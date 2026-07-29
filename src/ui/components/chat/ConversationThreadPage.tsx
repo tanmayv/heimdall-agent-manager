@@ -364,8 +364,12 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [reconfigStatus, setReconfigStatus] = useState('');
   const [taskChainOpen, setTaskChainOpen] = useState(false);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  const [composerActionsOpen, setComposerActionsOpen] = useState(false);
   const runtimeMenuRef = useRef<HTMLDivElement | null>(null);
   const runtimeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const composerActionsRef = useRef<HTMLDivElement | null>(null);
+  const composerActionsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
   const [renaming, setRenaming] = useState(false);
@@ -461,6 +465,33 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     };
   }, [runtimeMenuOpen]);
 
+  useEffect(() => {
+    if (!composerActionsOpen) return;
+    const isInsideComposerActions = (target: EventTarget | null) => {
+      const node = target as Node | null;
+      return Boolean(node && (composerActionsRef.current?.contains(node) || composerActionsButtonRef.current?.contains(node)));
+    };
+    const onPointerDown = (event: MouseEvent | TouchEvent) => {
+      if (!isInsideComposerActions(event.target)) setComposerActionsOpen(false);
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (!isInsideComposerActions(event.target)) setComposerActionsOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setComposerActionsOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('focusin', onFocusIn);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('focusin', onFocusIn);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [composerActionsOpen]);
+
   // Apply & relaunch only matters when the selection differs from what the
   // instance currently runs; otherwise it's a no-op (use Restart instead).
   const effectiveProvider = provider || instanceProvider;
@@ -545,6 +576,17 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     }
   }
 
+  function handleAttachmentInput(event: any) {
+    const files = Array.from(event.target.files || []) as File[];
+    event.target.value = '';
+    files.forEach((file) => void uploadAttachment(file));
+  }
+
+  function openAttachmentPicker() {
+    setComposerActionsOpen(false);
+    fileInputRef.current?.click();
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (sendDisabled) return;
@@ -589,6 +631,11 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       const message = errMsg(err, 'Pane capture request failed');
       setLocalMessages((current) => current.map((item) => (msgId(item, 0) === localId ? failedPaneCaptureMessage(item, message) : item)));
     }
+  }
+
+  function requestPaneFromComposer() {
+    setComposerActionsOpen(false);
+    if (!paneCaptureDisabled) void requestPane();
   }
 
   function renderConversationMessageBody(message: ChatMessage) {
@@ -683,6 +730,58 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
         <p className="mt-2 text-sm text-zinc-400">No conversation with id <span className="font-mono">{conversationId}</span> for this user.</p>
         <a data-debug-id="conversation-thread-back-btn" href="#/conversations/new" className="mt-4 inline-flex rounded-2xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300">Start a new conversation</a>
       </section>
+    );
+  }
+
+
+  function renderComposer() {
+    return (
+      <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="shrink-0 border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
+        {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
+        {attachments.length > 0 && (
+          <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
+            {attachments.map((a) => (
+              <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-white/10 bg-black/20 px-2.5 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
+                  <span className="min-w-0 flex-1 truncate" title={a.name}>{a.name}</span>
+                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
+                  {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-200 hover:bg-white/10">Retry</button> : null}
+                  <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">Remove</button>
+                </div>
+                {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
+                {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
+              </div>
+            ))}
+            {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
+            {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
+          </div>
+        )}
+        <div className="flex items-end gap-1.5 sm:gap-2">
+          <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
+          <div ref={composerActionsRef} className="relative shrink-0 sm:hidden">
+            <button ref={composerActionsButtonRef} data-debug-id="conversation-composer-actions-menu-btn" type="button" aria-label="More composer actions" aria-haspopup="menu" aria-expanded={composerActionsOpen ? 'true' : 'false'} onClick={() => setComposerActionsOpen((open) => !open)} className="grid h-[44px] w-[44px] place-items-center rounded-2xl border border-white/10 bg-black/30 text-2xl leading-none text-zinc-300 hover:bg-white/5 hover:text-white">⋯</button>
+            {composerActionsOpen ? (
+              <div data-debug-id="conversation-composer-actions-menu" role="menu" className="absolute bottom-full left-0 z-40 mb-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 shadow-2xl shadow-black/50">
+                <button data-debug-id="conversation-composer-actions-upload" type="button" role="menuitem" onClick={openAttachmentPicker} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-zinc-100 hover:bg-white/10"><span className="text-lg">＋</span><span>Upload</span></button>
+                <button data-debug-id="conversation-composer-actions-pane" type="button" role="menuitem" disabled={paneCaptureDisabled} onClick={requestPaneFromComposer} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-zinc-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"><span className="text-lg">▣</span><span>Pane capture</span></button>
+              </div>
+            ) : null}
+          </div>
+          <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="hidden h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white sm:grid">＋</button>
+          <textarea
+            data-debug-id="conversation-composer-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); } }}
+            rows={2}
+            placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
+            className="min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
+          />
+          <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={requestPaneFromComposer} className="hidden h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl border border-sky-400/30 bg-sky-400/10 text-lg font-bold text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40 sm:grid">▣</button>
+          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl bg-sky-400 text-lg font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? '⇧' : '↑'}</button>
+        </div>
+      </form>
     );
   }
 
@@ -792,49 +891,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
         />
       </div>
 
-      <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="shrink-0 border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
-        {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
-        {attachments.length > 0 && (
-          <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
-            {attachments.map((a) => (
-              <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-white/10 bg-black/20 px-2.5 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
-                  <span className="min-w-0 flex-1 truncate" title={a.name}>{a.name}</span>
-                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
-                  {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-200 hover:bg-white/10">Retry</button> : null}
-                  <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">Remove</button>
-                </div>
-                {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
-                {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
-              </div>
-            ))}
-            {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
-            {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
-          </div>
-        )}
-        <div className="flex items-end gap-2">
-          <label data-debug-id="conversation-attach-btn" className="grid h-[44px] w-[44px] shrink-0 cursor-pointer place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white" title="Upload Attachment">
-            <input data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={(e) => {
-              const files = Array.from(e.target.files || []) as File[];
-              e.target.value = '';
-              files.forEach((file) => void uploadAttachment(file));
-            }} />
-            ＋
-          </label>
-          <textarea
-            data-debug-id="conversation-composer-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); } }}
-            rows={2}
-            placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
-            className="min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
-          />
-          <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={() => void requestPane()} className="rounded-2xl border border-sky-400/30 bg-sky-400/10 px-3 py-2.5 text-sm font-bold text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Pane</button>
-          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? 'Uploading…' : 'Send'}</button>
-        </div>
-      </form>
+      {renderComposer()}
             </div>
             <div className="flex h-full min-h-0 w-1/2 flex-col">
               <TaskChainOverview
@@ -868,49 +925,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
         />
       </div>
 
-      <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="shrink-0 border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
-        {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
-        {attachments.length > 0 && (
-          <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
-            {attachments.map((a) => (
-              <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-white/10 bg-black/20 px-2.5 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
-                  <span className="min-w-0 flex-1 truncate" title={a.name}>{a.name}</span>
-                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
-                  {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-200 hover:bg-white/10">Retry</button> : null}
-                  <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">Remove</button>
-                </div>
-                {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
-                {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
-              </div>
-            ))}
-            {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
-            {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
-          </div>
-        )}
-        <div className="flex items-end gap-2">
-          <label data-debug-id="conversation-attach-btn" className="grid h-[44px] w-[44px] shrink-0 cursor-pointer place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white" title="Upload Attachment">
-            <input data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={(e) => {
-              const files = Array.from(e.target.files || []) as File[];
-              e.target.value = '';
-              files.forEach((file) => void uploadAttachment(file));
-            }} />
-            ＋
-          </label>
-          <textarea
-            data-debug-id="conversation-composer-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); } }}
-            rows={2}
-            placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
-            className="min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
-          />
-          <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={() => void requestPane()} className="rounded-2xl border border-sky-400/30 bg-sky-400/10 px-3 py-2.5 text-sm font-bold text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Pane</button>
-          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? 'Uploading…' : 'Send'}</button>
-        </div>
-      </form>
+      {renderComposer()}
         </>
       )}
     </section>
