@@ -410,6 +410,11 @@ function bridgeColorSlot(bridgeId?: string): string {
   return BRIDGE_PALETTE[h % BRIDGE_PALETTE.length];
 }
 
+function bridgeIsRevoked(bridge: any): boolean {
+  const status = String(bridge?.status || bridge?.runtime_status || bridge?.runtimeStatus || bridge?.state || '').trim().toLowerCase();
+  return status === 'revoked' || Boolean(bridge?.revoked_at || bridge?.revokedAt);
+}
+
 type LiveState = 'live' | 'starting' | 'stopping' | 'off' | 'stale' | 'error' | 'none';
 
 function liveStateFromRuntime(runtimeStatus?: string): LiveState {
@@ -582,7 +587,7 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
 
 function ProjectConversationTree({ groups, loading = false, error = '' }: { groups: ProjectGroup[]; loading?: boolean; error?: string }) {
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 10000 });
-  const bridges = bridgesQuery.data?.bridges || [];
+  const bridges = (bridgesQuery.data?.bridges || []).filter((bridge: any) => !bridgeIsRevoked(bridge));
 
   return (
     <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4 border-t border-white/10 pt-4">
