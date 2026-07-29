@@ -110,10 +110,16 @@ Benefits:
 ### Full snapshots are catch-up only
 
 `task_chain_snapshot` is the only full-ish chain payload. It is sent on:
-- bridge connect/reconnect;
+- bridge connect/reconnect, including bridge process restart with a new
+  `bridge_boot_id`;
 - instance launch / member moved to a new bridge;
 - explicit bridge `task_chain_resync_request`;
 - Hub-detected gap recovery.
+
+A bridge process restart is treated as **total cache loss**, even if the local
+wrappers/tmux sessions survived. The restarted bridge starts with no trusted
+chain cache, reports the active instances it recovered locally, and waits for Hub
+snapshots before making task policy decisions.
 
 Snapshots use a **compact chain projection**, not the UI chain-detail response:
 - include chain identity/status/coordinator;
@@ -162,7 +168,8 @@ delta.
 ### Heartbeats stay runtime-only
 
 `bridge_heartbeat` must remain small and runtime-focused:
-- bridge identity, heartbeat sequence/time;
+- bridge identity, `bridge_boot_id` (stable for one bridge process), heartbeat
+  sequence/time;
 - capabilities only on connect or when changed (or a compact capabilities hash on
   periodic heartbeats);
 - active instance IDs / changed instance rows;
@@ -289,6 +296,35 @@ serialization point and fan-out hub**. This gives a star topology, not a mesh.
   `task_chain_resync_request`; the Hub answers with a snapshot at the current
   version.
 
+### Bridge process restart (cache reconstruction)
+
+A bridge restart is a special reconnect where the bridge's in-memory task cache,
+pending notification queue, and dedupe set may be gone while wrappers/tmux panes
+may still be alive. Correctness rules:
+
+1. On process start, the Bridge generates a new `bridge_boot_id`, clears all
+   task-chain cache state, marks task policy `not_ready`, and rebuilds only the
+   local runtime inventory it can prove (active wrappers/tmux sessions and their
+   `agent_instance_id`s).
+2. The first bridge hello/heartbeat includes `bridge_boot_id`, `cold_start:true`,
+   and the recovered active instance IDs. This is still runtime metadata only —
+   no task payloads.
+3. The Hub treats `cold_start` / unknown `bridge_boot_id` as cache loss. It
+   reconciles active instances, recomputes which chains are hosted by that bridge,
+   sends `task_policy_sync`, then sends `task_chain_snapshot` for every hosted
+   chain at the current durable `chain_version`.
+4. The Hub sends `task_sync_complete` for that `bridge_boot_id` after the initial
+   snapshot batch. Until then, the Bridge does **not** run auto-claim/auto-start
+   and does not deliver version-gated task notifications except by first applying
+   the required snapshot.
+5. Any deltas racing with restart are either ordered after the snapshot on the WS
+   stream or rejected by the Bridge's base-version check, causing a resync. The
+   Bridge never applies a delta against an unknown/stale base.
+6. Pending comment notifications are replayed from Hub metadata markers after the
+   snapshot batch. Duplicate delivery after crash-before-ack is acceptable
+   at-least-once behavior; duplicate command delivery within a boot is deduped by
+   `notification_id`.
+
 ### What the bridge caches
 
 Per `chain_id`: `{ chain_version, compact chain fields, compact tasks[],
@@ -355,11 +391,18 @@ sent through `task_policy_sync` (so operators tune them in one place):
   - Body-free, version-gated, deduped by `notification_id`.
 - `task_policy_sync` `{ policy_version, policy }`
   - Sent on connect or when policy changes.
+- `task_sync_complete` `{ bridge_id, bridge_boot_id, chain_ids[],
+  max_chain_version }`
+  - Sent after the initial snapshot batch for a bridge boot/reconnect so the
+    Bridge can mark task policy ready for that boot.
 - (reuse) `launch_agent` when the Hub itself needs to start something; most
   (re)launch decisions are local to the owning bridge.
 
 ### Bridge → Hub (over the bridge WS / relay)
 
+- Extend the bridge hello / first heartbeat with `{ bridge_boot_id, cold_start,
+  active_instance_ids[] }`. `cold_start:true` means the bridge has discarded task
+  caches and needs snapshots before policy decisions.
 - `task_chain_resync_request` `{ bridge_id, chain_id, have_chain_version,
   reason }` → Hub responds with `task_chain_snapshot`.
 - `task_claim_request` `{ agent_instance_id, task_id, seen_chain_version }` → Hub
@@ -504,6 +547,8 @@ changed instance if useful:
   "type": "bridge_heartbeat",
   "protocol_version": 1,
   "bridge_id": "brg_A…",
+  "bridge_boot_id": "boot_18c6…",
+  "cold_start": false,                  // true only on first heartbeat after process start
   "heartbeat_seq": 42,
   "active_instance_ids": ["inst_A…"],
   "instances": [
@@ -576,15 +621,25 @@ changed cooldown entry, and acks:
 ## Bridge-Side State & Loop
 
 ```text
+bridge process start/restart:
+  generate bridge_boot_id
+  clear task chain cache + pending notification dedupe
+  recover active local wrappers/tmux instances only
+  connect/heartbeat with cold_start:true + active_instance_ids
+  wait for task_policy_sync + task_chain_snapshot batch + task_sync_complete
+
 launch_agent(chain_id) ──────► store instance→chain_id
 task_policy_sync ────────────► upsert policy[policy_version]
 task_chain_snapshot ─────────► replace chain cache[chain_id] @ version
 task_chain_delta ────────────► apply only if base version matches; else resync
 task_comment_notify ─────────► hold until cache version >= notification version, then push
 
+task_sync_complete ──────────► mark task policy ready for this bridge_boot_id
+
 heartbeat loop (existing) + policy tick (new):
   send runtime-only heartbeat
   for inst in local live instances:
+     if !task_policy_ready_for_boot: skip (await initial snapshots)
      chain = cache[inst.chain_id]; if none, skip (await snapshot)
      task  = current task for inst (assignee == inst, workable)
      idle_s = now - inst.last_activity
@@ -603,6 +658,9 @@ small `last_nudge_at_changed` deltas so restarted bridges don't re-storm.
 - Hub keeps a small **pending notification / claim / nudge marker outbox** only
   for correctness across restarts and reconnects. This is not a scheduler — just
   retry/replay of decision reports and metadata-only task notifications.
+- Bridge task caches are explicitly **not durable or trusted after restart**.
+  Correct task state after a bridge restart comes from Hub snapshots keyed by the
+  restarted bridge's active instance inventory and new `bridge_boot_id`.
 - Comment notification outbox rows store IDs/version/recipient/delivery state
   only, never comment bodies.
 - If a bridge is offline, its instances usually are not running there anyway →
@@ -621,6 +679,9 @@ small `last_nudge_at_changed` deltas so restarted bridges don't re-storm.
      /publish/nudge mutations.
    - Fan out deltas on mutation; snapshots only on connect/launch/resync/gap.
    - Add `task_chain_resync_request` handling.
+   - Treat a new `bridge_boot_id` / `cold_start:true` as cache loss: send policy,
+     snapshots for all hosted chains, pending notification markers, and
+     `task_sync_complete` before Bridge policy is enabled.
 3. **Hub: version-gated task comment notifications.**
    - On `comment_added`, compute assignee/reviewer recipients from post-mutation
      state.
@@ -677,6 +738,11 @@ small `last_nudge_at_changed` deltas so restarted bridges don't re-storm.
 - **Reconnect catch-up**: take Bridge B offline, mutate the chain N times, bring B
   back → snapshot brings it to the latest `chain_version`, followed by pending
   metadata-only notifications as needed.
+- **Bridge process restart with wrappers still alive**: restart Bridge B without
+  killing local wrappers/tmux panes → first heartbeat has a new `bridge_boot_id`
+  and `cold_start:true`; no auto-claim/auto-start/comment delivery occurs until
+  policy + snapshots + `task_sync_complete`; cache reaches Hub's latest
+  `chain_version` before decisions resume.
 - **Gap handling**: drop one delta, deliver the next → Bridge requests snapshot
   and does not apply against the wrong base.
 - **Heartbeat payload discipline**: assert heartbeats do not contain chains,
@@ -704,6 +770,9 @@ small `last_nudge_at_changed` deltas so restarted bridges don't re-storm.
 - **Stale/missing bridge cache**: ignore duplicate versions, request snapshot for
   gaps, and defer all decisions/notifications for a chain with no cache entry
   until sync arrives. Hub is source of truth; bridge cache is advisory-but-fresh.
+- **Bridge restart correctness**: a new `bridge_boot_id` invalidates all prior
+  in-memory task state on that bridge; the Hub must resnapshot hosted chains from
+  durable state before the Bridge resumes task policy.
 - **Cooldown is Hub-durable** (`last_nudge_at` in snapshot/delta) so multi-bridge
   and restarts share one cooldown clock and don't double-nudge.
 - **No full comments over bridge WS**: task comment bodies remain durable REST/RPC
