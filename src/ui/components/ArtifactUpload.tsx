@@ -97,6 +97,15 @@ export type UseArtifactUploadResult = {
   uploadClipboardImage: (event: any, overrides?: Partial<ArtifactUploadContext>) => Promise<ClipboardUploadResult>;
 };
 
+function canUseAmbientArtifactAuth(): boolean {
+  if (typeof window === 'undefined') return false;
+  return Boolean((window as any).odinApi?.deviceAuth) || window.location.protocol === 'http:' || window.location.protocol === 'https:';
+}
+
+function hasArtifactUploadAuth(session: any): boolean {
+  return canUseAmbientArtifactAuth() || Boolean(session?.daemonUrl && session?.clientToken);
+}
+
 // Reusable upload flow used by the direct/selected-agent composer, the chain
 // coordinator composer, and ChainView paste affordances. Returns the created
 // `artifact://<id>` link on success or null on failure, setting a human-readable
@@ -114,7 +123,7 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
       setError(`File is too large. Maximum upload size is ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.`);
       return null;
     }
-    if (!session?.daemonUrl || !session?.clientToken) {
+    if (!hasArtifactUploadAuth(session)) {
       setError('Not connected. Reconnect before uploading an artifact.');
       return null;
     }

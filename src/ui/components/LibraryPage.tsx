@@ -119,8 +119,11 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
   const [renameName, setRenameName] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState('');
 
-  const artifactsQuery = useListArtifactsQuery({ limit: 200, includeDeleted: false }, { skip: !session?.clientToken });
-  const agentsQuery = useListAgentsQuery(undefined, { skip: !session?.clientToken });
+  const daemonUrl = session?.daemonUrl || '';
+  const clientToken = session?.clientToken || '';
+  const artifactRequestAuth = useMemo(() => ({ daemonUrl, clientToken }), [daemonUrl, clientToken]);
+  const artifactsQuery = useListArtifactsQuery({ limit: 200, includeDeleted: false, ...artifactRequestAuth }, { skip: !clientToken });
+  const agentsQuery = useListAgentsQuery(undefined, { skip: !clientToken });
   const [updateArtifact] = useUpdateArtifactMutation();
   const [deleteArtifact] = useDeleteArtifactMutation();
   const upload = useArtifactUpload({ projectId: '', originKind: 'library_upload', originRef: '' });
@@ -156,7 +159,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
     const name = renameName.trim();
     if (!name) return;
     try {
-      await updateArtifact({ artifactId: id, name, changeReason: 'rename from library' }).unwrap();
+      await updateArtifact({ artifactId: id, name, changeReason: 'rename from library', ...artifactRequestAuth }).unwrap();
       setRenamingId('');
     } catch {
       // ignore — RTK Query tag invalidation keeps the list fresh
@@ -165,16 +168,13 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
 
   async function handleDelete(id: string) {
     try {
-      await deleteArtifact({ artifactId: id }).unwrap();
+      await deleteArtifact({ artifactId: id, ...artifactRequestAuth }).unwrap();
       setDeleteConfirmId('');
       if (activeArtifactId === id) setActiveArtifactId('');
     } catch {
       // ignore
     }
   }
-
-  const daemonUrl = session?.daemonUrl || '';
-  const clientToken = session?.clientToken || '';
 
   return (
     <div data-debug-id="library-page" className="flex h-full flex-col bg-[#0a0a0a] text-zinc-100">

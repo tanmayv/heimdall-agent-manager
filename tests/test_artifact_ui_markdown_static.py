@@ -59,7 +59,9 @@ def main() -> None:
 
     require("row.mime || row.content_type || row.contentType" in chain_artifacts, "chain artifact library should display content_type fallback metadata")
     require("artifact.mime || artifact.content_type || artifact.contentType" in app, "chat artifact side panel should display content_type fallback metadata")
-    require("useListArtifactsQuery({ projectId, limit: 20 }" in chain_artifacts and "useListArtifactsQuery({ projectId, limit: 20 }" in app, "artifact libraries should render backend project list results without origin-only scoping")
+    chain_project_list = "useListArtifactsQuery({ projectId, limit: 20 }" in chain_artifacts or "useListArtifactsQuery({ projectId, limit: 20, ...artifactRequestAuth }" in chain_artifacts
+    app_project_list = "useListArtifactsQuery({ projectId, limit: 20 }" in app or "useListArtifactsQuery({ projectId, limit: 20, ...artifactRequestAuth }" in app
+    require(chain_project_list and app_project_list, "artifact libraries should render backend project list results without origin-only scoping")
 
     print("ARTIFACT UI MARKDOWN STATIC TEST PASSED")
 

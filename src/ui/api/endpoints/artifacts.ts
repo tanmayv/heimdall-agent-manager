@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import * as daemonApi from '../daemonApi';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
-type ArtifactListArgs = {
+type ArtifactAuthArgs = {
+  daemonUrl?: string;
+  clientToken?: string;
+};
+
+type ArtifactListArgs = ArtifactAuthArgs & {
   projectId?: string;
   creatorId?: string;
   originRef?: string;
@@ -11,7 +16,7 @@ type ArtifactListArgs = {
   offset?: number;
 };
 
-type ArtifactCreateArgs = {
+type ArtifactCreateArgs = ArtifactAuthArgs & {
   file?: File | Blob | null;
   name: string;
   kind?: string;
@@ -23,7 +28,7 @@ type ArtifactCreateArgs = {
   contentBase64?: string;
 };
 
-type ArtifactUpdateArgs = {
+type ArtifactUpdateArgs = ArtifactAuthArgs & {
   artifactId: string;
   name?: string;
   kind?: string;
@@ -35,23 +40,23 @@ type ArtifactUpdateArgs = {
   changeReason?: string;
 };
 
-type ArtifactTextContentArgs = {
+type ArtifactTextContentArgs = ArtifactAuthArgs & {
   artifactId: string;
   versionNo?: number | null;
 };
 
-type ArtifactRollbackArgs = {
+type ArtifactRollbackArgs = ArtifactAuthArgs & {
   artifactId: string;
   versionNo: number;
   changeReason?: string;
 };
 
-type ArtifactAnnotationsArgs = {
+type ArtifactAnnotationsArgs = ArtifactAuthArgs & {
   artifactId: string;
   versionNo?: number | null;
 };
 
-type CreateArtifactAnnotationArgs = {
+type CreateArtifactAnnotationArgs = ArtifactAuthArgs & {
   artifactId: string;
   versionNo?: number | null;
   contextType: string;
@@ -59,14 +64,14 @@ type CreateArtifactAnnotationArgs = {
   comment: string;
 };
 
-type UpdateArtifactAnnotationArgs = {
+type UpdateArtifactAnnotationArgs = ArtifactAuthArgs & {
   annotationId: string;
   artifactId: string;
   versionNo?: number | null;
   comment: string;
 };
 
-type DeleteArtifactAnnotationArgs = {
+type DeleteArtifactAnnotationArgs = ArtifactAuthArgs & {
   annotationId: string;
   artifactId: string;
   versionNo?: number | null;
@@ -76,14 +81,21 @@ function isElectronDeviceAuth(): boolean {
   return typeof window !== 'undefined' && Boolean((window as any).odinApi?.deviceAuth);
 }
 
+function isBrowserAmbientAuth(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.location.protocol === 'http:' || window.location.protocol === 'https:';
+}
+
 function auth(session: any) {
   // Hub v1 artifact endpoints should be auth-mode neutral. In the routed
   // Authentik app, same-origin cookies authenticate relative /api/v1 requests;
   // in Electron, the fetch bridge rewrites relative /api/v1 requests to the
   // configured Hub and injects the secure-store user token. Do not pass legacy
-  // Redux clientToken values on those paths.
+  // Redux clientToken values on those paths. If no legacy token exists in a web
+  // shell, prefer the ambient /api/v1 route instead of an unauthenticated local
+  // daemon URL so upload and preview use the same cookie/device auth path.
   const token = String(session?.clientToken || '');
-  if (isElectronDeviceAuth() || token === 'v1') return { daemonUrl: '', clientToken: '' };
+  if (isElectronDeviceAuth() || token === 'v1' || (!token && isBrowserAmbientAuth())) return { daemonUrl: '', clientToken: '' };
   return { daemonUrl: session.daemonUrl, clientToken: token };
 }
 
@@ -208,6 +220,11 @@ function artifactFetchInit(session: any): RequestInit {
     : { credentials: 'include' };
 }
 
+function withoutArtifactAuthArgs<T extends ArtifactAuthArgs>(args: T): Omit<T, keyof ArtifactAuthArgs> {
+  const { daemonUrl: _daemonUrl, clientToken: _clientToken, ...rest } = (args || {}) as T;
+  return rest as Omit<T, keyof ArtifactAuthArgs>;
+}
+
 export const artifactsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listArtifacts: build.query<any, ArtifactListArgs>({
@@ -229,8 +246,8 @@ export const artifactsApi = heimdallApi.injectEndpoints({
       async onQueryStarted(arg, { dispatch, queryFulfilled }) {
         try {
           const { data } = await queryFulfilled;
-          const { projectId, creatorId, originRef, includeDeleted, limit = 20 } = arg;
-          const cacheKeyArgs = { projectId, creatorId, originRef, includeDeleted, limit };
+          const { projectId, creatorId, originRef, includeDeleted, limit = 20, daemonUrl, clientToken } = arg;
+          const cacheKeyArgs = { projectId, creatorId, originRef, includeDeleted, limit, daemonUrl, clientToken };
           dispatch(
             artifactsApi.util.updateQueryData('listArtifacts', cacheKeyArgs, (draft) => {
               if (!draft) return;
@@ -250,14 +267,14 @@ export const artifactsApi = heimdallApi.injectEndpoints({
         } catch {}
       }
     }),
-    fetchArtifactMeta: build.query<any, { artifactId: string }>({
+    fetchArtifactMeta: build.query<any, ArtifactAuthArgs & { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
         if (!artifactId) return { artifact: null };
         return normalizeArtifactResponse(await daemonApi.fetchArtifactMeta({ ...auth(session), artifactId }));
       }),
       providesTags: (_result, _error, { artifactId }) => [{ type: 'Artifact' as const, id: artifactId }],
     }),
-    fetchArtifactVersions: build.query<any, { artifactId: string }>({
+    fetchArtifactVersions: build.query<any, ArtifactAuthArgs & { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
         if (!artifactId) return { versions: [] };
         try {
@@ -310,7 +327,7 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     }),
     createArtifact: build.mutation<any, ArtifactCreateArgs>({
       queryFn: withSessionQuery(async (args, { session }) => {
-        const data = await daemonApi.createArtifact({ ...auth(session), ...args });
+        const data = await daemonApi.createArtifact({ ...withoutArtifactAuthArgs(args), ...auth(session) });
         const artifact = normalizeArtifact(data?.artifact || data?.data || data);
         return { ...data, artifact, link: artifact?.link || (artifact?.artifact_id ? `artifact://${artifact.artifact_id}` : '') };
       }),
@@ -329,7 +346,7 @@ export const artifactsApi = heimdallApi.injectEndpoints({
       },
     }),
     updateArtifact: build.mutation<any, ArtifactUpdateArgs>({
-      queryFn: withSessionQuery(async (args, { session }) => daemonApi.updateArtifact({ ...auth(session), ...args })),
+      queryFn: withSessionQuery(async (args, { session }) => daemonApi.updateArtifact({ ...withoutArtifactAuthArgs(args), ...auth(session) })),
       invalidatesTags: (result, _error, { artifactId, projectId = '', originRef = '' }) => {
         const updated = result?.artifact || {};
         return [
@@ -354,27 +371,27 @@ export const artifactsApi = heimdallApi.injectEndpoints({
       ],
     }),
     createArtifactAnnotation: build.mutation<any, CreateArtifactAnnotationArgs>({
-      queryFn: withSessionQuery(async (args, { session }) => daemonApi.createArtifactAnnotation({ ...auth(session), ...args })),
+      queryFn: withSessionQuery(async (args, { session }) => daemonApi.createArtifactAnnotation({ ...withoutArtifactAuthArgs(args), ...auth(session) })),
       invalidatesTags: (_result, _error, { artifactId, versionNo = null }) => [
         { type: 'ArtifactAnnotations' as const, id: artifactId },
         { type: 'ArtifactAnnotations' as const, id: annotationScopeTag(artifactId, versionNo) },
       ],
     }),
     updateArtifactAnnotation: build.mutation<any, UpdateArtifactAnnotationArgs>({
-      queryFn: withSessionQuery(async ({ annotationId, comment }, { session }) => daemonApi.updateArtifactAnnotation({ ...auth(session), annotationId, comment })),
+      queryFn: withSessionQuery(async (args, { session }) => daemonApi.updateArtifactAnnotation({ ...withoutArtifactAuthArgs(args), ...auth(session) })),
       invalidatesTags: (_result, _error, { artifactId, versionNo = null }) => [
         { type: 'ArtifactAnnotations' as const, id: artifactId },
         { type: 'ArtifactAnnotations' as const, id: annotationScopeTag(artifactId, versionNo) },
       ],
     }),
     deleteArtifactAnnotation: build.mutation<any, DeleteArtifactAnnotationArgs>({
-      queryFn: withSessionQuery(async ({ annotationId }, { session }) => daemonApi.deleteArtifactAnnotation({ ...auth(session), annotationId })),
+      queryFn: withSessionQuery(async (args, { session }) => daemonApi.deleteArtifactAnnotation({ ...withoutArtifactAuthArgs(args), ...auth(session) })),
       invalidatesTags: (_result, _error, { artifactId, versionNo = null }) => [
         { type: 'ArtifactAnnotations' as const, id: artifactId },
         { type: 'ArtifactAnnotations' as const, id: annotationScopeTag(artifactId, versionNo) },
       ],
     }),
-    deleteArtifact: build.mutation<any, { artifactId: string }>({
+    deleteArtifact: build.mutation<any, ArtifactAuthArgs & { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => daemonApi.deleteArtifact({ ...auth(session), artifactId })),
       invalidatesTags: (_result, _error, { artifactId }) => [
         { type: 'Artifact' as const, id: artifactId },

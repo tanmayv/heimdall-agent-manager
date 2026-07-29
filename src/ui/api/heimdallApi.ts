@@ -54,12 +54,25 @@ function queryError(error: any): QueryError & { message: string } {
   } as any;
 }
 
+function hasOwn(value: any, key: string): boolean {
+  return Boolean(value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function sessionWithRequestOverrides(session: any, arg: any) {
+  if (!arg || typeof arg !== 'object') return session || {};
+  const next = { ...(session || {}) };
+  if (hasOwn(arg, 'daemonUrl')) next.daemonUrl = arg.daemonUrl;
+  if (hasOwn(arg, 'clientToken')) next.clientToken = arg.clientToken;
+  if (hasOwn(arg, 'clientInstanceId')) next.clientInstanceId = arg.clientInstanceId;
+  return next;
+}
+
 export function withSessionQuery<Arg, Result>(
   run: (arg: Arg, context: { state: any; session: any }) => Promise<Result>,
 ) {
   return async (arg: Arg, api: { getState: () => unknown }) => {
     const state = api.getState() as any;
-    const session = state?.chat?.session || {};
+    const session = sessionWithRequestOverrides(state?.chat?.session || {}, arg);
     try {
       return { data: await run(arg, { state, session }) };
     } catch (error: any) {
