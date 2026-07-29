@@ -19,7 +19,7 @@ function useAgentCreateState() {
   // Poll: bridge status/capabilities change async and the Hub emits no user-WS
   // event for bridge liveness, so a one-shot fetch can leave create/launch
   // controls empty after a Bridge comes online.
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 5000, refetchOnMountOrArgChange: true });
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const [name, setName] = useState('');
   const [templateId, setTemplateId] = useState('');
   const [instructions, setInstructions] = useState('');

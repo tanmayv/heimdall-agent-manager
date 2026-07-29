@@ -584,7 +584,7 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
 }
 
 function ProjectConversationTree({ groups, loading = false, error = '' }: { groups: ProjectGroup[]; loading?: boolean; error?: string }) {
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 10000 });
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
   const bridges = (bridgesQuery.data?.bridges || []).filter((bridge: any) => !bridgeIsRevoked(bridge));
 
   return (
