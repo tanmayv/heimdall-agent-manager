@@ -1,5 +1,6 @@
 package http
 
+import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -209,8 +210,29 @@ nudge_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
 	nudge, nudged, err := taskchain_service.manual_nudge(h.taskchains, auth_ctx, task_id, json_string(req.body, "message"))
 	if !nudged do return respond_error(err, req.request_id)
+	
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"task_id\":\""); write_handler_json_string(&b, string(nudge.task_id)); strings.write_string(&b, "\",\"nudged\":true,\"target\":\""); write_handler_json_string(&b, nudge_target_string(nudge.target)); strings.write_string(&b, "\",\"created_at\":\""); write_handler_json_string(&b, nudge.created_at); strings.write_string(&b, "\"}")
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, `{"task_id":"`)
+	write_handler_json_string(&b, string(nudge.task_id))
+	strings.write_string(&b, `","nudge_id":"`)
+	write_handler_json_string(&b, nudge.nudge_id)
+	strings.write_string(&b, `","delivery_state":"`)
+	write_handler_json_string(&b, nudge.delivery_state)
+	strings.write_string(&b, `","live_delivered":`)
+	strings.write_string(&b, fmt.tprintf("%d", nudge.live_delivered))
+	strings.write_string(&b, `,"durable_queued":`)
+	strings.write_string(&b, fmt.tprintf("%d", nudge.durable_queued))
+	strings.write_string(&b, `,"failed":`)
+	strings.write_string(&b, fmt.tprintf("%d", nudge.failed))
+	strings.write_string(&b, `,"target_role":"`)
+	write_handler_json_string(&b, taskchain_service.target_string(nudge.target))
+	strings.write_string(&b, `","created_at":"`)
+	write_handler_json_string(&b, nudge.created_at)
+	strings.write_string(&b, `,"targets":`)
+	strings.write_string(&b, nudge.targets_json)
+	strings.write_string(&b, `}`)
+	
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -395,7 +417,7 @@ publish_state_http :: proc(state: domain.Publish_State) -> string { if state == 
 chain_status_http :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; return "active" }
 task_status_http :: proc(status: domain.Task_Status) -> string { switch status { case .Assigned: return "assigned"; case .In_Progress: return "in_progress"; case .In_Validation: return "in_validation"; case .Validated_Good: return "validated_good"; case .Validated_Not_Good: return "validated_not_good"; case .Paused: return "paused"; case .Completed: return "completed"; case .Cancelled: return "cancelled" }; return "assigned" }
 task_status_from_http :: proc(status: string) -> (domain.Task_Status, bool) { if status == "assigned" do return .Assigned, true; if status == "in_progress" do return .In_Progress, true; if status == "in_validation" do return .In_Validation, true; if status == "validated_good" do return .Validated_Good, true; if status == "validated_not_good" do return .Validated_Not_Good, true; if status == "paused" do return .Paused, true; if status == "completed" do return .Completed, true; if status == "cancelled" do return .Cancelled, true; return .Assigned, false }
-nudge_target_string :: proc(target: taskchain_service.Nudge_Target) -> string { switch target { case .Assignee: return "assignee"; case .Reviewer: return "reviewer"; case .Coordinator: return "coordinator"; case .None: return "none" }; return "none" }
+
 
 json_or_empty_array :: proc(value: string) -> string { if strings.trim_space(value) == "" do return "[]"; return value }
 json_or_empty_object :: proc(value: string) -> string { if strings.trim_space(value) == "" do return "{}"; return value }

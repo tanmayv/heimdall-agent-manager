@@ -1,11 +1,13 @@
 package taskchain
 
+import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
+import project "odin_test:hub/service/project"
 
 Nudge_Target :: enum {
 	None,
@@ -20,6 +22,12 @@ Manual_Nudge :: struct {
 	target: Nudge_Target,
 	message: string,
 	created_at: string,
+	nudge_id: string,
+	delivery_state: string,
+	live_delivered: int,
+	durable_queued: int,
+	failed: int,
+	targets_json: string,
 }
 
 Taskchain_Service :: struct {
@@ -28,6 +36,7 @@ Taskchain_Service :: struct {
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
 	nudges: [dynamic]Manual_Nudge,
+	bridge_command_sink: project.Bridge_Command_Sink,
 }
 
 Create_Chain_Input :: struct {
@@ -82,6 +91,10 @@ Vote_Input :: struct {
 
 new_taskchain_service :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.Agent_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Taskchain_Service {
 	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, nudges = make([dynamic]Manual_Nudge)}
+}
+
+new_taskchain_service_with_runtime :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.Agent_Repository, bridge_command_sink: project.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Taskchain_Service {
+	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, nudges = make([dynamic]Manual_Nudge), bridge_command_sink = bridge_command_sink}
 }
 
 is_instance_member_or_coordinator :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_id: string) -> bool {
@@ -423,12 +436,154 @@ list_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context,
 	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
 }
 
+target_string :: proc(target: Nudge_Target) -> string {
+	switch target {
+	case .Assignee: return "assignee"
+	case .Reviewer: return "reviewer"
+	case .Coordinator: return "coordinator"
+	case .None: return "none"
+	}
+	return "none"
+}
+
+task_status_string :: proc(status: domain.Task_Status) -> string {
+	switch status {
+	case .Assigned: return "assigned"
+	case .In_Progress: return "in_progress"
+	case .In_Validation: return "in_validation"
+	case .Validated_Good: return "validated_good"
+	case .Validated_Not_Good: return "validated_not_good"
+	case .Paused: return "paused"
+	case .Completed: return "completed"
+	case .Cancelled: return "cancelled"
+	}
+	return "assigned"
+}
+
+extract_instances_from_ref_blob :: proc(blob: string) -> [dynamic]string {
+	instances := make([dynamic]string)
+	search := 0
+	for search < len(blob) {
+		rel := strings.index(blob[search:], "agent_instance_id")
+		if rel < 0 do break
+		idx := search + rel
+		id := json_string_value_after(blob, idx)
+		if id != "" {
+			append(&instances, id)
+		}
+		search = idx + len("agent_instance_id")
+	}
+	return instances
+}
+
 manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, message: string) -> (Manual_Nudge, bool, domain.Domain_Error) {
 	task, ok, err := get_task(service, auth, task_id)
 	if !ok do return Manual_Nudge{}, false, err
 	if task.publish_state != .Published do return Manual_Nudge{}, false, domain.domain_error(.Conflict, "draft task cannot be nudged")
 	if task.status == .Completed || task.status == .Cancelled do return Manual_Nudge{}, false, domain.domain_error(.Conflict, "terminal task cannot be nudged")
-	nudge := Manual_Nudge{task_id = task.task_id, owner_user_id = task.owner_user_id, target = nudge_target_for_status(task.status), message = message, created_at = platform.clock_now(service.clock)}
+	
+	target := nudge_target_for_status(task.status)
+	nudge_id := platform.generate_id(service.ids, "ndg_")
+	now := platform.clock_now(service.clock)
+	nudge := Manual_Nudge{task_id = task.task_id, owner_user_id = task.owner_user_id, target = target, message = message, created_at = now, nudge_id = nudge_id}
+	
+	instance_ids := make([dynamic]string)
+	defer delete(instance_ids)
+	
+	if target == .Assignee {
+		extracted := extract_instances_from_ref_blob(task.assignee_ref_json)
+		for id in extracted do append(&instance_ids, id)
+		delete(extracted)
+	} else if target == .Reviewer {
+		extracted := extract_instances_from_ref_blob(task.reviewer_refs_json)
+		for id in extracted do append(&instance_ids, id)
+		delete(extracted)
+	} else if target == .Coordinator {
+		chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
+		if chain_ok && chain.coordinator_agent_instance_id != "" {
+			append(&instance_ids, chain.coordinator_agent_instance_id)
+		}
+	}
+	
+	if target == .None || len(instance_ids) == 0 {
+		nudge.delivery_state = "no_targets"
+		nudge.targets_json = "[]"
+		append(&service.nudges, nudge)
+		return nudge, true, domain.Domain_Error{}
+	}
+	
+	live_delivered := 0
+	durable_queued := 0
+	failed := 0
+	targets_b := strings.builder_make()
+	defer strings.builder_destroy(&targets_b)
+	strings.write_string(&targets_b, "[")
+	
+	for id, i in instance_ids {
+		if i > 0 do strings.write_string(&targets_b, ",")
+		strings.write_string(&targets_b, `{"agent_instance_id":"`)
+		contracts.write_json_string(&targets_b, id)
+		strings.write_string(&targets_b, `","role":"`)
+		contracts.write_json_string(&targets_b, target_string(target))
+		
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, id)
+		if !inst_ok || inst.bridge_id == "" {
+			failed += 1
+			strings.write_string(&targets_b, `","state":"failed"}`)
+			continue
+		}
+		
+		strings.write_string(&targets_b, `","bridge_id":"`)
+		contracts.write_json_string(&targets_b, inst.bridge_id)
+		
+		cmd_id := platform.generate_id(service.ids, "cmd_")
+		b := strings.builder_make()
+		defer strings.builder_destroy(&b)
+		strings.write_string(&b, `{"type":"notify_task_nudge","command_id":"`)
+		contracts.write_json_string(&b, cmd_id)
+		strings.write_string(&b, `","task_id":"`)
+		contracts.write_json_string(&b, string(task.task_id))
+		strings.write_string(&b, `","chain_id":"`)
+		contracts.write_json_string(&b, string(task.chain_id))
+		strings.write_string(&b, `","nudge_id":"`)
+		contracts.write_json_string(&b, nudge_id)
+		strings.write_string(&b, `","target_role":"`)
+		contracts.write_json_string(&b, target_string(target))
+		strings.write_string(&b, `","task_status":"`)
+		contracts.write_json_string(&b, task_status_string(task.status))
+		strings.write_string(&b, `","body":"`)
+		contracts.write_json_string(&b, message)
+		strings.write_string(&b, `","created_at":"`)
+		contracts.write_json_string(&b, now)
+		strings.write_string(&b, `"}`)
+		
+		sent := false
+		if service.bridge_command_sink.send_runtime_command != nil {
+			sent, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
+		}
+		if sent {
+			live_delivered += 1
+			strings.write_string(&targets_b, `","state":"delivered"}`)
+		} else {
+			failed += 1
+			strings.write_string(&targets_b, `","state":"failed"}`)
+		}
+	}
+	strings.write_string(&targets_b, "]")
+	
+	nudge.targets_json = strings.clone(strings.to_string(targets_b))
+	nudge.live_delivered = live_delivered
+	nudge.durable_queued = durable_queued
+	nudge.failed = failed
+	
+	if live_delivered > 0 {
+		nudge.delivery_state = "delivered"
+	} else if durable_queued > 0 {
+		nudge.delivery_state = "queued"
+	} else {
+		nudge.delivery_state = "failed"
+	}
+	
 	append(&service.nudges, nudge)
 	return nudge, true, domain.Domain_Error{}
 }
