@@ -367,6 +367,14 @@ function displayConversationMeta(conversation: ConversationSummary): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+function routeMobileTitle(path: string, conversations: ConversationSummary[]): string {
+  if (path.startsWith('/conversations/') && path !== '/conversations/new') {
+    const id = decodeSegment(path.slice('/conversations/'.length));
+    const conversation = conversations.find((item) => item.conversationId === id || item.agentInstanceId === id);
+    if (conversation) return displayConversationTitle(conversation);
+  }
+  return routeTitle(path);
+}
 
 
 function buildProjectConversationTree(conversations: ConversationSummary[], projects: ProjectSummary[]): ProjectGroup[] {
@@ -950,6 +958,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, projects), [conversations, projects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
+  const mobileRouteTitle = useMemo(() => routeMobileTitle(path, conversations), [path, conversations]);
   const sidebarError = String((conversationsQuery.error as any)?.error || (projectsQuery.error as any)?.error || '');
   const sidebarLoading = conversationsQuery.isLoading || projectsQuery.isLoading;
 
@@ -1027,7 +1036,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col">
         {isMobile ? (
-          <MobileTopBar title={routeTitle(path)} onOpenDrawer={() => setDrawerOpen(true)} />
+          <MobileTopBar title={mobileRouteTitle} onOpenDrawer={() => setDrawerOpen(true)} />
         ) : null}
         <RouteOutlet path={path} mobileBottomPadded={isMobile} conversations={conversations} />
       </div>
