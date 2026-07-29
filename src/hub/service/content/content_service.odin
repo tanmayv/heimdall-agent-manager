@@ -13,6 +13,31 @@ ARTIFACT_MAX_BYTES :: 50 * 1024 * 1024
 
 Content_Service :: struct { content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator }
 Memory_Input :: struct { agent_id,template_id,bridge_id,title,body,evidence,status: string, project_id: domain.Project_ID, type: domain.Memory_Type }
+Memory_Update_Input :: struct {
+	title:           string,
+	body:            string,
+	evidence:        string,
+	type:            domain.Memory_Type,
+	agent_id:        string,
+	project_id:      domain.Project_ID,
+	bridge_id:       string,
+	template_id:     string,
+	has_title:       bool,
+	has_body:        bool,
+	has_evidence:    bool,
+	has_type:        bool,
+	has_agent_id:    bool,
+	has_project_id:  bool,
+	has_bridge_id:   bool,
+	has_template_id: bool,
+}
+Memory_Filter :: struct {
+	status:     string,
+	type:       string,
+	agent_id:   string,
+	project_id: domain.Project_ID,
+	bridge_id:  string,
+}
 Chat_Input :: struct { agent_id,agent_instance_id,chain_id,title,initial_body,artifact_ids_json,bridge_id,provider,tier: string, project_id: domain.Project_ID }
 Message_Input :: struct { body,artifact_ids_json: string }
 Artifact_Input :: struct { kind,name,description,content_type,content,mime,ext,sha256,origin_kind,origin_ref,filename,agent_id,agent_instance_id,chain_id,task_id: string, project_id: domain.Project_ID }
@@ -22,11 +47,80 @@ new_content_service :: proc(content: ^iface.Content_Repository, agents: ^iface.A
 new_content_service_with_runtime :: proc(content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Content_Service { return Content_Service{content=content, agents=agents, bridges=bridges, projects=projects, taskchains=taskchains, bridge_command_sink=sink, clock=clock, ids=ids} }
 
 create_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context, input:Memory_Input)->(domain.Memory,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if strings.trim_space(input.body)=="" do return {},false,domain.domain_error(.Validation_Failed,"memory body is required"); if input.type==.Unknown do return {},false,domain.domain_error(.Validation_Failed,"memory type is invalid"); if input.agent_id!="" { if !agent_owned(s, owner, input.agent_id) do return {},false,domain.domain_error(.Not_Found,"agent not found") }; if string(input.project_id)!="" { if !project_owned(s, owner, input.project_id) do return {},false,domain.domain_error(.Not_Found,"project not found") }; if input.template_id!="" { if !template_available(s, owner, input.template_id) do return {},false,domain.domain_error(.Not_Found,"template not found") }; if input.bridge_id!="" { if !bridge_owned(s, owner, input.bridge_id) do return {},false,domain.domain_error(.Not_Found,"bridge not found") }; now:=platform.clock_now(s.clock); status:=input.status; if status=="" do status="pending"; typ:=input.type; if typ==.Unknown do typ=.Fact; m:=domain.Memory{memory_id=platform.generate_id(s.ids,"mem_"),owner_user_id=owner,agent_id=input.agent_id,project_id=input.project_id,template_id=input.template_id,bridge_id=input.bridge_id,type=typ,status=status,title=input.title,body=input.body,evidence=input.evidence,created_at=now,updated_at=now}; return iface.content_save_memory(s.content,m) }
-list_memories :: proc(s:^Content_Service, auth:contracts.Auth_Context)->([]domain.Memory,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return nil,err; return iface.content_list_memories(s.content,owner) }
+list_memories :: proc(s:^Content_Service, auth:contracts.Auth_Context, filter:Memory_Filter={}, limit:int=50, cursor:string="")->([]domain.Memory,domain.Domain_Error){
+	owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return nil,err
+	all,list_err:=iface.content_list_memories(s.content,owner); if list_err.code!=.None do return nil,list_err
+	eff_limit:=limit; if eff_limit<=0 do eff_limit=50; if eff_limit>200 do eff_limit=200
+	filtered:=make([dynamic]domain.Memory,0,len(all)); defer delete(filtered)
+	for m in all {
+		if filter.status!="" && m.status!=filter.status do continue
+		if filter.type!="" && domain.memory_type_string(m.type)!=filter.type do continue
+		if filter.agent_id!="" && m.agent_id!=filter.agent_id do continue
+		if string(filter.project_id)!="" && m.project_id!=filter.project_id do continue
+		if filter.bridge_id!="" && m.bridge_id!=filter.bridge_id do continue
+		append(&filtered,m)
+	}
+	out:=make([dynamic]domain.Memory)
+	seeking:=cursor!=""
+	for m in filtered {
+		if seeking {
+			if m.updated_at < cursor {
+				seeking=false
+			} else {
+				continue
+			}
+		}
+		if len(out)>=eff_limit do break
+		append(&out,m)
+	}
+	return out[:],{}
+}
 get_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context, id:string)->(domain.Memory,bool,domain.Domain_Error){ m,ok,err:=iface.content_get_memory(s.content,id); if !ok do return {},false,err; if m.owner_user_id=="system" do return m,true,{}; if ok2,e:=ownership.require_owner(auth,m.owner_user_id); !ok2 do return {},false,e; return m,true,{} }
+update_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context, id:string, input:Memory_Update_Input)->(domain.Memory,bool,domain.Domain_Error){
+	m,ok,err:=iface.content_get_memory(s.content,id); if !ok do return {},false,err
+	if m.owner_user_id=="system" do return {},false,domain.domain_error(.Forbidden,"system memories are read-only")
+	if ok2,e:=ownership.require_owner(auth,m.owner_user_id); !ok2 do return {},false,e
+	if m.status!="pending" && m.status!="active" do return {},false,domain.domain_error(.Validation_Failed,"only pending or active memories can be updated")
+	owner,own_ok,own_err:=ownership.owner_from_auth(auth); if !own_ok do return {},false,own_err
+	if input.has_agent_id && input.agent_id!="" { if !agent_owned(s,owner,input.agent_id) do return {},false,domain.domain_error(.Not_Found,"agent not found") }
+	if input.has_project_id && string(input.project_id)!="" { if !project_owned(s,owner,input.project_id) do return {},false,domain.domain_error(.Not_Found,"project not found") }
+	if input.has_template_id && input.template_id!="" { if !template_available(s,owner,input.template_id) do return {},false,domain.domain_error(.Not_Found,"template not found") }
+	if input.has_bridge_id && input.bridge_id!="" { if !bridge_owned(s,owner,input.bridge_id) do return {},false,domain.domain_error(.Not_Found,"bridge not found") }
+	if input.has_title do m.title=input.title
+	if input.has_body { if strings.trim_space(input.body)=="" do return {},false,domain.domain_error(.Validation_Failed,"memory body is required"); m.body=input.body }
+	if input.has_evidence do m.evidence=input.evidence
+	if input.has_type { if input.type==.Unknown do return {},false,domain.domain_error(.Validation_Failed,"memory type is invalid"); m.type=input.type }
+	if input.has_agent_id do m.agent_id=input.agent_id
+	if input.has_project_id do m.project_id=input.project_id
+	if input.has_bridge_id do m.bridge_id=input.bridge_id
+	if input.has_template_id do m.template_id=input.template_id
+	m.updated_at=platform.clock_now(s.clock)
+	return iface.content_save_memory(s.content,m)
+}
 update_memory_status :: proc(s:^Content_Service, auth:contracts.Auth_Context, id,status:string)->(domain.Memory,bool,domain.Domain_Error){ m,ok,err:=iface.content_get_memory(s.content,id); if !ok do return {},false,err; if m.owner_user_id=="system" do return {},false,domain.domain_error(.Forbidden,"system memories are read-only"); if ok2,e:=ownership.require_owner(auth,m.owner_user_id); !ok2 do return {},false,e; m.status=status; m.updated_at=platform.clock_now(s.clock); return iface.content_save_memory(s.content,m) }
 archive_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(domain.Memory,bool,domain.Domain_Error){ return update_memory_status(s,auth,id,"archived") }
-approve_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(domain.Memory,bool,domain.Domain_Error){ return update_memory_status(s,auth,id,"active") }
+approve_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string, input:Memory_Update_Input={}, has_edits:bool=false)->(domain.Memory,bool,domain.Domain_Error){
+	if !has_edits do return update_memory_status(s,auth,id,"active")
+	m,ok,err:=iface.content_get_memory(s.content,id); if !ok do return {},false,err
+	if m.owner_user_id=="system" do return {},false,domain.domain_error(.Forbidden,"system memories are read-only")
+	if ok2,e:=ownership.require_owner(auth,m.owner_user_id); !ok2 do return {},false,e
+	owner,own_ok,own_err:=ownership.owner_from_auth(auth); if !own_ok do return {},false,own_err
+	if input.has_agent_id && input.agent_id!="" { if !agent_owned(s,owner,input.agent_id) do return {},false,domain.domain_error(.Not_Found,"agent not found") }
+	if input.has_project_id && string(input.project_id)!="" { if !project_owned(s,owner,input.project_id) do return {},false,domain.domain_error(.Not_Found,"project not found") }
+	if input.has_template_id && input.template_id!="" { if !template_available(s,owner,input.template_id) do return {},false,domain.domain_error(.Not_Found,"template not found") }
+	if input.has_bridge_id && input.bridge_id!="" { if !bridge_owned(s,owner,input.bridge_id) do return {},false,domain.domain_error(.Not_Found,"bridge not found") }
+	if input.has_title do m.title=input.title
+	if input.has_body { if strings.trim_space(input.body)=="" do return {},false,domain.domain_error(.Validation_Failed,"memory body is required"); m.body=input.body }
+	if input.has_evidence do m.evidence=input.evidence
+	if input.has_type { if input.type==.Unknown do return {},false,domain.domain_error(.Validation_Failed,"memory type is invalid"); m.type=input.type }
+	if input.has_agent_id do m.agent_id=input.agent_id
+	if input.has_project_id do m.project_id=input.project_id
+	if input.has_bridge_id do m.bridge_id=input.bridge_id
+	if input.has_template_id do m.template_id=input.template_id
+	m.status="active"
+	m.updated_at=platform.clock_now(s.clock)
+	return iface.content_save_memory(s.content,m)
+}
 reject_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(domain.Memory,bool,domain.Domain_Error){ return update_memory_status(s,auth,id,"rejected") }
 
 create_conversation :: proc(s:^Content_Service, auth:contracts.Auth_Context, input:Chat_Input)->(domain.Chat_Conversation,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if input.agent_id=="" do return {},false,domain.domain_error(.Validation_Failed,"agent_id is required"); if input.agent_instance_id=="" do return {},false,domain.domain_error(.Validation_Failed,"agent_instance_id is required"); if !agent_owned(s,owner,input.agent_id) do return {},false,domain.domain_error(.Not_Found,"agent not found"); if bind_ok,bind_err:=conversation_instance_binding_valid(s,owner,input); !bind_ok do return {},false,bind_err; initial:=Message_Input{body=input.initial_body,artifact_ids_json=input.artifact_ids_json}; if strings.trim_space(input.initial_body)!="" { if msg_ok,msg_err:=validate_initial_message(s,auth,initial); !msg_ok do return {},false,msg_err }; now:=platform.clock_now(s.clock); title:=conversation_title_from_input(input.title,input.initial_body,input.agent_id); c:=domain.Chat_Conversation{conversation_id=platform.generate_id(s.ids,"chat_"),owner_user_id=owner,agent_id=input.agent_id,agent_instance_id=input.agent_instance_id,project_id=input.project_id,chain_id=input.chain_id,title=title,created_at=now,updated_at=now}; saved,save_ok,save_err:=iface.content_save_conversation(s.content,c); if !save_ok do return {},false,save_err; if strings.trim_space(input.initial_body)!="" { _,sent,send_err := send_message(s,auth,saved.conversation_id,initial); if !sent do return {},false,send_err; updated,got,_:=iface.content_get_conversation(s.content,saved.conversation_id); if got do saved=updated }; return saved,true,{} }

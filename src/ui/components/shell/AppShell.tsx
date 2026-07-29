@@ -19,6 +19,7 @@ import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
 import UserTokensPanel from '../settings/UserTokensPanel';
+import MemoryPanel from '../settings/MemoryPanel';
 import LibraryPage from '../LibraryPage';
 import ArtifactViewer from '../ArtifactViewer';
 import { clearUserClientState } from '../../store/chatSlice';
@@ -766,9 +767,7 @@ function AccessDenied() {
 
 
 function MemorySettingsPanel() {
-  const [records, setRecords] = useState<any[]>([]); const [error, setError] = useState(''); const [loading, setLoading] = useState(true);
-  useEffect(() => { let cancelled = false; setLoading(true); cookieJsonFetch('/memories').then((rows) => { if (!cancelled) setRecords(Array.isArray(rows) ? rows : []); }).catch((err) => { if (!cancelled) setError(String(err?.message || err)); }).finally(() => { if (!cancelled) setLoading(false); }); return () => { cancelled = true; }; }, []);
-  return <div data-debug-id="settings-memory-panel" className="w-full max-w-4xl space-y-4 text-left"><h2 className="text-xl font-semibold text-white">Memory</h2>{error ? <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}{loading ? <div className="text-sm text-zinc-500">Loading memory…</div> : records.length === 0 ? <div className="rounded-xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No memory records.</div> : <div className="space-y-2">{records.map((record) => <div key={record.memory_id || record.memoryId || record.id} data-debug-id={`settings-memory-row-${record.memory_id || record.memoryId || record.id}`} className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="break-words font-semibold text-zinc-100">{record.title || record.memory_id || record.id}</div><div className="mt-1 break-all text-xs text-zinc-500">{record.type || 'memory'} · {record.status || 'unknown'}</div>{record.body ? <div className="mt-2 line-clamp-3 break-words text-sm text-zinc-400">{record.body}</div> : null}</div>)}</div>}</div>;
+  return <MemoryPanel />;
 }
 
 function DefaultsSettingsPanel() {

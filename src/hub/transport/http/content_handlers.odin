@@ -13,10 +13,58 @@ import content_service "odin_test:hub/service/content"
 
 Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service }
 
-list_memories_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; rows,err:=content_service.list_memories(h.content,auth); if err.code!=.None do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_byte(&b,'['); for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_memory_json(&b,r,true)}; strings.write_byte(&b,']'); return respond_list(strings.to_string(b),contracts.API_Page{limit=contracts.API_DEFAULT_PAGE_LIMIT,has_more=false},req.request_id,auth_ctx_server_time(req)) }
+list_memories_handler :: proc(ctx:rawptr, req:Request)->Response{
+	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
+	limit:=query_int(req.query,"limit",50)
+	if limit<=0 do limit=50
+	if limit>200 do limit=200
+	cursor:=query_value(req.query,"cursor")
+	status:=query_value(req.query,"status")
+	type_str:=query_value(req.query,"type")
+	agent_id:=query_value(req.query,"agent_id")
+	project_id:=query_value(req.query,"project_id")
+	bridge_id:=query_value(req.query,"bridge_id")
+	filter:=content_service.Memory_Filter{status=status,type=type_str,agent_id=agent_id,project_id=domain.Project_ID(project_id),bridge_id=bridge_id}
+	rows,err:=content_service.list_memories(h.content,auth,filter,limit,cursor)
+	if err.code!=.None do return respond_error(err,req.request_id)
+	defer delete(rows)
+	b:=strings.builder_make(); strings.write_byte(&b,'[')
+	next_cursor:=""
+	for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_memory_json(&b,r,true); next_cursor=r.updated_at }
+	strings.write_byte(&b,']')
+	has_more:=len(rows)>=limit
+	return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next_cursor if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req))
+}
 create_memory_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; m,saved,err:=content_service.create_memory(h.content,auth,memory_input(req.body)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_memory_json(&b,m,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
 memory_detail_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; m,got,err:=content_service.get_memory(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id); b:=strings.builder_make(); write_memory_json(&b,m,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
-memory_action_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; id:=path_part(req.path,4); action:=path_part(req.path,5); m:domain.Memory; good:=false; err:domain.Domain_Error; if action=="approve" {m,good,err=content_service.approve_memory(h.content,auth,id)} else if action=="reject" {m,good,err=content_service.reject_memory(h.content,auth,id)} else if action=="archive" {m,good,err=content_service.archive_memory(h.content,auth,id)} else { return respond_error(domain.domain_error(.Not_Found,"route not found"),req.request_id) }; if !good do return respond_error(err,req.request_id); b:=strings.builder_make(); write_memory_json(&b,m,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
+patch_memory_handler :: proc(ctx:rawptr, req:Request)->Response{
+	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
+	id:=path_part(req.path,4)
+	input,_:=memory_update_input(req.body)
+	m,updated,err:=content_service.update_memory(h.content,auth,id,input)
+	if !updated do return respond_error(err,req.request_id)
+	b:=strings.builder_make(); write_memory_json(&b,m,false)
+	return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))
+}
+memory_action_handler :: proc(ctx:rawptr, req:Request)->Response{
+	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
+	id:=path_part(req.path,4)
+	action:=path_part(req.path,5)
+	m:domain.Memory; good:=false; err:domain.Domain_Error
+	if action=="approve" {
+		input,has_edits:=memory_update_input(req.body)
+		m,good,err=content_service.approve_memory(h.content,auth,id,input,has_edits)
+	} else if action=="reject" {
+		m,good,err=content_service.reject_memory(h.content,auth,id)
+	} else if action=="archive" {
+		m,good,err=content_service.archive_memory(h.content,auth,id)
+	} else {
+		return respond_error(domain.domain_error(.Not_Found,"route not found"),req.request_id)
+	}
+	if !good do return respond_error(err,req.request_id)
+	b:=strings.builder_make(); write_memory_json(&b,m,false)
+	return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))
+}
 
 list_chats_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; limit:=query_int(req.query,"limit",50); cursor:=query_value(req.query,"cursor"); rows,err:=content_service.list_conversations(h.content,auth,limit,cursor); if err.code!=.None do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_byte(&b,'['); next:=""; for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_chat_json_with_runtime(&b,r,h,auth); next=r.updated_at}; strings.write_byte(&b,']'); has_more:=len(rows)>=limit; return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req)) }
 create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
@@ -120,6 +168,97 @@ memory_input :: proc(body:string)->content_service.Memory_Input{
 	template_id := json_string(body,"template_id"); if template_id == "" do template_id = json_string(body,"target_template_id")
 	bridge_id := json_string(body,"bridge_id"); if bridge_id == "" do bridge_id = json_string(body,"target_bridge_id")
 	return content_service.Memory_Input{agent_id=agent_id,project_id=domain.Project_ID(project_id),template_id=template_id,bridge_id=bridge_id,type=domain.memory_type_from_string(json_string(body,"type")),title=json_string(body,"title"),body=json_string(body,"body"),evidence=json_string(body,"evidence"),status=json_string(body,"status")}
+}
+json_property :: proc(body, key: string) -> (value: string, present: bool) {
+	i := 0
+	n := len(body)
+	for i < n {
+		if body[i] == '"' {
+			key_start := i + 1
+			i += 1
+			for i < n {
+				if body[i] == '\\' {
+					i += 2
+					continue
+				}
+				if body[i] == '"' {
+					break
+				}
+				i += 1
+			}
+			if i >= n do return "", false
+			found_key := body[key_start:i]
+			i += 1
+
+			for i < n && (body[i] == ' ' || body[i] == '\t' || body[i] == '\r' || body[i] == '\n') {
+				i += 1
+			}
+			if i < n && body[i] == ':' {
+				i += 1
+				for i < n && (body[i] == ' ' || body[i] == '\t' || body[i] == '\r' || body[i] == '\n') {
+					i += 1
+				}
+				if found_key == key {
+					if i < n && body[i] == '"' {
+						val_start := i + 1
+						i += 1
+						for i < n {
+							if body[i] == '\\' {
+								i += 2
+								continue
+							}
+							if body[i] == '"' {
+								return body[val_start:i], true
+							}
+							i += 1
+						}
+					}
+					return "", true
+				}
+			}
+		} else {
+			i += 1
+		}
+	}
+	return "", false
+}
+
+memory_update_input :: proc(body: string) -> (content_service.Memory_Update_Input, bool) {
+	trimmed := strings.trim_space(body)
+	if trimmed == "" || trimmed == "{}" do return {}, false
+	input: content_service.Memory_Update_Input
+	has_any := false
+
+	if val, ok := json_property(body, "title"); ok { input.title = val; input.has_title = true; has_any = true }
+	if val, ok := json_property(body, "body"); ok { input.body = val; input.has_body = true; has_any = true }
+	if val, ok := json_property(body, "evidence"); ok { input.evidence = val; input.has_evidence = true; has_any = true }
+	if val, ok := json_property(body, "type"); ok { input.type = domain.memory_type_from_string(val); input.has_type = true; has_any = true }
+
+	if val, ok := json_property(body, "agent_id"); ok {
+		input.agent_id = val; input.has_agent_id = true; has_any = true
+	} else if val, ok := json_property(body, "target_agent_id"); ok {
+		input.agent_id = val; input.has_agent_id = true; has_any = true
+	}
+
+	if val, ok := json_property(body, "project_id"); ok {
+		input.project_id = domain.Project_ID(val); input.has_project_id = true; has_any = true
+	} else if val, ok := json_property(body, "target_project_id"); ok {
+		input.project_id = domain.Project_ID(val); input.has_project_id = true; has_any = true
+	}
+
+	if val, ok := json_property(body, "bridge_id"); ok {
+		input.bridge_id = val; input.has_bridge_id = true; has_any = true
+	} else if val, ok := json_property(body, "target_bridge_id"); ok {
+		input.bridge_id = val; input.has_bridge_id = true; has_any = true
+	}
+
+	if val, ok := json_property(body, "template_id"); ok {
+		input.template_id = val; input.has_template_id = true; has_any = true
+	} else if val, ok := json_property(body, "target_template_id"); ok {
+		input.template_id = val; input.has_template_id = true; has_any = true
+	}
+
+	return input, has_any
 }
 chat_input :: proc(body:string)->content_service.Chat_Input{ return content_service.Chat_Input{agent_id=json_string(body,"agent_id"),agent_instance_id=json_string(body,"agent_instance_id"),chain_id=json_string(body,"chain_id"),project_id=domain.Project_ID(json_string(body,"project_id")),title=json_string(body,"title"),initial_body=json_object_string(body,"initial_message","body"),artifact_ids_json=json_array_raw(body,"artifact_ids"),bridge_id=json_string(body,"bridge_id"),provider=json_string(body,"provider"),tier=json_string(body,"tier")} }
 message_input :: proc(body:string)->content_service.Message_Input{ return content_service.Message_Input{body=json_string(body,"body"),artifact_ids_json=json_array_raw(body,"artifact_ids")} }

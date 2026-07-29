@@ -1,153 +1,255 @@
-import * as daemonApi from '../daemonApi';
-import { normalizeHistory, normalizeMemory, sortMemoryRecords } from '../memoryCatalog';
-import { heimdallApi, withSessionQuery } from '../heimdallApi';
+import { cookieJsonFetch, cookieMutation } from "../cookieFetch";
+import { heimdallApi } from "../heimdallApi";
+import { normalizeMemory } from "../memoryCatalog";
 
-function memoryTagId(record: any, fallback = '') {
-  return String(record?.memoryId || record?.memory_id || record?.id || fallback || '');
-}
+export type ListMemoriesQueryArg = {
+  status?: string;
+  type?: string;
+  agent_id?: string;
+  project_id?: string;
+  bridge_id?: string;
+  targetAgentId?: string;
+  targetProjectId?: string;
+  targetBridgeId?: string;
+  limit?: number;
+  cursor?: string;
+} | void;
 
-function auth(session: any) {
-  return {
-    daemonUrl: session.daemonUrl,
-    clientInstanceId: session.clientInstanceId,
-    clientToken: session.clientToken,
-  };
-}
+export type CreateMemoryInput = {
+  title?: string;
+  body?: string;
+  evidence?: string;
+  type?: string;
+  agent_id?: string;
+  project_id?: string;
+  bridge_id?: string;
+  template_id?: string;
+  targetAgentId?: string;
+  targetProjectId?: string;
+  targetBridgeId?: string;
+  targetTemplateId?: string;
+  expectedVersion?: number;
+  metadataJson?: string;
+  sourceTaskId?: string;
+  reason?: string;
+  status?: string;
+  proposalAction?: string;
+  memoryId?: string;
+};
+
+export type UpdateMemoryInput = {
+  memoryId: string;
+  title?: string;
+  body?: string;
+  evidence?: string;
+  type?: string;
+  agent_id?: string;
+  project_id?: string;
+  bridge_id?: string;
+  template_id?: string;
+  targetAgentId?: string;
+  targetProjectId?: string;
+  targetBridgeId?: string;
+  targetTemplateId?: string;
+  expectedVersion?: number;
+};
+
+export type ApproveMemoryInput = {
+  memoryId?: string;
+  proposalId?: string;
+  decision?: "approve" | "reject" | string;
+  reason?: string;
+  title?: string;
+  body?: string;
+  evidence?: string;
+  type?: string;
+  agent_id?: string;
+  project_id?: string;
+  bridge_id?: string;
+  template_id?: string;
+  targetAgentId?: string;
+  targetProjectId?: string;
+  targetBridgeId?: string;
+  targetTemplateId?: string;
+};
+
+export type RejectMemoryInput = {
+  memoryId: string;
+  reason?: string;
+};
+
+export type ArchiveMemoryInput = {
+  memoryId: string;
+  reason?: string;
+};
 
 export const memoryApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listMemory: build.query<any, void>({
-      queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.clientToken) return { records: [] };
-        const data = await daemonApi.listMemory({ ...auth(session), includeAllStatuses: true });
-        return { records: sortMemoryRecords((data.records ?? []).map(normalizeMemory)) };
-      }),
-      providesTags: (result) => [
-        { type: 'Memory' as const, id: 'ALL' },
-        ...((result?.records || []).map((record: any) => ({ type: 'Memory' as const, id: memoryTagId(record) })).filter((tag: any) => Boolean(tag.id))),
-      ],
-    }),
-    listApplicableMemory: build.query<any, { targetAgentId?: string; targetProjectId?: string; targetBridgeId?: string }>({
-      queryFn: withSessionQuery(async (arg, { session }) => {
-        if (!session?.clientToken) return { records: [] };
-        const data = await daemonApi.listApplicableMemory({ ...auth(session), ...arg });
-        return { records: sortMemoryRecords((data.records ?? []).map(normalizeMemory)) };
-      }),
-      providesTags: (result) => [
-        { type: 'Memory' as const, id: 'ALL' },
-        ...((result?.records || []).map((record: any) => ({ type: 'Memory' as const, id: memoryTagId(record) })).filter((tag: any) => Boolean(tag.id))),
-      ],
-    }),
-    fetchMemory: build.query<any, { memoryId: string }>({
-      queryFn: withSessionQuery(async ({ memoryId }, { session }) => {
-        if (!memoryId || !session?.clientToken) return { memoryId, record: null };
-        const detail = await daemonApi.showMemory({ ...auth(session), memoryId });
-        return { memoryId, record: detail.record ? normalizeMemory(detail.record) : null };
-      }),
-      providesTags: (result, _error, { memoryId }) => [{ type: 'Memory' as const, id: memoryTagId(result?.record, memoryId) }],
-      async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+    listMemories: build.query<any, ListMemoriesQueryArg>({
+      queryFn: async (arg) => {
         try {
-          const { data } = await queryFulfilled;
-          if (!data?.record) return;
-          dispatch(memoryApi.util.updateQueryData('listMemory', undefined, (draft: any) => {
-            const rows = draft?.records || (draft.records = []);
-            const index = rows.findIndex((record: any) => record.memoryId === data.record.memoryId);
-            if (index >= 0) rows[index] = data.record;
-            else rows.push(data.record);
-            draft.records = sortMemoryRecords(rows);
-          }));
-        } catch (_error) {
-          // noop
+          const params = new URLSearchParams();
+          if (arg) {
+            if (arg.status) params.set("status", arg.status);
+            if (arg.type) params.set("type", arg.type);
+            const agentId = arg.agent_id || arg.targetAgentId;
+            if (agentId) params.set("agent_id", agentId);
+            const projectId = arg.project_id || arg.targetProjectId;
+            if (projectId) params.set("project_id", projectId);
+            const bridgeId = arg.bridge_id || arg.targetBridgeId;
+            if (bridgeId) params.set("bridge_id", bridgeId);
+            if (arg.limit) params.set("limit", String(arg.limit));
+            if (arg.cursor) params.set("cursor", arg.cursor);
+          }
+          const queryString = params.toString();
+          const path = `/memories${queryString ? `?${queryString}` : ""}`;
+          const res = await cookieJsonFetch(path);
+          const rawItems = res?.items || res?.memories || (Array.isArray(res) ? res : []);
+          const items = rawItems.map(normalizeMemory);
+          return { data: { items, next_cursor: res?.next_cursor || res?.nextCursor || "" } };
+        } catch (error: any) {
+          return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
         }
       },
-    }),
-    fetchMemoryHistory: build.query<any, { memoryId: string }>({
-      queryFn: withSessionQuery(async ({ memoryId }, { session }) => {
-        if (!memoryId || !session?.clientToken) return { memoryId, events: [] };
-        const history = await daemonApi.memoryHistory({ ...auth(session), memoryId });
-        return { memoryId, events: (history.events ?? []).map(normalizeHistory) };
-      }),
-      providesTags: (_result, _error, { memoryId }) => [{ type: 'MemoryHistory' as const, id: memoryId }],
-    }),
-    proposeMemoryChange: build.mutation<any, any>({
-      queryFn: withSessionQuery(async (payload, { session }) => {
-        if (!session?.clientToken) throw new Error('Not authenticated');
-        return daemonApi.proposeMemory({ ...auth(session), ...payload });
-      }),
-      invalidatesTags: (_result, _error, payload) => [
-        { type: 'Memory' as const, id: 'ALL' },
-        ...(payload?.memoryId ? [{ type: 'Memory' as const, id: payload.memoryId }, { type: 'MemoryHistory' as const, id: payload.memoryId }] : []),
+      providesTags: (result) => [
+        { type: "Memory" as const, id: "ALL" },
+        ...((result?.items || []).map((m: any) => ({ type: "Memory" as const, id: String(m.id || m.memoryId) })).filter((t: any) => Boolean(t.id))),
       ],
     }),
-    decideMemoryProposal: build.mutation<any, { proposalId: string; decision: 'approve' | 'reject'; reason?: string }>({
-      queryFn: withSessionQuery(async (payload, { session }) => {
-        if (!session?.clientToken) throw new Error('Not authenticated');
-        return daemonApi.decideMemory({ ...auth(session), proposalId: payload.proposalId, decision: payload.decision, reason: payload.reason });
-      }),
-      invalidatesTags: [{ type: 'Memory', id: 'ALL' }],
+    getMemory: build.query<any, { memoryId: string } | string>({
+      queryFn: async (arg) => {
+        const memoryId = typeof arg === "string" ? arg : arg?.memoryId;
+        if (!memoryId) return { data: null };
+        try {
+          const res = await cookieJsonFetch(`/memories/${encodeURIComponent(memoryId)}`);
+          const record = res?.memory || res?.record || res;
+          return { data: record ? normalizeMemory(record) : null };
+        } catch (error: any) {
+          return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, arg) => [
+        { type: "Memory" as const, id: typeof arg === "string" ? arg : arg?.memoryId },
+      ],
+    }),
+    fetchMemoryHistory: build.query<any, { memoryId: string }>({
+      queryFn: async () => {
+        return { data: { events: [] } };
+      },
+      providesTags: (_result, _error, arg) => [{ type: "MemoryHistory" as const, id: arg?.memoryId }],
+    }),
+    createMemory: build.mutation<any, CreateMemoryInput>({
+      queryFn: async (payload) => {
+        try {
+          const agent_id = payload.agent_id || payload.targetAgentId;
+          const project_id = payload.project_id || payload.targetProjectId;
+          const bridge_id = payload.bridge_id || payload.targetBridgeId;
+          const template_id = payload.template_id || payload.targetTemplateId;
+          const data = await cookieMutation("/memories", "POST", { ...payload, agent_id, project_id, bridge_id, template_id });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [{ type: "Memory" as const, id: "ALL" }],
+    }),
+    updateMemory: build.mutation<any, UpdateMemoryInput>({
+      queryFn: async ({ memoryId, ...payload }) => {
+        try {
+          const agent_id = payload.agent_id || payload.targetAgentId;
+          const project_id = payload.project_id || payload.targetProjectId;
+          const bridge_id = payload.bridge_id || payload.targetBridgeId;
+          const template_id = payload.template_id || payload.targetTemplateId;
+          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}`, "PATCH", { ...payload, agent_id, project_id, bridge_id, template_id });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { memoryId }) => [
+        { type: "Memory" as const, id: "ALL" },
+        { type: "Memory" as const, id: memoryId },
+      ],
+    }),
+    approveMemory: build.mutation<any, ApproveMemoryInput>({
+      queryFn: async (arg) => {
+        try {
+          const memoryId = arg.memoryId || arg.proposalId || "";
+          if (arg.decision === "reject") {
+            const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/reject`, "POST", { reason: arg.reason });
+            return { data };
+          }
+          const { memoryId: _m, proposalId: _p, decision: _d, ...edits } = arg;
+          const agent_id = edits.agent_id || edits.targetAgentId;
+          const project_id = edits.project_id || edits.targetProjectId;
+          const bridge_id = edits.bridge_id || edits.targetBridgeId;
+          const template_id = edits.template_id || edits.targetTemplateId;
+          const body = { ...edits, agent_id, project_id, bridge_id, template_id };
+          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/approve`, "POST", body);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, arg) => [
+        { type: "Memory" as const, id: "ALL" },
+        { type: "Memory" as const, id: arg.memoryId || arg.proposalId || "" },
+      ],
+    }),
+    rejectMemory: build.mutation<any, RejectMemoryInput>({
+      queryFn: async ({ memoryId, reason }) => {
+        try {
+          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/reject`, "POST", { reason });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { memoryId }) => [
+        { type: "Memory" as const, id: "ALL" },
+        { type: "Memory" as const, id: memoryId },
+      ],
+    }),
+    archiveMemory: build.mutation<any, ArchiveMemoryInput>({
+      queryFn: async ({ memoryId, reason }) => {
+        try {
+          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/archive`, "POST", { reason });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { memoryId }) => [
+        { type: "Memory" as const, id: "ALL" },
+        { type: "Memory" as const, id: memoryId },
+      ],
     }),
   }),
 });
 
-function memoryEventMayChangeListMembership(payload: any) {
-  const event = String(payload?.event || payload?.change || payload?.kind || '').toLowerCase();
-  const action = String(payload?.action || '').toLowerCase();
-  const status = String(payload?.status || '').toLowerCase();
-  return [
-    event,
-    action,
-    status,
-  ].some((value) => (
-    value.includes('proposed') ||
-    value.includes('approved') ||
-    value.includes('rejected') ||
-    value.includes('archived') ||
-    value.includes('rollback') ||
-    value.includes('edit') ||
-    value.includes('created') ||
-    value.includes('deleted') ||
-    value.includes('active') ||
-    value.includes('pending')
-  ));
-}
-
 export function patchMemoryCachesFromWs(dispatch: any, payload: any) {
-  const rawRecord = payload?.record || payload?.memory || null;
-  const memoryId = String(payload?.memory_id || rawRecord?.memory_id || rawRecord?.memoryId || '');
-  const membershipChanged = memoryEventMayChangeListMembership(payload);
-  if (rawRecord && memoryId) {
-    const record = normalizeMemory({ ...rawRecord, memory_id: memoryId });
-    dispatch(memoryApi.util.upsertQueryData('fetchMemory', { memoryId }, { memoryId, record }));
-    dispatch(memoryApi.util.updateQueryData('listMemory', undefined, (draft: any) => {
-      const rows = draft?.records || (draft.records = []);
-      const index = rows.findIndex((item: any) => item.memoryId === memoryId);
-      if (index >= 0) rows[index] = { ...rows[index], ...record };
-      else rows.push(record);
-      draft.records = sortMemoryRecords(rows);
-    }));
-  }
-  const tags: any[] = [];
+  const memoryId = String(payload?.memory_id || payload?.memoryId || payload?.record?.memory_id || payload?.record?.id || "");
+  const tags: any[] = [{ type: "Memory", id: "ALL" }];
   if (memoryId) {
-    tags.push({ type: 'Memory', id: memoryId }, { type: 'MemoryHistory', id: memoryId });
+    tags.push({ type: "Memory", id: memoryId });
   }
-  // Daemon memory_event payloads are often id-only membership/status changes
-  // such as Memory_Proposed or Memory_Approved. A newly proposed/activated
-  // record is not yet present in subscribed listMemory/listApplicableMemory
-  // caches, so those queries only provide Memory:ALL and would not refetch on a
-  // per-id invalidation. Invalidate ALL for membership-affecting events while
-  // retaining per-id detail/history invalidation.
-  if (!memoryId || membershipChanged || rawRecord) {
-    tags.push({ type: 'Memory', id: 'ALL' });
-  }
-  if (tags.length > 0) dispatch(heimdallApi.util.invalidateTags(tags));
+  dispatch(heimdallApi.util.invalidateTags(tags));
 }
 
 export const {
-  useListMemoryQuery,
-  useListApplicableMemoryQuery,
-  useFetchMemoryQuery,
-  useLazyFetchMemoryQuery,
-  useFetchMemoryHistoryQuery,
-  useProposeMemoryChangeMutation,
-  useDecideMemoryProposalMutation,
+  useListMemoriesQuery,
+  useGetMemoryQuery,
+  useCreateMemoryMutation,
+  useUpdateMemoryMutation,
+  useApproveMemoryMutation,
+  useRejectMemoryMutation,
+  useArchiveMemoryMutation,
 } = memoryApi;
+
+export const useListMemoryQuery = useListMemoriesQuery;
+export const useListApplicableMemoryQuery = useListMemoriesQuery;
+export const useFetchMemoryQuery = useGetMemoryQuery;
+export const useLazyFetchMemoryQuery = memoryApi.endpoints.getMemory.useLazyQuery;
+export const useProposeMemoryChangeMutation = useCreateMemoryMutation;
+export const useDecideMemoryProposalMutation = useApproveMemoryMutation;
+export const useFetchMemoryHistoryQuery = memoryApi.endpoints.fetchMemoryHistory.useQuery;

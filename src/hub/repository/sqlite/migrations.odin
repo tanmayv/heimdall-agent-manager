@@ -489,7 +489,70 @@ WHERE memory_id = 'mem_system_use_current_chain_tasks';
 MIGRATION_015_MEMORY_TARGET_SCOPE :: `SELECT 1;
 `
 
-migration_order :: [15]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql"}
+MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: `INSERT INTO memories (memory_id, owner_user_id, agent_id, project_id, template_id, bridge_id, type, status, title, body, evidence, created_at, updated_at)
+VALUES (
+  'mem_system_heimdall_memory',
+  'system',
+  '',
+  '',
+  '',
+  '',
+  'skill',
+  'active',
+  'Heimdall Memory Management & Workflow Skill',
+  '---
+name: memory-management-workflow
+description: Core guidance for Heimdall memory management, scope selection, proposal review, and ham-ctl CLI commands.
+---
+
+# Heimdall Memory Management & Workflow Skill
+
+Use Heimdall memory management for managing long-term agent knowledge, project scopes, habits, facts, and expertise.
+
+## Scope Selection Rules
+- **Agent Scope** (agent_id): Knowledge specific to an agent definition across instances.
+- **Project Scope** (project_id): Knowledge scoped to a specific project repository.
+- **Bridge Scope** (bridge_id): Host environment or infrastructure knowledge.
+- **Template Scope** (template_id): Guidance for agents initialized from a specific template.
+- **Global Scope**: Leave scope fields empty for system-wide knowledge.
+- **Ephemeral Instances**: Ephemeral instance memories bind durably to the instance''s underlying agent_id (and project/bridge where applicable).
+
+## Memory Types
+- fact: Static declarative truth or project configuration.
+- habit: Behavioral pattern or operational preference.
+- episode: Record of specific past event or task run outcome.
+- expertise: Special knowledge, architectural insight, or deep domain rule.
+- skill: Machine-actionable procedure or SKILL.md instruction set.
+- template: Structured format reference.
+
+## Propose-Review-Approve Workflow
+- Agents propose new memories in pending status using ham-ctl or agent actions.
+- Humans review pending proposals in Settings -> Memory UI or CLI.
+- Proposals can be edited before approval, approved directly (flipping status to active), or rejected.
+- System memories (owner_user_id = ''system'') are read-only.
+
+## CLI Usage Examples (ham-ctl)
+- Propose a memory: ./.heimdall/bin/ham-ctl agent memory propose --title "Build Rule" --type "fact" --body "Always run tests before committing."
+- Approve proposal: ./.heimdall/bin/ham-ctl memory approve mem_123
+- List memories: ./.heimdall/bin/ham-ctl memory list --status active',
+  'Seeded system default memory for memory workflow skill.',
+  '2026-07-29T00:00:00Z',
+  '2026-07-29T00:00:00Z'
+)
+ON CONFLICT(memory_id) DO UPDATE SET
+  agent_id=excluded.agent_id,
+  project_id=excluded.project_id,
+  template_id=excluded.template_id,
+  bridge_id=excluded.bridge_id,
+  type=excluded.type,
+  status=excluded.status,
+  title=excluded.title,
+  body=excluded.body,
+  evidence=excluded.evidence,
+  updated_at=excluded.updated_at;
+`
+
+migration_order :: [16]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -540,6 +603,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "013_task_workflow_skill_memory.sql" do return strings.clone(MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY)
 	if name == "014_task_workflow_skill_comments.sql" do return strings.clone(MIGRATION_014_TASK_WORKFLOW_SKILL_COMMENTS)
 	if name == "015_memory_target_scope.sql" do return strings.clone(MIGRATION_015_MEMORY_TARGET_SCOPE)
+	if name == "016_memory_workflow_skill_memory.sql" do return strings.clone(MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY)
 	return ""
 }
 
