@@ -46,8 +46,9 @@ content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:d
 		append(&filters, "direction != 'agent_to_user'")
 	}
 	if receiver_only {
-		// Include user_to_agent (where sender is NULL) but exclude caller-sent agent_to_agent
-		append(&filters, "(sender_agent_instance_id IS NULL OR sender_agent_instance_id != ?)")
+		// user_to_agent rows set sender_agent_instance_id to the receiving agent, so IS NULL fails.
+		// Instead, filter out caller-sent agent_to_agent messages directly.
+		append(&filters, "(direction != 'agent_to_agent' OR sender_agent_instance_id != ?)")
 	}
 	if !include_debug do append(&filters, "message_type NOT IN ('pane_capture', 'status_update', 'pane_capture_result')")
 	

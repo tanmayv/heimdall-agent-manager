@@ -101,16 +101,16 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	b := strings.builder_make()
 	mode_str := unread_only ? "inbox_unread" : "history"
 	
-	fmt.sbprintf(&b, "{\"conversation\":{\"conversation_id\":\"%s\",\"agent_instance_id\":\"%s\",\"unread_count_before\":%d,\"unread_count_after\":%d},\"mode\":\"%s\",\"filters\":{\"receiver_agent_instance_id\":\"%s\",\"unread_only\":%t,\"receiver_only\":%t,\"include_outgoing\":%t,\"include_debug\":%t,\"mark_read\":%t},\"messages\":[",
+	fmt.sbprintf(&b, "{{\"conversation\":{{\"conversation_id\":\"%s\",\"agent_instance_id\":\"%s\",\"unread_count_before\":%d,\"unread_count_after\":%d}},\"mode\":\"%s\",\"filters\":{{\"receiver_agent_instance_id\":\"%s\",\"unread_only\":%t,\"receiver_only\":%t,\"include_outgoing\":%t,\"include_debug\":%t,\"mark_read\":%t}},\"messages\":[",
 		conv.conversation_id, inst.agent_instance_id, unread_count_before, unread_count_before - marked_count, mode_str,
 		inst.agent_instance_id, unread_only, receiver_only, include_outgoing, include_debug, mark_read)
 
 	next := ""
 	for msg, i in rows { if i > 0 do strings.write_byte(&b, ','); write_message_json(&b, msg, h.content); next = msg.created_at }
 	
-	fmt.sbprintf(&b, "],\"page\":{\"limit\":%d,\"next_cursor\":\"%s\",\"has_more\":%t}", limit, next, len(rows) >= limit)
+	fmt.sbprintf(&b, "],\"page\":{{\"limit\":%d,\"next_cursor\":\"%s\",\"has_more\":%t}}", limit, next, len(rows) >= limit)
 	
-	fmt.sbprintf(&b, ",\"read\":{\"marked\":%t,\"marked_count\":%d,\"through_message_id\":\"%s\",\"through_created_at\":\"%s\"}}",
+	fmt.sbprintf(&b, ",\"read\":{{\"marked\":%t,\"marked_count\":%d,\"through_message_id\":\"%s\",\"through_created_at\":\"%s\"}}}}",
 	    mark_read, marked_count, through_message_id, through_created_at)
 
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
