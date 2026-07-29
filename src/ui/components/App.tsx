@@ -728,7 +728,7 @@ export default function App() {
   }, []);
   const agentsQuery = useListAgentsQuery(undefined, {
     skip: !session.daemonUrl,
-    pollingInterval: chainCreationProgress?.active || home.surface === 'agents' || urlParams.view === 'agent-identity' || guidePanelOpen || Boolean(selectedSidebarAgentId) ? 10000 : 0,
+    pollingInterval: chainCreationProgress?.active || home.surface === 'agents' || urlParams.view === 'agent-identity' || guidePanelOpen || Boolean(selectedSidebarAgentId) ? 120000 : 0,
   });
   const [triggerFetchAgentsPage, fetchAgentsPageResult] = useLazyFetchAgentsPageQuery();
   const agents = agentsQuery.data?.agents || [];
@@ -743,7 +743,7 @@ export default function App() {
     { agentInstanceId: agentPageId || '' },
     {
       skip: !agentPageId,
-      pollingInterval: agentPageId ? 10000 : 0,
+      pollingInterval: agentPageId ? 120000 : 0,
     },
   );
   useEffect(() => { sessionRef.current = session; }, [session]);
