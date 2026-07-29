@@ -473,8 +473,8 @@ function ZoomableImage({ contentUrl, alt }: { contentUrl: string; alt: string })
 
 // UI-10: json/diff/text rendered with monospace. json is pretty-printed; diff
 // keeps +/- markers. Both support copy-all. Self-contained content fetch.
-function ArtifactCodePreview({ artifactId, versionNo, kind }: { artifactId: string; versionNo: number | null; kind: 'json' | 'diff' | 'text' }) {
-  const textQuery = useFetchArtifactTextContentQuery({ artifactId, versionNo }, { skip: !artifactId });
+function ArtifactCodePreview({ artifactId, versionNo, kind, daemonUrl, clientToken }: { artifactId: string; versionNo: number | null; kind: 'json' | 'diff' | 'text'; daemonUrl: string; clientToken: string }) {
+  const textQuery = useFetchArtifactTextContentQuery({ artifactId, versionNo, daemonUrl, clientToken }, { skip: !artifactId || !clientToken });
   const [copyState, setCopyState] = useState<CopyState>('idle');
   const raw = textQuery.data?.text || '';
   const display = useMemo(() => {
@@ -623,8 +623,9 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
 }
 
 export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onClose }: ArtifactViewerProps) {
-  const metaQuery = useFetchArtifactMetaQuery({ artifactId }, { skip: !artifactId || !clientToken });
-  const versionsQuery = useFetchArtifactVersionsQuery({ artifactId }, { skip: !artifactId || !clientToken });
+  const artifactRequestAuth = useMemo(() => ({ daemonUrl, clientToken }), [daemonUrl, clientToken]);
+  const metaQuery = useFetchArtifactMetaQuery({ artifactId, ...artifactRequestAuth }, { skip: !artifactId || !clientToken });
+  const versionsQuery = useFetchArtifactVersionsQuery({ artifactId, ...artifactRequestAuth }, { skip: !artifactId || !clientToken });
   const [createAnnotationMutation] = useCreateArtifactAnnotationMutation();
   const [updateAnnotationMutation] = useUpdateArtifactAnnotationMutation();
   const [deleteAnnotationMutation] = useDeleteArtifactAnnotationMutation();
@@ -716,7 +717,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const annotationSupported = previewKind === 'markdown' || previewKind === 'png';
   const annotationScopeVersionNo = selectedVersionNo ?? (currentHeadVersionNo > 0 ? currentHeadVersionNo : null);
   const annotationsQuery = useFetchArtifactAnnotationsQuery(
-    { artifactId, versionNo: annotationScopeVersionNo },
+    { artifactId, versionNo: annotationScopeVersionNo, ...artifactRequestAuth },
     { skip: !artifactId || !clientToken || annotationScopeVersionNo == null },
   );
   const annotations = useMemo(() => {
@@ -736,7 +737,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const contentUrl = contentState.url;
   const imagePreviewNeedsContent = previewKind === 'png' || previewKind === 'image';
   const textQuery = useFetchArtifactTextContentQuery(
-    { artifactId, versionNo: selectedVersionNo },
+    { artifactId, versionNo: selectedVersionNo, ...artifactRequestAuth },
     { skip: !artifactId || !clientToken || previewKind !== 'markdown' },
   );
   const textContent = textQuery.data?.text || '';
@@ -787,6 +788,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             contextType: annotation.context.type,
             contextJson: annotation.context,
             comment: annotation.comment,
+            ...artifactRequestAuth,
           }).unwrap();
         }
         clearLegacyArtifactAnnotations(artifactId);
@@ -812,7 +814,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   async function handleRemoveAnnotation(annotationId: string) {
     if (!annotationScopeVersionNo) return;
     try {
-      await deleteAnnotationMutation({ annotationId, artifactId, versionNo: annotationScopeVersionNo }).unwrap();
+      await deleteAnnotationMutation({ annotationId, artifactId, versionNo: annotationScopeVersionNo, ...artifactRequestAuth }).unwrap();
     } catch {
       setActionMessage('Failed to remove annotation.');
     }
@@ -821,7 +823,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   async function handleSaveComment(annotationId: string, comment: string) {
     if (!annotationScopeVersionNo) return;
     try {
-      await updateAnnotationMutation({ annotationId, artifactId, versionNo: annotationScopeVersionNo, comment }).unwrap();
+      await updateAnnotationMutation({ annotationId, artifactId, versionNo: annotationScopeVersionNo, comment, ...artifactRequestAuth }).unwrap();
     } catch {
       setActionMessage('Failed to update annotation comment.');
     }
@@ -858,6 +860,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
           charEnd: pendingTextSelection.charEnd,
         },
         comment,
+        ...artifactRequestAuth,
       }).unwrap();
       setAnnotationsOpen(true);
       setNewAnnotationComment('');
@@ -901,6 +904,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
           imageNaturalHeight: hasNatural ? height : undefined,
         },
         comment,
+        ...artifactRequestAuth,
       }).unwrap();
       setAnnotationsOpen(true);
       setPendingImageRegion(null);
@@ -913,7 +917,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   async function handleConfirmRollback() {
     if (!selectedVersionNo) return;
     try {
-      await rollbackArtifactMutation({ artifactId, versionNo: selectedVersionNo, changeReason: rollbackReason.trim() }).unwrap();
+      await rollbackArtifactMutation({ artifactId, versionNo: selectedVersionNo, changeReason: rollbackReason.trim(), ...artifactRequestAuth }).unwrap();
       setSelectedVersionNo(null);
       setRollbackConfirmOpen(false);
       setRollbackReason('');
@@ -935,7 +939,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     if (!name) return;
     setEditBusy(true);
     try {
-      await updateArtifactMutation({ artifactId, name, description: editDescription.trim(), changeReason: 'rename/description via viewer' }).unwrap();
+      await updateArtifactMutation({ artifactId, name, description: editDescription.trim(), changeReason: 'rename/description via viewer', ...artifactRequestAuth }).unwrap();
       setEditMetaOpen(false);
       setActionMessage('Updated artifact name and description.');
     } catch {
@@ -949,7 +953,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   async function handleConfirmDelete() {
     setDeleteBusy(true);
     try {
-      await deleteArtifactMutation({ artifactId }).unwrap();
+      await deleteArtifactMutation({ artifactId, ...artifactRequestAuth }).unwrap();
       setDeleteConfirmOpen(false);
       onClose();
     } catch {
@@ -1201,7 +1205,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   ) : previewKind === 'markdown' ? (
                     loadingText ? <div className="text-sm text-zinc-400">Loading preview…</div> : <MarkdownBody data-debug-id="artifact-viewer-markdown-preview" source={textContent} className="text-zinc-200" onArtifactClick={setNestedArtifactId} onTextSelectionChange={annotationMode ? handleTextSelectionChange : undefined} />
                   ) : previewKind === 'json' || previewKind === 'diff' || previewKind === 'text' ? (
-                    <ArtifactCodePreview artifactId={artifactId} versionNo={selectedVersionNo} kind={previewKind} />
+                    <ArtifactCodePreview artifactId={artifactId} versionNo={selectedVersionNo} kind={previewKind} {...artifactRequestAuth} />
                   ) : (
                     <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Preview is not available for this artifact type{selectedArtifactMeta.kind ? ` (${selectedArtifactMeta.kind}${selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType ? `, ${selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}` : ''})` : ''}. Use Download to open it externally.</div>
                   )}

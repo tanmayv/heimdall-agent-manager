@@ -62,14 +62,15 @@ export default function ChainArtifactsPanel({ daemonUrl = '', clientToken = '', 
   const dispatch = useDispatch<any>();
   const [activeArtifactId, setActiveArtifactId] = useState('');
   const pasteUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_panel' });
+  const artifactRequestAuth = useMemo(() => ({ daemonUrl, clientToken }), [daemonUrl, clientToken]);
   const [triggerFetchArtifactsPage, fetchArtifactsPageResult] = useLazyFetchArtifactsPageQuery();
-  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 20 }, { skip: !projectId || !daemonUrl || !clientToken });
+  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 20, ...artifactRequestAuth }, { skip: !projectId || !clientToken });
   const artifacts = (artifactsQuery.data?.artifacts || []) as ArtifactRow[];
   const loading = artifactsQuery.isFetching || fetchArtifactsPageResult.isFetching;
   const handleLoadMore = () => {
     if (artifactsQuery.isFetching || fetchArtifactsPageResult.isFetching) return;
     const nextOffset = artifacts.length;
-    triggerFetchArtifactsPage({ projectId, limit: 20, offset: nextOffset });
+    triggerFetchArtifactsPage({ projectId, limit: 20, offset: nextOffset, ...artifactRequestAuth });
   };
   const error = !daemonUrl || !clientToken
     ? 'Artifact listing is unavailable until the UI is connected to the daemon.'
