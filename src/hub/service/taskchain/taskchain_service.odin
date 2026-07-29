@@ -541,6 +541,8 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		defer strings.builder_destroy(&b)
 		strings.write_string(&b, `{"type":"notify_task_nudge","command_id":"`)
 		contracts.write_json_string(&b, cmd_id)
+		strings.write_string(&b, `","agent_instance_id":"`)
+		contracts.write_json_string(&b, id)
 		strings.write_string(&b, `","task_id":"`)
 		contracts.write_json_string(&b, string(task.task_id))
 		strings.write_string(&b, `","chain_id":"`)
@@ -562,8 +564,8 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 			sent, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
 		}
 		if sent {
-			live_delivered += 1
-			strings.write_string(&targets_b, `","state":"delivered"}`)
+			durable_queued += 1
+			strings.write_string(&targets_b, `","state":"queued"}`)
 		} else {
 			failed += 1
 			strings.write_string(&targets_b, `","state":"failed"}`)

@@ -158,7 +158,7 @@ def main() -> None:
             "agent_token": user_token,
             "chain_id": "chain-compact-nudge",
             "title": "Compact nudge chain",
-            "coordinator_agent_instance_id": USER_ID,
+            "coordinator_agent_instance_id": AGENT_ID,
         })
         long_description = "large description " + ("x" * 3600)
         task = request_post(url, "/tasks/create", {

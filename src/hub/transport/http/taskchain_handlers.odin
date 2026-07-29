@@ -229,7 +229,7 @@ nudge_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	write_handler_json_string(&b, taskchain_service.target_string(nudge.target))
 	strings.write_string(&b, `","created_at":"`)
 	write_handler_json_string(&b, nudge.created_at)
-	strings.write_string(&b, `,"targets":`)
+	strings.write_string(&b, `","targets":`)
 	strings.write_string(&b, nudge.targets_json)
 	strings.write_string(&b, `}`)
 	
