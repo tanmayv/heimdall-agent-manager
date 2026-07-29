@@ -185,3 +185,162 @@ bridge_bootstrap_find_on_path :: proc(name: string) -> string {
 	}
 	return ""
 }
+
+bootstrap_global_cache: Bootstrap_Cache
+
+bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider: string, cache: ^Bootstrap_Cache) -> bool {
+	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(instance_id) == "" || strings.trim_space(run_dir) == "" do return false
+	path := strings.concatenate({"/api/v1/bridge/agent-instances/", instance_id, "/bootstrap?format=manifest"})
+	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_token})}}
+	resp, ok := http.request_with_headers_timeout("GET", hub_url, path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
+	if !ok || resp.status != 200 do return false
+
+	data_obj, data_ok := bridge_provider_json_extract_object(resp.body, "data")
+	if !data_ok do return false
+	protocol, _ := bridge_provider_json_extract_int(data_obj, "protocol")
+	if protocol != 2 do return false
+
+	files_array, files_ok := bridge_provider_json_extract_array(data_obj, "files")
+	if !files_ok do return false
+
+	skills_array, _ := bridge_provider_json_extract_array(data_obj, "skills")
+
+	file_objs := bridge_provider_json_top_level_objects(files_array)
+	agents_md_assembly := ""
+	for f_obj in file_objs {
+		kind := bridge_provider_json_extract_string(f_obj, "kind", "")
+		if kind == "AGENTS_MD" {
+			if ass_arr, got_ass := bridge_provider_json_extract_array(f_obj, "assembly"); got_ass {
+				agents_md_assembly = ass_arr
+			}
+		}
+	}
+	if agents_md_assembly == "" do return false
+
+	needed_hashes := make([dynamic]string)
+	defer delete(needed_hashes)
+	missing_hashes := make([dynamic]string)
+	defer delete(missing_hashes)
+
+	assembly_objs := bridge_provider_json_top_level_objects(agents_md_assembly)
+	for item_obj in assembly_objs {
+		h := bridge_provider_json_extract_string(item_obj, "hash", "")
+		if h != "" {
+			append(&needed_hashes, h)
+			if cache != nil && !bootstrap_cache_has(cache, h) {
+				append(&missing_hashes, h)
+			}
+		}
+	}
+
+	skill_objs := bridge_provider_json_top_level_objects(skills_array)
+	for s_obj in skill_objs {
+		h := bridge_provider_json_extract_string(s_obj, "hash", "")
+		if h != "" {
+			append(&needed_hashes, h)
+			if cache != nil && !bootstrap_cache_has(cache, h) {
+				append(&missing_hashes, h)
+			}
+		}
+	}
+
+	if len(missing_hashes) > 0 {
+		req_b := strings.builder_make()
+		strings.write_string(&req_b, "{\"hashes\":[")
+		for m_hash, i in missing_hashes {
+			if i > 0 do strings.write_byte(&req_b, ',')
+			strings.write_byte(&req_b, '"')
+			bridge_bootstrap_json_string(&req_b, m_hash)
+			strings.write_byte(&req_b, '"')
+		}
+		strings.write_string(&req_b, "]}")
+		blob_body := strings.to_string(req_b)
+
+		post_resp, post_ok := http.request_with_headers_timeout("POST", hub_url, "/api/v1/bridge/blobs", blob_body, headers[:], http.DEFAULT_TIMEOUT_MS)
+		if !post_ok || post_resp.status != 200 do return false
+		defer delete(post_resp.body)
+
+		post_data_obj, post_data_ok := bridge_provider_json_extract_object(post_resp.body, "data")
+		if !post_data_ok {
+			post_data_obj, post_data_ok = bridge_provider_json_extract_object(post_resp.body, "")
+			if !post_data_ok do return false
+		}
+
+		blobs_array, blobs_ok := bridge_provider_json_extract_array(post_data_obj, "blobs")
+		if !blobs_ok do return false
+
+		missing_resp_array, _ := bridge_provider_json_extract_array(post_data_obj, "missing")
+		if missing_resp_array != "" {
+			missing_parsed := bridge_provider_json_parse_string_array(missing_resp_array)
+			defer {
+				for item in missing_parsed do delete(item)
+				delete(missing_parsed)
+			}
+			if len(missing_parsed) > 0 do return false
+		}
+
+		blob_objs := bridge_provider_json_top_level_objects(blobs_array)
+		for b_obj in blob_objs {
+			b_hash := bridge_provider_json_extract_string(b_obj, "hash", "")
+			b_content := bridge_provider_json_extract_string(b_obj, "body", "")
+			if cache != nil {
+				if !bootstrap_cache_put(cache, b_hash, b_content) do return false
+			}
+		}
+	}
+
+	agents_md_b := strings.builder_make()
+	for item_obj in assembly_objs {
+		inline_str := bridge_provider_json_extract_string(item_obj, "inline", "")
+		if inline_str != "" {
+			strings.write_string(&agents_md_b, inline_str)
+		} else {
+			h := bridge_provider_json_extract_string(item_obj, "hash", "")
+			if h != "" {
+				if cache != nil {
+					body, found := bootstrap_cache_get(cache, h)
+					if !found do return false
+					strings.write_string(&agents_md_b, body)
+					delete(body)
+				}
+			}
+		}
+	}
+	strings.write_string(&agents_md_b, bridge_bootstrap_ctl_guidance())
+
+	_ = os.make_directory_all(run_dir)
+	agents_md_path := strings.concatenate({run_dir, "/AGENTS.md"})
+	defer delete(agents_md_path)
+	if os.write_entire_file(agents_md_path, strings.to_string(agents_md_b)) != nil do return false
+
+	written_skills := make([dynamic]string)
+	defer delete(written_skills)
+	for s_obj in skill_objs {
+		name := bridge_provider_json_extract_string(s_obj, "name", "")
+		h := bridge_provider_json_extract_string(s_obj, "hash", "")
+		content := ""
+		if cache != nil {
+			got, found := bootstrap_cache_get(cache, h)
+			if !found do return false
+			content = got
+		}
+		path := bridge_bootstrap_skill_relative_path(provider, name)
+		if bridge_bootstrap_write_skill_file(run_dir, path, content) do append(&written_skills, path)
+		if content != "" do delete(content)
+	}
+
+	if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false
+
+	manifest := strings.builder_make()
+	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
+	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\"AGENTS.md\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
+	for skill_path in written_skills {
+		strings.write_string(&manifest, ",{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, skill_path); strings.write_string(&manifest, "\",\"kind\":\"SKILL\"}")
+	}
+	strings.write_string(&manifest, "]}")
+	manifest_path := strings.concatenate({run_dir, "/heimdall-bootstrap-manifest.json"})
+	defer delete(manifest_path)
+	if os.write_entire_file(manifest_path, strings.to_string(manifest)) != nil do return false
+
+	return true
+}

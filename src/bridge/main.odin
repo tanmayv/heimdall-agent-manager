@@ -26,6 +26,7 @@ Bridge_Config :: struct {
 	peers: [dynamic]cfg_lib.Peer_Config,
 	peer_auth_token: string,
 	chunk_bytes: int,
+	bootstrap_cache_max_bytes: int,
 	local_endpoint_port: u16,
 	local_endpoint_run_dir: string,
 	agent_command: string,
@@ -118,15 +119,18 @@ main :: proc() {
 
 	bridge_config = bridge_config_from_args(os.args)
 	bridge_provider_store_init()
+	bootstrap_cache_init(&bootstrap_global_cache, bridge_config.data_dir, bridge_config.bootstrap_cache_max_bytes)
 	if has_flag(os.args, "--bootstrap-fetch") {
 		instance_id := option_value(os.args, "--instance-id", "")
 		run_dir := option_value(os.args, "--run-dir", "")
 		bridge_endpoint := option_value(os.args, "--bridge-endpoint", os.get_env_alloc("HEIMDALL_BRIDGE_ENDPOINT", context.allocator))
 		agent_token := option_value(os.args, "--agent-token", os.get_env_alloc("HEIMDALL_AGENT_TOKEN", context.allocator))
 		provider := option_value(os.args, "--provider", "")
-		if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider) {
-			fmt.eprintln("bootstrap fetch/materialization failed")
-			os.exit(1)
+		if !bridge_bootstrap_fetch_manifest_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider, &bootstrap_global_cache) {
+			if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider) {
+				fmt.eprintln("bootstrap fetch/materialization failed")
+				os.exit(1)
+			}
 		}
 		fmt.println("bootstrap materialized", run_dir)
 		return
@@ -267,6 +271,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		peers = make([dynamic]cfg_lib.Peer_Config),
 		peer_auth_token = "",
 		chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES,
+		bootstrap_cache_max_bytes = 256 * 1024 * 1024,
 		local_endpoint_port = 0,
 		local_endpoint_run_dir = "/tmp/heimdall-bridge-local",
 		agent_command = "sleep 3600",
@@ -302,6 +307,9 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	}
 	if chunk_s := option_value(args, "--chunk-bytes", ""); chunk_s != "" {
 		if chunk_i, ok := strconv.parse_int(chunk_s); ok do cfg.chunk_bytes = int(chunk_i)
+	}
+	if cache_bytes_s := option_value(args, "--bootstrap-cache-max-bytes", ""); cache_bytes_s != "" {
+		if cache_bytes_i, ok := strconv.parse_int(cache_bytes_s); ok do cfg.bootstrap_cache_max_bytes = int(cache_bytes_i)
 	}
 	if local_port_s := option_value(args, "--local-endpoint-port", ""); local_port_s != "" {
 		if local_port_i, ok := strconv.parse_int(local_port_s); ok do cfg.local_endpoint_port = u16(local_port_i)

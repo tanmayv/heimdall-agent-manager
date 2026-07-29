@@ -2,6 +2,9 @@ package agent
 
 import "core:fmt"
 import "core:strings"
+import "core:sync"
+import "core:crypto/hash"
+import "core:encoding/hex"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -1047,4 +1050,307 @@ json_value :: proc(body, key: string) -> string {
 	if len(rest) == 0 || rest[0] != '"' do return ""
 	for i := 1; i < len(rest); i += 1 { if rest[i] == '"' do return rest[1:i] }
 	return ""
+}
+
+bootstrap_fragment_hash :: proc(body: string) -> string {
+	buf: [32]byte
+	hash.hash_string_to_buffer(.SHA256, body, buf[:])
+	hex_str := hex.encode(buf[:])
+	defer delete(hex_str)
+	return strings.concatenate({"sha256:", string(hex_str)})
+}
+
+render_agent_identity :: proc(agent: domain.Agent, owner: domain.User_ID) -> string {
+	if strings.trim_space(agent.instructions) == "" do return ""
+	b := strings.builder_make()
+	strings.write_string(&b, "\n\n## Agent Identity & Instructions\n")
+	strings.write_string(&b, agent.instructions)
+	return strings.to_string(b)
+}
+
+render_project :: proc(project_name, project_path, project_repo, project_vcs, project_desc: string) -> string {
+	if strings.trim_space(project_name) == "" && strings.trim_space(project_path) == "" do return ""
+	b := strings.builder_make()
+	strings.write_string(&b, "\n\n## Project\nThis agent is associated with a project. You run in your own managed working directory (not the project directory). Work against the project checkout below when the task requires it.\n")
+	if strings.trim_space(project_name) != "" { strings.write_string(&b, "\n- Name: "); strings.write_string(&b, project_name) }
+	if strings.trim_space(project_path) != "" { strings.write_string(&b, "\n- Path: "); strings.write_string(&b, project_path) }
+	if strings.trim_space(project_repo) != "" { strings.write_string(&b, "\n- Repo: "); strings.write_string(&b, project_repo) }
+	if strings.trim_space(project_vcs) != "" { strings.write_string(&b, "\n- VCS: "); strings.write_string(&b, project_vcs) }
+	if strings.trim_space(project_desc) != "" { strings.write_string(&b, "\n- Description: "); strings.write_string(&b, project_desc) }
+	return strings.to_string(b)
+}
+
+render_tasks_guidance :: proc() -> string {
+	return "\n\n## Working with tasks (REQUIRED)\nYou MUST track all substantial work as tasks in this task chain. This is not optional.\n\nRules you must follow:\n1. Before starting work, ALWAYS run ./.heimdall/bin/ham-ctl agent tasks fetch to see the current tasks in your chain.\n2. Do NOT do meaningful work that is not represented by a task. If a task does not exist for what you are about to do, create one (coordinator) or ask the coordinator to create one.\n3. When you begin a task, move it to in_progress: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress\n4. As you make progress, you MUST post a comment on the task describing what you did, what changed, and what is next: ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \"<progress update>\". Add a comment at every meaningful step, on blockers, and before handing off for review.\n5. When the work is complete, submit it for review: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_validation (or ./.heimdall/bin/ham-ctl agent tasks done --task-id <id>). Include a summary comment of what to review.\n6. Reviewers vote with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \"<feedback>\". If you receive ngtm, address the feedback, comment what you changed, and re-submit.\n7. Use ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id> to request attention on a stalled task.\n\nKeep task status and comments current at all times so the whole chain reflects real progress."
+}
+
+render_memories_markdown :: proc(service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) -> string {
+	if service == nil || service.content == nil do return ""
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None do return ""
+	b := strings.builder_make()
+	written := 0
+	for m in memories {
+		if !bootstrap_memory_applies(m, service, owner, inst) do continue
+		if written == 0 do strings.write_string(&b, "\n\n## Applicable Memories / Skills")
+		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n", m.title, domain.memory_type_string(m.type))
+		write_raw_markdown_string(&b, m.body)
+		written += 1
+	}
+	return strings.to_string(b)
+}
+
+write_raw_markdown_string :: proc(b: ^strings.Builder, value: string) {
+	text := value
+	if strings.index(text, "\\n") >= 0 {
+		replaced, _ := strings.replace_all(text, "\\n", "\n")
+		text = replaced
+	}
+	strings.write_string(b, text)
+}
+
+render_skill :: proc(m: domain.Memory) -> (string, string) {
+	name := bootstrap_skill_name(m)
+	content := bootstrap_skill_file_content(m, name)
+	return name, content
+}
+
+render_header_inline :: proc(agent_name, instance_id, chain_title, chain_id, coordinator_id: string, is_coordinator: bool) -> string {
+	b := strings.builder_make()
+	fmt.sbprintf(&b, "# Agent bootstrap\n\nAgent: %s\nInstance: %s", agent_name, instance_id)
+	if chain_title != "" || chain_id != "" {
+		fmt.sbprintf(&b, "\nTask chain: %s (%s)", chain_title, chain_id)
+		if is_coordinator {
+			strings.write_string(&b, "\nCoordinator: you (coordinator)")
+		} else if coordinator_id != "" {
+			fmt.sbprintf(&b, "\nCoordinator: %s", coordinator_id)
+		}
+	}
+	return strings.to_string(b)
+}
+
+Hub_Fragment_Cache_Entry :: struct {
+	hash: string,
+	body: string,
+}
+
+Hub_Fragment_Cache :: struct {
+	entries: map[string]Hub_Fragment_Cache_Entry,
+	lock: sync.Mutex,
+}
+
+global_hub_fragment_cache: Hub_Fragment_Cache
+
+hub_fragment_cache_put :: proc(hash, body: string) {
+	sync.mutex_lock(&global_hub_fragment_cache.lock)
+	defer sync.mutex_unlock(&global_hub_fragment_cache.lock)
+	if global_hub_fragment_cache.entries == nil {
+		global_hub_fragment_cache.entries = make(map[string]Hub_Fragment_Cache_Entry)
+	}
+	global_hub_fragment_cache.entries[hash] = Hub_Fragment_Cache_Entry{hash = hash, body = body}
+}
+
+hub_fragment_cache_get :: proc(hash: string) -> (string, bool) {
+	sync.mutex_lock(&global_hub_fragment_cache.lock)
+	defer sync.mutex_unlock(&global_hub_fragment_cache.lock)
+	if global_hub_fragment_cache.entries == nil do return "", false
+	entry, ok := global_hub_fragment_cache.entries[hash]
+	if !ok do return "", false
+	return entry.body, true
+}
+
+bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id: string) -> (string, bool, domain.Domain_Error) {
+	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
+	if !ok do return "", false, err
+	if inst.bridge_id != bridge_id || inst.owner_user_id != owner do return "", false, domain.domain_error(.Not_Found, "agent instance not found")
+	if !(inst.runtime_status == "launching" || inst.runtime_status == "starting" || inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy") do return "", false, domain.domain_error(.Conflict, "agent instance is not launchable")
+	agent, agent_ok, agent_err := iface.agent_get(service.agents, inst.agent_id)
+	if !agent_ok do return "", false, agent_err
+	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
+	if !bridge_ok do return "", false, bridge_err
+	project_name := ""
+	project_repo := ""
+	project_vcs := ""
+	project_desc := ""
+	project_path := inst.project_path
+	if inst.project_id != "" && service.projects != nil {
+		if project, project_ok, _ := iface.project_get(service.projects, inst.project_id); project_ok {
+			project_name = project.name
+			project_repo = project.repo_url
+			project_vcs = project.vcs_kind
+			project_desc = project.description
+			if strings.trim_space(project_path) == "" do project_path = project.default_path
+		}
+	}
+	chain := domain.Task_Chain{}
+	chain_ok := false
+	if inst.chain_id != "" && service.taskchains != nil { chain, chain_ok, _ = iface.taskchain_get_chain(service.taskchains, domain.Task_Chain_ID(inst.chain_id)) }
+
+	header_inline := render_header_inline(agent.name, inst.agent_instance_id, chain.title, string(chain.chain_id), chain.coordinator_agent_instance_id, chain.coordinator_agent_instance_id == inst.agent_instance_id)
+
+	identity_body := render_agent_identity(agent, owner)
+	identity_hash := ""
+	if identity_body != "" {
+		identity_hash = bootstrap_fragment_hash(identity_body)
+		hub_fragment_cache_put(identity_hash, identity_body)
+	}
+
+	project_body := render_project(project_name, project_path, project_repo, project_vcs, project_desc)
+	project_hash := ""
+	if project_body != "" {
+		project_hash = bootstrap_fragment_hash(project_body)
+		hub_fragment_cache_put(project_hash, project_body)
+	}
+
+	tasks_body := render_tasks_guidance()
+	tasks_hash := bootstrap_fragment_hash(tasks_body)
+	hub_fragment_cache_put(tasks_hash, tasks_body)
+
+	memories_body := render_memories_markdown(service, owner, inst)
+	memories_hash := ""
+	if memories_body != "" {
+		memories_hash = bootstrap_fragment_hash(memories_body)
+		hub_fragment_cache_put(memories_hash, memories_body)
+	}
+
+	Skill_Manifest_Item :: struct {
+		name: string,
+		hash: string,
+	}
+	skills_list := make([dynamic]Skill_Manifest_Item)
+	if service != nil && service.content != nil {
+		memories, err := iface.content_list_memories(service.content, owner)
+		if err.code == .None {
+			for m in memories {
+				if !bootstrap_memory_applies(m, service, owner, inst) || m.type != .Skill do continue
+				name, content := render_skill(m)
+				skill_hash := bootstrap_fragment_hash(content)
+				hub_fragment_cache_put(skill_hash, content)
+				append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
+			}
+		}
+	}
+	if len(skills_list) == 0 {
+		name, content := bootstrap_fallback_skill()
+		skill_hash := bootstrap_fragment_hash(content)
+		hub_fragment_cache_put(skill_hash, content)
+		append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
+	}
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"protocol\":2,\"instance\":{\"agent_instance_id\":\"")
+	write_service_json_string(&b, inst.agent_instance_id)
+	strings.write_string(&b, "\",\"agent_id\":\""); write_service_json_string(&b, agent.agent_id)
+	strings.write_string(&b, "\",\"chain_id\":\""); write_service_json_string(&b, inst.chain_id)
+	strings.write_string(&b, "\",\"coordinator_agent_instance_id\":\""); write_service_json_string(&b, chain.coordinator_agent_instance_id)
+	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, string(inst.project_id))
+	strings.write_string(&b, "\",\"project_path\":\""); write_service_json_string(&b, inst.project_path)
+	strings.write_string(&b, "\",\"instance_token\":\"hit_"); write_service_json_string(&b, inst.agent_instance_id)
+	strings.write_string(&b, "\",\"hub_url\":\""); write_service_json_string(&b, bridge.hub_url)
+	strings.write_string(&b, "\"},\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"assembly\":[")
+
+	strings.write_string(&b, "{\"section\":\"header\",\"inline\":\"")
+	write_service_json_string(&b, header_inline)
+	strings.write_string(&b, "\"}")
+
+	if identity_hash != "" {
+		strings.write_string(&b, ",{\"section\":\"agent_identity\",\"hash\":\"")
+		write_service_json_string(&b, identity_hash)
+		strings.write_string(&b, "\"}")
+	}
+	if project_hash != "" {
+		strings.write_string(&b, ",{\"section\":\"project\",\"hash\":\"")
+		write_service_json_string(&b, project_hash)
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_string(&b, ",{\"section\":\"tasks_guidance\",\"hash\":\"")
+	write_service_json_string(&b, tasks_hash)
+	strings.write_string(&b, "\"}")
+	if memories_hash != "" {
+		strings.write_string(&b, ",{\"section\":\"memories\",\"hash\":\"")
+		write_service_json_string(&b, memories_hash)
+		strings.write_string(&b, "\"}")
+	}
+
+	strings.write_string(&b, "]}]")
+
+	strings.write_string(&b, ",\"skills\":[")
+	for item, i in skills_list {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_string(&b, "{\"kind\":\"SKILL\",\"name\":\"")
+		write_service_json_string(&b, item.name)
+		strings.write_string(&b, "\",\"target_hint\":\"")
+		write_service_json_string(&b, fmt.tprintf(".agents/skills/%s/SKILL.md", item.name))
+		strings.write_string(&b, "\",\"hash\":\"")
+		write_service_json_string(&b, item.hash)
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_string(&b, "]}")
+	return strings.to_string(b), true, domain.Domain_Error{}
+}
+
+json_string_array :: proc(json, key: string) -> []string {
+	key_pattern := strings.concatenate({"\"", key, "\""})
+	defer delete(key_pattern)
+	idx := strings.index(json, key_pattern)
+	if idx < 0 do return nil
+	rest := json[idx + len(key_pattern):]
+	bracket := strings.index_byte(rest, '[')
+	if bracket < 0 do return nil
+	rest = rest[bracket + 1:]
+	end := strings.index_byte(rest, ']')
+	if end < 0 do return nil
+	arr_text := rest[:end]
+	out := make([dynamic]string)
+	i := 0
+	for i < len(arr_text) {
+		if arr_text[i] != '"' { i += 1; continue }
+		j := i + 1
+		for j < len(arr_text) && arr_text[j] != '"' {
+			if arr_text[j] == '\\' && j + 1 < len(arr_text) do j += 1
+			j += 1
+		}
+		if j < len(arr_text) {
+			append(&out, strings.clone(arr_text[i + 1:j]))
+			i = j + 1
+		} else {
+			break
+		}
+	}
+	return out[:]
+}
+
+resolve_blobs_json :: proc(service: ^Agent_Service, request_body: string) -> string {
+	hashes := json_string_array(request_body, "hashes")
+	defer {
+		for h in hashes do delete(h)
+		delete(hashes)
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"blobs\":[")
+	blobs_written := 0
+	missing := make([dynamic]string)
+	defer delete(missing)
+	for hash in hashes {
+		if body, found := hub_fragment_cache_get(hash); found {
+			if blobs_written > 0 do strings.write_byte(&b, ',')
+			strings.write_string(&b, "{\"hash\":\"")
+			write_service_json_string(&b, hash)
+			strings.write_string(&b, "\",\"body\":\"")
+			write_service_json_string(&b, body)
+			strings.write_string(&b, "\"}")
+			blobs_written += 1
+		} else {
+			append(&missing, hash)
+		}
+	}
+	strings.write_string(&b, "],\"missing\":[")
+	for m_hash, i in missing {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_string(&b, "\"")
+		write_service_json_string(&b, m_hash)
+		strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, "]}")
+	return strings.to_string(b)
 }

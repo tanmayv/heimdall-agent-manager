@@ -345,32 +345,31 @@ Bridge: manifest error OR blobs.missing non-empty OR hash-verify fails
 
 ## Tasks
 
-### Task 1 — Hub: refactor bootstrap into named fragments
+### Task 1 — Hub: refactor bootstrap into named fragments [COMPLETED]
 - Extract the inline AGENTS_MD sections in `bootstrap_json_for_bridge` into pure
   render procs returning strings: `render_agent_identity`, `render_project`,
   `render_tasks_guidance`, `render_memories_markdown`, `render_skill(memory)`.
-- Add `sha256` (core:crypto/sha2) hashing helper `bootstrap_fragment_hash`.
+- Add `sha256` (core:crypto/hash) hashing helper `bootstrap_fragment_hash`.
 - Remove `recent_messages` from the bootstrap payload.
 - Files: `src/hub/service/agent/agent_service.odin`.
 
-### Task 2 — Hub: manifest endpoint + hash LRU
+### Task 2 — Hub: manifest endpoint + hash LRU [COMPLETED]
 - `GET …/bootstrap?format=manifest` → build header inline + fragment hashes.
 - Add `(section, source_id, source_updated_at) → (hash, body)` LRU to skip
   re-render and to resolve blob requests.
 - Keep the legacy full endpoint intact (protocol 1).
 - Files: `bridge_handlers.odin`, `wiring.odin`, `agent_service.odin`.
 
-### Task 3 — Hub: `POST /api/v1/bridge/blobs`
-- Resolve each hash by re-render (option 1) or LRU; verify; return `blobs` +
-  `missing`.
+### Task 3 — Hub: `POST /api/v1/bridge/blobs` [COMPLETED]
+- Resolve each hash by re-render or LRU; verify; return `blobs` + `missing`.
 - Files: `bridge_handlers.odin`, `wiring.odin`.
 
-### Task 4 — Bridge: content-addressed blob cache
+### Task 4 — Bridge: content-addressed blob cache [COMPLETED]
 - Implement `bootstrap-cache/` store: `has(hash)`, `get(hash)`, `put(hash,body)`
   with atomic write + verify + LRU eviction (`bootstrap_cache_max_bytes`).
 - Files: new `src/bridge/bootstrap_cache.odin`.
 
-### Task 5 — Bridge: manifest fetch + local assembly + fallback
+### Task 5 — Bridge: manifest fetch + local assembly + fallback [COMPLETED]
 - New `bridge_bootstrap_fetch_manifest_and_materialize`: fetch manifest, compute
   missing, one `POST /bridge/blobs`, verify+cache, assemble AGENTS.md (+ ctl
   footer), write skills into provider `skill_dir`, write `ham-ctl` + manifest.
@@ -379,7 +378,7 @@ Bridge: manifest error OR blobs.missing non-empty OR hash-verify fails
 - Files: `src/bridge/bootstrap_service.odin`, `hub_runtime_client.odin`,
   `main.odin` (capabilities).
 
-### Task 6 — Config + docs
+### Task 6 — Config + docs [COMPLETED]
 - Config: `bootstrap_cache_max_bytes` (bridge). Default 256 MB.
 - Update `AGENTS.md` architecture notes + this doc's status.
 

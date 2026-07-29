@@ -261,7 +261,9 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
 	provider, tier := bridge_runtime_provider_tier(command_json)
-	if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_issue.plaintext_token, provider) do return false, "bootstrap fetch/materialization failed"
+	if !bridge_bootstrap_fetch_manifest_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_issue.plaintext_token, provider, &bootstrap_global_cache) {
+		if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_issue.plaintext_token, provider) do return false, "bootstrap fetch/materialization failed"
+	}
 	session := bridge_runtime_tmux_session()
 	window := bridge_runtime_tmux_window(instance_id)
 	wrapper_args, wrapper_args_ok := bridge_runtime_ham_wrapper_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, provider, tier)
@@ -1028,7 +1030,7 @@ bridge_provider_test_sanitize_diagnostics :: proc(value: string) -> string {
 bridge_hub_hello_json :: proc() -> string {
 	caps := bridge_provider_capabilities_json()
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"hostname\":\"")
+	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"bootstrap_fragment_cache\":true,\"hostname\":\"")
 	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
 	strings.write_string(&b, "\",\"capabilities\":")
 	strings.write_string(&b, caps)

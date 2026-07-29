@@ -14,7 +14,7 @@ The daemon owns durable state, runtime routing, and notification fanout. Wrapper
 - The daemon is the source of truth for durable task, memory, project, team, VCS, artifact, auth, and agent-identity state.
 - Runtime sockets, live wrapper status, and user WebSocket connections are in-memory projections rebuilt on restart.
 - `agent_id` is the durable identity tier; `agent_instance_id` is the concrete running/project-bound instance.
-- Wrapper bootstrap files (`AGENTS.md` / `CLAUDE.md`, optional skills files, manifest) are generated from daemon state, not handwritten per run.
+- Wrapper bootstrap files (`AGENTS.md`, optional skills files, manifest) are assembled locally on the bridge via the content-addressed Bootstrap Fragment Cache (Hub ↔ Bridge protocol 2 manifest + sha256 blob store) with fallback to full hub generation.
 - Agent inbox/chat WebSockets are metadata-only notification channels; task/lifecycle UI notifications may embed compact task/chain payloads, but durable state still lives behind REST/RPC/CLI fetches.
 
 ## Identity Model

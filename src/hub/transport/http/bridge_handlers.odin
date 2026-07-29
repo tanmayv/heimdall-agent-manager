@@ -390,9 +390,25 @@ bridge_instance_bootstrap_handler :: proc(ctx: rawptr, req: Request) -> Response
 	bridge_auth, bridge_ok, bridge_err := bridge_service.verify_bridge_token(h.bridges, token)
 	if !bridge_ok do return respond_error(bridge_err, req.request_id)
 	instance_id := path_part(req.path, 5)
+	if strings.contains(req.query, "format=manifest") || strings.contains(req.path, "format=manifest") {
+		manifest, manifest_ok, manifest_err := agent_service.bootstrap_manifest_json_for_bridge(h.agents, domain.User_ID(bridge_auth.user_id), bridge_auth.bridge_id, instance_id)
+		if !manifest_ok do return respond_error(manifest_err, req.request_id)
+		return respond_success(manifest, req.request_id, auth_ctx_server_time(req))
+	}
 	bundle, bundle_ok, bundle_err := agent_service.bootstrap_json_for_bridge(h.agents, domain.User_ID(bridge_auth.user_id), bridge_auth.bridge_id, instance_id)
 	if !bundle_ok do return respond_error(bundle_err, req.request_id)
 	return respond_success(bundle, req.request_id, auth_ctx_server_time(req))
+}
+
+bridge_blobs_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	if rejected, resp := reject_query_or_body_token(req); rejected do return resp
+	token, token_ok := bearer_token(req)
+	if !token_ok do return respond_error(domain.domain_error(.Unauthenticated, "bridge bearer token is required"), req.request_id)
+	_, bridge_ok, bridge_err := bridge_service.verify_bridge_token(h.bridges, token)
+	if !bridge_ok do return respond_error(bridge_err, req.request_id)
+	result := agent_service.resolve_blobs_json(h.agents, req.body)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
 revoke_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
