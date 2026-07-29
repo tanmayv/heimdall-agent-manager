@@ -16,6 +16,7 @@ type ArtifactCreateArgs = {
   name: string;
   kind?: string;
   mime?: string;
+  ext?: string;
   projectId?: string;
   description?: string;
   originKind?: string;
