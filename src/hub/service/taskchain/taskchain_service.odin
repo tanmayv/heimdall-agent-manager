@@ -398,7 +398,67 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	task.updated_at = now
 	if next == .In_Progress && task.started_at == "" do task.started_at = now
 	if next == .Completed || next == .Cancelled do task.completed_at = now
-	return iface.taskchain_save_task(service.repo, task)
+	task_ret, saved_ok, save_err := iface.taskchain_save_task(service.repo, task)
+	if saved_ok {
+		notify_task_status_change(service, auth, task_ret, chain)
+	}
+	return task_ret, saved_ok, save_err
+}
+
+notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task: domain.Task, chain: domain.Task_Chain) {
+	if service.bridge_command_sink.send_runtime_command == nil do return
+	actor_agent_instance_id := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+	
+	instance_ids := make([dynamic]string)
+	defer delete(instance_ids)
+	
+	if chain.coordinator_agent_instance_id != "" do append(&instance_ids, chain.coordinator_agent_instance_id)
+	
+	assignees := extract_instances_from_ref_blob(task.assignee_ref_json)
+	for id in assignees do append(&instance_ids, id)
+	delete(assignees)
+	
+	reviewers := extract_instances_from_ref_blob(task.reviewer_refs_json)
+	for id in reviewers do append(&instance_ids, id)
+	delete(reviewers)
+	
+	def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
+	for id in def_reviewers do append(&instance_ids, id)
+	delete(def_reviewers)
+	
+	bridge_ids := make(map[string]bool)
+	defer delete(bridge_ids)
+	for id in instance_ids {
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, id)
+		if inst_ok && inst.bridge_id != "" do bridge_ids[inst.bridge_id] = true
+	}
+	
+	for bridge_id in bridge_ids {
+		cmd_id := platform.generate_id(service.ids, "cmd_")
+		b := strings.builder_make()
+		strings.write_string(&b, `{"type":"task_status_changed_notify","command_id":"`)
+		contracts.write_json_string(&b, cmd_id)
+		strings.write_string(&b, `","task_id":"`)
+		contracts.write_json_string(&b, string(task.task_id))
+		strings.write_string(&b, `","chain_id":"`)
+		contracts.write_json_string(&b, string(task.chain_id))
+		strings.write_string(&b, `","new_status":"`)
+		contracts.write_json_string(&b, task_status_string(task.status))
+		strings.write_string(&b, `","assignee_ref_json":`)
+		strings.write_string(&b, task.assignee_ref_json if task.assignee_ref_json != "" else "[]")
+		strings.write_string(&b, `,"reviewer_refs_json":`)
+		strings.write_string(&b, task.reviewer_refs_json if task.reviewer_refs_json != "" else "[]")
+		strings.write_string(&b, `,"default_reviewer_refs_json":`)
+		strings.write_string(&b, chain.default_reviewer_refs_json if chain.default_reviewer_refs_json != "" else "[]")
+		strings.write_string(&b, `,"actor_agent_instance_id":"`)
+		contracts.write_json_string(&b, actor_agent_instance_id)
+		strings.write_string(&b, `","updated_at":"`)
+		contracts.write_json_string(&b, task.updated_at)
+		strings.write_string(&b, `"}`)
+		
+		project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
+		strings.builder_destroy(&b)
+	}
 }
 
 valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {

@@ -195,6 +195,100 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
+	if type == "task_status_changed_notify" {
+		command_id := extract_json_string(text, "command_id", "")
+		task_id := extract_json_string(text, "task_id", "")
+		new_status := extract_json_string(text, "new_status", "")
+		actor_agent_instance_id := extract_json_string(text, "actor_agent_instance_id", "")
+
+		assignee_ref_json, _ := bridge_provider_json_extract_array(text, "assignee_ref_json")
+		reviewer_refs_json, _ := bridge_provider_json_extract_array(text, "reviewer_refs_json")
+		default_reviewer_refs_json, _ := bridge_provider_json_extract_array(text, "default_reviewer_refs_json")
+		
+		get_instances :: proc(json_array: string) -> []string {
+			objs := bridge_provider_json_top_level_objects(json_array)
+			defer {
+				for obj in objs do delete(obj)
+				delete(objs)
+			}
+			insts := make([dynamic]string)
+			for obj in objs {
+				inst := extract_json_string(obj, "agent_instance_id", "")
+				if inst != "" do append(&insts, inst)
+			}
+			return insts[:]
+		}
+
+		targets := make([dynamic]string)
+		defer delete(targets)
+
+		if new_status == "in_progress" {
+			assignees := get_instances(assignee_ref_json)
+			defer delete(assignees)
+			for inst in assignees {
+				if inst != actor_agent_instance_id do append(&targets, inst)
+			}
+		} else if new_status == "in_validation" {
+			reviewers := get_instances(reviewer_refs_json)
+			defer delete(reviewers)
+			if len(reviewers) == 0 {
+				default_reviewers := get_instances(default_reviewer_refs_json)
+				for inst in default_reviewers {
+					if inst != actor_agent_instance_id do append(&targets, inst)
+				}
+				delete(default_reviewers)
+			} else {
+				for inst in reviewers {
+					if inst != actor_agent_instance_id do append(&targets, inst)
+				}
+			}
+		} else if new_status == "validated_not_good" {
+			reviewers := get_instances(reviewer_refs_json)
+			defer delete(reviewers)
+			is_reviewer := false
+			for inst in reviewers {
+				if inst == actor_agent_instance_id { is_reviewer = true; break }
+			}
+			if !is_reviewer && len(reviewers) == 0 {
+				default_reviewers := get_instances(default_reviewer_refs_json)
+				defer delete(default_reviewers)
+				for inst in default_reviewers {
+					if inst == actor_agent_instance_id { is_reviewer = true; break }
+				}
+			}
+			if is_reviewer {
+				assignees := get_instances(assignee_ref_json)
+				defer delete(assignees)
+				for inst in assignees do append(&targets, inst)
+			}
+		}
+
+		if len(targets) > 0 {
+			message := strings.concatenate({"Task ", task_id, " is now ", new_status})
+			defer delete(message)
+			payload_b := strings.builder_make()
+			defer strings.builder_destroy(&payload_b)
+			strings.write_string(&payload_b, "{\"type\":\"notify_task_nudge\",\"command_id\":\"")
+			bridge_runtime_write_json_string(&payload_b, command_id)
+			strings.write_string(&payload_b, "\",\"task_id\":\"")
+			bridge_runtime_write_json_string(&payload_b, task_id)
+			strings.write_string(&payload_b, "\",\"new_status\":\"")
+			bridge_runtime_write_json_string(&payload_b, new_status)
+			strings.write_string(&payload_b, "\",\"message\":\"")
+			bridge_runtime_write_json_string(&payload_b, message)
+			strings.write_string(&payload_b, "\"}")
+			
+			payload_str := strings.to_string(payload_b)
+			
+			for inst in targets {
+				ok := bridge_wrapper_push_task_nudge(inst, payload_str)
+				if !ok do fmt.println("bridge task_status_changed_notify nudge pending/unsubscribed", inst, command_id)
+			}
+		}
+		
+		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded", ""))
+		return
+	}
 	if type == "capture_agent_pane" {
 		bridge_hub_handle_pane_capture_command(conn, text)
 		return
