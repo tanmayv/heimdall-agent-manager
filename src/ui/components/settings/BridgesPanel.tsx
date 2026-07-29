@@ -18,8 +18,8 @@ export default function BridgesPanel() {
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [hasPendingEnrollments, setHasPendingEnrollments] = useState(false);
   const pollActive = enrollOpen || hasPendingEnrollments;
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: pollActive ? 3000 : 0 });
-  const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { pollingInterval: pollActive ? 3000 : 0 });
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: pollActive ? 120000 : 0 });
+  const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { pollingInterval: pollActive ? 120000 : 0 });
   const [renameBridge] = useRenameBridgeMutation();
   const [revokeBridge] = useRevokeBridgeMutation();
   const [createEnrollment] = useCreateBridgeEnrollmentMutation();

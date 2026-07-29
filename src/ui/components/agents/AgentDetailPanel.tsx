@@ -25,13 +25,13 @@ const tierOrder = ['cheap', 'normal', 'smart'];
 export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const agentQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
   const supportQuery = useListAgentBridgeSupportQuery({ agentId }, { skip: !agentId, refetchOnMountOrArgChange: true });
-  const instancesQuery = useListAgentInstancesQuery({ agentId }, { skip: !agentId, pollingInterval: 5000 });
+  const instancesQuery = useListAgentInstancesQuery({ agentId }, { skip: !agentId, pollingInterval: 120000 });
   // Bridge status/capabilities change asynchronously (a Bridge can come online or
   // report providers after this page first loaded), and the Hub emits no user-WS
   // event for bridge liveness. Without a refresh the cached bridge list stays
   // offline/capability-less, so the launch + default-provider controls render
   // empty even though support is enabled. Poll + refetch on mount to stay live.
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 5000, refetchOnMountOrArgChange: true });
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
   const [updateAgent, { isLoading: updatingAgent }] = useUpdateAgentIdentityMutation();
   const [patchSupport, { isLoading: patchingSupport }] = usePatchAgentBridgeSupportMutation();

@@ -148,7 +148,7 @@ export default function ConversationLaunchComposer() {
   const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
   // Poll bridges: liveness/capabilities update async with no user-WS event, so a
   // one-shot fetch can leave the launch controls empty after a Bridge connects.
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 5000, refetchOnMountOrArgChange: true });
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const [createLaunchConversation] = useCreateLaunchConversationMutation();
   const [restartAgentInstance] = useRestartAgentInstanceMutation();
   const [reconfigureAgentInstance] = useReconfigureAgentInstanceMutation();

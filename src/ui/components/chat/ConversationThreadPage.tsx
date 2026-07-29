@@ -317,7 +317,7 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
 
 export default function ConversationThreadPage({ conversationId }: { conversationId: string }) {
   const convQuery = useFetchConversationQuery({ conversationId }, { skip: !conversationId });
-  const messagesQuery = useFetchConversationMessagesQuery({ conversationId }, { skip: !conversationId, pollingInterval: 4000, refetchOnMountOrArgChange: true });
+  const messagesQuery = useFetchConversationMessagesQuery({ conversationId }, { skip: !conversationId, pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const [fetchOlderMessages, olderMessagesState] = useLazyFetchConversationMessagesQuery();
   const [updateConversationTitle, updateTitleState] = useUpdateConversationTitleMutation();
   const [requestPaneCapture, requestPaneCaptureState] = useRequestPaneCaptureMutation();
@@ -338,7 +338,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   // The instance record is the source of truth for the CONCRETE provider / tier /
   // bridge this conversation runs on (never "default"/"Auto").
-  const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: 5000, refetchOnMountOrArgChange: true });
+  const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const instance = instanceQuery.data?.instance || null;
   const instanceProvider = String(instance?.provider || '');
   const instanceTier = String(instance?.tier || '');
@@ -346,7 +346,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const conversationRuntimeStatus = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
 
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 5000, refetchOnMountOrArgChange: true });
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const bridges = bridgesQuery.data?.bridges || [];
   const instanceBridge = useMemo(() => bridges.find((b: any) => bridgeId(b) === instanceBridgeId), [bridges, instanceBridgeId]);
 
