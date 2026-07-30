@@ -863,39 +863,45 @@ function normalizeMemoryMutationBody(body: Record<string, any>) {
   return normalized;
 }
 
-export async function listMemory({ daemonUrl, clientInstanceId, clientToken, type, status, targetProjectId, includeAllStatuses = true }: UserRpcRequest & { type?: string; status?: string; targetProjectId?: string; includeAllStatuses?: boolean }) {
-  return userRpcRequest({
-    daemonUrl,
-    clientInstanceId,
-    clientToken,
-    action: 'memory_list',
+function memoryAuthHeaders(clientToken: string) {
+  return { Authorization: `Bearer ${clientToken || ''}` };
+}
+
+export async function listMemory({ daemonUrl, clientToken, type, status, targetProjectId, includeAllStatuses = true }: UserRpcRequest & { type?: string; status?: string; targetProjectId?: string; includeAllStatuses?: boolean }) {
+  return requestJson(joinUrl(daemonUrl, '/memory/list'), {
+    method: 'POST',
+    headers: memoryAuthHeaders(clientToken),
     body: {
       type: type || '',
       status: status || '',
       target_project_id: normalizeMemoryTargetValue(targetProjectId),
       include_all_statuses: includeAllStatuses,
-    }
+    },
   });
 }
 
-export async function listApplicableMemory({ daemonUrl, clientInstanceId, clientToken, targetAgentId, targetProjectId }: UserRpcRequest & { targetAgentId?: string; targetProjectId?: string }) {
-  return requestJson(joinUrl(daemonUrl, '/memory/applicable'), { method: 'POST', body: { client_instance_id: clientInstanceId, client_token: clientToken, target_agent_id: normalizeMemoryTargetValue(targetAgentId), target_project_id: normalizeMemoryTargetValue(targetProjectId) } });
+export async function listApplicableMemory({ daemonUrl, clientToken, targetAgentId, targetProjectId }: UserRpcRequest & { targetAgentId?: string; targetProjectId?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/memory/applicable'), {
+    method: 'POST',
+    headers: memoryAuthHeaders(clientToken),
+    body: { target_agent_id: normalizeMemoryTargetValue(targetAgentId), target_project_id: normalizeMemoryTargetValue(targetProjectId) },
+  });
 }
 
-export async function showMemory({ daemonUrl, clientInstanceId, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {
-  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'memory_show', body: { memory_id: memoryId } });
+export async function showMemory({ daemonUrl, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/memory/show'), { method: 'POST', headers: memoryAuthHeaders(clientToken), body: { memory_id: memoryId } });
 }
 
-export async function memoryHistory({ daemonUrl, clientInstanceId, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {
-  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'memory_history', body: { memory_id: memoryId } });
+export async function memoryHistory({ daemonUrl, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/memory/history'), { method: 'POST', headers: memoryAuthHeaders(clientToken), body: { memory_id: memoryId } });
 }
 
-export async function proposeMemory({ daemonUrl, clientInstanceId, clientToken, proposalAction, ...body }: UserRpcRequest & { proposalAction: 'new' | 'edit' | 'archive' | 'rollback' } & Record<string, any>) {
-  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: `memory_propose_${proposalAction}`, body: normalizeMemoryMutationBody(body) });
+export async function proposeMemory({ daemonUrl, clientToken, proposalAction, ...body }: UserRpcRequest & { proposalAction: 'new' | 'edit' | 'archive' | 'rollback' } & Record<string, any>) {
+  return requestJson(joinUrl(daemonUrl, `/memory/propose/${proposalAction}`), { method: 'POST', headers: memoryAuthHeaders(clientToken), body: normalizeMemoryMutationBody(body) });
 }
 
-export async function decideMemory({ daemonUrl, clientInstanceId, clientToken, proposalId, decision, reason }: UserRpcRequest & { proposalId: string; decision: 'approve' | 'reject'; reason?: string }) {
-  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'memory_decide', body: { proposal_id: proposalId, decision, reason: reason || '' } });
+export async function decideMemory({ daemonUrl, clientToken, proposalId, decision, reason }: UserRpcRequest & { proposalId: string; decision: 'approve' | 'reject'; reason?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/memory/decide'), { method: 'POST', headers: memoryAuthHeaders(clientToken), body: { proposal_id: proposalId, decision, reason: reason || '' } });
 }
 
 export async function testLaunch({ daemonUrl, provider, tier }: { daemonUrl: string; provider: string; tier: string }) {

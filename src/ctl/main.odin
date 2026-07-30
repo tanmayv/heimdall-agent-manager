@@ -952,7 +952,8 @@ ctl_memory :: proc(daemon_url: string, cmd: []string, args: []string) {
 	if msg := memory_ctl_deprecated_subject_args(args); msg != "" { fmt.println(memory_ctl_error_json(msg)); return }
 	path := ""
 	body := strings.builder_make()
-	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token); strings.write_string(&body, `"`)
+	strings.write_string(&body, `{`)
+	wrote_field := false
 	if len(cmd) >= 2 && cmd[0] == "propose" {
 		switch cmd[1] {
 		case "new": path = "/memory/propose/new"
@@ -961,50 +962,67 @@ ctl_memory :: proc(daemon_url: string, cmd: []string, args: []string) {
 		case "rollback": path = "/memory/propose/rollback"
 		case: fmt.println("usage: ham-ctl memory propose <new|edit|archive|rollback>"); return
 		}
-		memory_ctl_add_common_fields(&body, args)
+		memory_ctl_add_common_fields(&body, args, &wrote_field)
 	} else if len(cmd) >= 1 && cmd[0] == "decide" {
 		path = "/memory/decide"
-		strings.write_string(&body, `,"proposal_id":"`); json_write_string(&body, option_value(args, "--proposal-id", "")); strings.write_string(&body, `"`)
-		strings.write_string(&body, `,"decision":"`); json_write_string(&body, option_value(args, "--decision", option_value(args, "--result", ""))); strings.write_string(&body, `"`)
+		memory_ctl_add_string_field(&body, &wrote_field, "proposal_id", option_value(args, "--proposal-id", ""))
+		memory_ctl_add_string_field(&body, &wrote_field, "decision", option_value(args, "--decision", option_value(args, "--result", "")))
 	} else if len(cmd) >= 1 && cmd[0] == "list" {
 		path = "/memory/list"
-		memory_ctl_add_filter_fields(&body, args)
+		memory_ctl_add_filter_fields(&body, args, &wrote_field)
 	} else if len(cmd) >= 1 && cmd[0] == "show" {
 		path = "/memory/show"
-		strings.write_string(&body, `,"memory_id":"`); json_write_string(&body, option_value(args, "--memory-id", option_value(args, "--memory", ""))); strings.write_string(&body, `"`)
+		memory_ctl_add_string_field(&body, &wrote_field, "memory_id", option_value(args, "--memory-id", option_value(args, "--memory", "")))
 	} else if len(cmd) >= 1 && cmd[0] == "history" {
 		path = "/memory/history"
-		strings.write_string(&body, `,"memory_id":"`); json_write_string(&body, option_value(args, "--memory-id", option_value(args, "--memory", ""))); strings.write_string(&body, `"`)
+		memory_ctl_add_string_field(&body, &wrote_field, "memory_id", option_value(args, "--memory-id", option_value(args, "--memory", "")))
 	} else {
 		fmt.println("usage: ham-ctl memory <propose new|edit|archive|rollback|decide|list|show|history>"); return
 	}
 	strings.write_string(&body, `}`)
-	response, ok := http.post(daemon_url, path, strings.to_string(body))
+	headers: [1]http.Header
+	headers[0] = http.Header{name = "Authorization", value = strings.concatenate({"Bearer ", token})}
+	response, ok := http.request_with_headers_timeout("POST", daemon_url, path, strings.to_string(body), headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok { fmt.println(`{"ok":false,"message":"memory request failed"}`); return }
 	fmt.println(response.body)
 }
 
-memory_ctl_add_common_fields :: proc(body: ^strings.Builder, args: []string) {
-	memory_ctl_add_filter_fields(body, args)
-	if memory_id := option_value(args, "--memory-id", option_value(args, "--memory", "")); memory_id != "" { strings.write_string(body, `,"memory_id":"`); json_write_string(body, memory_id); strings.write_string(body, `"`) }
-	if title := option_value(args, "--title", ""); title != "" { strings.write_string(body, `,"title":"`); json_write_string(body, title); strings.write_string(body, `"`) }
-	if text := option_value(args, "--body", ""); text != "" { strings.write_string(body, `,"body":"`); json_write_string(body, text); strings.write_string(body, `"`) }
-	if reason := option_value(args, "--reason", ""); reason != "" { strings.write_string(body, `,"reason":"`); json_write_string(body, reason); strings.write_string(body, `"`) }
-	if evidence := option_value(args, "--evidence", ""); evidence != "" { strings.write_string(body, `,"evidence":"`); json_write_string(body, evidence); strings.write_string(body, `"`) }
-	if source_task := option_value(args, "--source-task-id", option_value(args, "--source-task", "")); source_task != "" { strings.write_string(body, `,"source_task_id":"`); json_write_string(body, source_task); strings.write_string(body, `"`) }
-	if expected := option_value(args, "--expected-version", ""); expected != "" { strings.write_string(body, `,"expected_version":`); strings.write_string(body, expected) }
+memory_ctl_add_string_field :: proc(body: ^strings.Builder, wrote: ^bool, key, value: string) {
+	if value == "" do return
+	if wrote^ do strings.write_string(body, `,`)
+	strings.write_string(body, `"`); json_write_string(body, key); strings.write_string(body, `":"`); json_write_string(body, value); strings.write_string(body, `"`)
+	wrote^ = true
+}
+
+memory_ctl_add_common_fields :: proc(body: ^strings.Builder, args: []string, wrote: ^bool) {
+	memory_ctl_add_filter_fields(body, args, wrote)
+	memory_ctl_add_string_field(body, wrote, "memory_id", option_value(args, "--memory-id", option_value(args, "--memory", "")))
+	memory_ctl_add_string_field(body, wrote, "title", option_value(args, "--title", ""))
+	memory_ctl_add_string_field(body, wrote, "body", option_value(args, "--body", ""))
+	memory_ctl_add_string_field(body, wrote, "reason", option_value(args, "--reason", ""))
+	memory_ctl_add_string_field(body, wrote, "evidence", option_value(args, "--evidence", ""))
+	memory_ctl_add_string_field(body, wrote, "source_task_id", option_value(args, "--source-task-id", option_value(args, "--source-task", "")))
+	if expected := option_value(args, "--expected-version", ""); expected != "" {
+		if wrote^ do strings.write_string(body, `,`)
+		strings.write_string(body, `"expected_version":`); strings.write_string(body, expected)
+		wrote^ = true
+	}
 }
 
 memory_ctl_has_deprecated_subject_flag :: proc(args: []string) -> bool {
 	return memory_ctl_deprecated_subject_args(args) != ""
 }
 
-memory_ctl_add_filter_fields :: proc(body: ^strings.Builder, args: []string) {
-	if target_agent_id := option_value(args, "--target-agent-id", ""); target_agent_id != "" { strings.write_string(body, `,"target_agent_id":"`); json_write_string(body, target_agent_id); strings.write_string(body, `"`) }
-	if target_project_id := option_value(args, "--target-project-id", ""); target_project_id != "" { strings.write_string(body, `,"target_project_id":"`); json_write_string(body, target_project_id); strings.write_string(body, `"`) }
-	if typ := option_value(args, "--type", ""); typ != "" { strings.write_string(body, `,"type":"`); json_write_string(body, typ); strings.write_string(body, `"`) }
-	if status := option_value(args, "--status", ""); status != "" { strings.write_string(body, `,"status":"`); json_write_string(body, status); strings.write_string(body, `"`) }
-	if has_flag(args, "--all") do strings.write_string(body, `,"include_all_statuses":true`)
+memory_ctl_add_filter_fields :: proc(body: ^strings.Builder, args: []string, wrote: ^bool) {
+	memory_ctl_add_string_field(body, wrote, "target_agent_id", option_value(args, "--target-agent-id", ""))
+	memory_ctl_add_string_field(body, wrote, "target_project_id", option_value(args, "--target-project-id", ""))
+	memory_ctl_add_string_field(body, wrote, "type", option_value(args, "--type", ""))
+	memory_ctl_add_string_field(body, wrote, "status", option_value(args, "--status", ""))
+	if has_flag(args, "--all") {
+		if wrote^ do strings.write_string(body, `,`)
+		strings.write_string(body, `"include_all_statuses":true`)
+		wrote^ = true
+	}
 }
 
 

@@ -420,47 +420,47 @@ handle_client :: proc(client: net.TCP_Socket) {
 	}
 
 	if strings.has_prefix(request, "POST /memory/propose/new ") {
-		handle_memory_propose(client, request_body(request), "new")
+		handle_memory_propose(client, request, "new")
 		return
 	}
 
 	if strings.has_prefix(request, "POST /memory/propose/edit ") {
-		handle_memory_propose(client, request_body(request), "edit")
+		handle_memory_propose(client, request, "edit")
 		return
 	}
 
 	if strings.has_prefix(request, "POST /memory/propose/archive ") {
-		handle_memory_propose(client, request_body(request), "archive")
+		handle_memory_propose(client, request, "archive")
 		return
 	}
 
 	if strings.has_prefix(request, "POST /memory/propose/rollback ") {
-		handle_memory_propose(client, request_body(request), "rollback")
+		handle_memory_propose(client, request, "rollback")
 		return
 	}
 
 	if strings.has_prefix(request, "POST /memory/decide ") {
-		handle_memory_decide(client, request_body(request))
+		handle_memory_decide(client, request)
 		return
 	}
 
 	if strings.has_prefix(request, "POST /memory/list ") {
-		handle_memory_list(client, request_body(request))
+		handle_memory_list(client, request)
 		return
 	}
 
 	if strings.has_prefix(request, "POST /memory/applicable ") {
-		handle_memory_applicable(client, request_body(request))
+		handle_memory_applicable(client, request)
 		return
 	}
 
 	if strings.has_prefix(request, "POST /memory/show ") {
-		handle_memory_show(client, request_body(request))
+		handle_memory_show(client, request)
 		return
 	}
 
 	if strings.has_prefix(request, "POST /memory/history ") {
-		handle_memory_history(client, request_body(request))
+		handle_memory_history(client, request)
 		return
 	}
 
