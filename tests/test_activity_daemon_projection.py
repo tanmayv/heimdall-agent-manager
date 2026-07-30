@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression: daemon projects heartbeat activity fields through runtime APIs."""
+"""Regression: hub projects heartbeat/activity-report fields through runtime APIs."""
 import json
 import os
 import shutil
@@ -40,7 +40,7 @@ def wait_for_health():
 
 def main():
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    daemon_bin = os.environ["HEIMDALL_DAEMON_BIN"]
+    daemon_bin = os.environ.get("HEIMDALL_HUB_BIN") or os.environ["HEIMDALL_DAEMON_BIN"]
     temp_dir = tempfile.mkdtemp(prefix="heimdall-activity-daemon-")
     config_path = os.path.join(temp_dir, "config.toml")
     log_path = os.path.join(temp_dir, "daemon.log")
@@ -120,6 +120,41 @@ daemon_url = "{URL}"
         assert listed.get("activity_status") == "idle", listed
         assert listed.get("activity_source") == "tmux_pane_sampler", listed
         assert listed.get("activity_checked_unix_ms") == 123456789, listed
+
+        status, activity = request("POST", "/agent-activity", {
+            "agent_instance_id": "coder@activity-test",
+            "agent_token": agent_token,
+            "activity_status": "active",
+            "activity_source": "pi_extension",
+            "activity_summary": "running read",
+            "activity_checked_unix_ms": 123456900,
+        })
+        assert status == 200 and activity.get("ok") is True, activity
+
+        heartbeat["activity_status"] = "unknown"
+        heartbeat["activity_source"] = "tmux_pane_sampler"
+        heartbeat["activity_summary"] = ""
+        heartbeat["activity_checked_unix_ms"] = 123456901
+        status, hb = request("POST", "/heartbeat", heartbeat)
+        assert status == 200 and hb.get("ok") is True, hb
+
+        status, clients = request("GET", "/clients")
+        assert status == 200 and clients.get("agents"), clients
+        agent = next((a for a in clients["agents"] if a.get("agent_instance_id") == "coder@activity-test"), None)
+        assert agent, clients
+        assert agent.get("activity_status") == "active", agent
+        assert agent.get("activity_source") == "pi_extension", agent
+        assert agent.get("activity_summary") == "running read", agent
+        assert agent.get("activity_checked_unix_ms") == 123456900, agent
+
+        status, agents = request("GET", "/agents")
+        assert status == 200 and agents.get("agents"), agents
+        listed = next((a for a in agents["agents"] if a.get("agent_instance_id") == "coder@activity-test"), None)
+        assert listed, agents
+        assert listed.get("activity_status") == "active", listed
+        assert listed.get("activity_source") == "pi_extension", listed
+        assert listed.get("activity_summary") == "running read", listed
+        assert listed.get("activity_checked_unix_ms") == 123456900, listed
 
         print("test_activity_daemon_projection: ok")
     finally:

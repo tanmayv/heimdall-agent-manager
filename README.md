@@ -17,7 +17,7 @@ graph TD
     Daemon -->|Automatic Sync| DB[(SQLite Relational DBs)]
 ```
 
-1.  **The Daemon (`ham-daemon`)**: The core brain. It runs as a lightweight background daemon (managed via systemd), tracking task states, maintaining active agent registries, persisting curated memories, and exposing a real-time WebSocket + REST API.
+1.  **The Hub (`ham-hub`)**: The core brain. It runs as a lightweight background service, tracking task states, maintaining active agent registries, persisting curated memories, and exposing a real-time WebSocket + REST API. (`ham-daemon` is retained only as a deprecated compatibility binary.)
 2.  **The Agent Wrapper (`ham-wrapper`)**: A secure sandbox manager. It spawns autonomous agents in dedicated, isolated tmux windows, handles startup probe detection (safely bypassing prompts like folder trust), injects starter prompts, and intercepts stdin/stdout to stream logs and event triggers back to the daemon.
 3.  **The Control CLI (`ham-ctl`)**: The developer's command-line cockpit. Used by both human operators and background agents to create tasks, send messages, claim work, and record memories.
 4.  **The Desktop UI (`heimdall`)**: A gorgeous, hardware-accelerated Electron desktop application. Includes a live chat interface, interactive task boards, independent split-scroll memory curation tabs, and a step-by-step first-time setup wizard.
@@ -127,14 +127,14 @@ flowchart TD
 
 For developers making changes to Heimdall:
 
-### 1. Compile the Odin Daemon/Wrapper
+### 1. Compile the Odin Hub/Wrapper
 Compile the binaries locally from source in less than 0.5 seconds:
 ```bash
-# Compile Daemon
-odin build src/daemon -out:ham-daemon
+# Compile Hub
+odin build src/daemon -collection:odin_test=src -out:ham-hub
 
 # Compile Wrapper
-odin build src/wrapper -out:ham-wrapper
+odin build src/wrapper -collection:odin_test=src -out:ham-wrapper
 ```
 
 ### 2. Hot-Reloading Electron Frontend

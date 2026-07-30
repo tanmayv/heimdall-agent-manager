@@ -1572,6 +1572,7 @@ export default function App() {
             return (urlParams.view === 'conversation' || isConversationAgent(selectedPageAgent)) ? (
               <ConversationThreadPage
                 {...sharedAgentPageProps}
+                tasksById={tasksById}
               />
             ) : (
               <AgentDetailPage
@@ -3973,7 +3974,7 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
   );
 }
 
-function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
+function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], tasksById = {}, chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -4130,6 +4131,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                 },
                 workBanner: {
                   agent: locallyStopped ? { ...agent, status: 'stopped', startupStatus: 'stopped' } : agent,
+                  tasksById,
                   debugPrefix: conversationAgentContext.debug.workBannerPrefix,
                   onStart: startConversation,
                   startDisabled: Boolean(threadBusy || sending),
@@ -4370,7 +4372,7 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
   );
 }
 
-function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, providers, onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
+function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, providers, tasksById = {}, onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
   const [selectedAgentId, setSelectedAgentId] = useState(agents[0]?.id || '');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -4476,7 +4478,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             {selectedAgent && <span data-debug-id="home-running-agent-chat-status" className="rounded-full bg-white/10 px-2 py-1 text-xs text-zinc-400">{agentRuntimeDot(selectedAgent).label}</span>}
           </div>
           <CoordinatorMessageList chainId={selectedAgentId || 'running-agents'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="home-running-agent-chat" emptyText="No direct messages loaded for this agent." />
-          <ChatRuntimeBanner agent={selectedAgent} debugPrefix="home-running-agent-chat" onStart={() => { if (selectedAgentId) void ensureSelectedAgentRunning(selectedAgentId); }} startDisabled={!selectedAgentId || sending} />
+          <ChatRuntimeBanner agent={selectedAgent} tasksById={tasksById} debugPrefix="home-running-agent-chat" onStart={() => { if (selectedAgentId) void ensureSelectedAgentRunning(selectedAgentId); }} startDisabled={!selectedAgentId || sending} />
           <div data-debug-id="home-running-agent-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
             <textarea
               ref={chatInputRef}

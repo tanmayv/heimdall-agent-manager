@@ -253,6 +253,7 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			strings.write_string(&builder, `","startup_updated_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", ag.startup_updated_unix_ms))
 			strings.write_string(&builder, `,"activity_status":"`); json_write_string(&builder, ag.activity_status)
 			strings.write_string(&builder, `","activity_source":"`); json_write_string(&builder, ag.activity_source)
+			strings.write_string(&builder, `","activity_summary":"`); json_write_string(&builder, ag.activity_summary)
 			strings.write_string(&builder, `","activity_checked_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", ag.activity_checked_unix_ms)); strings.write_string(&builder, `}`)
 			wrote += 1
 			matched += 1
@@ -685,6 +686,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `","startup_updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", agent.startup_updated_unix_ms))
 		strings.write_string(builder, `,"activity_status":"`); json_write_string(builder, agent.activity_status)
 		strings.write_string(builder, `","activity_source":"`); json_write_string(builder, agent.activity_source)
+		strings.write_string(builder, `","activity_summary":"`); json_write_string(builder, agent.activity_summary)
 		strings.write_string(builder, `","activity_checked_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", agent.activity_checked_unix_ms))
 		strings.write_string(builder, `,"exec_state":"`); json_write_string(builder, agent.exec_state)
 		strings.write_string(builder, `","exec_state_since_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", agent.exec_state_since_unix_ms))
@@ -700,12 +702,12 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `,"startup_status":"`); json_write_string(builder, startup_status_json)
 		strings.write_string(builder, `","startup_reason_code":"","safe_diagnostic":"","startup_updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status_for_json.updated_unix_ms))
 		strings.write_string(builder, `,"activity_status":"`); json_write_string(builder, activity_status_json)
-		strings.write_string(builder, `","activity_source":"remote_status","activity_checked_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status_for_json.last_seen_unix_ms))
+		strings.write_string(builder, `","activity_source":"remote_status","activity_summary":"","activity_checked_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status_for_json.last_seen_unix_ms))
 		strings.write_string(builder, `,"exec_state":"`); json_write_string(builder, "running" if remote_effective_status_for_json == FEDERATION_AGENT_STATUS_WORKING else "idle")
 		strings.write_string(builder, `","exec_state_since_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status_for_json.updated_unix_ms))
 		strings.write_string(builder, `,"blocked_reason":""`)
 	} else {
-		strings.write_string(builder, `","tmux_pane":"","connected":false,"connection_state":"offline","activity_status":"unknown","activity_source":"","activity_checked_unix_ms":0,"exec_state":"","exec_state_since_unix_ms":0,"blocked_reason":""`)
+		strings.write_string(builder, `","tmux_pane":"","connected":false,"connection_state":"offline","activity_status":"unknown","activity_source":"","activity_summary":"","activity_checked_unix_ms":0,"exec_state":"","exec_state_since_unix_ms":0,"blocked_reason":""`)
 	}
 	strings.write_string(builder, `}`)
 }

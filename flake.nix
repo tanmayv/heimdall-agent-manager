@@ -51,8 +51,8 @@
         '';
       };
 
-      mkOdinDaemonPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
-        pname = "ham-daemon";
+      mkOdinDaemonLikePackage = pkgs: odin: name: pkgs.stdenv.mkDerivation {
+        pname = name;
         version = appVersion;
         src = ./.;
         nativeBuildInputs = [ odin pkgs.makeWrapper ];
@@ -62,11 +62,14 @@
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-          odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
-          wrapProgram $out/bin/ham-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.sqlite ]}
+          odin build src/daemon -collection:odin_test=src -out:$out/bin/${name}
+          wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.sqlite ]}
           runHook postBuild
         '';
       };
+
+      mkOdinDaemonPackage = pkgs: odin: mkOdinDaemonLikePackage pkgs odin "ham-daemon";
+      mkOdinHubPackage = pkgs: odin: mkOdinDaemonLikePackage pkgs odin "ham-hub";
 
       mkOdinCtlPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
         pname = "ham-ctl";
@@ -136,6 +139,7 @@
           odin = pkgs.odin.override { llvmPackages_18 = pkgs.llvmPackages_21; };
         in
         {
+          ham-hub = mkOdinHubPackage pkgs odin;
           ham-daemon = mkOdinDaemonPackage pkgs odin;
           ham-bridge = mkOdinPackage pkgs odin "ham-bridge" "src/bridge";
           # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
@@ -151,12 +155,16 @@
           heimdall-node-modules = mkNodeModules pkgs;
           bc-agent-wrapper = self.packages.${system}.ham-wrapper;
           bc-test-agent = self.packages.${system}.ham-test-agent;
-          default = self.packages.${system}.ham-daemon;
+          default = self.packages.${system}.ham-hub;
         });
 
       apps = forAllSystems (system: 
         let pkgs = pkgsFor system;
         in {
+        hub = {
+          type = "app";
+          program = "${self.packages.${system}.ham-hub}/bin/ham-hub";
+        };
         daemon = {
           type = "app";
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";

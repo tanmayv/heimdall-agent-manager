@@ -14,6 +14,7 @@ import ws "odin_test:lib/ws"
 
 // Test agents use a minimal one-shot prompt. The prompt uses the same {ctl_bin},
 // {daemon_url}, and {token} substitutions as the normal starter_prompt template.
+// todo: remove test code from wrapper binary.
 TEST_AGENT_STARTER_PROMPT :: "You are a Heimdall test agent. Your only task:\n\nRun exactly this shell command:\n{ctl_bin} --daemon-url {daemon_url} --token {token} start-success\n\nIf the command exits 0, you are done — say \"TEST OK\" and stop.\nIf it errors, print the error verbatim and stop.\nDo not perform any other action. Do not write files. Do not read files."
 
 is_test_token :: proc(token: string) -> bool {
@@ -25,6 +26,7 @@ main :: proc() {
 	if len(os.args) > 1 && os.args[1] == "test" {
 		os.exit(run_test_command(os.args))
 	}
+	// todo: if this is even needed.
 	if has_flag(os.args, "--version") {
 		fmt.println("ham-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 		return
@@ -98,7 +100,7 @@ main :: proc() {
 	response, health_ok := http.get(cfg.daemon_url, contracts.ROUTE_HEALTH)
 	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=daemon_health_done agent=%s ok=%t status=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, agent_instance_id, health_ok, response.status)
 	if !health_ok || response.status != 200 {
-		fmt.println("daemon is not reachable; start ham-daemon first")
+		fmt.println("hub is not reachable; start ham-hub first")
 		return
 	}
 
@@ -1198,7 +1200,9 @@ safe_slug :: proc(value: string) -> string {
 }
 
 BOOTSTRAP_HEADER :: "<!-- HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite -->"
+BOOTSTRAP_JS_HEADER :: "// HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite"
 BOOTSTRAP_MANIFEST :: ".heimdall-bootstrap-manifest"
+PI_ACTIVITY_EXTENSION_REL_PATH :: ".heimdall/heimdall-pi-activity.ts"
 
 Memory_Record :: struct {
 	memory_id:             string,
@@ -1302,6 +1306,16 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 		skill_paths := write_skills(cwd, rel_dir, filename, memories[:])
 		for p in skill_paths {
 			append(&written, p)
+		}
+	}
+
+	// Pi extension for high-confidence interactive working/idle activity updates.
+	if agent_command_is_pi(agent_cmd, selected_agent, cfg.command) {
+		path := join_path(cwd, PI_ACTIVITY_EXTENSION_REL_PATH)
+		if can_write_managed_file(path) {
+			text := build_pi_activity_extension(daemon_url, agent_instance_id, agent_token)
+			write_managed_file(path, text)
+			append(&written, PI_ACTIVITY_EXTENSION_REL_PATH)
 		}
 	}
 
@@ -1735,6 +1749,7 @@ file_has_managed_header :: proc(path: string) -> bool {
 MANAGED_YAML_MARKER :: "heimdall_managed: true"
 data_has_managed_marker :: proc(data: string) -> bool {
 	if strings.has_prefix(data, BOOTSTRAP_HEADER) do return true
+	if strings.has_prefix(data, BOOTSTRAP_JS_HEADER) do return true
 	if active_live_prefs.bootstrap_header != "" && strings.has_prefix(data, active_live_prefs.bootstrap_header) do return true
 	if strings.has_prefix(data, "---\n") || strings.has_prefix(data, "---\r\n") {
 		after := data[4:] if strings.has_prefix(data, "---\n") else data[5:]
@@ -2033,6 +2048,187 @@ deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, dae
 	}
 }
 
+command_name_looks_like_pi :: proc(name: string) -> bool {
+	if name == "pi" do return true
+	if strings.has_suffix(name, "/pi") do return true
+	if strings.has_suffix(name, "\\pi") do return true
+	if strings.index(name, "pi-coding-agent") >= 0 do return true
+	return false
+}
+
+agent_command_is_pi :: proc(agent_cmd: cfg_lib.Agent_Command_Config, selected_agent: string, fallback_command: []string) -> bool {
+	if selected_agent == "pi" || agent_cmd.name == "pi" do return true
+	base := agent_cmd.command
+	if len(base) == 0 do base = fallback_command
+	if len(base) > 0 && command_name_looks_like_pi(base[0]) do return true
+	return false
+}
+
+build_pi_activity_extension :: proc(daemon_url, agent_instance_id, agent_token: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, BOOTSTRAP_JS_HEADER)
+	strings.write_string(&b, `
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+type ActivityStatus = "active" | "idle" | "unknown";
+
+type PublishOptions = {
+	force?: boolean;
+};
+
+const DAEMON_URL = "`)
+	json_write_string(&b, daemon_url)
+	strings.write_string(&b, `";
+const AGENT_INSTANCE_ID = "`)
+	json_write_string(&b, agent_instance_id)
+	strings.write_string(&b, `";
+const AGENT_TOKEN = "`)
+	json_write_string(&b, agent_token)
+	strings.write_string(&b, `";
+const ACTIVITY_SOURCE = "pi_extension";
+const MIN_POST_INTERVAL_MS = 1000;
+const STREAM_UPDATE_INTERVAL_MS = 1500;
+const HEARTBEAT_ACTIVE_MS = 5000;
+const HEARTBEAT_IDLE_MS = 25000;
+
+function endpoint(): string {
+	return DAEMON_URL.replace(/\/$/, "") + "/agent-activity";
+}
+
+function postActivity(status: ActivityStatus, summary = ""): void {
+	const body = {
+		agent_instance_id: AGENT_INSTANCE_ID,
+		agent_token: AGENT_TOKEN,
+		activity_status: status,
+		activity_source: ACTIVITY_SOURCE,
+		activity_summary: summary,
+		activity_checked_unix_ms: Date.now(),
+	};
+	void fetch(endpoint(), {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	}).catch(() => undefined);
+}
+
+function toolName(event: any): string {
+	return String(
+		event?.toolName ??
+		event?.tool_name ??
+		event?.tool?.name ??
+		event?.call?.name ??
+		event?.name ??
+		"tool",
+	);
+}
+
+function toolKey(event: any): string {
+	return String(event?.toolCallId ?? event?.tool_call_id ?? event?.id ?? event?.call?.id ?? toolName(event));
+}
+
+function localText(status: ActivityStatus, summary: string): string {
+	if (status === "active") return summary ? "working · " + summary : "working";
+	if (status === "idle") return "idle";
+	return "activity unknown";
+}
+
+export default function (pi: ExtensionAPI) {
+	let lastStatus: ActivityStatus = "unknown";
+	let lastSummary = "";
+	let lastPostAt = 0;
+	let lastStreamUpdateAt = 0;
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+	let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+	const activeTools = new Set<string>();
+
+	function setLocal(ctx: ExtensionContext, status: ActivityStatus, summary: string): void {
+		if (!ctx.hasUI) return;
+		const text = "Heimdall: " + localText(status, summary);
+		ctx.ui.setStatus("heimdall-activity", text);
+	}
+
+	function publish(ctx: ExtensionContext, status: ActivityStatus, summary = "", options: PublishOptions = {}): void {
+		if (status === "active" && idleTimer) {
+			clearTimeout(idleTimer);
+			idleTimer = undefined;
+		}
+		setLocal(ctx, status, summary);
+		const now = Date.now();
+		if (!options.force && status === lastStatus && summary === lastSummary && now - lastPostAt < MIN_POST_INTERVAL_MS) return;
+		lastStatus = status;
+		lastSummary = summary;
+		lastPostAt = now;
+		postActivity(status, summary);
+	}
+
+	function scheduleIdle(ctx: ExtensionContext, delayMs: number): void {
+		if (idleTimer) clearTimeout(idleTimer);
+		idleTimer = setTimeout(() => {
+			const idle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
+			const pending = typeof ctx.hasPendingMessages === "function" ? ctx.hasPendingMessages() : false;
+			if (idle && !pending && activeTools.size === 0) publish(ctx, "idle", "", { force: true });
+			else publish(ctx, "active", activeTools.size ? "running tool" : "settling", { force: true });
+		}, delayMs);
+	}
+
+	function scheduleHeartbeat(ctx: ExtensionContext): void {
+		if (heartbeatTimer) clearTimeout(heartbeatTimer);
+		heartbeatTimer = setTimeout(() => {
+			publish(ctx, lastStatus, lastSummary, { force: true });
+			scheduleHeartbeat(ctx);
+		}, lastStatus === "active" ? HEARTBEAT_ACTIVE_MS : HEARTBEAT_IDLE_MS);
+	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		publish(ctx, "idle", "", { force: true });
+		scheduleHeartbeat(ctx);
+	});
+
+	pi.on("before_agent_start", async (_event, ctx) => publish(ctx, "active", "received prompt", { force: true }));
+	pi.on("agent_start", async (_event, ctx) => publish(ctx, "active", "working", { force: true }));
+	pi.on("turn_start", async (_event, ctx) => publish(ctx, "active", "thinking", { force: true }));
+	pi.on("message_start", async (_event, ctx) => publish(ctx, "active", "streaming", { force: true }));
+	pi.on("message_update", async (_event, ctx) => {
+		const now = Date.now();
+		if (now - lastStreamUpdateAt >= STREAM_UPDATE_INTERVAL_MS) {
+			lastStreamUpdateAt = now;
+			publish(ctx, "active", "streaming");
+		}
+	});
+	pi.on("message_end", async (_event, ctx) => publish(ctx, "active", "finishing response", { force: true }));
+	pi.on("tool_call", async (event, ctx) => publish(ctx, "active", "preparing " + toolName(event), { force: true }));
+	pi.on("tool_execution_start", async (event, ctx) => {
+		activeTools.add(toolKey(event));
+		publish(ctx, "active", "running " + toolName(event), { force: true });
+	});
+	pi.on("tool_execution_update", async (event, ctx) => publish(ctx, "active", "running " + toolName(event)));
+	pi.on("tool_execution_end", async (event, ctx) => {
+		activeTools.delete(toolKey(event));
+		publish(ctx, "active", activeTools.size ? "running tool" : "finishing tool", { force: true });
+	});
+	pi.on("turn_end", async (_event, ctx) => scheduleIdle(ctx, 1200));
+	pi.on("agent_end", async (_event, ctx) => {
+		publish(ctx, "active", "settling", { force: true });
+		scheduleIdle(ctx, 3500);
+	});
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (idleTimer) clearTimeout(idleTimer);
+		if (heartbeatTimer) clearTimeout(heartbeatTimer);
+		publish(ctx, "idle", "", { force: true });
+	});
+
+	pi.registerCommand("heimdall-status", {
+		description: "Force a Heimdall activity status refresh.",
+		handler: async (_args, ctx) => {
+			publish(ctx, lastStatus, lastSummary, { force: true });
+			ctx.ui.notify("Heimdall activity refreshed: " + localText(lastStatus, lastSummary), "info");
+		},
+	});
+}
+`)
+	return strings.to_string(b)
+}
+
 build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, model_tier: string, unread_count: int) -> []string {
 	agent_command_name := selected_agent
 	if agent_command_name == "" do agent_command_name = command_name_for_agent(cfg.command, cfg.agent_name)
@@ -2042,13 +2238,19 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			if len(base) == 0 do base = cfg.command
 			delivery := prompt_delivery_for_agent(agent_cmd)
 			inject_prompt_via_flags := delivery == "flag-injection"
+			load_pi_activity_extension := agent_command_is_pi(agent_cmd, selected_agent, cfg.command) && !is_test_token(agent_token)
 			count := len(base) + len(agent_cmd.yolo_flags)
+			if load_pi_activity_extension do count += 2
 			if inject_prompt_via_flags {
 				count += len(agent_cmd.prompt_flags)
 				if starter_prompt_template_for_agent(agent_cmd, agent_token) != "" do count += 1
 			}
 			result := make([dynamic]string, 0, count)
 			append_templated_args(&result, base, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
+			if load_pi_activity_extension {
+				append(&result, "--extension")
+				append(&result, PI_ACTIVITY_EXTENSION_REL_PATH)
+			}
 			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
 			// Model tier flag
 			if agent_cmd.models.flag != "" {

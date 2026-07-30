@@ -192,7 +192,7 @@ ctl_agents_list :: proc(daemon_url: string) {
 ctl_agents_start :: proc(target: string, args: []string, config_path, daemon_url: string) {
 	health_response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
 	if !health_ok || health_response.status != 200 {
-		fmt.println(`{"ok":false,"message":"daemon is not reachable; start ham-daemon first"}`)
+		fmt.println(`{"ok":false,"message":"hub is not reachable; start ham-hub first"}`)
 		return
 	}
 

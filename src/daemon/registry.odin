@@ -29,6 +29,7 @@ Agent_Record :: struct {
 	activity_status: string,
 	activity_checked_unix_ms: i64,
 	activity_source: string,
+	activity_summary: string,
 	provider_profile: string,
 	provider_tier: string,
 	project_id: string,
@@ -63,6 +64,7 @@ Heartbeat_Snapshot :: struct {
 	activity_status: string,
 	activity_checked_unix_ms: i64,
 	activity_source: string,
+	activity_summary: string,
 }
 
 startup_status_rank :: proc(status: string) -> int {
@@ -106,16 +108,7 @@ registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (runtime_
 		a.blocked_reason = strings.clone(snap.blocked_reason)
 		runtime_changed = true
 	}
-	if snap.activity_status != "" && snap.activity_status != a.activity_status {
-		a.activity_status = strings.clone(snap.activity_status)
-		runtime_changed = true
-	}
-	if snap.activity_checked_unix_ms != 0 && snap.activity_checked_unix_ms != a.activity_checked_unix_ms {
-		a.activity_checked_unix_ms = snap.activity_checked_unix_ms
-		runtime_changed = true
-	}
-	if snap.activity_source != a.activity_source {
-		a.activity_source = strings.clone(snap.activity_source)
+	if registry_apply_activity_update(snap.agent_instance_id, snap.activity_status, snap.activity_source, snap.activity_summary, snap.activity_checked_unix_ms) {
 		runtime_changed = true
 	}
 
@@ -144,6 +137,53 @@ registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (runtime_
 	}
 
 	return runtime_changed, lifecycle_changed
+}
+
+activity_source_rank :: proc(source: string) -> int {
+	if strings.has_prefix(source, "pi_extension") do return 20
+	if strings.has_prefix(source, "extension") do return 15
+	if source == "tmux_pane_sampler" do return 10
+	if source == "remote_status" do return 5
+	return 0
+}
+
+registry_apply_activity_update :: proc(agent_instance_id, status, source, summary: string, checked_unix_ms: i64) -> bool {
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 do return false
+	a := &agents[idx]
+	changed := false
+	incoming_rank := activity_source_rank(source)
+	current_rank := activity_source_rank(a.activity_source)
+	apply_allowed := true
+	if source != "" && current_rank > incoming_rank {
+		// A low-confidence wrapper sample must not clobber a first-class harness
+		// extension state such as Pi's tool/turn events while that signal is fresh.
+		// If the extension disappears, lower-rank sources are allowed to recover
+		// the UI after the high-confidence timestamp has gone stale.
+		stale := a.activity_checked_unix_ms == 0 || checked_unix_ms == 0 || checked_unix_ms - a.activity_checked_unix_ms > 30_000
+		if !stale do apply_allowed = false
+	}
+	if !apply_allowed do return false
+	if status != "" && status != a.activity_status {
+		a.activity_status = strings.clone(status)
+		changed = true
+	}
+	if checked_unix_ms != 0 && checked_unix_ms != a.activity_checked_unix_ms {
+		a.activity_checked_unix_ms = checked_unix_ms
+		changed = true
+	}
+	if source != "" && source != a.activity_source {
+		a.activity_source = strings.clone(source)
+		changed = true
+	}
+	if summary != "" && summary != a.activity_summary {
+		a.activity_summary = strings.clone(summary)
+		changed = true
+	} else if status == "idle" && a.activity_summary != "" {
+		a.activity_summary = ""
+		changed = true
+	}
+	return changed
 }
 
 // registry_refresh_identity_cache mirrors a few identity/config fields into the
@@ -603,6 +643,7 @@ registry_list_json :: proc() -> string {
 		strings.write_string(&builder, `,"startup_status":"`); json_write_string(&builder, a.startup_status)
 		strings.write_string(&builder, `","activity_status":"`); json_write_string(&builder, a.activity_status)
 		strings.write_string(&builder, `","activity_source":"`); json_write_string(&builder, a.activity_source)
+		strings.write_string(&builder, `","activity_summary":"`); json_write_string(&builder, a.activity_summary)
 		strings.write_string(&builder, `","activity_checked_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", a.activity_checked_unix_ms))
 		strings.write_string(&builder, `,"provider_profile":"`); json_write_string(&builder, a.provider_profile)
 		strings.write_string(&builder, `","provider_tier":"`); json_write_string(&builder, a.provider_tier)

@@ -129,10 +129,10 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	}
 	defer net.close(listener)
 	if !socket_set_close_on_exec(listener) {
-		fmt.println("warning: failed to set daemon listener close-on-exec")
+		fmt.println("warning: failed to set hub listener close-on-exec")
 	}
-	fmt.println("odin-daemon listening", cfg.daemon.bind_host, cfg.daemon.port)
-	_ = guide_service_start(cfg.guide_agent, "daemon_startup")
+	fmt.println(server_binary_name(), "listening", cfg.daemon.bind_host, cfg.daemon.port)
+	_ = guide_service_start(cfg.guide_agent, "hub_startup")
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
 		if accept_err != nil do continue
@@ -244,6 +244,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /startup ") {
 		handle_startup_report(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agent-activity ") {
+		handle_agent_activity_report(client, request_body(request))
 		return
 	}
 

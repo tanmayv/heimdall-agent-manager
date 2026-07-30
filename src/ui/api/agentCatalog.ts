@@ -31,6 +31,7 @@ export function mapAgent(agent: any) {
   const activityStatus = agent.activity_status || agent.activityStatus || '';
   const activityCheckedUnixMs = Number(agent.activity_checked_unix_ms ?? agent.activityCheckedUnixMs ?? 0);
   const activitySource = agent.activity_source || agent.activitySource || '';
+  const activitySummary = agent.activity_summary || agent.activitySummary || '';
 
   let status = 'offline';
   if (startupStatus === 'stopped') {
@@ -104,6 +105,7 @@ export function mapAgent(agent: any) {
     activityStatus,
     activityCheckedUnixMs,
     activitySource,
+    activitySummary,
     currentTaskId: agent.current_task_id || agent.currentTaskId || '',
     currentTaskSince: Number(agent.current_task_since ?? agent.currentTaskSince ?? 0),
     state: agent.state || '',
@@ -244,6 +246,7 @@ export function applyAgentLifecycleEvent(agents: any[], payload: any) {
       templateId: mapped.templateId || existing.templateId || '',
       providerProfile: mapped.providerProfile || existing.providerProfile || '',
       modelTier: mapped.modelTier || existing.modelTier || 'normal',
+      activitySummary: mapped.activitySummary || existing.activitySummary || '',
       known: true,
     };
   } else {
@@ -297,6 +300,7 @@ export function applyAgentRuntimeEvent(agents: any[], payload: any) {
     activityStatus,
     activityCheckedUnixMs: normalizedPayload.activity_checked_unix_ms ?? existing.activityCheckedUnixMs,
     activitySource: normalizedPayload.activity_source ?? existing.activitySource,
+    activitySummary: normalizedPayload.activity_summary ?? existing.activitySummary,
     runDir: normalizedPayload.run_dir ?? existing.runDir,
     lastSeenUnixMs: normalizedPayload.last_seen_unix_ms ?? existing.lastSeenUnixMs,
     lastSeen: normalizedPayload.last_seen_unix_ms ? new Date(normalizedPayload.last_seen_unix_ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : existing.lastSeen,

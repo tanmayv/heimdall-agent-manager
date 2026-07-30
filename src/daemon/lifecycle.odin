@@ -152,6 +152,54 @@ handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
 	write_response(client, 200, "OK", `{"ok":true}`)
 }
 
+handle_agent_activity_report :: proc(client: net.TCP_Socket, body: string) {
+	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
+	agent_token := extract_json_string(body, "agent_token", "")
+	activity_status := extract_json_string(body, "activity_status", extract_json_string(body, "status", ""))
+	activity_source := extract_json_string(body, "activity_source", "pi_extension")
+	activity_summary := extract_json_string(body, "activity_summary", extract_json_string(body, "summary", ""))
+	checked_unix_ms := i64(extract_json_int(body, "activity_checked_unix_ms", 0))
+	if checked_unix_ms == 0 do checked_unix_ms = now_unix_ms()
+
+	if !valid_agent_instance_id(agent_instance_id) || agent_token == "" || activity_status == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"activity report requires agent_instance_id, agent_token, and activity_status"}`)
+		return
+	}
+	if activity_status != "active" && activity_status != "idle" && activity_status != "unknown" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid activity_status"}`)
+		return
+	}
+
+	if reg_idx := registry_find_agent(agent_instance_id); reg_idx >= 0 {
+		if agents[reg_idx].has_agent_token && agents[reg_idx].agent_token != agent_token {
+			write_response(client, 409, "Conflict", `{"ok":false,"error":"token_mismatch","message":"agent_token does not match registry"}`)
+			return
+		}
+	} else {
+		itype, iid := auth_db_get_identity(agent_token)
+		if itype != "agent" || iid != agent_instance_id {
+			write_response(client, 401, "Unauthorized", `{"ok":false,"error":"token_not_found","message":"agent token is not valid for this agent instance"}`)
+			return
+		}
+		if store_idx := agent_record_index_by_instance(agent_instance_id); store_idx >= 0 {
+			rec := agent_instance_records[store_idx]
+			_ = registry_register(derive_agent_class(agent_instance_id), agent_instance_id, rec.display_name, agent_token)
+			registry_refresh_identity_cache(agent_instance_id, rec.display_name, rec.provider_profile, rec.model_tier, rec.project_id)
+		} else {
+			write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent instance"}`)
+			return
+		}
+	}
+
+	changed := registry_apply_activity_update(agent_instance_id, activity_status, activity_source, activity_summary, checked_unix_ms)
+	if changed {
+		agent_runtime_emit(agent_instance_id, "agent_activity")
+		_ = federation_propagate_agent_status(agent_instance_id, "agent_activity")
+	}
+
+	write_response(client, 200, "OK", `{"ok":true}`)
+}
+
 // handle_heartbeat is the single sync point between wrapper, daemon, and UI.
 // Behavior:
 //   - Required fields (display_name, agent_instance_id, provider_profile,
@@ -188,6 +236,7 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 		activity_status          = extract_json_string(body, "activity_status", ""),
 		activity_checked_unix_ms = i64(extract_json_int(body, "activity_checked_unix_ms", 0)),
 		activity_source          = extract_json_string(body, "activity_source", ""),
+		activity_summary         = extract_json_string(body, "activity_summary", ""),
 	}
 
 	if !valid_agent_instance_id(snap.agent_instance_id) {
