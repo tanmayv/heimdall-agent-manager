@@ -11,6 +11,8 @@ import "core:thread"
 import "core:time"
 import tmux "odin_test:lib/tmux"
 
+PI_ACTIVITY_EXTENSION_REL_PATH :: ".heimdall/heimdall-pi-activity.ts"
+
 Bridge_Runtime_Config :: struct {
 	bridge_endpoint: string,
 	wrapper_token: string,
@@ -35,6 +37,13 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 	if strings.trim_space(cfg.working_dir) == "" do cfg.working_dir = os.get_env_alloc("PWD", context.allocator)
 	if strings.trim_space(cfg.pane_id) == "" do cfg.pane_id = os.get_env_alloc("TMUX_PANE", context.allocator)
 	_ = os.make_directory_all(cfg.working_dir)
+	if wrapper_bridge_should_load_pi_activity(cfg) {
+		if wrapper_bridge_write_pi_activity_extension(cfg) {
+			cfg.agent_argv = wrapper_bridge_agent_argv_with_pi_activity(cfg.agent_argv)
+		} else {
+			fmt.eprintln("warning: failed to write Heimdall Pi activity extension; continuing without extension")
+		}
+	}
 	_ = wrapper_bridge_report_startup(cfg, "starting", "ham-wrapper bridge runtime starting")
 
 	notify_cfg := new(Bridge_Runtime_Config)
@@ -71,6 +80,199 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 		}
 		time.sleep(250 * time.Millisecond)
 	}
+}
+
+wrapper_bridge_should_load_pi_activity :: proc(cfg: Bridge_Runtime_Config) -> bool {
+	if strings.trim_space(cfg.provider) == "pi" do return true
+	if len(cfg.agent_argv) > 0 && wrapper_bridge_command_looks_like_pi(cfg.agent_argv[0]) do return true
+	return false
+}
+
+wrapper_bridge_command_looks_like_pi :: proc(name: string) -> bool {
+	trimmed := strings.trim_space(name)
+	if trimmed == "pi" do return true
+	if strings.has_suffix(trimmed, "/pi") || strings.has_suffix(trimmed, "\\pi") do return true
+	if strings.index(trimmed, "pi-coding-agent") >= 0 do return true
+	return false
+}
+
+wrapper_bridge_agent_argv_with_pi_activity :: proc(argv: []string) -> []string {
+	for arg in argv { if arg == PI_ACTIVITY_EXTENSION_REL_PATH do return argv }
+	out := make([dynamic]string)
+	if len(argv) == 0 do return argv
+	append(&out, argv[0])
+	append(&out, "--extension")
+	append(&out, PI_ACTIVITY_EXTENSION_REL_PATH)
+	for i := 1; i < len(argv); i += 1 do append(&out, argv[i])
+	return out[:]
+}
+
+wrapper_bridge_write_pi_activity_extension :: proc(cfg: Bridge_Runtime_Config) -> bool {
+	dir := strings.concatenate({strings.trim_right(cfg.working_dir, "/"), "/.heimdall"})
+	_ = os.make_directory_all(dir)
+	path := strings.concatenate({strings.trim_right(cfg.working_dir, "/"), "/", PI_ACTIVITY_EXTENSION_REL_PATH})
+	return os.write_entire_file(path, wrapper_bridge_build_pi_activity_extension()) == nil
+}
+
+wrapper_bridge_build_pi_activity_extension :: proc() -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `// HEIMDALL-MANAGED-PI-ACTIVITY v1: safe to overwrite
+import * as net from "node:net";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+type ActivityStatus = "active" | "idle" | "unknown";
+
+type PublishOptions = { force?: boolean };
+
+const ACTIVITY_SOURCE = "pi_extension";
+const MIN_POST_INTERVAL_MS = 1000;
+const STREAM_UPDATE_INTERVAL_MS = 1500;
+const HEARTBEAT_ACTIVE_MS = 5000;
+const HEARTBEAT_IDLE_MS = 25000;
+
+let requestSeq = 0;
+
+function bridgeCall(method: string, params: Record<string, unknown>): void {
+  const endpoint = String(process.env.HEIMDALL_BRIDGE_ENDPOINT || "");
+  const token = String(process.env.HEIMDALL_AGENT_TOKEN || "");
+  if (!endpoint || !token) return;
+  const line = JSON.stringify({ v: 1, id: "pi-activity-" + Date.now() + "-" + (++requestSeq), token, method, params }) + "\n";
+  let socket: net.Socket;
+  if (endpoint.startsWith("unix:")) {
+    socket = net.createConnection(endpoint.slice(5));
+  } else if (endpoint.startsWith("tcp:")) {
+    const raw = endpoint.slice(4);
+    const idx = raw.lastIndexOf(":");
+    if (idx <= 0) return;
+    const host = raw.slice(0, idx);
+    const port = Number(raw.slice(idx + 1));
+    if (!Number.isFinite(port) || port <= 0) return;
+    socket = net.createConnection({ host, port });
+  } else {
+    return;
+  }
+  socket.setTimeout(1200);
+  socket.on("connect", () => socket.end(line));
+  socket.on("timeout", () => socket.destroy());
+  socket.on("error", () => undefined);
+}
+
+function postActivity(status: ActivityStatus, summary = ""): void {
+  bridgeCall("agent.activity.report", {
+    status,
+    source: ACTIVITY_SOURCE,
+    summary,
+    checked_unix_ms: Date.now(),
+  });
+}
+
+function toolName(event: any): string {
+  return String(event?.toolName ?? event?.tool_name ?? event?.tool?.name ?? event?.call?.name ?? event?.name ?? "tool");
+}
+
+function toolKey(event: any): string {
+  return String(event?.toolCallId ?? event?.tool_call_id ?? event?.id ?? event?.call?.id ?? toolName(event));
+}
+
+function localText(status: ActivityStatus, summary: string): string {
+  if (status === "active") return summary ? "working · " + summary : "working";
+  if (status === "idle") return "idle";
+  return "activity unknown";
+}
+
+export default function (pi: ExtensionAPI) {
+  let lastStatus: ActivityStatus = "unknown";
+  let lastSummary = "";
+  let lastPostAt = 0;
+  let lastStreamUpdateAt = 0;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+  const activeTools = new Set<string>();
+
+  function setLocal(ctx: ExtensionContext, status: ActivityStatus, summary: string): void {
+    if (!ctx.hasUI) return;
+    ctx.ui.setStatus("heimdall-activity", "Heimdall: " + localText(status, summary));
+  }
+
+  function publish(ctx: ExtensionContext, status: ActivityStatus, summary = "", options: PublishOptions = {}): void {
+    if (status === "active" && idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+    setLocal(ctx, status, summary);
+    const now = Date.now();
+    if (!options.force && status === lastStatus && summary === lastSummary && now - lastPostAt < MIN_POST_INTERVAL_MS) return;
+    lastStatus = status;
+    lastSummary = summary;
+    lastPostAt = now;
+    postActivity(status, summary);
+  }
+
+  function scheduleIdle(ctx: ExtensionContext, delayMs: number): void {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      const idle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
+      const pending = typeof ctx.hasPendingMessages === "function" ? ctx.hasPendingMessages() : false;
+      if (idle && !pending && activeTools.size === 0) publish(ctx, "idle", "", { force: true });
+      else publish(ctx, "active", activeTools.size ? "running tool" : "settling", { force: true });
+    }, delayMs);
+  }
+
+  function scheduleHeartbeat(ctx: ExtensionContext): void {
+    if (heartbeatTimer) clearTimeout(heartbeatTimer);
+    heartbeatTimer = setTimeout(() => {
+      publish(ctx, lastStatus, lastSummary, { force: true });
+      scheduleHeartbeat(ctx);
+    }, lastStatus === "active" ? HEARTBEAT_ACTIVE_MS : HEARTBEAT_IDLE_MS);
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
+    publish(ctx, "idle", "", { force: true });
+    scheduleHeartbeat(ctx);
+  });
+  pi.on("before_agent_start", async (_event, ctx) => publish(ctx, "active", "received prompt", { force: true }));
+  pi.on("agent_start", async (_event, ctx) => publish(ctx, "active", "working", { force: true }));
+  pi.on("turn_start", async (_event, ctx) => publish(ctx, "active", "thinking", { force: true }));
+  pi.on("message_start", async (_event, ctx) => publish(ctx, "active", "streaming", { force: true }));
+  pi.on("message_update", async (_event, ctx) => {
+    const now = Date.now();
+    if (now - lastStreamUpdateAt >= STREAM_UPDATE_INTERVAL_MS) {
+      lastStreamUpdateAt = now;
+      publish(ctx, "active", "streaming");
+    }
+  });
+  pi.on("message_end", async (_event, ctx) => publish(ctx, "active", "finishing response", { force: true }));
+  pi.on("tool_call", async (event, ctx) => publish(ctx, "active", "preparing " + toolName(event), { force: true }));
+  pi.on("tool_execution_start", async (event, ctx) => {
+    activeTools.add(toolKey(event));
+    publish(ctx, "active", "running " + toolName(event), { force: true });
+  });
+  pi.on("tool_execution_update", async (event, ctx) => publish(ctx, "active", "running " + toolName(event)));
+  pi.on("tool_execution_end", async (event, ctx) => {
+    activeTools.delete(toolKey(event));
+    publish(ctx, "active", activeTools.size ? "running tool" : "finishing tool", { force: true });
+  });
+  pi.on("turn_end", async (_event, ctx) => scheduleIdle(ctx, 1200));
+  pi.on("agent_end", async (_event, ctx) => {
+    publish(ctx, "active", "settling", { force: true });
+    scheduleIdle(ctx, 3500);
+  });
+  pi.on("session_shutdown", async (_event, ctx) => {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (heartbeatTimer) clearTimeout(heartbeatTimer);
+    publish(ctx, "idle", "", { force: true });
+  });
+
+  pi.registerCommand("heimdall-status", {
+    description: "Force a Heimdall activity status refresh.",
+    handler: async (_args, ctx) => {
+      publish(ctx, lastStatus, lastSummary, { force: true });
+      ctx.ui.notify("Heimdall activity refreshed: " + localText(lastStatus, lastSummary), "info");
+    },
+  });
+}
+`)
+	return strings.to_string(b)
 }
 
 wrapper_bridge_runtime_config_from_args :: proc(args: []string) -> Bridge_Runtime_Config {

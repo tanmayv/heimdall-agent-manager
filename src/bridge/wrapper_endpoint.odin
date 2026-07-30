@@ -229,7 +229,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Wrapper:
 		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe" || method == "wrapper.pane_capture.result"
 	case .Agent:
-		return method == "agent.rest.request" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.rest.request" || method == "agent.activity.report" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
 	return false
 }
@@ -291,6 +291,22 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 }
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
+	if method == "agent.activity.report" {
+		activity := bridge_local_extract_json_string(params, "status", "unknown")
+		source := bridge_local_extract_json_string(params, "source", "agent_extension")
+		bridge_runtime_note_agent_activity(rec.agent_instance_id, activity, source)
+		if inst, got := bridge_runtime_instance_snapshot(rec.agent_instance_id); got {
+			b := strings.builder_make()
+			strings.write_string(&b, "{\"accepted\":true,\"agent_instance_id\":\""); bridge_runtime_write_json_string(&b, inst.agent_instance_id)
+			strings.write_string(&b, "\",\"runtime_status\":\""); bridge_runtime_write_json_string(&b, inst.runtime_status)
+			strings.write_string(&b, "\",\"activity_status\":\""); bridge_runtime_write_json_string(&b, inst.activity_status)
+			strings.write_string(&b, "\",\"activity_source\":\""); bridge_runtime_write_json_string(&b, inst.activity_source)
+			strings.write_string(&b, "\",\"state_seq\":"); strings.write_string(&b, fmt.tprintf("%d", inst.state_seq))
+			strings.write_string(&b, "}")
+			return bridge_local_response_data(request_id, strings.to_string(b))
+		}
+		return bridge_local_response_data(request_id, "{\"accepted\":true}")
+	}
 	if method == "agent.rest.request" {
 		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
 		relay := bridge_local_relay_rest_request(params, rec)
