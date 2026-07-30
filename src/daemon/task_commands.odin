@@ -11,7 +11,9 @@ Task_Create_Command :: struct {
 	priority:                     string,
 	status:                       string,
 	assignee_agent_instance_id:   string,
+	assignee_agent_id:            string,
 	reviewer_agent_instance_id:   string,
+	reviewer_agent_id:            string,
 	depends_on:                   string,
 	created_by:                   string,
 	author_agent_instance_id:     string,
@@ -24,7 +26,9 @@ Task_Chain_Create_Command :: struct {
 	description:                        string,
 	status:                             string,
 	coordinator_agent_instance_id:      string,
+	coordinator_agent_id:               string,
 	default_reviewer_agent_instance_id: string,
+	default_reviewer_agent_id:          string,
 	wants_vcs:                          bool,
 	author_agent_instance_id:           string,
 }
@@ -80,6 +84,7 @@ Task_Assign_Command :: struct {
 	task_id:                  string,
 	chain_id:                 string,
 	agent_instance_id:        string,
+	agent_id:                 string,
 	author_agent_instance_id: string,
 }
 
@@ -87,6 +92,7 @@ Task_Participant_Command :: struct {
 	task_id:                  string,
 	chain_id:                 string,
 	agent_instance_id:        string,
+	agent_id:                 string,
 	role:                     string,
 	author_agent_instance_id: string,
 }
@@ -113,7 +119,9 @@ Task_Chain_Update_Command :: struct {
 	title:                              string,
 	description:                        string,
 	coordinator_agent_instance_id:      string,
+	coordinator_agent_id:               string,
 	default_reviewer_agent_instance_id: string,
+	default_reviewer_agent_id:          string,
 	final_summary:                      string,
 	author_agent_instance_id:           string,
 }

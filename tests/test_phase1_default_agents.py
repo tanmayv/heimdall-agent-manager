@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -25,9 +26,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def request_json(method: str, path: str, body=None):
     data = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
     req = urllib.request.Request(f"{URL}{path}", data=data, headers={"Content-Type": "application/json"}, method=method)
-    with urllib.request.urlopen(req, timeout=10) as res:
-        payload = res.read().decode("utf-8")
-        return res.status, (json.loads(payload) if payload else {})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            payload = res.read().decode("utf-8")
+            return res.status, (json.loads(payload) if payload else {})
+    except urllib.error.HTTPError as err:
+        payload = err.read().decode("utf-8")
+        return err.code, (json.loads(payload) if payload else {})
 
 
 def wait_for_health():
@@ -126,14 +131,25 @@ def main():
         for alias in ("assignee", "coder", "tester", "researcher", "specialist"):
             require(mapping.get(alias) == "worker", f"alias {alias} should map to worker: {mapping}")
 
-        # Alias assignment: a coordinator/skill assigning the default-use "coder"
-        # should materialize a concrete worker instance on an empty DB.
+        # Instance fields are exact only: the hub should not guess that a plain
+        # durable/default-use id in assignee_agent_instance_id means agent_id.
+        status, rejected = request_json("POST", "/tasks/create", {
+            "agent_token": token,
+            "standalone": True,
+            "title": "Instance field must not materialize",
+            "status": "planning",
+            "assignee_agent_instance_id": "coder",
+        })
+        require(status == 400 and "use agent_id" in rejected.get("message", ""), rejected)
+
+        # Explicit durable agent_id assignment should materialize a concrete
+        # instance for that durable id.
         status, task = request_json("POST", "/tasks/create", {
             "agent_token": token,
             "standalone": True,
-            "title": "Alias resolution proof",
+            "title": "Explicit agent_id resolution proof",
             "status": "planning",
-            "assignee_agent_instance_id": "coder",
+            "assignee_agent_id": "worker",
         })
         require(status == 200 and task.get("ok"), task)
         status, agents_after_task = request_json("GET", "/agents?include_identities=true")

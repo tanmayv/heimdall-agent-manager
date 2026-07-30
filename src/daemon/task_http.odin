@@ -77,7 +77,9 @@ handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 				extract_json_string(body, "priority", ""),
 				extract_json_string(body, "status", ""),
 				extract_json_string(body, "assignee_agent_instance_id", ""),
+				extract_json_string(body, "assignee_agent_id", ""),
 				extract_json_string(body, "reviewer_agent_instance_id", ""),
+				extract_json_string(body, "reviewer_agent_id", ""),
 				extract_json_string(body, "depends_on", ""),
 				idempotency_key,
 			)
@@ -96,7 +98,9 @@ handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 		priority                      = extract_json_string(body, "priority", ""),
 		status                        = extract_json_string(body, "status", ""),
 		assignee_agent_instance_id    = extract_json_string(body, "assignee_agent_instance_id", ""),
+		assignee_agent_id             = extract_json_string(body, "assignee_agent_id", ""),
 		reviewer_agent_instance_id    = extract_json_string(body, "reviewer_agent_instance_id", ""),
+		reviewer_agent_id             = extract_json_string(body, "reviewer_agent_id", ""),
 		depends_on                    = extract_json_string(body, "depends_on", ""),
 		created_by                    = author,
 		author_agent_instance_id      = author,
@@ -121,7 +125,9 @@ handle_task_chain_create :: proc(client: net.TCP_Socket, body: string) {
 		description                        = description,
 		status                             = extracted_status,
 		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
+		coordinator_agent_id               = extract_json_string(body, "coordinator_agent_id", ""),
 		default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""),
+		default_reviewer_agent_id          = extract_json_string(body, "default_reviewer_agent_id", ""),
 		wants_vcs                          = extract_json_bool(body, "wants_vcs", false),
 		author_agent_instance_id           = author,
 	})
@@ -265,6 +271,7 @@ handle_task_assign :: proc(client: net.TCP_Socket, body: string) {
 	task_id := extract_json_string(body, "task_id", "")
 	chain_id := extract_json_string(body, "chain_id", "")
 	assignee_ref := extract_json_string(body, "agent_instance_id", "")
+	assignee_agent_id := extract_json_string(body, "agent_id", "")
 	// A remote coordinator assigning a peer-owned task forwards the assignment to
 	// the owner. Task-scoped remote-work resolution (the coordinator knows the
 	// task from a chain tasks read).
@@ -276,19 +283,19 @@ handle_task_assign :: proc(client: net.TCP_Socket, body: string) {
 		} else if remote {
 			if chain_id == "" do chain_id = remote_work.chain_id
 			idempotency_key := fmt.tprintf("task-assign:%s:%s:%d", task_id, author, router_now_unix_ms())
-			payload := federation_task_assign_callback_json(remote_work, author, task_id, assignee_ref, idempotency_key)
+			payload := federation_task_assign_callback_json(remote_work, author, task_id, assignee_ref, assignee_agent_id, idempotency_key)
 			write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_ASSIGN, task_id)
 			return
 		}
 	}
-	result := task_service_assign(task_id, chain_id, assignee_ref, author)
+	result := task_service_assign(task_id, chain_id, assignee_ref, author, assignee_agent_id)
 	write_task_service_response(client, result)
 }
 
 handle_task_participant :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), author)
+	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), author, extract_json_string(body, "agent_id", ""))
 	write_task_service_response(client, result)
 }
 
@@ -478,7 +485,7 @@ handle_task_chain_update :: proc(client: net.TCP_Socket, body: string) {
 			write_remote_chain_identity_ambiguous_response(client, chain_id)
 			return
 		} else if remote {
-			if json_has_key(body, "coordinator_agent_instance_id") || json_has_key(body, "default_reviewer_agent_instance_id") {
+			if json_has_key(body, "coordinator_agent_instance_id") || json_has_key(body, "coordinator_agent_id") || json_has_key(body, "default_reviewer_agent_instance_id") || json_has_key(body, "default_reviewer_agent_id") {
 				write_response(client, 400, "Bad Request", `{"ok":false,"message":"coordinator/reviewer reassignment must be performed on the chain's owner daemon, not over federation"}`)
 				return
 			}
@@ -502,7 +509,9 @@ handle_task_chain_update :: proc(client: net.TCP_Socket, body: string) {
 		title                              = extract_json_string(body, "title", ""),
 		description                        = extract_json_string(body, "description", ""),
 		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
+		coordinator_agent_id               = extract_json_string(body, "coordinator_agent_id", ""),
 		default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""),
+		default_reviewer_agent_id          = extract_json_string(body, "default_reviewer_agent_id", ""),
 		final_summary                      = extract_json_string(body, "final_summary", ""),
 		author_agent_instance_id           = author,
 	})

@@ -144,7 +144,7 @@ handle_user_rpc_task_log :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_user_rpc_task_create :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), standalone = extract_json_bool(body, "standalone", false), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""), depends_on = extract_json_string(body, "depends_on", ""), created_by = user_id, author_agent_instance_id = user_id})
+	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), standalone = extract_json_bool(body, "standalone", false), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""), assignee_agent_id = extract_json_string(body, "assignee_agent_id", ""), reviewer_agent_instance_id = extract_json_string(body, "reviewer_agent_instance_id", ""), reviewer_agent_id = extract_json_string(body, "reviewer_agent_id", ""), depends_on = extract_json_string(body, "depends_on", ""), created_by = user_id, author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 
@@ -155,7 +155,7 @@ handle_user_rpc_task_chain_create :: proc(client: net.TCP_Socket, body, user_id:
 	}
 	description := extract_json_string(body, "description", "")
 	if description == "" do description = extract_json_string(body, "goal", "")
-	result := task_service_create_chain(Task_Chain_Create_Command{chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), title = extract_json_string(body, "title", ""), description = description, coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), wants_vcs = extract_json_bool(body, "wants_vcs", false), author_agent_instance_id = user_id})
+	result := task_service_create_chain(Task_Chain_Create_Command{chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), title = extract_json_string(body, "title", ""), description = description, coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), coordinator_agent_id = extract_json_string(body, "coordinator_agent_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), default_reviewer_agent_id = extract_json_string(body, "default_reviewer_agent_id", ""), wants_vcs = extract_json_bool(body, "wants_vcs", false), author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 
@@ -216,12 +216,12 @@ handle_user_rpc_task_delete :: proc(client: net.TCP_Socket, body, user_id: strin
 }
 
 handle_user_rpc_task_assign :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_assign(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), user_id)
+	result := task_service_assign(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), user_id, extract_json_string(body, "agent_id", ""))
 	write_task_service_response(client, result)
 }
 
 handle_user_rpc_task_participant :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), user_id)
+	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), user_id, extract_json_string(body, "agent_id", ""))
 	write_task_service_response(client, result)
 }
 
@@ -236,7 +236,7 @@ handle_user_rpc_task_nudge :: proc(client: net.TCP_Socket, body, user_id: string
 }
 
 handle_user_rpc_task_chain_update :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_update_chain(Task_Chain_Update_Command{chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), final_summary = extract_json_string(body, "final_summary", ""), author_agent_instance_id = user_id})
+	result := task_service_update_chain(Task_Chain_Update_Command{chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), coordinator_agent_id = extract_json_string(body, "coordinator_agent_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), default_reviewer_agent_id = extract_json_string(body, "default_reviewer_agent_id", ""), final_summary = extract_json_string(body, "final_summary", ""), author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 

@@ -1509,7 +1509,7 @@ federation_task_status_callback_json :: proc(work: Federation_Remote_Work_Record
 // create from the actor daemon (B) to the chain owner daemon (A). Chain-scoped:
 // keyed by chain_id + coordinator proxy, since there is no pre-existing task id.
 // The optional string fields carry the same knobs as a local /tasks create.
-federation_task_create_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, title, description, acceptance_criteria, priority, status, assignee_ref, reviewer_ref, depends_on, idempotency_key: string) -> string {
+federation_task_create_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, title, description, acceptance_criteria, priority, status, assignee_ref, assignee_agent_id, reviewer_ref, reviewer_agent_id, depends_on, idempotency_key: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"kind":"`); strings.write_string(&b, FEDERATION_ENVELOPE_TASK_CREATE)
 	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
@@ -1524,7 +1524,9 @@ federation_task_create_callback_json :: proc(work: Federation_Remote_Work_Record
 	strings.write_string(&b, `","priority":"`); json_write_string(&b, priority)
 	strings.write_string(&b, `","status":"`); json_write_string(&b, status)
 	strings.write_string(&b, `","assignee_agent_instance_id":"`); json_write_string(&b, assignee_ref)
+	strings.write_string(&b, `","assignee_agent_id":"`); json_write_string(&b, assignee_agent_id)
 	strings.write_string(&b, `","reviewer_agent_instance_id":"`); json_write_string(&b, reviewer_ref)
+	strings.write_string(&b, `","reviewer_agent_id":"`); json_write_string(&b, reviewer_agent_id)
 	strings.write_string(&b, `","depends_on":"`); json_write_string(&b, depends_on)
 	strings.write_string(&b, `"}`)
 	return strings.to_string(b)
@@ -1554,7 +1556,7 @@ federation_chain_update_callback_json :: proc(work: Federation_Remote_Work_Recor
 // federation_task_assign_callback_json forwards a coordinator-authored task
 // assignment from actor daemon (B) to the owner daemon (A). Task-scoped: the
 // coordinator must already know the task_id (from a chain tasks read).
-federation_task_assign_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, task_id, assignee_ref, idempotency_key: string) -> string {
+federation_task_assign_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, task_id, assignee_ref, assignee_agent_id, idempotency_key: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"kind":"`); strings.write_string(&b, FEDERATION_ENVELOPE_TASK_ASSIGN)
 	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
@@ -1565,6 +1567,7 @@ federation_task_assign_callback_json :: proc(work: Federation_Remote_Work_Record
 	strings.write_string(&b, `","proxy_agent_instance_id":"`); json_write_string(&b, work.proxy_agent_instance_id)
 	strings.write_string(&b, `","from_agent_instance_id":"`); json_write_string(&b, from_agent_instance_id)
 	strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, assignee_ref)
+	strings.write_string(&b, `","agent_id":"`); json_write_string(&b, assignee_agent_id)
 	strings.write_string(&b, `"}`)
 	return strings.to_string(b)
 }
@@ -2279,7 +2282,9 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 			priority                   = extract_json_string(body, "priority", ""),
 			status                     = extract_json_string(body, "status", ""),
 			assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""),
+			assignee_agent_id          = extract_json_string(body, "assignee_agent_id", ""),
 			reviewer_agent_instance_id = extract_json_string(body, "reviewer_agent_instance_id", ""),
+			reviewer_agent_id          = extract_json_string(body, "reviewer_agent_id", ""),
 			depends_on                 = extract_json_string(body, "depends_on", ""),
 			created_by                 = proxy_agent_instance_id,
 			author_agent_instance_id   = proxy_agent_instance_id,
@@ -2330,8 +2335,9 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 		chain_id := extract_json_string(body, "chain_id", "")
 		task_id := extract_json_string(body, "task_id", "")
 		assignee_ref := extract_json_string(body, "agent_instance_id", "")
+		assignee_agent_id := extract_json_string(body, "agent_id", "")
 		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
-		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || chain_id == "" || task_id == "" || assignee_ref == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_chain_coordinator_authorized(peer_id, proxy_agent_instance_id, chain_id) {
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || chain_id == "" || task_id == "" || (assignee_ref == "" && assignee_agent_id == "") || from_agent_instance_id != remote_agent_instance_id || !federation_remote_chain_coordinator_authorized(peer_id, proxy_agent_instance_id, chain_id) {
 			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"task_assign_not_authorized"}`)
 			return
 		}
@@ -2341,12 +2347,12 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"task_not_in_chain"}`)
 			return
 		}
-		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s:%s", kind, task_id, assignee_ref))
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s:%s:%s", kind, task_id, assignee_ref, assignee_agent_id))
 		if federation_delivery_dedupe_completed(scope, idempotency_key) {
 			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
 			return
 		}
-		result := task_service_assign(task_id, chain_id, assignee_ref, proxy_agent_instance_id)
+		result := task_service_assign(task_id, chain_id, assignee_ref, proxy_agent_instance_id, assignee_agent_id)
 		if !result.ok {
 			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
 			return
