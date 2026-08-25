@@ -150,6 +150,7 @@ bridge_task_scheduler_tick :: proc() -> int {
 		if bridge_task_deliver_nudge(task_id, status, target, now) {
 			bridge_task_mark_nudged(task_id, target, now)
 			actions += 1
+			fmt.printfln("SCHED_NUDGE ts=%d task=%s status=%s target=%s stale_ms=%d", now, task_id, status, target, now - first_seen)
 		}
 	}
 
