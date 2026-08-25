@@ -757,7 +757,19 @@ bridge_runtime_default_run_dir :: proc(instance_id: string) -> string {
 	return strings.concatenate({base, "/instances/", bridge_runtime_safe_part(instance_id)})
 }
 
-bridge_runtime_tmux_session :: proc() -> string { return "heimdall-bridge" }
+// bridge_runtime_tmux_session scopes the tmux server per bridge so multiple
+// bridges on one host do not share a single tmux daemon. A shared session caused
+// two problems: (1) all bridges' agent windows piled into one server, and (2)
+// the tmux daemon inherited a bridge's listening sockets, so killing that bridge
+// left the daemon holding its ports -> restart failed with Address_In_Use. The
+// local_endpoint_port is a reliable per-host discriminator (two bridges cannot
+// bind the same port), so we key the session on it.
+bridge_runtime_tmux_session :: proc() -> string {
+	if bridge_config.local_endpoint_port != 0 {
+		return fmt.tprintf("heimdall-bridge-%d", bridge_config.local_endpoint_port)
+	}
+	return "heimdall-bridge"
+}
 bridge_runtime_tmux_window :: proc(instance_id: string) -> string { return strings.concatenate({"agent-", bridge_runtime_safe_part(instance_id)}) }
 
 bridge_runtime_safe_part :: proc(value: string) -> string {
