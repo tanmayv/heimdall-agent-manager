@@ -231,6 +231,9 @@ publish_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context,
 			_, _, _ = iface.taskchain_save_task(service.repo, t_copy)
 		}
 	}
+	// Auto-promotion on publish: any task with satisfied deps and a free assignee
+	// auto-claims into In_Progress so a manual refresh shows the work as started.
+	_ = recompute_chain_promotions(service, saved_chain)
 	return saved_chain, true, domain.Domain_Error{}
 }
 
@@ -403,6 +406,12 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	task_ret, saved_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if saved_ok {
 		notify_task_status_change(service, auth, task_ret, chain)
+		// Auto-promotion: a terminal transition may unblock dependents, and freeing
+		// an assignee slot (leaving In_Progress) may let a queued task auto-claim.
+		// Recompute the chain so the promoted status persists and shows on refresh.
+		if task_is_terminal(next) || next == .Paused || next == .Validated_Good {
+			_ = recompute_chain_promotions(service, chain)
+		}
 	}
 	return task_ret, saved_ok, save_err
 }
@@ -895,7 +904,13 @@ evaluate_task_quorum :: proc(service: ^Taskchain_Service, task: domain.Task) {
 		t := task
 		t.status = updated_status
 		t.updated_at = platform.clock_now(service.clock)
-		iface.taskchain_save_task(service.repo, t)
+		saved, ok, _ := iface.taskchain_save_task(service.repo, t)
+		// A Validated_Good task frees its reviewer and can unblock dependents;
+		// recompute so downstream tasks auto-claim and show on refresh.
+		if ok && updated_status == .Validated_Good {
+			chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, saved.chain_id)
+			if chain_ok do _ = recompute_chain_promotions(service, chain)
+		}
 	}
 }
 

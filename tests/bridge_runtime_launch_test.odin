@@ -9,19 +9,23 @@ main :: proc() {
 	bridge.bridge_hub_runtime_init()
 	bridge.bridge_runtime_set_status("inst_launch", "starting", "active")
 	first, ok := bridge.bridge_runtime_instance_snapshot("inst_launch")
-	check(ok && first.state_seq == 1 && first.runtime_status == "starting", "initial status must set seq=1")
+	// state_seq uses a time-monotonic floor (survives bridge restart), so the
+	// first value is a large timestamp-derived number, not 1.
+	check(ok && first.state_seq > 0 && first.runtime_status == "starting", "initial status must set a positive state_seq")
 	bridge.bridge_runtime_set_status("inst_launch", "starting", "active")
 	same, _ := bridge.bridge_runtime_instance_snapshot("inst_launch")
-	check(same.state_seq == 1, "same status must not increment state_seq")
+	check(same.state_seq == first.state_seq, "same status must not increment state_seq")
 	bridge.bridge_runtime_set_status("inst_launch", "running", "idle")
 	changed, _ := bridge.bridge_runtime_instance_snapshot("inst_launch")
-	check(changed.state_seq == 2 && changed.runtime_status == "running", "changed status must increment state_seq")
+	check(changed.state_seq > first.state_seq && changed.runtime_status == "running", "changed status must increment state_seq")
 	heartbeat := bridge.bridge_hub_heartbeat_json()
 	check(strings.contains(heartbeat, "bridge_heartbeat") && strings.contains(heartbeat, "inst_launch") && strings.contains(heartbeat, "state_seq"), "heartbeat digest must include instance state_seq")
 
-	argv := bridge.bridge_runtime_wrapper_supervisor_argv("tcp:127.0.0.1:49324", "hlat_wrapper", "hlat_agent", "inst_launch", "/tmp/run", "sleep 3600")
-	joined := strings.join(argv, " ")
-	check(strings.contains(joined, "wrapper-supervisor") && strings.contains(joined, "--agent-token hlat_wrapper") && strings.contains(joined, "--child-agent-token hlat_agent"), "launch argv must invoke wrapper supervisor with separate wrapper/agent local tokens")
+	// ham-wrapper argv now requires a runnable provider profile; without one it
+	// returns ok=false. With no provider configured in this unit test, assert the
+	// contract that an unrunnable provider yields no argv.
+	_, argv_ok := bridge.bridge_runtime_ham_wrapper_argv("tcp:127.0.0.1:49324", "hlat_wrapper", "hlat_agent", "inst_launch", "/tmp/run", "", "")
+	check(!argv_ok, "ham-wrapper argv must be unavailable without a runnable provider profile")
 
 	// §12.0.2 endpoint selection: Unix primary, loopback fallback, none if neither started.
 	local_config := bridge.bridge_local_endpoint_config_default("/tmp/heimdall-bridge-launch-test", 49424)

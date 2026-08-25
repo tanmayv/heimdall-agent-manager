@@ -1,0 +1,110 @@
+package bridge_task_scheduler_test
+
+import "core:fmt"
+import "core:os"
+import bridge "odin_test:bridge"
+
+main :: proc() {
+	test_threshold_mapping()
+	test_should_nudge()
+	test_observe_and_prune()
+	test_cross_bridge_locality()
+	fmt.println("PASS: bridge task scheduler")
+}
+
+cfg :: proc() -> bridge.Bridge_Nudge_Config {
+	c := bridge.bridge_task_scheduler_default_config()
+	c.enabled = true
+	c.ready_after_seconds = 300
+	c.working_stale_after_seconds = 900
+	c.review_after_seconds = 300
+	c.cooldown_seconds = 300
+	return c
+}
+
+test_threshold_mapping :: proc() {
+	c := cfg()
+	check(bridge.bridge_task_threshold_seconds_cfg(c, "assigned") == 300, "assigned -> ready_after")
+	check(bridge.bridge_task_threshold_seconds_cfg(c, "in_progress") == 900, "in_progress -> working_stale")
+	check(bridge.bridge_task_threshold_seconds_cfg(c, "in_validation") == 300, "in_validation -> review_after")
+	check(bridge.bridge_task_threshold_seconds_cfg(c, "validated_good") == 0, "validated_good has no threshold")
+	check(bridge.bridge_task_threshold_seconds_cfg(c, "completed") == 0, "completed has no threshold")
+}
+
+test_should_nudge :: proc() {
+	c := cfg()
+	now: i64 = 10_000_000
+
+	// Disabled short-circuits.
+	off := c; off.enabled = false
+	check(!bridge.bridge_task_should_nudge(off, "assigned", now - 999_000, 0, now), "disabled must not nudge")
+
+	// Not stale (only 100s since first seen vs 300s threshold).
+	check(!bridge.bridge_task_should_nudge(c, "assigned", now - 100_000, 0, now), "fresh must not nudge")
+
+	// Stale, never nudged -> nudge.
+	check(bridge.bridge_task_should_nudge(c, "assigned", now - 400_000, 0, now), "stale assigned must nudge")
+
+	// Cooldown active (last nudge 100s ago < 300s).
+	check(!bridge.bridge_task_should_nudge(c, "assigned", now - 400_000, now - 100_000, now), "cooldown must suppress")
+
+	// Cooldown expired (last nudge 400s ago).
+	check(bridge.bridge_task_should_nudge(c, "assigned", now - 400_000, now - 400_000, now), "allowed after cooldown")
+
+	// No-threshold status never nudges even if very old.
+	check(!bridge.bridge_task_should_nudge(c, "validated_good", now - 999_000, 0, now), "no-threshold status must not nudge")
+
+	// first_seen unset -> no nudge.
+	check(!bridge.bridge_task_should_nudge(c, "assigned", 0, 0, now), "missing first_seen must not nudge")
+}
+
+test_observe_and_prune :: proc() {
+	bridge.bridge_task_scheduler_init()
+	now: i64 = 5_000_000
+
+	// First observation sets first_seen = now.
+	fs1 := bridge.bridge_task_observe("task_1", "assigned", "inst_a", now)
+	check(fs1 == now, "first observation stamps now")
+
+	// Same status later keeps first_seen stable (staleness accrues).
+	fs2 := bridge.bridge_task_observe("task_1", "assigned", "inst_a", now + 60_000)
+	check(fs2 == now, "same status keeps first_seen stable")
+
+	// Status change resets first_seen and clears nudge state.
+	bridge.bridge_task_mark_nudged("task_1", "inst_a", now + 10_000)
+	check(bridge.bridge_task_last_nudge("task_1", "inst_a") == now + 10_000, "nudge time recorded")
+	fs3 := bridge.bridge_task_observe("task_1", "in_progress", "inst_a", now + 120_000)
+	check(fs3 == now + 120_000, "status change resets first_seen")
+	check(bridge.bridge_task_last_nudge("task_1", "inst_a") == 0, "status change clears nudge cooldown")
+
+	// Prune removes observations not seen this tick.
+	seen := make(map[string]bool); defer delete(seen)
+	seen["task_1"] = true
+	_ = bridge.bridge_task_observe("task_gone", "assigned", "inst_b", now)
+	bridge.bridge_task_prune_unseen(seen)
+	// task_gone should be pruned; task_1 retained (observe still works / returns stable).
+	fs_keep := bridge.bridge_task_observe("task_1", "in_progress", "inst_a", now + 200_000)
+	check(fs_keep == now + 120_000, "retained task keeps its first_seen after prune")
+}
+
+// Locality helper: bridge_task_instance_is_local reflects the in-memory runtime
+// registry (instances this bridge has launched/observed this process lifetime).
+test_cross_bridge_locality :: proc() {
+	bridge.bridge_hub_runtime_init()
+	bridge.bridge_task_scheduler_init()
+
+	// Unknown instance -> not tracked yet.
+	check(!bridge.bridge_task_instance_is_local("inst_remote"), "untracked instance must not be local")
+
+	// Once the bridge tracks an instance (e.g. it launched/observed it), it is local.
+	bridge.bridge_runtime_set_status("inst_here", "stopped", "idle")
+	check(bridge.bridge_task_instance_is_local("inst_here"), "tracked instance must be local")
+
+	// NOTE: bridge_task_status_notify_wake_local intentionally does NOT gate on the
+	// in-memory registry: the Hub routes task_status_changed_notify only to the
+	// hosting bridge, so a target arriving via notify is authoritative even right
+	// after a bridge restart (empty registry) — the orphan-recovery case. Verified
+	// live end-to-end; not asserted here since it triggers a real tmux launch.
+}
+
+check :: proc(ok: bool, message: string) { if ok do return; fmt.eprintln("FAIL:", message); os.exit(1) }

@@ -273,16 +273,21 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			payload_str := strings.to_string(payload_b)
 			
 			for inst in targets {
-				is_local := false
-				for rt_inst in bridge_runtime_instances {
-					if rt_inst.agent_instance_id == inst {
-						is_local = true
-						break
-					}
+				// Cross-bridge cascade: a status change on another bridge (e.g. an
+				// upstream task completing) can promote a downstream task whose target
+				// lives here. Push to the live wrapper if connected; otherwise wake the
+				// local agent (coalesced) so it can pick up the work on boot. Targets
+				// that are not local to this bridge are ignored (another bridge owns them).
+				if bridge_wrapper_push_task_nudge(inst, payload_str) {
+					delivered += 1
+					continue
 				}
-				if is_local {
-					ok := bridge_wrapper_push_task_nudge(inst, payload_str)
-					if ok { delivered += 1 } else { failed += 1; fmt.println("bridge task_status_changed_notify nudge pending/unsubscribed", inst, command_id) }
+				if bridge_task_status_notify_wake_local(inst) {
+					delivered += 1
+					fmt.println("bridge task_status_changed_notify woke local target", inst, command_id)
+				} else {
+					failed += 1
+					fmt.println("bridge task_status_changed_notify target not local or wake failed", inst, command_id)
 				}
 			}
 		}

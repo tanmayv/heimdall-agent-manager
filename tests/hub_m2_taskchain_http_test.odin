@@ -53,8 +53,12 @@ main :: proc() {
 	check(publish_chain.status == 200 && strings.contains(publish_chain.body, "\"publish_state\":\"published\"") && strings.contains(publish_chain.body, "\"status\":\"active\""), "publish chain must set published/active")
 	wrong_parent_publish := request(&graph, "POST", task_url(other_chain_id, task_id, "/publish"), "", alice[:])
 	check(wrong_parent_publish.status == 404, "task publish must reject wrong parent chain path")
+	// publish_chain cascade-publishes all draft tasks, so the task is already
+	// published/assigned; a redundant publish_task must report 409 already-published.
+	published_task_list := request(&graph, "GET", chain_url(chain_id, "/tasks"), "", alice[:])
+	check(published_task_list.status == 200 && strings.contains(published_task_list.body, "\"publish_state\":\"published\"") && strings.contains(published_task_list.body, "\"status\":\"assigned\""), "chain publish must cascade task to published/assigned")
 	publish_task := request(&graph, "POST", task_url(chain_id, task_id, "/publish"), "", alice[:])
-	check(publish_task.status == 200 && strings.contains(publish_task.body, "\"publish_state\":\"published\"") && strings.contains(publish_task.body, "\"status\":\"assigned\""), "publish task must set published/assigned")
+	check(publish_task.status == 409, "re-publishing an already-published task must return 409")
 	wrong_parent_status := request(&graph, "POST", task_url(other_chain_id, task_id, "/status"), "{\"status\":\"in_progress\"}", alice[:])
 	check(wrong_parent_status.status == 404, "task status must reject wrong parent chain path")
 	wrong_parent_nudge := request(&graph, "POST", task_url(other_chain_id, task_id, "/nudge"), "{\"message\":\"wrong\"}", alice[:])
@@ -76,7 +80,7 @@ main :: proc() {
 	third_id := extract_json_string(third.body, "task_id")
 	_ = request(&graph, "POST", task_url(chain_id, third_id, "/publish"), "", alice[:])
 	nudge := request(&graph, "POST", task_url(chain_id, third_id, "/nudge"), "{\"message\":\"ping\"}", alice[:])
-	check(nudge.status == 200 && strings.contains(nudge.body, "\"nudged\":true") && strings.contains(nudge.body, "assignee"), "manual nudge endpoint must notify without status mutation")
+	check(nudge.status == 200 && strings.contains(nudge.body, "\"target_role\":\"assignee\"") && strings.contains(nudge.body, "\"nudge_id\":"), "manual nudge endpoint must notify without status mutation")
 	after_nudge := request(&graph, "GET", chain_url(chain_id, "/tasks"), "", alice[:])
 	check(strings.contains(after_nudge.body, third_id) && strings.contains(after_nudge.body, "\"status\":\"assigned\""), "nudge must not mutate task status")
 	complete_chain := request(&graph, "POST", chain_url(chain_id, "/complete"), "{}", alice[:])

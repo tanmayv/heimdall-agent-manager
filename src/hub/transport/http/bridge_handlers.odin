@@ -17,12 +17,14 @@ import bridge_service "odin_test:hub/service/bridge"
 import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
+import taskchain_service "odin_test:hub/service/taskchain"
 
 Bridge_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
 	bridges: ^bridge_service.Bridge_Service,
 	agents: ^agent_service.Agent_Service,
 	content: ^content_service.Content_Service,
+	taskchains: ^taskchain_service.Taskchain_Service,
 	event_bus: ^events.User_Event_Bus,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
 }
@@ -300,6 +302,14 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	if !hello_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(hello_err.message)); return }
 	project_service.bridge_runtime_registry_set_command_socket(h.bridge_runtime_registry, bridge.bridge_id, client)
 	_ = write_ws_text_frame(client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing))
+	// Orphan recovery: replay actionable-task notifications for this bridge's
+	// instances. A cross-bridge cascade (or any status change) that fanned out to
+	// this bridge while it was offline was dropped (fire-and-forget); on reconnect
+	// we re-fire the current actionable state so agents get woken/nudged. Runs
+	// once per (re)connect, after bridge_ready so the command socket is registered.
+	if h.taskchains != nil {
+		_ = taskchain_service.replay_bridge_actionable_notifications(h.taskchains, domain.User_ID(bridge.owner_user_id), bridge.bridge_id)
+	}
 	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, client)
 }
 
@@ -419,6 +429,40 @@ bridge_blobs_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !bridge_ok do return respond_error(bridge_err, req.request_id)
 	result := agent_service.resolve_blobs_json(h.agents, req.body)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// bridge_actionable_tasks_handler returns the compact actionable-task set for the
+// calling bridge's hosted instances. The Bridge scheduler polls this once per
+// tick to drive auto-promotion and auto-nudge locally, keeping the Hub lean.
+bridge_actionable_tasks_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	if rejected, resp := reject_query_or_body_token(req); rejected do return resp
+	token, token_ok := bearer_token(req)
+	if !token_ok do return respond_error(domain.domain_error(.Unauthenticated, "bridge bearer token is required"), req.request_id)
+	bridge_auth, bridge_ok, bridge_err := bridge_service.verify_bridge_token(h.bridges, token)
+	if !bridge_ok do return respond_error(bridge_err, req.request_id)
+	if h.taskchains == nil do return respond_error(domain.domain_error(.Internal_Error, "taskchain service is not configured"), req.request_id)
+	items, err := taskchain_service.actionable_tasks_for_bridge(h.taskchains, domain.User_ID(bridge_auth.user_id), bridge_auth.bridge_id)
+	if err.code != .None do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"tasks\":[")
+	for item, i in items {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_actionable_task_json(&b, item)
+	}
+	strings.write_string(&b, "]}")
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
+write_actionable_task_json :: proc(b: ^strings.Builder, t: taskchain_service.Actionable_Task) {
+	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id))
+	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id))
+	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status))
+	strings.write_string(b, "\",\"target_instance_id\":\""); write_handler_json_string(b, t.target_instance_id)
+	strings.write_string(b, "\",\"target_role\":\""); write_handler_json_string(b, taskchain_service.target_string(t.target_role))
+	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, t.updated_at)
+	strings.write_string(b, "\",\"deps_satisfied\":"); strings.write_string(b, "true" if t.deps_satisfied else "false")
+	strings.write_string(b, "}")
 }
 
 revoke_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {

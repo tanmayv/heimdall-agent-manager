@@ -32,6 +32,13 @@ Bridge_Config :: struct {
 	agent_command: string,
 	ham_ctl_bin: string,
 	agent_commands: [dynamic]cfg_lib.Agent_Command_Config,
+	nudge_enabled: bool,
+	nudge_interval_seconds: int,
+	nudge_ready_after_seconds: int,
+	nudge_review_after_seconds: int,
+	nudge_working_stale_after_seconds: int,
+	nudge_cooldown_seconds: int,
+	nudge_restart_grace_seconds: int,
 }
 
 Bridge_Peer_Link_State :: struct {
@@ -145,6 +152,8 @@ main :: proc() {
 		fmt.println("bridge local endpoint", endpoint, "fallback", bridge_local_endpoint_env_value(local_config, false), "socket_mode", "0600")
 	}
 	bridge_hub_runtime_start()
+	bridge_task_scheduler_configure()
+	bridge_task_scheduler_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	bridge_peer_state_init(bridge_config.peers[:])
 	if len(bridge_config.peers) > 0 do thread.run(bridge_dialer_worker)
@@ -286,6 +295,13 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		cfg.bridge_token = loaded.config.daemon.bridge_token
 		cfg.data_dir = loaded.config.daemon.data_dir
 		cfg.ham_ctl_bin = loaded.config.wrapper.ham_ctl_bin
+		cfg.nudge_enabled = loaded.config.daemon.nudge_enabled
+		cfg.nudge_interval_seconds = loaded.config.daemon.nudge_interval_seconds
+		cfg.nudge_ready_after_seconds = loaded.config.daemon.nudge_ready_after_seconds
+		cfg.nudge_review_after_seconds = loaded.config.daemon.nudge_review_after_seconds
+		cfg.nudge_working_stale_after_seconds = loaded.config.daemon.nudge_working_stale_after_seconds
+		cfg.nudge_cooldown_seconds = loaded.config.daemon.nudge_cooldown_seconds
+		cfg.nudge_restart_grace_seconds = loaded.config.daemon.nudge_restart_grace_seconds
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
 		for peer in loaded.config.bridge.peers {

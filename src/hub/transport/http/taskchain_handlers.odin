@@ -360,6 +360,7 @@ write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth
 	strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json))
 	strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json))
 	strings.write_string(b, ",\"blocked\":"); strings.write_string(b, "true" if is_blocked else "false")
+	strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false")
 	strings.write_string(b, ",\"depends_on\":[")
 	for id, i in dep_ids {
 		if i > 0 do strings.write_byte(b, ',')
