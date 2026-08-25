@@ -147,11 +147,14 @@ build_http_request :: proc(method, host: string, port: u16, path, body: string, 
 parse_response_bytes :: proc(data: []byte) -> (Response, bool) {
 	raw := string(data)
 	response_body := raw
+	body_is_owned := false
 	if idx := strings.index(raw, "\r\n\r\n"); idx >= 0 {
 		headers := raw[:idx]
 		response_body = raw[idx + 4:]
 		if response_transfer_chunked(headers) {
+			// response_decode_chunked_body allocates a fresh string.
 			response_body = response_decode_chunked_body(response_body)
+			body_is_owned = true
 		} else {
 			content_length := response_content_length(headers)
 			if content_length >= 0 {
@@ -166,6 +169,16 @@ parse_response_bytes :: proc(data: []byte) -> (Response, bool) {
 		if parsed_status, status_ok := strconv.parse_int(raw[9:12]); status_ok {
 			status = int(parsed_status)
 		}
+	}
+
+	// Response.body must be an independently-heap-allocated string so callers can
+	// safely `delete(resp.body)`. In the non-chunked path response_body is a slice
+	// into the transient `data` buffer (its pointer lands mid-buffer, right after
+	// the \r\n\r\n header terminator); returning that slice caused callers that
+	// free the body to hit an invalid-free (SIGABRT). Clone it here so ownership is
+	// unambiguous.
+	if !body_is_owned {
+		response_body = strings.clone(response_body)
 	}
 
 	return Response{status = status, body = response_body}, true
