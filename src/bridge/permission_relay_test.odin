@@ -1,7 +1,19 @@
 package main
 
 import "core:strings"
+import "core:sync"
 import "core:testing"
+
+// Test helper: is a (instance, request_id) still pending? Safe under the parallel
+// test runner, which shares the global bridge_permission_pending list.
+bridge_permission_test_is_pending :: proc(agent_instance_id, request_id: string) -> bool {
+	sync.mutex_lock(&bridge_permission_mutex)
+	defer sync.mutex_unlock(&bridge_permission_mutex)
+	for p in bridge_permission_pending {
+		if p.request_id == request_id && p.agent_instance_id == agent_instance_id do return true
+	}
+	return false
+}
 
 @(test)
 bridge_permission_normalize_decision_maps_canonical :: proc(t: ^testing.T) {
@@ -26,7 +38,6 @@ bridge_permission_clamp_timeout_bounds :: proc(t: ^testing.T) {
 
 @(test)
 bridge_permission_register_rejects_dupes :: proc(t: ^testing.T) {
-	bridge_permission_pending = nil
 	now := bridge_runtime_now_ms()
 	p := Bridge_Permission_Pending{request_id = "r1", agent_instance_id = "inst_a", tool = "bash", risk = "risky", created_unix_ms = now, deadline_unix_ms = now + 1000}
 	testing.expect(t, bridge_permission_register(p))
@@ -39,7 +50,6 @@ bridge_permission_register_rejects_dupes :: proc(t: ^testing.T) {
 
 @(test)
 bridge_permission_wait_resolves_from_reply :: proc(t: ^testing.T) {
-	bridge_permission_pending = nil
 	now := bridge_runtime_now_ms()
 	p := Bridge_Permission_Pending{request_id = "r2", agent_instance_id = "inst_b", tool = "write", risk = "risky", created_unix_ms = now, deadline_unix_ms = now + 5000}
 	testing.expect(t, bridge_permission_register(p))
@@ -52,19 +62,18 @@ bridge_permission_wait_resolves_from_reply :: proc(t: ^testing.T) {
 	testing.expect(t, decision == "allow")
 	testing.expect(t, reason == "ok by user")
 	// Entry consumed.
-	testing.expect(t, len(bridge_permission_pending) == 0)
+	testing.expect(t, !bridge_permission_test_is_pending("inst_b", "r2"))
 }
 
 @(test)
 bridge_permission_wait_times_out_to_deny :: proc(t: ^testing.T) {
-	bridge_permission_pending = nil
 	now := bridge_runtime_now_ms()
 	p := Bridge_Permission_Pending{request_id = "r3", agent_instance_id = "inst_c", tool = "bash", risk = "risky", created_unix_ms = now, deadline_unix_ms = now + 50}
 	testing.expect(t, bridge_permission_register(p))
 	decision, reason := bridge_permission_wait("inst_c", "r3", 50)
 	testing.expect(t, decision == "deny")
 	testing.expect(t, strings.contains(reason, "timed out"))
-	testing.expect(t, len(bridge_permission_pending) == 0)
+	testing.expect(t, !bridge_permission_test_is_pending("inst_c", "r3"))
 }
 
 @(test)
