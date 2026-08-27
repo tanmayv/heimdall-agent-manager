@@ -295,13 +295,29 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		cfg.bridge_token = loaded.config.daemon.bridge_token
 		cfg.data_dir = loaded.config.daemon.data_dir
 		cfg.ham_ctl_bin = loaded.config.wrapper.ham_ctl_bin
-		cfg.nudge_enabled = loaded.config.daemon.nudge_enabled
-		cfg.nudge_interval_seconds = loaded.config.daemon.nudge_interval_seconds
-		cfg.nudge_ready_after_seconds = loaded.config.daemon.nudge_ready_after_seconds
-		cfg.nudge_review_after_seconds = loaded.config.daemon.nudge_review_after_seconds
-		cfg.nudge_working_stale_after_seconds = loaded.config.daemon.nudge_working_stale_after_seconds
-		cfg.nudge_cooldown_seconds = loaded.config.daemon.nudge_cooldown_seconds
-		cfg.nudge_restart_grace_seconds = loaded.config.daemon.nudge_restart_grace_seconds
+		// Nudge/scheduler knobs are bridge-owned: prefer the [bridge] section.
+		// Fall back to the legacy [daemon].nudge_* keys (from the ham-daemon era)
+		// with a deprecation warning so existing configs keep working.
+		if loaded.config.bridge.nudge_configured {
+			cfg.nudge_enabled = loaded.config.bridge.nudge_enabled
+			cfg.nudge_interval_seconds = loaded.config.bridge.nudge_interval_seconds
+			cfg.nudge_ready_after_seconds = loaded.config.bridge.nudge_ready_after_seconds
+			cfg.nudge_review_after_seconds = loaded.config.bridge.nudge_review_after_seconds
+			cfg.nudge_working_stale_after_seconds = loaded.config.bridge.nudge_working_stale_after_seconds
+			cfg.nudge_cooldown_seconds = loaded.config.bridge.nudge_cooldown_seconds
+			cfg.nudge_restart_grace_seconds = loaded.config.bridge.nudge_restart_grace_seconds
+		} else {
+			if loaded.config.daemon.nudge_enabled || loaded.config.daemon.nudge_interval_seconds != 0 {
+				fmt.println("WARN deprecated config: [daemon].nudge_* is bridge-owned; move these keys to a [bridge] section")
+			}
+			cfg.nudge_enabled = loaded.config.daemon.nudge_enabled
+			cfg.nudge_interval_seconds = loaded.config.daemon.nudge_interval_seconds
+			cfg.nudge_ready_after_seconds = loaded.config.daemon.nudge_ready_after_seconds
+			cfg.nudge_review_after_seconds = loaded.config.daemon.nudge_review_after_seconds
+			cfg.nudge_working_stale_after_seconds = loaded.config.daemon.nudge_working_stale_after_seconds
+			cfg.nudge_cooldown_seconds = loaded.config.daemon.nudge_cooldown_seconds
+			cfg.nudge_restart_grace_seconds = loaded.config.daemon.nudge_restart_grace_seconds
+		}
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
 		for peer in loaded.config.bridge.peers {

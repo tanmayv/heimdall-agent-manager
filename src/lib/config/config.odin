@@ -52,6 +52,18 @@ Peer_Config :: struct {
 
 Bridge_Config :: struct {
 	peers: [dynamic]Peer_Config,
+	// Nudge/scheduler knobs owned by the bridge (it runs the sweep loop). Parsed
+	// from the [bridge] section. nudge_configured is set when any [bridge] nudge
+	// key is present, so consumers can prefer these over the legacy [daemon]
+	// nudge_* fallback.
+	nudge_configured: bool,
+	nudge_enabled: bool,
+	nudge_interval_seconds: int,
+	nudge_ready_after_seconds: int,
+	nudge_review_after_seconds: int,
+	nudge_working_stale_after_seconds: int,
+	nudge_cooldown_seconds: int,
+	nudge_restart_grace_seconds: int,
 }
 
 Role_Default_Agent_Config :: struct {
@@ -198,6 +210,7 @@ Load_Result :: struct {
 Section :: enum {
 	None,
 	Daemon,
+	Bridge,
 	Peer,
 	Wrapper,
 	Wrapper_Agent_Command,
@@ -269,6 +282,10 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		if line == "[wrapper]" {
 			section = .Wrapper
 			current_agent_command = ""
+			continue
+		}
+		if line == "[bridge]" {
+			section = .Bridge
 			continue
 		}
 		if line == "[[peer]]" {
@@ -347,6 +364,8 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		#partial switch section {
 		case .Daemon:
 			parse_daemon_key(key, value, &cfg.daemon)
+		case .Bridge:
+			parse_bridge_key(key, value, &cfg.bridge)
 		case .Peer:
 			parse_peer_key(current_peer_index, key, value, &cfg.bridge)
 		case .Wrapper:
@@ -490,6 +509,29 @@ daemon_default_agent_id_set :: proc(cfg: ^Daemon_Config, default_use, agent_id: 
 ensure_peer :: proc(cfg: ^Bridge_Config) -> int {
 	append(&cfg.peers, Peer_Config{})
 	return len(cfg.peers) - 1
+}
+
+// parse_bridge_key parses the [bridge] section. Currently the bridge-owned
+// nudge/scheduler knobs live here. Any recognized key marks nudge_configured so
+// consumers prefer these over the legacy [daemon] nudge_* fallback.
+parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
+	switch key {
+	case "nudge_enabled":
+		cfg.nudge_enabled = parse_bool(value); cfg.nudge_configured = true
+	case "nudge_interval_seconds":
+		if n, ok := strconv.parse_int(value); ok { cfg.nudge_interval_seconds = int(n); cfg.nudge_configured = true }
+	case "nudge_ready_after_seconds":
+		if n, ok := strconv.parse_int(value); ok { cfg.nudge_ready_after_seconds = int(n); cfg.nudge_configured = true }
+	case "nudge_review_after_seconds":
+		if n, ok := strconv.parse_int(value); ok { cfg.nudge_review_after_seconds = int(n); cfg.nudge_configured = true }
+	case "nudge_working_stale_after_seconds":
+		if n, ok := strconv.parse_int(value); ok { cfg.nudge_working_stale_after_seconds = int(n); cfg.nudge_configured = true }
+	case "nudge_cooldown_seconds":
+		if n, ok := strconv.parse_int(value); ok { cfg.nudge_cooldown_seconds = int(n); cfg.nudge_configured = true }
+	case "nudge_restart_grace_seconds":
+		if n, ok := strconv.parse_int(value); ok { cfg.nudge_restart_grace_seconds = int(n); cfg.nudge_configured = true }
+	case:
+	}
 }
 
 parse_peer_key :: proc(idx: int, key, value: string, cfg: ^Bridge_Config) {

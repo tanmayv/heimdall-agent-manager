@@ -49,17 +49,24 @@ provider_profile = "jetski"
 model_tier = "smart"
 
 [daemon]
-# Scheduled task nudges are disabled by default. When enabled, the daemon records durable
-# Task_Nudged/Task_Nudge_Failed events and applies cooldown/restart grace to avoid spam.
+# NOTE: nudge_* knobs are now bridge-owned. Configure them in the [bridge]
+# section below. The legacy [daemon].nudge_* keys are still read as a fallback
+# (with a deprecation warning) for the deprecated ham-daemon.
+# nudge_send_escape_prefix = false
+
+# The bridge runs the task auto-promotion/nudge sweep. These knobs are disabled
+# by default; enabling nudges turns on scheduled re-pings for stale actionable
+# tasks. The promotion-wake safety net (ensuring a queued task's assignee is
+# running) always runs when the bridge has hub connectivity, regardless of
+# nudge_enabled.
+[bridge]
 # nudge_enabled = false
 # nudge_interval_seconds = 60
 # nudge_ready_after_seconds = 300
 # nudge_review_after_seconds = 300
-# nudge_need_improvements_after_seconds = 300
 # nudge_working_stale_after_seconds = 900
 # nudge_cooldown_seconds = 300
 # nudge_restart_grace_seconds = 60
-# nudge_send_escape_prefix = false
 # Agents stuck in "starting" past this many seconds are marked startup_failed.
 # startup_stale_after_seconds = 120
 # Artifact uploads are limited to 10 MiB by default.
