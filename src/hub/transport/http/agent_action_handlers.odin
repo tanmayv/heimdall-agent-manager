@@ -370,10 +370,25 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	startup_note, note_saved, _ := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = "Agent has started and is ready.", artifact_ids_json = "[]"})
 	conv, conv_ok, _ := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
 	if conv_ok {
-		messages, msg_err := content_service.list_messages(h.content, auth, conv.conversation_id, 50, "")
-		if msg_err.code == .None {
-			for msg in messages {
-				if msg.direction == "user_to_agent" { content_service.notify_agent_message(h.content, conv, "user_to_agent", "user", msg.message_id); break }
+		// Only re-notify for genuinely unread inbound messages. Scanning all recent
+		// messages and notifying for the first user_to_agent row (regardless of read
+		// state) produced false "New message from user" notifications on every
+		// start-success, even when the inbox was empty/already read.
+		inbox_filter := content_service.Agent_Inbox_Filter{
+			agent_instance_id = inst.agent_instance_id,
+			unread_only       = true,
+			receiver_only     = true,
+			include_outgoing  = false,
+			include_debug     = false,
+			limit             = 50,
+		}
+		unread, unread_err := content_service.list_agent_inbox_messages(h.content, auth, inbox_filter)
+		if unread_err.code == .None {
+			for msg in unread {
+				if msg.direction == "user_to_agent" && msg.read_at == "" {
+					content_service.notify_agent_message(h.content, conv, "user_to_agent", "user", msg.message_id)
+					break
+				}
 			}
 		}
 	}
