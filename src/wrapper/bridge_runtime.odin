@@ -25,6 +25,7 @@ Bridge_Runtime_Config :: struct {
 	agent_argv: []string,
 	liveness_interval_ms: int,
 	activity_interval_ms: int,
+	antigravity_hooks_path: string,
 }
 
 wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
@@ -42,6 +43,20 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 			cfg.agent_argv = wrapper_bridge_agent_argv_with_pi_activity(cfg.agent_argv)
 		} else {
 			fmt.eprintln("warning: failed to write Heimdall Pi activity extension; continuing without extension")
+		}
+	}
+	// Antigravity (agy) hook overlay generation. Opt-in via HEIMDALL_ANTIGRAVITY_HOOKS=1
+	// because the exact hooks.json discovery/overlay path on a managed (read-only
+	// nix-symlinked ~/.gemini) machine still needs a runtime smoke-test before we
+	// auto-wire the launch. When enabled, we write the Heimdall hook script + hooks.json
+	// overlay and export HEIMDALL_ANTIGRAVITY_HOOKS_CONFIG so an operator/launcher can
+	// point agy at it. See antigravity_adapter.odin + antigravity-hook-decision-spike.md.
+	if wrapper_bridge_should_load_antigravity(cfg) && os.get_env_alloc("HEIMDALL_ANTIGRAVITY_HOOKS", context.allocator) == "1" {
+		if hooks_path, ok := wrapper_bridge_write_antigravity_hooks(cfg); ok {
+			cfg.antigravity_hooks_path = hooks_path
+			fmt.eprintln(wrapper_bridge_antigravity_summary(hooks_path))
+		} else {
+			fmt.eprintln("warning: failed to write Heimdall Antigravity hooks overlay; continuing without hooks")
 		}
 	}
 	_ = wrapper_bridge_report_startup(cfg, "starting", "ham-wrapper bridge runtime starting")
@@ -411,6 +426,9 @@ wrapper_bridge_child_env :: proc(cfg: Bridge_Runtime_Config) -> []string {
 	append(&out, strings.concatenate({"HEIMDALL_AGENT_TOKEN=", cfg.child_agent_token}))
 	append(&out, strings.concatenate({"HEIMDALL_AGENT_INSTANCE_ID=", cfg.agent_instance_id}))
 	append(&out, strings.concatenate({"HEIMDALL_CTL_BIN=", strings.trim_right(cfg.working_dir, "/"), "/.heimdall/bin/ham-ctl"}))
+	if strings.trim_space(cfg.antigravity_hooks_path) != "" {
+		append(&out, strings.concatenate({"HEIMDALL_ANTIGRAVITY_HOOKS_CONFIG=", cfg.antigravity_hooks_path}))
+	}
 	return out[:]
 }
 
