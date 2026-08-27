@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -39,6 +40,11 @@ Taskchain_Service :: struct {
 	ids: ^platform.ID_Generator,
 	nudges: [dynamic]Manual_Nudge,
 	bridge_command_sink: project.Bridge_Command_Sink,
+	// replay_last_unix_ms throttles orphan-recovery replays per bridge so a
+	// flapping bridge (rapid reconnects) does not re-fan-out the whole actionable
+	// set on every connect. Guarded by replay_mutex.
+	replay_mutex: sync.Mutex,
+	replay_last_unix_ms: map[string]i64,
 }
 
 Create_Chain_Input :: struct {

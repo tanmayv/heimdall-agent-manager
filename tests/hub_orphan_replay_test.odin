@@ -119,14 +119,28 @@ main :: proc() {
 	// inst_b on B) -> 2 raw commands for 1 replayed task. That cross-bridge fan-out
 	// is intended and idempotent; we assert on tasks replayed and that B was targeted.
 	g.sent_cmds = 0; g_sent_bridge_b = 0; g_sent_task_down = 0
-	n := taskchain_service.replay_bridge_actionable_notifications(&service, "alice", "bridge_B")
+	t0: i64 = 1_000_000
+	n := taskchain_service.replay_bridge_actionable_notifications_at(&service, "alice", "bridge_B", t0)
 	check(n == 1, fmt.tprintf("expected 1 replay for bridge B, got %d", n))
 	check(g_sent_task_down >= 1, "replay must notify for the actionable 'down' task")
 	check(g_sent_bridge_b == 1, fmt.tprintf("expected 1 notify targeting bridge B, got %d", g_sent_bridge_b))
 
+	// Throttle: an immediate re-replay for the same bridge (flapping) is suppressed.
+	g.sent_cmds = 0; g_sent_bridge_b = 0
+	n2 := taskchain_service.replay_bridge_actionable_notifications_at(&service, "alice", "bridge_B", t0 + 1_000)
+	check(n2 == 0, fmt.tprintf("expected throttled (0) replay within window, got %d", n2))
+	check(g.sent_cmds == 0, "throttled replay must send nothing")
+
+	// After the throttle window elapses, replay runs again.
+	g.sent_cmds = 0; g_sent_bridge_b = 0
+	n3 := taskchain_service.replay_bridge_actionable_notifications_at(&service, "alice", "bridge_B", t0 + 20_000)
+	check(n3 == 1, fmt.tprintf("expected replay after window, got %d", n3))
+	check(g_sent_bridge_b == 1, "post-window replay must target bridge B again")
+
 	// Replay for bridge A: "up" is Completed (terminal) -> not actionable -> nothing.
+	// (Different bridge -> not throttled by bridge_B's timestamp.)
 	g.sent_cmds = 0
-	nA := taskchain_service.replay_bridge_actionable_notifications(&service, "alice", "bridge_A")
+	nA := taskchain_service.replay_bridge_actionable_notifications_at(&service, "alice", "bridge_A", t0 + 20_000)
 	check(nA == 0, fmt.tprintf("expected 0 replay for bridge A, got %d", nA))
 	check(g.sent_cmds == 0, "no notify expected for bridge A")
 

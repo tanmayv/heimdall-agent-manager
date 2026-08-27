@@ -1,9 +1,16 @@
 package taskchain
 
 import "core:strings"
+import "core:sync"
+import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
+
+// Minimum gap between orphan-recovery replays for the same bridge. A flapping
+// bridge that reconnects rapidly will only trigger one full replay per window;
+// the bridge-side nudge cooldown and wake coalescing absorb the rest.
+REPLAY_MIN_INTERVAL_MS :: i64(10_000)
 
 // Actionable-tasks read model. The Bridge scheduler polls this once per tick to
 // learn which of *its* local instances have work to advance or nudge, without
@@ -127,8 +134,29 @@ actionable_tasks_for_bridge :: proc(service: ^Taskchain_Service, owner: domain.U
 // with this bridge_id is not needed — a bridge belongs to exactly one owner — so
 // the caller supplies the owner resolved from the bridge's auth/record.
 replay_bridge_actionable_notifications :: proc(service: ^Taskchain_Service, owner: domain.User_ID, bridge_id: string) -> int {
+	return replay_bridge_actionable_notifications_at(service, owner, bridge_id, time.to_unix_nanoseconds(time.now()) / 1_000_000)
+}
+
+// replay_should_run applies the per-bridge throttle: returns true (and records
+// now) when at least REPLAY_MIN_INTERVAL_MS has elapsed since the last replay for
+// this bridge, false otherwise. now_ms is injected for testability.
+replay_should_run :: proc(service: ^Taskchain_Service, bridge_id: string, now_ms: i64) -> bool {
+	if service == nil do return false
+	sync.mutex_lock(&service.replay_mutex)
+	defer sync.mutex_unlock(&service.replay_mutex)
+	if service.replay_last_unix_ms == nil do service.replay_last_unix_ms = make(map[string]i64)
+	last, has := service.replay_last_unix_ms[bridge_id]
+	if has && now_ms - last < REPLAY_MIN_INTERVAL_MS do return false
+	service.replay_last_unix_ms[bridge_id] = now_ms
+	return true
+}
+
+// replay_bridge_actionable_notifications_at is the now-injectable form used by
+// tests; the public wrapper passes the real wall clock.
+replay_bridge_actionable_notifications_at :: proc(service: ^Taskchain_Service, owner: domain.User_ID, bridge_id: string, now_ms: i64) -> int {
 	if service == nil || service.repo == nil do return 0
 	if service.bridge_command_sink.send_runtime_command == nil do return 0
+	if !replay_should_run(service, bridge_id, now_ms) do return 0
 	items, err := actionable_tasks_for_bridge(service, owner, bridge_id)
 	if err.code != .None do return 0
 	sent := 0
