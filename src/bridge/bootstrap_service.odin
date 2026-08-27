@@ -62,6 +62,14 @@ bridge_bootstrap_materialize_local_provider_test :: proc(run_dir, bridge_endpoin
 	return true
 }
 
+// bridge_bootstrap_free_object_slice frees a []string of cloned JSON objects
+// (as returned by bridge_provider_json_top_level_objects): both each element and
+// the backing slice.
+bridge_bootstrap_free_object_slice :: proc(objs: []string) {
+	for o in objs do delete(o)
+	delete(objs)
+}
+
 bridge_bootstrap_skill_relative_path :: proc(provider, skill_name: string) -> string {
 	profile, ok := bridge_provider_by_name_or_default(provider)
 	skill_dir := ""
@@ -205,7 +213,12 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 
 	skills_array, _ := bridge_provider_json_extract_array(data_obj, "skills")
 
+	// top_level_objects returns freshly-cloned object substrings; free each slice
+	// (and its elements) at function end. Scalars extracted below (hashes, names)
+	// are freed where they are transient; hashes retained in needed_hashes are
+	// freed via that array's element cleanup.
 	file_objs := bridge_provider_json_top_level_objects(files_array)
+	defer bridge_bootstrap_free_object_slice(file_objs)
 	agents_md_assembly := ""
 	for f_obj in file_objs {
 		kind := bridge_provider_json_extract_string(f_obj, "kind", "")
@@ -214,15 +227,20 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 				agents_md_assembly = ass_arr
 			}
 		}
+		delete(kind)
 	}
 	if agents_md_assembly == "" do return false
 
+	// needed_hashes owns its hash strings (delete(dynamic) frees only the backing
+	// array). missing_hashes holds ALIASES of needed_hashes entries, so we free
+	// only its array, never its elements, to avoid a double free.
 	needed_hashes := make([dynamic]string)
-	defer delete(needed_hashes)
+	defer { for h in needed_hashes do delete(h); delete(needed_hashes) }
 	missing_hashes := make([dynamic]string)
 	defer delete(missing_hashes)
 
 	assembly_objs := bridge_provider_json_top_level_objects(agents_md_assembly)
+	defer bridge_bootstrap_free_object_slice(assembly_objs)
 	for item_obj in assembly_objs {
 		h := bridge_provider_json_extract_string(item_obj, "hash", "")
 		if h != "" {
@@ -230,10 +248,13 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 			if cache != nil && !bootstrap_cache_has(cache, h) {
 				append(&missing_hashes, h)
 			}
+		} else {
+			delete(h)
 		}
 	}
 
 	skill_objs := bridge_provider_json_top_level_objects(skills_array)
+	defer bridge_bootstrap_free_object_slice(skill_objs)
 	for s_obj in skill_objs {
 		h := bridge_provider_json_extract_string(s_obj, "hash", "")
 		if h != "" {
@@ -241,6 +262,8 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 			if cache != nil && !bootstrap_cache_has(cache, h) {
 				append(&missing_hashes, h)
 			}
+		} else {
+			delete(h)
 		}
 	}
 
@@ -280,30 +303,36 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 		}
 
 		blob_objs := bridge_provider_json_top_level_objects(blobs_array)
+		defer bridge_bootstrap_free_object_slice(blob_objs)
 		for b_obj in blob_objs {
 			b_hash := bridge_provider_json_extract_string(b_obj, "hash", "")
 			b_content := bridge_provider_json_extract_string(b_obj, "body", "")
 			if cache != nil {
-				if !bootstrap_cache_put(cache, b_hash, b_content) do return false
+				if !bootstrap_cache_put(cache, b_hash, b_content) { delete(b_hash); delete(b_content); return false }
 			}
+			delete(b_hash); delete(b_content)
 		}
 	}
 
 	agents_md_b := strings.builder_make()
+	defer strings.builder_destroy(&agents_md_b)
 	for item_obj in assembly_objs {
 		inline_str := bridge_provider_json_extract_string(item_obj, "inline", "")
 		if inline_str != "" {
 			strings.write_string(&agents_md_b, inline_str)
+			delete(inline_str)
 		} else {
+			delete(inline_str)
 			h := bridge_provider_json_extract_string(item_obj, "hash", "")
 			if h != "" {
 				if cache != nil {
 					body, found := bootstrap_cache_get(cache, h)
-					if !found do return false
+					if !found { delete(h); return false }
 					strings.write_string(&agents_md_b, body)
 					delete(body)
 				}
 			}
+			delete(h)
 		}
 	}
 	strings.write_string(&agents_md_b, bridge_bootstrap_ctl_guidance())
@@ -314,24 +343,26 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 	if os.write_entire_file(agents_md_path, strings.to_string(agents_md_b)) != nil do return false
 
 	written_skills := make([dynamic]string)
-	defer delete(written_skills)
+	defer { for p in written_skills do delete(p); delete(written_skills) }
 	for s_obj in skill_objs {
 		name := bridge_provider_json_extract_string(s_obj, "name", "")
 		h := bridge_provider_json_extract_string(s_obj, "hash", "")
 		content := ""
 		if cache != nil {
 			got, found := bootstrap_cache_get(cache, h)
-			if !found do return false
+			if !found { delete(name); delete(h); return false }
 			content = got
 		}
 		path := bridge_bootstrap_skill_relative_path(provider, name)
-		if bridge_bootstrap_write_skill_file(run_dir, path, content) do append(&written_skills, path)
+		if bridge_bootstrap_write_skill_file(run_dir, path, content) { append(&written_skills, path) } else { delete(path) }
 		if content != "" do delete(content)
+		delete(name); delete(h)
 	}
 
 	if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false
 
 	manifest := strings.builder_make()
+	defer strings.builder_destroy(&manifest)
 	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
 	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\"AGENTS.md\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
 	for skill_path in written_skills {
