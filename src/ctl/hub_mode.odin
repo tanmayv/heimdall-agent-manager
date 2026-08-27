@@ -183,8 +183,8 @@ ctl_hub_tasks :: proc(base, token, action: string, args: []string) {
 		fields := make([dynamic]string)
 		if title := option_value(args, "--title", ""); title != "" do append(&fields, json_kv("title", title))
 		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
-		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
-		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" do append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", reviewer)), "]"}))
+		if aref := ctl_build_assignee_ref(args); aref != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", aref}))
+		if rref := ctl_build_reviewer_refs(args); rref != "" do append(&fields, strings.concatenate({"\"reviewer_refs\":", rref}))
 		if deps := option_value(args, "--depends-on", option_value(args, "--on", "")); deps != "" {
 			parts := strings.split(deps, ",")
 			defer delete(parts)
@@ -388,4 +388,34 @@ print_hub_help :: proc(cmd: []string) {
 	fmt.println("examples:")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... me")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... launch --agent-id reviewer")
+}
+
+// ctl_ref_json builds a single actor ref, choosing agent_id vs agent_instance based
+// on explicit flags or the id prefix. Values starting with "inst_" are treated as
+// concrete agent_instance ids; anything else (e.g. "default-agent", "reviewer") is a
+// durable agent_id that the hub resolves-or-launches into a concrete instance.
+ctl_ref_json :: proc(instance_value, agent_id_value, plain_value: string) -> string {
+	if agent_id_value != "" do return json_object(json_kv("type", "agent_id"), json_kv("agent_id", agent_id_value))
+	if instance_value != "" do return json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", instance_value))
+	if plain_value != "" {
+		if strings.has_prefix(plain_value, "inst_") do return json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", plain_value))
+		return json_object(json_kv("type", "agent_id"), json_kv("agent_id", plain_value))
+	}
+	return ""
+}
+
+ctl_build_assignee_ref :: proc(args: []string) -> string {
+	inst := option_value(args, "--assignee-agent-instance-id", "")
+	aid := option_value(args, "--assignee-agent-id", "")
+	plain := option_value(args, "--assignee", "")
+	return ctl_ref_json(inst, aid, plain)
+}
+
+ctl_build_reviewer_refs :: proc(args: []string) -> string {
+	inst := option_value(args, "--reviewer-agent-instance-id", "")
+	aid := option_value(args, "--reviewer-agent-id", "")
+	plain := option_value(args, "--reviewer", "")
+	ref := ctl_ref_json(inst, aid, plain)
+	if ref == "" do return ""
+	return strings.concatenate({"[", ref, "]"})
 }

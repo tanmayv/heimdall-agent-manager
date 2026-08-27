@@ -280,6 +280,10 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 	reviewer_refs := input.reviewer_refs_json
 	if reviewer_refs == "" do reviewer_refs = chain.default_reviewer_refs_json
 	if reviewer_refs == "" do reviewer_refs = "[]"
+	// Resolve any durable agent_id refs into concrete agent_instance refs (reuse or,
+	// in Phase 2, launch) before validation so callers can assign/review by agent_id.
+	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, assignee_ref); norm_ok { assignee_ref = norm } else { return domain.Task{}, false, norm_err }
+	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, reviewer_refs); norm_ok { reviewer_refs = norm } else { return domain.Task{}, false, norm_err }
 	if refs_ok, refs_err := validate_actor_refs(service, chain, assignee_ref, reviewer_refs); !refs_ok do return domain.Task{}, false, refs_err
 	now := platform.clock_now(service.clock)
 	task := domain.Task{
@@ -326,6 +330,9 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	if input.assignee_ref_json != "" do task.assignee_ref_json = input.assignee_ref_json
 	if input.reviewer_refs_json != "" do task.reviewer_refs_json = input.reviewer_refs_json
 
+	// Resolve durable agent_id refs into concrete agent_instance refs before validation.
+	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, task.assignee_ref_json); norm_ok { task.assignee_ref_json = norm } else { return domain.Task{}, false, norm_err }
+	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, task.reviewer_refs_json); norm_ok { task.reviewer_refs_json = norm } else { return domain.Task{}, false, norm_err }
 	if refs_ok, refs_err := validate_actor_refs(service, chain, task.assignee_ref_json, task.reviewer_refs_json); !refs_ok do return domain.Task{}, false, refs_err
 	task.updated_at = platform.clock_now(service.clock)
 	saved, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
@@ -1024,6 +1031,97 @@ agent_instance_same_chain :: proc(service: ^Taskchain_Service, instance_id: stri
 
 agent_instance_ref_json :: proc(instance_id: string) -> string { return strings.concatenate({`{"type":"agent_instance","agent_instance_id":"`, instance_id, `"}`}) }
 user_ref_json :: proc(user_id: string) -> string { return strings.concatenate({`{"type":"user","user_id":"`, user_id, `"}`}) }
+
+// normalize_actor_refs rewrites any {"type":"agent_id","agent_id":"..."} ref into a
+// concrete {"type":"agent_instance",...} ref by resolving a reusable instance of that
+// durable agent_id for the chain owner (Phase 1: resolve-by-reuse). The resolved
+// instance is added to the chain members (idempotently) so downstream
+// validate_actor_refs / agent_instance_same_chain pass. Refs of type agent_instance
+// and user are returned unchanged. Returns the rewritten blob.
+//
+// Reuse policy (default "chain"): prefer an instance already in this chain
+// (coordinator or member) of the requested agent_id; otherwise any active instance of
+// that agent_id owned by the chain owner. If none is found we return a clear error
+// (Phase 2 will launch a new instance via agent_service.create_instance).
+normalize_actor_refs :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, blob: string) -> (string, bool, domain.Domain_Error) {
+	if blob == "" do return blob, true, domain.Domain_Error{}
+	if !strings.contains(blob, "\"agent_id\"") do return blob, true, domain.Domain_Error{}
+	result := blob
+	search := 0
+	for search < len(result) {
+		rel := strings.index(result[search:], "\"type\"")
+		if rel < 0 do break
+		type_idx := search + rel
+		type_val := json_string_value_after(result, type_idx)
+		if type_val != "agent_id" { search = type_idx + len("\"type\""); continue }
+		// Find the agent_id value belonging to this ref object.
+		id_rel := strings.index(result[type_idx:], "agent_id")
+		if id_rel < 0 do break
+		id_idx := type_idx + id_rel
+		agent_id := json_string_value_after(result, id_idx)
+		if agent_id == "" { search = id_idx + len("agent_id"); continue }
+		instance_id, resolve_ok, resolve_err := resolve_agent_id_instance(service, chain, agent_id)
+		if !resolve_ok do return blob, false, resolve_err
+		// Ensure it is a chain member so the ref validates.
+		if !is_instance_member_or_coordinator(service, chain, instance_id) {
+			ensure_chain_member(service, chain, instance_id, agent_id)
+		}
+		// Replace the whole ref object {...} that contains this type with an
+		// agent_instance ref.
+		obj_start := strings.last_index_byte(result[:type_idx], '{')
+		if obj_start < 0 do return blob, false, domain.domain_error(.Validation_Failed, "malformed agent_id ref")
+		obj_end := strings.index_byte(result[type_idx:], '}')
+		if obj_end < 0 do return blob, false, domain.domain_error(.Validation_Failed, "malformed agent_id ref")
+		obj_end = type_idx + obj_end + 1
+		replacement := agent_instance_ref_json(instance_id)
+		result = strings.concatenate({result[:obj_start], replacement, result[obj_end:]})
+		search = obj_start + len(replacement)
+	}
+	return result, true, domain.Domain_Error{}
+}
+
+// resolve_agent_id_instance finds a reusable instance of the durable agent_id for the
+// chain owner. Prefers in-chain instances, then any owner-owned instance.
+resolve_agent_id_instance :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, agent_id: string) -> (string, bool, domain.Domain_Error) {
+	if service.agents == nil do return "", false, domain.domain_error(.Internal_Error, "agent repository is not configured")
+	// 1) Prefer an instance already in this chain (coordinator or member).
+	if chain.coordinator_agent_instance_id != "" {
+		if inst, ok, _ := iface.agent_get_instance(service.agents, chain.coordinator_agent_instance_id); ok && inst.agent_id == agent_id {
+			return inst.agent_instance_id, true, domain.Domain_Error{}
+		}
+	}
+	if members, err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id); err.code == .None {
+		for m in members {
+			if m.agent_id == agent_id && m.agent_instance_id != "" do return m.agent_instance_id, true, domain.Domain_Error{}
+		}
+	}
+	// 2) Any active instance of this agent_id owned by the chain owner.
+	instances, list_err := iface.agent_list_instances_by_owner(service.agents, chain.owner_user_id, 1000, "")
+	if list_err.code == .None {
+		for inst in instances {
+			if inst.agent_id != agent_id do continue
+			if inst.runtime_status == "stopped" || inst.runtime_status == "failed" do continue
+			return inst.agent_instance_id, true, domain.Domain_Error{}
+		}
+	}
+	return "", false, domain.domain_error(.Not_Found, strings.concatenate({"no reusable instance found for agent_id '", agent_id, "'; launch one or add it to the chain"}))
+}
+
+// ensure_chain_member adds instance_id to the chain members with a worker role if not
+// already present. Best-effort: failures are non-fatal because the ref will still be
+// validated by agent_instance_same_chain (owner + chain checks).
+ensure_chain_member :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_id, agent_id: string) {
+	now := platform.clock_now(service.clock)
+	member := domain.Task_Chain_Member{
+		chain_id = chain.chain_id,
+		agent_instance_id = instance_id,
+		agent_id = agent_id,
+		owner_user_id = chain.owner_user_id,
+		role = "worker",
+		created_at = now,
+	}
+	_, _, _ = iface.taskchain_save_member(service.repo, member)
+}
 
 json_string_value_after :: proc(body: string, key_idx: int) -> string {
 	if key_idx < 0 || key_idx >= len(body) do return ""
