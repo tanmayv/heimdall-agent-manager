@@ -1021,6 +1021,9 @@ bridge_runtime_activity_source_rank :: proc(source: string) -> int {
 bridge_runtime_normalize_activity_status :: proc(status: string) -> string {
 	s := strings.to_lower(strings.trim_space(status))
 	if s == "active" || s == "working" || s == "busy" do return "active"
+	// waiting_user (agent blocked on a permission/approval decision) is a busy
+	// sub-state: from the runtime projection's perspective the agent is not idle.
+	if s == "waiting_user" || s == "waiting" || s == "waiting_approval" do return "active"
 	if s == "idle" || s == "inactive" do return "idle"
 	if s == "unknown" do return "unknown"
 	if s == "" do return "unknown"

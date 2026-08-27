@@ -157,6 +157,75 @@ function bridgeCall(method: string, params: Record<string, unknown>): void {
   socket.on("error", () => undefined);
 }
 
+type PermissionDecision = { decision: "allow" | "deny" | "ask"; reason: string };
+
+// Blocking request/response over the bridge local endpoint. Used for the permission
+// gate (agent.permission.request), which BLOCKS the tool until the bridge returns a
+// decision (or the request times out on the bridge side -> fail-safe deny).
+function bridgeRequest(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<any> {
+  return new Promise((resolve) => {
+    const endpoint = String(process.env.HEIMDALL_BRIDGE_ENDPOINT || "");
+    const token = String(process.env.HEIMDALL_AGENT_TOKEN || "");
+    if (!endpoint || !token) { resolve(null); return; }
+    const id = "pi-perm-" + Date.now() + "-" + (++requestSeq);
+    const line = JSON.stringify({ v: 1, id, token, method, params }) + "\n";
+    let socket: net.Socket;
+    if (endpoint.startsWith("unix:")) {
+      socket = net.createConnection(endpoint.slice(5));
+    } else if (endpoint.startsWith("tcp:")) {
+      const raw = endpoint.slice(4);
+      const idx = raw.lastIndexOf(":");
+      if (idx <= 0) { resolve(null); return; }
+      const host = raw.slice(0, idx);
+      const port = Number(raw.slice(idx + 1));
+      if (!Number.isFinite(port) || port <= 0) { resolve(null); return; }
+      socket = net.createConnection({ host, port });
+    } else { resolve(null); return; }
+    let buf = "";
+    let done = false;
+    const finish = (value: any) => { if (done) return; done = true; try { socket.destroy(); } catch {} resolve(value); };
+    // Allow the bridge its full decision window plus slack before giving up locally.
+    socket.setTimeout(timeoutMs + 5000);
+    socket.on("connect", () => socket.write(line));
+    socket.on("data", (chunk) => {
+      buf += String(chunk);
+      const nl = buf.indexOf("\n");
+      if (nl < 0) return;
+      const first = buf.slice(0, nl).trim();
+      try { finish(JSON.parse(first)); } catch { finish(null); }
+    });
+    socket.on("timeout", () => finish(null));
+    socket.on("error", () => finish(null));
+    socket.on("close", () => finish(null));
+  });
+}
+
+// Default policy: auto-allow read-only/safe tools, always relay risky mutating tools.
+function toolRisk(name: string): "safe" | "risky" {
+  const n = name.toLowerCase();
+  const safe = ["read", "grep", "ls", "list", "find", "glob", "cat", "search", "view", "fetch", "get"];
+  for (const s of safe) { if (n === s || n.includes(s)) return "safe"; }
+  return "risky";
+}
+
+async function relayPermission(name: string, input: unknown): Promise<PermissionDecision> {
+  const request_id = "req-" + Date.now() + "-" + (++requestSeq);
+  const timeoutMs = 120000;
+  const resp = await bridgeRequest("agent.permission.request", {
+    request_id,
+    tool: name,
+    risk: toolRisk(name),
+    input: input ?? {},
+    timeout_ms: timeoutMs,
+  }, timeoutMs);
+  const data = resp && resp.ok && resp.data ? resp.data : null;
+  const decision = data && typeof data.decision === "string" ? data.decision : "deny";
+  const reason = data && typeof data.reason === "string" ? data.reason : "no decision from bridge";
+  if (decision === "allow") return { decision: "allow", reason };
+  if (decision === "ask") return { decision: "ask", reason };
+  return { decision: "deny", reason };
+}
+
 function postActivity(status: ActivityStatus, summary = ""): void {
   bridgeCall("agent.activity.report", {
     status,
@@ -242,7 +311,24 @@ export default function (pi: ExtensionAPI) {
     }
   });
   pi.on("message_end", async (_event, ctx) => publish(ctx, "active", "finishing response", { force: true }));
-  pi.on("tool_call", async (event, ctx) => publish(ctx, "active", "preparing " + toolName(event), { force: true }));
+  pi.on("tool_call", async (event, ctx) => {
+    const name = toolName(event);
+    publish(ctx, "active", "preparing " + name, { force: true });
+    // Permission gate. Opt-in via HEIMDALL_PERMISSION_GATE=1 so activity-only
+    // deployments keep current behavior. Safe/read-only tools auto-allow; risky
+    // tools relay to the bridge and BLOCK on the remote/local decision.
+    if (String(process.env.HEIMDALL_PERMISSION_GATE || "") !== "1") return;
+    if (toolRisk(name) === "safe") return;
+    publish(ctx, "active", "awaiting approval: " + name, { force: true });
+    const input = (event as any)?.input ?? (event as any)?.arguments ?? {};
+    const verdict = await relayPermission(name, input);
+    publish(ctx, "active", "running " + name, { force: true });
+    if (verdict.decision === "deny") {
+      return { block: true, reason: verdict.reason || "Denied via Heimdall bridge" };
+    }
+    // allow / ask -> let Pi proceed (ask falls through to Pi's own prompt).
+    return;
+  });
   pi.on("tool_execution_start", async (event, ctx) => {
     activeTools.add(toolKey(event));
     publish(ctx, "active", "running " + toolName(event), { force: true });
@@ -474,9 +560,34 @@ wrapper_bridge_dispatch_push_lines :: proc(cfg: Bridge_Runtime_Config, pending: 
 			wrapper_bridge_handle_pane_capture_request(cfg, line)
 			continue
 		}
+		if strings.contains(line, "\"push\":\"permission_request\"") { wrapper_bridge_deliver_permission_request_push(cfg, line); continue }
+		if strings.contains(line, "\"push\":\"permission_reply\"") { wrapper_bridge_deliver_permission_reply_push(cfg, line); continue }
 		if strings.contains(line, "\"push\":\"agent_message\"") do wrapper_bridge_deliver_message_push(cfg, line)
 		if strings.contains(line, "\"push\":\"task_nudge\"") do wrapper_bridge_deliver_task_nudge_push(cfg, line)
 	}
+}
+
+// Permission relay pushes are primarily consumed by the Pi extension's own blocking
+// socket round-trip (the gate). The wrapper mirrors them to the TTY so a local user
+// sees the pending approval and how it resolved (observe + mirror), matching the
+// Antigravity reference pattern.
+wrapper_bridge_deliver_permission_request_push :: proc(cfg: Bridge_Runtime_Config, line: string) {
+	request_id := extract_json_string(line, "request_id", "")
+	tool := extract_json_string(line, "tool", "tool")
+	risk := extract_json_string(line, "risk", "unknown")
+	pane := wrapper_bridge_prompt_pane(cfg)
+	if strings.trim_space(pane) == "" do return
+	msg := strings.concatenate({"Permission requested: ", tool, " (risk=", risk, ", request_id=", request_id, "). Answer via ham-ctl agent permission reply or the Heimdall UI."})
+	_ = tmux.send_text(pane, msg, true)
+}
+
+wrapper_bridge_deliver_permission_reply_push :: proc(cfg: Bridge_Runtime_Config, line: string) {
+	request_id := extract_json_string(line, "request_id", "")
+	decision := extract_json_string(line, "decision", "deny")
+	pane := wrapper_bridge_prompt_pane(cfg)
+	if strings.trim_space(pane) == "" do return
+	msg := strings.concatenate({"Permission ", decision, " for request_id=", request_id, "."})
+	_ = tmux.send_text(pane, msg, true)
 }
 
 wrapper_bridge_handle_pane_capture_request :: proc(cfg: Bridge_Runtime_Config, line: string) {

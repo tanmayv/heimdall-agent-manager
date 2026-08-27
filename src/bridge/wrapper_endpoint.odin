@@ -233,7 +233,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Wrapper:
 		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe" || method == "wrapper.pane_capture.result"
 	case .Agent:
-		return method == "agent.rest.request" || method == "agent.activity.report" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.rest.request" || method == "agent.activity.report" || method == "agent.permission.request" || method == "agent.permission.reply" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
 	return false
 }
@@ -310,6 +310,30 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 			return bridge_local_response_data(request_id, strings.to_string(b))
 		}
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
+	}
+	if method == "agent.permission.request" {
+		// Blocking: registers the request, mirrors it to the wrapper/UI push channel,
+		// and waits for a decision (or fail-safe deny on timeout).
+		decision, reason := bridge_permission_handle_request(rec.agent_instance_id, params)
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"request_id\":\""); bridge_local_write_json_string(&b, bridge_local_extract_json_string(params, "request_id", ""))
+		strings.write_string(&b, "\",\"decision\":\""); bridge_local_write_json_string(&b, decision)
+		strings.write_string(&b, "\",\"reason\":\""); bridge_local_write_json_string(&b, reason)
+		strings.write_string(&b, "\"}")
+		return bridge_local_response_data(request_id, strings.to_string(b))
+	}
+	if method == "agent.permission.reply" {
+		// Local resolution path: a wrapper/UI at the TTY answers an outstanding
+		// permission request for this instance. Resolves any waiting request.request.
+		req_id := bridge_local_extract_json_string(params, "request_id", "")
+		decision := bridge_local_extract_json_string(params, "decision", "deny")
+		reason := bridge_local_extract_json_string(params, "reason", "")
+		resolved := bridge_permission_resolve(rec.agent_instance_id, req_id, decision, reason)
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"accepted\":"); strings.write_string(&b, "true" if resolved else "false")
+		strings.write_string(&b, ",\"request_id\":\""); bridge_local_write_json_string(&b, req_id)
+		strings.write_string(&b, "\"}")
+		return bridge_local_response_data(request_id, strings.to_string(b))
 	}
 	if method == "agent.rest.request" {
 		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
