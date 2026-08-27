@@ -8,7 +8,6 @@ main :: proc() {
 	test_threshold_mapping()
 	test_should_nudge()
 	test_observe_and_prune()
-	test_cross_bridge_locality()
 	fmt.println("PASS: bridge task scheduler")
 }
 
@@ -85,26 +84,6 @@ test_observe_and_prune :: proc() {
 	// task_gone should be pruned; task_1 retained (observe still works / returns stable).
 	fs_keep := bridge.bridge_task_observe("task_1", "in_progress", "inst_a", now + 200_000)
 	check(fs_keep == now + 120_000, "retained task keeps its first_seen after prune")
-}
-
-// Locality helper: bridge_task_instance_is_local reflects the in-memory runtime
-// registry (instances this bridge has launched/observed this process lifetime).
-test_cross_bridge_locality :: proc() {
-	bridge.bridge_hub_runtime_init()
-	bridge.bridge_task_scheduler_init()
-
-	// Unknown instance -> not tracked yet.
-	check(!bridge.bridge_task_instance_is_local("inst_remote"), "untracked instance must not be local")
-
-	// Once the bridge tracks an instance (e.g. it launched/observed it), it is local.
-	bridge.bridge_runtime_set_status("inst_here", "stopped", "idle")
-	check(bridge.bridge_task_instance_is_local("inst_here"), "tracked instance must be local")
-
-	// NOTE: bridge_task_status_notify_wake_local intentionally does NOT gate on the
-	// in-memory registry: the Hub routes task_status_changed_notify only to the
-	// hosting bridge, so a target arriving via notify is authoritative even right
-	// after a bridge restart (empty registry) — the orphan-recovery case. Verified
-	// live end-to-end; not asserted here since it triggers a real tmux launch.
 }
 
 check :: proc(ok: bool, message: string) { if ok do return; fmt.eprintln("FAIL:", message); os.exit(1) }

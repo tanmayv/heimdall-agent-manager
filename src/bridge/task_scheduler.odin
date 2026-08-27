@@ -251,16 +251,6 @@ bridge_task_prune_unseen :: proc(seen: map[string]bool) {
 	}
 }
 
-// bridge_task_instance_is_local reports whether the bridge has ever tracked this
-// instance (i.e. it belongs to this bridge). Used to reject cross-bridge notify
-// targets that another bridge actually owns.
-bridge_task_instance_is_local :: proc(instance_id: string) -> bool {
-	sync.mutex_lock(&bridge_runtime_mutex)
-	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for inst in bridge_runtime_instances { if inst.agent_instance_id == instance_id do return true }
-	return false
-}
-
 // bridge_task_status_notify_wake_local wakes a non-live target in response to a
 // task_status_changed_notify (including the reconnect-replay orphan path). The
 // Hub routes each notify ONLY to the bridge that hosts the target instance, so a
