@@ -28,6 +28,10 @@ BRIDGE_NUDGE_DEFAULT_GRACE_S :: 30
 BRIDGE_WAKE_COALESCE_MS :: i64(30_000)
 
 Bridge_Nudge_Config :: struct {
+	// enabled gates only the auto-NUDGE path (re-pinging stale actionable tasks).
+	// The promotion-wake path (ensuring a queued task's assignee is running) is a
+	// safety net that always runs while the sweep thread is active, independent of
+	// this flag, so default-off config still picks up queued work.
 	enabled:              bool,
 	interval_seconds:     int,
 	ready_after_seconds:  int,
@@ -88,7 +92,9 @@ bridge_task_scheduler_configure :: proc() {
 
 bridge_task_scheduler_start :: proc() {
 	bridge_task_scheduler_init()
-	if !bridge_nudge_config.enabled do return
+	// The sweep runs whenever the bridge has hub connectivity, so the
+	// promotion-wake safety net is active even when auto-nudge is disabled. The
+	// nudge path inside the tick is separately gated by bridge_nudge_config.enabled.
 	if strings.trim_space(bridge_config.bridge_token) == "" || strings.trim_space(bridge_config.daemon_url) == "" do return
 	thread.run(bridge_task_scheduler_worker)
 }
@@ -109,7 +115,6 @@ bridge_task_scheduler_worker :: proc() {
 // for each locally-targeted task decide promotion-wake / nudge. Returns the
 // number of actions taken (nudges delivered/queued + wakes requested).
 bridge_task_scheduler_tick :: proc() -> int {
-	if !bridge_nudge_config.enabled do return 0
 	body, ok := bridge_task_fetch_actionable()
 	if !ok do return 0
 	actions := 0
