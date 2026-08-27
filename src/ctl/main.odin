@@ -32,6 +32,11 @@ main :: proc() {
 		return
 	}
 
+	if cmd[0] == "setup" || cmd[0] == "doctor" {
+		ctl_setup_command(os.args)
+		return
+	}
+
 		if cmd[0] == "task-chains" || cmd[0] == "task-chain" || cmd[0] == "chains" || cmd[0] == "chain" {
 		ctl_task_chains_command(cmd[:], os.args)
 		return
