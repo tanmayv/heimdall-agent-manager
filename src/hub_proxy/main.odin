@@ -33,11 +33,12 @@ Config :: struct {
 	listen:        string, // host:port to listen on (plaintext)
 	upstream_host: string, // e.g. hub.mundus.in
 	upstream_port: u16,    // e.g. 443
+	upstream_tls:  bool,   // true for https upstream (default); false = plaintext (local testing)
 	verbose:       bool,
 }
 
 main :: proc() {
-	config := Config{listen = "127.0.0.1:8090", upstream_host = "", upstream_port = 443}
+	config := Config{listen = "127.0.0.1:8090", upstream_host = "", upstream_port = 443, upstream_tls = true}
 	if !parse_args(&config) {
 		print_usage()
 		os.exit(2)
@@ -63,9 +64,9 @@ parse_args :: proc(config: ^Config) -> bool {
 		case arg == "--listen" && i + 1 < len(os.args):
 			config.listen = strings.clone(os.args[i + 1]); i += 1
 		case arg == "--upstream" && i + 1 < len(os.args):
-			host, port, ok := parse_upstream(os.args[i + 1])
+			host, port, tls, ok := parse_upstream(os.args[i + 1])
 			if !ok { fmt.eprintln("ham-hub-proxy: invalid --upstream", os.args[i + 1]); return false }
-			config.upstream_host = host; config.upstream_port = port; i += 1
+			config.upstream_host = host; config.upstream_port = port; config.upstream_tls = tls; i += 1
 		case arg == "--verbose":
 			config.verbose = true
 		case arg == "-h" || arg == "--help":
@@ -77,25 +78,28 @@ parse_args :: proc(config: ^Config) -> bool {
 	return true
 }
 
-// parse_upstream accepts https://host, https://host:port, host, or host:port.
-// Defaults to TLS port 443. http:// is rejected (this proxy exists to ADD TLS).
-parse_upstream :: proc(value: string) -> (host: string, port: u16, ok: bool) {
+// parse_upstream accepts https://host[:port] (TLS, default 443) or http://host[:port]
+// (plaintext, default 80 — for local testing against a plaintext dev hub), or a bare
+// host[:port] (assumed https). Returns whether TLS should be used.
+parse_upstream :: proc(value: string) -> (host: string, port: u16, tls: bool, ok: bool) {
 	v := strings.trim_space(value)
-	if strings.has_prefix(v, "http://") {
-		fmt.eprintln("ham-hub-proxy: --upstream must be https:// (this proxy terminates TLS to the hub)")
-		return "", 0, false
+	use_tls := true
+	default_port: u16 = 443
+	if strings.has_prefix(v, "https://") {
+		v = v[len("https://"):]
+	} else if strings.has_prefix(v, "http://") {
+		v = v[len("http://"):]; use_tls = false; default_port = 80
 	}
-	if strings.has_prefix(v, "https://") do v = v[len("https://"):]
 	v = strings.trim_right(v, "/")
 	if slash := strings.index_byte(v, '/'); slash >= 0 do v = v[:slash]
 	host_part := v
-	port_val: u16 = 443
+	port_val := default_port
 	if colon := strings.last_index_byte(v, ':'); colon >= 0 && strings.index_byte(v, ']') < colon {
 		host_part = v[:colon]
 		if p, pok := parse_u16(v[colon + 1:]); pok do port_val = p
 	}
-	if strings.trim_space(host_part) == "" do return "", 0, false
-	return strings.clone(host_part), port_val, true
+	if strings.trim_space(host_part) == "" do return "", 0, false, false
+	return strings.clone(host_part), port_val, use_tls, true
 }
 
 parse_u16 :: proc(s: string) -> (u16, bool) {
@@ -124,7 +128,8 @@ run_server :: proc(config: Config) {
 		fmt.eprintln("ham-hub-proxy: listen failed", config.listen, lerr)
 		os.exit(1)
 	}
-	fmt.printfln("ham-hub-proxy listening %s -> https://%s:%d (Host rewritten to %s)", config.listen, config.upstream_host, config.upstream_port, config.upstream_host)
+	scheme := "https" if config.upstream_tls else "http"
+	fmt.printfln("ham-hub-proxy listening %s -> %s://%s:%d (Host rewritten to %s%s)", config.listen, scheme, config.upstream_host, config.upstream_port, config.upstream_host, "" if config.upstream_tls else " [plaintext test mode]")
 
 	shared := new(Config); shared^ = config
 	for {
@@ -156,6 +161,16 @@ handle_client :: proc(ctx: ^Client_Ctx) {
 	rewritten := rewrite_host_header(head, cfg.upstream_host)
 	defer delete(rewritten)
 
+	if cfg.verbose {
+		fmt.printfln("ham-hub-proxy: %s", first_line(rewritten))
+	}
+
+	if !cfg.upstream_tls {
+		// Plaintext upstream (local testing against a dev hub over http://).
+		handle_plaintext(client, cfg, rewritten, body_tail)
+		return
+	}
+
 	// 3) Start openssl s_client to the upstream (TLS + SNI to the real host).
 	cmd := tls_client_command(cfg.upstream_host, cfg.upstream_port)
 	defer delete(cmd)
@@ -166,10 +181,6 @@ handle_client :: proc(ctx: ^Client_Ctx) {
 	process, prerr := os.process_start(os.Process_Desc{command = cmd, stdin = stdin_r, stdout = stdout_w, stderr = os.stderr})
 	_ = os.close(stdin_r); _ = os.close(stdout_w)
 	if prerr != nil { _ = os.close(stdin_w); _ = os.close(stdout_r); return }
-
-	if cfg.verbose {
-		fmt.printfln("ham-hub-proxy: %s", first_line(rewritten))
-	}
 
 	// 4) Send the rewritten head (+ any already-read body bytes) to the upstream.
 	if !write_all_pipe(stdin_w, transmute([]byte)rewritten) {
@@ -202,6 +213,55 @@ handle_client :: proc(ctx: ^Client_Ctx) {
 	_ = os.process_kill(process)
 	_, _ = os.process_wait(process)
 	if pump != nil { thread.join(pump); thread.destroy(pump) }
+}
+
+// handle_plaintext forwards to an http:// upstream over a plain TCP socket (no
+// TLS). Used for local testing against a plaintext dev hub. Same Host rewrite +
+// transparent bidirectional pipe (incl. WebSocket upgrade).
+handle_plaintext :: proc(client: net.TCP_Socket, cfg: ^Config, rewritten: string, body_tail: []byte) {
+	ep := net.Endpoint{port = int(cfg.upstream_port)}
+	if ip, ipok := net.parse_ip4_address(cfg.upstream_host); ipok {
+		ep.address = ip
+	} else if cfg.upstream_host == "localhost" {
+		ep.address = net.IP4_Loopback
+	} else {
+		fmt.eprintln("ham-hub-proxy: plaintext upstream host must be an IPv4 literal or localhost, got", cfg.upstream_host)
+		return
+	}
+	upstream, derr := net.dial_tcp_from_endpoint(ep)
+	if derr != nil { return }
+	defer net.close(upstream)
+
+	if !net_send_all(upstream, transmute([]byte)rewritten) do return
+	if len(body_tail) > 0 && !net_send_all(upstream, body_tail) do return
+
+	// upstream -> client on a helper thread; client -> upstream on this thread.
+	sp := new(Sock_Pump_Ctx); sp.from = upstream; sp.to = client
+	pump := thread.create_and_start_with_poly_data(sp, pump_socket)
+	buf: [16384]byte
+	for {
+		n, rerr := net.recv_tcp(client, buf[:])
+		if n > 0 { if !net_send_all(upstream, buf[:n]) do break }
+		if rerr != nil || n <= 0 do break
+	}
+	net.close(upstream)
+	net.close(client)
+	if pump != nil { thread.join(pump); thread.destroy(pump) }
+}
+
+Sock_Pump_Ctx :: struct {
+	from: net.TCP_Socket,
+	to:   net.TCP_Socket,
+}
+
+pump_socket :: proc(p: ^Sock_Pump_Ctx) {
+	defer free(p)
+	buf: [16384]byte
+	for {
+		n, rerr := net.recv_tcp(p.from, buf[:])
+		if n > 0 { if !net_send_all(p.to, buf[:n]) do break }
+		if rerr != nil || n <= 0 do break
+	}
 }
 
 Pump_Ctx :: struct {
