@@ -344,10 +344,15 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
-    reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; tier?: string }>({
-      queryFn: async ({ instanceId, provider, tier }) => {
+    reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; tier?: string; bridgeId?: string }>({
+      queryFn: async ({ instanceId, provider, tier, bridgeId }) => {
         try {
-          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}`, 'PATCH', { provider: provider || '', tier: tier || '' });
+          // The hub reconfigure endpoint accepts an optional bridge_id to move the
+          // instance to another device (bridge); only send it when set so we don't
+          // clobber the current bridge with an empty value.
+          const body: Record<string, string> = { provider: provider || '', tier: tier || '' };
+          if (bridgeId) body.bridge_id = bridgeId;
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}`, 'PATCH', body);
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

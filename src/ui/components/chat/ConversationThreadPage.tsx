@@ -25,6 +25,7 @@ import {
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
+import RuntimeChip, { runtimeStateFromStatus } from '../runtime/RuntimeChip';
 import { useViewport } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -381,6 +382,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
+  const [bridge, setBridge] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
   const [taskChainOpen, setTaskChainOpen] = useState(false);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
@@ -399,10 +401,24 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
 
-  // Provider/tier selectable range is the instance Bridge's real capability
+  // Device (bridge) selection. The reconfigure endpoint accepts an optional
+  // bridge_id to move the instance to another device. Options are the online
+  // bridges (plus the current one, always visible). Provider/tier options follow
+  // the SELECTED bridge's capability matrix.
+  const bridgeLabel = String(instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '');
+  const selectedBridgeId = bridge || instanceBridgeId;
+  const selectedBridge = useMemo(() => bridges.find((b: any) => bridgeId(b) === selectedBridgeId) || instanceBridge, [bridges, selectedBridgeId, instanceBridge]);
+  const bridgeOptions = useMemo(() => {
+    const online = bridges.filter((b: any) => String(b?.status || b?.state || 'online').toLowerCase() === 'online');
+    const list = (online.length ? online : bridges).map((b: any) => ({ id: bridgeId(b), label: String(b?.label || b?.machine_hostname || bridgeId(b)) }));
+    if (instanceBridgeId && !list.some((b) => b.id === instanceBridgeId)) list.unshift({ id: instanceBridgeId, label: bridgeLabel || instanceBridgeId });
+    return list.filter((b) => b.id);
+  }, [bridges, instanceBridgeId, bridgeLabel]);
+
+  // Provider/tier selectable range is the SELECTED Bridge's real capability
   // matrix; agent bridge-support provider/tier values are preferred defaults,
   // not allowlists.
-  const caps = useMemo(() => normalizeBridgeCapabilities(instanceBridge), [instanceBridge]);
+  const caps = useMemo(() => normalizeBridgeCapabilities(selectedBridge), [selectedBridge]);
 
   const providerOptions = useMemo(() => {
     const list = caps.map((c) => c.provider).filter(Boolean);
@@ -428,8 +444,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
   const runtimeButtonLabel = runtimeActionBusy ? (stopState.isLoading ? 'Stopping…' : (needsStart ? 'Starting…' : 'Restarting…')) : (runtimeStopping ? 'Stopping…' : needsStart ? 'Start' : 'Stop');
   const runtimeButtonIcon = runtimeActionBusy || runtimeStopping ? '…' : needsStart ? '▶' : '■';
-  const bridgeLabel = String(instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '');
-  const runtimeConfigLabel = [instanceProvider, instanceTier].filter(Boolean).join(' / ');
   const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
   const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
@@ -549,7 +563,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   // instance currently runs; otherwise it's a no-op (use Restart instead).
   const effectiveProvider = provider || instanceProvider;
   const effectiveTier = tier || instanceTier;
-  const selectionChangesConfig = Boolean(agentInstanceId) && ((effectiveProvider && effectiveProvider !== instanceProvider) || (effectiveTier && effectiveTier !== instanceTier));
+  const effectiveBridgeId = bridge || instanceBridgeId;
+  const selectionChangesConfig = Boolean(agentInstanceId) && ((effectiveProvider && effectiveProvider !== instanceProvider) || (effectiveTier && effectiveTier !== instanceTier) || (effectiveBridgeId && effectiveBridgeId !== instanceBridgeId));
 
   async function saveConversationTitle() {
     const next = titleDraft.trim();
@@ -751,10 +766,11 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     if (!agentInstanceId) return;
     const nextProvider = provider || providerOptions[0] || '';
     const nextTier = tier || tierOptions[0] || '';
+    const nextBridgeId = bridge && bridge !== instanceBridgeId ? bridge : '';
     if (!nextProvider || !nextTier) { setReconfigStatus('Choose a provider and tier first.'); return; }
-    setReconfigStatus('Applying selected runtime config…');
+    setReconfigStatus(nextBridgeId ? 'Moving to selected device…' : 'Applying selected runtime config…');
     try {
-      await reconfigureInstance({ agentId, instanceId: agentInstanceId, provider: nextProvider, tier: nextTier }).unwrap();
+      await reconfigureInstance({ agentId, instanceId: agentInstanceId, provider: nextProvider, tier: nextTier, bridgeId: nextBridgeId }).unwrap();
       setReconfigStatus(`Applied ${nextProvider}/${nextTier} — restarting…`);
       await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
       setReconfigStatus(`Restart requested with ${nextProvider}/${nextTier}.`);
@@ -779,6 +795,17 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   const runtimeControls = (
     <div data-debug-id="conversation-runtime-controls" className="space-y-3">
+      <label className="block text-[11px] text-zinc-500">Device (bridge)
+        <select
+          data-debug-id="conversation-bridge-select"
+          value={selectedBridgeId}
+          onChange={(e) => { setBridge(e.target.value); setProvider(''); setTier(''); }}
+          disabled={runtimeActionBusy}
+          className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {bridgeOptions.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}
+        </select>
+      </label>
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-[11px] text-zinc-500">Provider
           <select data-debug-id="conversation-provider-select" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
@@ -886,15 +913,22 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <h2 data-debug-id="conversation-thread-title" className="truncate text-base font-semibold text-white sm:text-lg">{title}</h2>
-              <span data-debug-id="conversation-thread-status-chip" title={`Runtime status: ${runtimeStatus || 'unknown'}`} className={`max-w-[96px] shrink-0 truncate rounded-full border px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide ${needsStart ? 'border-zinc-600 bg-zinc-800/70 text-zinc-300' : runtimeStopping ? 'border-amber-400/30 bg-amber-400/10 text-amber-200' : 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200'}`}>{runtimeStatus || '—'}</span>
             </div>
           )}
           {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-[11px] text-red-300">{titleError}</div> : null}
-          <div data-debug-id="conversation-thread-compact-summary" className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500">
-            {bridgeLabel ? <span data-debug-id="conversation-thread-bridge-summary" className="min-w-0 truncate">{bridgeLabel}</span> : null}
-            {bridgeLabel && runtimeConfigLabel ? <span className="shrink-0 text-zinc-700">•</span> : null}
-            {runtimeConfigLabel ? <span data-debug-id="conversation-thread-runtime-summary" className="shrink-0">{runtimeConfigLabel}</span> : null}
-            {chainId ? <span data-debug-id="conversation-thread-chain-summary" className="hidden shrink-0 text-sky-300/70 sm:inline">• task chain linked</span> : null}
+          {/* Runtime chip: explicit "Running/Starting/Stopped · bridge · provider · tier".
+              Answers "is it running and on which device/model?" and opens the runtime
+              controls menu (change bridge/provider/model, start/stop). */}
+          <div data-debug-id="conversation-thread-compact-summary" className="mt-0.5 flex min-w-0 items-center gap-1.5">
+            <RuntimeChip
+              debugId="conversation-thread-runtime-chip"
+              state={runtimeStateFromStatus(runtimeStatus)}
+              bridgeLabel={bridgeLabel}
+              provider={instanceProvider}
+              tier={instanceTier}
+              onClick={() => setRuntimeMenuOpen(true)}
+            />
+            {chainId ? <span data-debug-id="conversation-thread-chain-summary" className="hidden shrink-0 text-[11px] text-sky-300/70 sm:inline">· task chain linked</span> : null}
           </div>
         </div>
         <div data-debug-id="conversation-thread-mobile-actions" className="flex shrink-0 items-center gap-1.5 sm:gap-2">

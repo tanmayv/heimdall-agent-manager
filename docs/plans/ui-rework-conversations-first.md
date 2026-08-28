@@ -93,10 +93,11 @@ Mobile:   list (search + grouped convos + FAB + tabbar)  <->  thread (runtime ch
 - [x] ~~Add `ui.conversationsFirst` feature flag~~ — **dropped.** `App.tsx` is dead; we
       enhance `AppShell.tsx` in place (each change independently revertible), so a global
       flag is unnecessary. Revisit only if a change turns out to be risky.
-- [x] Add shared `Icon` component (`components/Icon.tsx`). Wraps `lucide-react` (already a
-      dep) behind a stable name-based API: plus, gear, chat, grid, tasks,
-      chevron-{left,right,down}, arrow-{up,right}, close, stop, play, search, device.
-      Establishes the "icons not emojis" rule for new UI.
+- [x] Add shared `Icon` component (`components/Icon.tsx`). Local inline SVGs (we do NOT
+      use `lucide-react` — the pinned 1.21.0 is broken, see Phase 2 log) behind a stable
+      name-based API: plus, gear, chat, grid, tasks, chevron-{left,right,down},
+      arrow-{up,right}, close, stop, play, search, device. Establishes the "icons not
+      emojis" rule for new UI.
 - [x] Add `StatusDot` + `RuntimeChip` primitives (`components/runtime/RuntimeChip.tsx`)
       with `runtimeStateFromStatus()` normalizing instance `runtime_status` →
       live/starting/stopped, and an explicit label ("Running/Starting/Stopped").
@@ -112,14 +113,26 @@ Mobile:   list (search + grouped convos + FAB + tabbar)  <->  thread (runtime ch
 - [ ] Persist rail collapse state per project (local pref).
 - **Acceptance:** can browse and open real conversations grouped by project.
 
-### Phase 2 — Conversation view + runtime chip `[ ] not started`
-- [ ] Header: title + **RuntimeChip** (`status · bridge · provider · tier`) with live dot.
-- [ ] **Status is explicit** in the chip label (Running / Starting… / Stopped), not just a dot.
-- [ ] Change popover (desktop) / bottom sheet (mobile): device→provider→tier segmented
-      controls constrained to the bridge capability matrix; Apply&restart; Start/Stop.
-- [ ] Reuse `ConversationThreadPage` message list/composer; do not regress read receipts,
-      pane capture, artifact upload.
-- **Acceptance:** user can see run status and change bridge/provider/model in place.
+### Phase 2 — Conversation view + runtime chip `[x] done`
+- [x] Header: title + **RuntimeChip** (`status · bridge · provider · tier`) with live dot.
+      Replaced the old uppercase status pill + separate bridge/config summary line in
+      `ConversationThreadPage` with the single `RuntimeChip`; clicking it opens the runtime
+      menu.
+- [x] **Status is explicit** in the chip label (Running / Starting / Stopped), via
+      `runtimeStateFromStatus()`.
+- [x] Change menu (desktop popover / mobile sheet already existed): added a **Device
+      (bridge) selector** (`conversation-bridge-select`) so users can move the instance to
+      another device; provider/tier follow the selected bridge's capability matrix;
+      Apply&relaunch now sends `bridge_id`. Start/Stop already present.
+  - Backend: hub `reconfigure_instance` already accepts `bridge_id` (has_bridge_id);
+    extended the `reconfigureAgentInstance` mutation to pass it. **No new backend.**
+- [x] Reuse existing message list/composer — untouched; read receipts, pane capture,
+      artifact upload unaffected.
+- **Acceptance:** run status + device/provider/model visible and changeable in place.
+      _Met._ `tsc -b` + `vite build` green.
+- Follow-up (not blocking): bridge options currently list all online bridges; could be
+  narrowed to the agent's `bridge_support` set. New debug-ids to register in AGENTS.md:
+  `conversation-thread-runtime-chip`, `conversation-bridge-select`.
 
 ### Phase 3 — Task chain access (inspector + chain bar) `[ ] not started`
 - [ ] Header **Task chain** button (with `done/total` progress) — only when the
@@ -184,7 +197,15 @@ Mobile:   list (search + grouped convos + FAB + tabbar)  <->  thread (runtime ch
 ## 7. Progress log
 _Append newest first: `YYYY-MM-DD — <who> — <phase> — <what landed / decided>`._
 
-- 2026-08-28 — impl — **Phase 0 done.** Added `components/Icon.tsx` (lucide-backed,
+- 2026-08-28 — impl — **Phase 2 done.** `ConversationThreadPage` header now shows the
+  unified `RuntimeChip` (explicit Running/Starting/Stopped + bridge · provider · tier),
+  clicking it opens the runtime menu. Added a Device (bridge) selector to the runtime
+  controls and extended `reconfigureAgentInstance` to pass `bridge_id` (hub already
+  supports it) so a conversation can be moved across devices. Also fixed a real
+  pre-existing hazard: the pinned `lucide-react@1.21.0` ships a broken package (missing
+  ESM entry → Vite fails), so `Icon.tsx` now uses local inline SVGs instead of lucide.
+  `tsc -b` + `vite build` both green.
+- 2026-08-28 — impl — **Phase 0 done.** Added `components/Icon.tsx` (inline-SVG,
   name-based API) and `components/runtime/RuntimeChip.tsx` (`StatusDot`, `RuntimeChip`,
   `runtimeStateFromStatus`/`runtimeStateLabel`). Discovered `components/App.tsx` is dead
   code — the real shell is `components/shell/AppShell.tsx`, which already has the
