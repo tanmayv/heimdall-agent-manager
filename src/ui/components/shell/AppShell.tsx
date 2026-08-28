@@ -859,7 +859,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // UI-14: server state for the sidebar lives in RTK Query (cookie-auth), not
   // component-local state. The single user-WS connection invalidates the
   // SidebarConversations tag on chat/unread events so badges refresh live.
-  const conversationsQuery = useListSidebarConversationsQuery({ limit: 100 });
+  // The rail shows live agents + unread counts; the hub doesn't push all of these
+  // over the user WS, so poll periodically (paused when the tab is unfocused) so a
+  // just-started/stopped agent appears/disappears without a manual refresh.
+  const conversationsQuery = useListSidebarConversationsQuery({ limit: 100 }, { pollingInterval: 10000, skipPollingIfUnfocused: true });
   const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentNamesById = useMemo(() => {

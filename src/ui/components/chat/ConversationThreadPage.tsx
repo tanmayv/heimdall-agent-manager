@@ -340,8 +340,12 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
 }
 
 export default function ConversationThreadPage({ conversationId }: { conversationId: string }) {
-  const convQuery = useFetchConversationQuery({ conversationId }, { skip: !conversationId });
-  const messagesQuery = useFetchConversationMessagesQuery({ conversationId }, { skip: !conversationId, pollingInterval: 120000, refetchOnMountOrArgChange: true });
+  // The hub does not push per-conversation runtime/message events over the user
+  // WS in this rewrite, so the open thread relies on polling to stay fresh. Poll
+  // the visible view frequently, but pause polling when the tab is unfocused so we
+  // don't hammer the hub in the background. (skipPollingIfUnfocused, RTKQ 2.x.)
+  const convQuery = useFetchConversationQuery({ conversationId }, { skip: !conversationId, pollingInterval: 8000, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
+  const messagesQuery = useFetchConversationMessagesQuery({ conversationId }, { skip: !conversationId, pollingInterval: 4000, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
   const [fetchOlderMessages, olderMessagesState] = useLazyFetchConversationMessagesQuery();
   const [updateConversationTitle, updateTitleState] = useUpdateConversationTitleMutation();
   const [requestPaneCapture, requestPaneCaptureState] = useRequestPaneCaptureMutation();
@@ -355,6 +359,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const conversation = convQuery.data?.conversation || null;
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
   const agentInstanceId = String(conversation?.agent_instance_id || conversation?.agentInstanceId || '');
+  const conversationRuntimeStatusForPoll = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const chainId = String(conversation?.chain_id || conversation?.chainId || '');
   const title = conversationDisplayTitle(conversation, agentId, agentInstanceId, conversationId);
 
@@ -373,8 +378,19 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   // The instance record is the source of truth for the CONCRETE provider / tier /
   // bridge this conversation runs on (never "default"/"Auto").
-  const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: 120000, refetchOnMountOrArgChange: true });
+  // Adaptive polling: while the runtime is transitional (starting) poll fast so
+  // the status chip settles quickly; once stable, poll moderately. The interval is
+  // derived from the last-seen status tracked in a ref (updated after each read),
+  // seeded from the conversation summary before the instance loads.
+  const lastInstanceStatusRef = useRef('');
+  const pollHint = lastInstanceStatusRef.current || conversationRuntimeStatusForPoll;
+  const instancePollInterval = runtimeStateFromStatus(pollHint) === 'starting' ? 2500 : 8000;
+  const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: instancePollInterval, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
   const instance = instanceQuery.data?.instance || null;
+  useEffect(() => {
+    const s = String(instance?.runtime_status || instance?.runtimeStatus || '');
+    if (s) lastInstanceStatusRef.current = s;
+  }, [instance?.runtime_status, instance?.runtimeStatus]);
   const instanceProvider = String(instance?.provider || '');
   const instanceTier = String(instance?.tier || '');
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');
