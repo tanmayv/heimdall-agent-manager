@@ -388,9 +388,10 @@ bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID
 	write_bootstrap_memories(&b, service, owner, inst)
 	strings.write_string(&b, "],\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"content\":\"# Agent bootstrap\\n\\nAgent: "); write_service_json_string(&b, agent.name)
 	strings.write_string(&b, "\\nInstance: "); write_service_json_string(&b, inst.agent_instance_id)
+	is_coordinator := chain_ok && chain.coordinator_agent_instance_id == inst.agent_instance_id
 	if chain_ok {
 		strings.write_string(&b, "\\nTask chain: "); write_service_json_string(&b, chain.title); strings.write_string(&b, " ("); write_service_json_string(&b, string(chain.chain_id)); strings.write_string(&b, ")")
-		strings.write_string(&b, "\\nCoordinator: "); if chain.coordinator_agent_instance_id == inst.agent_instance_id { strings.write_string(&b, "you (coordinator)") } else { write_service_json_string(&b, chain.coordinator_agent_instance_id) }
+		strings.write_string(&b, "\\nCoordinator: "); if is_coordinator { strings.write_string(&b, "you (coordinator)") } else { write_service_json_string(&b, chain.coordinator_agent_instance_id) }
 	}
 	if strings.trim_space(project_name) != "" || strings.trim_space(project_path) != "" {
 		strings.write_string(&b, "\\n\\n## Project\\nThis agent is associated with a project. You run in your own managed working directory (not the project directory). Work against the project checkout below when the task requires it.\\n")
@@ -401,19 +402,39 @@ bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID
 		if strings.trim_space(project_desc) != "" { strings.write_string(&b, "\\n- Description: "); write_service_json_string(&b, project_desc) }
 	}
 	strings.write_string(&b, "\\n\\n## Working with tasks (REQUIRED)\\nYou MUST track all substantial work as tasks in this task chain. This is not optional.\\n\\nRules you must follow:\\n1. Before starting work, ALWAYS run ./.heimdall/bin/ham-ctl agent tasks fetch to see the current tasks in your chain.\\n2. Do NOT do meaningful work that is not represented by a task. If a task does not exist for what you are about to do, create one (coordinator) or ask the coordinator to create one.\\n3. When you begin a task, move it to in_progress: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress\\n4. As you make progress, you MUST post a comment on the task describing what you did, what changed, and what is next: ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \\\"<progress update>\\\". Add a comment at every meaningful step, on blockers, and before handing off for review.\\n5. When the work is complete, submit it for review: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_validation (or ./.heimdall/bin/ham-ctl agent tasks done --task-id <id>). Include a summary comment of what to review.\\n6. Reviewers vote with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \\\"<feedback>\\\". If you receive ngtm, address the feedback, comment what you changed, and re-submit.\\n7. Use ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id> to request attention on a stalled task.\\n\\nKeep task status and comments current at all times so the whole chain reflects real progress.")
+	if is_coordinator {
+		strings.write_string(&b, "\\n\\n## You are the COORDINATOR of this task chain (delegate — do not do the work yourself)\\nYour role is to PLAN and ORCHESTRATE the chain, not to implement it. Doing substantial work yourself instead of delegating is a failure mode.\\n\\nWhat this means in practice:\\n1. Break the goal into discrete tasks and ASSIGN each to a worker agent. Do not implement features, write the code, run the research, or produce the deliverable yourself — that is the assignees' job.\\n2. Add the agents you need to the chain (`./.heimdall/bin/ham-ctl agent chains add-agent ...` / create tasks with an explicit `--assignee <agent_instance_id>`), set dependencies with `--depends-on`, and add required reviewers with `tasks participant --role lgtm_required`.\\n3. Own the chain description as the canonical design doc (goal, scope, REQ-IDs, task plan, validation strategy). Keep it in sync as scope changes.\\n4. Be the ONLY point of contact for the user. Team agents route questions/blockers through you; you synthesize and reply. Acknowledge user messages promptly with chain-scoped chat.\\n5. Enforce review gates: `tasks done` -> `review_ready` -> reviewers LGTM -> `approved`. The chain is `completed` only when YOU move it to completed with a verifiable final summary.\\n6. Only do work yourself for trivial coordination glue (creating/annotating tasks, nudging, synthesizing results). Anything a worker can own, delegate.\\n\\nRead the `coordinator-task-management` skill for the full ham-ctl command reference and the delegation workflow.")
+	} else if chain_ok {
+		strings.write_string(&b, "\\n\\n## You are a WORKER on this task chain\\nExecute the tasks ASSIGNED to you. Do not take on work outside your assigned tasks or coordinate the whole chain — that is the coordinator's job. Route questions, blockers, and user-facing messages to the coordinator (chat with chain context is redirected to them automatically). Keep your task status and comments current, and hand off for review with `tasks done` when complete. Read the `worker-task-management` skill for the ham-ctl command reference.")
+	}
 	write_bootstrap_memory_markdown(&b, service, owner, inst)
 	strings.write_string(&b, "\"}]")
-	write_bootstrap_skill_fields(&b, service, owner, inst)
+	write_bootstrap_skill_fields(&b, service, owner, inst, is_coordinator, chain_ok)
 	strings.write_string(&b, ",\"instance_token\":\"hit_"); write_service_json_string(&b, inst.agent_instance_id)
 	strings.write_string(&b, "\",\"hub_url\":\""); write_service_json_string(&b, bridge.hub_url); strings.write_string(&b, "\"}")
 	return strings.to_string(b), true, domain.Domain_Error{}
 }
 
-write_bootstrap_skill_fields :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) {
+write_bootstrap_skill_fields :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance, is_coordinator: bool, chain_ok: bool) {
 	strings.write_string(b, ",\"skills\":[")
 	written := 0
 	default_name := ""
 	default_content := ""
+	// Role-specific task-management skill (coordinator delegation playbook vs
+	// worker execution guide). Injected first so it is always present for chain
+	// members regardless of the memory-backed skill set.
+	if chain_ok {
+		role_skill_name: string
+		role_skill_content: string
+		if is_coordinator {
+			role_skill_name, role_skill_content = bootstrap_coordinator_task_skill()
+		} else {
+			role_skill_name, role_skill_content = bootstrap_worker_task_skill()
+		}
+		write_bootstrap_skill_json(b, role_skill_name, role_skill_content)
+		default_name = role_skill_name; default_content = role_skill_content
+		written += 1
+	}
 	if service != nil && service.content != nil {
 		memories, err := iface.content_list_memories(service.content, owner)
 		if err.code == .None {
@@ -444,6 +465,20 @@ write_bootstrap_skill_json :: proc(b: ^strings.Builder, name, content: string) {
 	strings.write_string(b, "{\"name\":\""); write_service_json_string(b, name)
 	strings.write_string(b, "\",\"content\":\""); write_service_json_string(b, content)
 	strings.write_string(b, "\"}")
+}
+
+// Detailed coordinator task-management + delegation skill, materialized as a
+// SKILL.md the coordinator loads. Emphasis: delegate, don't implement.
+bootstrap_coordinator_task_skill :: proc() -> (string, string) {
+	content := "---\nname: coordinator-task-management\ndescription: How a task-chain COORDINATOR uses ham-ctl to plan, delegate to worker agents, enforce review gates, and complete the chain. Load whenever you are the coordinator of a chain.\n---\n\n# Coordinator task management (delegate — do not do the work yourself)\n\nYou are the coordinator. Your job is to PLAN and ORCHESTRATE. Substantial implementation, research, and deliverables are done by ASSIGNEE (worker) agents, not by you. Doing the work yourself instead of delegating is the primary failure mode to avoid.\n\nAll commands use the managed wrapper from your run directory: `./.heimdall/bin/ham-ctl`.\n\n## 1. See the current state\n- `./.heimdall/bin/ham-ctl agent tasks fetch` — list tasks in your chain with status, assignee, and blockers.\n- `./.heimdall/bin/ham-ctl agent chains show` — inspect chain metadata, members, and the chain description.\n\n## 2. Plan the work (chain description = design doc)\n- Own the chain description as a markdown design doc: goal, scope, a REQ-ID list (stable ids like `WS-1`, `AUTH-3`), task plan, validation strategy, risks.\n- Update it whenever scope/tasks/dependencies/reviewers change: `./.heimdall/bin/ham-ctl agent chains update --description \\\"<markdown>\\\"`. A stale description is a correctness bug.\n\n## 3. Add the agents you need\n- `./.heimdall/bin/ham-ctl agent chains add-agent --agent <agent_id> [--provider <p>] [--tier <t>]` — bring a worker/reviewer into the chain.\n\n## 4. Create tasks and DELEGATE them\n- Create a task and assign it to a worker: `./.heimdall/bin/ham-ctl agent tasks create --title \\\"<title>\\\" --description \\\"<what + which REQ-IDs>\\\" --assignee <agent_instance_id>`.\n- Order work with dependencies: add `--depends-on <task_id[,task_id]>`.\n- Require blocking reviewers: `./.heimdall/bin/ham-ctl agent tasks participant --task-id <id> --agent-instance-id <reviewer> --role lgtm_required` (use `lgtm_optional` for advisory, `subscriber` for FYI).\n- Reassign if needed: `./.heimdall/bin/ham-ctl agent tasks assign --task-id <id> --agent-instance-id <agent>`.\n- Do NOT create one giant task you then implement yourself. Split the goal so each substantial piece has an assignee.\n\n## 5. Drive the work without doing it\n- Nudge a stalled task's current owner: `./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id>`.\n- Read progress via `tasks fetch` and task comments. Answer worker questions; unblock dependencies; add missing reviewers.\n- Only touch a task's own status for coordination glue. Implementation status transitions are the assignee's responsibility.\n\n## 6. Review gates and completion\n- `tasks done` moves a task to `review_ready` (assignee handoff). Required `lgtm_required` reviewers then vote `lgtm`/`ngtm`.\n- A task becomes `approved` only after every required reviewer LGTMs.\n- The chain is `completed` ONLY when you explicitly complete it with a verifiable final summary: `./.heimdall/bin/ham-ctl agent chains status --status completed --final-summary \\\"<results, evidence, commits, files, quality rating + reasoning>\\\"`.\n\n## 7. User communication (coordinator-only)\n- You are the only agent who talks to the user. Acknowledge user messages promptly, state your next action, and route worker questions through yourself.\n- `./.heimdall/bin/ham-ctl agent chat send --body \\\"<update>\\\"` for user replies. Keep the user informed of progress and blockers.\n\nGolden rule: if a worker agent could do it, delegate it. Reserve your own hands-on effort for planning, coordination, synthesis, and completion."
+	return "coordinator-task-management", content
+}
+
+// Detailed worker task-management skill, materialized as a SKILL.md the worker
+// loads. Emphasis: execute your assigned tasks, route coordination to the lead.
+bootstrap_worker_task_skill :: proc() -> (string, string) {
+	content := "---\nname: worker-task-management\ndescription: How a WORKER agent uses ham-ctl to execute assigned tasks, report progress, and hand off for review in a task chain. Load whenever you are a non-coordinator member of a chain.\n---\n\n# Worker task management (execute your assigned tasks)\n\nYou are a worker on this chain. Do the tasks ASSIGNED to you and report progress. Do not coordinate the whole chain or take on unassigned work — route that to the coordinator.\n\nAll commands use the managed wrapper: `./.heimdall/bin/ham-ctl`.\n\n## 1. Find your work\n- `./.heimdall/bin/ham-ctl agent tasks fetch` — list tasks; focus on those assigned to you and currently actionable.\n- Read the task description and the chain description for the REQ-IDs your task must satisfy.\n\n## 2. Do the work with visible progress\n- Start: `./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress`.\n- Comment at every meaningful step, on blockers, and before handoff: `./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \\\"<what you did, what changed, what is next>\\\"`.\n- Do not do substantial work that has no task. If one is missing, ask the coordinator to create it (do not silently expand scope).\n\n## 3. Hand off for review\n- When done: `./.heimdall/bin/ham-ctl agent tasks done --task-id <id>` (moves it to `review_ready`). Include a summary comment of what to review and the evidence (tests, commits, files).\n- If you receive an `ngtm` vote, address the feedback, comment what you changed, and re-submit.\n\n## 4. Reviewing (when you are a reviewer)\n- Vote with `./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \\\"<feedback>\\\"`.\n\n## 5. Communication\n- Route questions, blockers, and user-facing messages to the coordinator. Chat sent with chain context is redirected to them automatically.\n- Use `./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id>` to request attention on a stalled task you own.\n\nKeep your task status and comments current at all times so the chain reflects real progress."
+	return "worker-task-management", content
 }
 
 bootstrap_fallback_skill :: proc() -> (string, string) {
@@ -1075,6 +1110,18 @@ render_tasks_guidance :: proc() -> string {
 	return "\n\n## Working with tasks (REQUIRED)\nYou MUST track all substantial work as tasks in this task chain. This is not optional.\n\nRules you must follow:\n1. Before starting work, ALWAYS run ./.heimdall/bin/ham-ctl agent tasks fetch to see the current tasks in your chain.\n2. Do NOT do meaningful work that is not represented by a task. If a task does not exist for what you are about to do, create one (coordinator) or ask the coordinator to create one.\n3. When you begin a task, move it to in_progress: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress\n4. As you make progress, you MUST post a comment on the task describing what you did, what changed, and what is next: ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \"<progress update>\". Add a comment at every meaningful step, on blockers, and before handing off for review.\n5. When the work is complete, submit it for review: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_validation (or ./.heimdall/bin/ham-ctl agent tasks done --task-id <id>). Include a summary comment of what to review.\n6. Reviewers vote with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \"<feedback>\". If you receive ngtm, address the feedback, comment what you changed, and re-submit.\n7. Use ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id> to request attention on a stalled task.\n\nKeep task status and comments current at all times so the whole chain reflects real progress."
 }
 
+// Role-specific AGENTS.md guidance for the manifest/fragment assembler. The
+// coordinator is told to delegate (not implement); a worker is told to execute
+// assigned tasks and route coordination to the coordinator. Empty when the
+// instance is not part of a chain.
+render_role_guidance :: proc(is_coordinator: bool, chain_ok: bool) -> string {
+	if !chain_ok do return ""
+	if is_coordinator {
+		return "\n\n## You are the COORDINATOR of this task chain (delegate — do not do the work yourself)\nYour role is to PLAN and ORCHESTRATE the chain, not to implement it. Doing substantial work yourself instead of delegating is a failure mode.\n\nWhat this means in practice:\n1. Break the goal into discrete tasks and ASSIGN each to a worker agent. Do not implement features, write the code, run the research, or produce the deliverable yourself — that is the assignees' job.\n2. Add the agents you need to the chain (`./.heimdall/bin/ham-ctl agent chains add-agent ...`) and create tasks with an explicit `--assignee <agent_instance_id>`; set order with `--depends-on` and blocking reviewers with `tasks participant --role lgtm_required`.\n3. Own the chain description as the canonical design doc (goal, scope, REQ-IDs, task plan, validation strategy). Keep it in sync as scope changes.\n4. Be the ONLY point of contact for the user. Team agents route questions/blockers through you; you synthesize and reply. Acknowledge user messages promptly.\n5. Enforce review gates: `tasks done` -> `review_ready` -> required reviewers LGTM -> `approved`. The chain is `completed` only when YOU complete it with a verifiable final summary.\n6. Only do work yourself for trivial coordination glue. Anything a worker can own, delegate.\n\nRead the `coordinator-task-management` skill for the full ham-ctl command reference and delegation workflow."
+	}
+	return "\n\n## You are a WORKER on this task chain\nExecute the tasks ASSIGNED to you. Do not take on work outside your assigned tasks or coordinate the whole chain — that is the coordinator's job. Route questions, blockers, and user-facing messages to the coordinator (chat with chain context is redirected to them automatically). Keep your task status and comments current, and hand off for review with `tasks done` when complete. Read the `worker-task-management` skill for the ham-ctl command reference."
+}
+
 render_memories_markdown :: proc(service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) -> string {
 	if service == nil || service.content == nil do return ""
 	memories, err := iface.content_list_memories(service.content, owner)
@@ -1197,6 +1244,14 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	tasks_hash := bootstrap_fragment_hash(tasks_body)
 	hub_fragment_cache_put(tasks_hash, tasks_body)
 
+	is_coordinator := chain_ok && chain.coordinator_agent_instance_id == inst.agent_instance_id
+	role_body := render_role_guidance(is_coordinator, chain_ok)
+	role_hash := ""
+	if role_body != "" {
+		role_hash = bootstrap_fragment_hash(role_body)
+		hub_fragment_cache_put(role_hash, role_body)
+	}
+
 	memories_body := render_memories_markdown(service, owner, inst)
 	memories_hash := ""
 	if memories_body != "" {
@@ -1209,6 +1264,20 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 		hash: string,
 	}
 	skills_list := make([dynamic]Skill_Manifest_Item)
+	// Role-specific task-management skill (coordinator delegation playbook vs worker
+	// execution guide), always present for chain members.
+	if chain_ok {
+		role_skill_name: string
+		role_skill_content: string
+		if is_coordinator {
+			role_skill_name, role_skill_content = bootstrap_coordinator_task_skill()
+		} else {
+			role_skill_name, role_skill_content = bootstrap_worker_task_skill()
+		}
+		role_skill_hash := bootstrap_fragment_hash(role_skill_content)
+		hub_fragment_cache_put(role_skill_hash, role_skill_content)
+		append(&skills_list, Skill_Manifest_Item{name = role_skill_name, hash = role_skill_hash})
+	}
 	if service != nil && service.content != nil {
 		memories, err := iface.content_list_memories(service.content, owner)
 		if err.code == .None {
@@ -1257,6 +1326,11 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	strings.write_string(&b, ",{\"section\":\"tasks_guidance\",\"hash\":\"")
 	write_service_json_string(&b, tasks_hash)
 	strings.write_string(&b, "\"}")
+	if role_hash != "" {
+		strings.write_string(&b, ",{\"section\":\"role_guidance\",\"hash\":\"")
+		write_service_json_string(&b, role_hash)
+		strings.write_string(&b, "\"}")
+	}
 	if memories_hash != "" {
 		strings.write_string(&b, ",{\"section\":\"memories\",\"hash\":\"")
 		write_service_json_string(&b, memories_hash)
