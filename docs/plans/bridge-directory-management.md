@@ -1,6 +1,6 @@
 # Bridge directory management — plan
 
-**Status:** In progress — Phase 1
+**Status:** Phases 1–4 done (Phase 5 polish remaining)
 
 ### Confirmed decisions (2026-08-28)
 1. Root default: **`$HOME` only** for v1 (single `fs_root`); allowlist later.
@@ -226,8 +226,16 @@ resolved with `bridge_expand_home` at startup.
 - **Phase 3 — Hub HTTP endpoints.** `bridge_handlers.odin` handlers +
   `wiring.odin` routes; owner/online guards; pass-through via
   `send_runtime_command_wait`. Contracts constants.
-- **Phase 4 — UI.** `BridgeDirectoryPicker` + RTK endpoints; wire into the two
-  bridge-path surfaces; the "missing on bridge X → create" affordance.
+- **Phase 4 — UI. `[x] done`** RTK endpoints (`api/endpoints/bridgeFs.ts`:
+  listBridgeDir / statBridgePath / mkdirBridgePath). `BridgeDirectoryPicker`
+  (browse + breadcrumb + new-folder + typed-path create + hidden toggle). Reworked
+  the project **Working directory** panel to the confirmed model: a single
+  **default path** (no bridge picker — edits `project.default_path`) + a per-online-
+  bridge list showing the **effective** path (override or default) with a live
+  **present / not present** indicator (`statBridgePath`), a **Create** action for
+  missing paths (`mkdirBridgePath` → re-probe), **Override** (opens the picker →
+  `setProjectBridgePath`), and **Reset to default** (`deleteProjectBridgePath`).
+  Verified live: default-path save, per-bridge override, and stat/mkdir round-trips.
 - **Phase 5 — Polish.** Hidden toggle, git badges, breadcrumb bounds, empty/error
   states, AGENTS.md debug-id registry, docs.
 

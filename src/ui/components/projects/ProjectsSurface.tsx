@@ -19,15 +19,15 @@ import {
   useUpdateProjectMutation,
   useSetProjectBridgePathMutation,
   useDeleteProjectBridgePathMutation,
-  useValidateProjectBridgePathMutation,
   type Project,
 } from '../../api/endpoints/projects';
 import { useListAgentsQuery } from '../../api/endpoints/agents';
 import { useListMemoriesQuery } from '../../api/endpoints/memory';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
+import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../api/endpoints/bridgeFs';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import Icon from '../Icon';
-import SearchableSelect from '../SearchableSelect';
+import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
 
 function str(v: any): string { return String(v ?? '').trim(); }
 function bridgeId(b: any): string { return str(b?.bridge_id || b?.bridgeId || b?.id); }
@@ -323,67 +323,151 @@ function MemoryPanel({ memories, loading, projectId }: { memories: any[]; loadin
   );
 }
 
+function bridgeIsOnline(b: any): boolean { return str(b?.status || b?.state || 'online').toLowerCase() === 'online'; }
+
 function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; project: Project | null; bridges: any[] }) {
-  const [setBridgePath, setState] = useSetProjectBridgePathMutation();
+  const [updateProject, updateState] = useUpdateProjectMutation();
+  const [setBridgePath] = useSetProjectBridgePathMutation();
   const [deleteBridgePath] = useDeleteProjectBridgePathMutation();
-  const [validateBridgePath] = useValidateProjectBridgePathMutation();
-  const existing = project?.bridge_paths || [];
-  const pathByBridge = useMemo(() => {
-    const map = new Map<string, any>();
-    for (const bp of existing) map.set(str(bp.bridge_id), bp);
+
+  const defaultPath = str(project?.default_path);
+  const overrides = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const bp of (project?.bridge_paths || [])) map.set(str(bp.bridge_id), str(bp.path));
     return map;
-  }, [existing]);
+  }, [project?.bridge_paths]);
 
-  const [selBridge, setSelBridge] = useState('');
-  const [pathDraft, setPathDraft] = useState('');
-  const [err, setErr] = useState('');
+  // Effective path for a bridge = its override, else the project default.
+  const effectivePath = (bid: string) => overrides.get(bid) || defaultPath;
 
-  async function save() {
-    setErr('');
-    if (!selBridge || !pathDraft.trim()) { setErr('Choose a device and enter a path.'); return; }
+  const onlineBridges = useMemo(() => bridges.filter(bridgeIsOnline), [bridges]);
+
+  // Default-path editor.
+  const [defaultDraft, setDefaultDraft] = useState(defaultPath);
+  const [defaultErr, setDefaultErr] = useState('');
+  useEffect(() => { setDefaultDraft(defaultPath); }, [defaultPath]);
+  async function saveDefault() {
+    setDefaultErr('');
     try {
-      await setBridgePath({ projectId, bridgeId: selBridge, path: pathDraft.trim() } as any).unwrap();
-      setPathDraft('');
-    } catch (e: any) { setErr(str(e?.data?.error?.message || e?.error || e?.message) || 'Save failed'); }
+      await updateProject({ projectId, default_path: defaultDraft.trim() }).unwrap();
+    } catch (e: any) { setDefaultErr(str(e?.data?.error?.message || e?.error || e?.message) || 'Save failed'); }
   }
 
-  const bridgeOptions = bridges.map((b) => ({ value: bridgeId(b), title: bridgeLabel(b), subtitle: pathByBridge.has(bridgeId(b)) ? 'has a path set' : undefined }));
+  // Per-bridge existence probe (stat) — one call per online bridge.
+  const [statFor] = useLazyStatBridgePathQuery();
+  const [statByBridge, setStatByBridge] = useState<Record<string, { loading: boolean; exists?: boolean; error?: string }>>({});
+  async function probe(bid: string) {
+    const path = effectivePath(bid);
+    if (!path) { setStatByBridge((s) => ({ ...s, [bid]: { loading: false, error: 'no path' } })); return; }
+    setStatByBridge((s) => ({ ...s, [bid]: { loading: true } }));
+    try {
+      const res = await statFor({ bridgeId: bid, path }).unwrap();
+      setStatByBridge((s) => ({ ...s, [bid]: { loading: false, exists: Boolean(res.exists && res.is_dir), error: res.ok ? '' : str(res.error?.message) } }));
+    } catch (e: any) {
+      setStatByBridge((s) => ({ ...s, [bid]: { loading: false, error: str(e?.error || e?.message) || 'bridge unavailable' } }));
+    }
+  }
+  // Probe all online bridges whenever the set of bridges or the paths change.
+  useEffect(() => {
+    for (const b of onlineBridges) void probe(bridgeId(b));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onlineBridges.map(bridgeId).join(','), defaultPath, Array.from(overrides.entries()).map(([k, v]) => `${k}:${v}`).join(',')]);
+
+  // Which bridge's override picker is open.
+  const [pickerBridge, setPickerBridge] = useState('');
+
+  async function applyOverride(bid: string, path: string) {
+    try {
+      await setBridgePath({ projectId, bridgeId: bid, path }).unwrap();
+      setPickerBridge('');
+    } catch { /* surfaced via re-probe */ }
+  }
+  async function resetToDefault(bid: string) {
+    try { await deleteBridgePath({ projectId, bridgeId: bid }).unwrap(); } catch { /* ignore */ }
+  }
 
   return (
-    <Card title="Bridge paths" count={existing.length} debugId="project-detail-bridge-paths">
-      <p className="mb-3 text-xs text-zinc-500">Where this project lives on each device (bridge). Agents launched on a device use its path.</p>
+    <Card title="Working directory" debugId="project-detail-bridge-paths">
+      {/* Default path — not tied to any bridge. */}
+      <div className="mb-4">
+        <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path (all devices)</label>
+        <p className="mt-1 text-xs text-zinc-500">Used on every device unless overridden below. e.g. <span className="font-mono text-zinc-400">~/projects/my-app</span></p>
+        <div className="mt-2 flex gap-2">
+          <input data-debug-id="project-detail-default-path-input" value={defaultDraft} onChange={(e) => setDefaultDraft(e.target.value)} placeholder="~/path/to/project" className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" />
+          <button data-debug-id="project-detail-default-path-save-btn" type="button" disabled={updateState.isLoading || defaultDraft.trim() === defaultPath} onClick={saveDefault} className="shrink-0 rounded-xl bg-sky-400 px-4 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-40">Save</button>
+        </div>
+        {defaultErr ? <p data-debug-id="project-detail-default-path-error" className="mt-1 text-xs text-red-300">{defaultErr}</p> : null}
+      </div>
 
-      {existing.length > 0 ? (
-        <div className="mb-4 space-y-1.5">
-          {existing.map((bp) => {
-            const bid = str(bp.bridge_id);
-            const b = bridges.find((x) => bridgeId(x) === bid);
+      {/* Per-device presence + overrides. */}
+      <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Devices</label>
+      <p className="mt-1 mb-2 text-xs text-zinc-500">Whether the effective path is present on each online device.</p>
+      {onlineBridges.length === 0 ? (
+        <div data-debug-id="project-detail-bridge-paths-empty" className="text-sm text-zinc-500">No online devices to check.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {onlineBridges.map((b) => {
+            const bid = bridgeId(b);
+            const path = effectivePath(bid);
+            const overridden = overrides.has(bid);
+            const st = statByBridge[bid] || { loading: true };
+            const isOpen = pickerBridge === bid;
             return (
-              <div key={bid} data-debug-id={`project-detail-bridge-path-row-${bid}`} className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-black/20 px-3 py-2">
-                <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-zinc-300">{b ? bridgeLabel(b) : bid}</span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-zinc-300">{bp.path}</span>
-                {bp.is_validated ? <span className="shrink-0 text-[11px] font-semibold text-emerald-400">validated</span> : <span className="shrink-0 text-[11px] text-amber-400">unvalidated</span>}
-                <button data-debug-id={`project-detail-bridge-path-validate-${bid}`} type="button" onClick={() => validateBridgePath({ projectId, bridgeId: bid } as any)} className="shrink-0 rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Validate</button>
-                <button data-debug-id={`project-detail-bridge-path-remove-${bid}`} type="button" onClick={() => deleteBridgePath({ projectId, bridgeId: bid } as any)} aria-label="Remove path" className="shrink-0 rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-red-300"><Icon name="close" size={14} /></button>
+              <div key={bid} data-debug-id={`project-detail-bridge-path-row-${bid}`} className="rounded-lg border border-white/[0.06] bg-black/20">
+                <div className="flex items-center gap-3 px-3 py-2">
+                  <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-zinc-300">{bridgeLabel(b)}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-zinc-300" title={path}>{path || <span className="not-italic text-zinc-600">no path</span>}</span>
+                  {overridden ? <span className="shrink-0 rounded bg-sky-400/15 px-1.5 py-0.5 text-[9px] font-bold text-sky-300">override</span> : null}
+                  {/* presence indicator */}
+                  {st.loading ? (
+                    <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className="shrink-0 text-[11px] text-zinc-500">checking…</span>
+                  ) : st.error ? (
+                    <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className="shrink-0 text-[11px] text-amber-400">{st.error}</span>
+                  ) : st.exists ? (
+                    <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className="shrink-0 text-[11px] font-semibold text-emerald-400">present</span>
+                  ) : (
+                    <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className="shrink-0 text-[11px] font-semibold text-red-400">not present</span>
+                  )}
+                  {/* actions */}
+                  {!st.loading && !st.exists && !st.error && path ? (
+                    <CreateOnBridgeButton bridgeId={bid} path={path} onDone={() => void probe(bid)} />
+                  ) : null}
+                  <button data-debug-id={`project-detail-bridge-path-override-${bid}`} type="button" onClick={() => setPickerBridge(isOpen ? '' : bid)} className="shrink-0 rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">{isOpen ? 'Close' : 'Override'}</button>
+                  {overridden ? <button data-debug-id={`project-detail-bridge-path-reset-${bid}`} type="button" onClick={() => resetToDefault(bid)} className="shrink-0 rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-red-300" title="Reset to default"><Icon name="close" size={14} /></button> : null}
+                </div>
+                {isOpen ? (
+                  <div className="border-t border-white/[0.06] p-2">
+                    <BridgeDirectoryPicker
+                      debugId={`project-detail-bridge-picker-${bid}`}
+                      bridgeId={bid}
+                      bridgeLabel={bridgeLabel(b)}
+                      initialPath={path}
+                      onPick={(p) => void applyOverride(bid, p)}
+                      onClose={() => setPickerBridge('')}
+                    />
+                  </div>
+                ) : null}
               </div>
             );
           })}
         </div>
-      ) : (
-        <div data-debug-id="project-detail-bridge-paths-empty" className="mb-4 text-sm text-zinc-500">No per-device paths yet. Add one below.</div>
       )}
-
-      <div className="grid gap-2 sm:grid-cols-[minmax(0,220px)_1fr_auto] sm:items-end">
-        <div>
-          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Device</label>
-          <SearchableSelect debugId="project-detail-bridge-path-device" options={bridgeOptions} value={selBridge} onChange={setSelBridge} buttonPlaceholder="Choose device…" placeholder="Search devices…" />
-        </div>
-        <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Path
-          <input data-debug-id="project-detail-bridge-path-input" value={pathDraft} onChange={(e) => setPathDraft(e.target.value)} placeholder="~/path/on/this/device" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" />
-        </label>
-        <button data-debug-id="project-detail-bridge-path-save-btn" type="button" disabled={setState.isLoading} onClick={save} className="h-[42px] rounded-xl bg-sky-400 px-4 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">Save</button>
-      </div>
-      {err ? <p data-debug-id="project-detail-bridge-path-error" className="mt-2 text-xs text-red-300">{err}</p> : null}
     </Card>
+  );
+}
+
+// CreateOnBridgeButton mkdir's the effective path on a bridge, then triggers a re-probe.
+function CreateOnBridgeButton({ bridgeId, path, onDone }: { bridgeId: string; path: string; onDone: () => void }) {
+  const [mkdir, state] = useMkdirBridgePathMutation();
+  return (
+    <button
+      data-debug-id={`project-detail-bridge-path-create-${bridgeId}`}
+      type="button"
+      disabled={state.isLoading}
+      onClick={async () => { try { await mkdir({ bridgeId, path }).unwrap(); } catch { /* ignore */ } onDone(); }}
+      className="shrink-0 rounded-md border border-emerald-400/30 px-2 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-400/10 disabled:opacity-50"
+    >
+      {state.isLoading ? 'Creating…' : 'Create'}
+    </button>
   );
 }
