@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useListConversationInboxQuery, useLazyListConversationInboxQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { buildRouteHash } from '../../utils/appLocation';
+import Icon from '../Icon';
 
 const PAGE_SIZE = 40;
 
@@ -82,14 +83,17 @@ export default function ConversationsHomePage() {
 
   return (
     <div data-debug-id="conversations-home-page" className="flex min-h-full w-full flex-col text-left">
-      <header data-debug-id="conversations-home-header" className="sticky top-0 z-10 -mx-3 border-b border-white/10 bg-[#090909]/95 px-3 pb-3 pt-2 backdrop-blur sm:-mx-4 sm:px-4 lg:-mx-5 lg:px-5">
+      {/* On mobile the shell top bar already shows the "Conversations" title, so
+          keep this header compact (a slim count row + New). Desktop shows the full
+          eyebrow/title block. */}
+      <header data-debug-id="conversations-home-header" className="sticky top-0 z-10 -mx-3 border-b border-white/10 bg-[#090909]/95 px-3 py-2 backdrop-blur sm:-mx-4 sm:px-4 sm:pb-3 sm:pt-2 lg:-mx-5 lg:px-5">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75">Conversations</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white">Inbox</h1>
-            <p data-debug-id="conversations-home-subtitle" className="mt-1 text-sm text-zinc-500">Newest message first · {conversations.length} loaded{unreadTotal ? ` · ${unreadTotal} unread` : ''}</p>
+            <p className="hidden text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75 sm:block">Conversations</p>
+            <h1 className="hidden text-2xl font-semibold tracking-tight text-white sm:mt-1 sm:block">Inbox</h1>
+            <p data-debug-id="conversations-home-subtitle" className="text-[13px] text-zinc-500 sm:mt-1 sm:text-sm">{conversations.length} loaded{unreadTotal ? ` · ${unreadTotal} unread` : ''}</p>
           </div>
-          <a data-debug-id="conversations-home-new-btn" href={buildRouteHash('/conversations/new', '')} className="inline-flex min-h-11 shrink-0 items-center rounded-2xl bg-sky-400 px-4 py-2 text-sm font-black text-black shadow-lg shadow-sky-950/30 hover:bg-sky-300">New</a>
+          <a data-debug-id="conversations-home-new-btn" href={buildRouteHash('/conversations/new', '')} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-2xl bg-sky-400 px-4 py-2 text-sm font-black text-black shadow-lg shadow-sky-950/30 hover:bg-sky-300"><Icon name="plus" size={15} /> New</a>
         </div>
       </header>
 

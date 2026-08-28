@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useGlobalSearchQuery, type SearchHit } from '../../api/endpoints/search';
+import Icon, { type IconName } from '../Icon';
 
 // UI-12: unified command palette — navigation + entity search + actions.
 // One component, invoked from Cmd/Ctrl-K, the sidebar "Search" item, and the
@@ -20,27 +21,27 @@ export type PaletteAction = {
   id: string;
   label: string;
   hint?: string;
-  icon?: string;
+  icon?: IconName;
 };
 
 export type PaletteResult =
-  | { kind: 'navigate'; label: string; hint?: string; icon?: string; route: string; group: 'Navigate' }
-  | { kind: 'action'; label: string; hint?: string; icon?: string; actionId: string; group: 'Actions' }
+  | { kind: 'navigate'; label: string; hint?: string; icon?: IconName; route: string; group: 'Navigate' }
+  | { kind: 'action'; label: string; hint?: string; icon?: IconName; actionId: string; group: 'Actions' }
   | { kind: 'entity'; label: string; hint?: string; hit: SearchHit; group: string; route?: string };
 
-const DEFAULT_NAV: { label: string; icon: string; route: string }[] = [
-  { label: 'New conversation', icon: '💬', route: '/conversations/new' },
-  { label: 'Conversations', icon: '💬', route: '/conversations' },
-  { label: 'Task Chains', icon: '☑', route: '/chains' },
-  { label: 'Agents', icon: '🤖', route: '/agents' },
-  { label: 'Library', icon: '▣', route: '/library' },
-  { label: 'Settings', icon: '⚙', route: '/settings' },
+const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
+  { label: 'New conversation', icon: 'plus', route: '/conversations/new' },
+  { label: 'Conversations', icon: 'chat', route: '/conversations' },
+  { label: 'Projects', icon: 'grid', route: '/projects' },
+  { label: 'Agents', icon: 'tasks', route: '/agents' },
+  { label: 'Library', icon: 'device', route: '/library' },
+  { label: 'Settings', icon: 'gear', route: '/settings' },
 ];
 
 const DEFAULT_ACTIONS: PaletteAction[] = [
-  { id: 'new-chain', label: 'New task chain', icon: '⛓', hint: 'Start a chain' },
-  { id: 'new-agent', label: 'New agent', icon: '🤖', hint: 'Create a durable identity' },
-  { id: 'new-project', label: 'New project', icon: '📁', hint: 'Grouping + paths' },
+  { id: 'new-chain', label: 'New task chain', icon: 'tasks', hint: 'Start a chain' },
+  { id: 'new-agent', label: 'New agent', icon: 'plus', hint: 'Create a durable identity' },
+  { id: 'new-project', label: 'New project', icon: 'grid', hint: 'Grouping + paths' },
 ];
 
 function matches(haystack: string, q: string): boolean {
@@ -72,18 +73,18 @@ function hitRoute(hit: SearchHit): string {
   }
 }
 
-function hitIcon(type: string): string {
+function hitIcon(type: string): IconName {
   switch (String(type || '').toLowerCase()) {
-    case 'conversation': return '💬';
+    case 'conversation': return 'chat';
     case 'agent':
-    case 'agent_instance': return '🤖';
+    case 'agent_instance': return 'tasks';
     case 'task-chain':
-    case 'chain': return '⛓';
-    case 'task': return '☑';
-    case 'project': return '📁';
-    case 'artifact': return '▣';
-    case 'memory': return '✦';
-    default: return '•';
+    case 'chain': return 'tasks';
+    case 'task': return 'tasks';
+    case 'project': return 'grid';
+    case 'artifact': return 'device';
+    case 'memory': return 'search';
+    default: return 'chevron-right';
   }
 }
 
@@ -213,7 +214,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
-          <span aria-hidden="true" className="text-zinc-500">🔍</span>
+          <span aria-hidden="true" className="text-zinc-500"><Icon name="search" size={16} /></span>
           <input
             ref={inputRef}
             data-debug-id="command-palette-input"
@@ -241,7 +242,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                   const idx = indices[i];
                   const active = idx === activeIndex;
                   const label = result.label;
-                  const icon = result.kind === 'entity' ? hitIcon(result.hit.type || '') : (result as any).icon || '•';
+                  const icon: IconName = result.kind === 'entity' ? hitIcon(result.hit.type || '') : ((result as any).icon || 'chevron-right');
                   return (
                     <button
                       key={`${groupLabel}-${idx}`}
@@ -252,7 +253,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                       onMouseEnter={() => setActiveIndex(idx)}
                       className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${active ? 'bg-white/[0.08] text-zinc-100' : 'text-zinc-300 hover:bg-white/[0.04]'}`}
                     >
-                      <span aria-hidden="true" className="w-5 text-center text-base opacity-70">{icon}</span>
+                      <span aria-hidden="true" className="grid w-5 place-items-center text-zinc-400 opacity-80"><Icon name={icon} size={16} /></span>
                       <span className="min-w-0 flex-1 truncate">{label}</span>
                       {result.hint ? <span className="ml-auto shrink-0 truncate pl-2 text-[11px] text-zinc-500">{result.hint}</span> : null}
                     </button>

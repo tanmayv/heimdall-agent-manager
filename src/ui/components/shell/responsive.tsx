@@ -92,11 +92,13 @@ export type MobileTabBarProps = {
   paletteDebugId?: string;
 };
 
+// Mirror the desktop left-sidebar nav (Conversations, Projects, Agents, Settings)
+// with the command-palette as the center button.
 const TABS: { id: string; label: string; icon: IconName; route: string }[] = [
-  { id: 'chat', label: 'Chat', icon: 'chat', route: '/conversations' },
-  { id: 'chains', label: 'Chains', icon: 'tasks', route: '/chains' },
-  { id: 'library', label: 'Library', icon: 'device', route: '/library' },
-  { id: 'more', label: 'More', icon: 'gear', route: '/settings' },
+  { id: 'chat', label: 'Chats', icon: 'chat', route: '/conversations' },
+  { id: 'projects', label: 'Projects', icon: 'grid', route: '/projects' },
+  { id: 'agents', label: 'Agents', icon: 'tasks', route: '/agents' },
+  { id: 'settings', label: 'Settings', icon: 'gear', route: '/settings/bridges' },
 ];
 
 export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge = 0, chainsBadge = 0, paletteDebugId = 'shell-mobile-palette-button' }: MobileTabBarProps) {
@@ -108,7 +110,7 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
       className="ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-white/10 bg-[#101010]/95 backdrop-blur md:hidden"
     >
       {TABS.slice(0, 2).map((tab) => (
-        <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chat' ? chatBadge : tab.id === 'chains' ? chainsBadge : 0} onClick={() => onNavigate(tab.route)} />
+        <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chat' ? chatBadge : 0} onClick={() => onNavigate(tab.route)} />
       ))}
       {/* Center = command palette (dedicated center button per arch doc §6D). */}
       <div className="flex items-end justify-center pb-1">
@@ -117,9 +119,9 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
           data-debug-id={paletteDebugId}
           onClick={onOpenPalette}
           aria-label="Command palette"
-          className={`grid h-12 w-12 -translate-y-2 place-items-center rounded-full border border-white/15 bg-[#1c1c1c] text-zinc-100 shadow-lg shadow-black/40 hover:bg-[#262626] ${TOUCH_TARGET_CLASS}`}
+          className={`grid h-12 w-12 -translate-y-2 place-items-center rounded-full border border-white/15 bg-sky-400 text-black shadow-lg shadow-sky-950/40 hover:bg-sky-300 ${TOUCH_TARGET_CLASS}`}
         >
-          <span aria-hidden="true">⌘</span>
+          <Icon name="search" size={20} />
         </button>
       </div>
       {TABS.slice(2).map((tab) => (
