@@ -1,13 +1,27 @@
 # UI Rework — "Conversations-first" implementation plan
 
-**Status:** Not started (planning complete)
+**Status:** In progress — Phase 0
 **Owner:** _unassigned_
 **Design source:** `docs/mocks/simplified-ui.html` + `docs/mocks/simplified-ui-redesign.md`
 **Last updated:** 2026-08-28
 
 > Multi-session tracker. Update the **Status** boxes and the **Progress log** at the
-> bottom as work lands. Keep each phase independently shippable behind the feature
-> flag so we never break the current UI mid-flight.
+> bottom as work lands. Keep each phase independently shippable so we never break the
+> current UI mid-flight.
+
+### IMPORTANT — codebase reality (discovered 2026-08-28)
+- The live UI entrypoint is `src/ui/main.tsx` → `components/shell/AppShell.tsx`.
+  **`components/App.tsx` (the ~7200-line monolith) is dead code — imported nowhere.**
+  Do the rework in `AppShell.tsx` + `components/chat/*`, not `App.tsx`.
+- `AppShell` **already** has: project-grouped conversation tree in the left rail
+  (`ProjectConversationTree` / `buildProjectConversationTree`), a hash `RouteOutlet`,
+  mobile drawer + bottom tab bar, and single user-WS wiring. So Phase 1's rail largely
+  **exists** — this rework is mostly: (a) runtime chip + status in the conversation view,
+  (b) one-tap task chain, (c) the scalable New chat flow, (d) icon-ification, (e) folding
+  extra nav into Manage.
+- Because there is no second legacy shell to fall back to, we are **enhancing in place**
+  behind small local guards rather than a global `ui.conversationsFirst` swap. Keep each
+  change independently revertible; no big-bang cutover needed.
 
 ---
 
@@ -75,13 +89,19 @@ Mobile:   list (search + grouped convos + FAB + tabbar)  <->  thread (runtime ch
 
 ## 4. Phases (each independently shippable)
 
-### Phase 0 — Foundations `[ ] not started`
-- [ ] Add `ui.conversationsFirst` feature flag (route-level switch in `App.tsx`).
-- [ ] Add shared `Icon` component + SVG sprite (port symbols from the mock: plus, gear,
-      chat, grid, tasks, chevron-{left,right,down}, arrow-{up,right}, close, stop, play).
-      Establish the "no emoji" lint expectation.
-- [ ] Add a `StatusDot` + `RuntimeChip` primitive (status → color: live/starting/stopped).
-- **Acceptance:** flag off = legacy UI unchanged; flag on = empty new shell renders.
+### Phase 0 — Foundations `[x] done`
+- [x] ~~Add `ui.conversationsFirst` feature flag~~ — **dropped.** `App.tsx` is dead; we
+      enhance `AppShell.tsx` in place (each change independently revertible), so a global
+      flag is unnecessary. Revisit only if a change turns out to be risky.
+- [x] Add shared `Icon` component (`components/Icon.tsx`). Wraps `lucide-react` (already a
+      dep) behind a stable name-based API: plus, gear, chat, grid, tasks,
+      chevron-{left,right,down}, arrow-{up,right}, close, stop, play, search, device.
+      Establishes the "icons not emojis" rule for new UI.
+- [x] Add `StatusDot` + `RuntimeChip` primitives (`components/runtime/RuntimeChip.tsx`)
+      with `runtimeStateFromStatus()` normalizing instance `runtime_status` →
+      live/starting/stopped, and an explicit label ("Running/Starting/Stopped").
+- **Acceptance:** `tsc -b` passes; primitives ready to drop into the conversation view.
+      _Met._ Not yet visually wired (that's Phase 2).
 
 ### Phase 1 — Shell + rail (conversations grouped by project) `[ ] not started`
 - [ ] New `ConversationsShell` (left rail + main + optional inspector) behind the flag.
@@ -164,6 +184,13 @@ Mobile:   list (search + grouped convos + FAB + tabbar)  <->  thread (runtime ch
 ## 7. Progress log
 _Append newest first: `YYYY-MM-DD — <who> — <phase> — <what landed / decided>`._
 
+- 2026-08-28 — impl — **Phase 0 done.** Added `components/Icon.tsx` (lucide-backed,
+  name-based API) and `components/runtime/RuntimeChip.tsx` (`StatusDot`, `RuntimeChip`,
+  `runtimeStateFromStatus`/`runtimeStateLabel`). Discovered `components/App.tsx` is dead
+  code — the real shell is `components/shell/AppShell.tsx`, which already has the
+  project-grouped conversation rail; updated the plan's scope accordingly and dropped the
+  global feature flag. `tsc -b` green. Next: Phase 2 (wire RuntimeChip + status into the
+  conversation view) since Phase 1's rail largely exists.
 - 2026-08-28 — planning — Phase plan drafted. Interactive mock (`docs/mocks/simplified-ui.html`)
   covers desktop + mobile, New chat flow, runtime chip with explicit run status, task-chain
-  access, and an emoji-free SVG icon set. Ready to start Phase 0.
+  access, and an emoji-free SVG icon set.
