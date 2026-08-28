@@ -11,11 +11,12 @@
 //   agents    -> useListAgentsQuery({ projectId })
 //   memory    -> useListMemoriesQuery({ project_id })
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   useListProjectsQuery,
   useFetchProjectQuery,
   useCreateProjectMutation,
+  useUpdateProjectMutation,
   useSetProjectBridgePathMutation,
   useDeleteProjectBridgePathMutation,
   useValidateProjectBridgePathMutation,
@@ -40,7 +41,20 @@ function projectIdFromRoute(): string {
 }
 
 export default function ProjectsSurface() {
-  const routeProjectId = projectIdFromRoute();
+  // The AppShell route is just `/projects` for both list and detail (detail only
+  // adds a `?projectId=` query). The shell won't re-render on a query-only change,
+  // so track the selected project id here and react to hashchange ourselves.
+  const [routeProjectId, setRouteProjectId] = useState(projectIdFromRoute);
+  useEffect(() => {
+    const update = () => setRouteProjectId(projectIdFromRoute());
+    window.addEventListener('hashchange', update);
+    window.addEventListener('popstate', update);
+    update();
+    return () => {
+      window.removeEventListener('hashchange', update);
+      window.removeEventListener('popstate', update);
+    };
+  }, []);
   return routeProjectId
     ? <ProjectDetail projectId={routeProjectId} />
     : <ProjectList />;
@@ -160,11 +174,12 @@ function ProjectDetail({ projectId }: { projectId: string }) {
       <header className="mb-5">
         <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75">Project</p>
         <h1 data-debug-id="project-detail-title" className="mt-1 text-2xl font-semibold tracking-tight text-white">{project?.name || projectId}</h1>
-        {project?.default_path ? <p className="mt-1 font-mono text-xs text-zinc-500">{project.default_path}</p> : null}
-        {project?.description ? <p className="mt-2 max-w-2xl text-sm text-zinc-400">{project.description}</p> : null}
       </header>
 
       <div className="grid gap-4 lg:grid-cols-2">
+        <div className="lg:col-span-2">
+          <AboutPanel projectId={projectId} project={project} />
+        </div>
         <AgentsPanel agents={agents} loading={agentsQuery.isLoading} projectId={projectId} />
         <MemoryPanel memories={memories} loading={memoryQuery.isLoading} projectId={projectId} />
         <div className="lg:col-span-2">
@@ -184,6 +199,68 @@ function Card({ title, count, children, debugId, action }: { title: string; coun
       </div>
       {children}
     </section>
+  );
+}
+
+function AboutPanel({ projectId, project }: { projectId: string; project: Project | null }) {
+  const [updateProject, updateState] = useUpdateProjectMutation();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [defaultPath, setDefaultPath] = useState('');
+  const [err, setErr] = useState('');
+
+  // Seed the edit form from the loaded project whenever it (re)loads.
+  useEffect(() => {
+    if (!project) return;
+    setName(str(project.name));
+    setDescription(str(project.description));
+    setDefaultPath(str(project.default_path));
+  }, [project?.project_id, project?.name, project?.description, project?.default_path]);
+
+  async function save() {
+    setErr('');
+    try {
+      await updateProject({ projectId, name: name.trim(), description: description.trim(), default_path: defaultPath.trim() }).unwrap();
+      setEditing(false);
+    } catch (e: any) {
+      setErr(str(e?.data?.error?.message || e?.error || e?.message) || 'Save failed');
+    }
+  }
+
+  return (
+    <Card title="About" debugId="project-detail-about"
+      action={!editing ? (
+        <button data-debug-id="project-detail-edit-btn" type="button" onClick={() => setEditing(true)} className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:bg-white/10">Edit</button>
+      ) : null}>
+      {!editing ? (
+        <div className="space-y-2">
+          {project?.default_path ? <p data-debug-id="project-detail-path" className="font-mono text-xs text-zinc-500">{project.default_path}</p> : null}
+          {str(project?.description) ? (
+            <p data-debug-id="project-detail-description" className="max-w-2xl whitespace-pre-wrap text-sm leading-6 text-zinc-300">{project?.description}</p>
+          ) : (
+            <p data-debug-id="project-detail-description-empty" className="text-sm text-zinc-500">No description yet. <button type="button" onClick={() => setEditing(true)} className="text-sky-300 hover:underline">Add one</button>.</p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
+            <input data-debug-id="project-detail-name-input" value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white" />
+          </label>
+          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
+            <textarea data-debug-id="project-detail-description-input" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="What is this project about?" className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white placeholder:text-zinc-600" />
+          </label>
+          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
+            <input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={(e) => setDefaultPath(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" placeholder="~/path/to/repo" />
+          </label>
+          {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-red-300">{err}</p> : null}
+          <div className="flex gap-2">
+            <button data-debug-id="project-detail-save-btn" type="button" disabled={updateState.isLoading} onClick={save} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">{updateState.isLoading ? 'Saving…' : 'Save'}</button>
+            <button data-debug-id="project-detail-cancel-btn" type="button" onClick={() => { setEditing(false); setErr(''); }} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }
 
