@@ -1,6 +1,6 @@
 # Bridge directory management — plan
 
-**Status:** Phases 1–4 done (Phase 5 polish remaining)
+**Status:** Done (Phases 1–5)
 
 ### Confirmed decisions (2026-08-28)
 1. Root default: **`$HOME` only** for v1 (single `fs_root`); allowlist later.
@@ -236,8 +236,11 @@ resolved with `bridge_expand_home` at startup.
   missing paths (`mkdirBridgePath` → re-probe), **Override** (opens the picker →
   `setProjectBridgePath`), and **Reset to default** (`deleteProjectBridgePath`).
   Verified live: default-path save, per-bridge override, and stat/mkdir round-trips.
-- **Phase 5 — Polish.** Hidden toggle, git badges, breadcrumb bounds, empty/error
-  states, AGENTS.md debug-id registry, docs.
+- **Phase 5 — Polish. `[x] done`** Device rows: colored status dot, default/override
+  tag, `present · git` label, per-row re-check (refresh icon). Picker: folder icons
+  for dirs, hidden toggle, breadcrumb bounds, empty/error/loading states. Added
+  `refresh` + `folder` icons. AGENTS.md debug-id registry updated. Verified via
+  screenshot; tsc -b + vite build green.
 
 Each phase is independently shippable and testable.
 

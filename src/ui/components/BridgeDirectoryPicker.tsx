@@ -131,7 +131,7 @@ export default function BridgeDirectoryPicker({
             onClick={() => void load(cwd ? `${cwd}/${e.name}` : e.name)}
             className="flex w-full items-center gap-2 border-b border-white/[0.04] px-3 py-2 text-left text-[13px] text-zinc-200 last:border-b-0 hover:bg-white/[0.06]"
           >
-            <Icon name="grid" size={14} className="shrink-0 text-zinc-500" />
+            <Icon name="folder" size={15} className="shrink-0 text-sky-300/70" />
             <span className="min-w-0 flex-1 truncate">{e.name}</span>
             {e.has_git ? <span className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">git</span> : null}
             {e.hidden ? <span className="shrink-0 text-[10px] text-zinc-600">hidden</span> : null}

@@ -355,14 +355,14 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
 
   // Per-bridge existence probe (stat) — one call per online bridge.
   const [statFor] = useLazyStatBridgePathQuery();
-  const [statByBridge, setStatByBridge] = useState<Record<string, { loading: boolean; exists?: boolean; error?: string }>>({});
+  const [statByBridge, setStatByBridge] = useState<Record<string, { loading: boolean; exists?: boolean; hasGit?: boolean; error?: string }>>({});
   async function probe(bid: string) {
     const path = effectivePath(bid);
     if (!path) { setStatByBridge((s) => ({ ...s, [bid]: { loading: false, error: 'no path' } })); return; }
     setStatByBridge((s) => ({ ...s, [bid]: { loading: true } }));
     try {
       const res = await statFor({ bridgeId: bid, path }).unwrap();
-      setStatByBridge((s) => ({ ...s, [bid]: { loading: false, exists: Boolean(res.exists && res.is_dir), error: res.ok ? '' : str(res.error?.message) } }));
+      setStatByBridge((s) => ({ ...s, [bid]: { loading: false, exists: Boolean(res.exists && res.is_dir), hasGit: Boolean(res.has_git), error: res.ok ? '' : str(res.error?.message) } }));
     } catch (e: any) {
       setStatByBridge((s) => ({ ...s, [bid]: { loading: false, error: str(e?.error || e?.message) || 'bridge unavailable' } }));
     }
@@ -414,24 +414,24 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
             const isOpen = pickerBridge === bid;
             return (
               <div key={bid} data-debug-id={`project-detail-bridge-path-row-${bid}`} className="rounded-lg border border-white/[0.06] bg-black/20">
-                <div className="flex items-center gap-3 px-3 py-2">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
+                  {/* status dot */}
+                  <span
+                    aria-hidden="true"
+                    className={`h-2 w-2 shrink-0 rounded-full ${st.loading ? 'bg-zinc-500 animate-pulse' : st.error ? 'bg-amber-400' : st.exists ? 'bg-emerald-400' : 'bg-red-400'}`}
+                  />
                   <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-zinc-300">{bridgeLabel(b)}</span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-zinc-300" title={path}>{path || <span className="not-italic text-zinc-600">no path</span>}</span>
-                  {overridden ? <span className="shrink-0 rounded bg-sky-400/15 px-1.5 py-0.5 text-[9px] font-bold text-sky-300">override</span> : null}
-                  {/* presence indicator */}
-                  {st.loading ? (
-                    <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className="shrink-0 text-[11px] text-zinc-500">checking…</span>
-                  ) : st.error ? (
-                    <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className="shrink-0 text-[11px] text-amber-400">{st.error}</span>
-                  ) : st.exists ? (
-                    <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className="shrink-0 text-[11px] font-semibold text-emerald-400">present</span>
-                  ) : (
-                    <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className="shrink-0 text-[11px] font-semibold text-red-400">not present</span>
-                  )}
+                  <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold ${overridden ? 'bg-sky-400/15 text-sky-300' : 'bg-white/[0.06] text-zinc-500'}`}>{overridden ? 'override' : 'default'}</span>
+                  <span className="min-w-0 flex-1 basis-full truncate font-mono text-[12px] text-zinc-400 sm:basis-0" title={path}>{path || <span className="text-zinc-600">no path set</span>}</span>
+                  {/* presence label */}
+                  <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className={`shrink-0 text-[11px] font-semibold ${st.loading ? 'text-zinc-500' : st.error ? 'text-amber-400' : st.exists ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {st.loading ? 'checking…' : st.error ? st.error : st.exists ? (st.hasGit ? 'present · git' : 'present') : 'not present'}
+                  </span>
                   {/* actions */}
                   {!st.loading && !st.exists && !st.error && path ? (
                     <CreateOnBridgeButton bridgeId={bid} path={path} onDone={() => void probe(bid)} />
                   ) : null}
+                  <button data-debug-id={`project-detail-bridge-path-recheck-${bid}`} type="button" onClick={() => void probe(bid)} title="Re-check" aria-label="Re-check" className="shrink-0 rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="refresh" size={13} /></button>
                   <button data-debug-id={`project-detail-bridge-path-override-${bid}`} type="button" onClick={() => setPickerBridge(isOpen ? '' : bid)} className="shrink-0 rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">{isOpen ? 'Close' : 'Override'}</button>
                   {overridden ? <button data-debug-id={`project-detail-bridge-path-reset-${bid}`} type="button" onClick={() => resetToDefault(bid)} className="shrink-0 rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-red-300" title="Reset to default"><Icon name="close" size={14} /></button> : null}
                 </div>

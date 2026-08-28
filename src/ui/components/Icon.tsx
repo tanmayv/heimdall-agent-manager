@@ -28,7 +28,9 @@ export type IconName =
   | 'play'
   | 'search'
   | 'device'
-  | 'menu';
+  | 'menu'
+  | 'refresh'
+  | 'folder';
 
 const PATHS: Record<IconName, ReactElement> = {
   plus: <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />,
@@ -75,6 +77,15 @@ const PATHS: Record<IconName, ReactElement> = {
     </g>
   ),
   menu: <path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />,
+  refresh: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 11a8 8 0 0 0-14.5-4.5L3 9" />
+      <path d="M3 4v5h5" />
+      <path d="M4 13a8 8 0 0 0 14.5 4.5L21 15" />
+      <path d="M21 20v-5h-5" />
+    </g>
+  ),
+  folder: <path d="M3 7a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinejoin="round" />,
 };
 
 export default function Icon({
