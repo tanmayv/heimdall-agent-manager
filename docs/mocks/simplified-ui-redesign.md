@@ -144,5 +144,19 @@ change-popover, and mobile runtime sheet feel true to production.
 Screenshots reviewed during design:
 - Desktop default (conversations grouped by project, runtime chip under title).
 - Desktop with runtime popover + task-chain inspector open (shows promotion states
-  done → in progress → waiting).
+  done -> in progress -> waiting).
 - Mobile thread view with the runtime bottom sheet.
+- New chat modal (project -> coordinator agent -> runtime with pre-filled defaults).
+
+The mock also demonstrates:
+- **Explicit run status** in the runtime chip ("Running / Starting / Stopped"), not
+  just a color dot — so agent chat always shows whether the runtime is live.
+- **One-tap task chain** access (header "Task chain N/M" button -> inspector on desktop;
+  chain quick-bar -> bottom sheet on mobile).
+- **New chat** flow with defaults pre-resolved from the agent's `default_provider` /
+  `default_tier` on its first supported bridge, with an advanced section to override
+  device/provider/model.
+- **Icons only, no emojis** — a small inline SVG sprite provides every glyph.
+
+The staged implementation plan lives at
+`docs/plans/ui-rework-conversations-first.md` (multi-session tracker).

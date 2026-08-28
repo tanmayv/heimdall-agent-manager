@@ -32,6 +32,8 @@
   }
   a { color: inherit; text-decoration: none; }
   button { font: inherit; color: inherit; cursor: pointer; background: none; border: none; }
+  .ico { width: 1em; height: 1em; display:inline-block; vertical-align:-0.13em; flex:none; }
+  .ico.b { width: 18px; height: 18px; }
   .wrap { max-width: 1320px; margin: 0 auto; padding: 28px 20px 60px; }
   h1.page { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
   .sub { color: var(--muted); margin: 0 0 22px; font-size: 13px; }
@@ -107,7 +109,17 @@
   .runtime > span { white-space:nowrap; }
   .runtime:hover { border-color: var(--border-strong); color: var(--text); }
   .runtime b { color: var(--text); font-weight: 650; }
+  .runtime .status { font-weight: 700; }
+  .runtime .status.live { color: var(--green); }
+  .runtime .status.starting { color: var(--amber); }
+  .runtime .status.stopped { color: var(--grey); }
   .runtime .sep { color: var(--faint); }
+  .chainbtn {
+    display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:10px;
+    padding: 6px 11px; font-size:12px; color: var(--muted); margin-right:2px;
+  }
+  .chainbtn:hover { border-color: var(--border-strong); color: var(--text); background: var(--panel-2); }
+  .chainbtn .cdot { width:6px; height:6px; border-radius:999px; background: var(--sky); }
   .runtime .chev { color: var(--faint); border-left:1px solid var(--border); padding-left:6px; margin-left:1px; }
   .iconbtn { width:34px; height:34px; border-radius:10px; display:grid; place-items:center; color: var(--muted); border:1px solid var(--border); }
   .iconbtn:hover { background: var(--panel-2); color: var(--text); }
@@ -205,6 +217,11 @@
   .m-thead .ti .h { font-size:15px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .m-runtime { display:inline-flex; align-items:center; gap:6px; margin-top:3px; font-size:11px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:2px 8px; }
   .m-runtime b { color: var(--text); font-weight:600; }
+  .m-runtime .status { font-weight:700; color: var(--green); }
+  .m-chainbar { display:flex; align-items:center; gap:8px; padding: 9px 12px; border-bottom:1px solid var(--border); background: rgba(56,189,248,0.05); font-size:12px; color: var(--muted); }
+  .m-chainbar .cdot { width:6px; height:6px; border-radius:999px; background: var(--sky); flex:none; }
+  .m-chainbar b { color: var(--text); font-weight:650; }
+  .m-chainbar .go { margin-left:auto; color: var(--sky); font-weight:700; }
   .m-thread-scroll { flex:1; overflow-y:auto; padding: 16px 12px 12px; display:flex; flex-direction:column; gap:12px; }
   .m-msg { max-width: 82%; }
   .m-msg .bubble { border-radius:14px; padding:9px 12px; font-size:13.5px; }
@@ -222,6 +239,60 @@
   .sheet.open { transform: translateY(0); }
   .grip { width:38px; height:4px; border-radius:999px; background: var(--border-strong); margin: 8px auto 14px; }
   .caption { font-size:11px; color:var(--faint); margin: 4px 0 20px; }
+  /* ---------- NEW CHAT (desktop modal) ---------- */
+  .modal-scrim { position:absolute; inset:0; background: rgba(0,0,0,0.55); z-index: 80; display:none; place-items:center; padding: 24px; }
+  .modal-scrim.open { display:grid; }
+  .modal {
+    width: 460px; max-width: 100%; max-height: 100%; overflow-y:auto; background: #12151c;
+    border:1px solid var(--border-strong); border-radius: 18px; box-shadow: 0 40px 90px -30px rgba(0,0,0,0.9);
+    padding: 20px;
+  }
+  .modal h3 { margin: 0 0 2px; font-size: 17px; }
+  .modal .sub2 { margin: 0 0 18px; color: var(--muted); font-size: 12.5px; }
+  .fld { margin-bottom: 16px; }
+  .fld > label { display:block; font-size: 11px; text-transform: uppercase; letter-spacing:0.08em; color: var(--faint); margin-bottom: 7px; font-weight:700; }
+  .selectrow { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip {
+    border:1px solid var(--border); border-radius: 10px; padding: 8px 12px; font-size: 13px; color: var(--muted);
+    display:flex; align-items:center; gap:7px;
+  }
+  .chip:hover { color: var(--text); border-color: var(--border-strong); }
+  .chip.on { border-color: var(--sky); background: var(--sky-bg); color: var(--text); }
+  .chip .sub-l { color: var(--faint); font-size: 11px; }
+  .chip.on .sub-l { color: var(--muted); }
+  .defnote { font-size: 11px; color: var(--faint); margin-top: 6px; display:flex; align-items:center; gap:5px; }
+  .defnote b { color: var(--sky); font-weight:700; }
+  .agentline { display:flex; align-items:center; gap:9px; }
+  .agentline .ava { width:28px; height:28px; border-radius:8px; background: linear-gradient(135deg,var(--sky),var(--violet)); flex:none; }
+  .runtime-summary {
+    border:1px dashed var(--border); border-radius: 12px; padding: 11px 13px; font-size: 12.5px; color: var(--muted);
+    display:flex; align-items:center; gap:9px; margin-top: 4px;
+  }
+  .runtime-summary .dot { flex:none; }
+  .runtime-summary b { color: var(--text); font-weight:650; }
+  .runtime-summary .edit { margin-left:auto; color: var(--sky); font-size:12px; font-weight:700; }
+  .adv { margin-top: 4px; }
+  .adv .head { color: var(--muted); font-size:12px; display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .adv .head:hover { color: var(--text); }
+  .adv .body2 { margin-top: 12px; display:none; }
+  .adv.open .body2 { display:block; }
+  .adv.open .head .chev2 { transform: rotate(90deg); }
+  .adv .head .chev2 { font-size:10px; color: var(--faint); transition: transform .15s; }
+  .modal .actions { display:flex; gap:10px; margin-top: 20px; }
+  .modal .actions .ghost { flex:none; border:1px solid var(--border); border-radius:11px; padding:11px 16px; font-size:13px; color:var(--muted); }
+  .modal .actions .ghost:hover { color:var(--text); background: var(--panel-2); }
+  .modal .actions .primary { flex:1; background: var(--sky); color:#04222f; font-weight:800; border-radius:11px; padding:11px; font-size:14px; }
+  .modal .actions .primary:hover { filter:brightness(1.08); }
+
+  /* new chat mobile full-screen reuses .m-view pattern */
+  .m-newchat { position:absolute; inset:0; background: var(--bg-2); z-index: 65; transform: translateY(100%); transition: transform .28s ease; display:flex; flex-direction:column; }
+  .m-newchat.open { transform: translateY(0); }
+  .m-nc-top { padding: 30px 12px 12px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
+  .m-nc-top .h { font-size:16px; font-weight:800; flex:1; }
+  .m-nc-scroll { flex:1; overflow-y:auto; padding: 16px 14px 100px; }
+  .m-nc-foot { position:absolute; left:0; right:0; bottom:0; padding: 12px 14px 22px; background: rgba(10,12,16,0.96); border-top:1px solid var(--border); backdrop-filter: blur(8px); }
+  .m-nc-foot .primary { width:100%; background: var(--sky); color:#04222f; font-weight:800; border-radius:14px; padding:14px; font-size:15px; }
+
   @media (max-width: 800px) {
     .phone { width: 100%; max-width: 380px; border-radius: 36px; }
     .frames { gap: 40px; }
@@ -229,12 +300,28 @@
 </style>
 </head>
 <body>
+<!-- Inline SVG icon sprite (stroke-based, no emojis anywhere in the UI). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.4M12 19.1v2.4M4.2 7l2 1.2M17.8 15.8l2 1.2M4.2 17l2-1.2M17.8 8.2l2-1.2" stroke-linecap="round"/></g></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5.5h16v11H9l-4 3.5v-3.5H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6.5" height="6.5" rx="1.2"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.2"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.2"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.2"/></g></symbol>
+  <symbol id="i-tasks" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l1.6 1.6L8.5 5"/><path d="M4 15.5l1.6 1.6L8.5 14"/><path d="M11.5 7h8.5M11.5 16h8.5"/></g></symbol>
+  <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="M14.5 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></symbol>
+</svg>
 <div class="wrap">
   <h1 class="page">Heimdall — Simplified UI</h1>
   <p class="sub">"Conversations first." Left rail = coordinator conversations grouped by project. The runtime chip makes bridge (device) + model plain and changeable. Same model on desktop and mobile. Data mirrors <b>hub.mundus.in</b>.</p>
   <div class="legend">
-    <span class="tag">● green = live runtime</span>
-    <span class="tag">● grey = stopped</span>
+    <span class="tag"><span class="dot live" style="display:inline-block;vertical-align:middle;margin-right:5px"></span>green = live runtime</span>
+    <span class="tag"><span class="dot stopped" style="display:inline-block;vertical-align:middle;margin-right:5px"></span>grey = stopped</span>
     <span class="tag">bridge label = device (macbook / dawnstar)</span>
     <span class="tag">everything here maps to an existing hub/bridge endpoint</span>
   </div>
@@ -248,10 +335,10 @@
         <aside class="rail">
           <div class="top">
             <div class="brand"><span class="logo"></span><b>Heimdall</b></div>
-            <button class="newchat">＋ New chat</button>
+            <button class="newchat" onclick="openNewChat()"><svg class="ico"><use href="#i-plus"/></svg> New chat</button>
           </div>
           <div class="scroll" id="railScroll"></div>
-          <div class="foot"><button class="manage">⚙ &nbsp;Manage <span style="color:var(--faint);font-size:11px;margin-left:auto">agents · devices · memory</span></button></div>
+          <div class="foot"><button class="manage"><svg class="ico"><use href="#i-gear"/></svg> &nbsp;Manage <span style="color:var(--faint);font-size:11px;margin-left:auto">agents · devices · memory</span></button></div>
         </aside>
 
         <!-- MAIN -->
@@ -261,8 +348,8 @@
               <div class="h" id="cvTitle">Harness hook adapters: Pi + Antigravity</div>
               <div class="runtime" id="runtimeChip" onclick="togglePop(event)">
                 <span class="dot live" id="rtDot"></span>
-                <span><b id="rtBridge">macbook</b><span class="sep"> · </span><b id="rtProv">claude</b><span class="sep"> · </span><b id="rtTier">smart</b></span>
-                <span class="chev">Change ▾</span>
+                <span><span class="status live" id="rtStatus">Running</span><span class="sep"> · </span><b id="rtBridge">macbook</b><span class="sep"> · </span><b id="rtProv">claude</b><span class="sep"> · </span><b id="rtTier">smart</b></span>
+                <span class="chev">Change <svg class="ico"><use href="#i-chevron-down"/></svg></span>
                 <!-- popover -->
                 <div class="pop" id="pop" style="display:none" onclick="event.stopPropagation()">
                   <h4>Runtime</h4>
@@ -280,11 +367,51 @@
                   </div>
                   <p class="hint">Changing device/provider restarts the instance.</p>
                   <button class="apply" onclick="applyRuntime()">Apply &amp; restart</button>
-                  <button class="stopstart" onclick="toggleRun()"><span id="stopstartLbl">■ Stop instance</span></button>
+                  <button class="stopstart" onclick="toggleRun()"><span id="stopstartIco"><svg class="ico"><use href="#i-stop"/></svg></span> <span id="stopstartLbl">Stop instance</span></button>
                 </div>
               </div>
             </div>
-            <button class="iconbtn" title="Show tasks / workspace" onclick="toggleInsp()">▤</button>
+            <button class="chainbtn" id="chainBtn" title="Show this coordinator's task chain" onclick="toggleInsp()"><span class="cdot"></span> Task chain <span id="chainProgress" style="color:var(--faint)">1/3</span></button>
+          </div>
+
+          <!-- NEW CHAT modal (desktop) -->
+          <div class="modal-scrim" id="ncScrim" onclick="if(event.target===this)closeNewChat()">
+            <div class="modal">
+              <h3>New chat</h3>
+              <p class="sub2">Start a conversation with a coordinator agent. Defaults are pre-filled — you can just hit Start.</p>
+
+              <div class="fld">
+                <label>Project</label>
+                <div class="selectrow" id="ncProjects"></div>
+              </div>
+
+              <div class="fld">
+                <label>Coordinator agent</label>
+                <div class="selectrow" id="ncAgents"></div>
+                <div class="defnote" id="ncAgentDef"></div>
+              </div>
+
+              <div class="fld">
+                <label>Runtime</label>
+                <div class="runtime-summary" id="ncRuntimeSummary">
+                  <span class="dot live"></span>
+                  <span>Runs on <b id="ncSumBridge">macbook</b> · <b id="ncSumProv">claude</b> · <b id="ncSumTier">smart</b></span>
+                  <button class="edit" onclick="toggleAdv()">Change</button>
+                </div>
+                <div class="adv" id="ncAdv">
+                  <div class="body2">
+                    <div class="fld"><label>Device (bridge)</label><div class="selectrow" id="ncBridge"></div></div>
+                    <div class="fld"><label>Provider</label><div class="selectrow" id="ncProv"></div></div>
+                    <div class="fld" style="margin-bottom:0"><label>Model tier</label><div class="selectrow" id="ncTier"></div></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="actions">
+                <button class="ghost" onclick="closeNewChat()">Cancel</button>
+                <button class="primary" onclick="closeNewChat()">Start chat <svg class="ico"><use href="#i-arrow-right"/></svg></button>
+              </div>
+            </div>
           </div>
 
           <div class="thread" id="thread"></div>
@@ -299,7 +426,7 @@
 
         <!-- INSPECTOR -->
         <aside class="insp">
-          <div class="h"><b style="font-size:13px">Task chain</b><button class="iconbtn" style="width:26px;height:26px;border:none" onclick="toggleInsp()">✕</button></div>
+          <div class="h"><b style="font-size:13px">Task chain</b><button class="iconbtn" style="width:26px;height:26px;border:none" onclick="toggleInsp()"><svg class="ico"><use href="#i-close"/></svg></button></div>
           <div class="tabs"><button class="on">Tasks</button><button>Workspace</button><button>Artifacts</button></div>
           <div class="body" id="inspBody"></div>
         </aside>
@@ -315,31 +442,49 @@
           <!-- LIST VIEW -->
           <div class="m-view list">
             <div class="m-top"><div class="ttl">Chats</div><div class="avatar"></div></div>
-            <div class="m-search">🔍 Search conversations</div>
+            <div class="m-search">Search conversations</div>
             <div class="m-scroll" id="mScroll"></div>
-            <button class="m-fab" onclick="mOpen()">＋</button>
+            <button class="m-fab" onclick="mOpenNewChat()"><svg class="ico b"><use href="#i-plus"/></svg></button>
             <div class="m-tabbar">
-              <button class="on"><span class="ic">💬</span>Chats</button>
-              <button><span class="ic">▦</span>Projects</button>
-              <button><span class="ic">⚙</span>Manage</button>
+              <button class="on"><span class="ic"><svg class="ico b"><use href="#i-chat"/></svg></span>Chats</button>
+              <button><span class="ic"><svg class="ico b"><use href="#i-grid"/></svg></span>Projects</button>
+              <button><span class="ic"><svg class="ico b"><use href="#i-gear"/></svg></span>Manage</button>
             </div>
           </div>
 
           <!-- THREAD VIEW -->
           <div class="m-view thread">
             <div class="m-thead">
-              <button class="m-back" onclick="mBack()">‹</button>
+              <button class="m-back" onclick="mBack()"><svg class="ico b"><use href="#i-chevron-left"/></svg></button>
               <div class="ti">
                 <div class="h">Harness hook adapters</div>
-                <button class="m-runtime" onclick="openSheet()"><span class="dot live"></span><b>macbook</b> · claude · smart&nbsp;▾</button>
+                <button class="m-runtime" onclick="openSheet()"><span class="dot live"></span><span class="status">Running</span> · <b>macbook</b> · claude&nbsp;<svg class="ico"><use href="#i-chevron-down"/></svg></button>
               </div>
-              <button class="m-back" onclick="mSheetTasks()">▤</button>
             </div>
+            <!-- task-chain quick bar: tap to open the chain sheet -->
+            <button class="m-chainbar" onclick="mSheetTasks()"><span class="cdot"></span> Task chain · <b>1/3 done</b> <span class="go">View <svg class="ico"><use href="#i-chevron-right"/></svg></span></button>
             <div class="m-thread-scroll" id="mThread"></div>
             <div class="m-composer">
               <div class="box">Message the coordinator…</div>
-              <button class="m-send">↑</button>
+              <button class="m-send"><svg class="ico b"><use href="#i-arrow-up"/></svg></button>
             </div>
+          </div>
+
+          <!-- NEW CHAT full-screen (mobile) -->
+          <div class="m-newchat" id="mNewChat">
+            <div class="m-nc-top">
+              <button class="m-back" onclick="mCloseNewChat()"><svg class="ico b"><use href="#i-close"/></svg></button>
+              <span class="h">New chat</span>
+            </div>
+            <div class="m-nc-scroll">
+              <p class="sub2" style="margin:0 0 18px">Defaults are pre-filled — tap Start, or adjust below.</p>
+              <div class="fld"><label>Project</label><div class="selectrow" id="mncProjects"></div></div>
+              <div class="fld"><label>Coordinator agent</label><div class="selectrow" id="mncAgents"></div><div class="defnote" id="mncAgentDef"></div></div>
+              <div class="fld"><label>Device (bridge)</label><div class="selectrow" id="mncBridge"></div></div>
+              <div class="fld"><label>Provider</label><div class="selectrow" id="mncProv"></div></div>
+              <div class="fld"><label>Model tier</label><div class="selectrow" id="mncTier"></div></div>
+            </div>
+            <div class="m-nc-foot"><button class="primary" onclick="mCloseNewChat()">Start chat <svg class="ico"><use href="#i-arrow-right"/></svg></button></div>
           </div>
 
           <!-- runtime bottom sheet -->
@@ -352,7 +497,16 @@
             <div class="field"><label style="font-size:11px;color:var(--faint)">Provider</label><div class="seg" id="mSegProv"></div></div>
             <div class="field"><label style="font-size:11px;color:var(--faint)">Model tier</label><div class="seg" id="mSegTier"></div></div>
             <button class="apply" style="width:100%;margin-top:8px;background:var(--sky);color:#04222f;font-weight:800;border-radius:12px;padding:12px;font-size:14px" onclick="closeSheet()">Apply &amp; restart</button>
-            <button class="stopstart" style="width:100%;margin-top:8px;border:1px solid var(--border);border-radius:12px;padding:11px;font-size:13px;color:var(--muted)" onclick="closeSheet()">■ Stop instance</button>
+            <button class="stopstart" style="width:100%;margin-top:8px;border:1px solid var(--border);border-radius:12px;padding:11px;font-size:13px;color:var(--muted)" onclick="closeSheet()"><svg class="ico"><use href="#i-stop"/></svg> Stop instance</button>
+          </div>
+
+          <!-- task-chain sheet -->
+          <div class="sheet-scrim" id="taskScrim" onclick="closeTaskSheet()"></div>
+          <div class="sheet" id="taskSheet">
+            <div class="grip"></div>
+            <h4 style="margin:0 0 2px;font-size:13px">Task chain</h4>
+            <p class="caption">Harness hook adapters · 1 of 3 done</p>
+            <div id="mTasks"></div>
           </div>
         </div>
       </div>
@@ -367,6 +521,13 @@ const BRIDGES = [
   { id:'dawnstar', label:'dawnstar', providers:['pi'],                         status:'online' },
 ];
 const TIERS = ['cheap','normal','smart'];
+
+// Durable agent identities (agt_*). Each carries its own defaults + which bridges
+// it is supported on (agent bridge-support), so New chat can pre-resolve runtime.
+const AGENTS = [
+  { id:'agt_default', name:'default-agent', defProv:'claude', defTier:'smart', bridges:['macbook','dawnstar'] },
+  { id:'agt_researcher', name:'researcher', defProv:'pi', defTier:'normal', bridges:['dawnstar','macbook'] },
+];
 
 const PROJECTS = [
   { id:'proj_hpm', name:'heimdall agent manager', collapsed:false, convs:[
@@ -406,7 +567,7 @@ function renderRail(){
     const proj = document.createElement('div');
     proj.className = 'proj' + (p.collapsed?' collapsed':'');
     const head = document.createElement('button'); head.className='head';
-    head.innerHTML = `<span class="chev">▾</span> ${p.name} <span style="margin-left:auto;color:var(--faint);font-weight:600">${p.convs.length}</span>`;
+    head.innerHTML = `<span class="chev"><svg class="ico"><use href="#i-chevron-down"/></svg></span> ${p.name} <span style="margin-left:auto;color:var(--faint);font-weight:600">${p.convs.length}</span>`;
     head.onclick = () => { p.collapsed=!p.collapsed; renderRail(); };
     proj.appendChild(head);
     p.convs.forEach(c => {
@@ -424,7 +585,11 @@ function renderRail(){
 function selectConv(c){
   PROJECTS.forEach(p=>p.convs.forEach(x=>x.active=(x.id===c.id)));
   document.getElementById('cvTitle').textContent = c.title;
-  RT = { bridge:c.bridge, prov:c.prov, tier:c.tier, running:c.run==='live' };
+  RT = { bridge:c.bridge, prov:c.prov, tier:c.tier, running:c.run==='live', run:c.run };
+  // Task-chain button only shows for coordinator conversations that own a chain.
+  const cb = document.getElementById('chainBtn');
+  cb.style.display = c.chain ? 'inline-flex' : 'none';
+  if(!c.chain) document.getElementById('desktop').classList.remove('insp-open');
   syncChip(); renderThread(c.id); renderRail();
 }
 function renderThread(id){
@@ -450,9 +615,13 @@ function syncChip(){
   document.getElementById('rtBridge').textContent = RT.bridge;
   document.getElementById('rtProv').textContent = RT.prov;
   document.getElementById('rtTier').textContent = RT.tier;
-  const dotEl = document.getElementById('rtDot');
-  dotEl.className = 'dot ' + (RT.running?'live':'stopped');
-  document.getElementById('stopstartLbl').textContent = RT.running ? '■ Stop instance' : '▶ Start instance';
+  const state = RT.run || (RT.running?'live':'stopped');
+  const label = state==='live'?'Running':(state==='starting'?'Starting…':'Stopped');
+  const st = document.getElementById('rtStatus');
+  st.textContent = label; st.className = 'status ' + (state==='live'?'live':(state==='starting'?'starting':'stopped'));
+  document.getElementById('rtDot').className = 'dot ' + (state==='live'?'live':(state==='starting'?'starting':'stopped'));
+  document.getElementById('stopstartLbl').textContent = RT.running ? 'Stop instance' : 'Start instance';
+  document.getElementById('stopstartIco').innerHTML = RT.running ? '<svg class="ico"><use href="#i-stop"/></svg>' : '<svg class="ico"><use href="#i-play"/></svg>';
 }
 function seg(containerId, items, current, onPick, disabledFn){
   const c = document.getElementById(containerId); c.innerHTML='';
@@ -468,7 +637,7 @@ function seg(containerId, items, current, onPick, disabledFn){
 }
 function renderSegs(prefix){
   const bridge = BRIDGES.find(x=>x.id===RT.bridge)||BRIDGES[0];
-  seg(prefix+'Bridge', BRIDGES.map(x=>({val:x.id,label:'● '+x.label})), RT.bridge, v=>{
+  seg(prefix+'Bridge', BRIDGES.map(x=>({val:x.id,label:x.label})), RT.bridge, v=>{
     RT.bridge=v; const nb=BRIDGES.find(x=>x.id===v);
     if(!nb.providers.includes(RT.prov)) RT.prov=nb.providers[0];
     renderSegs(prefix);
@@ -493,7 +662,7 @@ function renderMobile(){
   const s=document.getElementById('mScroll'); s.innerHTML='';
   PROJECTS.forEach(p=>{
     const h=document.createElement('div'); h.className='m-proj-head';
-    h.innerHTML=`▾ ${p.name} <span style="margin-left:auto;color:var(--faint)">${p.convs.length}</span>`;
+    h.innerHTML=`<svg class="ico" style="margin-right:4px"><use href="#i-chevron-down"/></svg>${p.name} <span style="margin-left:auto;color:var(--faint)">${p.convs.length}</span>`;
     s.appendChild(h);
     p.convs.forEach(c=>{
       const r=document.createElement('button'); r.className='m-conv';
@@ -509,7 +678,16 @@ function renderMobile(){
 }
 function mOpen(){ document.getElementById('phone').dataset.view='thread'; }
 function mBack(){ document.getElementById('phone').dataset.view='list'; }
-function mSheetTasks(){ openSheet(); }
+function mSheetTasks(){
+  const el=document.getElementById('mTasks'); el.innerHTML='';
+  TASKS.forEach(t=>{
+    const r=document.createElement('div'); r.className='taskrow';
+    r.innerHTML=`<span class="tasktitle">${t.title}</span><span class="pill ${t.cls}">${t.st}</span>`;
+    el.appendChild(r);
+  });
+  document.getElementById('taskScrim').classList.add('open'); document.getElementById('taskSheet').classList.add('open');
+}
+function closeTaskSheet(){ document.getElementById('taskScrim').classList.remove('open'); document.getElementById('taskSheet').classList.remove('open'); }
 function openSheet(){ document.getElementById('scrim').classList.add('open'); document.getElementById('sheet').classList.add('open'); renderSegs('mSeg'); }
 function closeSheet(){ document.getElementById('scrim').classList.remove('open'); document.getElementById('sheet').classList.remove('open'); }
 
@@ -521,6 +699,64 @@ function renderMThread(){
     t.appendChild(d);
   });
 }
+
+// ---------- NEW CHAT flow (desktop modal + mobile full-screen) ----------
+// Projects available to pick (real ones + a "No project" default).
+const NC_PROJECTS = [
+  { id:'proj_none', name:'No project', hint:'ad-hoc chat' },
+  { id:'proj_hpm', name:'heimdall agent manager', hint:'~/heimdall-agent-manager' },
+  { id:'proj_zv2', name:'zv2 historical report', hint:'~/zv2-historical-analysis' },
+];
+// New-chat selection state. Defaults are resolved from the chosen agent.
+let NC = { project:'proj_hpm', agent:'agt_default', bridge:'', prov:'', tier:'' };
+
+function ncAgent(){ return AGENTS.find(a=>a.id===NC.agent) || AGENTS[0]; }
+// Resolve sensible runtime defaults for the selected agent: prefer the agent's
+// default provider on its first supported (online) bridge, else first available.
+function ncResolveDefaults(){
+  const a = ncAgent();
+  const bridge = BRIDGES.find(b=>a.bridges.includes(b.id) && b.providers.includes(a.defProv))
+             || BRIDGES.find(b=>a.bridges.includes(b.id)) || BRIDGES[0];
+  NC.bridge = bridge.id;
+  NC.prov = bridge.providers.includes(a.defProv) ? a.defProv : bridge.providers[0];
+  NC.tier = a.defTier || 'normal';
+}
+function chip(container, items, current, onPick){
+  const c = document.getElementById(container); if(!c) return; c.innerHTML='';
+  items.forEach(it=>{
+    const b=document.createElement('button');
+    b.className='chip'+(it.val===current?' on':'');
+    b.innerHTML = it.html;
+    b.onclick=()=>onPick(it.val);
+    c.appendChild(b);
+  });
+}
+function renderNewChat(prefix){
+  const a = ncAgent();
+  chip(prefix+'Projects', NC_PROJECTS.map(p=>({val:p.id, html:`${p.name}<span class="sub-l">${p.hint}</span>`})), NC.project, v=>{ NC.project=v; renderNewChat(prefix); });
+  chip(prefix+'Agents', AGENTS.map(x=>({val:x.id, html:`<span class="ava"></span>${x.name}`})), NC.agent, v=>{ NC.agent=v; ncResolveDefaults(); renderNewChat(prefix); });
+  const def = document.getElementById(prefix+'AgentDef');
+  if(def) def.innerHTML = `defaults to <b>${a.defProv} · ${a.defTier}</b> on ${a.bridges[0]}`;
+  // bridge/provider/tier selectors (constrained to agent's supported bridges + bridge caps)
+  const supBridges = BRIDGES.filter(b=>a.bridges.includes(b.id));
+  chip(prefix+'Bridge', supBridges.map(b=>({val:b.id, html:`<span class="dot live" style="margin-right:2px"></span> ${b.label}`})), NC.bridge, v=>{
+    NC.bridge=v; const nb=BRIDGES.find(b=>b.id===v); if(!nb.providers.includes(NC.prov)) NC.prov=nb.providers[0]; renderNewChat(prefix);
+  });
+  const bridge = BRIDGES.find(b=>b.id===NC.bridge)||supBridges[0];
+  chip(prefix+'Prov', bridge.providers.map(p=>({val:p, html:p})), NC.prov, v=>{ NC.prov=v; renderNewChat(prefix); });
+  chip(prefix+'Tier', TIERS.map(t=>({val:t, html:t})), NC.tier, v=>{ NC.tier=v; renderNewChat(prefix); });
+  // desktop runtime summary line
+  if(prefix==='nc'){
+    document.getElementById('ncSumBridge').textContent = NC.bridge;
+    document.getElementById('ncSumProv').textContent = NC.prov;
+    document.getElementById('ncSumTier').textContent = NC.tier;
+  }
+}
+function openNewChat(){ ncResolveDefaults(); renderNewChat('nc'); document.getElementById('ncAdv').classList.remove('open'); document.getElementById('ncScrim').classList.add('open'); }
+function closeNewChat(){ document.getElementById('ncScrim').classList.remove('open'); }
+function toggleAdv(){ document.getElementById('ncAdv').classList.toggle('open'); }
+function mOpenNewChat(){ ncResolveDefaults(); renderNewChat('mnc'); document.getElementById('mNewChat').classList.add('open'); }
+function mCloseNewChat(){ document.getElementById('mNewChat').classList.remove('open'); }
 
 // init
 renderRail(); syncChip(); renderThread('c1'); renderInsp(); renderMobile(); renderMThread();
