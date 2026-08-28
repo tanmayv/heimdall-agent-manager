@@ -307,6 +307,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_pane_capture_command(conn, text)
 		return
 	}
+	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
 }
 

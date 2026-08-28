@@ -13,6 +13,7 @@ package main
 import "core:os"
 import "core:strings"
 import "core:path/filepath"
+import ws "odin_test:lib/ws"
 
 // The resolved (symlink-free, absolute) sandbox root. Set once at startup by
 // bridge_fs_init. Empty means FS management is effectively disabled (deny all).
@@ -223,4 +224,93 @@ bridge_fs_make_dir :: proc(requested: string) -> Bridge_Fs_Mkdir_Result {
 		return Bridge_Fs_Mkdir_Result{ok = false, path = canonical, within_root = true, error_code = "mkdir_failed", message = "Could not create directory"}
 	}
 	return Bridge_Fs_Mkdir_Result{ok = true, path = canonical, created = true, within_root = true}
+}
+
+// --- WS command handling (Hub -> Bridge) ---------------------------------
+
+// bridge_fs_handle_command dispatches the fs_* command types over the runtime WS.
+// Returns true if `type` was an fs command (handled), false otherwise. Results are
+// cached by command_id for idempotent replay, matching the other command handlers.
+bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
+	switch type {
+	case "fs_list_dir":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		path := extract_json_string(text, "path", "")
+		result := bridge_fs_list_dir(path)
+		out := bridge_fs_list_result_json(command_id, result)
+		bridge_runtime_cache_command(command_id, out)
+		_ = ws.send_text(conn, out)
+		return true
+	case "fs_stat":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		path := extract_json_string(text, "path", "")
+		result := bridge_fs_stat(path)
+		out := bridge_fs_stat_result_json(command_id, result)
+		bridge_runtime_cache_command(command_id, out)
+		_ = ws.send_text(conn, out)
+		return true
+	case "fs_make_dir":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		path := extract_json_string(text, "path", "")
+		result := bridge_fs_make_dir(path)
+		out := bridge_fs_mkdir_result_json(command_id, result)
+		bridge_runtime_cache_command(command_id, out)
+		_ = ws.send_text(conn, out)
+		return true
+	}
+	return false
+}
+
+bridge_fs_list_result_json :: proc(command_id: string, r: Bridge_Fs_List_Result) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"fs_list_dir_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
+	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
+	strings.write_string(&b, "\",\"root\":\""); json_write_string(&b, r.root)
+	strings.write_string(&b, "\",\"parent\":\""); json_write_string(&b, r.parent)
+	strings.write_string(&b, "\",\"truncated\":"); strings.write_string(&b, "true" if r.truncated else "false")
+	strings.write_string(&b, ",\"entries\":[")
+	for e, i in r.entries {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_string(&b, "{\"name\":\""); json_write_string(&b, e.name)
+		strings.write_string(&b, "\",\"is_dir\":"); strings.write_string(&b, "true" if e.is_dir else "false")
+		strings.write_string(&b, ",\"hidden\":"); strings.write_string(&b, "true" if e.hidden else "false")
+		strings.write_string(&b, ",\"has_git\":"); strings.write_string(&b, "true" if e.has_git else "false")
+		strings.write_string(&b, "}")
+	}
+	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
+	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
+	strings.write_string(&b, "\"}}")
+	return strings.to_string(b)
+}
+
+bridge_fs_stat_result_json :: proc(command_id: string, r: Bridge_Fs_Stat_Result) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"fs_stat_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
+	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
+	strings.write_string(&b, "\",\"exists\":"); strings.write_string(&b, "true" if r.exists else "false")
+	strings.write_string(&b, ",\"is_dir\":"); strings.write_string(&b, "true" if r.is_dir else "false")
+	strings.write_string(&b, ",\"has_git\":"); strings.write_string(&b, "true" if r.has_git else "false")
+	strings.write_string(&b, ",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
+	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
+	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
+	strings.write_string(&b, "\"}}")
+	return strings.to_string(b)
+}
+
+bridge_fs_mkdir_result_json :: proc(command_id: string, r: Bridge_Fs_Mkdir_Result) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"fs_make_dir_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
+	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
+	strings.write_string(&b, "\",\"created\":"); strings.write_string(&b, "true" if r.created else "false")
+	strings.write_string(&b, ",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
+	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
+	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
+	strings.write_string(&b, "\"}}")
+	return strings.to_string(b)
 }

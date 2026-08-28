@@ -155,6 +155,56 @@ list_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+// --- Bridge filesystem directory management (browse/stat/mkdir) -----------
+// Live pass-through to the target bridge (no hub persistence). Same owner + online
+// guards as the provider relay; the bridge sandboxes every path to its fs_root.
+
+bridge_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, command_type, path: string) -> (string, bool, domain.Domain_Error) {
+	auth_ctx, auth_ok, _ := require_auth(h.auth, req)
+	if !auth_ok do return "", false, domain.domain_error(.Unauthenticated, "authentication required")
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
+	if !bridge_ok do return "", false, bridge_err
+	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	command_id := fmt.tprintf("cmd_fs_%d", time.to_unix_nanoseconds(time.now()))
+	cmd_body := bridge_fs_command_json(command_type, command_id, path)
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	if !reply_ok do return "", false, reply_err
+	// The bridge fs_* result IS the payload we return verbatim (already a flat JSON
+	// object with ok/path/entries/error). Strip nothing.
+	return reply, true, domain.Domain_Error{}
+}
+
+bridge_fs_command_json :: proc(command_type, command_id, path: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\""); write_handler_json_string(&b, command_type)
+	strings.write_string(&b, "\",\"command_id\":\""); write_handler_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"path\":\""); write_handler_json_string(&b, path)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+list_bridge_dir_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := bridge_fs_relay(h, req, path_part(req.path, 4), "fs_list_dir", query_value(req.query, "path"))
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+stat_bridge_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := bridge_fs_relay(h, req, path_part(req.path, 4), "fs_stat", query_value(req.query, "path"))
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+mkdir_bridge_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := bridge_fs_relay(h, req, path_part(req.path, 4), "fs_make_dir", json_string(req.body, "path"))
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
 put_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	name := path_part(req.path, 6)
@@ -347,7 +397,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			_ = got
 			applied := current_seq == state_seq && current_runtime == runtime_status
 			_ = write_ws_text_frame(client, bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime))
-		case "command_result", "project_path_validation_result", "providers_report":
+		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result":
 			command_id := json_string(text, "command_id")
 			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		case "pane_capture_result":
