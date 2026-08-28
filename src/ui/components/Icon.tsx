@@ -27,7 +27,8 @@ export type IconName =
   | 'stop'
   | 'play'
   | 'search'
-  | 'device';
+  | 'device'
+  | 'menu';
 
 const PATHS: Record<IconName, ReactElement> = {
   plus: <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />,
@@ -73,6 +74,7 @@ const PATHS: Record<IconName, ReactElement> = {
       <path d="M9 20h6M12 16v4" strokeLinecap="round" />
     </g>
   ),
+  menu: <path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" />,
 };
 
 export default function Icon({

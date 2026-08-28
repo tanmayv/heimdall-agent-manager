@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import Icon, { type IconName } from '../Icon';
 
 // UI-13: responsive/mobile primitives shared across the shell.
 // Breakpoints (approx, per arch doc §6D): <768px mobile, 768–1024px tablet,
@@ -72,7 +73,7 @@ export const TOUCH_TARGET_CLASS = 'min-h-11 min-w-11';
 export type MobileTab = {
   id: string;
   label: string;
-  icon: string;
+  icon: IconName;
   route: string;
   badge?: number;
 };
@@ -91,11 +92,11 @@ export type MobileTabBarProps = {
   paletteDebugId?: string;
 };
 
-const TABS: { id: string; label: string; icon: string; route: string }[] = [
-  { id: 'chat', label: 'Chat', icon: '💬', route: '/conversations' },
-  { id: 'chains', label: 'Chains', icon: '⛓', route: '/chains' },
-  { id: 'library', label: 'Library', icon: '▣', route: '/library' },
-  { id: 'more', label: 'More', icon: '⋯', route: '/settings' },
+const TABS: { id: string; label: string; icon: IconName; route: string }[] = [
+  { id: 'chat', label: 'Chat', icon: 'chat', route: '/conversations' },
+  { id: 'chains', label: 'Chains', icon: 'tasks', route: '/chains' },
+  { id: 'library', label: 'Library', icon: 'device', route: '/library' },
+  { id: 'more', label: 'More', icon: 'gear', route: '/settings' },
 ];
 
 export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge = 0, chainsBadge = 0, paletteDebugId = 'shell-mobile-palette-button' }: MobileTabBarProps) {
@@ -128,7 +129,7 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
   );
 }
 
-function MobileTabButton({ tab, active, badge = 0, onClick }: { tab: { id: string; label: string; icon: string; route: string }; active: boolean; badge?: number; onClick: () => void }) {
+function MobileTabButton({ tab, active, badge = 0, onClick }: { tab: { id: string; label: string; icon: IconName; route: string }; active: boolean; badge?: number; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -137,7 +138,7 @@ function MobileTabButton({ tab, active, badge = 0, onClick }: { tab: { id: strin
       aria-current={active ? 'page' : undefined}
       className={`relative flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] ${active ? 'text-zinc-100' : 'text-zinc-500'} ${TOUCH_TARGET_CLASS}`}
     >
-      <span aria-hidden="true" className="text-lg leading-none">{tab.icon}</span>
+      <span aria-hidden="true" className="leading-none"><Icon name={tab.icon} size={20} /></span>
       <span>{tab.label}</span>
       {badge > 0 ? <span data-debug-id={`shell-mobile-tab-${tab.id}-badge`} className="absolute right-3 top-0.5 min-w-4 rounded-full bg-sky-400 px-1 text-center text-[9px] font-bold leading-4 text-black">{badge > 99 ? '99+' : badge}</span> : null}
     </button>
@@ -166,7 +167,7 @@ export function MobileTopBar({ title, onOpenDrawer, inspectorToggle }: MobileTop
         aria-label="Open navigation"
         className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10 ${TOUCH_TARGET_CLASS}`}
       >
-        <span aria-hidden="true">☰</span>
+        <Icon name="menu" size={18} />
       </button>
       <h1 data-debug-id="shell-mobile-title" className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100">{title}</h1>
       {inspectorToggle ? (
@@ -207,7 +208,7 @@ export function MobileBackHeader({ title, onBack, action }: MobileBackHeaderProp
         aria-label="Back"
         className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10 ${TOUCH_TARGET_CLASS}`}
       >
-        <span aria-hidden="true">‹</span>
+        <Icon name="chevron-left" size={18} />
       </button>
       <h2 data-debug-id="shell-mobile-back-title" className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100">{title}</h2>
       {action ? <div className="shrink-0">{action}</div> : null}
@@ -257,7 +258,7 @@ export function MobileInspectorSheet({ open, onClose, title, subtitle, headerAct
               title="Close inspector"
               className={`grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100 ${TOUCH_TARGET_CLASS}`}
             >
-              ×
+              <Icon name="close" size={16} />
             </button>
           </div>
         </div>

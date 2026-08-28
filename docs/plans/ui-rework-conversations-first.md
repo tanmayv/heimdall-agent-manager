@@ -1,6 +1,6 @@
 # UI Rework — "Conversations-first" implementation plan
 
-**Status:** In progress — Phase 0
+**Status:** In progress — Phases 0, 1, 2 done; next Phase 3/4
 **Owner:** _unassigned_
 **Design source:** `docs/mocks/simplified-ui.html` + `docs/mocks/simplified-ui-redesign.md`
 **Last updated:** 2026-08-28
@@ -104,14 +104,28 @@ Mobile:   list (search + grouped convos + FAB + tabbar)  <->  thread (runtime ch
 - **Acceptance:** `tsc -b` passes; primitives ready to drop into the conversation view.
       _Met._ Not yet visually wired (that's Phase 2).
 
-### Phase 1 — Shell + rail (conversations grouped by project) `[ ] not started`
-- [ ] New `ConversationsShell` (left rail + main + optional inspector) behind the flag.
-- [ ] Rail: **New chat** button, project-collapsible groups, conversation rows
-      (status dot, title, preview, unread badge, time). Always-present "No project" group.
-- [ ] Wire to `sidebar.ts` + `projects.ts`; group conversations by instance `project_id`.
-- [ ] Bottom **Manage** entry linking to the relocated settings surface.
-- [ ] Persist rail collapse state per project (local pref).
-- **Acceptance:** can browse and open real conversations grouped by project.
+### Phase 1 — Shell + rail (conversations grouped by project) `[x] done (audit)`
+Audit finding: **most of this already existed** in `AppShell.tsx`
+(`ProjectConversationTree` / `ProjectGroupItem` / `buildProjectConversationTree`).
+- [x] Rail already has project-collapsible groups, conversation rows (status dot, title,
+      meta/time, unread badge), agent sub-groups, and a bridge legend. Wired to
+      `sidebar.ts` + `projects.ts`, grouped by instance `project_id`.
+- [x] Always-present ungrouped bucket exists as `DEFAULT_CONVERSATIONS_PROJECT`
+      (labeled "Conversations", always sorted first). _Naming nit only._
+- [x] Rail collapse state already persisted per project via `localStorage`.
+- [x] **Added a prominent "New chat" button** (`shell-new-chat-button`) at the top of the
+      rail → `/conversations/new` (previously only per-agent `+`).
+- [x] **Emoji → Icon cleanup (the real work):** `NAV_ROUTES` icons were corrupted emoji
+      bytes (rendered as `??`); converted `ShellRoute.icon`/`MobileTab.icon` to `IconName`
+      and render via `<Icon>`. Replaced project chevrons, sidebar collapse, per-agent `+`,
+      mobile tab-bar icons, mobile back/close, hamburger, and route-placeholder glyphs
+      with `<Icon>`. Added `menu` icon. Kept the `⌘` keycap (semantic shortcut hint).
+- [~] **Manage** entry: the existing "Settings" secondary nav already links to
+      bridges/providers/tokens/projects/memory. Full "Manage" consolidation is Phase 6.
+- **Acceptance:** rail browses/opens conversations grouped by project, icons render (no
+      emojis). _Met._ Verified with an isolated Tailwind harness screenshot; `tsc -b` +
+      `vite build` green.
+- New debug-id: `shell-new-chat-button` (register in AGENTS.md).
 
 ### Phase 2 — Conversation view + runtime chip `[x] done`
 - [x] Header: title + **RuntimeChip** (`status · bridge · provider · tier`) with live dot.
@@ -197,6 +211,13 @@ Mobile:   list (search + grouped convos + FAB + tabbar)  <->  thread (runtime ch
 ## 7. Progress log
 _Append newest first: `YYYY-MM-DD — <who> — <phase> — <what landed / decided>`._
 
+- 2026-08-28 — impl — **Phase 1 done (audit).** The project-grouped rail already existed
+  in `AppShell.tsx`; audited it against the plan. Added a prominent rail "New chat" button
+  and did the real cleanup: converted all shell/mobile nav icons from (partly corrupted)
+  emojis to the `<Icon>` component (`ShellRoute.icon`/`MobileTab.icon` → `IconName`),
+  including chevrons, collapse, per-agent +, mobile tab bar, back/close, hamburger, and
+  route placeholders. Added a `menu` icon. `tsc -b` + `vite build` green; verified rail
+  visually via a Tailwind harness.
 - 2026-08-28 — impl — **Phase 2 done.** `ConversationThreadPage` header now shows the
   unified `RuntimeChip` (explicit Running/Starting/Stopped + bridge · provider · tier),
   clicking it opens the runtime menu. Added a Device (bridge) selector to the runtime

@@ -5,6 +5,7 @@ import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import CommandPalette from '../command-palette/CommandPalette';
+import Icon, { type IconName } from '../Icon';
 import { useViewport, MobileTabBar, MobileTopBar } from './responsive';
 import { heimdallApi } from '../../api/heimdallApi';
 import { useUserWebSocket } from '../../api/useUserWebSocket';
@@ -29,7 +30,7 @@ import { priorUserClientStateCleared } from '../../store/store';
 type ShellRoute = {
   path: string;
   label: string;
-  icon: string;
+  icon: IconName;
   description: string;
   group: 'primary' | 'secondary';
 };
@@ -101,13 +102,12 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
   name: 'Conversations',
   isDefaultConversations: true,
 };
-
 const NAV_ROUTES: ShellRoute[] = [
-  { path: '/conversations', label: 'Conversations', icon: '💬', description: 'Chat sessions grouped by project and agent', group: 'primary' },
-  { path: '/chains', label: 'Task Chains', icon: '☑', description: 'Task-chain work and review', group: 'primary' },
-  { path: '/agents', label: 'Agents', icon: '🤖', description: 'Agent identities and sessions', group: 'primary' },
-  { path: '/library', label: 'Library', icon: '▣', description: 'Artifacts and files', group: 'primary' },
-  { path: '/settings/bridges', label: 'Settings', icon: '⚙', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
+  { path: '/conversations', label: 'Conversations', icon: 'chat', description: 'Chat sessions grouped by project and agent', group: 'primary' },
+  { path: '/chains', label: 'Task Chains', icon: 'tasks', description: 'Task-chain work and review', group: 'primary' },
+  { path: '/agents', label: 'Agents', icon: 'grid', description: 'Agent identities and sessions', group: 'primary' },
+  { path: '/library', label: 'Library', icon: 'device', description: 'Artifacts and files', group: 'primary' },
+  { path: '/settings/bridges', label: 'Settings', icon: 'gear', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
 ];
 
 function routeFromLocation(): string {
@@ -537,8 +537,8 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
           aria-controls={`sidebar-project-body-${projectId}`}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold text-zinc-100 hover:text-white"
         >
-          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-block w-4 text-center text-xs text-zinc-400">
-            {collapsed ? '▸' : '▾'}
+          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-flex w-4 items-center justify-center text-zinc-400">
+            <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
           </span>
           <span className="truncate">{projectGroup.project.name}</span>
         </button>
@@ -569,8 +569,8 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
                         href={buildRouteHash('/conversations/new', `agent_id=${encodeURIComponent(agentGroup.agentId)}`)}
                         title={`Start a new conversation with ${agentGroup.agentName}`}
                         aria-label={`Start a new conversation with ${agentGroup.agentName}`}
-                        className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-sm font-black text-zinc-300 hover:bg-sky-400 hover:text-black"
-                      >+</a>
+                        className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-zinc-300 hover:bg-sky-400 hover:text-black"
+                      ><Icon name="plus" size={13} /></a>
                       <UnreadBadge count={agentGroup.unreadCount} debugId={`sidebar-agent-unread-${agentGroup.agentId}`} />
                     </div>
                     <div className="mt-1 space-y-1">
@@ -653,7 +653,7 @@ function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; act
       title={collapsed ? item.label : item.description}
       className={`group flex min-h-11 items-center gap-3 rounded-2xl border px-3 py-2 text-sm transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
     >
-      <span aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center text-base">{item.icon}</span>
+      <span aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center"><Icon name={item.icon} size={18} /></span>
       {!collapsed && (
         <span className="min-w-0">
           <span className="block truncate font-semibold">{item.label}</span>
@@ -746,7 +746,7 @@ function AuthStatusScreen({ debugId, title, body }: { debugId: string; title: st
   return (
     <main data-debug-id={debugId} className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
       <section className="w-full max-w-md rounded-[2rem] border border-white/10 bg-white/[0.04] p-8 text-center shadow-2xl">
-        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10">⌁</div>
+        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10 text-zinc-400"><Icon name="search" size={22} /></div>
         <h1 className="text-2xl font-semibold">{title}</h1>
         <p className="mt-3 text-sm leading-6 text-zinc-400">{body}</p>
       </section>
@@ -869,7 +869,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <ArtifactViewer artifactId={decodeURIComponent(path.slice('/library/artifacts/'.length))} daemonUrl="" clientToken="v1" onClose={() => window.history.back()} />
         ) : (
           <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-left">
-            <div data-debug-id="shell-page-placeholder-icon" className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10 text-2xl">⌁</div>
+            <div data-debug-id="shell-page-placeholder-icon" className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10 text-zinc-400"><Icon name="search" size={22} /></div>
             {isKnownRoute ? <Breadcrumbs crumbs={crumbs} /> : <h1 data-debug-id="shell-route-title" className="text-2xl font-semibold tracking-tight text-white">Route not found</h1>}
             <p data-debug-id="shell-route-path" className="mt-1 text-xs text-zinc-600">{path}</p>
             <h2 className="mt-4 text-xl font-semibold text-white">{isKnownRoute ? (crumbs[crumbs.length - 1]?.label || 'Route') : 'This route is not part of the v1 shell map'}</h2>
@@ -1016,11 +1016,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/5 text-sm text-zinc-300 hover:bg-white/10 hover:text-white"
           >
-            {collapsed ? '›' : '‹'}
+            <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={16} />
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-3">
+          {/* Primary action: start a new conversation. Prominent, always first. */}
+          <a
+            data-debug-id="shell-new-chat-button"
+            href={shellHash('/conversations/new')}
+            title="New chat"
+            className={`mb-2 flex min-h-11 items-center gap-2 rounded-2xl bg-sky-400 px-3 py-2 text-sm font-black text-black shadow-lg shadow-sky-950/30 hover:bg-sky-300 ${collapsed ? 'justify-center' : ''}`}
+          >
+            <Icon name="plus" size={18} />
+            {!collapsed && <span>New chat</span>}
+          </a>
           <button
             type="button"
             data-debug-id="shell-command-palette-button"
