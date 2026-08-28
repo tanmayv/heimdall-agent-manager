@@ -164,6 +164,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "DELETE", "/api/v1/artifacts/*", rawptr(&graph.content_handlers), http.delete_artifact_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/templates", rawptr(&graph.content_handlers), http.list_templates_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/templates", rawptr(&graph.content_handlers), http.create_template_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/templates/*", rawptr(&graph.content_handlers), http.update_template_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/templates/*", rawptr(&graph.content_handlers), http.delete_template_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances", rawptr(&graph.agent_handlers), http.list_agent_instances_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances", rawptr(&graph.agent_handlers), http.create_agent_instance_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*", rawptr(&graph.agent_handlers), http.agent_instance_detail_handler)

@@ -17,6 +17,7 @@ import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
+import TemplatesPanel from '../settings/TemplatesPanel';
 import ProjectsSurface from '../projects/ProjectsSurface';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
@@ -126,6 +127,7 @@ function routeTitle(path: string): string {
   if (path.startsWith('/settings/user-tokens')) return 'User token settings';
   if (path.startsWith('/settings/projects')) return 'Project settings';
   if (path.startsWith('/settings/providers')) return 'Provider settings';
+  if (path.startsWith('/settings/templates')) return 'Templates';
   if (path.startsWith('/settings/memory')) return 'Memory settings';
   if (path.startsWith('/settings')) return 'Settings';
   if (path.startsWith('/agents')) return 'Agents';
@@ -149,6 +151,7 @@ const SETTINGS_NAV = [
   { path: '/settings/providers', label: 'Providers' },
   { path: '/settings/user-tokens', label: 'User tokens' },
   { path: '/settings/projects', label: 'Projects' },
+  { path: '/settings/templates', label: 'Templates' },
   { path: '/settings/memory', label: 'Memory' },
   { path: '/settings/defaults', label: 'Defaults' },
 ];
@@ -775,6 +778,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
       path.startsWith('/settings/user-tokens') ||
       path.startsWith('/settings/projects') ||
       path.startsWith('/settings/providers') ||
+      path.startsWith('/settings/templates') ||
       path.startsWith('/settings/memory') ||
       path.startsWith('/settings/defaults') ||
       path === '/agents/new';
@@ -810,6 +814,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <ProviderEditorPage providerName={decodeSegment(path.slice('/settings/providers/'.length, -'/edit'.length))} />
         ) : path === '/settings/projects' ? (
           <ProjectsPanel />
+        ) : path === '/settings/templates' ? (
+          <TemplatesPanel />
         ) : path === '/settings/memory' ? (
           <MemorySettingsPanel />
         ) : path === '/settings/defaults' ? (

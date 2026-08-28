@@ -31,6 +31,39 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       providesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
     }),
+    createAgentTemplate: build.mutation<any, { name: string; description?: string; persona?: string; instructions?: string }>({
+      queryFn: async (payload) => {
+        try {
+          const data = await cookieMutation('/templates', 'POST', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
+    }),
+    updateAgentTemplate: build.mutation<any, { templateId: string; name?: string; description?: string; persona?: string; instructions?: string }>({
+      queryFn: async ({ templateId, ...payload }) => {
+        try {
+          const data = await cookieMutation(`/templates/${encodeURIComponent(templateId)}`, 'PATCH', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
+    }),
+    deleteAgentTemplate: build.mutation<any, { templateId: string }>({
+      queryFn: async ({ templateId }) => {
+        try {
+          const data = await cookieMutation(`/templates/${encodeURIComponent(templateId)}`, 'DELETE');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
+    }),
     fetchAgentIdentity: build.query<any, { agentId: string }>({
       queryFn: async ({ agentId }) => {
         if (!agentId) return { data: { agent: null } };
@@ -448,4 +481,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
 }
 
-export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
+export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;

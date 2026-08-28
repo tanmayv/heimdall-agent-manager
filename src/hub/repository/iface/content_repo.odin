@@ -22,6 +22,7 @@ Content_Delete_Artifact_Proc :: proc(ctx: rawptr, artifact_id: string, owner_use
 Content_Save_Template_Proc :: proc(ctx: rawptr, t: domain.Template) -> (domain.Template, bool, domain.Domain_Error)
 Content_Get_Template_Proc :: proc(ctx: rawptr, template_id: string) -> (domain.Template, bool, domain.Domain_Error)
 Content_List_Templates_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Template, domain.Domain_Error)
+Content_Delete_Template_Proc :: proc(ctx: rawptr, template_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
 
 Content_Repository :: struct {
 	ctx: rawptr,
@@ -45,6 +46,7 @@ Content_Repository :: struct {
 	save_template: Content_Save_Template_Proc,
 	get_template: Content_Get_Template_Proc,
 	list_templates: Content_List_Templates_Proc,
+	delete_template: Content_Delete_Template_Proc,
 }
 
 content_save_memory :: proc(r: ^Content_Repository, m: domain.Memory) -> (domain.Memory, bool, domain.Domain_Error) { if r == nil || r.save_memory == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_memory(r.ctx, m) }
@@ -67,3 +69,4 @@ content_delete_artifact :: proc(r: ^Content_Repository, id: string, owner: domai
 content_save_template :: proc(r: ^Content_Repository, t: domain.Template) -> (domain.Template, bool, domain.Domain_Error) { if r == nil || r.save_template == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_template(r.ctx, t) }
 content_get_template :: proc(r: ^Content_Repository, id: string) -> (domain.Template, bool, domain.Domain_Error) { if r == nil || r.get_template == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.get_template(r.ctx, id) }
 content_list_templates :: proc(r: ^Content_Repository, owner: domain.User_ID) -> ([]domain.Template, domain.Domain_Error) { if r == nil || r.list_templates == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_templates(r.ctx, owner) }
+content_delete_template :: proc(r: ^Content_Repository, id: string, owner: domain.User_ID) -> (bool, domain.Domain_Error) { if r == nil || r.delete_template == nil do return false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.delete_template(r.ctx, id, owner) }
