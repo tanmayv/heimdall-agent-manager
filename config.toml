@@ -67,6 +67,10 @@ model_tier = "smart"
 # nudge_working_stale_after_seconds = 900
 # nudge_cooldown_seconds = 300
 # nudge_restart_grace_seconds = 60
+# Sandbox root for bridge filesystem directory management (the UI's bridge-aware
+# directory picker for per-bridge project paths). All browse/stat/mkdir operations
+# are confined to this root. Defaults to $HOME. ~-expanded + symlink-resolved.
+# fs_root = "~"
 # Agents stuck in "starting" past this many seconds are marked startup_failed.
 # startup_stale_after_seconds = 120
 # Artifact uploads are limited to 10 MiB by default.

@@ -39,6 +39,7 @@ Bridge_Config :: struct {
 	nudge_working_stale_after_seconds: int,
 	nudge_cooldown_seconds: int,
 	nudge_restart_grace_seconds: int,
+	fs_root: string,
 }
 
 Bridge_Peer_Link_State :: struct {
@@ -125,6 +126,7 @@ main :: proc() {
 	}
 
 	bridge_config = bridge_config_from_args(os.args)
+	bridge_fs_init(bridge_config.fs_root)
 	bridge_provider_store_init()
 	bootstrap_cache_init(&bootstrap_global_cache, bridge_config.data_dir, bridge_config.bootstrap_cache_max_bytes)
 	if has_flag(os.args, "--bootstrap-fetch") {
@@ -318,6 +320,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 			cfg.nudge_cooldown_seconds = loaded.config.daemon.nudge_cooldown_seconds
 			cfg.nudge_restart_grace_seconds = loaded.config.daemon.nudge_restart_grace_seconds
 		}
+		cfg.fs_root = loaded.config.bridge.fs_root
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
 		for peer in loaded.config.bridge.peers {

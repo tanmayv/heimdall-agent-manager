@@ -64,6 +64,10 @@ Bridge_Config :: struct {
 	nudge_working_stale_after_seconds: int,
 	nudge_cooldown_seconds: int,
 	nudge_restart_grace_seconds: int,
+	// Filesystem directory-management sandbox root. All bridge FS browse/stat/mkdir
+	// operations are confined to this root (default: $HOME). Parsed from
+	// [bridge].fs_root; ~-expanded + symlink-resolved at startup.
+	fs_root: string,
 }
 
 Role_Default_Agent_Config :: struct {
@@ -530,6 +534,8 @@ parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
 		if n, ok := strconv.parse_int(value); ok { cfg.nudge_cooldown_seconds = int(n); cfg.nudge_configured = true }
 	case "nudge_restart_grace_seconds":
 		if n, ok := strconv.parse_int(value); ok { cfg.nudge_restart_grace_seconds = int(n); cfg.nudge_configured = true }
+	case "fs_root":
+		cfg.fs_root = parse_string(value)
 	case:
 	}
 }
