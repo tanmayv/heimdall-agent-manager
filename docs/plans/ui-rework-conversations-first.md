@@ -1,6 +1,6 @@
 # UI Rework — "Conversations-first" implementation plan
 
-**Status:** In progress — Phases 0, 1, 2 done; next Phase 3/4
+**Status:** In progress — Phases 0, 1, 2, 3 done; next Phase 4 (New chat flow)
 **Owner:** _unassigned_
 **Design source:** `docs/mocks/simplified-ui.html` + `docs/mocks/simplified-ui-redesign.md`
 **Last updated:** 2026-08-28
@@ -148,13 +148,23 @@ Audit finding: **most of this already existed** in `AppShell.tsx`
   narrowed to the agent's `bridge_support` set. New debug-ids to register in AGENTS.md:
   `conversation-thread-runtime-chip`, `conversation-bridge-select`.
 
-### Phase 3 — Task chain access (inspector + chain bar) `[ ] not started`
-- [ ] Header **Task chain** button (with `done/total` progress) — only when the
-      coordinator owns a chain. Toggles the right inspector.
-- [ ] Inspector tabs: Tasks / Workspace / Artifacts (reuse existing tab components).
-- [ ] Mobile: chain **quick-bar** under the thread header → **task bottom sheet**.
-- **Acceptance:** from a coordinator chat, the chain + tasks are one tap away and reflect
-      live promotion states.
+### Phase 3 — Task chain access (inspector + chain bar) `[x] mostly done`
+Audit: the header already had a task-chain toggle (`taskchain-overview-toggle-btn`)
+revealing `TaskChainOverview`. Enhancements shipped:
+- [x] Header **Task chain button** upgraded from a bare `▤` glyph to a labeled button
+      with an `<Icon name="tasks">` + **`done/total` progress badge**
+      (`taskchain-overview-toggle-progress`), shown only when the conversation is linked
+      to a chain. Progress from a lightweight `useFetchChainTasksQuery` (done =
+      validated_good|completed). Reflects live promotion since the query is tag-invalidated.
+- [x] Inspector reuses `TaskChainOverview` (Tasks list already there; live status).
+- [x] Converted the runtime start/stop button (`▶`/`■` → `<Icon play|stop>`) and runtime
+      menu gear (`⚙` → `<Icon gear>`) as part of the icon rule.
+- [~] Mobile chain quick-bar → dedicated task bottom sheet: the toggle works on mobile
+      (reveals the overview inline); a distinct bottom-sheet treatment is deferred to the
+      Phase 5 mobile-polish pass.
+- **Acceptance:** from a coordinator chat the chain + tasks are one click away with live
+      done/total. _Met (desktop + mobile inline)._ `tsc -b` + `vite build` green.
+- New debug-id: `taskchain-overview-toggle-progress`.
 
 ### Phase 4 — New chat flow `[ ] not started`
 - [ ] Desktop modal + mobile full-screen: **Project → Coordinator agent → Runtime**.
@@ -211,6 +221,12 @@ Audit finding: **most of this already existed** in `AppShell.tsx`
 ## 7. Progress log
 _Append newest first: `YYYY-MM-DD — <who> — <phase> — <what landed / decided>`._
 
+- 2026-08-28 — impl — **Phase 3 mostly done.** Upgraded the conversation header task-chain
+  toggle to a labeled "Task chain N/M" button with a live done/total progress badge
+  (lightweight `useFetchChainTasksQuery`) + `<Icon tasks>`; converted the runtime
+  start/stop button and runtime gear to `<Icon>`. Inspector reuses `TaskChainOverview`.
+  Mobile gets the inline overview now; a dedicated task bottom sheet is deferred to Phase 5.
+  `tsc -b` + `vite build` green.
 - 2026-08-28 — impl — **Phase 1 done (audit).** The project-grouped rail already existed
   in `AppShell.tsx`; audited it against the plan. Added a prominent rail "New chat" button
   and did the real cleanup: converted all shell/mobile nav icons from (partly corrupted)

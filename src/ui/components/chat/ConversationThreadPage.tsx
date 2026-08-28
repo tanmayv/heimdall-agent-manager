@@ -26,6 +26,8 @@ import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import RuntimeChip, { runtimeStateFromStatus } from '../runtime/RuntimeChip';
+import Icon from '../Icon';
+import { useFetchChainTasksQuery } from '../../api/endpoints/tasks';
 import { useViewport } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -355,6 +357,17 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const agentInstanceId = String(conversation?.agent_instance_id || conversation?.agentInstanceId || '');
   const chainId = String(conversation?.chain_id || conversation?.chainId || '');
   const title = conversationDisplayTitle(conversation, agentId, agentInstanceId, conversationId);
+
+  // Lightweight chain-task progress for the header "Task chain N/M" button, so
+  // the coordinator's chain is one glance + one click away. Only fetched when the
+  // conversation is linked to a chain.
+  const chainTasksQuery = useFetchChainTasksQuery({ chainId }, { skip: !chainId });
+  const chainProgress = useMemo(() => {
+    const tasks = chainTasksQuery.data?.tasks || [];
+    const total = tasks.length;
+    const done = tasks.filter((t: any) => t.status === 'validated_good' || t.status === 'completed').length;
+    return { total, done };
+  }, [chainTasksQuery.data]);
   const rawTitle = String(conversation?.title || '').trim();
   const editableTitle = rawTitle && !looksLikeInternalId(rawTitle) ? rawTitle : title;
 
@@ -443,7 +456,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const runtimeStopping = runtimeIsStopping(runtimeStatus);
   const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
   const runtimeButtonLabel = runtimeActionBusy ? (stopState.isLoading ? 'Stopping…' : (needsStart ? 'Starting…' : 'Restarting…')) : (runtimeStopping ? 'Stopping…' : needsStart ? 'Start' : 'Stop');
-  const runtimeButtonIcon = runtimeActionBusy || runtimeStopping ? '…' : needsStart ? '▶' : '■';
+  const runtimeButtonBusy = runtimeActionBusy || runtimeStopping;
   const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
   const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
@@ -932,9 +945,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           </div>
         </div>
         <div data-debug-id="conversation-thread-mobile-actions" className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} aria-label={`${runtimeButtonLabel} runtime`} title={`${runtimeButtonLabel} runtime`} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} className={needsStart ? 'grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-400 text-sm font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-red-400/30 bg-red-400/10 text-sm font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonIcon}</button>
+          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} aria-label={`${runtimeButtonLabel} runtime`} title={`${runtimeButtonLabel} runtime`} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} className={needsStart ? 'grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-400 text-sm font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-red-400/30 bg-red-400/10 text-sm font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonBusy ? <span aria-hidden="true">…</span> : <Icon name={needsStart ? 'play' : 'stop'} size={15} />}</button>
           <div className="relative" ref={runtimeMenuRef}>
-            <button ref={runtimeMenuButtonRef} type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Runtime controls" title="Runtime controls" aria-haspopup={isMobile ? 'dialog' : 'menu'} aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-base text-zinc-200 hover:bg-white/10">⚙</button>
+            <button ref={runtimeMenuButtonRef} type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Runtime controls" title="Runtime controls" aria-haspopup={isMobile ? 'dialog' : 'menu'} aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-base text-zinc-200 hover:bg-white/10"><Icon name="gear" size={17} /></button>
             {runtimeMenuOpen && !isMobile ? (
               <div data-debug-id="conversation-runtime-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 text-left shadow-2xl shadow-black/60">
                 {runtimeControls}
@@ -953,7 +966,11 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             ) : null}
           </div>
           {chainId ? (
-            <button type="button" data-debug-id="taskchain-overview-toggle-btn" aria-label={taskChainOpen ? 'Hide task chain' : 'Show task chain'} title={taskChainOpen ? 'Hide task chain' : 'Show task chain'} onClick={toggleTaskChainFromHeader} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-sky-400/30 bg-sky-400/10 text-base font-semibold text-sky-200 hover:bg-sky-400/20">▤</button>
+            <button type="button" data-debug-id="taskchain-overview-toggle-btn" aria-label={taskChainOpen ? 'Hide task chain' : 'Show task chain'} title={taskChainOpen ? 'Hide task chain' : 'Show task chain'} onClick={toggleTaskChainFromHeader} aria-pressed={taskChainOpen ? 'true' : 'false'} className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold sm:px-3 ${taskChainOpen ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-sky-400/30 bg-sky-400/10 text-sky-200 hover:bg-sky-400/20'}`}>
+              <Icon name="tasks" size={16} />
+              <span className="hidden sm:inline">Task chain</span>
+              {chainProgress.total > 0 ? <span data-debug-id="taskchain-overview-toggle-progress" className="rounded-full bg-black/25 px-1.5 py-0.5 text-[10px] font-bold text-sky-100">{chainProgress.done}/{chainProgress.total}</span> : null}
+            </button>
           ) : null}
           <div className="relative" ref={headerActionsRef}>
             <button ref={headerActionsButtonRef} type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="More conversation actions" title="More conversation actions" aria-haspopup="menu" aria-expanded={headerActionsOpen ? 'true' : 'false'} onClick={() => setHeaderActionsOpen((open) => !open)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-xl leading-none text-zinc-200 hover:bg-white/10">⋯</button>
