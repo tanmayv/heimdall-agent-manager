@@ -78,21 +78,10 @@ type ProjectSummary = {
   isDefaultConversations?: boolean;
 };
 
-type SessionGroup = {
-  conversation: ConversationSummary;
-};
-
-type AgentGroup = {
-  agentId: string;
-  agentName: string;
-  unreadCount: number;
-  sessions: SessionGroup[];
-};
-
 type ProjectGroup = {
   project: ProjectSummary;
   unreadCount: number;
-  agents: AgentGroup[];
+  conversations: ConversationSummary[];
 };
 
 type BreadcrumbCrumb = { label: string; href?: string };
@@ -387,26 +376,32 @@ function buildProjectConversationTree(conversations: ConversationSummary[], proj
     if (project.projectId) projectsById.set(project.projectId, project.projectId === defaultProjectId ? { ...project, isDefaultConversations: true } : project);
   });
 
-  const grouped = new Map<string, Map<string, ConversationSummary[]>>();
+  const grouped = new Map<string, ConversationSummary[]>();
   conversations.forEach((conversation) => {
+    // Only surface conversations whose agent runtime is live/starting in the rail;
+    // stopped/unreachable/failed sessions are hidden here (still reachable from the
+    // Conversations inbox / Agents surfaces).
+    if (!isLiveConversation(conversation)) return;
     const rawProjectId = conversation.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId;
     const projectId = rawProjectId === DEFAULT_CONVERSATIONS_PROJECT.projectId ? defaultProjectId : rawProjectId;
     if (!projectsById.has(projectId)) projectsById.set(projectId, { projectId, name: projectId });
-    if (!grouped.has(projectId)) grouped.set(projectId, new Map());
-    const byAgent = grouped.get(projectId)!;
-    if (!byAgent.has(conversation.agentId)) byAgent.set(conversation.agentId, []);
-    byAgent.get(conversation.agentId)!.push(conversation);
+    if (!grouped.has(projectId)) grouped.set(projectId, []);
+    grouped.get(projectId)!.push(conversation);
   });
-  if (!grouped.has(defaultProjectId)) grouped.set(defaultProjectId, new Map());
+  if (!grouped.has(defaultProjectId)) grouped.set(defaultProjectId, []);
 
-  return Array.from(grouped.entries()).map(([projectId, agentMap]) => {
-    const agents: AgentGroup[] = Array.from(agentMap.entries()).map(([agentId, sessions]) => {
-      const sortedSessions = sessions.map((conversation) => ({ conversation }));
-      const named = sortedSessions.find((session) => session.conversation.agentName && session.conversation.agentName !== 'Unnamed agent')?.conversation.agentName;
-      return { agentId, agentName: named || 'Unnamed agent', sessions: sortedSessions, unreadCount: sortedSessions.reduce((sum, session) => sum + session.conversation.unreadCount, 0) };
-    }).sort((a, b) => b.unreadCount - a.unreadCount || a.agentName.localeCompare(b.agentName));
-    return { project: projectsById.get(projectId) || { projectId, name: projectId }, agents, unreadCount: agents.reduce((sum, agent) => sum + agent.unreadCount, 0) };
-  }).sort((a, b) => {
+  const recency = (c: ConversationSummary) => Number(c.lastMessageUnixMs || Date.parse(c.lastMessageAt || c.updatedAt || '') || 0);
+
+  return Array.from(grouped.entries()).map(([projectId, list]) => {
+    // Flat, most-recent-first list of conversations directly under the project
+    // (no agent-id grouping layer).
+    const sorted = [...list].sort((a, b) => recency(b) - recency(a));
+    return { project: projectsById.get(projectId) || { projectId, name: projectId }, conversations: sorted, unreadCount: sorted.reduce((sum, c) => sum + c.unreadCount, 0) };
+  })
+  // With the live-only filter, a project with no running conversations would be an
+  // empty header — drop those so the rail only shows projects with live work.
+  .filter((group) => group.conversations.length > 0)
+  .sort((a, b) => {
     if (a.project.isDefaultConversations) return -1;
     if (b.project.isDefaultConversations) return 1;
     return b.unreadCount - a.unreadCount || a.project.name.localeCompare(b.project.name);
@@ -446,6 +441,13 @@ function liveStateFromRuntime(runtimeStatus?: string): LiveState {
     case 'failed': return 'error';
     default: return 'none';
   }
+}
+
+// The rail only lists currently-running conversations. "Live" = the runtime is
+// connected or actively coming up/going down (live/starting/stopping).
+function isLiveConversation(conversation: ConversationSummary): boolean {
+  const state = liveStateFromRuntime(conversation.runtimeStatus);
+  return state === 'live' || state === 'starting' || state === 'stopping';
 }
 
 const DOT_COLOR_CLASSES: Record<string, { solid: string; half: string }> = {
@@ -527,15 +529,15 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
   };
 
   return (
-    <div data-debug-id={`sidebar-project-group-${projectId}`} className="rounded-2xl border border-white/8 bg-black/15 p-2">
-      <div className="flex items-center justify-between gap-2 px-1 py-1">
+    <div data-debug-id={`sidebar-project-group-${projectId}`} className="px-0.5">
+      <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-white/[0.04]">
         <button
           type="button"
           data-debug-id={`sidebar-project-toggle-btn-${projectId}`}
           onClick={toggleCollapsed}
           aria-expanded={!collapsed}
           aria-controls={`sidebar-project-body-${projectId}`}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold text-zinc-100 hover:text-white"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[13px] font-semibold text-zinc-200 hover:text-white"
         >
           <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-flex w-4 items-center justify-center text-zinc-400">
             <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
@@ -546,56 +548,28 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
       </div>
       {!collapsed && (
         <div id={`sidebar-project-body-${projectId}`} data-debug-id={`sidebar-project-body-${projectId}`}>
-          {projectGroup.agents.length === 0 ? (
-            <div data-debug-id={`sidebar-project-empty-${projectId}`} className="px-1 py-2 text-xs text-zinc-500">No sessions yet.</div>
+          {projectGroup.conversations.length === 0 ? (
+            <div data-debug-id={`sidebar-project-empty-${projectId}`} className="px-2 py-1.5 pl-8 text-[11.5px] text-zinc-600">No conversations yet.</div>
           ) : (
-            <div className="mt-1 space-y-1">
-              {projectGroup.agents.map((agentGroup) => {
-                const activeSession = agentGroup.sessions.find((s) => liveStateFromRuntime(s.conversation.runtimeStatus) === 'live')
-                  || agentGroup.sessions.find((s) => liveStateFromRuntime(s.conversation.runtimeStatus) === 'starting')
-                  || agentGroup.sessions[0];
-                return (
-                  <div key={agentGroup.agentId} data-debug-id={`sidebar-agent-group-${agentGroup.agentId}`} className="rounded-xl bg-white/[0.03] px-2 py-1.5">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
-                      <StatusDot
-                        bridgeId={activeSession?.conversation.bridgeId}
-                        runtimeStatus={activeSession?.conversation.runtimeStatus}
-                        debugId={`sidebar-agent-status-dot-${agentGroup.agentId}`}
-                        label={agentGroup.agentName}
-                      />
-                      <span className="min-w-0 flex-1 truncate">{agentGroup.agentName}</span>
-                      <a
-                        data-debug-id={`sidebar-agent-new-conversation-${agentGroup.agentId}`}
-                        href={buildRouteHash('/conversations/new', `agent_id=${encodeURIComponent(agentGroup.agentId)}`)}
-                        title={`Start a new conversation with ${agentGroup.agentName}`}
-                        aria-label={`Start a new conversation with ${agentGroup.agentName}`}
-                        className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-zinc-300 hover:bg-sky-400 hover:text-black"
-                      ><Icon name="plus" size={13} /></a>
-                      <UnreadBadge count={agentGroup.unreadCount} debugId={`sidebar-agent-unread-${agentGroup.agentId}`} />
-                    </div>
-                    <div className="mt-1 space-y-1">
-                      {agentGroup.sessions.map(({ conversation }) => (
-                        <a
-                          key={conversation.conversationId}
-                          data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
-                          href={shellHash(`/conversations/${conversation.conversationId}`)}
-                          className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-zinc-400 hover:bg-white/8 hover:text-white"
-                        >
-                          <StatusDot
-                            bridgeId={conversation.bridgeId}
-                            runtimeStatus={conversation.runtimeStatus}
-                            debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
-                            label={displayConversationTitle(conversation)}
-                          />
-                          <span className="min-w-0 flex-1 truncate">{displayConversationTitle(conversation)}</span>
-                          {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
-                          <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
-                        </a>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="space-y-0.5">
+              {projectGroup.conversations.map((conversation) => (
+                <a
+                  key={conversation.conversationId}
+                  data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
+                  href={shellHash(`/conversations/${conversation.conversationId}`)}
+                  className="flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] text-zinc-400 hover:bg-white/[0.06] hover:text-white"
+                >
+                  <StatusDot
+                    bridgeId={conversation.bridgeId}
+                    runtimeStatus={conversation.runtimeStatus}
+                    debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
+                    label={displayConversationTitle(conversation)}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{displayConversationTitle(conversation)}</span>
+                  {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
+                  <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
+                </a>
+              ))}
             </div>
           )}
         </div>
@@ -608,31 +582,20 @@ function ProjectConversationTree({ groups, loading = false, error = '' }: { grou
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
   const bridges = (bridgesQuery.data?.bridges || []).filter((bridge: any) => !bridgeIsRevoked(bridge));
 
+  // Bridge liveness still informs the per-conversation status dots; the legend row
+  // itself was visual clutter and has been removed from the rail.
+  void bridges;
   return (
-    <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4 border-t border-white/10 pt-4">
-      <div className="mb-2 flex items-center justify-between px-1 text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">
-        <span>Projects</span>
+    <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4">
+      <div className="mb-1.5 flex items-center justify-between px-2.5 text-[10.5px] font-bold uppercase tracking-[0.16em] text-zinc-600">
+        <span>Active</span>
         {loading ? <span data-debug-id="sidebar-project-agent-session-loading" className="normal-case tracking-normal text-zinc-600">Loading…</span> : null}
       </div>
       {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-[11px] leading-4 text-red-100">{error}</div> : null}
-      {bridges.length > 0 && (
-        <div data-debug-id="sidebar-bridge-legend" className="mb-3 flex flex-wrap items-center gap-2 px-1 text-[11px] text-zinc-400">
-          <span className="font-semibold text-zinc-500">Bridges:</span>
-          {bridges.map((b: any) => {
-            const bridgeId = String(b.bridge_id || b.bridgeId || b.id || '');
-            const label = b.label || b.machine_hostname || bridgeId;
-            const slot = bridgeColorSlot(bridgeId);
-            const solid = DOT_COLOR_CLASSES[slot]?.solid || 'bg-zinc-500';
-            return (
-              <span key={bridgeId} data-debug-id={`sidebar-bridge-legend-item-${bridgeId}`} className="inline-flex items-center gap-1">
-                <span className={`h-2 w-2 rounded-full ${solid}`} />
-                <span>{label}</span>
-              </span>
-            );
-          })}
-        </div>
-      )}
-      <div className="space-y-3">
+      {!loading && !error && groups.length === 0 ? (
+        <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-zinc-600">No running agents. Start one with New chat.</div>
+      ) : null}
+      <div className="space-y-0.5">
         {groups.map((projectGroup) => (
           <ProjectGroupItem key={projectGroup.project.projectId} projectGroup={projectGroup} />
         ))}
@@ -643,24 +606,19 @@ function ProjectConversationTree({ groups, loading = false, error = '' }: { grou
 
 function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; active: boolean; collapsed: boolean; badge?: number }) {
   const activeClass = active
-    ? 'border-white/20 bg-white/12 text-white shadow-[inset_3px_0_0_rgba(14,165,233,0.95)]'
-    : 'border-transparent text-zinc-400 hover:border-white/10 hover:bg-white/8 hover:text-white';
+    ? 'bg-white/10 text-white'
+    : 'text-zinc-400 hover:bg-white/[0.06] hover:text-white';
   return (
     <a
       data-debug-id={`shell-nav-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
       href={shellHash(item.path)}
       aria-label={collapsed ? item.label : undefined}
-      title={collapsed ? item.label : item.description}
-      className={`group flex min-h-11 items-center gap-3 rounded-2xl border px-3 py-2 text-sm transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
+      title={item.description}
+      className={`group flex min-h-9 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
     >
-      <span aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center"><Icon name={item.icon} size={18} /></span>
-      {!collapsed && (
-        <span className="min-w-0">
-          <span className="block truncate font-semibold">{item.label}</span>
-          <span className="block truncate text-[11px] text-zinc-500 group-hover:text-zinc-400">{item.description}</span>
-        </span>
-      )}
-      <UnreadBadge count={badge} debugId={`shell-nav-unread-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} />
+      <span aria-hidden="true" className={`grid h-5 w-5 shrink-0 place-items-center ${active ? 'text-sky-300' : ''}`}><Icon name={item.icon} size={17} /></span>
+      {!collapsed && <span className="min-w-0 flex-1 truncate">{item.label}</span>}
+      {!collapsed && <UnreadBadge count={badge} debugId={`shell-nav-unread-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} />}
     </a>
   );
 }
@@ -1031,34 +989,30 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             <Icon name="plus" size={18} />
             {!collapsed && <span>New chat</span>}
           </a>
-          <button
-            type="button"
-            data-debug-id="shell-command-palette-button"
-            onClick={() => setPaletteOpen(true)}
-            title="Command palette (Cmd/Ctrl-K)"
-            className={`mb-3 flex min-h-11 items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-zinc-300 hover:bg-white/[0.08] ${collapsed ? 'justify-center' : ''}`}
-          >
-            <span aria-hidden="true" className="grid h-6 w-6 place-items-center">⌘</span>
-            {!collapsed && <span className="font-semibold">Command palette</span>}
-          </button>
-          <nav data-debug-id="shell-primary-nav" className="space-y-2" aria-label="Primary destinations">
+          {/* Command palette is keyboard-only on desktop (Cmd/Ctrl-K, wired globally).
+              On mobile it lives in the bottom tab bar's center button. No rail button. */}
+          <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
           {!collapsed && <ProjectConversationTree groups={conversationTree} loading={sidebarLoading} error={sidebarError} />}
         </div>
 
         <div className="border-t border-white/10 p-3">
-          <nav data-debug-id="shell-secondary-nav" className="mb-3 space-y-2" aria-label="Settings destinations">
+          <nav data-debug-id="shell-secondary-nav" className="mb-2 space-y-0.5" aria-label="Settings destinations">
             {secondary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} />)}
           </nav>
-          <div data-debug-id="shell-global-ownership-points" className={`rounded-2xl border border-white/10 bg-black/20 p-3 ${collapsed ? 'px-2 text-center' : ''}`}>
-            <div data-debug-id="shell-current-user-owner" title="Current user config is shell-owned" className="text-xs font-semibold text-zinc-300">{collapsed ? 'U' : displayName}</div>
-            {!collapsed && <div className="mt-1 truncate text-[11px] text-zinc-500">{user.email || user.user_id || '/api/v1 current user'}</div>}
-            <div data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title="The shell owns exactly one user WebSocket connection (/api/v1/user-ws)" className={`mt-2 inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] font-semibold ${wsConnected ? 'bg-emerald-400/10 text-emerald-200' : wsStatus === 'error' ? 'bg-red-400/10 text-red-200' : 'bg-amber-400/10 text-amber-200'} ${collapsed ? 'justify-center' : ''}`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${wsConnected ? 'bg-emerald-300' : wsStatus === 'error' ? 'bg-red-300' : 'bg-amber-300 animate-pulse'}`} />
-              {!collapsed && <span>{wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'}</span>}
-            </div>
-            {logoutUrl && !collapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} className="mt-3 block text-[11px] font-semibold text-zinc-400 underline-offset-4 hover:text-white hover:underline">Sign out</a>}
+          <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${collapsed ? 'justify-center' : ''}`}>
+            <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-[11px] font-bold text-zinc-300`}>
+              {(displayName || 'U').slice(0, 1).toUpperCase()}
+              <span className={`absolute ml-5 mt-5 h-2 w-2 rounded-full ring-2 ring-[#101010] ${wsConnected ? 'bg-emerald-400' : wsStatus === 'error' ? 'bg-red-400' : 'bg-amber-400 animate-pulse'}`} />
+            </span>
+            {!collapsed && (
+              <div className="min-w-0 flex-1">
+                <div data-debug-id="shell-current-user-owner" className="truncate text-[12px] font-semibold text-zinc-200">{displayName}</div>
+                <div className="truncate text-[10.5px] text-zinc-500">{user.email || user.user_id || ''}</div>
+              </div>
+            )}
+            {logoutUrl && !collapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} title="Sign out" className="shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-white/10 hover:text-white"><Icon name="close" size={14} /></a>}
           </div>
         </div>
       </aside>

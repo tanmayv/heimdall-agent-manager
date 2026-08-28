@@ -60,6 +60,26 @@ const SYNTHETIC_DEFAULT_PROJECT: ProjectOption = {
   is_default_conversations: true,
 };
 
+// RTK Query queryFn errors reject with `{ status: 'CUSTOM_ERROR', error: '...' }`
+// (not an Error), so `err.message` is undefined and `String(err)` becomes the
+// useless "[object Object]". Dig the real message out of every shape we produce,
+// including the hub's `{ error: { code, message } }` envelope.
+function errMsg(err: any, fallback: string): string {
+  if (!err) return fallback;
+  if (typeof err === 'string') return err;
+  const data = err.data ?? err;
+  const candidate =
+    err.message ||
+    data?.error?.message ||
+    (typeof data?.error === 'string' ? data.error : '') ||
+    data?.message ||
+    err.error?.message ||
+    (typeof err.error === 'string' ? err.error : '') ||
+    err.statusText ||
+    (typeof err.status === 'number' ? `Request failed (HTTP ${err.status})` : '');
+  return String(candidate || fallback);
+}
+
 function displayName(value: string | undefined, fallback: string): string {
   const trimmed = String(value || '').trim();
   return trimmed || fallback;
@@ -227,7 +247,7 @@ export default function ConversationLaunchComposer() {
 
   useEffect(() => {
     const anyError = agentsQuery.error || projectsQuery.error || bridgesQuery.error;
-    if (anyError) { setError(String((anyError as any)?.error || 'Failed to load launch data')); setStatus('error'); }
+    if (anyError) { setError(errMsg(anyError, 'Failed to load launch data')); setStatus('error'); }
   }, [agentsQuery.error, projectsQuery.error, bridgesQuery.error]);
 
   const selectedAgent = useMemo(() => agents.find((agent) => agent.agent_id === agentId), [agents, agentId]);
@@ -335,103 +355,23 @@ export default function ConversationLaunchComposer() {
       }).unwrap();
       const created = launched.conversation || {};
       const boundInstance = launched.instance || {};
-      const nextLocked: LockedLaunch = {
-        conversation_id: String(created.conversation_id || boundInstance.conversation_id || ''),
-        agent_instance_id: String(created.agent_instance_id || boundInstance.agent_instance_id || ''),
-        chain_id: String(created.chain_id || boundInstance.chain_id || ''),
-        agent_id: String(created.agent_id || boundInstance.agent_id || agentId),
-        project_id: String(created.project_id || boundInstance.project_id || selectedProject.project_id || ''),
-        project_name: selectedProject.name || 'Conversations',
-        bridge_id: String(boundInstance.bridge_id || bridgeId),
-        provider: String(boundInstance.provider || launchProvider || ''),
-        tier: String(boundInstance.tier || launchTier || ''),
-      };
-      setLocked(nextLocked);
-      setBridgeId(nextLocked.bridge_id === 'Auto' ? '' : nextLocked.bridge_id);
-      setPendingProvider(nextLocked.provider);
-      setPendingTier(nextLocked.tier);
-      setStatus('locked');
+      const conversationId = String(created.conversation_id || boundInstance.conversation_id || '');
+      // First send creates + binds the AgentInstance/ChatConversation/TaskChain.
+      // There's no reason to show an intermediate "session bound" screen — go
+      // straight into the conversation thread.
+      if (conversationId) {
+        window.location.hash = buildRouteHash(`/conversations/${conversationId}`, '');
+        return;
+      }
+      // Fallback: if the id is missing for any reason, land on the inbox rather
+      // than getting stuck on the composer.
+      window.location.hash = buildRouteHash('/conversations', '');
     } catch (err: any) {
-      setError(String(err?.message || err || 'First send failed'));
+      setError(errMsg(err, 'First send failed'));
       setStatus('idle');
     }
   }
 
-  async function restartInstance() {
-    if (!locked?.agent_instance_id) return;
-    setRestartStatus('Restarting…');
-    try {
-      await restartAgentInstance({ agentId: locked.agent_id, instanceId: locked.agent_instance_id }).unwrap();
-      setRestartStatus('Restart requested');
-    } catch (err: any) {
-      setRestartStatus(String(err?.message || err));
-    }
-  }
-
-  async function reconfigureInstance() {
-    if (!locked?.agent_instance_id) return;
-    setRestartStatus('Reconfiguring provider/tier…');
-    if (!hasPendingProviderTierChange) {
-      setRestartStatus('Choose a new provider or tier before reconfiguring.');
-      return;
-    }
-    if (!pendingProviderTierValid) {
-      setRestartStatus('Choose a provider/tier pair supported by the pinned Bridge before reconfiguring.');
-      return;
-    }
-    try {
-      await reconfigureAgentInstance({ agentId: locked.agent_id, instanceId: locked.agent_instance_id, provider: pendingProvider, tier: pendingTier }).unwrap();
-      setLocked({ ...locked, provider: pendingProvider, tier: pendingTier });
-      setRestartStatus('Provider/tier reconfigure requested explicitly; restart if the running process must relaunch.');
-    } catch (err: any) {
-      setRestartStatus(String(err?.message || err));
-    }
-  }
-
-  if (status === 'locked' && locked) {
-    return (
-      <section data-debug-id="conversation-launch-locked-state" className="w-full max-w-4xl rounded-[2rem] border border-emerald-400/20 bg-emerald-400/10 p-6 text-left shadow-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-200">Conversation started</p>
-        <h2 className="mt-2 text-2xl font-semibold text-white">First send created and bound the session</h2>
-        <p className="mt-2 text-sm text-emerald-50/80">The launch controls are now locked to the created AgentInstance, ChatConversation, and private TaskChain.</p>
-        <div data-debug-id="launch-locked-chips" className="mt-5 flex flex-wrap gap-2 text-xs font-semibold">
-          <span className="rounded-full bg-black/25 px-3 py-1.5 text-emerald-50">agent: {lockedValue(locked.agent_id)}</span>
-          <span className="rounded-full bg-black/25 px-3 py-1.5 text-emerald-50">project: {lockedValue(locked.project_name)}</span>
-          <span className="rounded-full bg-black/25 px-3 py-1.5 text-emerald-50">bridge: {lockedValue(locked.bridge_id)}</span>
-          <span className="rounded-full bg-black/25 px-3 py-1.5 text-emerald-50">provider: {lockedValue(locked.provider)}</span>
-          <span className="rounded-full bg-black/25 px-3 py-1.5 text-emerald-50">tier: {lockedValue(locked.tier)}</span>
-          <span className="rounded-full bg-black/25 px-3 py-1.5 text-emerald-50">chain: {lockedValue(locked.chain_id)}</span>
-          <span className="rounded-full bg-black/25 px-3 py-1.5 text-emerald-50">instance: {lockedValue(locked.agent_instance_id)}</span>
-        </div>
-        <fieldset data-debug-id="launch-post-start-provider-tier-controls" className="mt-5 rounded-3xl border border-emerald-200/15 bg-black/20 p-4">
-          <legend className="px-2 text-xs font-bold uppercase tracking-[0.16em] text-emerald-100/70">Explicit post-start provider/tier change</legend>
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="block">
-              <span className="text-xs font-semibold text-emerald-100/70">New provider</span>
-              <select data-debug-id="launch-post-start-provider-select" value={pendingProvider} onChange={(event) => setPendingProvider(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm">
-                <option value="">Default</option>
-                {pendingProviderOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold text-emerald-100/70">New tier</span>
-              <select data-debug-id="launch-post-start-tier-select" value={pendingTier} onChange={(event) => setPendingTier(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm">
-                <option value="">Default</option>
-                {pendingTierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-          </div>
-          <p data-debug-id="launch-post-start-change-note" className="mt-3 text-xs text-emerald-100/70">Agent, project, and Bridge stay locked. Provider/tier changes only happen when you press Reconfigure, and Restart is a separate explicit relaunch action. Choices come from the locked Bridge capability matrix.</p>
-        </fieldset>
-        <div className="mt-5 flex flex-wrap gap-3">
-          <a data-debug-id="launch-open-bound-conversation" href={buildRouteHash(`/conversations/${locked.conversation_id}`, '')} className="rounded-2xl bg-emerald-300 px-4 py-2 text-sm font-bold text-black hover:bg-emerald-200">Open conversation</a>
-          <button data-debug-id="launch-reconfigure-provider-tier" type="button" disabled={!canReconfigureProviderTier} onClick={reconfigureInstance} className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2 text-sm font-bold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50">Reconfigure provider/tier</button>
-          <button data-debug-id="launch-restart-instance" type="button" onClick={restartInstance} className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2 text-sm font-bold text-white hover:bg-white/15">Restart instance</button>
-        </div>
-        {restartStatus && <p data-debug-id="launch-restart-status" className="mt-3 text-xs text-emerald-100/80">{restartStatus}</p>}
-      </section>
-    );
-  }
 
   return (
     <form data-debug-id="new-convo-composer-shell" onSubmit={submitFirstSend} className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left shadow-2xl">
