@@ -145,9 +145,6 @@
           ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
           ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl pkgs.tmux ];
           ham-dev-proxy = mkOdinPackage pkgs odin "ham-dev-proxy" "src/dev_proxy";
-          # ham-hub-proxy shells out to `openssl s_client` for TLS re-origination
-          # to a remote HTTPS hub, so it must carry openssl on PATH.
-          ham-hub-proxy = mkOdinPackageWithRuntime pkgs odin "ham-hub-proxy" "src/hub_proxy" [ pkgs.openssl ];
           # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
           # workspaces). It must carry those on PATH because the daemon launches
           # the wrapper detached with only the daemon's PATH, which does not
