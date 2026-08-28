@@ -111,12 +111,21 @@ Mobile:   list (search + grouped convos + FAB + tabbar)  <->  thread (runtime ch
 
 ### Phase 4 — New chat flow `[ ] not started`
 - [ ] Desktop modal + mobile full-screen: **Project → Coordinator agent → Runtime**.
+- [ ] **Searchable pickers (must scale to 10–50 items)** for BOTH agent and project —
+      not chip rows. Reuse/extend `AgentPickerV2` (already store-backed + searchable) for
+      the agent picker; build an equivalent searchable list for projects.
+  - Agent rows show **name + role/template tag + description + `agt_` id** so similar or
+    identically-named agents stay distinguishable; search matches name/id/role/description.
+  - Project rows show **name + path/hint**; search matches name/id/path. Include a
+    "No project" option. Each list is internally scrollable with a result count.
 - [ ] Defaults pre-resolved: agent `default_provider`/`default_tier` on its first
       supported online bridge; advanced section only if the user wants to change.
 - [ ] Constrain bridge list to the agent's bridge-support; constrain provider/tier to the
       chosen bridge's capabilities.
 - [ ] Submit → create instance in a (new or standalone) chain and open the conversation.
-- **Acceptance:** "just hit Start" works with sane defaults; power users can override.
+- **Acceptance:** with 40+ agents/projects the picker is searchable, scrollable, and each
+      agent is identifiable by id + description; "just hit Start" still works with sane
+      defaults; power users can override.
 
 ### Phase 5 — Mobile polish + parity `[ ] not started`
 - [ ] list↔thread slide nav, FAB, bottom tab bar (Chats/Projects/Manage).

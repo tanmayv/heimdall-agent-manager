@@ -260,6 +260,25 @@
   .chip.on { border-color: var(--sky); background: var(--sky-bg); color: var(--text); }
   .chip .sub-l { color: var(--faint); font-size: 11px; }
   .chip.on .sub-l { color: var(--muted); }
+  /* searchable agent picker (scales to 10-50 agents) */
+  .apick { border:1px solid var(--border); border-radius: 12px; overflow:hidden; }
+  .apick .search { display:flex; align-items:center; gap:8px; padding: 9px 12px; border-bottom:1px solid var(--border); color: var(--faint); }
+  .apick .search input { flex:1; background:none; border:none; outline:none; color: var(--text); font: inherit; font-size:13px; }
+  .apick .list { max-height: 210px; overflow-y:auto; }
+  .apick .arow { display:flex; align-items:center; gap:10px; padding: 9px 12px; cursor:pointer; border-bottom:1px solid rgba(255,255,255,0.04); }
+  .apick .arow:last-child { border-bottom:none; }
+  .apick .arow:hover { background: var(--panel-2); }
+  .apick .arow.on { background: var(--sky-bg); box-shadow: inset 2px 0 0 var(--sky); }
+  .apick .arow .ava { width:30px; height:30px; border-radius:9px; background: linear-gradient(135deg,var(--sky),var(--violet)); flex:none; display:grid; place-items:center; font-weight:800; font-size:12px; color:#04222f; }
+  .apick .arow .info { min-width:0; flex:1; }
+  .apick .arow .nm { font-size:13.5px; font-weight:650; display:flex; align-items:center; gap:8px; }
+  .apick .arow .nm .role { font-size:10px; font-weight:700; color: var(--sky); background: var(--sky-bg); border-radius:999px; padding:1px 7px; letter-spacing:0.03em; }
+  .apick .arow .ds { font-size:11.5px; color: var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .apick .arow .id { font-size:10.5px; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-top:1px; }
+  .apick .arow .check { color: var(--sky); flex:none; opacity:0; }
+  .apick .arow.on .check { opacity:1; }
+  .apick .empty { padding: 18px 12px; text-align:center; color: var(--faint); font-size:12.5px; }
+  .apick .count { font-size:11px; color: var(--faint); padding: 7px 12px; border-top:1px solid var(--border); }
   .defnote { font-size: 11px; color: var(--faint); margin-top: 6px; display:flex; align-items:center; gap:5px; }
   .defnote b { color: var(--sky); font-weight:700; }
   .agentline { display:flex; align-items:center; gap:9px; }
@@ -382,12 +401,12 @@
 
               <div class="fld">
                 <label>Project</label>
-                <div class="selectrow" id="ncProjects"></div>
+                <div class="apick" id="ncProjectPick"></div>
               </div>
 
               <div class="fld">
                 <label>Coordinator agent</label>
-                <div class="selectrow" id="ncAgents"></div>
+                <div class="apick" id="ncAgentPick"></div>
                 <div class="defnote" id="ncAgentDef"></div>
               </div>
 
@@ -478,8 +497,8 @@
             </div>
             <div class="m-nc-scroll">
               <p class="sub2" style="margin:0 0 18px">Defaults are pre-filled — tap Start, or adjust below.</p>
-              <div class="fld"><label>Project</label><div class="selectrow" id="mncProjects"></div></div>
-              <div class="fld"><label>Coordinator agent</label><div class="selectrow" id="mncAgents"></div><div class="defnote" id="mncAgentDef"></div></div>
+              <div class="fld"><label>Project</label><div class="apick" id="mncProjectPick"></div></div>
+              <div class="fld"><label>Coordinator agent</label><div class="apick" id="mncAgentPick"></div><div class="defnote" id="mncAgentDef"></div></div>
               <div class="fld"><label>Device (bridge)</label><div class="selectrow" id="mncBridge"></div></div>
               <div class="fld"><label>Provider</label><div class="selectrow" id="mncProv"></div></div>
               <div class="fld"><label>Model tier</label><div class="selectrow" id="mncTier"></div></div>
@@ -525,8 +544,13 @@ const TIERS = ['cheap','normal','smart'];
 // Durable agent identities (agt_*). Each carries its own defaults + which bridges
 // it is supported on (agent bridge-support), so New chat can pre-resolve runtime.
 const AGENTS = [
-  { id:'agt_default', name:'default-agent', defProv:'claude', defTier:'smart', bridges:['macbook','dawnstar'] },
-  { id:'agt_researcher', name:'researcher', defProv:'pi', defTier:'normal', bridges:['dawnstar','macbook'] },
+  { id:'agt_18c678b1d1', name:'default-agent',  role:'System reviewer', desc:'General-purpose coordinator & code reviewer', defProv:'claude', defTier:'smart', bridges:['macbook','dawnstar'] },
+  { id:'agt_18c6a4f22b', name:'researcher',     role:'Research',        desc:'Investigation, analysis & written reports',   defProv:'pi', defTier:'normal', bridges:['dawnstar','macbook'] },
+  { id:'agt_18c6b91a07', name:'bugfixer',       role:'Coding',          desc:'Reproduce, fix & regression-test defects',    defProv:'claude', defTier:'smart', bridges:['macbook'] },
+  { id:'agt_18c6c02d55', name:'feature-dev',    role:'Coding',          desc:'Implements features + opens review tasks',    defProv:'claude', defTier:'normal', bridges:['macbook'] },
+  { id:'agt_18c6d13e8a', name:'billing-expert', role:'Domain',          desc:'Teloneum / cloudnet billing specialist',      defProv:'pi', defTier:'smart', bridges:['dawnstar'] },
+  { id:'agt_18c6e24f9c', name:'doc-writer',     role:'Docs',            desc:'Docs, changelogs & API references',           defProv:'pi', defTier:'cheap', bridges:['dawnstar','macbook'] },
+  { id:'agt_18c6f3510d', name:'ops-runner',     role:'Ops',             desc:'Deploys, migrations & runbook execution',     defProv:'claude', defTier:'normal', bridges:['macbook'] },
 ];
 
 const PROJECTS = [
@@ -703,14 +727,22 @@ function renderMThread(){
 // ---------- NEW CHAT flow (desktop modal + mobile full-screen) ----------
 // Projects available to pick (real ones + a "No project" default).
 const NC_PROJECTS = [
-  { id:'proj_none', name:'No project', hint:'ad-hoc chat' },
-  { id:'proj_hpm', name:'heimdall agent manager', hint:'~/heimdall-agent-manager' },
-  { id:'proj_zv2', name:'zv2 historical report', hint:'~/zv2-historical-analysis' },
+  { id:'proj_none', name:'No project', hint:'ad-hoc chat, no project scope' },
+  { id:'proj_18c687', name:'heimdall agent manager', hint:'~/heimdall-agent-manager' },
+  { id:'proj_18c6ed', name:'zv2 historical report', hint:'~/zv2-historical-analysis' },
+  { id:'proj_18c701', name:'teloneum billing', hint:'~/teloneum' },
+  { id:'proj_18c70a', name:'cloudnet ingest', hint:'~/cloudnet-ingest' },
+  { id:'proj_18c712', name:'mundus infra', hint:'~/mundus-infra' },
+  { id:'proj_18c71b', name:'docs site', hint:'~/heimdall-docs' },
+  { id:'proj_18c724', name:'agent harness', hint:'~/agent-harness' },
 ];
 // New-chat selection state. Defaults are resolved from the chosen agent.
-let NC = { project:'proj_hpm', agent:'agt_default', bridge:'', prov:'', tier:'' };
+// Per-prefix search terms so the desktop modal and mobile screen filter independently.
+let NC = { project:'proj_18c687', agent:'agt_18c678b1d1', bridge:'', prov:'', tier:'' };
+const NC_SEARCH = { nc:{agent:'',project:''}, mnc:{agent:'',project:''} };
 
 function ncAgent(){ return AGENTS.find(a=>a.id===NC.agent) || AGENTS[0]; }
+function ncProject(){ return NC_PROJECTS.find(p=>p.id===NC.project) || NC_PROJECTS[0]; }
 // Resolve sensible runtime defaults for the selected agent: prefer the agent's
 // default provider on its first supported (online) bridge, else first available.
 function ncResolveDefaults(){
@@ -731,10 +763,55 @@ function chip(container, items, current, onPick){
     c.appendChild(b);
   });
 }
+// Searchable list picker — scales to many agents/projects. Search matches
+// name/id/description/role. Renders name + role tag + description + id so
+// identically-named or similar agents stay distinguishable.
+function renderAgentPick(prefix){
+  const host=document.getElementById(prefix+'AgentPick'); if(!host) return;
+  const q=(NC_SEARCH[prefix].agent||'').toLowerCase();
+  const rows=AGENTS.filter(a=>[a.name,a.id,a.desc,a.role].join(' ').toLowerCase().includes(q));
+  host.innerHTML=`
+    <div class="search"><svg class="ico"><use href="#i-tasks"/></svg>
+      <input placeholder="Search ${AGENTS.length} agents by name, id or role…" value="${NC_SEARCH[prefix].agent}" oninput="ncSearch('${prefix}','agent',this.value)"></div>
+    <div class="list">${rows.length?rows.map(a=>`
+      <div class="arow ${a.id===NC.agent?'on':''}" onclick="ncPickAgent('${prefix}','${a.id}')">
+        <span class="ava">${a.name[0].toUpperCase()}</span>
+        <span class="info">
+          <span class="nm">${a.name} <span class="role">${a.role}</span></span>
+          <span class="ds">${a.desc}</span>
+          <span class="id">${a.id}</span>
+        </span>
+        <svg class="ico check"><use href="#i-arrow-right"/></svg>
+      </div>`).join(''):'<div class="empty">No agents match your search.</div>'}
+    </div>
+    <div class="count">${rows.length} of ${AGENTS.length} agents</div>`;
+}
+function renderProjectPick(prefix){
+  const host=document.getElementById(prefix+'ProjectPick'); if(!host) return;
+  const q=(NC_SEARCH[prefix].project||'').toLowerCase();
+  const rows=NC_PROJECTS.filter(p=>[p.name,p.id,p.hint].join(' ').toLowerCase().includes(q));
+  host.innerHTML=`
+    <div class="search"><svg class="ico"><use href="#i-grid"/></svg>
+      <input placeholder="Search ${NC_PROJECTS.length} projects…" value="${NC_SEARCH[prefix].project}" oninput="ncSearch('${prefix}','project',this.value)"></div>
+    <div class="list">${rows.length?rows.map(p=>`
+      <div class="arow ${p.id===NC.project?'on':''}" onclick="ncPickProject('${prefix}','${p.id}')">
+        <span class="ava" style="background:linear-gradient(135deg,var(--violet),var(--sky))">${p.name[0].toUpperCase()}</span>
+        <span class="info">
+          <span class="nm">${p.name}</span>
+          <span class="id" style="font-family:inherit;color:var(--muted)">${p.hint}</span>
+        </span>
+        <svg class="ico check"><use href="#i-arrow-right"/></svg>
+      </div>`).join(''):'<div class="empty">No projects match your search.</div>'}
+    </div>
+    <div class="count">${rows.length} of ${NC_PROJECTS.length} projects</div>`;
+}
+function ncSearch(prefix,which,val){ NC_SEARCH[prefix][which]=val; which==='agent'?renderAgentPick(prefix):renderProjectPick(prefix); }
+function ncPickAgent(prefix,id){ NC.agent=id; ncResolveDefaults(); renderNewChat(prefix); }
+function ncPickProject(prefix,id){ NC.project=id; renderProjectPick(prefix); }
 function renderNewChat(prefix){
   const a = ncAgent();
-  chip(prefix+'Projects', NC_PROJECTS.map(p=>({val:p.id, html:`${p.name}<span class="sub-l">${p.hint}</span>`})), NC.project, v=>{ NC.project=v; renderNewChat(prefix); });
-  chip(prefix+'Agents', AGENTS.map(x=>({val:x.id, html:`<span class="ava"></span>${x.name}`})), NC.agent, v=>{ NC.agent=v; ncResolveDefaults(); renderNewChat(prefix); });
+  renderProjectPick(prefix);
+  renderAgentPick(prefix);
   const def = document.getElementById(prefix+'AgentDef');
   if(def) def.innerHTML = `defaults to <b>${a.defProv} · ${a.defTier}</b> on ${a.bridges[0]}`;
   // bridge/provider/tier selectors (constrained to agent's supported bridges + bridge caps)
