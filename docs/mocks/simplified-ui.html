@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Heimdall — Simplified UI mock (desktop + mobile)</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --bg-2: #0e1117;
+    --panel: rgba(255,255,255,0.03);
+    --panel-2: rgba(255,255,255,0.05);
+    --border: rgba(255,255,255,0.10);
+    --border-strong: rgba(255,255,255,0.20);
+    --text: #e7e9ee;
+    --muted: #8b90a0;
+    --faint: #5a5f70;
+    --sky: #38bdf8;
+    --sky-bg: rgba(56,189,248,0.12);
+    --green: #34d399;
+    --amber: #fbbf24;
+    --grey: #6b7280;
+    --violet: #a78bfa;
+    --red: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: radial-gradient(1200px 600px at 20% -10%, #12161f, var(--bg));
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; color: inherit; cursor: pointer; background: none; border: none; }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 28px 20px 60px; }
+  h1.page { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 22px; font-size: 13px; }
+  .legend { display:flex; gap:10px; flex-wrap:wrap; margin: 0 0 26px; }
+  .legend .tag { font-size: 11px; color: var(--muted); border:1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
+
+  .frames { display: grid; grid-template-columns: minmax(0,1fr) 400px; gap: 30px; align-items: start; }
+  @media (max-width: 1120px) { .frames { grid-template-columns: 1fr; } }
+
+  .frame-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--faint); margin: 0 0 10px; font-weight: 700; }
+
+  /* ---------- DESKTOP FRAME ---------- */
+  .desktop {
+    border: 1px solid var(--border); border-radius: 16px; overflow: hidden;
+    background: var(--bg-2); box-shadow: 0 30px 80px -40px rgba(0,0,0,0.9);
+    height: 660px; display: grid; grid-template-columns: 258px minmax(0,1fr) var(--insp, 0px);
+    transition: grid-template-columns .25s ease;
+  }
+  .desktop.insp-open { --insp: 300px; }
+
+  /* rail */
+  .rail { border-right: 1px solid var(--border); background: rgba(0,0,0,0.25); display:flex; flex-direction:column; min-height:0; }
+  .rail .top { padding: 14px 12px 8px; }
+  .brand { display:flex; align-items:center; gap:8px; padding: 0 4px 12px; }
+  .brand .logo { width: 22px; height:22px; border-radius:6px; background: linear-gradient(135deg, var(--sky), var(--violet)); }
+  .brand b { font-size: 14px; letter-spacing: -0.01em; }
+  .newchat {
+    width: 100%; display:flex; align-items:center; gap:8px; justify-content:center;
+    background: var(--sky); color: #04222f; font-weight: 800; font-size: 13px;
+    border-radius: 11px; padding: 10px 12px;
+  }
+  .newchat:hover { filter: brightness(1.08); }
+  .rail .scroll { overflow-y:auto; padding: 8px 8px 12px; flex:1; min-height:0; }
+  .proj { margin-top: 6px; }
+  .proj > .head {
+    display:flex; align-items:center; gap:6px; width:100%; text-align:left;
+    color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 8px 8px 6px;
+  }
+  .proj > .head .chev { transition: transform .15s ease; font-size: 10px; color: var(--faint); }
+  .proj.collapsed > .head .chev { transform: rotate(-90deg); }
+  .proj.collapsed .conv { display:none; }
+  .conv {
+    display:flex; align-items:center; gap:9px; width:100%; text-align:left;
+    padding: 8px 9px; border-radius: 10px; color: var(--text); position: relative;
+  }
+  .conv:hover { background: var(--panel-2); }
+  .conv.active { background: var(--sky-bg); box-shadow: inset 0 0 0 1px rgba(56,189,248,0.25); }
+  .dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
+  .dot.live { background: var(--green); box-shadow: 0 0 8px rgba(52,211,153,0.7); }
+  .dot.starting { background: var(--amber); }
+  .dot.stopped { background: var(--grey); }
+  .conv .body { min-width:0; flex:1; display:block; overflow:hidden; }
+  .conv .title { display:block; font-size: 13px; font-weight: 600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .conv .prev { display:block; font-size: 11.5px; color: var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .conv .meta { display:flex; flex-direction:column; align-items:flex-end; gap:4px; flex:none; }
+  .conv .time { font-size: 10.5px; color: var(--faint); }
+  .badge { background: var(--sky); color:#04222f; font-weight: 800; font-size: 10px; border-radius: 999px; min-width: 17px; height: 17px; padding: 0 5px; display:grid; place-items:center; }
+  .rail .foot { border-top:1px solid var(--border); padding: 8px; }
+  .manage { display:flex; align-items:center; gap:9px; width:100%; padding: 9px; border-radius:10px; color: var(--muted); font-size:13px; }
+  .manage:hover { background: var(--panel-2); color: var(--text); }
+
+  /* main */
+  .main { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .cvhead { border-bottom:1px solid var(--border); padding: 12px 16px; display:flex; align-items:center; gap:12px; }
+  .cvhead .t { min-width:0; flex:1; }
+  .cvhead .t .h { font-size: 15px; font-weight: 700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .runtime {
+    display:inline-flex; align-items:center; gap:7px; margin-top:4px;
+    border:1px solid var(--border); border-radius: 999px; padding: 3px 5px 3px 9px;
+    font-size: 11.5px; color: var(--muted); cursor:pointer; position:relative; white-space:nowrap;
+  }
+  .runtime > span { white-space:nowrap; }
+  .runtime:hover { border-color: var(--border-strong); color: var(--text); }
+  .runtime b { color: var(--text); font-weight: 650; }
+  .runtime .sep { color: var(--faint); }
+  .runtime .chev { color: var(--faint); border-left:1px solid var(--border); padding-left:6px; margin-left:1px; }
+  .iconbtn { width:34px; height:34px; border-radius:10px; display:grid; place-items:center; color: var(--muted); border:1px solid var(--border); }
+  .iconbtn:hover { background: var(--panel-2); color: var(--text); }
+
+  .thread { flex:1; overflow-y:auto; padding: 20px 16px; display:flex; flex-direction:column; gap:14px; min-height:0; }
+  .msg { max-width: 76%; }
+  .msg .who { font-size: 11px; color: var(--faint); margin: 0 0 4px; }
+  .bubble { border-radius: 14px; padding: 10px 13px; font-size: 13.5px; line-height:1.5; }
+  .msg.user { align-self: flex-end; text-align: left; }
+  .msg.user .bubble { background: var(--sky); color: #04222f; border-bottom-right-radius: 5px; }
+  .msg.agent .bubble { background: var(--panel-2); border:1px solid var(--border); border-bottom-left-radius: 5px; }
+
+  .composer { border-top:1px solid var(--border); padding: 12px 14px; }
+  .composer .box { display:flex; align-items:flex-end; gap:8px; border:1px solid var(--border); border-radius: 14px; padding: 8px 8px 8px 14px; background: rgba(0,0,0,0.25); }
+  .composer textarea { flex:1; resize:none; background:none; border:none; outline:none; color:var(--text); font: inherit; max-height:90px; }
+  .send { background: var(--sky); color:#04222f; font-weight:800; border-radius:10px; padding:8px 14px; font-size:13px; }
+  .send:hover { filter: brightness(1.08); }
+
+  /* inspector */
+  .insp { border-left:1px solid var(--border); background: rgba(0,0,0,0.22); display:flex; flex-direction:column; min-width:0; overflow:hidden; }
+  .desktop:not(.insp-open) .insp { display:none; }
+  .insp .h { padding: 12px 14px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+  .insp .tabs { display:flex; gap:4px; padding: 8px 10px; border-bottom:1px solid var(--border); }
+  .insp .tabs button { font-size:12px; color:var(--muted); padding:5px 10px; border-radius:8px; }
+  .insp .tabs button.on { background: var(--panel-2); color: var(--text); }
+  .insp .body { padding: 12px 14px; overflow-y:auto; }
+  .taskrow { display:flex; align-items:center; gap:9px; padding: 9px 0; border-bottom:1px solid var(--border); }
+  .pill { font-size:10.5px; padding:2px 8px; border-radius:999px; font-weight:700; }
+  .pill.prog { background: rgba(56,189,248,0.14); color: var(--sky); }
+  .pill.done { background: rgba(52,211,153,0.14); color: var(--green); }
+  .pill.block { background: rgba(248,113,113,0.14); color: var(--red); }
+  .pill.wait { background: rgba(255,255,255,0.06); color: var(--muted); }
+  .tasktitle { flex:1; font-size:13px; }
+
+  /* runtime popover */
+  .pop {
+    position:absolute; top: 30px; left: 0; z-index: 40; width: 268px;
+    background: #12151c; border:1px solid var(--border-strong); border-radius: 14px;
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,0.85); padding: 12px; cursor: default;
+  }
+  .pop h4 { margin: 2px 0 10px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+  .field { margin-bottom: 10px; }
+  .field label { display:block; font-size: 11px; color: var(--faint); margin-bottom: 4px; }
+  .seg { display:flex; gap:6px; flex-wrap:wrap; }
+  .seg button {
+    border:1px solid var(--border); border-radius: 9px; padding: 6px 10px; font-size: 12px; color: var(--muted);
+    display:flex; align-items:center; gap:6px;
+  }
+  .seg button.on { border-color: var(--sky); color: var(--text); background: var(--sky-bg); }
+  .seg button:hover { color: var(--text); }
+  .pop .apply { width:100%; margin-top:4px; background: var(--sky); color:#04222f; font-weight:800; border-radius:10px; padding: 9px; font-size:13px; }
+  .pop .stopstart { width:100%; margin-top:8px; border:1px solid var(--border); border-radius:10px; padding:8px; font-size:12px; color:var(--muted); }
+  .pop .stopstart:hover { color: var(--text); background: var(--panel-2); }
+  .hint { font-size: 11px; color: var(--faint); margin-top: 2px; }
+
+  /* ---------- MOBILE FRAME ---------- */
+  .phone-col { display:flex; flex-direction:column; align-items:center; }
+  .phone {
+    width: 360px; height: 720px; border: 10px solid #1b1e26; border-radius: 42px;
+    background: var(--bg-2); overflow: hidden; position: relative; box-shadow: 0 30px 80px -30px rgba(0,0,0,0.9);
+  }
+  .notch { position:absolute; top:0; left:50%; transform:translateX(-50%); width: 130px; height: 24px; background:#1b1e26; border-radius: 0 0 16px 16px; z-index: 60; }
+  .screen { position:absolute; inset:0; display:flex; flex-direction:column; min-height:0; }
+  .m-view { position:absolute; inset:0; display:flex; flex-direction:column; background: var(--bg-2); transition: transform .28s ease; }
+  .m-view.list { transform: translateX(0); }
+  .m-view.thread { transform: translateX(100%); }
+  .phone[data-view="thread"] .m-view.list { transform: translateX(-30%); }
+  .phone[data-view="thread"] .m-view.thread { transform: translateX(0); }
+
+  .m-top { padding: 30px 14px 10px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+  .m-top .ttl { font-size: 17px; font-weight: 800; flex:1; }
+  .m-top .avatar { width:30px; height:30px; border-radius:999px; background: linear-gradient(135deg,var(--sky),var(--violet)); }
+  .m-search { margin: 10px 12px 6px; background: rgba(0,0,0,0.3); border:1px solid var(--border); border-radius:11px; padding: 9px 12px; font-size:13px; color: var(--faint); }
+  .m-scroll { flex:1; overflow-y:auto; padding: 4px 8px 90px; }
+  .m-proj-head { color: var(--muted); font-size: 11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; padding: 12px 8px 4px; display:flex; align-items:center; gap:6px; }
+  .m-conv { display:flex; align-items:center; gap:11px; padding: 11px 8px; border-radius: 12px; }
+  .m-conv:active { background: var(--panel-2); }
+  .m-conv .av { width: 40px; height:40px; border-radius: 12px; background: var(--sky-bg); color: var(--sky); display:grid; place-items:center; font-weight: 800; flex:none; position: relative; }
+  .m-conv .av .s { position:absolute; right:-2px; bottom:-2px; width:11px; height:11px; border-radius:999px; border:2px solid var(--bg-2); }
+  .m-conv .bd { flex:1; min-width:0; }
+  .m-conv .rowtop { display:flex; align-items:center; gap:8px; }
+  .m-conv .nm { font-size:14px; font-weight:650; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .m-conv .tm { font-size:11px; color: var(--faint); flex:none; }
+  .m-conv .pv { font-size:12.5px; color: var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+  .m-fab { position:absolute; right:16px; bottom:78px; width:54px; height:54px; border-radius:999px; background: var(--sky); color:#04222f; display:grid; place-items:center; font-size:26px; font-weight:400; box-shadow: 0 16px 40px -10px rgba(56,189,248,0.6); z-index: 50; }
+  .m-tabbar { position:absolute; bottom:0; left:0; right:0; height:64px; background: rgba(10,12,16,0.96); border-top:1px solid var(--border); display:flex; z-index: 55; backdrop-filter: blur(8px); }
+  .m-tabbar button { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; color: var(--faint); font-size:10px; }
+  .m-tabbar button.on { color: var(--sky); }
+  .m-tabbar .ic { font-size: 18px; }
+
+  /* mobile thread */
+  .m-thead { padding: 30px 10px 10px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
+  .m-back { width:34px; height:34px; display:grid; place-items:center; font-size:20px; color: var(--muted); flex:none; }
+  .m-thead .ti { flex:1; min-width:0; }
+  .m-thead .ti .h { font-size:15px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .m-runtime { display:inline-flex; align-items:center; gap:6px; margin-top:3px; font-size:11px; color:var(--muted); border:1px solid var(--border); border-radius:999px; padding:2px 8px; }
+  .m-runtime b { color: var(--text); font-weight:600; }
+  .m-thread-scroll { flex:1; overflow-y:auto; padding: 16px 12px 12px; display:flex; flex-direction:column; gap:12px; }
+  .m-msg { max-width: 82%; }
+  .m-msg .bubble { border-radius:14px; padding:9px 12px; font-size:13.5px; }
+  .m-msg.user { align-self:flex-end; }
+  .m-msg.user .bubble { background: var(--sky); color:#04222f; border-bottom-right-radius:5px; }
+  .m-msg.agent .bubble { background: var(--panel-2); border:1px solid var(--border); border-bottom-left-radius:5px; }
+  .m-composer { border-top:1px solid var(--border); padding: 10px; display:flex; gap:8px; align-items:flex-end; }
+  .m-composer .box { flex:1; background: rgba(0,0,0,0.3); border:1px solid var(--border); border-radius:16px; padding: 10px 14px; color: var(--faint); font-size:13px; }
+  .m-send { width:42px; height:42px; border-radius:999px; background: var(--sky); color:#04222f; display:grid; place-items:center; font-size:18px; flex:none; }
+
+  /* mobile runtime sheet */
+  .sheet-scrim { position:absolute; inset:0; background: rgba(0,0,0,0.5); z-index: 70; opacity:0; pointer-events:none; transition: opacity .25s; }
+  .sheet-scrim.open { opacity:1; pointer-events:auto; }
+  .sheet { position:absolute; left:0; right:0; bottom:0; background:#12151c; border-radius: 22px 22px 0 0; border-top:1px solid var(--border-strong); z-index: 71; transform: translateY(100%); transition: transform .28s ease; padding: 8px 16px 24px; }
+  .sheet.open { transform: translateY(0); }
+  .grip { width:38px; height:4px; border-radius:999px; background: var(--border-strong); margin: 8px auto 14px; }
+  .caption { font-size:11px; color:var(--faint); margin: 4px 0 20px; }
+  @media (max-width: 800px) {
+    .phone { width: 100%; max-width: 380px; border-radius: 36px; }
+    .frames { gap: 40px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="page">Heimdall — Simplified UI</h1>
+  <p class="sub">"Conversations first." Left rail = coordinator conversations grouped by project. The runtime chip makes bridge (device) + model plain and changeable. Same model on desktop and mobile. Data mirrors <b>hub.mundus.in</b>.</p>
+  <div class="legend">
+    <span class="tag">● green = live runtime</span>
+    <span class="tag">● grey = stopped</span>
+    <span class="tag">bridge label = device (macbook / dawnstar)</span>
+    <span class="tag">everything here maps to an existing hub/bridge endpoint</span>
+  </div>
+
+  <div class="frames">
+    <!-- ============ DESKTOP ============ -->
+    <div>
+      <p class="frame-label">Desktop · main experience</p>
+      <div class="desktop" id="desktop">
+        <!-- RAIL -->
+        <aside class="rail">
+          <div class="top">
+            <div class="brand"><span class="logo"></span><b>Heimdall</b></div>
+            <button class="newchat">＋ New chat</button>
+          </div>
+          <div class="scroll" id="railScroll"></div>
+          <div class="foot"><button class="manage">⚙ &nbsp;Manage <span style="color:var(--faint);font-size:11px;margin-left:auto">agents · devices · memory</span></button></div>
+        </aside>
+
+        <!-- MAIN -->
+        <section class="main">
+          <div class="cvhead">
+            <div class="t">
+              <div class="h" id="cvTitle">Harness hook adapters: Pi + Antigravity</div>
+              <div class="runtime" id="runtimeChip" onclick="togglePop(event)">
+                <span class="dot live" id="rtDot"></span>
+                <span><b id="rtBridge">macbook</b><span class="sep"> · </span><b id="rtProv">claude</b><span class="sep"> · </span><b id="rtTier">smart</b></span>
+                <span class="chev">Change ▾</span>
+                <!-- popover -->
+                <div class="pop" id="pop" style="display:none" onclick="event.stopPropagation()">
+                  <h4>Runtime</h4>
+                  <div class="field">
+                    <label>Device (bridge)</label>
+                    <div class="seg" id="segBridge"></div>
+                  </div>
+                  <div class="field">
+                    <label>Provider</label>
+                    <div class="seg" id="segProv"></div>
+                  </div>
+                  <div class="field">
+                    <label>Model tier</label>
+                    <div class="seg" id="segTier"></div>
+                  </div>
+                  <p class="hint">Changing device/provider restarts the instance.</p>
+                  <button class="apply" onclick="applyRuntime()">Apply &amp; restart</button>
+                  <button class="stopstart" onclick="toggleRun()"><span id="stopstartLbl">■ Stop instance</span></button>
+                </div>
+              </div>
+            </div>
+            <button class="iconbtn" title="Show tasks / workspace" onclick="toggleInsp()">▤</button>
+          </div>
+
+          <div class="thread" id="thread"></div>
+
+          <div class="composer">
+            <div class="box">
+              <textarea rows="1" placeholder="Message the coordinator…"></textarea>
+              <button class="send">Send</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- INSPECTOR -->
+        <aside class="insp">
+          <div class="h"><b style="font-size:13px">Task chain</b><button class="iconbtn" style="width:26px;height:26px;border:none" onclick="toggleInsp()">✕</button></div>
+          <div class="tabs"><button class="on">Tasks</button><button>Workspace</button><button>Artifacts</button></div>
+          <div class="body" id="inspBody"></div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- ============ MOBILE ============ -->
+    <div class="phone-col">
+      <p class="frame-label">Mobile · same model</p>
+      <div class="phone" id="phone" data-view="list">
+        <div class="notch"></div>
+        <div class="screen">
+          <!-- LIST VIEW -->
+          <div class="m-view list">
+            <div class="m-top"><div class="ttl">Chats</div><div class="avatar"></div></div>
+            <div class="m-search">🔍 Search conversations</div>
+            <div class="m-scroll" id="mScroll"></div>
+            <button class="m-fab" onclick="mOpen()">＋</button>
+            <div class="m-tabbar">
+              <button class="on"><span class="ic">💬</span>Chats</button>
+              <button><span class="ic">▦</span>Projects</button>
+              <button><span class="ic">⚙</span>Manage</button>
+            </div>
+          </div>
+
+          <!-- THREAD VIEW -->
+          <div class="m-view thread">
+            <div class="m-thead">
+              <button class="m-back" onclick="mBack()">‹</button>
+              <div class="ti">
+                <div class="h">Harness hook adapters</div>
+                <button class="m-runtime" onclick="openSheet()"><span class="dot live"></span><b>macbook</b> · claude · smart&nbsp;▾</button>
+              </div>
+              <button class="m-back" onclick="mSheetTasks()">▤</button>
+            </div>
+            <div class="m-thread-scroll" id="mThread"></div>
+            <div class="m-composer">
+              <div class="box">Message the coordinator…</div>
+              <button class="m-send">↑</button>
+            </div>
+          </div>
+
+          <!-- runtime bottom sheet -->
+          <div class="sheet-scrim" id="scrim" onclick="closeSheet()"></div>
+          <div class="sheet" id="sheet">
+            <div class="grip"></div>
+            <h4 style="margin:0 0 2px;font-size:13px">Runtime</h4>
+            <p class="caption">Where and how this conversation runs.</p>
+            <div class="field"><label style="font-size:11px;color:var(--faint)">Device (bridge)</label><div class="seg" id="mSegBridge"></div></div>
+            <div class="field"><label style="font-size:11px;color:var(--faint)">Provider</label><div class="seg" id="mSegProv"></div></div>
+            <div class="field"><label style="font-size:11px;color:var(--faint)">Model tier</label><div class="seg" id="mSegTier"></div></div>
+            <button class="apply" style="width:100%;margin-top:8px;background:var(--sky);color:#04222f;font-weight:800;border-radius:12px;padding:12px;font-size:14px" onclick="closeSheet()">Apply &amp; restart</button>
+            <button class="stopstart" style="width:100%;margin-top:8px;border:1px solid var(--border);border-radius:12px;padding:11px;font-size:13px;color:var(--muted)" onclick="closeSheet()">■ Stop instance</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- Real-ish data mirrored from hub.mundus.in ----
+const BRIDGES = [
+  { id:'macbook',  label:'macbook',  providers:['claude','antigravity','pi'], status:'online' },
+  { id:'dawnstar', label:'dawnstar', providers:['pi'],                         status:'online' },
+];
+const TIERS = ['cheap','normal','smart'];
+
+const PROJECTS = [
+  { id:'proj_hpm', name:'heimdall agent manager', collapsed:false, convs:[
+    { id:'c1', title:'Harness hook adapters: Pi + Antigravity', run:'live', bridge:'macbook', prov:'claude', tier:'smart', prev:'Coordinator: adapters wired, running review…', time:'2m', unread:0, active:true, chain:true },
+    { id:'c2', title:'Task promotion port review', run:'stopped', bridge:'macbook', prov:'claude', tier:'normal', prev:'You: can you re-verify the cascade?', time:'1h', unread:2, chain:true },
+  ]},
+  { id:'proj_zv2', name:'zv2 historical report', collapsed:false, convs:[
+    { id:'c3', title:'Historical analysis run', run:'live', bridge:'dawnstar', prov:'pi', tier:'normal', prev:'Coordinator: pulled 3 quarters of data', time:'20m', unread:0, chain:true },
+  ]},
+  { id:'proj_none', name:'No project', collapsed:false, convs:[
+    { id:'c4', title:'Quick question about config.toml', run:'stopped', bridge:'macbook', prov:'pi', tier:'cheap', prev:'You: where do nudge knobs live now?', time:'3d', unread:0, chain:false },
+  ]},
+];
+
+const THREADS = {
+  c1: [
+    { who:'You', side:'user', body:'Wire the Pi and Antigravity harness hook adapters and open a review task.' },
+    { who:'Coordinator · claude', side:'agent', body:'Planned two tasks: (1) adapter implementation, (2) review. Adapter task is in progress on macbook.' },
+    { who:'Coordinator · claude', side:'agent', body:'Adapters wired. Downstream review task auto-promoted to in_progress. Running verification now.' },
+  ],
+};
+
+const TASKS = [
+  { title:'Implement Pi + Antigravity adapters', st:'done', cls:'done' },
+  { title:'Review adapter behaviour', st:'in progress', cls:'prog' },
+  { title:'Document hook contract', st:'waiting', cls:'wait' },
+];
+
+// current runtime selection (desktop popover + mobile sheet share this)
+let RT = { bridge:'macbook', prov:'claude', tier:'smart', running:true };
+
+// ---------- desktop rail ----------
+function dot(run){ return run==='live'?'live':(run==='starting'?'starting':'stopped'); }
+function renderRail(){
+  const el = document.getElementById('railScroll'); el.innerHTML='';
+  PROJECTS.forEach(p => {
+    const proj = document.createElement('div');
+    proj.className = 'proj' + (p.collapsed?' collapsed':'');
+    const head = document.createElement('button'); head.className='head';
+    head.innerHTML = `<span class="chev">▾</span> ${p.name} <span style="margin-left:auto;color:var(--faint);font-weight:600">${p.convs.length}</span>`;
+    head.onclick = () => { p.collapsed=!p.collapsed; renderRail(); };
+    proj.appendChild(head);
+    p.convs.forEach(c => {
+      const a = document.createElement('button');
+      a.className = 'conv' + (c.active?' active':'');
+      a.innerHTML = `<span class="dot ${dot(c.run)}"></span>
+        <span class="body"><span class="title">${c.title}</span><span class="prev">${c.prev}</span></span>
+        <span class="meta"><span class="time">${c.time}</span>${c.unread?`<span class="badge">${c.unread}</span>`:''}</span>`;
+      a.onclick = () => selectConv(c);
+      proj.appendChild(a);
+    });
+    el.appendChild(proj);
+  });
+}
+function selectConv(c){
+  PROJECTS.forEach(p=>p.convs.forEach(x=>x.active=(x.id===c.id)));
+  document.getElementById('cvTitle').textContent = c.title;
+  RT = { bridge:c.bridge, prov:c.prov, tier:c.tier, running:c.run==='live' };
+  syncChip(); renderThread(c.id); renderRail();
+}
+function renderThread(id){
+  const t = document.getElementById('thread'); t.innerHTML='';
+  (THREADS[id] || [{who:'Coordinator',side:'agent',body:'No messages yet. Say hello to start.'}]).forEach(m=>{
+    const d = document.createElement('div'); d.className='msg '+m.side;
+    d.innerHTML = `<div class="who">${m.who}</div><div class="bubble">${m.body}</div>`;
+    t.appendChild(d);
+  });
+  t.scrollTop = t.scrollHeight;
+}
+function renderInsp(){
+  const b = document.getElementById('inspBody'); b.innerHTML='';
+  TASKS.forEach(t=>{
+    const r=document.createElement('div'); r.className='taskrow';
+    r.innerHTML=`<span class="tasktitle">${t.title}</span><span class="pill ${t.cls}">${t.st}</span>`;
+    b.appendChild(r);
+  });
+}
+
+// ---------- runtime chip / popover ----------
+function syncChip(){
+  document.getElementById('rtBridge').textContent = RT.bridge;
+  document.getElementById('rtProv').textContent = RT.prov;
+  document.getElementById('rtTier').textContent = RT.tier;
+  const dotEl = document.getElementById('rtDot');
+  dotEl.className = 'dot ' + (RT.running?'live':'stopped');
+  document.getElementById('stopstartLbl').textContent = RT.running ? '■ Stop instance' : '▶ Start instance';
+}
+function seg(containerId, items, current, onPick, disabledFn){
+  const c = document.getElementById(containerId); c.innerHTML='';
+  items.forEach(it=>{
+    const b=document.createElement('button');
+    b.textContent = it.label!==undefined?it.label:it;
+    const val = it.val!==undefined?it.val:it;
+    if(val===current) b.classList.add('on');
+    if(disabledFn && disabledFn(val)){ b.style.opacity=.35; b.style.pointerEvents='none'; }
+    b.onclick=()=>onPick(val);
+    c.appendChild(b);
+  });
+}
+function renderSegs(prefix){
+  const bridge = BRIDGES.find(x=>x.id===RT.bridge)||BRIDGES[0];
+  seg(prefix+'Bridge', BRIDGES.map(x=>({val:x.id,label:'● '+x.label})), RT.bridge, v=>{
+    RT.bridge=v; const nb=BRIDGES.find(x=>x.id===v);
+    if(!nb.providers.includes(RT.prov)) RT.prov=nb.providers[0];
+    renderSegs(prefix);
+  });
+  seg(prefix+'Prov', bridge.providers, RT.prov, v=>{ RT.prov=v; renderSegs(prefix); });
+  seg(prefix+'Tier', TIERS, RT.tier, v=>{ RT.tier=v; renderSegs(prefix); });
+}
+function togglePop(e){
+  const p=document.getElementById('pop');
+  const open = p.style.display==='none';
+  p.style.display = open?'block':'none';
+  if(open) renderSegs('seg');
+}
+function applyRuntime(){ RT.running=true; syncChip(); document.getElementById('pop').style.display='none'; }
+function toggleRun(){ RT.running=!RT.running; syncChip(); document.getElementById('pop').style.display='none'; }
+document.addEventListener('click', ()=>{ document.getElementById('pop').style.display='none'; });
+
+function toggleInsp(){ document.getElementById('desktop').classList.toggle('insp-open'); }
+
+// ---------- mobile ----------
+function renderMobile(){
+  const s=document.getElementById('mScroll'); s.innerHTML='';
+  PROJECTS.forEach(p=>{
+    const h=document.createElement('div'); h.className='m-proj-head';
+    h.innerHTML=`▾ ${p.name} <span style="margin-left:auto;color:var(--faint)">${p.convs.length}</span>`;
+    s.appendChild(h);
+    p.convs.forEach(c=>{
+      const r=document.createElement('button'); r.className='m-conv';
+      const sc = c.run==='live'?'var(--green)':(c.run==='starting'?'var(--amber)':'var(--grey)');
+      r.innerHTML=`<span class="av">${c.title[0].toUpperCase()}<span class="s" style="background:${sc}"></span></span>
+        <span class="bd"><span class="rowtop"><span class="nm">${c.title}</span><span class="tm">${c.time}</span></span>
+        <span class="pv">${c.prev}</span>
+        <span class="pv" style="color:var(--faint);margin-top:3px">${c.bridge} · ${c.prov} · ${c.tier}</span></span>`;
+      r.onclick=()=>mOpen();
+      s.appendChild(r);
+    });
+  });
+}
+function mOpen(){ document.getElementById('phone').dataset.view='thread'; }
+function mBack(){ document.getElementById('phone').dataset.view='list'; }
+function mSheetTasks(){ openSheet(); }
+function openSheet(){ document.getElementById('scrim').classList.add('open'); document.getElementById('sheet').classList.add('open'); renderSegs('mSeg'); }
+function closeSheet(){ document.getElementById('scrim').classList.remove('open'); document.getElementById('sheet').classList.remove('open'); }
+
+function renderMThread(){
+  const t=document.getElementById('mThread'); t.innerHTML='';
+  THREADS.c1.forEach(m=>{
+    const d=document.createElement('div'); d.className='m-msg '+m.side;
+    d.innerHTML=`<div class="bubble">${m.body}</div>`;
+    t.appendChild(d);
+  });
+}
+
+// init
+renderRail(); syncChip(); renderThread('c1'); renderInsp(); renderMobile(); renderMThread();
+</script>
+</body>
+</html>
