@@ -17,6 +17,7 @@ import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
+import ProjectsSurface from '../projects/ProjectsSurface';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
@@ -93,8 +94,8 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
 };
 const NAV_ROUTES: ShellRoute[] = [
   { path: '/conversations', label: 'Conversations', icon: 'chat', description: 'Chat sessions grouped by project and agent', group: 'primary' },
-  { path: '/chains', label: 'Task Chains', icon: 'tasks', description: 'Task-chain work and review', group: 'primary' },
-  { path: '/agents', label: 'Agents', icon: 'grid', description: 'Agent identities and sessions', group: 'primary' },
+  { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
+  { path: '/agents', label: 'Agents', icon: 'tasks', description: 'Agent identities and sessions', group: 'primary' },
   { path: '/library', label: 'Library', icon: 'device', description: 'Artifacts and files', group: 'primary' },
   { path: '/settings/bridges', label: 'Settings', icon: 'gear', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
 ];
@@ -768,7 +769,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
   const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
   const isKnownRoute = useMemo(() => {
     return [
-      '/conversations', '/conversations/new', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/settings',
+      '/conversations', '/conversations/new', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/user-tokens') ||
@@ -793,6 +794,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         {path === '/conversations' ? (
           <ConversationsHomePage />
+        ) : path === '/projects' ? (
+          <ProjectsSurface />
         ) : path === '/conversations/new' ? (
           <ConversationLaunchComposer />
         ) : path === '/settings' || path === '/settings/bridges' ? (
