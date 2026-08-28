@@ -1,6 +1,6 @@
 # UI Rework — "Conversations-first" implementation plan
 
-**Status:** In progress — Phases 0, 1, 2, 3 done; next Phase 4 (New chat flow)
+**Status:** In progress — Phases 0–4 done; next Phase 5 (mobile polish) / Phase 6 (Manage)
 **Owner:** _unassigned_
 **Design source:** `docs/mocks/simplified-ui.html` + `docs/mocks/simplified-ui-redesign.md`
 **Last updated:** 2026-08-28
@@ -166,23 +166,28 @@ revealing `TaskChainOverview`. Enhancements shipped:
       done/total. _Met (desktop + mobile inline)._ `tsc -b` + `vite build` green.
 - New debug-id: `taskchain-overview-toggle-progress`.
 
-### Phase 4 — New chat flow `[ ] not started`
-- [ ] Desktop modal + mobile full-screen: **Project → Coordinator agent → Runtime**.
-- [ ] **Searchable pickers (must scale to 10–50 items)** for BOTH agent and project —
-      not chip rows. Reuse/extend `AgentPickerV2` (already store-backed + searchable) for
-      the agent picker; build an equivalent searchable list for projects.
-  - Agent rows show **name + role/template tag + description + `agt_` id** so similar or
-    identically-named agents stay distinguishable; search matches name/id/role/description.
-  - Project rows show **name + path/hint**; search matches name/id/path. Include a
-    "No project" option. Each list is internally scrollable with a result count.
-- [ ] Defaults pre-resolved: agent `default_provider`/`default_tier` on its first
-      supported online bridge; advanced section only if the user wants to change.
-- [ ] Constrain bridge list to the agent's bridge-support; constrain provider/tier to the
-      chosen bridge's capabilities.
-- [ ] Submit → create instance in a (new or standalone) chain and open the conversation.
-- **Acceptance:** with 40+ agents/projects the picker is searchable, scrollable, and each
-      agent is identifiable by id + description; "just hit Start" still works with sane
-      defaults; power users can override.
+### Phase 4 — New chat flow `[x] done`
+Enhanced the existing `ConversationLaunchComposer` (`/conversations/new`) rather than
+building a new modal — it already had the launch/bridge/provider/tier/default logic.
+- [x] Built a reusable **`SearchableSelect`** (`components/SearchableSelect.tsx`):
+      searchable, keyboard-navigable popover list; each row renders avatar + title +
+      tag + subtitle + monospace id; internally scrollable with a "N of M" count.
+      Debug-ids: `<id>`, `<id>-popover`, `<id>-search-input`, `<id>-list`,
+      `<id>-option-<value>`, `<id>-empty`, `<id>-loading`, `<id>-count`.
+- [x] Replaced the agent + project `<select>` dropdowns with `SearchableSelect`
+      (`new-convo-agent-select`, `new-convo-project-select`). **Scales to 10–50.**
+  - Agent rows: **name + role tag (from template) + description (instructions) + `agt_`
+    id**; search matches name/id/role/description. `normalizeAgent` now carries
+    `template_id`/`role`/`description`; `templateRole()` derives a short role label.
+  - Project rows: name + `default` tag + `proj_` id; search matches name/id.
+- [x] Defaults still pre-resolved by the existing effects (agent/bridge default
+      provider/tier); bridge list constrained to online+capable; provider/tier follow the
+      chosen bridge. Submit path (`createLaunchConversation`) unchanged.
+- **Acceptance:** searchable/scrollable pickers with id + description; defaults still
+      auto-fill; power users override via the existing Run-location fieldset. _Met._
+      `tsc -b` + `vite build` green; verified the agent picker via a Tailwind harness.
+- Note: kept the existing plain `<select>`s for bridge/provider/tier (small, bounded
+  lists) — only agent/project needed the scalable picker.
 
 ### Phase 5 — Mobile polish + parity `[ ] not started`
 - [ ] list↔thread slide nav, FAB, bottom tab bar (Chats/Projects/Manage).
@@ -221,6 +226,12 @@ revealing `TaskChainOverview`. Enhancements shipped:
 ## 7. Progress log
 _Append newest first: `YYYY-MM-DD — <who> — <phase> — <what landed / decided>`._
 
+- 2026-08-28 — impl — **Phase 4 done.** Added a reusable `SearchableSelect`
+  (`components/SearchableSelect.tsx`) and swapped the New-chat agent + project `<select>`
+  dropdowns for it, so both scale to 10–50 with search + rich rows (agent: name + role tag
+  + description + agt_ id; project: name + id). Extended `normalizeAgent` to carry
+  template/role/description. Defaults + submit path unchanged. Verified the picker via a
+  Tailwind harness screenshot; `tsc -b` + `vite build` green.
 - 2026-08-28 — impl — **Phase 3 mostly done.** Upgraded the conversation header task-chain
   toggle to a labeled "Task chain N/M" button with a live done/total progress badge
   (lightweight `useFetchChainTasksQuery`) + `<Icon tasks>`; converted the runtime

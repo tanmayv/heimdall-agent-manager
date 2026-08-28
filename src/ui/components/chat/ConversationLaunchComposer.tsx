@@ -5,6 +5,7 @@ import { normalizeBridgeCapabilities, useListAgentBridgeSupportQuery, useListBri
 import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
+import SearchableSelect, { type SearchableOption } from '../SearchableSelect';
 
 type AgentOption = {
   agent_id: string;
@@ -12,6 +13,9 @@ type AgentOption = {
   default_provider?: string;
   default_tier?: string;
   state?: string;
+  template_id?: string;
+  role?: string;
+  description?: string;
 };
 
 type ProjectOption = {
@@ -74,6 +78,9 @@ function normalizeProject(project: ProjectOption): ProjectOption {
 }
 
 function normalizeAgent(agent: any): AgentOption {
+  const templateId = String(agent?.template_id || agent?.templateId || '');
+  // Derive a short human role from the template id (tmpl_system_reviewer → reviewer).
+  const role = String(agent?.role || '').trim() || templateRole(templateId);
   return {
     ...agent,
     agent_id: String(agent?.agent_id || agent?.agentId || agent?.id || ''),
@@ -81,7 +88,18 @@ function normalizeAgent(agent: any): AgentOption {
     default_provider: String(agent?.default_provider || agent?.defaultProvider || ''),
     default_tier: String(agent?.default_tier || agent?.defaultTier || ''),
     state: String(agent?.state || 'active'),
+    template_id: templateId,
+    role,
+    description: String(agent?.instructions || agent?.description || '').trim(),
   };
+}
+
+// Best-effort short role label from a template id for the agent picker subtitle.
+function templateRole(templateId: string): string {
+  const t = String(templateId || '').toLowerCase();
+  if (!t) return '';
+  const stripped = t.replace(/^tmpl_(system_)?/, '').replace(/_/g, ' ').trim();
+  return stripped ? stripped.charAt(0).toUpperCase() + stripped.slice(1) : '';
 }
 
 function defaultProject(projects: ProjectOption[]): ProjectOption {
@@ -178,6 +196,21 @@ export default function ConversationLaunchComposer() {
     return normalizedProjects.some(isDefaultProject) ? normalizedProjects : [SYNTHETIC_DEFAULT_PROJECT, ...normalizedProjects];
   }, [projectsQuery.data]);
   const bridges = useMemo<BridgeOption[]>(() => bridgesQuery.data?.bridges || [], [bridgesQuery.data?.bridges]);
+
+  // Searchable-select option lists (scale to 10–50 with search + descriptions).
+  const agentSelectOptions = useMemo<SearchableOption[]>(() => runnableAgents.map((agent: AgentOption) => ({
+    value: agent.agent_id,
+    title: agent.name || agent.agent_id,
+    tag: agent.role || undefined,
+    subtitle: agent.description || (agent.default_provider || agent.default_tier ? `defaults to ${[agent.default_provider, agent.default_tier].filter(Boolean).join(' · ')}` : undefined),
+    id: agent.agent_id,
+  })), [runnableAgents]);
+  const projectSelectOptions = useMemo<SearchableOption[]>(() => projects.map((project: ProjectOption) => ({
+    value: project.project_id,
+    title: project.name + (isDefaultProject(project) ? '' : ''),
+    tag: isDefaultProject(project) ? 'default' : undefined,
+    id: isDefaultProject(project) ? undefined : project.project_id,
+  })), [projects]);
   const support = useMemo(() => (supportQuery.data?.entries || []).map((row: any) => ({ bridgeId: row.bridgeId || row.bridge_id, provider: row.providerProfile || row.provider || '', tier: row.modelTier || row.tier || '' })), [supportQuery.data?.entries]);
 
   useEffect(() => {
@@ -412,19 +445,32 @@ export default function ConversationLaunchComposer() {
       </div>
 
       <div data-debug-id="launch-required-agent-control" className="mt-5 grid gap-4 md:grid-cols-2">
-        <label className="block">
+        <div className="block">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Agent required</span>
-          <select data-debug-id="new-convo-agent-select" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm">
-            <option value="">Choose an agent before sending…</option>
-            {runnableAgents.map((agent) => <option key={agent.agent_id} value={agent.agent_id}>{agent.name || agent.agent_id}</option>)}
-          </select>
-        </label>
-        <label data-debug-id="launch-project-default-control" className="block">
+          <SearchableSelect
+            debugId="new-convo-agent-select"
+            options={agentSelectOptions}
+            value={agentId}
+            onChange={setAgentId}
+            buttonPlaceholder="Choose an agent before sending…"
+            placeholder="Search agents by name, id or role…"
+            emptyLabel="No agents match your search."
+            loading={agentsQuery.isLoading}
+          />
+        </div>
+        <div data-debug-id="launch-project-default-control" className="block">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Project</span>
-          <select data-debug-id="new-convo-project-select" value={projectId} onChange={(event) => setProjectId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm">
-            {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}{isDefaultProject(project) ? ' · default' : ''}</option>)}
-          </select>
-        </label>
+          <SearchableSelect
+            debugId="new-convo-project-select"
+            options={projectSelectOptions}
+            value={projectId}
+            onChange={setProjectId}
+            buttonPlaceholder="Choose a project…"
+            placeholder="Search projects…"
+            emptyLabel="No projects match your search."
+            loading={projectsQuery.isLoading}
+          />
+        </div>
       </div>
 
       <fieldset data-debug-id="launch-advanced-bridge-provider-tier-controls" className="mt-5 rounded-3xl border border-white/10 bg-black/20 p-4">
