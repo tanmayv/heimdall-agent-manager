@@ -123,7 +123,7 @@ bridge_bootstrap_ctl_guidance :: proc() -> string {
 bridge_bootstrap_write_ham_ctl_wrapper :: proc(run_dir, bridge_endpoint, agent_token, instance_id: string) -> bool {
 	ctl := bridge_bootstrap_ham_ctl_path()
 	if strings.trim_space(ctl) == "" {
-		fmt.eprintln("bridge bootstrap failed: ham-ctl not found; set [wrapper].ham_ctl_bin or HEIMDALL_HAM_CTL_BIN")
+		fmt.eprintln("bridge bootstrap failed: ham-ctl not found; set HEIMDALL_HAM_CTL_BIN or put ham-ctl on PATH (the flake `bridge` app sets this automatically)")
 		return false
 	}
 	bin_dir := strings.concatenate({strings.trim_right(run_dir, "/"), "/.heimdall/bin"})
@@ -154,7 +154,10 @@ bridge_bootstrap_shell_quote :: proc(b: ^strings.Builder, value: string) {
 }
 
 bridge_bootstrap_ham_ctl_path :: proc() -> string {
-	if configured := bridge_bootstrap_normalize_executable_path(bridge_config.ham_ctl_bin); configured != "" do return configured
+	// ham-ctl is resolved from the HEIMDALL_HAM_CTL_BIN env var (set by the flake
+	// `bridge` app to the matching build), falling back to `ham-ctl` on PATH. There
+	// is intentionally no config-file entry — the env var keeps the ctl bound to the
+	// same build as the bridge without a stale hardcoded path in config.toml.
 	if v := os.get_env_alloc("HEIMDALL_HAM_CTL_BIN", context.allocator); strings.trim_space(v) != "" {
 		if normalized := bridge_bootstrap_normalize_executable_path(v); normalized != "" do return normalized
 	}
