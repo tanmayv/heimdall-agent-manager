@@ -100,6 +100,7 @@ def main():
             project_id=project["data"]["project_id"]
             st,created=req("POST",f"{base}/agent-instances",{"agent_id":agent_id,"bridge_id":bridge_id,"project_id":project_id},alice); assert st==201,created
             inst_id=created["data"]["agent_instance_id"]
+            coordinator_chain_id=created["data"]["chain_id"]
             event=recv_resource_changed(user_ws); assert event["resource"]=="agent_instance" and event["resource_id"]==inst_id and event["change"]=="created",event
             launch=ws_recv_json(bridge_ws); assert launch["type"]=="launch_agent",launch
             st,bundle=req("GET",f"{base}/bridge/agent-instances/{inst_id}/bootstrap",headers={"Authorization":f"Bearer {bridge_token}"}); assert st==200,bundle
@@ -111,6 +112,23 @@ def main():
             st,bob_boot=req("GET",f"{base}/bridge/agent-instances/{inst_id}/bootstrap",headers={"Authorization":f"Bearer {bob_br['data']['bridge_token']}"}); assert st==404,bob_boot
             ws_send_json(bridge_ws,{"type":"agent_instance_status","agent_instance_id":inst_id,"state_seq":1,"runtime_status":"running","activity_status":"idle"}); ack=ws_recv_json(bridge_ws); assert ack["payload"]["applied"] is True,ack
             status_event=recv_resource_changed(user_ws); assert status_event["resource"]=="agent_instance" and status_event["change"]=="status_changed" and status_event["summary"]["runtime_status"]=="running",status_event
+
+            # Agent-initiated add-agent: a running agent adds another agent to its own
+            # chain using its bridge-relayed instance token (bridge bearer token +
+            # X-Heimdall-Instance-Token: hit_<instance>), exactly as ham-ctl relays
+            # agent.rest.request. Previously POST /agent-instances was user-token only
+            # and returned 403 'bridge token cannot call user APIs'.
+            agent_relay_headers={"Authorization":f"Bearer {bridge_token}","X-Heimdall-Instance-Token":f"hit_{inst_id}"}
+            st,agent_added=req("POST",f"{base}/agent-instances",{"agent_id":agent_id,"bridge_id":bridge_id,"project_id":project_id,"chain_id":coordinator_chain_id},agent_relay_headers); assert st==201,agent_added
+            added_inst_id=agent_added["data"]["agent_instance_id"]
+            assert agent_added["data"]["chain_id"]==coordinator_chain_id,agent_added
+            added_event=recv_resource_changed(user_ws); assert added_event["resource"]=="agent_instance" and added_event["resource_id"]==added_inst_id and added_event["change"]=="created",added_event
+            added_launch=ws_recv_json(bridge_ws); assert added_launch["type"]=="launch_agent",added_launch
+            # The new instance is bound to the coordinator's chain as a member.
+            st,members=req("GET",f"{base}/task-chains/{coordinator_chain_id}/members",None,alice); assert st==200,members
+            member_ids={m["agent_instance_id"] for m in members["data"]}; assert added_inst_id in member_ids and inst_id in member_ids,members
+            # A foreign bridge token (bob) must NOT be able to act for alice's instance.
+            st,forbidden=req("POST",f"{base}/agent-instances",{"agent_id":agent_id,"bridge_id":bridge_id,"project_id":project_id,"chain_id":coordinator_chain_id},{"Authorization":f"Bearer {bob_br['data']['bridge_token']}","X-Heimdall-Instance-Token":f"hit_{inst_id}"}); assert st in (403,404),forbidden
 
             # UI-BE-7: task/chain mutations MUST also fan out resource_changed so the
             # UI task views live-update without a manual refresh. Prior to the fix the

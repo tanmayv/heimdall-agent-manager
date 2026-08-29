@@ -144,7 +144,13 @@ list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 create_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Accept both human user tokens and bridge-relayed instance tokens so a running
+	// agent (e.g. a chain coordinator) can add/launch another agent into its chain.
+	// require_auth_any resolves the hbr_ bridge token + hit_ instance assertion into
+	// an Auth_Context carrying the owning user_id; create_instance then scopes the
+	// new instance to that same owner (bridge/agent owner-match is enforced there),
+	// so an agent can only spawn agents it already owns.
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	inst, created, err := agent_service.create_instance(h.agents, auth_ctx, instance_input_from_body(req.body))
 	if !created do return respond_error(err, req.request_id)
