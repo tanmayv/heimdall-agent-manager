@@ -893,11 +893,18 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
         <div className="flex items-end gap-1.5 sm:gap-2">
           <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
           <div ref={composerActionsRef} className="relative shrink-0 sm:hidden">
-            <button ref={composerActionsButtonRef} data-debug-id="conversation-composer-actions-menu-btn" type="button" aria-label="More composer actions" aria-haspopup="menu" aria-expanded={composerActionsOpen ? 'true' : 'false'} onClick={() => setComposerActionsOpen((open) => !open)} className="grid h-[44px] w-[44px] place-items-center rounded-2xl border border-white/10 bg-black/30 text-2xl leading-none text-zinc-300 hover:bg-white/5 hover:text-white">⋯</button>
+            <button ref={composerActionsButtonRef} data-debug-id="conversation-composer-actions-menu-btn" type="button" aria-label="More composer actions" aria-haspopup="dialog" aria-expanded={composerActionsOpen ? 'true' : 'false'} onClick={() => setComposerActionsOpen((open) => !open)} className="grid h-[44px] w-[44px] place-items-center rounded-2xl border border-white/10 bg-black/30 text-2xl leading-none text-zinc-300 hover:bg-white/5 hover:text-white">⋯</button>
             {composerActionsOpen ? (
-              <div data-debug-id="conversation-composer-actions-menu" role="menu" className="absolute bottom-full left-0 z-40 mb-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 shadow-2xl shadow-black/50">
-                <button data-debug-id="conversation-composer-actions-upload" type="button" role="menuitem" onClick={openAttachmentPicker} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-zinc-100 hover:bg-white/10"><span className="text-lg">＋</span><span>Upload</span></button>
-                <button data-debug-id="conversation-composer-actions-pane" type="button" role="menuitem" disabled={paneCaptureDisabled} onClick={requestPaneFromComposer} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-zinc-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"><span className="text-lg">▣</span><span>Pane capture</span></button>
+              // Mobile: render as a fixed bottom sheet (z-50) rather than an
+              // absolute bottom-full dropdown. The composer <form> uses
+              // overflow-x-hidden, which per CSS promotes overflow-y to auto and
+              // clips an upward-opening dropdown behind the chat transcript. A
+              // fixed sheet escapes that clipping and always sits above the chat.
+              <div data-debug-id="conversation-composer-actions-sheet" className="fixed inset-0 z-50 flex items-end bg-black/60 p-2 backdrop-blur-sm sm:hidden" role="dialog" aria-modal="true" aria-label="Composer actions" onPointerDown={(event) => { if (event.target === event.currentTarget) setComposerActionsOpen(false); }}>
+                <div data-debug-id="conversation-composer-actions-menu" role="menu" className="w-full overflow-hidden rounded-t-[1.75rem] border border-white/10 bg-[#101010] p-2 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] shadow-2xl shadow-black/70">
+                <button data-debug-id="conversation-composer-actions-upload" type="button" role="menuitem" onClick={openAttachmentPicker} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-sm text-zinc-100 hover:bg-white/10"><span className="text-lg">＋</span><span>Upload</span></button>
+                <button data-debug-id="conversation-composer-actions-pane" type="button" role="menuitem" disabled={paneCaptureDisabled} onClick={requestPaneFromComposer} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-sm text-zinc-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"><span className="text-lg">▣</span><span>Pane capture</span></button>
+                </div>
               </div>
             ) : null}
           </div>
