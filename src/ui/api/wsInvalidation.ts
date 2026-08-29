@@ -356,6 +356,65 @@ function handleAgentEvent(dispatch: any, payload: any, ctx: WsCtx) {
   }
 }
 
+// UI-BE-7: the hub's event bus (src/hub/service/events/event_bus.odin) emits a
+// single generic envelope `{ type: 'resource_changed', resource, resource_id,
+// change, summary }` for every durable resource mutation, rather than the
+// legacy per-domain `task_event`/`agent_update` types. This is the ONLY event
+// shape the rewrite hub sends, so task/chain views only update live if we handle
+// it here. We invalidate the smallest RTK Query tags for the changed resource;
+// RTK Query refetches only entries with an active subscriber, so this scopes the
+// refetch to whatever the UI is currently showing.
+function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
+  const resource = String(payload.resource || '');
+  const resourceId = String(payload.resource_id || '');
+  const summary = payload.summary || {};
+  const chainId = String(summary.chain_id || (resource === 'task_chain' ? resourceId : '') || '');
+  const taskId = String(summary.task_id || (resource === 'task' ? resourceId : '') || '');
+  dispatch(wsRefreshRequested(`resource_changed:${resource}:${resourceId}`));
+
+  switch (resource) {
+    case 'task': {
+      const tags: any[] = [{ type: 'ChainList', id: 'ALL' }];
+      if (taskId) {
+        tags.push({ type: 'Task', id: taskId });
+        tags.push({ type: 'TaskLog', id: taskId });
+        tags.push({ type: 'TaskComments', id: taskId });
+      }
+      if (chainId) {
+        tags.push({ type: 'ChainTasks', id: chainId });
+        tags.push({ type: 'Chain', id: chainId });
+      }
+      dispatch(heimdallApi.util.invalidateTags(tags));
+      if (chainId && ctx.focusedChainId === chainId) {
+        dispatch(wsChainViewRefreshRequested(`resource_changed:task:${taskId || resourceId}`));
+      }
+      return;
+    }
+    case 'task_chain': {
+      const tags: any[] = [{ type: 'ChainList', id: 'ALL' }];
+      if (chainId) {
+        tags.push({ type: 'Chain', id: chainId });
+        tags.push({ type: 'ChainTasks', id: chainId });
+      }
+      dispatch(heimdallApi.util.invalidateTags(tags));
+      if (chainId && ctx.focusedChainId === chainId) {
+        dispatch(wsChainViewRefreshRequested(`resource_changed:task_chain:${chainId}`));
+      }
+      return;
+    }
+    case 'agent_instance':
+    case 'agent_id':
+    case 'agent': {
+      // Reuse the agent patch/refresh path; patchAgentCachesFromWs tolerates the
+      // resource_changed shape (reads agent_instance_id/record fields defensively).
+      handleAgentEvent(dispatch, { ...payload, type: 'agent_update', agent_instance_id: resourceId }, ctx);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
 // The user WebSocket is fire-and-forget fanout with no per-client replay: any
 // event emitted while we were disconnected is lost. After the socket re-opens we
 // therefore invalidate every RTK Query tag so the cache re-fetches whatever the
@@ -395,6 +454,9 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
     case 'agent_lifecycle_changed':
     case 'agent_runtime_changed':
       handleAgentEvent(dispatch, payload, ctx);
+      return;
+    case 'resource_changed':
+      handleResourceChanged(dispatch, payload, ctx);
       return;
     default:
       return;

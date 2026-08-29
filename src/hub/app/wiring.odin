@@ -112,7 +112,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content}
-	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents}
+	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains}

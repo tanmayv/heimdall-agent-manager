@@ -28,11 +28,33 @@ def ws_send_json(s,obj):
     else: header=bytes([0x81,0x80|126,(len(payload)>>8)&255,len(payload)&255])
     s.sendall(header+mask+bytes(b^mask[i%4] for i,b in enumerate(payload)))
 
+# Per-socket receive buffer so multiple WS frames delivered in one TCP segment
+# are parsed one-at-a-time instead of being dropped. Keyed by fileno.
+_WS_BUFFERS={}
+
 def ws_recv_json(s):
-    frame=s.recv(65536); assert frame and frame[0]&0x0f==1, frame
-    ln=frame[1]&0x7f; start=2
-    if ln==126: ln=(frame[2]<<8)|frame[3]; start=4
-    return json.loads(frame[start:start+ln].decode())
+    buf=_WS_BUFFERS.get(s.fileno(),b"")
+    while True:
+        # Need at least the 2-byte header before we can size the frame.
+        while len(buf)<2:
+            chunk=s.recv(65536)
+            if not chunk: raise AssertionError("socket closed while reading ws frame")
+            buf+=chunk
+        ln=buf[1]&0x7f; start=2
+        if ln==126:
+            while len(buf)<4:
+                chunk=s.recv(65536)
+                if not chunk: raise AssertionError("socket closed while reading ws frame")
+                buf+=chunk
+            ln=(buf[2]<<8)|buf[3]; start=4
+        while len(buf)<start+ln:
+            chunk=s.recv(65536)
+            if not chunk: raise AssertionError("socket closed while reading ws frame")
+            buf+=chunk
+        assert buf[0]&0x0f==1, buf[:start+ln]
+        payload=buf[start:start+ln]
+        _WS_BUFFERS[s.fileno()]=buf[start+ln:]
+        return json.loads(payload.decode())
 
 def ws_connect(path, port, headers=None):
     key=base64.b64encode(os.urandom(16)).decode(); s=socket.create_connection(("127.0.0.1",port),timeout=5)
@@ -89,6 +111,24 @@ def main():
             st,bob_boot=req("GET",f"{base}/bridge/agent-instances/{inst_id}/bootstrap",headers={"Authorization":f"Bearer {bob_br['data']['bridge_token']}"}); assert st==404,bob_boot
             ws_send_json(bridge_ws,{"type":"agent_instance_status","agent_instance_id":inst_id,"state_seq":1,"runtime_status":"running","activity_status":"idle"}); ack=ws_recv_json(bridge_ws); assert ack["payload"]["applied"] is True,ack
             status_event=recv_resource_changed(user_ws); assert status_event["resource"]=="agent_instance" and status_event["change"]=="status_changed" and status_event["summary"]["runtime_status"]=="running",status_event
+
+            # UI-BE-7: task/chain mutations MUST also fan out resource_changed so the
+            # UI task views live-update without a manual refresh. Prior to the fix the
+            # taskchain handlers published nothing on the user WebSocket.
+            st,chain=req("POST",f"{base}/task-chains",{"title":"Live update chain","description":"d"},alice); assert st==201,chain
+            chain_id=chain["data"]["chain_id"]
+            chain_created=recv_resource_changed(user_ws); assert chain_created["resource"]=="task_chain" and chain_created["resource_id"]==chain_id and chain_created["change"]=="created",chain_created
+            st,task=req("POST",f"{base}/task-chains/{chain_id}/tasks",{"title":"Live task","description":"d"},alice); assert st==201,task
+            task_id=task["data"]["task_id"]
+            # create_task emits a task 'created' event and a chain 'updated' event.
+            task_created=recv_resource_changed(user_ws); assert task_created["resource"]=="task" and task_created["resource_id"]==task_id and task_created["change"]=="created" and task_created["summary"]["chain_id"]==chain_id,task_created
+            chain_updated=recv_resource_changed(user_ws); assert chain_updated["resource"]=="task_chain" and chain_updated["resource_id"]==chain_id and chain_updated["change"]=="updated",chain_updated
+            # Tasks start as drafts; publishing the chain publishes + auto-promotes its
+            # tasks (one chain resource_changed) before a status transition is legal.
+            st,pub_chain=req("POST",f"{base}/task-chains/{chain_id}/publish",{},alice); assert st==200,pub_chain
+            pub_chain_evt=recv_resource_changed(user_ws); assert pub_chain_evt["resource"]=="task_chain" and pub_chain_evt["resource_id"]==chain_id,pub_chain_evt
+            st,status_resp=req("POST",f"{base}/task-chains/{chain_id}/tasks/{task_id}/status",{"status":"in_progress"},alice); assert st==200,status_resp
+            task_status=recv_resource_changed(user_ws); assert task_status["resource"]=="task" and task_status["resource_id"]==task_id and task_status["change"]=="status_changed",task_status
         finally:
             for s in (user_ws,bridge_ws):
                 if s:

@@ -7,11 +7,53 @@ import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import taskchain_service "odin_test:hub/service/taskchain"
+import events "odin_test:hub/service/events"
 
 Taskchain_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
 	agents: ^agent_service.Agent_Service,
+	event_bus: ^events.User_Event_Bus,
+}
+
+// UI-BE-7: publish a lightweight resource_changed event to the owning user's
+// live WebSocket clients so the browser can invalidate the smallest relevant
+// RTK Query cache and update task/chain views without a manual refresh. These
+// are fire-and-forget invalidation hints; the UI refetches authoritative state.
+// event_bus may be nil in some test wirings, in which case publish is a no-op.
+publish_chain_changed :: proc(h: ^Taskchain_Handlers, owner_user_id, chain_id, change: string) {
+	if h == nil || h.event_bus == nil || owner_user_id == "" do return
+	summary := taskchain_resource_summary_json("chain_id", chain_id)
+	defer delete(summary)
+	events.publish_resource_changed(h.event_bus, owner_user_id, "task_chain", chain_id, change, summary)
+}
+
+publish_task_changed :: proc(h: ^Taskchain_Handlers, owner_user_id, task_id, chain_id, change: string) {
+	if h == nil || h.event_bus == nil || owner_user_id == "" do return
+	summary := taskchain_task_summary_json(task_id, chain_id)
+	defer delete(summary)
+	events.publish_resource_changed(h.event_bus, owner_user_id, "task", task_id, change, summary)
+}
+
+taskchain_resource_summary_json :: proc(key, value: string) -> string {
+	b := strings.builder_make()
+	strings.write_byte(&b, '{')
+	strings.write_byte(&b, '"')
+	strings.write_string(&b, key)
+	strings.write_string(&b, "\":\"")
+	write_handler_json_string(&b, value)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+taskchain_task_summary_json :: proc(task_id, chain_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"task_id\":\"")
+	write_handler_json_string(&b, task_id)
+	strings.write_string(&b, "\",\"chain_id\":\"")
+	write_handler_json_string(&b, chain_id)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
 }
 
 list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -39,6 +81,7 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		chain, created, err = taskchain_service.update_chain_coordinator(h.taskchains, auth_ctx, chain.chain_id, inst.agent_instance_id)
 		if !created do return respond_error(err, req.request_id)
 	}
+	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "created")
 	b := strings.builder_make(); write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
@@ -50,6 +93,7 @@ patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := path_part(req.path, 4)
 	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), status = json_string(req.body, "status")})
 	if !updated do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
 	b := strings.builder_make(); write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
@@ -98,6 +142,7 @@ publish_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := path_part(req.path, 4)
 	chain, got, err := taskchain_service.publish_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
 	if !got do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
 	b := strings.builder_make(); write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
@@ -109,6 +154,7 @@ complete_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := path_part(req.path, 4)
 	chain, got, err := taskchain_service.change_chain_status(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), .Completed)
 	if !got do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
 	b := strings.builder_make(); write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
@@ -141,6 +187,8 @@ create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	deps := json_array_of_strings(req.body, "depends_on")
 	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), depends_on = deps})
 	if !created do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "created")
+	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
 	b := strings.builder_make(); write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
@@ -156,6 +204,7 @@ patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	deps := json_array_of_strings(req.body, "depends_on")
 	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), depends_on = deps, has_depends_on = has_deps})
 	if !updated do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
 	b := strings.builder_make(); write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
@@ -169,6 +218,7 @@ publish_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
 	task, got, err := taskchain_service.publish_task(h.taskchains, auth_ctx, task_id)
 	if !got do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
 	b := strings.builder_make(); write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
@@ -184,6 +234,8 @@ change_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !status_ok do return respond_error(domain.domain_error(.Validation_Failed, "invalid task status"), req.request_id)
 	task, changed, err := taskchain_service.change_task_status(h.taskchains, auth_ctx, task_id, status)
 	if !changed do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "status_changed")
+	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
 	b := strings.builder_make(); write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
@@ -197,6 +249,8 @@ cancel_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
 	task, changed, err := taskchain_service.change_task_status(h.taskchains, auth_ctx, task_id, .Cancelled)
 	if !changed do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "status_changed")
+	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
 	b := strings.builder_make(); write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
@@ -260,6 +314,7 @@ create_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
 	comment, saved, err := taskchain_service.comment_task(h.taskchains, auth_ctx, taskchain_service.Task_Comment_Input{task_id = task_id, body = json_string(req.body, "body")})
 	if !saved do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(comment.owner_user_id), string(comment.task_id), string(comment.chain_id), "commented")
 	b := strings.builder_make(); write_task_comment_json(&b, comment)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
@@ -288,6 +343,7 @@ vote_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
 	vote, recorded, err := taskchain_service.record_task_vote(h.taskchains, auth_ctx, taskchain_service.Vote_Input{task_id = task_id, vote = json_string(req.body, "vote"), comment = json_string(req.body, "comment")})
 	if !recorded do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(vote.owner_user_id), string(vote.task_id), string(vote.chain_id), "voted")
 	b := strings.builder_make(); write_task_vote_json(&b, vote)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
@@ -312,6 +368,7 @@ add_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	member, added, err := taskchain_service.add_chain_member(h.taskchains, auth_ctx, chain_id, json_string(req.body, "agent_instance_id"), json_string(req.body, "role"))
 	if !added do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(member.owner_user_id), string(member.chain_id), "updated")
 	b := strings.builder_make(); write_member_json(&b, member)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
@@ -324,6 +381,7 @@ remove_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	agent_instance_id := path_part(req.path, 6)
 	removed, err := taskchain_service.remove_chain_member(h.taskchains, auth_ctx, chain_id, agent_instance_id)
 	if !removed do return respond_error(err, req.request_id)
+	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
 	return respond_success("{\"removed\":true}", req.request_id, auth_ctx_server_time(req))
 }
 
