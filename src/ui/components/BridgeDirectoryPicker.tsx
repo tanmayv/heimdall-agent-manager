@@ -39,11 +39,23 @@ export default function BridgeDirectoryPicker({
   const [newFolder, setNewFolder] = useState('');
   const [showNewFolder, setShowNewFolder] = useState(false);
 
-  async function load(path: string) {
+  async function load(path: string, opts?: { fromFallback?: boolean }) {
     setError('');
     try {
       const res = await listDir({ bridgeId, path }).unwrap();
-      if (!res.ok) { setError(str(res.error?.message) || 'Could not open directory'); return; }
+      if (!res.ok) {
+        // Friendlier: if the requested path is outside the bridge's allowed root
+        // (or just missing), fall back to opening the root instead of erroring —
+        // so the picker always shows something useful. Only note it, don't block.
+        if (!opts?.fromFallback && (res.error?.code === 'path_outside_root' || res.error?.code === 'path_not_found')) {
+          const reason = res.error?.code === 'path_outside_root' ? 'outside the allowed root' : 'not found';
+          await load('', { fromFallback: true }); // '' => the bridge's root
+          setError(`Opened the root — "${path}" is ${reason} on this device.`);
+          return;
+        }
+        setError(str(res.error?.message) || 'Could not open directory');
+        return;
+      }
       setCwd(res.path); setRoot(res.root); setParent(res.parent); setEntries(res.entries || []);
       setPathInput(res.path);
     } catch (e: any) {
@@ -51,7 +63,7 @@ export default function BridgeDirectoryPicker({
     }
   }
 
-  useEffect(() => { void load(initialPath); /* open at initial path or root */ }, [bridgeId]);
+  useEffect(() => { void load(initialPath); /* open at initial path, else falls back to root */ }, [bridgeId]);
 
   const visibleEntries = useMemo(() => {
     const dirs = entries.filter((e) => e.is_dir && (showHidden || !e.hidden));
@@ -101,10 +113,14 @@ export default function BridgeDirectoryPicker({
   return (
     <div data-debug-id={debugId} className="w-full rounded-2xl border border-white/12 bg-[#0f1115] p-3 shadow-2xl">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="min-w-0 text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
-          Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</div>
+          {root ? <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-600" title={`Allowed root: ${root}`}>root: {root}</div> : null}
         </div>
-        {onClose ? <button data-debug-id={`${debugId}-close-btn`} type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-zinc-500 hover:bg-white/10 hover:text-white"><Icon name="close" size={15} /></button> : null}
+        <div className="flex shrink-0 items-center gap-1">
+          <button data-debug-id={`${debugId}-home-btn`} type="button" onClick={() => void load('')} title="Go to root" className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Root</button>
+          {onClose ? <button data-debug-id={`${debugId}-close-btn`} type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-zinc-500 hover:bg-white/10 hover:text-white"><Icon name="close" size={15} /></button> : null}
+        </div>
       </div>
 
       {/* breadcrumb */}

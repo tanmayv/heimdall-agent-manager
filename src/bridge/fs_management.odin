@@ -10,6 +10,7 @@ package main
 // v1 capabilities: list a directory, stat a path, mkdir -p. No file contents, no
 // delete/rename, no browsing outside the root.
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:path/filepath"
@@ -19,20 +20,27 @@ import ws "odin_test:lib/ws"
 // bridge_fs_init. Empty means FS management is effectively disabled (deny all).
 bridge_fs_root: string
 
-// bridge_fs_init resolves the configured fs_root (or $HOME) to a real absolute
-// path and stores it. Call once at startup.
+// bridge_fs_init resolves the configured fs_root (or $HOME when unset) to a real
+// absolute path and stores it. Call once at startup.
 bridge_fs_init :: proc(configured_root: string) {
+	home := os.get_env_alloc("HOME", context.allocator)
 	root := strings.trim_space(configured_root)
-	if root == "" do root = "~"
-	expanded := bridge_expand_home(root)
+	// Default to $HOME when unset. Also expand a bare "~" or "~/..." to $HOME
+	// (bridge_expand_home only handles the "~/" form, so handle bare "~" here).
+	if root == "" || root == "~" {
+		root = home != "" ? home : "/"
+	} else {
+		root = bridge_expand_home(root)
+	}
 	// Resolve symlinks + make absolute so containment compares real paths.
-	if resolved, err := os.get_absolute_path(expanded, context.allocator); err == nil {
+	if resolved, err := os.get_absolute_path(root, context.allocator); err == nil {
 		bridge_fs_root = resolved
 	} else {
 		// Root does not exist / cannot be resolved: fall back to the expanded form
-		// (containment will still work lexically; ops on a missing root just fail).
-		bridge_fs_root = strings.clone(expanded)
+		// (containment still works lexically; ops on a missing root just fail).
+		bridge_fs_root = strings.clone(root)
 	}
+	fmt.printfln("bridge fs sandbox root: %s", bridge_fs_root)
 }
 
 Bridge_Fs_Entry :: struct {
