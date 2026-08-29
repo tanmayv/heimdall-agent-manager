@@ -425,7 +425,12 @@ wrapper_bridge_runtime_config_from_args :: proc(args: []string) -> Bridge_Runtim
 		pane_id = option_value(args, "--pane-id", os.get_env_alloc("TMUX_PANE", context.allocator)),
 		liveness_interval_ms = wrapper_bridge_int_arg(args, "--liveness-interval-ms", 1000),
 		activity_interval_ms = wrapper_bridge_int_arg(args, "--activity-interval-ms", 2000),
-		pane_activity_enabled = has_flag(args, "--pane-activity") || wrapper_bridge_env_flag("HEIMDALL_WRAPPER_PANE_ACTIVITY"),
+		// Harness-agnostic pane-capture activity detection is ON by default for all
+		// harnesses (incl. pi). Where a harness also has a native activity extension,
+		// the extension outranks pane_diff (see bridge activity source ranking), so
+		// this acts as a complementary fallback. Opt out with --no-pane-activity or
+		// HEIMDALL_WRAPPER_PANE_ACTIVITY=0.
+		pane_activity_enabled = wrapper_bridge_pane_activity_default(args),
 		pane_activity_interval_ms = wrapper_bridge_int_arg(args, "--pane-activity-interval-ms", 1000),
 	}
 	if sep := wrapper_bridge_command_separator(args); sep >= 0 && sep + 1 < len(args) {
@@ -452,6 +457,15 @@ wrapper_bridge_int_arg :: proc(args: []string, key: string, fallback: int) -> in
 wrapper_bridge_env_flag :: proc(name: string) -> bool {
 	v := strings.to_lower(strings.trim_space(os.get_env_alloc(name, context.allocator)))
 	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+// Pane-activity detection defaults ON. Explicit opt-out wins over opt-in:
+//   --no-pane-activity or HEIMDALL_WRAPPER_PANE_ACTIVITY in {0,false,no,off}.
+wrapper_bridge_pane_activity_default :: proc(args: []string) -> bool {
+	if has_flag(args, "--no-pane-activity") do return false
+	env := strings.to_lower(strings.trim_space(os.get_env_alloc("HEIMDALL_WRAPPER_PANE_ACTIVITY", context.allocator)))
+	if env == "0" || env == "false" || env == "no" || env == "off" do return false
+	return true
 }
 
 wrapper_bridge_child_env :: proc(cfg: Bridge_Runtime_Config) -> []string {
