@@ -66,28 +66,21 @@ Pane_Activity_Sample :: struct {
 	spinner_present: bool,
 }
 
-// Braille + common ASCII/block spinner glyphs. Masked for the content hash and
-// used as a positive "active" indicator.
-@(private="file")
-PANE_SPINNER_RUNES := [?]rune{
-	'\u2801','\u2802','\u2804','\u2808','\u2810','\u2820','\u2840','\u2880',
-	'\u280b','\u2819','\u2839','\u2838','\u283c','\u2834','\u2826','\u2827',
-	'\u2807','\u280f', // ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ family
-	'\u2596','\u2597','\u2598','\u2599','\u259a','\u259b','\u259c','\u259d','\u259e','\u259f',
-	'\u258f','\u258e','\u258d','\u258c','\u258b','\u258a','\u2589','\u2588', // ▏▎▍▌▋▊▉█
-	'\u2591','\u2592','\u2593', // ░▒▓
-	'\u25e6','\u2022','\u25cf','\u25cb','\u25d0','\u25d1','\u25d2','\u25d3',
-	// NOTE: ASCII glyphs (| / - \\) and box-drawing (line/pipe) are intentionally
-	// NOT masked as spinners: they appear constantly in normal content (file paths,
-	// "(y/n)", tables, prose) and would cause chronic false-active plus corrupt
-	// waiting_user detection. Modern agent TUIs (Claude Code, Pi, Codex) use the
-	// braille/block spinners covered above, which are unambiguous.
-}
-
+// Spinner detection is restricted to the Unicode Braille Patterns block
+// (U+2800..U+28FF). Modern agent TUIs (Claude Code, Pi, Codex, Antigravity) all
+// animate their "thinking/working" spinner with braille glyphs, and braille
+// essentially never appears in normal agent output — so its PRESENCE is a strong,
+// low-false-positive "active" signal.
+//
+// We deliberately do NOT treat these as spinners, because they occur in ordinary
+// content/footers/progress bars and caused chronic false-active in real panes:
+//   - bullets/circles: • ◦ ● ○ ◐…
+//   - block shades / eighths: ░ ▒ ▓ ▏…█
+//   - box drawing: ─ │
+//   - ASCII: | / - \
 @(private="file")
 pane_is_spinner_rune :: proc(r: rune) -> bool {
-	for s in PANE_SPINNER_RUNES do if r == s do return true
-	return false
+	return r >= '\u2800' && r <= '\u28ff'
 }
 
 
