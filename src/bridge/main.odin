@@ -189,12 +189,26 @@ bridge_enroll_command :: proc(args: []string) -> bool {
 	strings.write_string(&body_b, "{\"hub_url\":\""); json_write_string(&body_b, hub_url)
 	strings.write_string(&body_b, "\",\"machine\":{\"hostname\":\"ham-bridge\"}}")
 	body := strings.to_string(body_b)
+	// Log a token PREVIEW only (never the full secret) so we can tell it was passed.
+	token_preview := token[:min(8, len(token))]
+	fmt.printfln("bridge enroll: POST %s/api/v1/bridges/enroll (enrollment_token=%s..., len=%d)", hub_url, token_preview, len(token))
 	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
 	resp, ok := http.request_with_headers_timeout("POST", hub_url, "/api/v1/bridges/enroll", body, headers[:], http.DEFAULT_TIMEOUT_MS)
-	if !ok || resp.status != 201 {
-		fmt.eprintln("bridge enrollment failed", resp.status, resp.body)
+	if !ok {
+		// Transport failure: could not reach the hub at all (proxy/tunnel down,
+		// DNS, connection refused, TLS handshake failed, timeout).
+		fmt.eprintfln("bridge enroll FAILED: could not reach the hub at %s — check the proxy/tunnel is up and --hub is correct (transport error, no HTTP response)", hub_url)
 		return false
 	}
+	if resp.status != 201 {
+		// The hub answered but rejected enrollment (bad/expired token, wrong Host
+		// via a misconfigured proxy, etc.). resp.body carries the hub's reason.
+		fmt.eprintfln("bridge enroll FAILED: hub returned HTTP %d — %s", resp.status, resp.body)
+		if resp.status == 401 || resp.status == 403 do fmt.eprintln("  hint: the enrollment token is invalid, already used, or expired — create a fresh one in the UI (Settings -> Bridges -> Add bridge).")
+		if resp.status == 404 do fmt.eprintln("  hint: the enrollment token was not found (invalid/expired — create a fresh one), OR the proxy isn't rewriting Host to the hub / --hub points at the wrong base URL.")
+		return false
+	}
+	fmt.printfln("bridge enroll: hub accepted (HTTP 201)")
 	bridge_token := extract_json_string(resp.body, "bridge_token", "")
 	bridge_id := extract_json_string(resp.body, "bridge_id", "")
 	persisted_hub_url := extract_json_string(resp.body, "hub_url", hub_url)
@@ -209,8 +223,8 @@ bridge_enroll_command :: proc(args: []string) -> bool {
 	} else {
 		if !bridge_write_enrolled_config(config_path, persisted_hub_url, bridge_token, bridge_id) do return false
 	}
-	fmt.println("bridge enrolled", bridge_id)
-	fmt.println("hub_url", persisted_hub_url)
+	fmt.printfln("bridge enroll SUCCESS: enrolled as bridge_id=%s hub_url=%s", bridge_id, persisted_hub_url)
+	fmt.println("  next: start the bridge (ham-bridge --hub <url> --bridge-token-file <path> ...); it will open the runtime WS and should log 'bridge hub runtime ready'.")
 	return true
 }
 

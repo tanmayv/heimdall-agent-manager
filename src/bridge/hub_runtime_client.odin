@@ -98,7 +98,22 @@ bridge_hub_runtime_init :: proc() {
 }
 
 bridge_hub_runtime_worker :: proc() {
-	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(bridge_config.bridge_token) == "" do return
+	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(bridge_config.bridge_token) == "" {
+		fmt.println("bridge hub runtime disabled: missing daemon_url or bridge_token (has the bridge enrolled? check the bridge_token/--bridge-token-file)")
+		return
+	}
+	// Only log each distinct failure the FIRST time (and periodically) so a down
+	// proxy/tunnel doesn't spam the log every 500ms, but the operator still sees
+	// exactly which step is failing.
+	last_failure := ""
+	attempts := 0
+	log_failure :: proc(last: ^string, count: ^int, msg: string) {
+		count^ += 1
+		if msg != last^ || count^ % 20 == 1 {
+			fmt.printfln("bridge hub runtime: %s (attempt %d)", msg, count^)
+			last^ = msg
+		}
+	}
 	for {
 		ws_url := bridge_hub_ws_url(bridge_config.daemon_url)
 		if ws_url == "" {
@@ -107,27 +122,36 @@ bridge_hub_runtime_worker :: proc() {
 		}
 		conn, ok := ws.connect_with_bearer(ws_url, bridge_config.bridge_token)
 		if !ok {
+			log_failure(&last_failure, &attempts, fmt.tprintf("cannot connect WS %s — proxy/tunnel down, hub unreachable, or TLS failed", ws_url))
 			time.sleep(500 * time.Millisecond)
 			continue
 		}
 		hello := bridge_hub_hello_json()
 		if !ws.send_text(&conn, hello) {
+			log_failure(&last_failure, &attempts, "WS connected but sending hello failed (connection dropped immediately)")
 			ws.close(&conn)
 			time.sleep(500 * time.Millisecond)
 			continue
 		}
 		ready_deadline := time.to_unix_nanoseconds(time.now()) + i64(5 * time.Second)
 		ready := false
+		got_error := false
 		for time.to_unix_nanoseconds(time.now()) < ready_deadline {
 			if text, got := ws.poll_text(&conn); got {
 				if extract_json_string(text, "type", "") == "bridge_ready" { ready = true; break }
-				if extract_json_string(text, "type", "") == "bridge_error" do break
+				if extract_json_string(text, "type", "") == "bridge_error" { got_error = true; break }
 			}
 			time.sleep(25 * time.Millisecond)
 		}
 		if ready {
 			fmt.println("bridge hub runtime ready")
+			last_failure = ""; attempts = 0
 			bridge_hub_runtime_loop(&conn)
+			fmt.println("bridge hub runtime: connection closed, reconnecting…")
+		} else if got_error {
+			log_failure(&last_failure, &attempts, "hub sent bridge_error after hello — token rejected or bridge not recognized (re-enroll?)")
+		} else {
+			log_failure(&last_failure, &attempts, "no bridge_ready within 5s after hello — hub didn't accept the session (slow link over the tunnel, or hub-side rejection)")
 		}
 		ws.close(&conn)
 		time.sleep(500 * time.Millisecond)
