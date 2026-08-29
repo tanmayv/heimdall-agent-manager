@@ -933,6 +933,46 @@ in
         $DRY_RUN_CMD mkdir -p ${lib.escapeShellArg entry.config.localRunDir}
       '') enabledBridgeEntries));
 
+      # macOS: home-manager's built-in setupLaunchAgents does an unreliable
+      # `launchctl bootout <plist-path>` that frequently fails with
+      # "Unrecognized target specifier", leaving the OLD bridge binary running
+      # even though the plist now points at the new store path. Reload each
+      # enabled bridge agent ourselves — AFTER the plists are written — using the
+      # service-target form (gui/<uid>/<label>), waiting for the old service to
+      # fully unload, then bootstrap + kickstart so the NEW store path is running.
+      # (Mirrors the proven restart pattern used for agent-communicator-web.)
+      home.activation.heimdallBridgeReload = lib.mkIf (anyBridgeEnabled && pkgs.stdenv.isDarwin) (
+        lib.hm.dag.entryAfter [ "setupLaunchAgents" ] (
+          lib.concatMapStringsSep "\n" (entry: ''
+            label="${entry.label}"
+            domain="gui/$(id -u)"
+            service="$domain/$label"
+            plist="$HOME/Library/LaunchAgents/$label.plist"
+            $VERBOSE_ECHO "heimdall: force-restarting bridge launchd agent $label"
+            if [ -f "$plist" ]; then
+              # Unload the running (old) service. bootout by target is the reliable
+              # spelling; ignore failure (may not be loaded yet).
+              $DRY_RUN_CMD /bin/launchctl bootout "$service" >/dev/null 2>&1 || true
+              # Wait for launchd to release the label + tear down the old pid.
+              for _ in 1 2 3 4 5; do
+                if ! /bin/launchctl print "$service" >/dev/null 2>&1; then break; fi
+                $DRY_RUN_CMD /bin/sleep 1
+              done
+              # Load the freshly-written plist (new store path).
+              if ! $DRY_RUN_CMD /bin/launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1; then
+                $VERBOSE_ECHO "heimdall: bootstrap failed for $service; falling back to kickstart"
+              fi
+              # Always kickstart to guarantee the new binary is actually running.
+              if ! $DRY_RUN_CMD /bin/launchctl kickstart -k "$service" >/dev/null 2>&1; then
+                $VERBOSE_ECHO "heimdall: kickstart failed for $service"
+              fi
+            else
+              $VERBOSE_ECHO "heimdall: LaunchAgent plist not found: $plist"
+            fi
+          '') enabledBridgeServiceEntries
+        )
+      );
+
       systemd.user.services = {
         heimdall-daemon = lib.mkIf (cfg.daemon.enable && cfg.daemon.service.enable && cfg.daemon.service.startOnBoot) {
           Unit = {
