@@ -1038,6 +1038,9 @@ bridge_runtime_activity_source_rank :: proc(source: string) -> int {
 	s := strings.to_lower(strings.trim_space(source))
 	if s == "pi_extension" do return 100
 	if strings.contains(s, "extension") do return 80
+	// Harness-agnostic tmux pane-capture detector: more reliable than a bare
+	// wrapper heartbeat, but a native agent extension (if present) still wins.
+	if s == "pane_diff" do return 40
 	if s == "wrapper" do return 10
 	if s == "bridge" do return 5
 	return 1

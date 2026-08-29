@@ -252,7 +252,15 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 	}
 	if method == "wrapper.activity.report" {
 		activity := bridge_local_extract_json_string(params, "status", "idle")
-		bridge_runtime_note_wrapper_signal(rec.agent_instance_id, activity)
+		// Optional source: the wrapper's harness-agnostic pane detector reports
+		// source="pane_diff", which ranks above the plain wrapper heartbeat but below a
+		// native agent extension. Absent/blank source keeps the legacy "wrapper" rank.
+		source := bridge_local_extract_json_string(params, "source", "")
+		if strings.trim_space(source) == "" {
+			bridge_runtime_note_wrapper_signal(rec.agent_instance_id, activity)
+		} else {
+			bridge_runtime_note_agent_activity(rec.agent_instance_id, activity, source)
+		}
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.liveness.ping" {

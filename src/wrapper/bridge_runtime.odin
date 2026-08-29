@@ -26,6 +26,12 @@ Bridge_Runtime_Config :: struct {
 	liveness_interval_ms: int,
 	activity_interval_ms: int,
 	antigravity_hooks_path: string,
+	// Harness-agnostic pane-capture activity detection. When enabled, the wrapper
+	// periodically snapshots the agent's tmux pane and classifies working/idle via
+	// pane_activity.odin, reporting with source "pane_diff". Off by default; intended
+	// for harnesses without a native activity extension.
+	pane_activity_enabled: bool,
+	pane_activity_interval_ms: int,
 }
 
 wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
@@ -74,6 +80,10 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 	_ = wrapper_bridge_report_startup(cfg, "ready", "agent child process launched")
 	last_liveness := time.to_unix_nanoseconds(time.now())
 	last_activity := last_liveness
+	pane_cfg := pane_activity_default_config()
+	pane_state := Pane_Activity_State{}
+	last_pane_sample := last_liveness
+	last_reported_status := ""
 	for {
 		state, wait_err := os.process_wait(process, 0)
 		if wait_err == nil && state.exited {
@@ -89,12 +99,39 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 			_ = wrapper_bridge_local_call(cfg, "wrapper.liveness.ping", "{}")
 			last_liveness = now
 		}
-		if now - last_activity >= i64(time.Duration(cfg.activity_interval_ms) * time.Millisecond) {
+		if cfg.pane_activity_enabled && strings.trim_space(cfg.pane_id) != "" {
+			// Harness-agnostic path: classify the pane and report on status change,
+			// plus a low-rate keepalive so the bridge activity TTL does not expire.
+			interval := cfg.pane_activity_interval_ms
+			if interval <= 0 do interval = 1000
+			if now - last_pane_sample >= i64(time.Duration(interval) * time.Millisecond) {
+				last_pane_sample = now
+				now_ms := now / i64(time.Millisecond)
+				if raw, ok := tmux.capture_pane_text(cfg.pane_id, pane_cfg.line_limit); ok {
+					sample := pane_activity_step(&pane_state, pane_cfg, raw, now_ms)
+					status := pane_activity_status_string(sample.status)
+					keepalive_due := now - last_activity >= i64(time.Duration(cfg.activity_interval_ms) * time.Millisecond)
+					if status != "unknown" && (status != last_reported_status || keepalive_due) {
+						_ = wrapper_bridge_local_call(cfg, "wrapper.activity.report", wrapper_bridge_pane_activity_report_json(status))
+						last_reported_status = status
+						last_activity = now
+					}
+				}
+			}
+		} else if now - last_activity >= i64(time.Duration(cfg.activity_interval_ms) * time.Millisecond) {
 			_ = wrapper_bridge_local_call(cfg, "wrapper.activity.report", "{\"status\":\"idle\"}")
 			last_activity = now
 		}
 		time.sleep(250 * time.Millisecond)
 	}
+}
+
+wrapper_bridge_pane_activity_report_json :: proc(status: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"status\":\"")
+	strings.write_string(&b, status)
+	strings.write_string(&b, "\",\"source\":\"pane_diff\"}")
+	return strings.to_string(b)
 }
 
 wrapper_bridge_should_load_pi_activity :: proc(cfg: Bridge_Runtime_Config) -> bool {
@@ -388,6 +425,8 @@ wrapper_bridge_runtime_config_from_args :: proc(args: []string) -> Bridge_Runtim
 		pane_id = option_value(args, "--pane-id", os.get_env_alloc("TMUX_PANE", context.allocator)),
 		liveness_interval_ms = wrapper_bridge_int_arg(args, "--liveness-interval-ms", 1000),
 		activity_interval_ms = wrapper_bridge_int_arg(args, "--activity-interval-ms", 2000),
+		pane_activity_enabled = has_flag(args, "--pane-activity") || wrapper_bridge_env_flag("HEIMDALL_WRAPPER_PANE_ACTIVITY"),
+		pane_activity_interval_ms = wrapper_bridge_int_arg(args, "--pane-activity-interval-ms", 1000),
 	}
 	if sep := wrapper_bridge_command_separator(args); sep >= 0 && sep + 1 < len(args) {
 		cmd := make([dynamic]string)
@@ -408,6 +447,11 @@ wrapper_bridge_int_arg :: proc(args: []string, key: string, fallback: int) -> in
 	parsed, ok := strconv.parse_int(value)
 	if !ok do return fallback
 	return int(parsed)
+}
+
+wrapper_bridge_env_flag :: proc(name: string) -> bool {
+	v := strings.to_lower(strings.trim_space(os.get_env_alloc(name, context.allocator)))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
 wrapper_bridge_child_env :: proc(cfg: Bridge_Runtime_Config) -> []string {
