@@ -95,14 +95,64 @@ bridge_agent_token_invalidate :: proc(plaintext: string) -> bool {
 	return false
 }
 
+// S1: the local-token store is namespaced PER BRIDGE so two bridges on one host
+// (e.g. a dev-stack bridge and the mundus bridge) never share a file. Previously
+// they shared ~/.local/share/heimdall/bridge/local-tokens.jsonl and each
+// bridge_agent_token_store_save_locked() rewrote the whole file from its own
+// in-memory records, so one bridge issuing a token WIPED the other's tokens —
+// leaving those agents permanently unauthenticated on reconnect. The namespace
+// key is the bridge's local_endpoint_run_dir, which is already unique per bridge.
+bridge_agent_token_store_namespace :: proc() -> string {
+	run_dir := strings.trim_space(bridge_config.local_endpoint_run_dir)
+	if run_dir == "" do return "default"
+	// Slugify the run dir into a single safe path segment.
+	b := strings.builder_make()
+	for i in 0..<len(run_dir) {
+		ch := run_dir[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			strings.write_byte(&b, ch)
+		} else {
+			strings.write_byte(&b, '_')
+		}
+	}
+	slug := strings.to_string(b)
+	if strings.trim_space(slug) == "" do return "default"
+	return slug
+}
+
 bridge_agent_token_store_path :: proc() -> string {
+	data_dir := bridge_expand_home(bridge_config.data_dir)
+	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
+	return strings.concatenate({strings.trim_right(data_dir, "/"), "/bridge/", bridge_agent_token_store_namespace(), "/local-tokens.jsonl"})
+}
+
+// bridge_agent_token_store_legacy_path is the pre-namespacing shared location.
+// We migrate records for THIS bridge out of it on first load so tokens issued by
+// the previous build are not lost across the upgrade.
+bridge_agent_token_store_legacy_path :: proc() -> string {
 	data_dir := bridge_expand_home(bridge_config.data_dir)
 	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
 	return strings.concatenate({strings.trim_right(data_dir, "/"), "/bridge/local-tokens.jsonl"})
 }
 
 bridge_agent_token_store_load :: proc() {
-	path := bridge_agent_token_store_path()
+	// Load the namespaced store first, then migrate any records for THIS bridge's
+	// instances out of the legacy shared file (so an upgrade doesn't lose tokens).
+	// Dedup by token_hash; namespaced records win.
+	bridge_agent_token_store_load_file(bridge_agent_token_store_path())
+	legacy := bridge_agent_token_store_legacy_path()
+	if legacy != bridge_agent_token_store_path() {
+		before := len(bridge_local_token_records)
+		bridge_agent_token_store_load_file(legacy)
+		// If we adopted any legacy records, persist them into the namespaced file so
+		// the legacy shared file is no longer authoritative for this bridge.
+		if len(bridge_local_token_records) > before do bridge_agent_token_store_save_locked()
+	}
+}
+
+// bridge_agent_token_store_load_file merges records from one jsonl file into the
+// in-memory set, skipping any whose token_hash we already hold.
+bridge_agent_token_store_load_file :: proc(path: string) {
 	raw, err := os.read_entire_file(path, context.allocator)
 	if err != nil do return
 	lines := strings.split(string(raw), "\n")
@@ -119,7 +169,10 @@ bridge_agent_token_store_load :: proc() {
 			rotated_at_unix_ms = bridge_agent_token_json_i64(trimmed, "rotated_at_unix_ms", 0),
 			invalidated_at_unix_ms = bridge_agent_token_json_i64(trimmed, "invalidated_at_unix_ms", 0),
 		}
-		if strings.trim_space(rec.token_hash) != "" && strings.trim_space(rec.agent_instance_id) != "" do append(&bridge_local_token_records, rec)
+		if strings.trim_space(rec.token_hash) == "" || strings.trim_space(rec.agent_instance_id) == "" do continue
+		already := false
+		for existing in bridge_local_token_records { if existing.token_hash == rec.token_hash { already = true; break } }
+		if !already do append(&bridge_local_token_records, rec)
 	}
 }
 
@@ -137,7 +190,18 @@ bridge_agent_token_store_save_locked :: proc() {
 		strings.write_string(&b, ",\"invalidated_at_unix_ms\":"); strings.write_string(&b, fmt.tprintf("%d", rec.invalidated_at_unix_ms))
 		strings.write_string(&b, "}\n")
 	}
-	_ = os.write_entire_file(path, strings.to_string(b))
+	// S2: atomic write — write to a temp file then rename over the target, so a
+	// crash mid-write can never truncate/corrupt the store (readers see either the
+	// old or the new complete file, never a partial one).
+	tmp := strings.concatenate({path, ".tmp"})
+	defer delete(tmp)
+	content := strings.to_string(b)
+	if os.write_entire_file(tmp, transmute([]byte)content) != nil do return
+	if os.rename(tmp, path) != nil {
+		// Fallback: best-effort direct write if rename is unavailable.
+		_ = os.write_entire_file(path, transmute([]byte)content)
+		_ = os.remove(tmp)
+	}
 }
 
 bridge_agent_token_role_from_string :: proc(value: string) -> Bridge_Local_Token_Role {
