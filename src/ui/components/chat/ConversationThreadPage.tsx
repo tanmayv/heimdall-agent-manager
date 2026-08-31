@@ -27,7 +27,7 @@ import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import RuntimeChip, { runtimeStateFromStatus } from '../runtime/RuntimeChip';
 import Icon from '../Icon';
-import { useFetchChainTasksQuery } from '../../api/endpoints/tasks';
+import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import { useViewport } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -367,6 +367,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   // the coordinator's chain is one glance + one click away. Only fetched when the
   // conversation is linked to a chain.
   const chainTasksQuery = useFetchChainTasksQuery({ chainId }, { skip: !chainId });
+  // Cookie-auth chain detail (works in the live shell, unlike the client-token
+  // fetchChainTasks). Used to resolve the agent's current task for the working
+  // indicator; polled modestly so the task title stays fresh.
+  const chainDetailQuery = useFetchTaskChainDetailQuery({ chainId }, { skip: !chainId, pollingInterval: 10000 });
   const chainProgress = useMemo(() => {
     const tasks = chainTasksQuery.data?.tasks || [];
     const total = tasks.length;
@@ -396,6 +400,25 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');
   const conversationRuntimeStatus = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
+  // Working indicator (above the composer): the instance's activity_status
+  // (driven by the harness-agnostic pane-capture detector) tells us whether the
+  // underlying agent is actively working vs idle. When working, surface the
+  // agent's current in-progress task title so it reads "Working: <task>".
+  const activityStatus = String(instance?.activity_status || instance?.activityStatus || '').toLowerCase();
+  const isWorking = runtimeStateFromStatus(runtimeStatus) === 'live' && (activityStatus === 'active' || activityStatus === 'busy' || activityStatus === 'working');
+  const workingTaskTitle = useMemo(() => {
+    if (!isWorking) return '';
+    const tasks = chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || [];
+    const mine = tasks.filter((t: any) => {
+      const asg = String(t.assigneeAgentInstanceId || t.assignee_agent_instance_id || t.assigneeRef?.agent_instance_id || '');
+      return asg && asg === agentInstanceId;
+    });
+    // Prefer an in-progress task; otherwise the most relevant non-terminal one
+    // the agent still owns (e.g. in_validation while it is still active).
+    const inProgress = mine.find((t: any) => String(t.status || '') === 'in_progress');
+    const pick = inProgress || mine.find((t: any) => !['completed', 'cancelled', 'validated_good'].includes(String(t.status || '')));
+    return pick ? String(pick.title || pick.taskId || '') : '';
+  }, [isWorking, chainDetailQuery.data, chainTasksQuery.data, agentInstanceId]);
 
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const bridges = bridgesQuery.data?.bridges || [];
@@ -870,6 +893,14 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   function renderComposer() {
     return (
       <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 overflow-x-hidden border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
+        {isWorking ? (
+          <div data-debug-id="conversation-working-indicator" className="mb-2 flex items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[12px] text-emerald-100">
+            <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-semibold">Working</span>{workingTaskTitle ? <span className="text-emerald-200/80">: {workingTaskTitle}</span> : null}
+            </span>
+          </div>
+        ) : null}
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
         {attachments.length > 0 && (
           <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
