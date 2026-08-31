@@ -372,11 +372,14 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   // indicator; polled modestly so the task title stays fresh.
   const chainDetailQuery = useFetchTaskChainDetailQuery({ chainId }, { skip: !chainId, pollingInterval: 10000 });
   const chainProgress = useMemo(() => {
-    const tasks = chainTasksQuery.data?.tasks || [];
+    // Prefer the cookie-auth chain detail (works in the live shell); fall back to
+    // the legacy client-token fetchChainTasks. Without this the live shell always
+    // read 0/0 because fetchChainTasks needs a client token the shell doesn't have.
+    const tasks = chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || [];
     const total = tasks.length;
     const done = tasks.filter((t: any) => t.status === 'validated_good' || t.status === 'completed').length;
     return { total, done };
-  }, [chainTasksQuery.data]);
+  }, [chainDetailQuery.data, chainTasksQuery.data]);
   const rawTitle = String(conversation?.title || '').trim();
   const editableTitle = rawTitle && !looksLikeInternalId(rawTitle) ? rawTitle : title;
 
