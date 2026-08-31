@@ -148,15 +148,26 @@ bridge_task_scheduler_tick :: proc() -> int {
 			continue
 		}
 
+		// Do NOT nudge a task whose dependencies are not satisfied: it cannot be
+		// worked yet, so pinging its assignee is pure noise. (An assigned+deps_ok
+		// task is handled by the promotion-wake branch above; anything reaching here
+		// with unsatisfied deps is genuinely blocked.)
+		if !deps_ok do continue
+
 		// Nudge: stale actionable task past threshold + cooldown.
 		last_nudge := bridge_task_last_nudge(task_id, target)
 		if !bridge_task_should_nudge(bridge_nudge_config, status, first_seen, last_nudge, now) do continue
 
-		if bridge_task_deliver_nudge(task_id, status, target, now) {
-			bridge_task_mark_nudged(task_id, target, now)
-			actions += 1
-			fmt.printfln("SCHED_NUDGE ts=%d task=%s status=%s target=%s stale_ms=%d", now, task_id, status, target, now - first_seen)
-		}
+		// Record the cooldown on ATTEMPT, before delivery. Previously last_nudge was
+		// only set when bridge_task_deliver_nudge returned true; when delivery was a
+		// no-op (wrapper push channel missing but the instance already live, common
+		// right after a relaunch) last_nudge stayed 0 and the task was re-nudged
+		// every tick, bypassing the cooldown entirely. Marking on attempt guarantees
+		// the per-(task,target) cooldown always applies.
+		bridge_task_mark_nudged(task_id, target, now)
+		delivered := bridge_task_deliver_nudge(task_id, status, target, now)
+		actions += 1
+		fmt.printfln("SCHED_NUDGE ts=%d task=%s status=%s target=%s stale_ms=%d delivered=%t", now, task_id, status, target, now - first_seen, delivered)
 	}
 
 	bridge_task_prune_unseen(seen)

@@ -488,6 +488,56 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 	}
 }
 
+// notify_task_comment wakes the task's current actionable owner when a NEW comment
+// is posted, so a comment asking the assignee/reviewer to act actually reaches the
+// agent (previously only status changes notified; comments were UI-only). It
+// resolves the actionable target for the task's current status (assignee for
+// assigned/in_progress/validated_not_good, reviewer for in_validation, coordinator
+// for validated_good), skips the comment's own author, and pushes a notify_task_nudge
+// command to that target's bridge (the bridge coalesces/pushes to the live wrapper).
+// Fire-and-forget: comment creation succeeds regardless of delivery.
+notify_task_comment :: proc(service: ^Taskchain_Service, author_agent_instance_id: string, task: domain.Task) {
+	if service.bridge_command_sink.send_runtime_command == nil do return
+	if service.agents == nil do return
+	chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
+	if !chain_ok do return
+	role := nudge_target_for_status(task.status)
+	if role == .None do return
+	target := resolve_target_instance(service, chain, task, role)
+	defer delete(target)
+	if strings.trim_space(target) == "" do return
+	// Don't notify the author about their own comment.
+	if target == author_agent_instance_id do return
+	inst, inst_ok, _ := iface.agent_get_instance(service.agents, target)
+	if !inst_ok || inst.bridge_id == "" do return
+	now := platform.clock_now(service.clock)
+	cmd_id := platform.generate_id(service.ids, "cmd_")
+	message := strings.concatenate({"New comment on task ", string(task.task_id)})
+	defer delete(message)
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, `{"type":"notify_task_nudge","origin":"comment","command_id":"`)
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, `","agent_instance_id":"`)
+	contracts.write_json_string(&b, target)
+	strings.write_string(&b, `","task_id":"`)
+	contracts.write_json_string(&b, string(task.task_id))
+	strings.write_string(&b, `","chain_id":"`)
+	contracts.write_json_string(&b, string(task.chain_id))
+	strings.write_string(&b, `","target_instance_id":"`)
+	contracts.write_json_string(&b, target)
+	strings.write_string(&b, `","target_role":"`)
+	contracts.write_json_string(&b, target_string(role))
+	strings.write_string(&b, `","task_status":"`)
+	contracts.write_json_string(&b, task_status_string(task.status))
+	strings.write_string(&b, `","message":"`)
+	contracts.write_json_string(&b, message)
+	strings.write_string(&b, `","created_at":"`)
+	contracts.write_json_string(&b, now)
+	strings.write_string(&b, `"}`)
+	_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
+}
+
 valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	if current == next do return true
 	switch current {
@@ -707,7 +757,13 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	}
 	now := platform.clock_now(service.clock)
 	comment := domain.Task_Comment{comment_id = platform.generate_id(service.ids, "cmt_"), task_id = task.task_id, chain_id = task.chain_id, owner_user_id = task.owner_user_id, author_agent_instance_id = auth.agent_instance_id, body = input.body, created_at = now, updated_at = now}
-	return iface.taskchain_save_comment(service.repo, comment)
+	saved, ok2, err2 := iface.taskchain_save_comment(service.repo, comment)
+	if ok2 {
+		// Wake the task's current actionable owner so a comment actually reaches the
+		// agent (not just the UI). author = the commenter (empty for user comments).
+		notify_task_comment(service, auth.agent_instance_id if auth.kind == .Instance_Token else "", task)
+	}
+	return saved, ok2, err2
 }
 
 list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {

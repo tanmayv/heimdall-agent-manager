@@ -220,7 +220,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		ok := bridge_wrapper_push_task_nudge(instance_id, text)
-		if !ok do fmt.println("bridge notify_task_nudge pending/no-wrapper-subscription", instance_id, command_id)
+		if !ok {
+			// Wrapper not connected: wake the local agent (coalesced) so it picks up
+			// the task/comment on boot, matching the status-change notify behavior.
+			// This is what makes a comment actually reach an idle/stopped assignee.
+			if bridge_task_status_notify_wake_local(instance_id) {
+				ok = true
+			} else {
+				fmt.println("bridge notify_task_nudge pending/no-wrapper-subscription", instance_id, command_id)
+			}
+		}
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}

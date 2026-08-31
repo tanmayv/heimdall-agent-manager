@@ -8,7 +8,33 @@ main :: proc() {
 	test_threshold_mapping()
 	test_should_nudge()
 	test_observe_and_prune()
+	test_cooldown_on_attempt()
 	fmt.println("PASS: bridge task scheduler")
+}
+
+// Regression: the scheduler used to record last_nudge only on SUCCESSFUL
+// delivery. When delivery was a no-op (wrapper push channel missing but the
+// instance already live, e.g. right after a relaunch) last_nudge stayed 0 and
+// the task was re-nudged every 60s tick, bypassing the 300s cooldown. The fix
+// records last_nudge on ATTEMPT. This test simulates the tick's decide->mark
+// sequence and asserts the cooldown holds regardless of delivery outcome.
+test_cooldown_on_attempt :: proc() {
+	bridge.bridge_task_scheduler_init()
+	c := cfg()
+	now: i64 = 10_000_000
+	// Task became stale (first_seen 400s ago), never nudged.
+	fs := bridge.bridge_task_observe("task_x", "in_validation", "inst_rev", now - 400_000)
+	check(fs == now - 400_000, "observed stale task")
+	last := bridge.bridge_task_last_nudge("task_x", "inst_rev")
+	check(bridge.bridge_task_should_nudge(c, "in_validation", fs, last, now), "stale+no-cooldown must nudge")
+	// Simulate the fixed tick: mark on ATTEMPT (even though delivery would fail).
+	bridge.bridge_task_mark_nudged("task_x", "inst_rev", now)
+	// One tick later (60s), the cooldown must suppress a re-nudge.
+	last2 := bridge.bridge_task_last_nudge("task_x", "inst_rev")
+	check(last2 == now, "cooldown timestamp recorded on attempt")
+	check(!bridge.bridge_task_should_nudge(c, "in_validation", fs, last2, now + 60_000), "within cooldown must NOT re-nudge (was the bug)")
+	// After the full 300s cooldown, nudging is allowed again.
+	check(bridge.bridge_task_should_nudge(c, "in_validation", fs, last2, now + 300_000), "allowed again after cooldown")
 }
 
 cfg :: proc() -> bridge.Bridge_Nudge_Config {
