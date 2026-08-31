@@ -13,6 +13,9 @@ Agent_Save_Instance_Proc :: proc(ctx: rawptr, instance: domain.Agent_Instance) -
 Agent_Get_Instance_Proc :: proc(ctx: rawptr, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error)
 Agent_List_Instances_By_Owner_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Agent_Instance, domain.Domain_Error)
 Agent_List_Instances_By_Bridge_Proc :: proc(ctx: rawptr, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error)
+// Lists instances still in an active runtime state (running/idle/busy/launching/
+// starting/stopping) across all owners — used by the staleness reaper.
+Agent_List_Active_Runtime_Instances_Proc :: proc(ctx: rawptr) -> ([]domain.Agent_Instance, domain.Domain_Error)
 
 Agent_Repository :: struct {
 	ctx: rawptr,
@@ -27,6 +30,7 @@ Agent_Repository :: struct {
 	get_instance: Agent_Get_Instance_Proc,
 	list_instances_by_owner: Agent_List_Instances_By_Owner_Proc,
 	list_instances_by_bridge: Agent_List_Instances_By_Bridge_Proc,
+	list_active_runtime_instances: Agent_List_Active_Runtime_Instances_Proc,
 }
 
 agent_save :: proc(repo: ^Agent_Repository, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error) {
@@ -77,6 +81,11 @@ agent_get_instance :: proc(repo: ^Agent_Repository, instance_id: string) -> (dom
 agent_list_instances_by_owner :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	if repo == nil || repo.list_instances_by_owner == nil do return nil, domain.domain_error(.Internal_Error, "agent repository is not configured")
 	return repo.list_instances_by_owner(repo.ctx, owner_user_id, limit, cursor)
+}
+
+agent_list_active_runtime_instances :: proc(repo: ^Agent_Repository) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+	if repo == nil || repo.list_active_runtime_instances == nil do return nil, domain.domain_error(.Internal_Error, "agent repository is not configured")
+	return repo.list_active_runtime_instances(repo.ctx)
 }
 
 agent_list_instances_by_bridge :: proc(repo: ^Agent_Repository, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {

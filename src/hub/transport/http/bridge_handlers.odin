@@ -363,8 +363,28 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, client)
 }
 
+// BRIDGE_INSTANCE_STALE_MS: an instance still in an active runtime state whose
+// last_seen_at is older than this is reaped to "unreachable" by the opportunistic
+// sweep on bridge heartbeats. Generously above the ~2s heartbeat cadence so a
+// briefly-slow bridge is never falsely reaped.
+BRIDGE_INSTANCE_STALE_MS :: 90_000
+
+// bridge_ws_disconnect clears the durable runtime state of a disconnected
+// bridge's instances (registry offline alone leaves them "running" forever) and
+// fans out resource_changed so the UI updates immediately.
+bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int) {
+	project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, bridge_id, connection_generation)
+	if h.agents == nil do return
+	// The bridge is gone; its registry entry was just removed above. The durable DB
+	// is authoritative here, so we only persist the cleared state and notify the UI.
+	cleared := agent_service.mark_bridge_instances_unreachable(h.agents, bridge_id)
+	for inst in cleared {
+		events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status))
+	}
+}
+
 bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, client: net.TCP_Socket) {
-	defer project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, bridge_id, connection_generation)
+	defer bridge_ws_disconnect(h, bridge_id, connection_generation)
 	for {
 		text, ok := read_ws_text_blocking(client, 60 * time.Second)
 		if !ok do return
@@ -381,6 +401,15 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			if len(active) == 0 && len(digest_active) > 0 do active = digest_active
 			reconciled := bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, active)
 			if h.agents != nil do reconciled += agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
+			// Opportunistic time-based reap: catches instances stranded by a
+			// disconnect the hub never observed (hub restart with persisted DB, or a
+			// lost WS close). Request-driven, so no background thread is required.
+			if h.agents != nil {
+				for inst in agent_service.reap_stale_instances(h.agents, BRIDGE_INSTANCE_STALE_MS) {
+					events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status))
+					reconciled += 1
+				}
+			}
 			_ = write_ws_text_frame(client, bridge_heartbeat_ack_payload(reconciled))
 		case "agent_instance_status":
 			instance_id := json_string(text, "agent_instance_id")

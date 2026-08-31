@@ -766,6 +766,107 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 	return changed
 }
 
+// mark_bridge_instances_unreachable clears the durable runtime state of every
+// still-active instance on a bridge that just disconnected. The bridge runtime
+// registry is in-memory only, so when a bridge WS drops (crash/restart/quit)
+// nothing else transitions its instances out of "running" — reconcile_bridge_heartbeat
+// needs a live heartbeat, which a gone bridge can never send. Returns the affected
+// instances so the caller can fan out resource_changed and the UI clears them.
+mark_bridge_instances_unreachable :: proc(service: ^Agent_Service, bridge_id: string) -> []domain.Agent_Instance {
+	if service == nil || service.agents == nil || strings.trim_space(bridge_id) == "" do return nil
+	instances, err := iface.agent_list_instances_by_bridge(service.agents, bridge_id)
+	if err.code != .None do return nil
+	now := platform.clock_now(service.clock)
+	changed := make([dynamic]domain.Agent_Instance)
+	for i in 0..<len(instances) {
+		inst := instances[i]
+		if !runtime_expected_active(inst.runtime_status) do continue
+		inst.runtime_status = "unreachable"
+		inst.activity_status = "idle"
+		inst.updated_at = now
+		apply_runtime_startup_projection(&inst, now)
+		saved, ok, _ := iface.agent_save_instance(service.agents, inst)
+		if ok do append(&changed, saved)
+	}
+	return changed[:]
+}
+
+// reap_stale_instances is a time-based safety net: any instance still in an
+// active runtime state whose last_seen_at is older than stale_after_ms is marked
+// unreachable. This catches states that survived a disconnect the hub never
+// observed (e.g. hub restart with a persisted DB, or a lost WS close), so the UI
+// self-heals without requiring a fresh bridge event. Returns affected instances.
+reap_stale_instances :: proc(service: ^Agent_Service, stale_after_ms: i64) -> []domain.Agent_Instance {
+	if service == nil || service.agents == nil || stale_after_ms <= 0 do return nil
+	now_str := platform.clock_now(service.clock)
+	now_ms, now_ok := rfc3339_to_unix_ms(now_str)
+	if !now_ok do return nil
+	instances, err := iface.agent_list_active_runtime_instances(service.agents)
+	if err.code != .None do return nil
+	changed := make([dynamic]domain.Agent_Instance)
+	for i in 0..<len(instances) {
+		inst := instances[i]
+		if !runtime_expected_active(inst.runtime_status) do continue
+		seen_ms, seen_ok := rfc3339_to_unix_ms(inst.last_seen_at)
+		if !seen_ok do continue
+		if now_ms - seen_ms < stale_after_ms do continue
+		inst.runtime_status = "unreachable"
+		inst.activity_status = "idle"
+		inst.updated_at = now_str
+		apply_runtime_startup_projection(&inst, now_str)
+		saved, ok, _ := iface.agent_save_instance(service.agents, inst)
+		if ok do append(&changed, saved)
+	}
+	return changed[:]
+}
+
+// rfc3339_to_unix_ms parses the hub's canonical "YYYY-MM-DDTHH:MM:SSZ" UTC
+// timestamps into unix milliseconds. Returns ok=false for empty/malformed input
+// so callers skip rather than misclassify. Only the fixed hub format is handled.
+rfc3339_to_unix_ms :: proc(s: string) -> (i64, bool) {
+	t := strings.trim_space(s)
+	if len(t) < 20 do return 0, false
+	if t[4] != '-' || t[7] != '-' || t[10] != 'T' || t[13] != ':' || t[16] != ':' do return 0, false
+	parse2 :: proc(str: string) -> (int, bool) {
+		if len(str) < 2 do return 0, false
+		a := int(str[0]) - '0'; b := int(str[1]) - '0'
+		if a < 0 || a > 9 || b < 0 || b > 9 do return 0, false
+		return a*10 + b, true
+	}
+	parse4 :: proc(str: string) -> (int, bool) {
+		hi, ok1 := parse2(str[0:2]); lo, ok2 := parse2(str[2:4])
+		if !ok1 || !ok2 do return 0, false
+		return hi*100 + lo, true
+	}
+	year, y_ok := parse4(t[0:4])
+	month, mo_ok := parse2(t[5:7])
+	day, d_ok := parse2(t[8:10])
+	hour, h_ok := parse2(t[11:13])
+	minute, mi_ok := parse2(t[14:16])
+	second, s_ok := parse2(t[17:19])
+	if !(y_ok && mo_ok && d_ok && h_ok && mi_ok && s_ok) do return 0, false
+	if month < 1 || month > 12 do return 0, false
+	// Days from the Unix epoch to the first of the given year-month (proleptic
+	// Gregorian), then add day-of-month. Uses a civil-from-date algorithm.
+	days := days_from_civil(year, month, day)
+	total_secs := i64(days) * 86400 + i64(hour) * 3600 + i64(minute) * 60 + i64(second)
+	return total_secs * 1000, true
+}
+
+// days_from_civil returns days since 1970-01-01 for a proleptic Gregorian date.
+// Based on Howard Hinnant's well-known constant-time algorithm.
+days_from_civil :: proc(y_in, m, d: int) -> int {
+	y := y_in
+	if m <= 2 do y -= 1
+	era := (y if y >= 0 else y - 399) / 400
+	yoe := y - era * 400
+	// month-of-year shifted so March=0 (Jan/Feb belong to the previous year).
+	mp := (m + 9) %% 12
+	doy := (153 * mp + 2) / 5 + d - 1
+	doe := yoe * 365 + yoe / 4 - yoe / 100 + doy
+	return era * 146097 + doe - 719468
+}
+
 require_enabled_support :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string) -> (bool, domain.Domain_Error) {
 	supports, err := list_support(service, auth, agent_id)
 	if err.code != .None do return false, err
