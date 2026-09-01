@@ -81,8 +81,7 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 	last_liveness := time.to_unix_nanoseconds(time.now())
 	last_activity := last_liveness
 	pane_cfg := pane_activity_default_config()
-	pane_state := Pane_Activity_State{}
-	last_pane_sample := last_liveness
+	last_pane_cycle := last_liveness
 	last_reported_status := ""
 	for {
 		state, wait_err := os.process_wait(process, 0)
@@ -100,15 +99,29 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 			last_liveness = now
 		}
 		if cfg.pane_activity_enabled && strings.trim_space(cfg.pane_id) != "" {
-			// Harness-agnostic path: classify the pane and report on status change,
-			// plus a low-rate keepalive so the bridge activity TTL does not expire.
+			// Harness-agnostic path: STATELESS burst detector. Once per cycle
+			// (~pane_activity_interval_ms, aligned with the ~2s keepalive) capture a
+			// burst of 3 pane-tail snapshots a few hundred ms apart, classify them,
+			// and report on status change or on the keepalive so the bridge activity
+			// TTL does not expire. No detector state carries across cycles.
 			interval := cfg.pane_activity_interval_ms
-			if interval <= 0 do interval = 1000
-			if now - last_pane_sample >= i64(time.Duration(interval) * time.Millisecond) {
-				last_pane_sample = now
-				now_ms := now / i64(time.Millisecond)
-				if raw, ok := tmux.capture_pane_text(cfg.pane_id, pane_cfg.line_limit); ok {
-					sample := pane_activity_step(&pane_state, pane_cfg, raw, now_ms)
+			if interval <= 0 do interval = 2000
+			if now - last_pane_cycle >= i64(time.Duration(interval) * time.Millisecond) {
+				last_pane_cycle = now
+				samples := pane_cfg.burst_samples
+				if samples <= 0 do samples = 3
+				frames := make([dynamic]string, 0, samples)
+				for s in 0..<samples {
+					if raw, ok := tmux.capture_pane_text(cfg.pane_id, pane_cfg.line_limit); ok {
+						append(&frames, raw)
+					}
+					// Gap between snapshots (skip after the final one).
+					if s + 1 < samples && pane_cfg.burst_gap_ms > 0 {
+						time.sleep(time.Duration(pane_cfg.burst_gap_ms) * time.Millisecond)
+					}
+				}
+				if len(frames) > 0 {
+					sample := pane_activity_burst_status(frames[:])
 					status := pane_activity_status_string(sample.status)
 					keepalive_due := now - last_activity >= i64(time.Duration(cfg.activity_interval_ms) * time.Millisecond)
 					if status != "unknown" && (status != last_reported_status || keepalive_due) {
@@ -117,6 +130,8 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 						last_activity = now
 					}
 				}
+				for f in frames do delete(f)
+				delete(frames)
 			}
 		} else if now - last_activity >= i64(time.Duration(cfg.activity_interval_ms) * time.Millisecond) {
 			_ = wrapper_bridge_local_call(cfg, "wrapper.activity.report", "{\"status\":\"idle\"}")
@@ -431,7 +446,7 @@ wrapper_bridge_runtime_config_from_args :: proc(args: []string) -> Bridge_Runtim
 		// this acts as a complementary fallback. Opt out with --no-pane-activity or
 		// HEIMDALL_WRAPPER_PANE_ACTIVITY=0.
 		pane_activity_enabled = wrapper_bridge_pane_activity_default(args),
-		pane_activity_interval_ms = wrapper_bridge_int_arg(args, "--pane-activity-interval-ms", 1000),
+		pane_activity_interval_ms = wrapper_bridge_int_arg(args, "--pane-activity-interval-ms", 2000),
 	}
 	if sep := wrapper_bridge_command_separator(args); sep >= 0 && sep + 1 < len(args) {
 		cmd := make([dynamic]string)

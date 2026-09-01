@@ -3,11 +3,21 @@ package main
 import "core:strings"
 import "core:testing"
 
-// Unit tests for the harness-agnostic pane-activity detector (pane_activity.odin).
-// These feed synthetic pane frames into the pure classifier and assert the derived
-// working/idle/waiting_user status, covering the failure modes a naive text-diff
-// would get wrong: spinner-only churn, timer-only churn, slow token streams, and
-// static idle prompts.
+// Unit tests for the harness-agnostic STATELESS burst pane-activity detector
+// (pane_activity.odin). Each detection cycle is self-contained: a burst of 3
+// pane-tail snapshots is normalized and diffed (all identical => idle, any differ
+// => active), with a braille-spinner override => active and a raw waiting-on-user
+// prompt => waiting_user. These tests feed frames directly, no tmux required, and
+// cover the failure modes a naive text-diff would get wrong: spinner-only churn,
+// timer/counter-only churn, slow token streams, and static idle prompts.
+
+// pane_burst builds a 3-frame burst from the given raw frames and classifies it
+// through the stateless pipeline (normalize each, OR spinner, OR waiting-user).
+@(private="file")
+pane_burst :: proc(a, b, c: string) -> Pane_Activity_Sample {
+	frames := []string{a, b, c}
+	return pane_activity_burst_status(frames)
+}
 
 @(test)
 pane_normalize_masks_timers_and_spinners :: proc(t: ^testing.T) {
@@ -31,73 +41,90 @@ pane_normalize_preserves_real_content_change :: proc(t: ^testing.T) {
 
 @(test)
 pane_activity_spinner_is_active :: proc(t: ^testing.T) {
-	cfg := pane_activity_default_config()
-	state := Pane_Activity_State{}
-	// Even with identical text, a present spinner => active.
-	s1 := pane_activity_step(&state, cfg, "\u2801 Working", 1000)
-	testing.expect(t, s1.spinner_present, "spinner should be present")
-	testing.expect(t, s1.status == .Active, "spinner frame must be active")
-	// Same content, later; spinner still present => still active well past idle_after.
-	s2 := pane_activity_step(&state, cfg, "\u2839 Working", 1000 + cfg.idle_after_ms + 5000)
-	testing.expect(t, s2.status == .Active, "spinner keeps it active despite masked-content stability")
+	// A braille spinner in ANY burst frame => active, even if the masked body text
+	// is identical across all three snapshots.
+	s := pane_burst("\u2801 Working", "\u2839 Working", "\u2802 Working")
+	testing.expect(t, s.spinner_present, "spinner should be present")
+	testing.expect(t, s.status == .Active, "spinner burst must be active")
+	// Spinner in just one of the three still forces active.
+	s2 := pane_burst("Working", "\u2839 Working", "Working")
+	testing.expect(t, s2.status == .Active, "spinner in any single frame keeps the burst active")
 }
 
 @(test)
 pane_activity_timer_only_churn_goes_idle :: proc(t: ^testing.T) {
-	// A pane whose ONLY change is a ticking clock with no spinner must settle idle
-	// once past idle_after_ms — this is the key false-active case a naive diff fails.
-	cfg := pane_activity_default_config()
-	state := Pane_Activity_State{}
-	_ = pane_activity_step(&state, cfg, "Session log\nlast update 10:00:01", 0)
-	_ = pane_activity_step(&state, cfg, "Session log\nlast update 10:00:02", 1000)
-	final := pane_activity_step(&state, cfg, "Session log\nlast update 10:00:11", cfg.idle_after_ms + 2000)
-	testing.expect(t, !final.spinner_present, "no spinner in timer-only frame")
-	testing.expect(t, !final.changed, "masked content must be unchanged across clock ticks")
-	testing.expect(t, final.status == .Idle, "timer-only churn must settle to idle")
+	// A pane whose ONLY change across the burst is a ticking clock/counter with no
+	// spinner must classify idle — the key false-active case a naive diff fails.
+	s := pane_burst(
+		"Session log\nlast update 10:00:01",
+		"Session log\nlast update 10:00:02",
+		"Session log\nlast update 10:00:03",
+	)
+	testing.expect(t, !s.spinner_present, "no spinner in timer-only burst")
+	testing.expect(t, !s.changed, "masked content must be unchanged across clock ticks")
+	testing.expect(t, s.status == .Idle, "timer-only churn must classify idle")
 }
 
 @(test)
-pane_activity_streaming_stays_active_with_hysteresis :: proc(t: ^testing.T) {
-	// Content changes every couple seconds (streaming tokens). Even sampling in the
-	// ambiguous band, hysteresis + recent-change must keep it active, never idle.
-	cfg := pane_activity_default_config()
-	state := Pane_Activity_State{}
-	_ = pane_activity_step(&state, cfg, "The answer begins", 0)
-	s2 := pane_activity_step(&state, cfg, "The answer begins here", 2000)
-	testing.expect(t, s2.status == .Active, "recent content change => active")
-	// 4s after last change: within idle_after (8s) => hysteresis holds active.
-	s3 := pane_activity_step(&state, cfg, "The answer begins here", 6000)
-	testing.expect(t, s3.status == .Active, "hysteresis holds active in the ambiguous band")
-	// New token arrives, resets the change timer.
-	s4 := pane_activity_step(&state, cfg, "The answer begins here now", 7000)
-	testing.expect(t, s4.changed && s4.status == .Active, "new token => changed + active")
+pane_activity_streaming_is_active :: proc(t: ^testing.T) {
+	// Content grows across the ~1s burst (streaming tokens). The normalized frames
+	// differ => active. This is why the burst spans ~1s: a slow stream still moves
+	// the body between the first and last snapshot.
+	s := pane_burst(
+		"The answer begins",
+		"The answer begins here",
+		"The answer begins here now",
+	)
+	testing.expect(t, s.changed, "growing body across the burst must register as changed")
+	testing.expect(t, s.status == .Active, "streaming tokens must classify active")
 }
 
 @(test)
 pane_activity_static_content_goes_idle :: proc(t: ^testing.T) {
-	cfg := pane_activity_default_config()
-	state := Pane_Activity_State{}
-	_ = pane_activity_step(&state, cfg, "$ ", 0)
-	final := pane_activity_step(&state, cfg, "$ ", cfg.idle_after_ms + 1000)
-	testing.expect(t, final.status == .Idle, "long-static pane must be idle")
+	// Three identical static frames => idle.
+	s := pane_burst("$ ", "$ ", "$ ")
+	testing.expect(t, !s.changed, "identical static frames are unchanged")
+	testing.expect(t, s.status == .Idle, "static pane burst must be idle")
 }
 
 @(test)
 pane_activity_detects_waiting_user :: proc(t: ^testing.T) {
-	cfg := pane_activity_default_config()
-	state := Pane_Activity_State{}
+	// A y/n prompt present in the (static) burst => waiting_user. The hub maps
+	// waiting_user => idle (see activity_status_normalize_test.odin), so a
+	// blocked-on-user agent never renders as working.
 	frame := "Ran command foo\nDo you want to proceed? (y/n)"
-	_ = pane_activity_step(&state, cfg, frame, 0)
-	final := pane_activity_step(&state, cfg, frame, cfg.idle_after_ms + 1000)
-	testing.expect(t, final.status == .Waiting_User, "y/n prompt after stability must read waiting_user")
+	s := pane_burst(frame, frame, frame)
+	testing.expect(t, s.status == .Waiting_User, "y/n prompt must classify waiting_user")
+	// Even if the prompt appears in only one frame of the burst, detect it.
+	s2 := pane_burst("Ran command foo", frame, frame)
+	testing.expect(t, s2.status == .Waiting_User, "waiting_user detected from any raw frame")
+}
+
+@(test)
+pane_classify_burst_precedence :: proc(t: ^testing.T) {
+	// Pure classifier precedence: spinner > waiting_user > changed > idle.
+	same := []string{"x", "x", "x"}
+	diff := []string{"x", "y", "x"}
+	// spinner beats everything.
+	st, _ := pane_classify_burst(same, true, true)
+	testing.expect(t, st == .Active, "spinner overrides waiting_user")
+	// waiting_user beats a plain change decision when no spinner.
+	st2, _ := pane_classify_burst(same, false, true)
+	testing.expect(t, st2 == .Waiting_User, "waiting_user when no spinner and frames identical")
+	// changed (no spinner, no waiting) => active.
+	st3, ch3 := pane_classify_burst(diff, false, false)
+	testing.expect(t, ch3 && st3 == .Active, "differing frames => active")
+	// all identical, no spinner/waiting => idle.
+	st4, ch4 := pane_classify_burst(same, false, false)
+	testing.expect(t, !ch4 && st4 == .Idle, "identical quiet frames => idle")
 }
 
 // REQ-3: the ACTUAL Claude Code footer captured from a live idle agent (tmux
 // capture-pane -p on inst_18d1235fc148693a / pane %57). The only thing that
 // changes frame-to-frame on an idle Claude pane is the numeric run in the status
 // footer (token counters, cost, cost %, the watchdog "idle Ns" seconds counter).
-// pane_normalize must collapse all of that so two frames of a genuinely idle pane
-// hash identically and the detector settles to idle rather than false-active.
+// pane_normalize must collapse all of that so the burst frames of a genuinely
+// idle pane are byte-identical and the cycle classifies idle rather than active.
 @(private="file")
 CLAUDE_FOOTER_FRAME_A :: "The coordinator asked the user to clarify the request.\n" +
 	"────────────────────\n" +
@@ -108,35 +135,37 @@ CLAUDE_FOOTER_FRAME_A :: "The coordinator asked the user to clarify the request.
 CLAUDE_FOOTER_FRAME_B :: "The coordinator asked the user to clarify the request.\n" +
 	"────────────────────\n" +
 	"/private/tmp/heimdall/instances/inst_18d1235fc148693a\n" +
-	"↑56 ↓12k R701k W73k $1.021 (sub) 6.0%/1.0M (auto)   (anthropic) claude-opus-4-8 • high\n" +
+	"↑56 ↓11k R700k W73k $1.004 (sub) 6.0%/1.0M (auto)   (anthropic) claude-opus-4-8 • high\n" +
+	"watchdog: idle 315s (0/∞) Heimdall: working · settling"
+@(private="file")
+CLAUDE_FOOTER_FRAME_C :: "The coordinator asked the user to clarify the request.\n" +
+	"────────────────────\n" +
+	"/private/tmp/heimdall/instances/inst_18d1235fc148693a\n" +
+	"↑56 ↓12k R701k W73k $1.021 (sub) 6.1%/1.0M (auto)   (anthropic) claude-opus-4-8 • high\n" +
 	"watchdog: idle 330s (0/∞) Heimdall: working · settling"
 
 @(test)
 pane_normalize_collapses_real_claude_footer :: proc(t: ^testing.T) {
 	a, spin_a := pane_normalize(CLAUDE_FOOTER_FRAME_A)
 	b, spin_b := pane_normalize(CLAUDE_FOOTER_FRAME_B)
-	defer delete(a); defer delete(b)
+	c, spin_c := pane_normalize(CLAUDE_FOOTER_FRAME_C)
+	defer delete(a); defer delete(b); defer delete(c)
 	// No braille spinner in an idle Claude footer.
-	testing.expect(t, !spin_a && !spin_b, "idle Claude footer has no braille spinner")
-	// The two frames differ ONLY by numeric counters (tokens/cost/%/watchdog secs)
-	// so after masking + collapsing they must be byte-identical => equal hash.
-	testing.expect(t, a == b, "idle Claude footer frames differing only by counters must normalize equal")
-	testing.expect(t, pane_hash(a) == pane_hash(b), "idle Claude footer must hash stably across frames")
+	testing.expect(t, !spin_a && !spin_b && !spin_c, "idle Claude footer has no braille spinner")
+	// The frames differ ONLY by numeric counters (tokens/cost/%/watchdog secs) so
+	// after masking + collapsing they must be byte-identical => equal hash.
+	testing.expect(t, a == b && b == c, "idle Claude footer frames differing only by counters must normalize equal")
+	testing.expect(t, pane_hash(a) == pane_hash(c), "idle Claude footer must hash stably across the burst")
 }
 
 @(test)
 pane_activity_real_claude_idle_footer_goes_idle :: proc(t: ^testing.T) {
-	// Drive the detector with the real footer frames the way the wrapper loop would:
-	// an initial frame, then a later frame past idle_after_ms whose only delta is the
-	// ticking counters. It must classify idle, not active.
-	cfg := pane_activity_default_config()
-	state := Pane_Activity_State{}
-	_ = pane_activity_step(&state, cfg, CLAUDE_FOOTER_FRAME_A, 0)
-	_ = pane_activity_step(&state, cfg, CLAUDE_FOOTER_FRAME_B, 2000)
-	final := pane_activity_step(&state, cfg, CLAUDE_FOOTER_FRAME_B, cfg.idle_after_ms + 3000)
-	testing.expect(t, !final.spinner_present, "no spinner in idle Claude footer")
-	testing.expect(t, !final.changed, "counter-only churn must not read as a content change")
-	testing.expect(t, final.status == .Idle, "real idle Claude footer must settle to idle, not active")
+	// Classify one stateless cycle from the 3 real footer snapshots whose only
+	// delta is the ticking counters. It must classify idle, not active.
+	s := pane_burst(CLAUDE_FOOTER_FRAME_A, CLAUDE_FOOTER_FRAME_B, CLAUDE_FOOTER_FRAME_C)
+	testing.expect(t, !s.spinner_present, "no spinner in idle Claude footer")
+	testing.expect(t, !s.changed, "counter-only churn must not read as a content change")
+	testing.expect(t, s.status == .Idle, "real idle Claude footer burst must classify idle, not active")
 }
 
 @(test)

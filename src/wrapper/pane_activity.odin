@@ -11,14 +11,25 @@ package main
 // A naive "did the text change?" diff is unreliable:
 //   - spinners / elapsed-time counters / clocks change every frame => false active
 //   - slow token streams look static within one sample                => false idle
-// This module neutralizes both by (a) MASKING volatile regions before hashing so
-// timers/clocks/spinners don't count as "content changed", while (b) treating the
-// PRESENCE of a spinner glyph as a strong positive "active" signal, and (c) using
-// a stable-duration threshold with hysteresis so we never flip active->idle on the
-// gap between streamed tokens.
 //
-// The functions here are pure and unit-testable without tmux: feed successive
-// normalized frames into pane_activity_step and assert the derived status.
+// STATELESS BURST DETECTOR (per the user's design decision):
+// Each detection cycle is self-contained — we do NOT carry any last_hash/
+// last_change_ms across cycles. Once per cycle the caller captures a BURST of 3
+// pane-tail snapshots a few hundred ms apart (~1-1.2s total), then:
+//   (a) MASKS volatile regions of each snapshot (timers/clocks/counters/spinners)
+//       via pane_normalize so a mutating footer never reads as "content changed";
+//   (b) treats the PRESENCE of a braille spinner glyph in ANY snapshot as a strong
+//       positive "active" signal;
+//   (c) diffs the 3 NORMALIZED snapshots: all identical => idle, any differ =>
+//       active. The ~1s burst span guards against false-idle on slow token streams
+//       (a stream will grow the body across the 3 frames), while masking guards
+//       against false-active from the ticking footer.
+//   (d) detects a "blocked on the user" prompt (y/n, press enter, …) from the RAW
+//       frame; the hub maps waiting_user => idle (a blocked agent is not working).
+//
+// The functions here are pure and unit-testable without tmux: build the 3
+// normalized frames (+ spinner/waiting flags) and call pane_classify_burst, or
+// feed 3 raw frames to pane_activity_burst_status.
 
 import "core:strings"
 
@@ -39,31 +50,26 @@ pane_activity_status_string :: proc(status: Pane_Activity_Status) -> string {
 	return "unknown"
 }
 
-// Tunables. Defaults chosen so streamed-token gaps (usually < a few seconds) do
-// not read as idle, while a genuinely quiet pane settles to idle reasonably fast.
+// Tunables for the stateless burst detector. A cycle captures `burst_samples`
+// snapshots of the pane tail (`line_limit` lines each), waiting `burst_gap_ms`
+// between snapshots. Defaults: 3 samples @ ~500ms gaps => ~1s burst span, which
+// lets a slow token stream visibly grow across frames (=> active) while a quiet
+// pane's masked frames stay identical (=> idle).
 Pane_Activity_Config :: struct {
-	active_window_ms: i64, // content changed within this window => active
-	idle_after_ms:    i64, // stable at least this long (no spinner) => idle
-	line_limit:       int, // pane tail lines to consider
+	burst_samples: int, // snapshots captured per cycle (design: 3)
+	burst_gap_ms:  i64, // delay between snapshots (design: ~400-600ms)
+	line_limit:    int, // pane tail lines to consider (design: 20)
 }
 
 pane_activity_default_config :: proc() -> Pane_Activity_Config {
-	return Pane_Activity_Config{active_window_ms = 3000, idle_after_ms = 8000, line_limit = 60}
+	return Pane_Activity_Config{burst_samples = 3, burst_gap_ms = 500, line_limit = 20}
 }
 
-// Rolling detector state. Carried across samples by the caller.
-Pane_Activity_State :: struct {
-	initialized:      bool,
-	last_hash:        u64,
-	last_change_ms:   i64,
-	last_status:      Pane_Activity_Status,
-}
-
-// Result of analyzing one captured frame.
+// Result of classifying one burst cycle.
 Pane_Activity_Sample :: struct {
 	status:          Pane_Activity_Status,
-	changed:         bool, // masked content differed from previous sample
-	spinner_present: bool,
+	changed:         bool, // any of the normalized burst frames differed
+	spinner_present: bool, // a braille spinner appeared in any raw burst frame
 }
 
 // Spinner detection is restricted to the Unicode Braille Patterns block
@@ -193,47 +199,65 @@ pane_detect_waiting_user :: proc(normalized: string) -> bool {
 	return false
 }
 
-// pane_activity_step advances the detector by one sample. `raw` is the freshly
-// captured pane tail; `now_ms` is the current wall-clock in ms. The state is
-// updated in place and the derived sample returned.
-pane_activity_step :: proc(state: ^Pane_Activity_State, cfg: Pane_Activity_Config, raw: string, now_ms: i64) -> Pane_Activity_Sample {
-	normalized, spinner := pane_normalize(raw)
-	defer delete(normalized)
-	h := pane_hash(normalized)
-
-	changed := false
-	if !state.initialized {
-		state.initialized = true
-		state.last_hash = h
-		state.last_change_ms = now_ms
-		state.last_status = .Unknown
-	} else if h != state.last_hash {
-		changed = true
-		state.last_hash = h
-		state.last_change_ms = now_ms
+// pane_classify_burst is the PURE core of the stateless detector. It takes the
+// already-NORMALIZED frames of one burst plus the spinner/waiting flags (both
+// OR'd across the raw frames of the burst) and returns the derived status. It
+// carries no state across cycles, so tests can call it directly.
+//
+// Precedence:
+//   1. spinner present in any raw frame        => Active (strong working signal)
+//   2. else waiting-on-user prompt in any frame => Waiting_User (hub maps to idle)
+//   3. else all normalized frames identical     => Idle
+//   4. else (frames differ)                     => Active (content is moving)
+pane_classify_burst :: proc(normalized_frames: []string, spinner_present: bool, waiting_user: bool) -> (status: Pane_Activity_Status, changed: bool) {
+	changed = false
+	for i in 1..<len(normalized_frames) {
+		if normalized_frames[i] != normalized_frames[0] {
+			changed = true
+			break
+		}
 	}
+	if spinner_present {
+		// A visible spinner means the TUI is actively rendering progress => active,
+		// even if the masked body text happens to be identical across the burst.
+		return .Active, changed
+	}
+	if waiting_user {
+		// Blocked on the user (y/n, press enter, …). Not working; the hub maps
+		// waiting_user => idle. Detected from the RAW frame by the caller.
+		return .Waiting_User, changed
+	}
+	if changed {
+		// The masked content moved across the ~1s burst (e.g. a growing token
+		// stream) => active.
+		return .Active, true
+	}
+	// All normalized frames identical and no spinner/prompt => genuinely quiet.
+	return .Idle, false
+}
 
-	stable_for := now_ms - state.last_change_ms
-
-	status: Pane_Activity_Status
-	if spinner {
-		// A visible spinner means the TUI is actively rendering progress => active.
-		status = .Active
-	} else if changed || stable_for < cfg.active_window_ms {
-		status = .Active
-	} else if pane_detect_waiting_user(raw) {
+// pane_activity_burst_status classifies one stateless cycle from a burst of RAW
+// pane-tail snapshots (already captured `burst_gap_ms` apart by the caller). It
+// normalizes each frame, ORs the spinner signal across the raw frames, ORs the
+// waiting-on-user prompt across the raw frames, then delegates to
+// pane_classify_burst. Returns a sample with the derived status.
+pane_activity_burst_status :: proc(raw_frames: []string) -> Pane_Activity_Sample {
+	if len(raw_frames) == 0 do return Pane_Activity_Sample{status = .Unknown}
+	normalized := make([]string, len(raw_frames))
+	defer {
+		for n in normalized do delete(n)
+		delete(normalized)
+	}
+	spinner := false
+	waiting := false
+	for raw, i in raw_frames {
+		n, spin := pane_normalize(raw)
+		normalized[i] = n
+		if spin do spinner = true
 		// Detect prompts from the RAW frame: normalization masks '/' (a spinner
 		// glyph) and digits, which would corrupt affordances like "(y/n)".
-		status = .Waiting_User
-	} else if stable_for >= cfg.idle_after_ms {
-		status = .Idle
-	} else {
-		// In the ambiguous band between active_window and idle_after: hold the last
-		// known status (hysteresis) to avoid flicker between streamed tokens.
-		status = state.last_status
-		if status == .Unknown do status = .Active
+		if pane_detect_waiting_user(raw) do waiting = true
 	}
-
-	state.last_status = status
+	status, changed := pane_classify_burst(normalized, spinner, waiting)
 	return Pane_Activity_Sample{status = status, changed = changed, spinner_present = spinner}
 }
