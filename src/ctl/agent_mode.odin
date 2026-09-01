@@ -31,7 +31,8 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	}
 	if resource == "context" { ctl_agentmode_context(endpoint, token, args); return }
 	if resource == "start-success" { ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return }
-	if resource == "agents" || resource == "instances" { ctl_agentmode_agents(endpoint, token, action, args); return }
+	if resource == "instances" { ctl_agentmode_instances(endpoint, token, action, args); return }
+	if resource == "agents" { ctl_agentmode_agents(endpoint, token, action, args); return }
 	if resource == "chat" || resource == "chats" { ctl_agentmode_chat(endpoint, token, action, args); return }
 	if resource == "tasks" || resource == "task" {
 		fmt.eprintln("Notice: 'ham-ctl agent tasks' is deprecated; use top-level 'ham-ctl tasks' instead.")
@@ -64,6 +65,41 @@ ctl_agentmode_agents :: proc(endpoint, token, action: string, args: []string) {
 	_ = args
 	if action == "" || action == "live" || action == "running" { ctl_agent_call(endpoint, token, "agent.agents.live", "{}"); return }
 	fmt.println("usage: ham-ctl agent agents <live|running>")
+}
+
+// Agent-token instance lifecycle so a running agent (e.g. a coordinator) can
+// launch/relaunch/stop agents it owns WITHOUT a user token. Routes through the
+// bridge-local agent endpoint (agent.instances.*), which relays to the raw hub
+// /api/v1/agent-instances endpoints with the instance token (same-owner scoped).
+ctl_agentmode_instances :: proc(endpoint, token, action: string, args: []string) {
+	if action == "" || action == "live" || action == "running" {
+		// Back-compat: `ham-ctl agent instances` (no verb) lists live instances.
+		ctl_agent_call(endpoint, token, "agent.agents.live", "{}")
+		return
+	}
+	if action == "launch" {
+		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
+		if agent_id == "" { fmt.println("usage: ham-ctl agent instances launch --agent-id <agent_id> [--bridge-id <id>] [--provider <p>] [--tier <t>] [--project-id <id>] [--chain-id <id>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("agent_id", agent_id))
+		if v := option_value(args, "--bridge-id", option_value(args, "--bridge", "")); v != "" do append(&fields, json_kv("bridge_id", v))
+		if v := option_value(args, "--provider", ""); v != "" do append(&fields, json_kv("provider", v))
+		if v := option_value(args, "--tier", ""); v != "" do append(&fields, json_kv("tier", v))
+		if v := option_value(args, "--project-id", option_value(args, "--project", "")); v != "" do append(&fields, json_kv("project_id", v))
+		if v := option_value(args, "--chain-id", option_value(args, "--chain", "")); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.instances.launch", json_object_from_slice(fields[:]))
+		return
+	}
+	if action == "restart" || action == "stop" {
+		instance_id := option_value(args, "--instance", option_value(args, "--instance-id", ""))
+		if instance_id == "" { fmt.printf("usage: ham-ctl agent instances %s --instance <agent_instance_id>%s\n", action, " [--reason <text>]" if action == "stop" else ""); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("instance_id", instance_id))
+		if action == "stop" { if v := option_value(args, "--reason", ""); v != "" do append(&fields, json_kv("reason", v)) }
+		ctl_agent_call(endpoint, token, action == "restart" ? "agent.instances.restart" : "agent.instances.stop", json_object_from_slice(fields[:]))
+		return
+	}
+	fmt.println("usage: ham-ctl agent instances <live|launch|restart|stop> ...")
 }
 
 ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {

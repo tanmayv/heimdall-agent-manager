@@ -20,6 +20,17 @@ main :: proc() {
 	check(!bridge.bridge_local_method_allowed("wrapper.exited", .Agent), "agent token must not call wrapper methods")
 	check(bridge.bridge_local_method_allowed("wrapper.startup.report", .Wrapper), "wrapper allowlist missing startup")
 	check(!bridge.bridge_local_method_allowed("agent.tasks.comment", .Wrapper), "wrapper token must not call agent methods")
+	// Agent instance lifecycle verbs (agents launching/relaunching/stopping agents
+	// they own) must be on the .Agent allow-list and off the .Wrapper one.
+	check(bridge.bridge_local_method_allowed("agent.instances.launch", .Agent), "agent allowlist missing instances.launch")
+	check(bridge.bridge_local_method_allowed("agent.instances.restart", .Agent), "agent allowlist missing instances.restart")
+	check(bridge.bridge_local_method_allowed("agent.instances.stop", .Agent), "agent allowlist missing instances.stop")
+	check(!bridge.bridge_local_method_allowed("agent.instances.launch", .Wrapper), "wrapper token must not launch instances")
+	// Pure method+params -> hub path mapping.
+	check(bridge.bridge_local_instance_lifecycle_path("agent.instances.launch", "{\"agent_id\":\"agt_x\"}") == "/api/v1/agent-instances", "launch must map to POST /api/v1/agent-instances")
+	check(bridge.bridge_local_instance_lifecycle_path("agent.instances.restart", "{\"instance_id\":\"inst_z\"}") == "/api/v1/agent-instances/inst_z/restart", "restart must map to /<id>/restart")
+	check(bridge.bridge_local_instance_lifecycle_path("agent.instances.stop", "{\"agent_instance_id\":\"inst_z\"}") == "/api/v1/agent-instances/inst_z/stop", "stop must accept agent_instance_id and map to /<id>/stop")
+	check(bridge.bridge_local_instance_lifecycle_path("agent.instances.restart", "{}") == "", "restart without an instance id must yield empty path (rejected)")
 	ctx := bridge.bridge_local_endpoint_handle_jsonl_line(strings.concatenate({"{\"v\":1,\"id\":\"ctx\",\"token\":\"", issued.plaintext_token, "\",\"method\":\"agent.context.get\",\"params\":{}}"}))
 	check(strings.contains(ctx, "\"ok\":true") && strings.contains(ctx, "inst_local") && !strings.contains(ctx, "MISSING"), "context.get should resolve identity and return valid JSON")
 	spaced_ctx := bridge.bridge_local_endpoint_handle_jsonl_line(strings.concatenate({"{ \"v\" : 1, \"id\" : \"spaced\", \"token\" : \"", issued.plaintext_token, "\", \"method\" : \"agent.context.get\", \"params\" : { } }"}))

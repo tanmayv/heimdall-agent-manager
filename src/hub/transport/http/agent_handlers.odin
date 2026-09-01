@@ -173,7 +173,10 @@ agent_instance_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 stop_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Accept user tokens AND bridge-relayed instance tokens so a running agent can
+	// stop an instance it owns. stop_instance -> get_instance -> require_owner keeps
+	// the same-owner boundary (an instance token for another owner gets Not_Found).
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	inst, stopped, err := agent_service.stop_instance(h.agents, auth_ctx, path_part(req.path, 4), agent_service.Stop_Instance_Input{reason = json_string(req.body, "reason")})
 	if !stopped do return respond_error(err, req.request_id)
@@ -184,7 +187,11 @@ stop_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 restart_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Accept user tokens AND bridge-relayed instance tokens so a running agent can
+	// relaunch (launch-by-instance-id) an instance it owns. restart_instance ->
+	// get_instance -> require_owner + relaunch_instance's bridge.owner==inst.owner
+	// check keep the same-owner boundary.
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	inst, restarted, err := agent_service.restart_instance(h.agents, auth_ctx, path_part(req.path, 4))
 	if !restarted do return respond_error(err, req.request_id)

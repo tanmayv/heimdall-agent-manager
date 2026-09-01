@@ -233,7 +233,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Wrapper:
 		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe" || method == "wrapper.pane_capture.result"
 	case .Agent:
-		return method == "agent.rest.request" || method == "agent.activity.report" || method == "agent.permission.request" || method == "agent.permission.reply" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.rest.request" || method == "agent.activity.report" || method == "agent.permission.request" || method == "agent.permission.reply" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.instances.launch" || method == "agent.instances.restart" || method == "agent.instances.stop" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
 	return false
 }
@@ -351,6 +351,19 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 		return bridge_local_response_data(request_id, relay.body)
 	}
+	if method == "agent.instances.launch" || method == "agent.instances.restart" || method == "agent.instances.stop" {
+		// Agent-driven instance lifecycle (launch by agent-id / relaunch|stop by
+		// instance-id). These hit the raw /api/v1/agent-instances[/<id>/restart|stop]
+		// hub endpoints (NOT the agent-actions envelope), which accept the instance
+		// token via X-Heimdall-Instance-Token; the hub scopes every op to the token's
+		// owner (same-owner only). Uses the same raw-REST relay as agent.rest.request.
+		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
+		relay := bridge_local_relay_instance_lifecycle(method, params, rec)
+		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub instance relay failed")
+		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
+		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
+		return bridge_local_response_data(request_id, relay.body)
+	}
 	if method == "agent.start_success" {
 		// Absolute transition: a valid instance token can mark the agent running from
 		// any prior bridge-local state (starting, failed, unreachable, stopped, etc.).
@@ -382,6 +395,47 @@ bridge_local_relay_rest_request :: proc(params: string, rec: Bridge_Local_Agent_
 		{name = "X-Heimdall-Instance-Token", value = rec.instance_token},
 	}
 	resp, ok := http.request_with_headers_timeout(http_method, bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	return Bridge_Local_Relay_Result{status = resp.status, body = resp.body, ok = ok}
+}
+
+// bridge_local_relay_instance_lifecycle relays the first-class agent instance
+// lifecycle verbs to the raw hub endpoints (NOT the agent-actions envelope):
+//   agent.instances.launch  -> POST /api/v1/agent-instances                 (body = params: agent_id[,bridge_id,provider,tier,project_id,chain_id])
+//   agent.instances.restart -> POST /api/v1/agent-instances/<instance_id>/restart
+//   agent.instances.stop    -> POST /api/v1/agent-instances/<instance_id>/stop  (body = {reason?})
+// The instance token rides in X-Heimdall-Instance-Token; the hub enforces
+// same-owner scoping. For restart/stop the instance_id comes from params
+// ("instance_id" or "agent_instance_id").
+// bridge_local_instance_lifecycle_path is the PURE method+params -> hub path
+// mapping for the instance lifecycle verbs, split out so it is unit-testable
+// without issuing HTTP. Returns "" when a restart/stop is missing its instance id.
+bridge_local_instance_lifecycle_path :: proc(method, params: string) -> string {
+	if method == "agent.instances.launch" do return "/api/v1/agent-instances"
+	if method == "agent.instances.restart" || method == "agent.instances.stop" {
+		instance_id := bridge_local_extract_json_string(params, "instance_id", "")
+		if instance_id == "" do instance_id = bridge_local_extract_json_string(params, "agent_instance_id", "")
+		if strings.trim_space(instance_id) == "" do return ""
+		verb := "restart" if method == "agent.instances.restart" else "stop"
+		return strings.concatenate({"/api/v1/agent-instances/", instance_id, "/", verb})
+	}
+	return ""
+}
+
+bridge_local_relay_instance_lifecycle :: proc(method, params: string, rec: Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
+	path := bridge_local_instance_lifecycle_path(method, params)
+	if path == "" do return Bridge_Local_Relay_Result{status = 0, ok = false}
+	// launch sends the params object as the create body; stop forwards {reason?};
+	// restart needs no body.
+	body := ""
+	if method == "agent.instances.launch" || method == "agent.instances.stop" {
+		body = strings.trim_space(params)
+		if body == "" do body = "{}"
+	}
+	headers := [?]http.Header{
+		{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_config.bridge_token})},
+		{name = "X-Heimdall-Instance-Token", value = rec.instance_token},
+	}
+	resp, ok := http.request_with_headers_timeout("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
 	return Bridge_Local_Relay_Result{status = resp.status, body = resp.body, ok = ok}
 }
 
