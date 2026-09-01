@@ -35,7 +35,7 @@ setup_known_harnesses :: proc() -> []Setup_Harness {
 		name = "pi", bin = "pi", config_path = j(home, ".pi/agent/extensions"),
 		install_hint = "install @earendil-works/pi-coding-agent (npm) or via nix",
 		auth_hint = "set provider key env (e.g. ANTHROPIC_API_KEY) or run pi's OAuth",
-		wire_hint = "wrapper auto-writes .heimdall/heimdall-pi-activity.ts and injects --extension; permission gate via HEIMDALL_PERMISSION_GATE=1",
+		wire_hint = "activity via the harness-agnostic tmux pane-capture detector (source=pane_diff); no extension required",
 	})
 	append(&out, Setup_Harness{
 		name = "antigravity", bin = "agy", config_path = j(home, ".gemini/hooks.json"),

@@ -193,7 +193,11 @@ bridge_permission_handle_request :: proc(agent_instance_id, params: string) -> (
 	}
 
 	// Mark the agent as waiting on user input while the request is outstanding.
-	bridge_runtime_note_agent_activity(agent_instance_id, "waiting_user", "pi_extension")
+	// Source is 'permission_gate' (NOT 'pi_extension', which was removed as an
+	// activity source): the pane_diff detector is the sole activity source, and
+	// this gate signal is ranked equal to pane_diff so it shows immediately and
+	// pane_diff can reflect the resolved state right after.
+	bridge_runtime_note_agent_activity(agent_instance_id, "waiting_user", "permission_gate")
 
 	// Mirror to the wrapper/UI push channel (observe + mirror). A missing wrapper
 	// subscription is non-fatal: the request can still be resolved via
@@ -202,8 +206,8 @@ bridge_permission_handle_request :: proc(agent_instance_id, params: string) -> (
 
 	decision, reason = bridge_permission_wait(agent_instance_id, request_id, timeout_ms)
 
-	// Restore activity to active now that the gate has resolved; the adapter will
-	// emit its own idle signal on settle.
-	bridge_runtime_note_agent_activity(agent_instance_id, "active", "pi_extension")
+	// Restore activity to active now that the gate has resolved; the pane_diff
+	// detector will emit the next authoritative active/idle on its following cycle.
+	bridge_runtime_note_agent_activity(agent_instance_id, "active", "permission_gate")
 	return decision, reason
 }

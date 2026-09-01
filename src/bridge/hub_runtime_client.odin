@@ -1045,11 +1045,21 @@ bridge_runtime_accept_activity_update :: proc(inst: ^Bridge_Runtime_Instance, so
 
 bridge_runtime_activity_source_rank :: proc(source: string) -> int {
 	s := strings.to_lower(strings.trim_space(source))
-	if s == "pi_extension" do return 100
+	// NOTE: the pi_extension==100 fast-path was REMOVED with the pi activity
+	// extension (task_18d129291c6a455d). It was the high-priority source that
+	// suppressed a correct pane_diff 'idle' (the stuck 'working · settling' bug).
+	// A native harness extension (e.g. antigravity) still ranks via the generic
+	// contains("extension")=>80 branch below.
 	if strings.contains(s, "extension") do return 80
-	// Harness-agnostic tmux pane-capture detector: more reliable than a bare
-	// wrapper heartbeat, but a native agent extension (if present) still wins.
+	// Harness-agnostic tmux pane-capture detector: now the primary activity source
+	// for every provider.
 	if s == "pane_diff" do return 40
+	// Permission gate (waiting_user while a blocking approval is outstanding, then
+	// active on resolve). Ranked EQUAL to pane_diff on purpose: equal ranks always
+	// accept (new_rank >= current_rank), so the gate's waiting_user shows
+	// immediately AND the next pane_diff cycle can override it right after the gate
+	// resolves — a higher rank would recreate a mini stuck-suppression until TTL.
+	if s == "permission_gate" do return 40
 	if s == "wrapper" do return 10
 	if s == "bridge" do return 5
 	return 1
