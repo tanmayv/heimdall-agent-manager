@@ -91,7 +91,7 @@ patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
-	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), status = json_string(req.body, "status")})
+	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), status = json_string(req.body, "status"), coordinator_agent_instance_id = json_string(req.body, "coordinator_agent_instance_id"), has_coordinator = strings.contains(req.body, "\"coordinator_agent_instance_id\"")})
 	if !updated do return respond_error(err, req.request_id)
 	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
 	b := strings.builder_make(); write_chain_json(&b, chain)

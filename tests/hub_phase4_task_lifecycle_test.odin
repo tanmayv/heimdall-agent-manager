@@ -88,6 +88,20 @@ main :: proc() {
 	_, terminal_nudge_ok, terminal_nudge_err := taskchain_service.manual_nudge(&service, auth, task.task_id, "wake")
 	check(!terminal_nudge_ok && terminal_nudge_err.code == .Conflict, "terminal task must not be nudged")
 
+	// H1: chain-level transition guards + reopen recovery path.
+	// valid_chain_transition unit coverage.
+	check(taskchain_service.valid_chain_transition(.Active, .Completed), "active -> completed must be valid")
+	check(taskchain_service.valid_chain_transition(.Active, .Cancelled), "active -> cancelled must be valid")
+	check(taskchain_service.valid_chain_transition(.Completed, .Active), "completed -> active (reopen) must be valid")
+	check(!taskchain_service.valid_chain_transition(.Cancelled, .Active), "cancelled -> active must stay invalid")
+	check(!taskchain_service.valid_chain_transition(.Completed, .Cancelled), "completed -> cancelled must be invalid")
+
+	// End-to-end: complete the chain, then reopen it back to active.
+	chain, ok, err = taskchain_service.change_chain_status(&service, auth, chain.chain_id, .Completed)
+	check(ok && chain.status == .Completed && chain.completed_at != "", "chain must complete and stamp completed_at")
+	chain, ok, err = taskchain_service.update_chain(&service, auth, chain.chain_id, taskchain_service.Update_Chain_Input{status = "active"})
+	check(ok && chain.status == .Active && chain.completed_at == "", "reopen must return chain to active and clear completed_at")
+
 	fmt.println("PASS: hub phase4 task lifecycle")
 }
 

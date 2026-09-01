@@ -33,6 +33,9 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	if resource == "start-success" { ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return }
 	if resource == "instances" { ctl_agentmode_instances(endpoint, token, action, args); return }
 	if resource == "agents" { ctl_agentmode_agents(endpoint, token, action, args); return }
+	if resource == "templates" || resource == "template" { ctl_agentmode_templates(endpoint, token, action, args); return }
+	if resource == "bridges" || resource == "bridge" { ctl_agentmode_bridges(endpoint, token, action, args); return }
+	if resource == "projects" || resource == "project" { ctl_agentmode_projects(endpoint, token, action, args); return }
 	if resource == "chat" || resource == "chats" { ctl_agentmode_chat(endpoint, token, action, args); return }
 	if resource == "tasks" || resource == "task" {
 		fmt.eprintln("Notice: 'ham-ctl agent tasks' is deprecated; use top-level 'ham-ctl tasks' instead.")
@@ -41,7 +44,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	}
 	if resource == "artifacts" || resource == "artifact" { ctl_agentmode_artifacts(endpoint, token, action, args); return }
 	if resource == "memory" { ctl_agentmode_memory(endpoint, token, action, args); return }
-	fmt.println("usage: ham-ctl agent <context|start-success|agents|chat|tasks|artifacts|memory> ...")
+	fmt.println("usage: ham-ctl agent <context|start-success|agents|templates|bridges|projects|chat|tasks|artifacts|memory> ...")
 }
 
 agent_mode_endpoint :: proc(args: []string) -> string {
@@ -62,9 +65,55 @@ ctl_agentmode_context :: proc(endpoint, token: string, args: []string) {
 }
 
 ctl_agentmode_agents :: proc(endpoint, token, action: string, args: []string) {
-	_ = args
 	if action == "" || action == "live" || action == "running" { ctl_agent_call(endpoint, token, "agent.agents.live", "{}"); return }
-	fmt.println("usage: ham-ctl agent agents <live|running>")
+	// H5 coordinator team-bootstrap: discover durable agents (same-owner) and create
+	// a durable agent from a template, using ONLY the agent token.
+	if action == "list" { ctl_agent_call(endpoint, token, "agent.agents.list", "{}"); return }
+	if action == "create" {
+		name := option_value(args, "--name", "")
+		if name == "" { fmt.println("usage: ham-ctl agent agents create --name <name> [--template-id <id>] [--provider <p>] [--tier <t>] [--slug <slug>] [--instructions <text>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("name", name))
+		if v := option_value(args, "--slug", ""); v != "" do append(&fields, json_kv("slug", v))
+		if v := option_value(args, "--template-id", option_value(args, "--template", "")); v != "" do append(&fields, json_kv("template_id", v))
+		if v := option_value(args, "--provider", option_value(args, "--default-provider", "")); v != "" do append(&fields, json_kv("default_provider", v))
+		if v := option_value(args, "--tier", option_value(args, "--default-tier", "")); v != "" do append(&fields, json_kv("default_tier", v))
+		if v := option_value(args, "--instructions", ""); v != "" do append(&fields, json_kv("instructions", v))
+		ctl_agent_call(endpoint, token, "agent.agents.create", json_object_from_slice(fields[:]))
+		return
+	}
+	fmt.println("usage: ham-ctl agent agents <live|list|create>")
+}
+
+// H5: discover/create agent templates (personas) via the agent token.
+ctl_agentmode_templates :: proc(endpoint, token, action: string, args: []string) {
+	if action == "" || action == "list" { ctl_agent_call(endpoint, token, "agent.templates.list", "{}"); return }
+	if action == "create" {
+		name := option_value(args, "--name", "")
+		if name == "" { fmt.println("usage: ham-ctl agent templates create --name <name> [--description <text>] [--persona <text>] [--instructions <text>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("name", name))
+		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
+		if v := option_value(args, "--persona", ""); v != "" do append(&fields, json_kv("persona", v))
+		if v := option_value(args, "--instructions", ""); v != "" do append(&fields, json_kv("instructions", v))
+		ctl_agent_call(endpoint, token, "agent.templates.create", json_object_from_slice(fields[:]))
+		return
+	}
+	fmt.println("usage: ham-ctl agent templates <list|create>")
+}
+
+// H5: discover bridges owned by this agent's owner (read-only) via the agent token.
+ctl_agentmode_bridges :: proc(endpoint, token, action: string, args: []string) {
+	_ = args
+	if action == "" || action == "list" { ctl_agent_call(endpoint, token, "agent.bridges.list", "{}"); return }
+	fmt.println("usage: ham-ctl agent bridges <list>")
+}
+
+// H5: discover projects owned by this agent's owner (read-only) via the agent token.
+ctl_agentmode_projects :: proc(endpoint, token, action: string, args: []string) {
+	_ = args
+	if action == "" || action == "list" { ctl_agent_call(endpoint, token, "agent.projects.list", "{}"); return }
+	fmt.println("usage: ham-ctl agent projects <list>")
 }
 
 // Agent-token instance lifecycle so a running agent (e.g. a coordinator) can
@@ -543,7 +592,10 @@ print_agent_help :: proc(cmd: []string) {
 		}
 	}
 	if resource == "chat" || resource == "chats" { print_agent_chat_help(action); return }
-	if resource == "agents" || resource == "instances" { fmt.println("ham-ctl agent agents <live|running>\nPurpose: list live agent instances visible to this agent's owner via the local Bridge.\nExamples:\n  ham-ctl agents live\n  ham-ctl agent agents live"); return }
+	if resource == "agents" || resource == "instances" { fmt.println("ham-ctl agent agents <live|list|create>\nPurpose: list live agent instances, discover durable agents, or create a durable agent (H5) — all same-owner scoped via the local Bridge.\nExamples:\n  ham-ctl agent agents live\n  ham-ctl agent agents list\n  ham-ctl agent agents create --name reviewer --template-id tmpl_x --provider claude --tier smart"); return }
+	if resource == "templates" || resource == "template" { fmt.println("ham-ctl agent templates <list|create>\nPurpose: discover or create agent templates (personas) via the agent token (H5).\nExamples:\n  ham-ctl agent templates list\n  ham-ctl agent templates create --name coder --persona 'You write code.' --instructions '...'"); return }
+	if resource == "bridges" || resource == "bridge" { fmt.println("ham-ctl agent bridges <list>\nPurpose: discover bridges owned by this agent's owner (read-only) via the agent token (H5).\nExample:\n  ham-ctl agent bridges list"); return }
+	if resource == "projects" || resource == "project" { fmt.println("ham-ctl agent projects <list>\nPurpose: discover projects owned by this agent's owner (read-only) via the agent token (H5).\nExample:\n  ham-ctl agent projects list"); return }
 	if resource == "tasks" || resource == "task" { print_agent_tasks_help(action); return }
 	if resource == "artifacts" || resource == "artifact" { print_agent_artifacts_help(action); return }
 	if resource == "memory" { print_agent_memory_help(action); return }
@@ -554,7 +606,10 @@ print_agent_help :: proc(cmd: []string) {
 	fmt.println("  context        Fetch instance, conversation, chain, task, and unread summary")
 	fmt.println("  start-success  Mark startup ready")
 	fmt.println("  chat           Read/send the bound user conversation")
-	fmt.println("  agents         List live/running agent instances")
+	fmt.println("  agents         List live instances, discover durable agents, or create one (list|create)")
+	fmt.println("  templates      Discover/create agent templates (personas): list|create")
+	fmt.println("  bridges        Discover bridges owned by this agent's owner (list)")
+	fmt.println("  projects       Discover projects owned by this agent's owner (list)")
 	fmt.println("  tasks          Fetch current task context and comment/status/vote/nudge assigned tasks")
 	fmt.println("  artifacts      List/create/read artifacts visible to this instance owner")
 	fmt.println("  memory         Propose memory")

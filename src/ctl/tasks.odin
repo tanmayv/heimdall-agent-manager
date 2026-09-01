@@ -105,7 +105,16 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|create|show|update|members|add-agent|publish|complete>")
+	fmt.println("usage: ham-ctl task-chains <list|create|show|update|members|add-agent|publish|complete|reopen>")
+}
+
+// Destructive chain verbs must NEVER fall back to the auto-resolved caller
+// chain: acting on the wrong chain here (e.g. completing your own chain by
+// omitting --chain) is unrecoverable-by-accident. These verbs require an
+// explicit --chain/--chain-id. Non-destructive verbs (show/list) keep the
+// convenience default via resolve_chain_id.
+is_destructive_chain_verb :: proc(action: string) -> bool {
+	return action == "complete" || action == "publish" || action == "reopen"
 }
 
 print_tasks_help :: proc(action: string) {
@@ -148,9 +157,19 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
+	// Guard destructive verbs: require an explicit --chain, never the caller default.
+	if is_destructive_chain_verb(action) {
+		explicit := option_value(args, "--chain-id", option_value(args, "--chain", ""))
+		if explicit == "" {
+			msg := strings.concatenate({"ham-ctl task-chains ", action, " requires an explicit --chain <id>; refusing to act on the auto-resolved caller chain"})
+			fmt.println(json_object(json_kv_raw("ok", "false"), json_kv("message", msg)))
+			os.exit(1)
+		}
+	}
+
 	chain_id := resolve_chain_id(transport, args)
 	if chain_id == "" {
-		fmt.println("usage: ham-ctl task-chains <show|update|members|add-agent|publish|complete> --chain <id>")
+		fmt.println("usage: ham-ctl task-chains <show|update|members|add-agent|publish|complete|reopen> --chain <id>")
 		return
 	}
 
@@ -223,7 +242,13 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
-	fmt.println("usage: ham-ctl task-chains <list|create|show|update|members|add-agent|publish|complete>")
+	// Coordinator-only recovery: return an accidentally-completed chain to active.
+	if action == "reopen" {
+		ctl_tasks_request(transport, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", "active")))
+		return
+	}
+
+	fmt.println("usage: ham-ctl task-chains <list|create|show|update|members|add-agent|publish|complete|reopen>")
 }
 
 ctl_tasks_command :: proc(cmd: []string, args: []string) {

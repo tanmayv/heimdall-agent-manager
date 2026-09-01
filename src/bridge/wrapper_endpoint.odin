@@ -233,7 +233,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Wrapper:
 		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe" || method == "wrapper.pane_capture.result"
 	case .Agent:
-		return method == "agent.rest.request" || method == "agent.activity.report" || method == "agent.permission.request" || method == "agent.permission.reply" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.instances.launch" || method == "agent.instances.restart" || method == "agent.instances.stop" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.rest.request" || method == "agent.activity.report" || method == "agent.permission.request" || method == "agent.permission.reply" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.instances.launch" || method == "agent.instances.restart" || method == "agent.instances.stop" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success" || bridge_local_is_admin_method(method)
 	}
 	return false
 }
@@ -364,6 +364,19 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 		return bridge_local_response_data(request_id, relay.body)
 	}
+	if bridge_local_is_admin_method(method) {
+		// Coordinator team-bootstrap admin verbs (H5): discovery reads and
+		// template/agent creates. These hit the raw /api/v1 REST routes (NOT the
+		// agent-actions envelope) with the Bridge-held instance token in
+		// X-Heimdall-Instance-Token; the hub scopes every op to the token's owner
+		// (same-owner only). Same raw-REST relay pattern as instance lifecycle.
+		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
+		relay := bridge_local_relay_admin_method(method, params, rec)
+		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub admin relay failed")
+		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
+		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
+		return bridge_local_response_data(request_id, relay.body)
+	}
 	if method == "agent.start_success" {
 		// Absolute transition: a valid instance token can mark the agent running from
 		// any prior bridge-local state (starting, failed, unreachable, stopped, etc.).
@@ -436,6 +449,53 @@ bridge_local_relay_instance_lifecycle :: proc(method, params: string, rec: Bridg
 		{name = "X-Heimdall-Instance-Token", value = rec.instance_token},
 	}
 	resp, ok := http.request_with_headers_timeout("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	return Bridge_Local_Relay_Result{status = resp.status, body = resp.body, ok = ok}
+}
+
+// bridge_local_is_admin_method reports whether a method is one of the H5
+// coordinator team-bootstrap admin verbs (discovery reads + template/agent
+// creates). Kept in one place so the allowlist and the dispatch/relay stay in
+// sync.
+bridge_local_is_admin_method :: proc(method: string) -> bool {
+	return method == "agent.agents.list" || method == "agent.agents.create" ||
+		method == "agent.templates.list" || method == "agent.templates.create" ||
+		method == "agent.bridges.list" || method == "agent.projects.list"
+}
+
+// bridge_local_admin_method_route is the PURE method -> (http_method, hub path)
+// mapping for the H5 admin verbs, split out so it is unit-testable without
+// issuing HTTP. All routes are same-owner scoped hub-side via the instance
+// token. Returns ("","") for an unknown method.
+bridge_local_admin_method_route :: proc(method: string) -> (string, string) {
+	switch method {
+	case "agent.agents.list": return "GET", "/api/v1/agents"
+	case "agent.agents.create": return "POST", "/api/v1/agents"
+	case "agent.templates.list": return "GET", "/api/v1/templates"
+	case "agent.templates.create": return "POST", "/api/v1/templates"
+	case "agent.bridges.list": return "GET", "/api/v1/bridges"
+	case "agent.projects.list": return "GET", "/api/v1/projects"
+	}
+	return "", ""
+}
+
+// bridge_local_relay_admin_method relays an H5 admin verb to its raw hub route.
+// GET verbs send no body; POST (create) verbs forward the params object as the
+// create body. The instance token rides in X-Heimdall-Instance-Token so the hub
+// enforces same-owner scoping; owner/credential fields are already spoof-guarded
+// upstream in bridge_local_endpoint_handle_jsonl_line.
+bridge_local_relay_admin_method :: proc(method, params: string, rec: Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
+	http_method, path := bridge_local_admin_method_route(method)
+	if path == "" do return Bridge_Local_Relay_Result{status = 0, ok = false}
+	body := ""
+	if http_method == "POST" {
+		body = strings.trim_space(params)
+		if body == "" do body = "{}"
+	}
+	headers := [?]http.Header{
+		{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_config.bridge_token})},
+		{name = "X-Heimdall-Instance-Token", value = rec.instance_token},
+	}
+	resp, ok := http.request_with_headers_timeout(http_method, bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
 	return Bridge_Local_Relay_Result{status = resp.status, body = resp.body, ok = ok}
 }
 

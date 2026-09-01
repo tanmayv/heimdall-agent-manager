@@ -99,7 +99,10 @@ enroll_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 list_bridges_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Accept user tokens AND bridge-relayed instance tokens so a coordinator agent
+	// can DISCOVER bridges it owns (H5); list_bridges is same-owner scoped in the
+	// service (owner_from_auth).
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	bridges, err := bridge_service.list_bridges(h.bridges, auth_ctx)
 	if err.code != .None do return respond_error(err, req.request_id)

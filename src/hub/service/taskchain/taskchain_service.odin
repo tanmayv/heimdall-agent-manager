@@ -60,6 +60,12 @@ Update_Chain_Input :: struct {
 	title: string,
 	description: string,
 	status: string,
+	// coordinator_agent_instance_id sets/changes the chain's designated coordinator
+	// after creation (H5 finding: chains created via a user token had an empty
+	// coordinator and PATCH could not set one). has_coordinator distinguishes
+	// "absent" from "explicitly clear". The target must belong to the same chain.
+	coordinator_agent_instance_id: string,
+	has_coordinator: bool,
 }
 
 Create_Task_Input :: struct {
@@ -112,6 +118,24 @@ is_instance_member_or_coordinator :: proc(service: ^Taskchain_Service, chain: do
 	if err.code != .None do return false
 	for m in members {
 		if m.agent_instance_id == instance_id do return true
+	}
+	return false
+}
+
+// is_chain_coordinator reconciles the TWO notions of "coordinator" (H5 finding):
+//  1. chain.coordinator_agent_instance_id (the single designated coordinator), and
+//  2. a chain member whose role is "coordinator".
+// Historically only (1) granted coordinator authority, so an agent added as a
+// coordinator MEMBER (e.g. via add-member --role coordinator) still hit "only
+// assignee or coordinator can ...". Treat either as coordinator so membership
+// role actually grants authority.
+is_chain_coordinator :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_id: string) -> bool {
+	if instance_id == "" do return false
+	if chain.coordinator_agent_instance_id == instance_id do return true
+	members, err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if err.code != .None do return false
+	for m in members {
+		if m.agent_instance_id == instance_id && m.role == "coordinator" do return true
 	}
 	return false
 }
@@ -195,17 +219,30 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, input: Update_Chain_Input) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
-	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+	if auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
 		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
 	}
 	if input.title != "" do chain.title = input.title
 	if input.description != "" do chain.description = input.description
+	if input.has_coordinator {
+		// Setting/changing the coordinator: a non-empty target must belong to this
+		// chain (same-owner + membership), mirroring update_chain_coordinator.
+		if input.coordinator_agent_instance_id != "" {
+			if same, same_err := agent_instance_same_chain(service, input.coordinator_agent_instance_id, chain); !same do return domain.Task_Chain{}, false, same_err
+		}
+		chain.coordinator_agent_instance_id = input.coordinator_agent_instance_id
+	}
 	if input.status != "" {
 		st := chain_status_from_string(input.status)
 		if st != chain.status {
 			if !valid_chain_transition(chain.status, st) do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "invalid chain status transition")
 			chain.status = st
-			if st == .Completed || st == .Cancelled do chain.completed_at = platform.clock_now(service.clock)
+			if st == .Completed || st == .Cancelled {
+				chain.completed_at = platform.clock_now(service.clock)
+			} else if st == .Active {
+				// Reopening clears the terminal completion timestamp.
+				chain.completed_at = ""
+			}
 		}
 	}
 	chain.updated_at = platform.clock_now(service.clock)
@@ -215,7 +252,7 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 publish_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
-	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+	if auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
 		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
 	}
 	if chain.publish_state != .Draft do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "chain is already published")
@@ -246,7 +283,7 @@ publish_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context,
 change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, next: domain.Task_Chain_Status) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
-	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+	if auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
 		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
 	}
 	if chain.publish_state != .Published do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "draft chain has no execution status")
@@ -254,7 +291,11 @@ change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	now := platform.clock_now(service.clock)
 	chain.status = next
 	chain.updated_at = now
-	if next == .Completed || next == .Cancelled do chain.completed_at = now
+	if next == .Completed || next == .Cancelled {
+		chain.completed_at = now
+	} else if next == .Active {
+		chain.completed_at = ""
+	}
 	return iface.taskchain_save_chain(service.repo, chain)
 }
 
@@ -262,7 +303,11 @@ valid_chain_transition :: proc(current, next: domain.Task_Chain_Status) -> bool 
 	if current == next do return true
 	switch current {
 	case .Active: return next == .Completed || next == .Cancelled
-	case .Completed, .Cancelled: return false
+	// Recovery path: a completed chain can be reopened to Active by its
+	// coordinator so an accidental completion is not permanently terminal.
+	// Cancelled remains terminal.
+	case .Completed: return next == .Active
+	case .Cancelled: return false
 	}
 	return false
 }
@@ -318,7 +363,7 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	if !chain_ok do return domain.Task{}, false, chain_err
 
 	if auth.kind == .Instance_Token {
-		is_coord := auth.agent_instance_id == chain.coordinator_agent_instance_id
+		is_coord := is_chain_coordinator(service, chain, auth.agent_instance_id)
 		is_assignee := strings.contains(task.assignee_ref_json, auth.agent_instance_id)
 		if !is_coord && !is_assignee {
 			return domain.Task{}, false, domain.domain_error(.Forbidden, "only assignee or coordinator can update task")
@@ -364,7 +409,7 @@ publish_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	if chain.publish_state != .Published do return domain.Task{}, false, domain.domain_error(.Conflict, "cannot publish task before chain is published")
 	if task.publish_state != .Draft do return domain.Task{}, false, domain.domain_error(.Conflict, "task is already published")
 	if auth.kind == .Instance_Token {
-		is_coord := auth.agent_instance_id == chain.coordinator_agent_instance_id
+		is_coord := is_chain_coordinator(service, chain, auth.agent_instance_id)
 		is_assignee := strings.contains(task.assignee_ref_json, auth.agent_instance_id)
 		if !is_coord && !is_assignee {
 			return domain.Task{}, false, domain.domain_error(.Forbidden, "only assignee or coordinator can publish task")
@@ -387,7 +432,7 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, task.chain_id)
 	if !chain_ok do return domain.Task{}, false, chain_err
 	if auth.kind == .Instance_Token {
-		is_coord := auth.agent_instance_id == chain.coordinator_agent_instance_id
+		is_coord := is_chain_coordinator(service, chain, auth.agent_instance_id)
 		is_assignee := strings.contains(task.assignee_ref_json, auth.agent_instance_id)
 		if !is_coord && !is_assignee {
 			return domain.Task{}, false, domain.domain_error(.Forbidden, "only assignee or coordinator can change task status")
@@ -543,7 +588,9 @@ valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	switch current {
 	case .Assigned: return next == .In_Progress || next == .Paused || next == .Cancelled
 	case .In_Progress: return next == .In_Validation || next == .Paused || next == .Cancelled
-	case .In_Validation: return next == .Validated_Good || next == .Validated_Not_Good || next == .Paused || next == .Cancelled
+	// In_Validation -> Completed is legal: it is the quorum auto-finalize path
+	// (evaluate_task_quorum advances a fully-approved task straight to Completed).
+	case .In_Validation: return next == .Validated_Good || next == .Validated_Not_Good || next == .Completed || next == .Paused || next == .Cancelled
 	case .Validated_Not_Good: return next == .In_Progress || next == .Paused || next == .Cancelled
 	case .Validated_Good: return next == .Completed || next == .Paused || next == .Cancelled
 	case .Paused: return next == .In_Progress || next == .Cancelled
@@ -751,7 +798,7 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	if auth.kind == .Instance_Token {
 		if auth.agent_instance_id == "" do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is required")
 		chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
-		is_coord := chain_ok && auth.agent_instance_id == chain.coordinator_agent_instance_id
+		is_coord := chain_ok && is_chain_coordinator(service, chain, auth.agent_instance_id)
 		is_actor := strings.contains(task.assignee_ref_json, auth.agent_instance_id) || strings.contains(task.reviewer_refs_json, auth.agent_instance_id)
 		if !is_coord && !is_actor do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is not assigned to or coordinator of this task")
 	}
@@ -777,7 +824,7 @@ list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string, role: string) -> (domain.Task_Chain_Member, bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain_Member{}, false, err
-	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+	if auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
 		return domain.Task_Chain_Member{}, false, domain.domain_error(.Forbidden, "only chain coordinator can add members")
 	}
 	if agent_instance_id == "" do return domain.Task_Chain_Member{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
@@ -810,7 +857,7 @@ add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 remove_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string) -> (bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return false, err
-	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+	if auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
 		return false, domain.domain_error(.Forbidden, "only chain coordinator can remove members")
 	}
 
@@ -957,26 +1004,43 @@ evaluate_task_quorum :: proc(service: ^Taskchain_Service, task: domain.Task) {
 		if v.vote == "lgtm" do lgtm_count += 1
 	}
 
+	// Determine the quorum outcome. Any ngtm fails the task; otherwise a
+	// satisfied lgtm quorum means the task is fully approved.
 	updated_status := task.status
+	quorum_approved := false
 	if has_ngtm {
 		updated_status = .Validated_Not_Good
 	} else {
 		required_count := count_required_reviewers(task.reviewer_refs_json)
 		if required_count <= 1 && lgtm_count >= 1 {
-			updated_status = .Validated_Good
+			quorum_approved = true
 		} else if required_count > 1 && lgtm_count >= required_count {
-			updated_status = .Validated_Good
+			quorum_approved = true
 		}
 	}
 
+	// When all required reviewers approve (no ngtm), auto-finalize the task all
+	// the way to Completed rather than lingering in Validated_Good. This is the
+	// only path that unblocks dependents: task_status_unblocks_dependents treats
+	// just Completed/Cancelled as clearing — Validated_Good does NOT unblock. We
+	// go In_Validation -> Completed directly (a legal transition here since the
+	// quorum is satisfied) and set completed_at exactly once. Idempotency: the
+	// early return above (status != In_Validation) makes late/duplicate votes a
+	// no-op, so completion side-effects run once.
+	if quorum_approved {
+		updated_status = .Completed
+	}
+
 	if updated_status != task.status {
+		now := platform.clock_now(service.clock)
 		t := task
 		t.status = updated_status
-		t.updated_at = platform.clock_now(service.clock)
+		t.updated_at = now
+		if updated_status == .Completed do t.completed_at = now
 		saved, ok, _ := iface.taskchain_save_task(service.repo, t)
-		// A Validated_Good task frees its reviewer and can unblock dependents;
+		// A Completed task frees its reviewer/assignee and unblocks dependents;
 		// recompute so downstream tasks auto-claim and show on refresh.
-		if ok && updated_status == .Validated_Good {
+		if ok && updated_status == .Completed {
 			chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, saved.chain_id)
 			if chain_ok do _ = recompute_chain_promotions(service, chain)
 		}

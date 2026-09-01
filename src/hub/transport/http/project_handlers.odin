@@ -9,7 +9,9 @@ import project_service "odin_test:hub/service/project"
 Project_Handlers :: struct { auth: ^auth_service.Auth_Service, projects: ^project_service.Project_Service }
 
 list_projects_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
+	// Accept user tokens AND bridge-relayed instance tokens so a coordinator agent
+	// can DISCOVER projects it owns (H5); list is same-owner scoped in the service.
+	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth_any(h.auth, req); if !ok do return auth_resp
 	limit := query_int(req.query, "limit", 50)
 	if limit <= 0 do limit = 50
 	if limit > 200 do limit = 200

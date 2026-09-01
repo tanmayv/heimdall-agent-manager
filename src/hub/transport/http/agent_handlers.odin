@@ -16,7 +16,10 @@ Agent_Handlers :: struct {
 
 list_agents_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Accept user tokens AND bridge-relayed instance tokens so a coordinator agent
+	// can DISCOVER durable agents it owns (H5). list_agents is same-owner scoped in
+	// the service (owner_from_auth), so an instance token only ever sees its owner.
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	limit := query_int(req.query, "limit", 50)
 	if limit <= 0 do limit = 50
@@ -34,7 +37,11 @@ list_agents_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 create_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Accept user tokens AND bridge-relayed instance tokens so a coordinator agent
+	// can CREATE a durable agent under its own owner (H5). create_agent stamps the
+	// new agent's owner from owner_from_auth(auth), so an instance token can only
+	// create agents for its own owner.
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	agent, created, err := agent_service.create_agent(h.agents, auth_ctx, agent_input_from_body(req.body))
 	if !created do return respond_error(err, req.request_id)
