@@ -149,6 +149,33 @@ export const tasksApi = heimdallApi.injectEndpoints({
         { type: 'ChainTasks', id: chainId },
       ],
     }),
+    // H9 U1: the chains an agent instance COORDINATES (single canonical source on
+    // the hub: task_chain_members role='coordinator'). An agent can coordinate
+    // multiple chains, so this returns a list normalized to { chainId, title,
+    // status } for the coordinator-chains dropdown.
+    listChainsByCoordinator: build.query<Array<{ chainId: string; title: string; status: string }>, { agentInstanceId: string }>({
+      queryFn: async ({ agentInstanceId }) => {
+        if (!agentInstanceId) return { data: [] };
+        try {
+          const raw = await cookieJsonFetch(`/task-chains?coordinated_by=${encodeURIComponent(agentInstanceId)}`);
+          const data = unwrapData(raw);
+          const list = Array.isArray(data) ? data : [];
+          return {
+            data: list.map((c: any) => ({
+              chainId: c.chain_id || c.chainId || '',
+              title: c.title || '',
+              status: c.status || 'active',
+            })),
+          };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { agentInstanceId }) => [
+        { type: 'ChainList', id: `coordinator:${agentInstanceId}` },
+        'ChainList',
+      ],
+    }),
     createTaskChain: build.mutation<any, { title: string; description?: string; kind?: string; coordinatorAgentId?: string }>({
       queryFn: async ({ title, description, kind, coordinatorAgentId }) => {
         try {
@@ -583,6 +610,7 @@ export const {
   useLazyFetchTaskLogPageQuery,
 
   useFetchTaskChainDetailQuery,
+  useListChainsByCoordinatorQuery,
   useCreateTaskChainMutation,
   useUpdateTaskChainMutation,
   useUpdateTaskDetailMutation,

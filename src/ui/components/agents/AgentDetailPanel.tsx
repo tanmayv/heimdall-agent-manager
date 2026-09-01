@@ -15,6 +15,7 @@ import {
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
+import { useListChainsByCoordinatorQuery } from '../../api/endpoints/tasks';
 
 type ProviderScope = 'bridge_default' | 'same_provider';
 type BridgeRowDraft = { enabled: boolean; providerScope: ProviderScope; provider: string; tier: string };
@@ -252,12 +253,50 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
             const id = instanceIdOf(instance);
             const conversationId = String(instance.conversation_id || instance.conversationId || '');
             const chainId = String(instance.chain_id || instance.chainId || '');
-            return <div key={id} data-debug-id={`agent-detail-instance-row-${id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 p-3"><div className="min-w-0"><div className="font-mono text-xs text-zinc-100">{id}</div><div className="mt-1 text-xs text-zinc-500">bridge {instance.bridge_id || '—'} · {instance.provider || '—'} / {instance.tier || '—'} · chain {instance.chain_id || '—'}</div></div><div className="flex items-center gap-2"><span data-debug-id={`agent-detail-instance-status-${id}`} className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-300">{instance.runtime_status || 'unknown'}</span>{chainId ? <a data-debug-id={`agent-detail-instance-taskchain-btn-${id}`} href={shellHash(`/chains/${chainId}`)} title="Open this instance's task chain" className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-2.5 py-1 text-xs font-semibold text-sky-200 hover:bg-sky-400/20">Task chain</a> : null}{conversationId ? <a data-debug-id={`agent-detail-instance-open-btn-${id}`} href={shellHash(`/conversations/${conversationId}`)} className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10">Open</a> : null}<button data-debug-id={`agent-detail-instance-stop-btn-${id}`} type="button" onClick={() => void stop(instance)} className="rounded-lg border border-amber-400/20 px-2.5 py-1 text-xs text-amber-100 hover:bg-amber-400/10">Stop</button><button data-debug-id={`agent-detail-instance-restart-btn-${id}`} type="button" onClick={() => void restart(instance)} className="rounded-lg border border-sky-400/20 px-2.5 py-1 text-xs text-sky-100 hover:bg-sky-400/10">Restart</button></div></div>;
+            return <div key={id} data-debug-id={`agent-detail-instance-row-${id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 p-3"><div className="min-w-0"><div className="font-mono text-xs text-zinc-100">{id}</div><div className="mt-1 text-xs text-zinc-500">bridge {instance.bridge_id || '—'} · {instance.provider || '—'} / {instance.tier || '—'} · chain {instance.chain_id || '—'}</div></div><div className="flex items-center gap-2"><CoordinatorChainsDropdown agentInstanceId={id} currentChainId={chainId} /><span data-debug-id={`agent-detail-instance-status-${id}`} className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-300">{instance.runtime_status || 'unknown'}</span>{chainId ? <a data-debug-id={`agent-detail-instance-taskchain-btn-${id}`} href={shellHash(`/chains/${chainId}`)} title="Open this instance's task chain" className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-2.5 py-1 text-xs font-semibold text-sky-200 hover:bg-sky-400/20">Task chain</a> : null}{conversationId ? <a data-debug-id={`agent-detail-instance-open-btn-${id}`} href={shellHash(`/conversations/${conversationId}`)} className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10">Open</a> : null}<button data-debug-id={`agent-detail-instance-stop-btn-${id}`} type="button" onClick={() => void stop(instance)} className="rounded-lg border border-amber-400/20 px-2.5 py-1 text-xs text-amber-100 hover:bg-amber-400/10">Stop</button><button data-debug-id={`agent-detail-instance-restart-btn-${id}`} type="button" onClick={() => void restart(instance)} className="rounded-lg border border-sky-400/20 px-2.5 py-1 text-xs text-sky-100 hover:bg-sky-400/10">Restart</button></div></div>;
           })}
           {!instances.length ? <div className="rounded-xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No instances yet. Launch one to create a private chain and conversation.</div> : null}
         </div>
       </section>
     </div>
+  );
+}
+
+// H9 U2/U3: dropdown listing the task chains THIS agent instance coordinates
+// (single canonical source on the hub). Selecting a chain navigates to it. An
+// agent can coordinate multiple chains, so this <select> is the switcher; the
+// default selection is the chain currently in view (if any). Handles the empty
+// (coordinates 0 chains) and loading states without crashing.
+function CoordinatorChainsDropdown({ agentInstanceId, currentChainId }: { agentInstanceId: string; currentChainId: string }) {
+  const { data: chains = [], isLoading } = useListChainsByCoordinatorQuery(
+    { agentInstanceId },
+    { skip: !agentInstanceId },
+  );
+  if (!agentInstanceId) return null;
+  if (isLoading) {
+    return <span data-debug-id={`agent-detail-coordinator-chains-loading-${agentInstanceId}`} className="text-xs text-zinc-500">Coordinated chains…</span>;
+  }
+  if (!chains.length) {
+    // Empty/disabled state: this agent coordinates no chains.
+    return <select data-debug-id="coordinator-chains-select" disabled aria-label="Coordinated chains (none)" className="rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-zinc-500"><option>No coordinated chains</option></select>;
+  }
+  const selected = chains.some((c) => c.chainId === currentChainId) ? currentChainId : chains[0].chainId;
+  return (
+    <select
+      data-debug-id="coordinator-chains-select"
+      aria-label="Coordinated chains"
+      title="Task chains this agent coordinates"
+      value={selected}
+      onChange={(e) => {
+        const target = e.target.value;
+        if (target) window.location.hash = shellHash(`/chains/${target}`).slice(1);
+      }}
+      className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-2 py-1 text-xs text-sky-100 outline-none focus:border-sky-400"
+    >
+      {chains.map((c) => (
+        <option key={c.chainId} value={c.chainId}>{(c.title || c.chainId)} · {c.status}</option>
+      ))}
+    </select>
   );
 }
 
