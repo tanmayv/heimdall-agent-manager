@@ -439,6 +439,7 @@ write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversati
 	strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id)
 	strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title)
 	strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count))
+	strings.write_string(b,",\"message_count\":"); strings.write_string(b,fmt.tprintf("%d",c.message_count))
 	strings.write_string(b,",\"last_message_preview\":\""); write_handler_json_string(b,c.last_message_preview)
 	strings.write_string(b,"\",\"last_message_at\":\""); write_handler_json_string(b,last_at)
 	strings.write_string(b,"\",\"last_message_direction\":\""); write_handler_json_string(b,c.last_message_direction)

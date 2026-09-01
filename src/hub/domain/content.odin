@@ -82,6 +82,9 @@ Chat_Conversation :: struct {
 	last_message_type: string,
 	last_message_status: string,
 	last_message_created_at: string,
+	// Total user-visible messages in the conversation (direction != agent_to_agent).
+	// Summary-only, populated by conversation list queries.
+	message_count: int,
 	created_at: string,
 	updated_at: string,
 }
