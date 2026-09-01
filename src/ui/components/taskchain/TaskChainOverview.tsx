@@ -31,6 +31,7 @@ import {
   useCreateAgentInstanceInChainMutation,
   useFetchAgentInstanceQuery,
   useListAgentIdentitiesQuery,
+  useListAgentInstancesQuery,
 } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import {
@@ -115,6 +116,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [newTaskDesc, setNewTaskDesc] = useState('');
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [newMemberRole, setNewMemberRole] = useState('worker');
+  // H14: two modes — add an EXISTING agent instance (default; the user's mental
+  // model of 'add a member'), or LAUNCH a new instance. The existing path uses
+  // addChainMember (cookieMutation) directly and avoids the session-token launch
+  // transport that silently no-ops in the cookie-authenticated shell.
+  const [addMode, setAddMode] = useState<'existing' | 'launch'>('existing');
+  const [addExistingInstanceId, setAddExistingInstanceId] = useState('');
+  const [addingExisting, setAddingExisting] = useState(false);
   // Add-Agent popup selection state (identity -> bridge -> provider -> tier).
   const [addAgentId, setAddAgentId] = useState('');
   const [addBridgeId, setAddBridgeId] = useState('');
@@ -131,6 +139,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const addBridgeRows = launchableBridgeRows(bridgesQuery.data?.bridges || []);
   const selectedAddBridge = addBridgeRows.find((row) => row.bridgeId === addBridgeId)?.bridge;
   const selectedAddAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addAgentId);
+  // H14: existing instances of the chosen identity (cookieJsonFetch — works in the
+  // shell). Only offered in 'existing' mode; skip the fetch otherwise.
+  const existingInstancesQuery = useListAgentInstancesQuery(
+    { agentId: addAgentId },
+    { skip: !addAgentId || addMode !== 'existing' },
+  );
+  const existingInstances: any[] = existingInstancesQuery.data?.instances || [];
+  const memberInstanceIds = new Set(members.map((m: any) => String(m.agentInstanceId || m.agent_instance_id || '')));
   const addProviderOptions = selectedAddBridge ? launchProvidersFor(selectedAddBridge) : [];
   const addTierOptions = selectedAddBridge ? launchTiersFor(selectedAddBridge, addProvider, selectedAddAgent) : [];
 
@@ -170,31 +186,65 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   // selected role. bridge_id/chain_id/provider/tier are honored by the hub's
   // POST /api/v1/agent-instances handler (instance_input_from_body), so this is a
   // pure UI plumb through createAgentInstanceInChain.
+  // H14: add an EXISTING agent instance as a member via addChainMember directly
+  // (cookieMutation) — no launch, no session token. This is the reliable path in
+  // the cookie-authenticated shell and matches the user's 'add a member' model.
+  const handleAddExistingMember = async () => {
+    setAddAgentError('');
+    if (!addExistingInstanceId) { setAddAgentError('Choose an existing agent instance to add.'); return; }
+    setAddingExisting(true);
+    try {
+      const res: any = await addMember({ chainId, agentInstanceId: addExistingInstanceId, role: newMemberRole });
+      // RTK Query returns { data } on success or { error } on failure; surface it.
+      if (res?.error) {
+        setAddAgentError(String(res.error?.error || res.error?.message || 'Failed to add member.'));
+        return;
+      }
+      setShowAddMemberModal(false);
+      setAddAgentId(''); setAddExistingInstanceId('');
+      refetch();
+    } catch (err: any) {
+      setAddAgentError(String(err?.message || err || 'Failed to add member.'));
+    } finally {
+      setAddingExisting(false);
+    }
+  };
+
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
     setAddAgentError('');
+    // H14: route to the reliable existing-instance path when in that mode.
+    if (addMode === 'existing') { await handleAddExistingMember(); return; }
     if (!addAgentId) { setAddAgentError('Choose an agent identity to launch.'); return; }
     if (addProvider && !addProviderOptions.includes(addProvider)) { setAddAgentError('Selected provider is not supported by the chosen bridge.'); return; }
     if (addTier && !addTierOptions.includes(addTier)) { setAddAgentError('Selected tier is not supported by the chosen bridge/provider.'); return; }
     try {
-      const result = await createInstanceInChain({
+      const result: any = await createInstanceInChain({
         agentId: addAgentId,
         chainId,
         ...(addBridgeId ? { bridgeId: addBridgeId } : {}),
         ...(addProvider ? { providerProfile: addProvider } : {}),
         ...(addTier ? { modelTier: addTier } : {}),
       }).unwrap();
+      // H14: the launch mutation RESOLVES { ok:false } (it does not reject) when the
+      // shell has no session token. Do NOT swallow that — surface it instead of a
+      // silent no-op.
       const newInstance = result?.agent_instance || result?.agentInstance || result?.agent;
-      if (newInstance) upsertAgentInCaches(dispatch, newInstance);
+      const newInstanceId = String(newInstance?.agent_instance_id || newInstance?.agentInstanceId || '');
+      if (result?.ok === false || !newInstanceId) {
+        setAddAgentError(String(result?.message || 'Could not launch a new instance in this app session. Use “Add existing instance” instead.'));
+        return;
+      }
+      upsertAgentInCaches(dispatch, newInstance);
       // Ensure the new instance is a chain member with the chosen role (create may
       // not attach the role). Skip if it already landed as a member.
-      const newInstanceId = String(newInstance?.agent_instance_id || newInstance?.agentInstanceId || '');
-      const alreadyMember = newInstanceId && members.some((m: any) => String(m.agentInstanceId || m.agent_instance_id || '') === newInstanceId);
-      if (newInstanceId && !alreadyMember) {
-        try {
-          await addMember({ chainId, agentInstanceId: newInstanceId, role: newMemberRole }).unwrap();
-        } catch (memberErr) {
-          console.error('Instance launched but adding as chain member failed:', memberErr);
+      const alreadyMember = members.some((m: any) => String(m.agentInstanceId || m.agent_instance_id || '') === newInstanceId);
+      if (!alreadyMember) {
+        const memberRes: any = await addMember({ chainId, agentInstanceId: newInstanceId, role: newMemberRole });
+        if (memberRes?.error) {
+          setAddAgentError(String(memberRes.error?.error || memberRes.error?.message || 'Instance launched but adding it as a member failed.'));
+          refetch();
+          return;
         }
       }
       setShowAddMemberModal(false);
@@ -845,8 +895,27 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             onSubmit={handleAddMember}
             className="w-full max-w-md rounded-lg border border-white/10 bg-[#141414] p-5 text-xs text-white"
           >
-            <h3 className="text-sm font-bold text-white">Add Agent to Task Chain</h3>
-            <p className="mt-1 text-[11px] text-zinc-500">Launch a new instance of an agent onto a bridge and add it to this chain.</p>
+            <h3 className="text-sm font-bold text-white">Add Member to Task Chain</h3>
+            <p className="mt-1 text-[11px] text-zinc-500">Add an existing agent instance to this chain, or launch a new one.</p>
+            {/* H14: mode toggle — existing instance (reliable) vs launch new. */}
+            <div data-debug-id="taskchain-add-member-mode" className="mt-3 inline-flex rounded border border-white/10 p-0.5 text-[11px]">
+              <button
+                type="button"
+                data-debug-id="taskchain-add-member-mode-existing"
+                onClick={() => { setAddMode('existing'); setAddAgentError(''); }}
+                className={`rounded px-2 py-1 font-semibold ${addMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+              >
+                Add existing instance
+              </button>
+              <button
+                type="button"
+                data-debug-id="taskchain-add-member-mode-launch"
+                onClick={() => { setAddMode('launch'); setAddAgentError(''); }}
+                className={`rounded px-2 py-1 font-semibold ${addMode === 'launch' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+              >
+                Launch new
+              </button>
+            </div>
             <div className="mt-4 space-y-3">
               <div>
                 <label className="block text-zinc-400">Agent identity</label>
@@ -854,7 +923,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   data-debug-id="taskchain-add-agent-agentid-select"
                   required
                   value={addAgentId}
-                  onChange={(e) => setAddAgentId(e.target.value)}
+                  onChange={(e) => { setAddAgentId(e.target.value); setAddExistingInstanceId(''); }}
                   className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                 >
                   <option value="">Choose agent…</option>
@@ -864,6 +933,31 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   })}
                 </select>
               </div>
+              {/* H14: existing-instance picker (only in 'existing' mode). */}
+              {addMode === 'existing' && (
+                <div>
+                  <label className="block text-zinc-400">Existing instance</label>
+                  <select
+                    data-debug-id="taskchain-add-member-existing-instance-select"
+                    value={addExistingInstanceId}
+                    onChange={(e) => setAddExistingInstanceId(e.target.value)}
+                    disabled={!addAgentId || existingInstancesQuery.isFetching}
+                    className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
+                  >
+                    <option value="">{!addAgentId ? 'Choose an agent first…' : existingInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                    {existingInstances.map((inst: any) => {
+                      const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                      const already = memberInstanceIds.has(iid);
+                      return <option key={iid} value={iid} disabled={already}>{iid}{already ? ' (already a member)' : ''}{inst.runtime_status ? ` · ${inst.runtime_status}` : ''}</option>;
+                    })}
+                  </select>
+                  {addAgentId && !existingInstancesQuery.isFetching && existingInstances.length === 0 && (
+                    <p className="mt-1 text-[11px] text-amber-300/80">No existing instances for this agent. Switch to “Launch new” to create one.</p>
+                  )}
+                </div>
+              )}
+              {addMode === 'launch' && (
+              <>
               <div>
                 <label className="block text-zinc-400">Bridge</label>
                 <select
@@ -903,6 +997,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   {addTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
                 </select>
               </div>
+              </>
+              )}
               <div>
                 <label className="block text-zinc-400">Role</label>
                 <select
@@ -929,10 +1025,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <button
                 data-debug-id="taskchain-add-agent-submit"
                 type="submit"
-                disabled={addingAgent || !addAgentId}
+                disabled={addMode === 'existing'
+                  ? (addingExisting || !addExistingInstanceId)
+                  : (addingAgent || !addAgentId)}
                 className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
               >
-                {addingAgent ? 'Launching…' : 'Launch & Add'}
+                {addMode === 'existing'
+                  ? (addingExisting ? 'Adding…' : 'Add member')
+                  : (addingAgent ? 'Launching…' : 'Launch & Add')}
               </button>
             </div>
           </form>
