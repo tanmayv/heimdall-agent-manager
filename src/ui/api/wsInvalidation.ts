@@ -12,6 +12,7 @@ import { wsChainViewRefreshRequested } from '../store/chainViewSlice';
 import { wsRefreshRequested } from '../store/homeSlice';
 import { auditEndedReceived, auditStartedReceived, memoryEventReceived } from '../store/memorySlice';
 import { taskEventReceived } from '../store/taskSlice';
+import { fireNotificationForWsEvent } from '../services/notificationService';
 
 type WsCtx = {
   selectedAgentId?: string;
@@ -427,6 +428,22 @@ export function resyncAfterReconnect(dispatch: any) {
 }
 
 export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) {
+  // Native (OS) notifications: fire from this single funnel for the curated
+  // event set, gated to open-but-unfocused tabs. Implemented as a thunk so the
+  // side-effectful service can read live settings via getState without a
+  // circular store import. Never throws into the invalidation path.
+  try {
+    dispatch((_dispatch: any, getState: any) => {
+      try {
+        fireNotificationForWsEvent(getState, payload, { visibleConversationId: ctx.visibleChatAgentId });
+      } catch (_err) {
+        /* notifications must never break cache invalidation */
+      }
+    });
+  } catch (_err) {
+    /* ignore */
+  }
+
   switch (payload?.type) {
     case 'task_event':
       handleTaskEvent(dispatch, payload);

@@ -1,0 +1,180 @@
+import assert from 'node:assert/strict';
+
+// Simulated DOM/browser environment for the side-effectful service. We control
+// visibility/focus, window.Notification, and localStorage to drive the gates.
+
+type Created = { title: string; options: any };
+const created: Created[] = [];
+
+const storage = new Map<string, string>();
+
+class FakeNotification {
+  title: string;
+  options: any;
+  onclick: (() => void) | null = null;
+  static permission: 'default' | 'granted' | 'denied' = 'granted';
+  static requestImpl: () => Promise<'default' | 'granted' | 'denied'> = async () => 'granted';
+  constructor(title: string, options: any) {
+    this.title = title;
+    this.options = options;
+    created.push({ title, options });
+  }
+  static async requestPermission() {
+    return FakeNotification.requestImpl();
+  }
+  close() {}
+}
+
+const state = {
+  visibility: 'hidden' as 'hidden' | 'visible',
+  focus: false,
+  hash: '',
+  origin: 'https://hub.test',
+  pathname: '/index.html',
+  search: '',
+};
+
+(globalThis as any).document = {
+  get visibilityState() { return state.visibility; },
+  hasFocus() { return state.focus; },
+  querySelector() { return { href: 'https://hub.test/favicon.png' }; },
+  addEventListener() {},
+  removeEventListener() {},
+};
+
+(globalThis as any).window = {
+  Notification: FakeNotification,
+  localStorage: {
+    getItem(k: string) { return storage.has(k) ? storage.get(k)! : null; },
+    setItem(k: string, v: string) { storage.set(k, v); },
+    removeItem(k: string) { storage.delete(k); },
+  },
+  get location() {
+    return {
+      origin: state.origin,
+      pathname: state.pathname,
+      search: state.search,
+      get hash() { return state.hash; },
+      set hash(v: string) { state.hash = v; },
+    };
+  },
+  focus() { state.focus = true; },
+  open(url: string) { (globalThis as any).__lastOpen = url; return { focus() {} }; },
+  odinApi: undefined,
+};
+// Also expose Notification globally (some code checks `'Notification' in window`).
+(globalThis as any).Notification = FakeNotification;
+
+const {
+  isTabBackgrounded,
+  isNotificationSupported,
+  isElectronRuntime,
+  fireNotificationForWsEvent,
+  showNativeNotification,
+  requestNotificationPermission,
+} = await import('../src/ui/services/notificationService');
+
+// --- basic gates ----------------------------------------------------------
+assert.equal(isNotificationSupported(), true, 'FakeNotification => supported');
+assert.equal(isElectronRuntime(), false, 'no odinApi => not electron');
+
+state.visibility = 'hidden';
+state.focus = false;
+assert.equal(isTabBackgrounded(), true, 'hidden tab is backgrounded');
+
+state.visibility = 'visible';
+state.focus = true;
+assert.equal(isTabBackgrounded(), false, 'visible+focused tab is foregrounded');
+
+state.visibility = 'visible';
+state.focus = false;
+assert.equal(isTabBackgrounded(), true, 'visible-but-unfocused is backgrounded');
+
+// --- settings that enable notifications ----------------------------------
+function enabledState() {
+  return {
+    notifications: { enabled: true, permission: 'granted', categories: { chat: true, attention: true } },
+  };
+}
+
+const chatPayload = {
+  type: 'chat_event',
+  direction: 'agent_to_user',
+  conversation_id: 'conv_1',
+  message: { direction: 'agent_to_user', body: 'hello there' },
+};
+
+// REQ-N2: focused tab => NO native notification.
+created.length = 0;
+state.visibility = 'visible';
+state.focus = true;
+let plan = fireNotificationForWsEvent(() => enabledState(), chatPayload);
+assert.equal(plan, null, 'focused tab must not notify');
+assert.equal(created.length, 0, 'no Notification created while focused');
+
+// REQ-N1: unfocused tab + enabled => exactly one native notification.
+created.length = 0;
+state.visibility = 'hidden';
+state.focus = false;
+plan = fireNotificationForWsEvent(() => enabledState(), chatPayload);
+assert.ok(plan, 'backgrounded + enabled should notify');
+assert.equal(created.length, 1, 'exactly one Notification');
+assert.equal(created[0].options.tag, 'heimdall:chat:conv_1', 'tag set for coalescing');
+
+// Disabled settings => skip.
+created.length = 0;
+plan = fireNotificationForWsEvent(() => ({ notifications: { enabled: false, permission: 'granted', categories: { chat: true, attention: true } } }), chatPayload);
+assert.equal(plan, null, 'disabled => no notify');
+assert.equal(created.length, 0);
+
+// Permission not granted => skip even if enabled flag set.
+created.length = 0;
+plan = fireNotificationForWsEvent(() => ({ notifications: { enabled: true, permission: 'default', categories: { chat: true, attention: true } } }), chatPayload);
+assert.equal(plan, null, 'permission!=granted => no notify');
+
+// Per-category opt-out => skip.
+created.length = 0;
+plan = fireNotificationForWsEvent(() => ({ notifications: { enabled: true, permission: 'granted', categories: { chat: false, attention: true } } }), chatPayload);
+assert.equal(plan, null, 'chat category off => no chat notify');
+
+// Excluded event => skip.
+created.length = 0;
+plan = fireNotificationForWsEvent(() => enabledState(), { type: 'agent_runtime_changed' });
+assert.equal(plan, null, 'excluded event => no notify');
+assert.equal(created.length, 0);
+
+// --- click => focus existing window + route ------------------------------
+// Wrap Notification so we can capture the instance whose onclick the service
+// wires up, then simulate the user clicking the OS notification.
+let lastInstance: any = null;
+const OrigNote = (window as any).Notification;
+(window as any).Notification = class extends OrigNote {
+  constructor(t: string, o: any) { super(t, o); lastInstance = this; }
+} as any;
+(globalThis as any).Notification = (window as any).Notification;
+
+// Case 1: focus succeeds => hash navigation on existing window.
+state.focus = false;
+state.hash = '';
+showNativeNotification({ title: 'a', body: 'b', tag: 't2', route: '/conversations/conv_2', category: 'chat' });
+// focus() sets state.focus=true, hasFocus() then true => in-place nav.
+lastInstance.onclick();
+assert.match(state.hash, /#\/conversations\/conv_2/, 'click focuses + routes in existing window');
+
+// Case 2: focus fails (window.focus does not set focus) => new-window fallback.
+(window as any).focus = () => { /* cannot refocus */ };
+state.focus = false;
+(globalThis as any).__lastOpen = undefined;
+showNativeNotification({ title: 'a', body: 'b', tag: 't3', route: '/conversations/conv_3', category: 'chat' });
+lastInstance.onclick();
+assert.ok(String((globalThis as any).__lastOpen || '').includes('#/conversations/conv_3'), 'click opens deep-link in new window when refocus fails');
+
+// --- requestNotificationPermission uses the browser API ------------------
+FakeNotification.requestImpl = async () => 'granted';
+assert.equal(await requestNotificationPermission(), 'granted');
+FakeNotification.requestImpl = async () => 'denied';
+assert.equal(await requestNotificationPermission(), 'denied');
+FakeNotification.requestImpl = async () => { throw new Error('boom'); };
+assert.equal(await requestNotificationPermission(), 'denied', 'thrown requestPermission => denied, no crash');
+
+console.log('ui_notification_service_test: ok');

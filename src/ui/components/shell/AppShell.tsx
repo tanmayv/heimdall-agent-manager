@@ -24,6 +24,7 @@ import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
 import UserTokensPanel from '../settings/UserTokensPanel';
 import MemoryPanel from '../settings/MemoryPanel';
+import NotificationsPanel from '../settings/NotificationsPanel';
 import LibraryPage from '../LibraryPage';
 import ArtifactViewer from '../ArtifactViewer';
 import { clearUserClientState } from '../../store/chatSlice';
@@ -129,6 +130,7 @@ function routeTitle(path: string): string {
   if (path.startsWith('/settings/providers')) return 'Provider settings';
   if (path.startsWith('/settings/templates')) return 'Templates';
   if (path.startsWith('/settings/memory')) return 'Memory settings';
+  if (path.startsWith('/settings/notifications')) return 'Notification settings';
   if (path.startsWith('/settings')) return 'Settings';
   if (path.startsWith('/agents')) return 'Agents';
   if (path.startsWith('/chains')) return 'Task Chains';
@@ -153,6 +155,7 @@ const SETTINGS_NAV = [
   { path: '/settings/projects', label: 'Projects' },
   { path: '/settings/templates', label: 'Templates' },
   { path: '/settings/memory', label: 'Memory' },
+  { path: '/settings/notifications', label: 'Notifications' },
   { path: '/settings/defaults', label: 'Defaults' },
 ];
 
@@ -780,6 +783,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
       path.startsWith('/settings/providers') ||
       path.startsWith('/settings/templates') ||
       path.startsWith('/settings/memory') ||
+      path.startsWith('/settings/notifications') ||
       path.startsWith('/settings/defaults') ||
       path === '/agents/new';
   }, [path]);
@@ -818,6 +822,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <TemplatesPanel />
         ) : path === '/settings/memory' ? (
           <MemorySettingsPanel />
+        ) : path === '/settings/notifications' ? (
+          <NotificationsPanel />
         ) : path === '/settings/defaults' ? (
           <DefaultsSettingsPanel />
         ) : path === '/chains' ? (

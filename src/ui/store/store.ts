@@ -12,6 +12,7 @@ import homeReducer from './homeSlice';
 import chainViewReducer from './chainViewSlice';
 import attentionReducer from './attentionSlice';
 import toastReducer from './toastSlice';
+import notificationsReducer from './notificationsSlice';
 
 export const priorUserClientStateCleared = createAction('heimdall/priorUserClientStateCleared');
 
@@ -24,6 +25,7 @@ const appReducer = combineReducers({
   chainView: chainViewReducer,
   attention: attentionReducer,
   toasts: toastReducer,
+  notifications: notificationsReducer,
   [heimdallApi.reducerPath]: heimdallApi.reducer,
 });
 
