@@ -95,6 +95,33 @@ bridge_agent_token_invalidate :: proc(plaintext: string) -> bool {
 	return false
 }
 
+// bridge_agent_token_invalidate_instance invalidates EVERY currently-valid local
+// token (wrapper + agent roles) issued for one agent_instance_id. This is the
+// core of the H7 restart-reap: on (re)launch the bridge invalidates the previous
+// runtime's local tokens BEFORE issuing fresh ones, so a superseded old
+// ham-wrapper fails its next wrapper.liveness.ping (bridge_agent_token_verify
+// misses the now-invalidated token -> "unauthenticated") and self-terminates.
+// This is transport/host independent (no tmux/PID reaping), so it works even
+// when the old process is orphaned, detached from its tmux window, or the
+// instance was restarted on a different bridge. Returns the count invalidated.
+bridge_agent_token_invalidate_instance :: proc(agent_instance_id: string) -> int {
+	if bridge_local_token_records == nil do bridge_agent_token_store_init()
+	target := strings.trim_space(agent_instance_id)
+	if target == "" do return 0
+	now := bridge_local_now_unix_ms()
+	sync.mutex_lock(&bridge_local_token_mutex)
+	defer sync.mutex_unlock(&bridge_local_token_mutex)
+	count := 0
+	for i in 0..<len(bridge_local_token_records) {
+		if bridge_local_token_records[i].agent_instance_id == target && bridge_local_token_records[i].invalidated_at_unix_ms == 0 {
+			bridge_local_token_records[i].invalidated_at_unix_ms = now
+			count += 1
+		}
+	}
+	if count > 0 do bridge_agent_token_store_save_locked()
+	return count
+}
+
 // S1: the local-token store is namespaced PER BRIDGE so two bridges on one host
 // (e.g. a dev-stack bridge and the mundus bridge) never share a file. Previously
 // they shared ~/.local/share/heimdall/bridge/local-tokens.jsonl and each

@@ -98,7 +98,18 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 		}
 		now := time.to_unix_nanoseconds(time.now())
 		if now - last_liveness >= i64(time.Duration(cfg.liveness_interval_ms) * time.Millisecond) {
-			_ = wrapper_bridge_local_call(cfg, "wrapper.liveness.ping", "{}")
+			// H7 restart-reap: read the bridge's response to the liveness ping. If our
+			// local token was invalidated (the bridge relaunched this instance, or the
+			// hub reported it running on another bridge), the bridge answers with an
+			// auth failure. A superseded old runtime must reap ITSELF: kill the child
+			// agent process and exit, so no orphaned ham-wrapper/agent survives a
+			// restart regardless of tmux/host/bridge.
+			if resp, got := wrapper_bridge_local_call_response(cfg, "wrapper.liveness.ping", "{}"); got && wrapper_bridge_response_is_auth_failure(resp) {
+				fmt.eprintln("ham-wrapper: local token invalidated (superseded runtime); terminating child and exiting", cfg.agent_instance_id)
+				_ = os.process_kill(process)
+				_, _ = os.process_wait(process, 0)
+				return true
+			}
 			last_liveness = now
 		}
 		if cfg.pane_activity_enabled && strings.trim_space(cfg.pane_id) != "" {
@@ -341,6 +352,32 @@ wrapper_bridge_local_call :: proc(cfg: Bridge_Runtime_Config, method, params_jso
 	return false
 }
 
+// wrapper_bridge_local_call_response performs a local-endpoint call and RETURNS
+// the bridge's response line (not just fire-and-forget). Used by the liveness
+// ping so the wrapper can detect that its token was invalidated (H7 restart-reap):
+// on a superseded old runtime the bridge answers with an auth-failure error and
+// the wrapper self-terminates. Returns (response, true) on a completed round-trip.
+wrapper_bridge_local_call_response :: proc(cfg: Bridge_Runtime_Config, method, params_json: string) -> (string, bool) {
+	request := wrapper_bridge_jsonl_request(cfg.wrapper_token, method, params_json)
+	if strings.has_prefix(cfg.bridge_endpoint, "tcp:") do return wrapper_bridge_send_tcp_response(cfg.bridge_endpoint, request)
+	if strings.has_prefix(cfg.bridge_endpoint, "unix:") do return wrapper_bridge_send_unix_response(cfg.bridge_endpoint, request)
+	return "", false
+}
+
+// wrapper_bridge_response_is_auth_failure classifies a bridge local-endpoint
+// response as an authentication failure => this runtime has been superseded and
+// must self-terminate. The bridge emits {"ok":false,...,"error":{"code":"..."}}
+// where code is "unauthenticated" (token invalid/rotated) or "forbidden". Pure
+// string classifier so it is unit-testable without a live bridge. A blank or
+// transport-failed response (ok=false at the call site) is NOT treated as an auth
+// failure here — only an explicit auth error code triggers termination, so a
+// transient bridge hiccup never kills a healthy agent.
+wrapper_bridge_response_is_auth_failure :: proc(response: string) -> bool {
+	if strings.trim_space(response) == "" do return false
+	if !strings.contains(response, "\"ok\":false") do return false
+	return strings.contains(response, "\"unauthenticated\"") || strings.contains(response, "\"code\":\"forbidden\"")
+}
+
 wrapper_bridge_send_tcp :: proc(endpoint, request: string) -> bool {
 	parts := strings.split(endpoint, ":")
 	defer delete(parts)
@@ -368,6 +405,59 @@ wrapper_bridge_send_unix :: proc(endpoint, request: string) -> bool {
 	if posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) != .OK do return false
 	bytes := transmute([]byte)request
 	return posix.send(fd, raw_data(bytes), c.size_t(len(bytes)), {}) >= 0
+}
+
+// wrapper_bridge_send_tcp_response sends a request and reads the single-line
+// response from the bridge local endpoint (one request -> one response line).
+wrapper_bridge_send_tcp_response :: proc(endpoint, request: string) -> (string, bool) {
+	parts := strings.split(endpoint, ":")
+	defer delete(parts)
+	if len(parts) < 3 do return "", false
+	port := wrapper_bridge_int_string(parts[2])
+	address := net.IP4_Loopback
+	if parsed, ok := net.parse_ip4_address(parts[1]); ok do address = parsed
+	conn, err := net.dial_tcp(address, port)
+	if err != nil do return "", false
+	defer net.close(conn)
+	if _, send_err := net.send_tcp(conn, transmute([]byte)request); send_err != nil do return "", false
+	buf: [8192]byte
+	pending := ""
+	for {
+		n, recv_err := net.recv_tcp(conn, buf[:])
+		if n > 0 do pending = strings.concatenate({pending, string(buf[:n])})
+		if idx := strings.index_byte(pending, '\n'); idx >= 0 do return strings.trim_space(pending[:idx]), true
+		if recv_err != nil || n <= 0 {
+			if strings.trim_space(pending) != "" do return strings.trim_space(pending), true
+			return "", false
+		}
+	}
+}
+
+// wrapper_bridge_send_unix_response is the Unix-socket analog of the above.
+wrapper_bridge_send_unix_response :: proc(endpoint, request: string) -> (string, bool) {
+	path := strings.trim_prefix(endpoint, "unix:")
+	fd := posix.socket(.UNIX, .STREAM)
+	if fd < 0 do return "", false
+	defer posix.close(fd)
+	addr: posix.sockaddr_un
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD || ODIN_OS == .Haiku { addr.sun_len = c.uchar(size_of(addr)) }
+	addr.sun_family = .UNIX
+	for i in 0..<len(path) do addr.sun_path[i] = c.char(path[i])
+	addr.sun_path[len(path)] = 0
+	if posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) != .OK do return "", false
+	bytes := transmute([]byte)request
+	if posix.send(fd, raw_data(bytes), c.size_t(len(bytes)), {}) < 0 do return "", false
+	buf: [8192]byte
+	pending := ""
+	for {
+		n := posix.recv(fd, raw_data(buf[:]), c.size_t(len(buf)), {})
+		if n > 0 do pending = strings.concatenate({pending, string(buf[:int(n)])})
+		if idx := strings.index_byte(pending, '\n'); idx >= 0 do return strings.trim_space(pending[:idx]), true
+		if n <= 0 {
+			if strings.trim_space(pending) != "" do return strings.trim_space(pending), true
+			return "", false
+		}
+	}
 }
 
 wrapper_bridge_int_string :: proc(value: string) -> int {

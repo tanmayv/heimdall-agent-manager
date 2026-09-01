@@ -771,6 +771,31 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 	return changed
 }
 
+// detect_superseded_instances is the H7 cross-bridge reap detector. Given the
+// instance ids a bridge just reported as active, it returns those whose CANONICAL
+// bridge_id (per the hub's durable record) is now a DIFFERENT bridge — i.e. the
+// instance was relaunched/moved to another bridge, so the reporting bridge is
+// running a superseded old runtime. The caller (bridge WS handler) sends each id
+// back to the reporting bridge in the heartbeat ack, and the bridge invalidates
+// that instance's local tokens so the old ham-wrapper self-terminates on its next
+// liveness ping. This is the authoritative cross-bridge coordination the user
+// specified: the hub tracks running instance ids across bridges and tells a
+// bridge when one of its instances is supposed to be running elsewhere.
+detect_superseded_instances :: proc(service: ^Agent_Service, reporting_bridge_id: string, active_instance_ids: []string) -> []string {
+	if service == nil || service.agents == nil || strings.trim_space(reporting_bridge_id) == "" do return nil
+	out := make([dynamic]string)
+	for id in active_instance_ids {
+		inst, ok, _ := iface.agent_get_instance(service.agents, id)
+		if !ok do continue
+		// Canonical owner is a different bridge => the reporting bridge holds a
+		// stale runtime for this instance and must reap it.
+		if strings.trim_space(inst.bridge_id) != "" && inst.bridge_id != reporting_bridge_id {
+			append(&out, inst.agent_instance_id)
+		}
+	}
+	return out[:]
+}
+
 // mark_bridge_instances_unreachable clears the durable runtime state of every
 // still-active instance on a bridge that just disconnected. The bridge runtime
 // registry is in-memory only, so when a bridge WS drops (crash/restart/quit)

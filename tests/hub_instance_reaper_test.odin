@@ -125,6 +125,23 @@ main :: proc() {
 	reaped2 := agent_service.reap_stale_instances(&svc, 90_000)
 	check(len(reaped2) == 0, "reap must be idempotent once stale rows are cleared")
 
+	// --- H7: detect_superseded_instances (cross-bridge reap) ---
+	// An instance was relaunched on a DIFFERENT bridge: the hub record now points
+	// at brg_new, but the OLD bridge (brg_old) still reports it active. The detector
+	// must flag it so the old bridge invalidates its local tokens and the stale
+	// wrapper self-terminates. Instances still owned by the reporting bridge, and
+	// unknown ids, must NOT be flagged.
+	_, _, _ = fake_save_instance(rawptr(repo), domain.Agent_Instance{agent_instance_id = "inst_moved", bridge_id = "brg_new", runtime_status = "running", activity_status = "active", last_seen_at = fresh})
+	_, _, _ = fake_save_instance(rawptr(repo), domain.Agent_Instance{agent_instance_id = "inst_stays", bridge_id = "brg_old", runtime_status = "running", activity_status = "active", last_seen_at = fresh})
+	// brg_old's heartbeat still lists inst_moved (stale) + inst_stays (its own) + an unknown id.
+	reported := []string{"inst_moved", "inst_stays", "inst_ghost"}
+	superseded := agent_service.detect_superseded_instances(&svc, "brg_old", reported)
+	check(len(superseded) == 1, "exactly one reported instance is owned by another bridge")
+	check(superseded[0] == "inst_moved", "the relocated instance must be flagged for reap")
+	// From the NEW bridge's perspective, inst_moved is canonical -> not superseded.
+	self_view := agent_service.detect_superseded_instances(&svc, "brg_new", []string{"inst_moved"})
+	check(len(self_view) == 0, "the owning bridge must never be told to reap its own instance")
+
 	_ = strings.trim_space("")
-	fmt.println("PASS: hub instance reaper (disconnect clear + staleness sweep + rfc3339)")
+	fmt.println("PASS: hub instance reaper (disconnect clear + staleness sweep + rfc3339 + cross-bridge supersede)")
 }

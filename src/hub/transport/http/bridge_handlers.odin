@@ -417,6 +417,12 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			digest_active := bridge_apply_heartbeat_digest(h, bridge_id, text)
 			if len(active) == 0 && len(digest_active) > 0 do active = digest_active
 			reconciled := bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, active)
+			// H7 cross-bridge reap: any instance this bridge reports active whose
+			// canonical bridge_id is now a DIFFERENT bridge has been relaunched
+			// elsewhere. Tell this bridge to invalidate those instances' local tokens
+			// (via the ack) so the stale old ham-wrapper self-terminates.
+			superseded: []string
+			if h.agents != nil do superseded = agent_service.detect_superseded_instances(h.agents, bridge_id, active)
 			if h.agents != nil do reconciled += agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
 			// Opportunistic time-based reap: catches instances stranded by a
 			// disconnect the hub never observed (hub restart with persisted DB, or a
@@ -427,7 +433,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 					reconciled += 1
 				}
 			}
-			_ = write_ws_text_frame(client, bridge_heartbeat_ack_payload(reconciled))
+			_ = write_ws_text_frame(client, bridge_heartbeat_ack_payload(reconciled, superseded))
 		case "agent_instance_status":
 			instance_id := json_string(text, "agent_instance_id")
 			state_seq := json_int(text, "state_seq", 0)
@@ -726,11 +732,20 @@ bridge_connection_replaced_payload :: proc() -> string {
 	return "{\"type\":\"connection_replaced\",\"protocol_version\":1,\"payload\":{\"reason\":\"newer_bridge_connection\"}}"
 }
 
-bridge_heartbeat_ack_payload :: proc(reconciled: int) -> string {
+bridge_heartbeat_ack_payload :: proc(reconciled: int, superseded_instance_ids: []string = nil) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_heartbeat_ack\",\"protocol_version\":1,\"payload\":{\"reconciled_unreachable_count\":")
 	strings.write_string(&b, fmt.tprintf("%d", reconciled))
-	strings.write_string(&b, "}}")
+	// H7: instance ids the reporting bridge must reap (relaunched on another
+	// bridge). The bridge invalidates their local tokens so the stale wrapper exits.
+	strings.write_string(&b, ",\"superseded_instance_ids\":[")
+	for id, i in superseded_instance_ids {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_byte(&b, '"')
+		write_handler_json_string(&b, id)
+		strings.write_byte(&b, '"')
+	}
+	strings.write_string(&b, "]}}")
 	return strings.to_string(b)
 }
 

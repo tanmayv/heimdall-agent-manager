@@ -175,6 +175,24 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 
 bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	type := extract_json_string(text, "type", "")
+	if type == "bridge_heartbeat_ack" {
+		// H7 cross-bridge reap: the hub tells us which of the instances we reported
+		// active have actually been relaunched on ANOTHER bridge. We hold a stale old
+		// runtime for each, so invalidate its local tokens: the old ham-wrapper then
+		// fails its next wrapper.liveness.ping and self-terminates. Transport/host
+		// independent — no tmux/PID reaping needed.
+		superseded, _ := bridge_provider_json_extract_string_array(text, "superseded_instance_ids")
+		for id in superseded {
+			if strings.trim_space(id) == "" do continue
+			n := bridge_agent_token_invalidate_instance(id)
+			if n > 0 {
+				fmt.println("bridge reap: instance relaunched on another bridge; invalidated local tokens", id, "count", n)
+				bridge_runtime_set_status(id, "stopped", "idle")
+				bridge_runtime_remove_launch(id)
+			}
+		}
+		return
+	}
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
@@ -457,6 +475,14 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable"
 	bridge_runtime_set_status(instance_id, "starting", "active")
+	// H7 restart-reap: invalidate ANY prior local tokens for this instance BEFORE
+	// issuing fresh ones. A superseded old ham-wrapper will then fail its next
+	// wrapper.liveness.ping (its token is no longer valid) and self-terminate,
+	// regardless of tmux window/host/bridge. The freshly issued wrapper+agent
+	// tokens below are non-deterministic (hlat_<nanos>_<seq>), so the new runtime
+	// is cryptographically distinct from the old one.
+	invalidated := bridge_agent_token_invalidate_instance(instance_id)
+	if invalidated > 0 do fmt.println("bridge launch: invalidated prior local tokens for instance", instance_id, "count", invalidated)
 	instance_token := strings.concatenate({"hit_", instance_id})
 	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)

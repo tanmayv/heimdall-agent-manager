@@ -93,3 +93,54 @@ bridge_token_store_save_load_roundtrip :: proc(t: ^testing.T) {
 	testing.expect(t, ok && rec.agent_instance_id == "inst_RT" && rec.role == .Agent, "token roundtrips through atomic save + reload")
 
 }
+
+// H7 restart-reap: invalidating an instance's tokens must kill EVERY valid token
+// for that instance (wrapper + agent roles) while leaving other instances' tokens
+// intact, so a superseded old ham-wrapper fails its next liveness ping.
+@(test)
+bridge_token_invalidate_instance_reaps_all_roles :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_token_store_test_mutex)
+	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	saved_dir := bridge_config.local_endpoint_run_dir
+	saved_data := bridge_config.data_dir
+	defer {
+		bridge_config.local_endpoint_run_dir = saved_dir
+		bridge_config.data_dir = saved_data
+	}
+	bridge_config.data_dir = "/tmp/ham-token-store-reap"
+	bridge_config.local_endpoint_run_dir = "/tmp/bridgeREAP"
+	bridge_agent_token_store_init()
+	// Hermetic: drop any records persisted by a prior run so counts are exact.
+	os.remove(bridge_agent_token_store_path())
+	clear(&bridge_local_token_records)
+
+	// Old runtime for inst_X: both wrapper + agent tokens.
+	old_wrapper := bridge_agent_token_issue("inst_X", "hit_inst_X", .Wrapper)
+	old_agent := bridge_agent_token_issue("inst_X", "hit_inst_X", .Agent)
+	// A different instance whose tokens must be untouched.
+	other := bridge_agent_token_issue("inst_Y", "hit_inst_Y", .Wrapper)
+
+	_, ow_ok := bridge_agent_token_verify(old_wrapper.plaintext_token)
+	_, oa_ok := bridge_agent_token_verify(old_agent.plaintext_token)
+	testing.expect(t, ow_ok && oa_ok, "both old-runtime tokens valid before invalidation")
+
+	n := bridge_agent_token_invalidate_instance("inst_X")
+	testing.expect(t, n == 2, "invalidate_instance must invalidate BOTH inst_X tokens")
+
+	_, ow_after := bridge_agent_token_verify(old_wrapper.plaintext_token)
+	_, oa_after := bridge_agent_token_verify(old_agent.plaintext_token)
+	testing.expect(t, !ow_after && !oa_after, "old-runtime tokens must NOT verify after invalidation")
+
+	_, other_ok := bridge_agent_token_verify(other.plaintext_token)
+	testing.expect(t, other_ok, "a different instance's token must survive")
+
+	// Idempotent: invalidating again finds nothing left to do.
+	testing.expect(t, bridge_agent_token_invalidate_instance("inst_X") == 0, "re-invalidation is a no-op")
+
+	// The NEW runtime re-issues a token that is cryptographically distinct from
+	// the old one (non-deterministic), so old vs new are never confusable.
+	new_wrapper := bridge_agent_token_issue("inst_X", "hit_inst_X", .Wrapper)
+	testing.expect(t, new_wrapper.plaintext_token != old_wrapper.plaintext_token, "re-issued token must differ from the invalidated one (non-deterministic)")
+	_, nw_ok := bridge_agent_token_verify(new_wrapper.plaintext_token)
+	testing.expect(t, nw_ok, "the newly issued token verifies")
+}
