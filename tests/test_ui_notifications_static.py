@@ -106,6 +106,25 @@ def main() -> None:
     require("/settings/notifications" in shell,
             "AppShell must route /settings/notifications")
 
+    # --- H11: Send-test-notification button ---------------------------------
+    require('data-debug-id="settings-notifications-test-btn"' in panel,
+            "panel must render the Send-test-notification button (H11)")
+    # It always gives visible in-app feedback via a toast.
+    require("showToast" in panel and "from '../../store/toastSlice'" in panel,
+            "test button must dispatch an in-app toast for visible feedback (H11)")
+    # It exercises the real native path when supported+granted (service boundary).
+    require("showNativeNotification" in panel,
+            "test button must fire the real showNativeNotification path when granted (H11)")
+    # The sample plan is the Heimdall test notification.
+    require("Heimdall test notification" in panel,
+            "test button must use the sample Heimdall test notification plan (H11)")
+    # Non-throwing: guarded so a failure still yields a toast (try/catch present).
+    require("try {" in panel and "onSendTest" in panel,
+            "test handler must be guarded (non-throwing) and dispatch a toast in all cases (H11)")
+    # Only the service module touches window.Notification (boundary preserved).
+    require("window.Notification" not in panel,
+            "panel must NOT touch window.Notification directly (service-module boundary)")
+
     print("test_ui_notifications_static: ok")
 
 

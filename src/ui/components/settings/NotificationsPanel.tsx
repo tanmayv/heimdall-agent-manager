@@ -13,7 +13,9 @@ import {
   isElectronRuntime,
   isNotificationSupported,
   requestNotificationPermission,
+  showNativeNotification,
 } from '../../services/notificationService';
+import { showToast } from '../../store/toastSlice';
 
 const CATEGORY_LABELS: Array<{ key: NotificationCategory; label: string; description: string }> = [
   { key: 'chat', label: 'Chat messages', description: 'New messages directed to you, nudges, and mentions.' },
@@ -55,6 +57,40 @@ function Toggle({
   );
 }
 
+// H11: the sample plan the Send-test-notification button fires through the real
+// native path. Exported so tests can assert exactly what is shown.
+export const TEST_NOTIFICATION_PLAN = {
+  title: 'Heimdall test notification',
+  body: 'If you can see this, notifications are working.',
+  tag: 'heimdall-test',
+  route: '#/settings',
+  category: 'attention' as const,
+};
+
+// H11: pure helper computing the always-shown in-app toast message for the test
+// button, covering every case (native fired / electron / unsupported / denied /
+// default). Pure + exported so it is unit-testable without React.
+export function testNotificationFeedback(opts: {
+  nativeShown: boolean;
+  electron: boolean;
+  supported: boolean;
+  permission: string;
+}): string {
+  if (opts.nativeShown) {
+    return 'Sent a native notification. If your tab is focused the OS popup may be suppressed — this toast confirms the path fired.';
+  }
+  if (opts.electron) {
+    return 'Desktop app handles native notifications; this in-app toast confirms the test fired.';
+  }
+  if (!opts.supported) {
+    return 'This browser has no Notifications API; showing an in-app toast instead.';
+  }
+  if (opts.permission === 'denied') {
+    return 'Notifications are blocked for this site — enable them in your browser settings. Showing an in-app toast for now.';
+  }
+  return 'Showing an in-app test notification.';
+}
+
 export default function NotificationsPanel() {
   const dispatch = useDispatch();
   const state = useSelector(selectNotificationsState);
@@ -72,6 +108,38 @@ export default function NotificationsPanel() {
   }, [dispatch]);
 
   const masterDisabled = !supported || electron || state.permission === 'denied';
+
+  // H11: fire a real test notification so the user can confirm notifications
+  // appear. It ALWAYS dispatches an in-app toast (visible feedback in every case:
+  // focused tab, Electron, denied, or unsupported) and, when browser
+  // notifications are supported + granted, also fires the real native path via
+  // showNativeNotification. Non-throwing: any failure still yields a toast.
+  async function onSendTest() {
+    let nativeShown = false;
+    let permission = state.permission;
+    try {
+      if (supported && !electron && permission === 'granted') {
+        nativeShown = showNativeNotification(TEST_NOTIFICATION_PLAN);
+      } else if (supported && !electron && permission === 'default') {
+        // Explicit user gesture: it is safe to request permission here. If granted,
+        // fire the native notification immediately.
+        permission = await requestNotificationPermission();
+        dispatch(notificationPermissionSet(permission));
+        if (permission === 'granted') {
+          nativeShown = showNativeNotification(TEST_NOTIFICATION_PLAN);
+        }
+      }
+    } catch (_err) {
+      // never throw from a test button; the toast below still fires.
+      nativeShown = false;
+    }
+    // Always give visible in-app feedback.
+    dispatch(showToast({
+      kind: 'info',
+      title: 'Test notification',
+      message: testNotificationFeedback({ nativeShown, electron, supported, permission }),
+    }));
+  }
 
   async function onMasterToggle(next: boolean) {
     if (!next) {
@@ -141,6 +209,26 @@ export default function NotificationsPanel() {
               />
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="font-semibold text-zinc-100">Test notifications</div>
+            <p className="mt-1 text-sm text-zinc-400">
+              Send a sample notification to confirm they appear. You will get a native OS notification when supported and
+              granted (and your tab is in the background), plus an in-app toast every time so you always see a result.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-debug-id="settings-notifications-test-btn"
+            onClick={() => void onSendTest()}
+            className="shrink-0 rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300"
+          >
+            Send test notification
+          </button>
         </div>
       </div>
     </div>
