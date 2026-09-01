@@ -92,6 +92,68 @@ pane_activity_detects_waiting_user :: proc(t: ^testing.T) {
 	testing.expect(t, final.status == .Waiting_User, "y/n prompt after stability must read waiting_user")
 }
 
+// REQ-3: the ACTUAL Claude Code footer captured from a live idle agent (tmux
+// capture-pane -p on inst_18d1235fc148693a / pane %57). The only thing that
+// changes frame-to-frame on an idle Claude pane is the numeric run in the status
+// footer (token counters, cost, cost %, the watchdog "idle Ns" seconds counter).
+// pane_normalize must collapse all of that so two frames of a genuinely idle pane
+// hash identically and the detector settles to idle rather than false-active.
+@(private="file")
+CLAUDE_FOOTER_FRAME_A :: "The coordinator asked the user to clarify the request.\n" +
+	"────────────────────\n" +
+	"/private/tmp/heimdall/instances/inst_18d1235fc148693a\n" +
+	"↑56 ↓9.1k R698k W73k $0.973 (sub) 5.9%/1.0M (auto)   (anthropic) claude-opus-4-8 • high\n" +
+	"watchdog: idle 300s (0/∞) Heimdall: working · settling"
+@(private="file")
+CLAUDE_FOOTER_FRAME_B :: "The coordinator asked the user to clarify the request.\n" +
+	"────────────────────\n" +
+	"/private/tmp/heimdall/instances/inst_18d1235fc148693a\n" +
+	"↑56 ↓12k R701k W73k $1.021 (sub) 6.0%/1.0M (auto)   (anthropic) claude-opus-4-8 • high\n" +
+	"watchdog: idle 330s (0/∞) Heimdall: working · settling"
+
+@(test)
+pane_normalize_collapses_real_claude_footer :: proc(t: ^testing.T) {
+	a, spin_a := pane_normalize(CLAUDE_FOOTER_FRAME_A)
+	b, spin_b := pane_normalize(CLAUDE_FOOTER_FRAME_B)
+	defer delete(a); defer delete(b)
+	// No braille spinner in an idle Claude footer.
+	testing.expect(t, !spin_a && !spin_b, "idle Claude footer has no braille spinner")
+	// The two frames differ ONLY by numeric counters (tokens/cost/%/watchdog secs)
+	// so after masking + collapsing they must be byte-identical => equal hash.
+	testing.expect(t, a == b, "idle Claude footer frames differing only by counters must normalize equal")
+	testing.expect(t, pane_hash(a) == pane_hash(b), "idle Claude footer must hash stably across frames")
+}
+
+@(test)
+pane_activity_real_claude_idle_footer_goes_idle :: proc(t: ^testing.T) {
+	// Drive the detector with the real footer frames the way the wrapper loop would:
+	// an initial frame, then a later frame past idle_after_ms whose only delta is the
+	// ticking counters. It must classify idle, not active.
+	cfg := pane_activity_default_config()
+	state := Pane_Activity_State{}
+	_ = pane_activity_step(&state, cfg, CLAUDE_FOOTER_FRAME_A, 0)
+	_ = pane_activity_step(&state, cfg, CLAUDE_FOOTER_FRAME_B, 2000)
+	final := pane_activity_step(&state, cfg, CLAUDE_FOOTER_FRAME_B, cfg.idle_after_ms + 3000)
+	testing.expect(t, !final.spinner_present, "no spinner in idle Claude footer")
+	testing.expect(t, !final.changed, "counter-only churn must not read as a content change")
+	testing.expect(t, final.status == .Idle, "real idle Claude footer must settle to idle, not active")
+}
+
+@(test)
+pane_normalize_collapses_decimal_and_grouped_numbers :: proc(t: ^testing.T) {
+	// Direct check of the #.# / #,# collapsing rule: value AND width/precision
+	// changes of a formatted number must hash identically, while surrounding text
+	// (and non-numeric punctuation) is preserved.
+	n1, _ := pane_normalize("tokens 9.1k cost $0.973 ratio 5.9%")
+	n2, _ := pane_normalize("tokens 12k cost $1.02 ratio 6%")
+	defer delete(n1); defer delete(n2)
+	testing.expect(t, n1 == n2, "decimal/grouped counters must collapse to the same masked form")
+	// Sentence-ending period (not between digits) must survive.
+	p1, _ := pane_normalize("Done. Next step.")
+	defer delete(p1)
+	testing.expect(t, strings.contains(p1, "."), "prose punctuation must be preserved")
+}
+
 @(test)
 pane_activity_status_strings :: proc(t: ^testing.T) {
 	testing.expect(t, pane_activity_status_string(.Active) == "active")

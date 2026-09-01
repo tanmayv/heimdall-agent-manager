@@ -122,7 +122,14 @@ pane_normalize :: proc(raw: string) -> (normalized: string, spinner_present: boo
 	for i in 0..=last_nonblank {
 		if i < 0 do break
 		line := strings.trim_right(lines[i], " \t\r")
-		// Collapse consecutive '#' into a single '#'.
+		// Collapse consecutive '#' into a single '#'. We also swallow the internal
+		// punctuation of a formatted number (thousands separators and decimal
+		// points) so that a counter mutating in value OR width/precision hashes
+		// identically: "9.1k" and "12k" both mask to "#k", "1,234" and "9" both to
+		// "#". Without this, real agent footers (token counters like "↓9.1k",
+		// cost "$0.973", ratios "5.9%/1.0M") flip the hash every frame on a pane
+		// that is otherwise idle and read as false-active. A '.'/',' only collapses
+		// when it sits BETWEEN two masked digits, so real prose punctuation is kept.
 		cl := strings.builder_make()
 		prev_hash := false
 		for j in 0..<len(line) {
@@ -130,6 +137,10 @@ pane_normalize :: proc(raw: string) -> (normalized: string, spinner_present: boo
 			if ch == '#' {
 				if prev_hash do continue
 				prev_hash = true
+			} else if (ch == '.' || ch == ',') && prev_hash && j+1 < len(line) && line[j+1] == '#' {
+				// Numeric separator between two '#': skip it, keep prev_hash so the
+				// following '#' run is also collapsed into the single leading '#'.
+				continue
 			} else {
 				prev_hash = false
 			}

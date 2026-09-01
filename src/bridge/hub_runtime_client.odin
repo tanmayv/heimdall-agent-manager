@@ -1058,9 +1058,13 @@ bridge_runtime_activity_source_rank :: proc(source: string) -> int {
 bridge_runtime_normalize_activity_status :: proc(status: string) -> string {
 	s := strings.to_lower(strings.trim_space(status))
 	if s == "active" || s == "working" || s == "busy" do return "active"
-	// waiting_user (agent blocked on a permission/approval decision) is a busy
-	// sub-state: from the runtime projection's perspective the agent is not idle.
-	if s == "waiting_user" || s == "waiting" || s == "waiting_approval" do return "active"
+	// waiting_user / waiting / waiting_approval: the agent has finished its turn and
+	// is BLOCKED on a human (an empty prompt, a y/n approval, "press enter", …). It
+	// is NOT doing work, so it must NOT surface as "active"/"working" in the hub —
+	// otherwise an idle agent sitting on the user reads as busy forever. We collapse
+	// these to the idle-equivalent projection; the finer-grained "waiting_user"
+	// signal is still available on the wrapper sample for callers that want it.
+	if s == "waiting_user" || s == "waiting" || s == "waiting_approval" do return "idle"
 	if s == "idle" || s == "inactive" do return "idle"
 	if s == "unknown" do return "unknown"
 	if s == "" do return "unknown"
