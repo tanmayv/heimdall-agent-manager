@@ -31,7 +31,13 @@ package main
 // normalized frames (+ spinner/waiting flags) and call pane_classify_burst, or
 // feed 3 raw frames to pane_activity_burst_status.
 
+import "core:fmt"
 import "core:strings"
+
+// Upper bound on burst frames we retain per-frame hashes for. The design uses 3
+// samples; keep a small fixed array so Pane_Activity_Sample stays alloc-free and
+// trivially copyable (no cleanup needed by callers).
+PANE_ACTIVITY_MAX_FRAMES :: 8
 
 Pane_Activity_Status :: enum {
 	Unknown,
@@ -65,11 +71,17 @@ pane_activity_default_config :: proc() -> Pane_Activity_Config {
 	return Pane_Activity_Config{burst_samples = 3, burst_gap_ms = 500, line_limit = 20}
 }
 
-// Result of classifying one burst cycle.
+// Result of classifying one burst cycle. Carries just enough observability for
+// the (env-gated) debug logger in bridge_runtime.odin WITHOUT retaining raw pane
+// text: the per-frame FNV hashes of the NORMALIZED frames let the log show
+// frame-to-frame movement (or stability) while never leaking pane contents.
 Pane_Activity_Sample :: struct {
 	status:          Pane_Activity_Status,
 	changed:         bool, // any of the normalized burst frames differed
 	spinner_present: bool, // a braille spinner appeared in any raw burst frame
+	waiting_user:    bool, // a waiting-on-user prompt appeared in any raw burst frame
+	frame_count:     int,  // number of frames actually classified (<= PANE_ACTIVITY_MAX_FRAMES)
+	frame_hashes:    [PANE_ACTIVITY_MAX_FRAMES]u64, // FNV hash of each normalized frame
 }
 
 // Spinner detection is restricted to the Unicode Braille Patterns block
@@ -259,5 +271,70 @@ pane_activity_burst_status :: proc(raw_frames: []string) -> Pane_Activity_Sample
 		if pane_detect_waiting_user(raw) do waiting = true
 	}
 	status, changed := pane_classify_burst(normalized, spinner, waiting)
-	return Pane_Activity_Sample{status = status, changed = changed, spinner_present = spinner}
+	sample := Pane_Activity_Sample{
+		status          = status,
+		changed         = changed,
+		spinner_present = spinner,
+		waiting_user    = waiting,
+		frame_count     = min(len(normalized), PANE_ACTIVITY_MAX_FRAMES),
+	}
+	// Record per-frame hashes of the NORMALIZED frames (hashes only — never raw
+	// text) so the debug logger can show frame-to-frame movement.
+	for i in 0..<sample.frame_count {
+		sample.frame_hashes[i] = pane_hash(normalized[i])
+	}
+	return sample
+}
+
+// pane_activity_debug_line is the PURE formatter for one Level-1 debug log line.
+// It builds a single structured, greppable line from already-derived values (no
+// DOM/tmux/IO). Kept here so it is unit-testable and so bridge_runtime.odin only
+// supplies observed values. NEVER include raw pane text — the per-frame movement
+// is conveyed via the normalized-frame FNV hashes on the sample.
+//
+// Fields (key=value, space-separated):
+//   ts, agent, pane, samples, status, changed, spinner, waiting_user,
+//   report_sent, reason, last_reported, ms_since_activity, hashes=[hex,…]
+pane_activity_debug_line :: proc(
+	ts_iso: string,
+	agent_instance_id: string,
+	pane_id: string,
+	sample: Pane_Activity_Sample,
+	report_sent: bool,
+	reason: string,
+	last_reported_status: string,
+	ms_since_last_activity: i64,
+) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "ts=")
+	strings.write_string(&b, ts_iso)
+	strings.write_string(&b, " agent=")
+	strings.write_string(&b, agent_instance_id)
+	strings.write_string(&b, " pane=")
+	strings.write_string(&b, pane_id)
+	strings.write_string(&b, " samples=")
+	strings.write_string(&b, fmt.tprintf("%d", sample.frame_count))
+	strings.write_string(&b, " status=")
+	strings.write_string(&b, pane_activity_status_string(sample.status))
+	strings.write_string(&b, " changed=")
+	strings.write_string(&b, "true" if sample.changed else "false")
+	strings.write_string(&b, " spinner=")
+	strings.write_string(&b, "true" if sample.spinner_present else "false")
+	strings.write_string(&b, " waiting_user=")
+	strings.write_string(&b, "true" if sample.waiting_user else "false")
+	strings.write_string(&b, " report_sent=")
+	strings.write_string(&b, "true" if report_sent else "false")
+	strings.write_string(&b, " reason=")
+	strings.write_string(&b, reason if strings.trim_space(reason) != "" else "none")
+	strings.write_string(&b, " last_reported=")
+	strings.write_string(&b, last_reported_status if strings.trim_space(last_reported_status) != "" else "none")
+	strings.write_string(&b, " ms_since_activity=")
+	strings.write_string(&b, fmt.tprintf("%d", ms_since_last_activity))
+	strings.write_string(&b, " hashes=[")
+	for i in 0..<sample.frame_count {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_string(&b, fmt.tprintf("%016x", sample.frame_hashes[i]))
+	}
+	strings.write_string(&b, "]")
+	return strings.to_string(b)
 }

@@ -83,6 +83,11 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 	pane_cfg := pane_activity_default_config()
 	last_pane_cycle := last_liveness
 	last_reported_status := ""
+	// Env-gated pane-activity debug logging. Read ONCE here (no per-cycle getenv):
+	// HEIMDALL_PANE_DEBUG in {1,true,yes,on} => level 1 (structured per-cycle line);
+	// {2,verbose} => level 2 (also dumps normalized frame[0] tail). 0/unset => off,
+	// zero output and zero behavior change.
+	pane_debug_level := wrapper_bridge_pane_debug_level()
 	for {
 		state, wait_err := os.process_wait(process, 0)
 		if wait_err == nil && state.exited {
@@ -124,10 +129,28 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 					sample := pane_activity_burst_status(frames[:])
 					status := pane_activity_status_string(sample.status)
 					keepalive_due := now - last_activity >= i64(time.Duration(cfg.activity_interval_ms) * time.Millisecond)
+					// Capture the reporting decision + inputs BEFORE mutating state so the
+					// debug logger sees the pre-report last_reported_status and the true
+					// ms-since-last-activity that drove the keepalive.
+					prev_reported := last_reported_status
+					ms_since_activity := (now - last_activity) / i64(time.Millisecond)
+					report_sent := false
+					reason := "suppressed"
+					if status == "unknown" {
+						reason = "unknown_status"
+					} else if status != last_reported_status {
+						reason = "status_changed"
+					} else if keepalive_due {
+						reason = "keepalive_due"
+					}
 					if status != "unknown" && (status != last_reported_status || keepalive_due) {
 						_ = wrapper_bridge_local_call(cfg, "wrapper.activity.report", wrapper_bridge_pane_activity_report_json(status))
 						last_reported_status = status
 						last_activity = now
+						report_sent = true
+					}
+					if pane_debug_level > 0 {
+						wrapper_bridge_pane_debug_log(cfg, pane_debug_level, sample, report_sent, reason, prev_reported, ms_since_activity, frames[:])
 					}
 				}
 				for f in frames do delete(f)
@@ -147,6 +170,72 @@ wrapper_bridge_pane_activity_report_json :: proc(status: string) -> string {
 	strings.write_string(&b, status)
 	strings.write_string(&b, "\",\"source\":\"pane_diff\"}")
 	return strings.to_string(b)
+}
+
+// wrapper_bridge_pane_debug_level reads HEIMDALL_PANE_DEBUG ONCE and maps it to a
+// verbosity level: 0 = off (default), 1 = per-cycle structured line, 2 = verbose
+// (also dump normalized frame[0] tail). Accepts 1/true/yes/on => 1; 2/verbose => 2.
+wrapper_bridge_pane_debug_level :: proc() -> int {
+	v := strings.to_lower(strings.trim_space(os.get_env_alloc("HEIMDALL_PANE_DEBUG", context.allocator)))
+	switch v {
+	case "2", "verbose":            return 2
+	case "1", "true", "yes", "on": return 1
+	}
+	return 0
+}
+
+// wrapper_bridge_pane_debug_log appends one structured line (Level 1) — and, at
+// Level 2, the last `line_limit` NORMALIZED lines of frame[0] — to
+// <run-dir>/.heimdall/pane-activity.log. All failures are SILENT: the detection
+// loop must never crash or block on logging. Raw pane text is never written at
+// Level 1 (hashes only); Level 2's dump is normalized (timers/counters/spinners
+// already masked) and size-guarded.
+wrapper_bridge_pane_debug_log :: proc(
+	cfg: Bridge_Runtime_Config,
+	level: int,
+	sample: Pane_Activity_Sample,
+	report_sent: bool,
+	reason: string,
+	last_reported_status: string,
+	ms_since_last_activity: i64,
+	raw_frames: []string,
+) {
+	if level <= 0 do return
+	dir := strings.concatenate({strings.trim_right(cfg.working_dir, "/"), "/.heimdall"})
+	_ = os.make_directory_all(dir)
+	path := strings.concatenate({dir, "/pane-activity.log"})
+	ts := wrapper_bridge_now_iso8601_utc()
+	line := pane_activity_debug_line(ts, cfg.agent_instance_id, cfg.pane_id, sample, report_sent, reason, last_reported_status, ms_since_last_activity)
+	b := strings.builder_make()
+	strings.write_string(&b, line)
+	strings.write_byte(&b, '\n')
+	if level >= 2 && len(raw_frames) > 0 {
+		// Verbose: dump the normalized tail of frame[0] (already masked, size-guarded).
+		normalized, _ := pane_normalize(raw_frames[0])
+		defer delete(normalized)
+		dump := normalized
+		if len(dump) > 8192 do dump = dump[:8192]
+		strings.write_string(&b, "  frame0_normalized:\n")
+		lines := strings.split(dump, "\n")
+		defer delete(lines)
+		for l in lines {
+			strings.write_string(&b, "    | ")
+			strings.write_string(&b, l)
+			strings.write_byte(&b, '\n')
+		}
+	}
+	file, err := os.open(path, os.O_CREATE | os.O_APPEND | os.O_WRONLY)
+	if err != nil do return
+	defer os.close(file)
+	_, _ = os.write_string(file, strings.to_string(b))
+}
+
+// ISO-8601 / RFC3339 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ) for the debug log.
+wrapper_bridge_now_iso8601_utc :: proc() -> string {
+	now := time.now()
+	year, month, day := time.date(now)
+	hour, minute, second := time.clock(now)
+	return fmt.tprintf("%04d-%02d-%02dT%02d:%02d:%02dZ", year, int(month), day, hour, minute, second)
 }
 
 wrapper_bridge_should_load_pi_activity :: proc(cfg: Bridge_Runtime_Config) -> bool {

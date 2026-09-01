@@ -184,6 +184,78 @@ pane_normalize_collapses_decimal_and_grouped_numbers :: proc(t: ^testing.T) {
 }
 
 @(test)
+pane_activity_burst_populates_hashes_and_flags :: proc(t: ^testing.T) {
+	// The burst sample must expose per-NORMALIZED-frame FNV hashes + the
+	// waiting_user flag so the (env-gated) debug logger can show frame movement
+	// without retaining raw pane text.
+	// Idle (counter-only churn) => all 3 normalized hashes identical.
+	idle := pane_burst(
+		"Session log\nlast update 10:00:01",
+		"Session log\nlast update 10:00:02",
+		"Session log\nlast update 10:00:03",
+	)
+	testing.expect(t, idle.frame_count == 3, "three frames classified")
+	testing.expect(t, !idle.waiting_user, "no waiting_user for idle log")
+	testing.expect(t, idle.frame_hashes[0] == idle.frame_hashes[1] && idle.frame_hashes[1] == idle.frame_hashes[2], "counter-only churn hashes identically across the burst")
+	testing.expect(t, idle.frame_hashes[0] != 0, "hash is populated")
+
+	// Streaming (growing body) => normalized hashes differ across the burst.
+	streaming := pane_burst("The answer begins", "The answer begins here", "The answer begins here now")
+	testing.expect(t, streaming.frame_hashes[0] != streaming.frame_hashes[2], "growing body yields differing frame hashes")
+
+	// waiting_user flag propagates to the sample.
+	frame := "Ran command foo\nDo you want to proceed? (y/n)"
+	waiting := pane_burst(frame, frame, frame)
+	testing.expect(t, waiting.waiting_user, "waiting_user flag set on the sample")
+}
+
+@(test)
+pane_activity_debug_line_has_required_fields :: proc(t: ^testing.T) {
+	// The pure Level-1 formatter must emit every field the spec requires, as a
+	// single greppable line, using the frame hashes (never raw text).
+	sample := pane_burst(
+		"Session log\nlast update 10:00:01",
+		"Session log\nlast update 10:00:02",
+		"Session log\nlast update 10:00:03",
+	)
+	line := pane_activity_debug_line(
+		"2026-09-01T09:15:30Z",
+		"inst_18d12670b46fe0b6",
+		"%63",
+		sample,
+		false,      // report_sent
+		"suppressed",
+		"idle",     // last_reported_status
+		1450,       // ms_since_last_activity
+	)
+	for field in ([]string{
+		"ts=2026-09-01T09:15:30Z",
+		"agent=inst_18d12670b46fe0b6",
+		"pane=%63",
+		"samples=3",
+		"status=idle",
+		"changed=false",
+		"spinner=false",
+		"waiting_user=false",
+		"report_sent=false",
+		"reason=suppressed",
+		"last_reported=idle",
+		"ms_since_activity=1450",
+		"hashes=[",
+	}) {
+		testing.expect(t, strings.contains(line, field), field)
+	}
+	// No raw pane text (the log line must never leak content at level 1).
+	testing.expect(t, !strings.contains(line, "Session log"), "debug line must not contain raw pane text")
+	testing.expect(t, !strings.contains(line, "\n"), "debug line must be a single line")
+	// A defaulted empty last_reported/reason must render as 'none'.
+	empty := pane_activity_debug_line("2026-09-01T09:15:31Z", "a", "%1", sample, true, "", "", 0)
+	testing.expect(t, strings.contains(empty, "reason=none"), "empty reason renders none")
+	testing.expect(t, strings.contains(empty, "last_reported=none"), "empty last_reported renders none")
+	testing.expect(t, strings.contains(empty, "report_sent=true"), "report_sent true renders")
+}
+
+@(test)
 pane_activity_status_strings :: proc(t: ^testing.T) {
 	testing.expect(t, pane_activity_status_string(.Active) == "active")
 	testing.expect(t, pane_activity_status_string(.Idle) == "idle")
