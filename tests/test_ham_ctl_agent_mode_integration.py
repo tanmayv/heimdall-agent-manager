@@ -131,6 +131,50 @@ def main():
     require(req2["method"] == "agent.start_success",
             "start-success subcommand must map to agent.start_success")
 
+    # --- H8: memory propose forwards scope flags into params ----------------
+    # The hub already honors template_id/project_id/bridge_id/agent_id; this
+    # asserts the CLI actually sends them (previously it dropped every scope).
+    mock3 = MockEndpoint()
+    t3 = threading.Thread(target=mock3.serve_once)
+    t3.start()
+    proc3 = run_agent([
+        "--bridge-endpoint", f"tcp:127.0.0.1:{mock3.port}",
+        "--agent-token", "hlat_mem", "memory", "propose",
+        "--type", "habit", "--title", "Reviewer checklist", "--body", "do X",
+        "--template-id", "tmpl_rev", "--project-id", "proj_1",
+        "--bridge-id", "brg_1", "--agent-id", "agt_9",
+    ])
+    t3.join(timeout=10)
+    mock3.close()
+    require(mock3.captured is not None, "memory propose must reach the endpoint")
+    req3 = json.loads(mock3.captured)
+    require(req3["method"] == "agent.memory.propose",
+            "memory propose must map to agent.memory.propose")
+    p3 = req3["params"]
+    require(p3.get("type") == "habit" and p3.get("title") == "Reviewer checklist",
+            "type/title must be forwarded")
+    require(p3.get("template_id") == "tmpl_rev", "--template-id must forward template_id")
+    require(p3.get("project_id") == "proj_1", "--project-id must forward project_id")
+    require(p3.get("bridge_id") == "brg_1", "--bridge-id must forward bridge_id")
+    require(p3.get("agent_id") == "agt_9", "--agent-id must forward agent_id")
+
+    # --- H8: omitting scope flags must NOT emit empty scope keys ------------
+    # (so the hub's defaults apply: agent -> caller's own, others -> global).
+    mock4 = MockEndpoint()
+    t4 = threading.Thread(target=mock4.serve_once)
+    t4.start()
+    proc4 = run_agent([
+        "--bridge-endpoint", f"tcp:127.0.0.1:{mock4.port}",
+        "--agent-token", "hlat_mem", "memory", "propose",
+        "--type", "fact", "--title", "No scope",
+    ])
+    t4.join(timeout=10)
+    mock4.close()
+    req4 = json.loads(mock4.captured)
+    p4 = req4["params"]
+    for k in ("template_id", "project_id", "bridge_id", "agent_id"):
+        require(k not in p4, f"omitted scope flag must NOT emit {k} (got {p4})")
+
     print("PASS: ham-ctl agent mode integration")
 
 

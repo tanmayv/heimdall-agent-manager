@@ -361,14 +361,29 @@ ctl_agentmode_memory :: proc(endpoint, token, action: string, args: []string) {
 	if action == "" || action == "propose" {
 		mem_type := option_value(args, "--type", "")
 		title := option_value(args, "--title", "")
-		if mem_type == "" || title == "" { fmt.println("usage: ham-ctl agent memory propose --type <type> --title <title> [--body <text>] [--evidence <text>]"); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("type", mem_type)); append(&fields, json_kv("title", title)); append(&fields, json_kv("body", option_value(args, "--body", "")))
-		if ev := option_value(args, "--evidence", ""); ev != "" do append(&fields, json_kv("evidence", ev))
-		ctl_agent_call(endpoint, token, "agent.memory.propose", json_object_from_slice(fields[:]))
+		if mem_type == "" || title == "" { fmt.println("usage: ham-ctl agent memory propose --type <type> --title <title> [--body <text>] [--evidence <text>] [--template-id <id>] [--project-id <id>] [--bridge-id <id>] [--agent-id <id>]"); return }
+		ctl_agent_call(endpoint, token, "agent.memory.propose", ctl_agentmode_memory_propose_params(args))
 		return
 	}
 	fmt.println("usage: ham-ctl agent memory <propose>")
+}
+
+// ctl_agentmode_memory_propose_params builds the agent.memory.propose params
+// JSON from CLI args. Pure (no I/O) so it is unit-testable. type/title/body are
+// always present; evidence and the H8 scope flags (template/project/bridge/agent)
+// are included ONLY when provided so the hub's defaults apply (agent -> caller's
+// own agent, the rest -> global). Each scope flag accepts a short alias.
+ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
+	fields := make([dynamic]string)
+	append(&fields, json_kv("type", option_value(args, "--type", "")))
+	append(&fields, json_kv("title", option_value(args, "--title", "")))
+	append(&fields, json_kv("body", option_value(args, "--body", "")))
+	if ev := option_value(args, "--evidence", ""); ev != "" do append(&fields, json_kv("evidence", ev))
+	if v := option_value(args, "--template-id", option_value(args, "--template", "")); v != "" do append(&fields, json_kv("template_id", v))
+	if v := option_value(args, "--project-id", option_value(args, "--project", "")); v != "" do append(&fields, json_kv("project_id", v))
+	if v := option_value(args, "--bridge-id", option_value(args, "--bridge", "")); v != "" do append(&fields, json_kv("bridge_id", v))
+	if v := option_value(args, "--agent-id", option_value(args, "--agent", "")); v != "" do append(&fields, json_kv("agent_id", v))
+	return json_object_from_slice(fields[:])
 }
 
 ctl_agent_call :: proc(endpoint, token, method, params_json: string) {
@@ -666,8 +681,14 @@ print_agent_artifacts_help :: proc(action: string) {
 
 print_agent_memory_help :: proc(action: string) {
 	_ = action
-	fmt.println("ham-ctl agent memory propose --type <type> --title <title> --body <text> [--evidence <text>]")
+	fmt.println("ham-ctl agent memory propose --type <type> --title <title> --body <text> [--evidence <text>] [--template-id <id>] [--project-id <id>] [--bridge-id <id>] [--agent-id <id>]")
 	fmt.println("Purpose: propose durable memory for later review.")
-	fmt.println("Example:")
+	fmt.println("Scope flags (optional; omit for defaults — agent scope defaults to the caller's own agent, the rest to global):")
+	fmt.println("  --template-id <id>  (alias --template)  scope the memory to a template (guidance for agents from that template)")
+	fmt.println("  --project-id  <id>  (alias --project)   scope to a project")
+	fmt.println("  --bridge-id   <id>  (alias --bridge)    scope to a bridge")
+	fmt.println("  --agent-id    <id>  (alias --agent)     target a specific agent (defaults to the caller's own)")
+	fmt.println("Examples:")
 	fmt.println("  ham-ctl agent memory propose --type fact --title 'Project test command' --body 'Use nix develop --command odin check src/hub.'")
+	fmt.println("  ham-ctl agent memory propose --type habit --title 'Reviewer checklist' --body '...' --template-id tmpl_reviewer")
 }
