@@ -362,7 +362,7 @@ export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', pro
 // the architecture doc and confirmed ready in the gap analysis. This never
 // attaches an unrelated live instance from another chain — it hydrates a fresh
 // instance into the current chain and creates its 1:1 conversation.
-export async function createAgentInstanceInChain({ daemonUrl, clientToken, agentId, chainId, providerProfile, modelTier, projectId, displayName, templateId }: { daemonUrl: string; clientToken: string; agentId: string; chainId: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }) {
+export async function createAgentInstanceInChain({ daemonUrl, clientToken, agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId }: { daemonUrl: string; clientToken: string; agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }) {
   if (!agentId || !chainId) throw new Error('agentId and chainId are required to add an agent to a chain');
   return requestJson(joinUrl(daemonUrl, '/api/v1/agent-instances'), {
     method: 'POST',
@@ -370,6 +370,9 @@ export async function createAgentInstanceInChain({ daemonUrl, clientToken, agent
     body: {
       agent_id: agentId,
       chain_id: chainId,
+      // The hub's instance_input_from_body honors bridge_id on create, so the
+      // popup's chosen bridge is respected (falls back to bridge default when omitted).
+      ...(bridgeId ? { bridge_id: bridgeId } : {}),
       ...(providerProfile ? { provider_profile: providerProfile } : {}),
       ...(modelTier ? { model_tier: modelTier } : {}),
       ...(projectId ? { project_id: projectId } : {}),

@@ -25,6 +25,19 @@ import {
   useAddChainMemberMutation,
   useRemoveChainMemberMutation,
 } from '../../api/endpoints/tasks';
+import { useDispatch } from 'react-redux';
+import {
+  upsertAgentInCaches,
+  useCreateAgentInstanceInChainMutation,
+  useListAgentIdentitiesQuery,
+} from '../../api/endpoints/agents';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
+import {
+  bridgeLabel,
+  launchProvidersFor,
+  launchTiersFor,
+  launchableBridgeRows,
+} from '../../utils/bridgeLaunchOptions';
 
 interface TaskChainOverviewProps {
   chainId: string;
@@ -64,6 +77,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [nudgeTask] = useNudgeTaskMutation();
   const [addMember] = useAddChainMemberMutation();
   const [removeMember] = useRemoveChainMemberMutation();
+  const [createInstanceInChain, { isLoading: addingAgent }] = useCreateAgentInstanceInChainMutation();
+  const dispatch = useDispatch();
+
+  // Data sources for the Add-Agent popup's dependent selects.
+  const agentIdentitiesQuery = useListAgentIdentitiesQuery();
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
 
   // Local state
   const [descExpanded, setDescExpanded] = useState(true);
@@ -77,12 +96,25 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDesc, setNewTaskDesc] = useState('');
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
-  const [newMemberInstanceId, setNewMemberInstanceId] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('worker');
+  // Add-Agent popup selection state (identity -> bridge -> provider -> tier).
+  const [addAgentId, setAddAgentId] = useState('');
+  const [addBridgeId, setAddBridgeId] = useState('');
+  const [addProvider, setAddProvider] = useState('');
+  const [addTier, setAddTier] = useState('');
+  const [addAgentError, setAddAgentError] = useState('');
 
   const chain = data?.chain;
   const tasks: any[] = chain?.tasks || [];
   const members: any[] = chain?.members || [];
+
+  // Add-Agent popup dependent option lists (identity -> bridge -> provider -> tier).
+  const agentIdentities: any[] = agentIdentitiesQuery.data?.agents || [];
+  const addBridgeRows = launchableBridgeRows(bridgesQuery.data?.bridges || []);
+  const selectedAddBridge = addBridgeRows.find((row) => row.bridgeId === addBridgeId)?.bridge;
+  const selectedAddAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addAgentId);
+  const addProviderOptions = selectedAddBridge ? launchProvidersFor(selectedAddBridge) : [];
+  const addTierOptions = selectedAddBridge ? launchTiersFor(selectedAddBridge, addProvider, selectedAddAgent) : [];
 
   // Compute progress buckets
   const progressBuckets = {
@@ -115,20 +147,43 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     }
   };
 
+  // Add-Agent popup: LAUNCH a new instance of the chosen agent-id on the chosen
+  // bridge/provider/tier bound to THIS chain, then add it as a member with the
+  // selected role. bridge_id/chain_id/provider/tier are honored by the hub's
+  // POST /api/v1/agent-instances handler (instance_input_from_body), so this is a
+  // pure UI plumb through createAgentInstanceInChain.
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMemberInstanceId.trim()) return;
+    setAddAgentError('');
+    if (!addAgentId) { setAddAgentError('Choose an agent identity to launch.'); return; }
+    if (addProvider && !addProviderOptions.includes(addProvider)) { setAddAgentError('Selected provider is not supported by the chosen bridge.'); return; }
+    if (addTier && !addTierOptions.includes(addTier)) { setAddAgentError('Selected tier is not supported by the chosen bridge/provider.'); return; }
     try {
-      await addMember({
+      const result = await createInstanceInChain({
+        agentId: addAgentId,
         chainId,
-        agentInstanceId: newMemberInstanceId.trim(),
-        role: newMemberRole,
+        ...(addBridgeId ? { bridgeId: addBridgeId } : {}),
+        ...(addProvider ? { providerProfile: addProvider } : {}),
+        ...(addTier ? { modelTier: addTier } : {}),
       }).unwrap();
-      setNewMemberInstanceId('');
+      const newInstance = result?.agent_instance || result?.agentInstance || result?.agent;
+      if (newInstance) upsertAgentInCaches(dispatch, newInstance);
+      // Ensure the new instance is a chain member with the chosen role (create may
+      // not attach the role). Skip if it already landed as a member.
+      const newInstanceId = String(newInstance?.agent_instance_id || newInstance?.agentInstanceId || '');
+      const alreadyMember = newInstanceId && members.some((m: any) => String(m.agentInstanceId || m.agent_instance_id || '') === newInstanceId);
+      if (newInstanceId && !alreadyMember) {
+        try {
+          await addMember({ chainId, agentInstanceId: newInstanceId, role: newMemberRole }).unwrap();
+        } catch (memberErr) {
+          console.error('Instance launched but adding as chain member failed:', memberErr);
+        }
+      }
       setShowAddMemberModal(false);
+      setAddAgentId(''); setAddBridgeId(''); setAddProvider(''); setAddTier('');
       refetch();
-    } catch (err) {
-      console.error('Failed to add member:', err);
+    } catch (err: any) {
+      setAddAgentError(String(err?.message || err || 'Failed to launch and add agent'));
     }
   };
 
@@ -730,7 +785,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         </div>
       )}
 
-      {/* Add Member Modal */}
+      {/* Add Agent to Chain popup: launch a new instance (identity + bridge +
+          provider + tier) and add it to this chain with the chosen role. */}
       {showAddMemberModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <form
@@ -738,21 +794,67 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             className="w-full max-w-md rounded-lg border border-white/10 bg-[#141414] p-5 text-xs text-white"
           >
             <h3 className="text-sm font-bold text-white">Add Agent to Task Chain</h3>
+            <p className="mt-1 text-[11px] text-zinc-500">Launch a new instance of an agent onto a bridge and add it to this chain.</p>
             <div className="mt-4 space-y-3">
               <div>
-                <label className="block text-zinc-400">Agent Instance ID</label>
-                <input
-                  type="text"
+                <label className="block text-zinc-400">Agent identity</label>
+                <select
+                  data-debug-id="taskchain-add-agent-agentid-select"
                   required
-                  value={newMemberInstanceId}
-                  onChange={(e) => setNewMemberInstanceId(e.target.value)}
-                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white placeholder-zinc-500 focus:outline-none focus:border-sky-500"
-                  placeholder="agent_instance_id..."
-                />
+                  value={addAgentId}
+                  onChange={(e) => setAddAgentId(e.target.value)}
+                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                >
+                  <option value="">Choose agent…</option>
+                  {agentIdentities.map((a: any) => {
+                    const id = String(a.agent_id || a.agentId || a.id || '');
+                    return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
+                  })}
+                </select>
+              </div>
+              <div>
+                <label className="block text-zinc-400">Bridge</label>
+                <select
+                  data-debug-id="taskchain-add-agent-bridge-select"
+                  value={addBridgeId}
+                  onChange={(e) => { setAddBridgeId(e.target.value); setAddProvider(''); setAddTier(''); }}
+                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                >
+                  <option value="">Choose bridge…</option>
+                  {addBridgeRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{bridgeLabel(row.bridge)}</option>)}
+                </select>
+                {addBridgeRows.length === 0 && <p className="mt-1 text-[11px] text-amber-300/80">No online bridge with provider capabilities is available.</p>}
+              </div>
+              <div>
+                <label className="block text-zinc-400">Provider</label>
+                <select
+                  data-debug-id="taskchain-add-agent-provider-select"
+                  value={addProvider}
+                  onChange={(e) => { setAddProvider(e.target.value); setAddTier(''); }}
+                  disabled={!selectedAddBridge}
+                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
+                >
+                  <option value="">Use bridge default provider</option>
+                  {addProviderOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-zinc-400">Tier</label>
+                <select
+                  data-debug-id="taskchain-add-agent-tier-select"
+                  value={addTier}
+                  onChange={(e) => setAddTier(e.target.value)}
+                  disabled={!selectedAddBridge}
+                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
+                >
+                  <option value="">Use bridge default tier</option>
+                  {addTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
+                </select>
               </div>
               <div>
                 <label className="block text-zinc-400">Role</label>
                 <select
+                  data-debug-id="taskchain-add-agent-role-select"
                   value={newMemberRole}
                   onChange={(e) => setNewMemberRole(e.target.value)}
                   className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
@@ -762,6 +864,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   <option value="coordinator">coordinator</option>
                 </select>
               </div>
+              {addAgentError && <p data-debug-id="taskchain-add-agent-error" className="text-[11px] text-red-300">{addAgentError}</p>}
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button
@@ -772,10 +875,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 Cancel
               </button>
               <button
+                data-debug-id="taskchain-add-agent-submit"
                 type="submit"
-                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500"
+                disabled={addingAgent || !addAgentId}
+                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
               >
-                Add Member
+                {addingAgent ? 'Launching…' : 'Launch & Add'}
               </button>
             </div>
           </form>

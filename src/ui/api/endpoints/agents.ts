@@ -275,10 +275,10 @@ export const agentsApi = heimdallApi.injectEndpoints({
     // UI-8: Add agent to chain via the rewrite API (POST /api/v1/agent-instances
     // with existing chain_id). Hydrates a fresh AgentInstance into the chain and
     // creates its 1:1 conversation; never attaches an unrelated live instance.
-    createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }>({
-      queryFn: withSessionQuery(async ({ agentId, chainId, providerProfile, modelTier, projectId, displayName, templateId }, { session }) => {
+    createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }>({
+      queryFn: withSessionQuery(async ({ agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId }, { session }) => {
         if (!session?.daemonUrl || !session?.clientToken || !agentId || !chainId) return { ok: false, message: 'Missing agentId/chainId' };
-        return daemonApi.createAgentInstanceInChain({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentId, chainId, providerProfile, modelTier, projectId, displayName, templateId });
+        return daemonApi.createAgentInstanceInChain({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId });
       }),
       invalidatesTags: (_result, _error, { chainId }) => [
         { type: 'Agents' as const, id: 'LIST' },
