@@ -10,6 +10,7 @@ import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import content_service "odin_test:hub/service/content"
 import taskchain_service "odin_test:hub/service/taskchain"
+import events "odin_test:hub/service/events"
 
 Agent_Action_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
@@ -17,6 +18,7 @@ Agent_Action_Handlers :: struct {
 	bridges: ^bridge_service.Bridge_Service,
 	content: ^content_service.Content_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
+	event_bus: ^events.User_Event_Bus,
 }
 
 agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -96,6 +98,11 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 		marked_count, _ = content_service.mark_messages_read_by_ids(h.content, auth, ids[:])
 		through_message_id = rows[len(rows)-1].message_id
 		through_created_at = rows[len(rows)-1].created_at
+		// Notify the conversation owner (the human) that their agent read these
+		// messages, so the UI can show read receipts on the user's sent bubbles.
+		if marked_count > 0 {
+			publish_agent_messages_read(h, string(conv.owner_user_id), conv, ids[:], inst.agent_instance_id)
+		}
 	}
 
 	b := strings.builder_make()
@@ -114,6 +121,14 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	    mark_read, marked_count, through_message_id, through_created_at)
 
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// Publish a `messages_read` event when an AGENT reads the user's messages, so
+// the human's UI can show read receipts. Reuses messages_read_event_json from
+// content_handlers (same package). No-op without an event bus (test wiring).
+publish_agent_messages_read :: proc(h:^Agent_Action_Handlers, owner_user_id:string, c:domain.Chat_Conversation, message_ids:[]string, reader_instance_id:string){
+	if h==nil || h.event_bus==nil || owner_user_id=="" || len(message_ids)==0 do return
+	events.publish_raw_to_user(h.event_bus, owner_user_id, messages_read_event_json(c, message_ids, reader_instance_id))
 }
 
 agent_action_agents_live_handler :: proc(ctx: rawptr, req: Request) -> Response {
