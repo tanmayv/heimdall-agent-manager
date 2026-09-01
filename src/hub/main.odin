@@ -215,6 +215,9 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			config.logout_url = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--device-auth-verification-uri" && i + 1 < len(os.args) {
 			config.device_auth_verification_uri = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--reaper-interval-seconds" && i + 1 < len(os.args) {
+			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.reaper_interval_seconds = int(parsed)
+			i += 1
 		}
 	}
 }

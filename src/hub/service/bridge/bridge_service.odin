@@ -173,6 +173,26 @@ bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname
 	return iface.bridge_save_bridge(service.repo, bridge)
 }
 
+// mark_bridge_offline flips a bridge's durable status to .Offline on a WS
+// disconnect. bridge_runtime_connect sets .Online but nothing symmetric marked
+// the durable record offline when the control WS dropped, so the bridge row
+// stayed .Online forever. Idempotent: a .Revoked bridge is left untouched, and
+// re-marking an already-.Offline bridge is a cheap no-op save. Returns the
+// bridge + whether the status actually changed so the caller can avoid a
+// spurious event when nothing moved.
+mark_bridge_offline :: proc(service: ^Bridge_Service, bridge_id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.repo, bridge_id)
+	if !bridge_ok do return domain.Bridge{}, false, bridge_err
+	// Never override a terminal revoked state, and skip the write if already offline.
+	if bridge.status == .Revoked || bridge.status == .Offline do return bridge, false, domain.Domain_Error{}
+	now := platform.clock_now(service.clock)
+	bridge.status = .Offline
+	bridge.updated_at = now
+	saved, ok, err := iface.bridge_save_bridge(service.repo, bridge)
+	if !ok do return domain.Bridge{}, false, err
+	return saved, true, domain.Domain_Error{}
+}
+
 update_runtime_capabilities :: proc(service: ^Bridge_Service, bridge_id, capabilities_json: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.repo, bridge_id)
 	if !bridge_ok do return domain.Bridge{}, false, bridge_err

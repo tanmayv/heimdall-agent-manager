@@ -1,5 +1,6 @@
 package app
 
+import "core:thread"
 import http "odin_test:hub/transport/http"
 
 run :: proc(config: Hub_Config) -> (bool, string) {
@@ -8,7 +9,21 @@ run :: proc(config: Hub_Config) -> (bool, string) {
 	if !ok do return false, message
 	// The Hub is a long-running HTTP process; shutdown_graph is intentionally only
 	// used by tests that construct App_Graph directly.
+	// Background stale-instance reaper: flips agents to 'unreachable' when their
+	// bridge stops heartbeating, independent of inbound bridge traffic. Launched
+	// before the blocking serve. We pass &graph directly: run() blocks on serve()
+	// for the process lifetime, so this stack frame (and every service pointer the
+	// graph holds) stays valid — exactly like &graph.router handed to serve below.
+	// A heap COPY would be unsafe: the graph's services store pointers back into
+	// this graph's own fields, so a copy would alias the original anyway.
+	thread.run_with_data(rawptr(&graph), reaper_thread_entry)
 	served := http.serve(&graph.router, http.Server_Config{bind_host = config.bind_host, port = config.port})
 	if !served do return false, "hub server failed"
 	return true, "hub server stopped"
+}
+
+// reaper_thread_entry adapts reaper_loop to the thread.run_with_data ABI.
+reaper_thread_entry :: proc(data: rawptr) {
+	if data == nil do return
+	reaper_loop((^App_Graph)(data))
 }

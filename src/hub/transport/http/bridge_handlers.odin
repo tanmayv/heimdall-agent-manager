@@ -373,7 +373,21 @@ BRIDGE_INSTANCE_STALE_MS :: 90_000
 // bridge's instances (registry offline alone leaves them "running" forever) and
 // fans out resource_changed so the UI updates immediately.
 bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int) {
+	// Only run the cascade if THIS connection generation is still the live one.
+	// registry_mark_offline is generation-guarded (a newer reconnect already
+	// replaced us => it returns without removing the live entry), so gate the
+	// durable offline/cascade on the same generation to stay idempotent and avoid
+	// clobbering a fresh reconnect's instances.
+	still_current := project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) == connection_generation
 	project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, bridge_id, connection_generation)
+	if !still_current do return
+	// Mark the durable bridge record offline (bridge_runtime_connect set it .Online
+	// but nothing marked it back down on WS close). Idempotent + skips revoked.
+	if h.bridges != nil {
+		if bridge, changed, _ := bridge_service.mark_bridge_offline(h.bridges, bridge_id); changed {
+			events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "status_changed", bridge_status_summary_json(domain.bridge_status_string(bridge.status)))
+		}
+	}
 	if h.agents == nil do return
 	// The bridge is gone; its registry entry was just removed above. The durable DB
 	// is authoritative here, so we only persist the cleared state and notify the UI.
@@ -722,6 +736,13 @@ agent_instance_status_summary_json :: proc(runtime_status, startup_status, activ
 	strings.write_string(&b, "{\"runtime_status\":\""); write_handler_json_string(&b, runtime_status)
 	strings.write_string(&b, "\",\"startup_status\":\""); write_handler_json_string(&b, startup_status)
 	strings.write_string(&b, "\",\"activity_status\":\""); write_handler_json_string(&b, activity_status)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+bridge_status_summary_json :: proc(status: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"status\":\""); write_handler_json_string(&b, status)
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }

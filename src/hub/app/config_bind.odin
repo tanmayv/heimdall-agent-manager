@@ -19,6 +19,12 @@ Hub_Config :: struct {
 	device_auth_interval: int,
 	device_auth_rate_limit: int,
 	device_auth_rate_window: int,
+	// Background stale-instance reaper cadence (seconds). A dedicated hub thread
+	// sweeps agent instances whose bridge stopped heartbeating and flips them to
+	// 'unreachable', INDEPENDENT of inbound bridge traffic (self-heals a fully-dead
+	// bridge, a lost WS close, or a hub restart with a persisted DB). <=0 falls back
+	// to the default; it never blocks startup.
+	reaper_interval_seconds: int,
 }
 
 default_config :: proc() -> Hub_Config {
@@ -41,5 +47,6 @@ default_config :: proc() -> Hub_Config {
 		device_auth_interval = 5,
 		device_auth_rate_limit = 10,
 		device_auth_rate_window = 60,
+		reaper_interval_seconds = 20,
 	}
 }
