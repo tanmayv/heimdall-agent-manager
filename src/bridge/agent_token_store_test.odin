@@ -2,15 +2,26 @@ package main
 
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 
 // Tests for per-bridge local-token store isolation + atomic persistence
 // (task_18d0f1f7b6c80449): two bridges sharing one store used to clobber each
 // other's tokens on full-file rewrite, leaving agents permanently unauthenticated
 // on reconnect. The store is now namespaced by local_endpoint_run_dir.
+//
+// NOTE: Odin runs a package's tests concurrently across threads. All three
+// token-store tests mutate the SAME process globals (bridge_config.data_dir,
+// bridge_config.local_endpoint_run_dir, and bridge_local_token_records), so they
+// must not run interleaved or one test's config change makes another resolve the
+// wrong store path. In a real deployment each bridge is its own process, so this
+// only matters for the test harness; serialize them with a shared mutex.
+bridge_token_store_test_mutex: sync.Mutex
 
 @(test)
 bridge_token_store_namespace_is_per_bridge :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_token_store_test_mutex)
+	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
 	saved := bridge_config.local_endpoint_run_dir
 	defer { bridge_config.local_endpoint_run_dir = saved }
 
@@ -28,6 +39,8 @@ bridge_token_store_namespace_is_per_bridge :: proc(t: ^testing.T) {
 
 @(test)
 bridge_token_store_two_bridges_do_not_clobber :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_token_store_test_mutex)
+	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
 	saved_dir := bridge_config.local_endpoint_run_dir
 	saved_data := bridge_config.data_dir
 	defer {
@@ -60,6 +73,8 @@ bridge_token_store_two_bridges_do_not_clobber :: proc(t: ^testing.T) {
 
 @(test)
 bridge_token_store_save_load_roundtrip :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_token_store_test_mutex)
+	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
 	saved_dir := bridge_config.local_endpoint_run_dir
 	saved_data := bridge_config.data_dir
 	defer {
