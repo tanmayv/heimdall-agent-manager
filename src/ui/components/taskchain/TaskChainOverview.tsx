@@ -29,6 +29,7 @@ import { useDispatch } from 'react-redux';
 import {
   upsertAgentInCaches,
   useCreateAgentInstanceInChainMutation,
+  useFetchAgentInstanceQuery,
   useListAgentIdentitiesQuery,
 } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
@@ -444,7 +445,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             >
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
               <span className="font-mono text-zinc-300">
-                {m.role}: {m.agentInstanceId || m.agent_instance_id}
+                {m.role}: <InstanceIdLink instanceId={m.agentInstanceId || m.agent_instance_id} />
               </span>
               <button
                 type="button"
@@ -534,12 +535,21 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-zinc-400">
                         {task.assigneeRef && (
                           <span data-debug-id={`taskchain-task-assignee-${taskId}`}>
-                            assignee: <span className="text-zinc-300">{task.assigneeRef.agent_instance_id || task.assigneeRef.user_id}</span>
+                            assignee: {task.assigneeRef.agent_instance_id
+                              ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
+                              : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
                           </span>
                         )}
                         {task.reviewerRefs && task.reviewerRefs.length > 0 && (
                           <span data-debug-id={`taskchain-task-reviewers-${taskId}`}>
-                            reviewers: <span className="text-zinc-300">{task.reviewerRefs.map((r: any) => r.agent_instance_id || r.user_id).join(', ')}</span>
+                            reviewers: {task.reviewerRefs.map((r: any, ri: number) => (
+                              <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
+                                {ri > 0 ? ', ' : ''}
+                                {r.agent_instance_id
+                                  ? <InstanceIdLink instanceId={r.agent_instance_id} />
+                                  : <span className="text-zinc-300">{r.user_id}</span>}
+                              </React.Fragment>
+                            ))}
                           </span>
                         )}
                       </div>
@@ -889,5 +899,42 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     </div>
   );
 };
+
+// H10: shellHash builds the routed-shell hash link the dashboard uses for
+// navigation (mirrors the helper in AgentDetailPanel).
+function shellHash(path: string): string { return `#${path.startsWith('/') ? path : `/${path}`}`; }
+
+// H10: InstanceIdLink renders an agent instance id as a clickable control that
+// opens that agent's chat. It resolves instance_id -> conversation_id via the
+// agents API (GET /agent-instances/{id}) and links to shellHash(/conversations/
+// <conversationId>). Graceful fallbacks: while resolving it links to the agent
+// instance's chain-agnostic detail is unknown, so it links to /conversations only
+// once resolved; if no conversation can be resolved it falls back to the agents
+// list route and shows a tooltip — never a dead link and never a crash. user_id
+// refs are NOT agent instances and must be rendered with plain text by callers.
+export function InstanceIdLink({ instanceId }: { instanceId: string }) {
+  const trimmed = String(instanceId || '').trim();
+  // Only agent instance ids are clickable; guard against empty values.
+  const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed });
+  if (!trimmed) return null;
+  const inst = data?.instance || null;
+  const conversationId = String(inst?.conversation_id || inst?.conversationId || '');
+  const href = conversationId
+    ? shellHash(`/conversations/${conversationId}`)
+    : shellHash(`/agents`);
+  const title = conversationId
+    ? `Open chat with ${trimmed}`
+    : `No conversation resolved for ${trimmed} — open agents`;
+  return (
+    <a
+      data-debug-id={`taskchain-instance-link-${trimmed}`}
+      href={href}
+      title={title}
+      className="font-mono text-sky-300 underline decoration-dotted underline-offset-2 hover:text-sky-200"
+    >
+      {trimmed}
+    </a>
+  );
+}
 
 export default TaskChainOverview;
