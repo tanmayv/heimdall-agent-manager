@@ -578,7 +578,12 @@ write_bootstrap_memory_markdown :: proc(b: ^strings.Builder, service: ^Agent_Ser
 	written := 0
 	for m in memories {
 		if !bootstrap_memory_applies(m, service, owner, inst) do continue
-		if written == 0 do strings.write_string(b, "\\n\\n## Applicable Memories / Skills")
+		// Only fact and habit memories belong inline in AGENTS.md. Skill
+		// memories are materialized as separate SKILL.md files and must not be
+		// duplicated here (that just pollutes the bootstrap doc). Other types
+		// (episode/expertise) are intentionally excluded from the inline doc.
+		if m.type != .Fact && m.type != .Habit do continue
+		if written == 0 do strings.write_string(b, "\\n\\n## Applicable Memories")
 		strings.write_string(b, "\\n\\n### "); write_service_json_string(b, m.title)
 		strings.write_string(b, "\\nType: "); write_service_json_string(b, domain.memory_type_string(m.type))
 		strings.write_string(b, "\\n\\n"); write_bootstrap_markdown_json_string(b, m.body)
@@ -1231,7 +1236,12 @@ render_memories_markdown :: proc(service: ^Agent_Service, owner: domain.User_ID,
 	written := 0
 	for m in memories {
 		if !bootstrap_memory_applies(m, service, owner, inst) do continue
-		if written == 0 do strings.write_string(&b, "\n\n## Applicable Memories / Skills")
+		// Only fact and habit memories belong inline in AGENTS.md. Skill
+		// memories are materialized as separate SKILL.md files and must not be
+		// duplicated here (that just pollutes the bootstrap doc). Other types
+		// (episode/expertise) are intentionally excluded from the inline doc.
+		if m.type != .Fact && m.type != .Habit do continue
+		if written == 0 do strings.write_string(&b, "\n\n## Applicable Memories")
 		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n", m.title, domain.memory_type_string(m.type))
 		write_raw_markdown_string(&b, m.body)
 		written += 1

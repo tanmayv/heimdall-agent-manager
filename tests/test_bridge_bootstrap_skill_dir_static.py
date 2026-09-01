@@ -13,6 +13,7 @@ CONTENT_SERVICE = ROOT / "src" / "hub" / "service" / "content" / "content_servic
 CONTENT_HANDLERS = ROOT / "src" / "hub" / "transport" / "http" / "content_handlers.odin"
 MIGRATIONS = ROOT / "src" / "hub" / "repository" / "sqlite" / "migrations.odin"
 MEMORY_CATALOG = ROOT / "src" / "ui" / "api" / "memoryCatalog.ts"
+PROVIDERS_PANEL = ROOT / "src" / "ui" / "components" / "settings" / "ProvidersPanel.tsx"
 
 
 def require(cond: bool, msg: str) -> None:
@@ -31,6 +32,18 @@ def main() -> None:
     content_handlers = CONTENT_HANDLERS.read_text(encoding="utf-8")
     migrations = MIGRATIONS.read_text(encoding="utf-8")
     memory_catalog = MEMORY_CATALOG.read_text(encoding="utf-8")
+    providers_panel = PROVIDERS_PANEL.read_text(encoding="utf-8")
+
+    # The UI provider editor must expose skill_dir so operators can configure the
+    # per-provider skills output directory (e.g. .pi/skills for pi) from the UI
+    # and have it persisted via PUT /bridges/<id>/providers/<name>.
+    for marker in [
+        "skillDir: string;",
+        "skillDir: String(profile.skill_dir",
+        "skill_dir: form.skillDir.trim()",
+        "providers-editor-skill-dir-input",
+    ]:
+        require(marker in providers_panel, f"UI provider editor must configure skill_dir: {marker}")
 
     for marker in [
         "skill_dir = bridge_provider_skill_dir_from_config(cmd)",
@@ -65,6 +78,22 @@ def main() -> None:
         "./.heimdall/bin/ham-ctl",
     ]:
         require(marker in agent_service, f"hub bootstrap should emit scoped matching skills: {marker}")
+
+    # AGENTS.md inline memory must be fact/habit only. Skill (and other) memory
+    # types are materialized as separate SKILL.md files and must NOT be dumped
+    # inline (that pollutes the bootstrap doc). Both inline renderers guard this.
+    require(
+        agent_service.count("if m.type != .Fact && m.type != .Habit do continue") >= 2,
+        "both inline AGENTS.md memory renderers must restrict to fact+habit",
+    )
+    require(
+        "## Applicable Memories / Skills" not in agent_service,
+        "inline AGENTS.md memory heading must not advertise skills",
+    )
+    require(
+        "## Applicable Memories" in agent_service,
+        "inline AGENTS.md memory heading should be '## Applicable Memories'",
+    )
 
     for marker in [
         "Memory_Type :: enum",
