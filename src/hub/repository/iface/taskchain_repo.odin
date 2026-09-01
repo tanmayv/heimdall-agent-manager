@@ -14,6 +14,9 @@ Task_Comment_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, own
 Task_Chain_Member_Save_Proc :: proc(ctx: rawptr, member: domain.Task_Chain_Member) -> (domain.Task_Chain_Member, bool, domain.Domain_Error)
 Task_Chain_Member_Remove_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_instance_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
 Task_Chain_Member_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Member, domain.Domain_Error)
+// H9: reverse lookup — the chains an agent instance COORDINATES (member row with
+// role='coordinator'), owner-scoped. An agent can coordinate multiple chains.
+Task_Chain_List_By_Coordinator_Proc :: proc(ctx: rawptr, agent_instance_id: string, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain, domain.Domain_Error)
 
 Task_Dependency_Save_Proc :: proc(ctx: rawptr, dep: domain.Task_Dependency) -> (domain.Task_Dependency, bool, domain.Domain_Error)
 Task_Dependency_Remove_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, depends_on_task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
@@ -35,6 +38,7 @@ Taskchain_Repository :: struct {
 	save_member: Task_Chain_Member_Save_Proc,
 	remove_member: Task_Chain_Member_Remove_Proc,
 	list_members_by_chain: Task_Chain_Member_List_By_Chain_Proc,
+	list_chains_by_coordinator: Task_Chain_List_By_Coordinator_Proc,
 	save_dependency: Task_Dependency_Save_Proc,
 	remove_dependency: Task_Dependency_Remove_Proc,
 	list_dependencies_by_chain: Task_Dependency_List_By_Chain_Proc,
@@ -95,6 +99,11 @@ taskchain_remove_member :: proc(repo: ^Taskchain_Repository, chain_id: domain.Ta
 taskchain_list_members_by_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Member, domain.Domain_Error) {
 	if repo == nil || repo.list_members_by_chain == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	return repo.list_members_by_chain(repo.ctx, chain_id, owner_user_id)
+}
+
+taskchain_list_chains_by_coordinator :: proc(repo: ^Taskchain_Repository, agent_instance_id: string, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain, domain.Domain_Error) {
+	if repo == nil || repo.list_chains_by_coordinator == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.list_chains_by_coordinator(repo.ctx, agent_instance_id, owner_user_id)
 }
 
 taskchain_save_dependency :: proc(repo: ^Taskchain_Repository, dep: domain.Task_Dependency) -> (domain.Task_Dependency, bool, domain.Domain_Error) {

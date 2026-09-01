@@ -105,7 +105,8 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|create|show|update|members|add-agent|publish|complete|reopen>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen>")
+	fmt.println("  coordinated [--agent-id <instance_id>]  list chains an agent coordinates (default: your own instance)")
 }
 
 // Destructive chain verbs must NEVER fall back to the auto-resolved caller
@@ -137,6 +138,15 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 
 	if action == "" || action == "list" {
 		ctl_tasks_request(transport, "GET", "/api/v1/task-chains", "")
+		return
+	}
+
+	// H9 R4: list the chains an agent coordinates (single canonical source). With no
+	// --agent-id, the hub defaults to the caller's own instance (from its token), so
+	// an agent can fetch "chains I coordinate" with only its agent token.
+	if action == "coordinated" {
+		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
+		ctl_tasks_request(transport, "GET", fmt.tprintf("/api/v1/task-chains?coordinated_by=%s", safe_path_part(agent_id)), "")
 		return
 	}
 
@@ -248,7 +258,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
-	fmt.println("usage: ham-ctl task-chains <list|create|show|update|members|add-agent|publish|complete|reopen>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen>")
 }
 
 ctl_tasks_command :: proc(cmd: []string, args: []string) {

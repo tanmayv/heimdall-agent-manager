@@ -111,9 +111,12 @@ new_taskchain_service_with_runtime :: proc(repo: ^iface.Taskchain_Repository, ag
 	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, nudges = make([dynamic]Manual_Nudge), bridge_command_sink = bridge_command_sink}
 }
 
+// is_instance_member_or_coordinator: membership OR coordinator authority, read
+// from the SINGLE canonical source (H9) — the task_chain_members table. The
+// coordinator is just a member whose role is "coordinator"; both notions live in
+// one table, so there is no dual-source drift.
 is_instance_member_or_coordinator :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_id: string) -> bool {
 	if instance_id == "" do return false
-	if chain.coordinator_agent_instance_id == instance_id do return true
 	members, err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	if err.code != .None do return false
 	for m in members {
@@ -122,22 +125,82 @@ is_instance_member_or_coordinator :: proc(service: ^Taskchain_Service, chain: do
 	return false
 }
 
-// is_chain_coordinator reconciles the TWO notions of "coordinator" (H5 finding):
-//  1. chain.coordinator_agent_instance_id (the single designated coordinator), and
-//  2. a chain member whose role is "coordinator".
-// Historically only (1) granted coordinator authority, so an agent added as a
-// coordinator MEMBER (e.g. via add-member --role coordinator) still hit "only
-// assignee or coordinator can ...". Treat either as coordinator so membership
-// role actually grants authority.
+// is_chain_coordinator (H9): the SINGLE canonical source of who coordinates a
+// chain is the task_chain_members table (a member with role == "coordinator").
+// The task_chains.coordinator_agent_instance_id column is now only a DERIVED
+// MIRROR kept for API/UI back-compat (stamped by coordinator_sync_mirror on
+// write) and is NEVER consulted for authority here. This removes the dual-source
+// drift where an empty column + a coordinator member locked the real coordinator
+// out. Because it reads the members table, one agent can coordinate multiple
+// chains and multiple agents could hold the coordinator role on a chain.
 is_chain_coordinator :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_id: string) -> bool {
 	if instance_id == "" do return false
-	if chain.coordinator_agent_instance_id == instance_id do return true
 	members, err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	if err.code != .None do return false
 	for m in members {
 		if m.agent_instance_id == instance_id && m.role == "coordinator" do return true
 	}
 	return false
+}
+
+// coordinator_primary_instance returns the current coordinator instance id from
+// the canonical members table (the earliest-created coordinator member if more
+// than one holds the role), or "" if the chain has no coordinator member. Used to
+// stamp the derived mirror column and to serialize coordinator identity.
+coordinator_primary_instance :: proc(service: ^Taskchain_Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID) -> string {
+	members, err := iface.taskchain_list_members_by_chain(service.repo, chain_id, owner)
+	if err.code != .None do return ""
+	// list_members_by_chain is ordered by created_at ASC, so the first coordinator
+	// encountered is the earliest-designated one.
+	for m in members {
+		if m.role == "coordinator" do return m.agent_instance_id
+	}
+	return ""
+}
+
+// coordinator_sync_mirror recomputes the derived coordinator_agent_instance_id
+// mirror column from the canonical members table and persists the chain if it
+// changed. Call after any coordinator-member mutation so the back-compat column
+// always reflects the single source (never independently authoritative).
+coordinator_sync_mirror :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -> domain.Task_Chain {
+	primary := coordinator_primary_instance(service, chain.chain_id, chain.owner_user_id)
+	if chain.coordinator_agent_instance_id == primary do return chain
+	updated := chain
+	updated.coordinator_agent_instance_id = primary
+	saved, ok, _ := iface.taskchain_save_chain(service.repo, updated)
+	if ok do return saved
+	return updated
+}
+
+// set_chain_coordinator changes the coordinator via the canonical members table:
+// demote any existing coordinator member(s) to "member", upsert the target as a
+// "coordinator" member, then sync the derived mirror. An empty target clears the
+// coordinator (all coordinators demoted). Returns the chain with the mirror
+// stamped. Same-chain/same-owner validation of a non-empty target is the caller's
+// responsibility (mirrors the existing agent_instance_same_chain check).
+set_chain_coordinator :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, target_instance_id: string) -> domain.Task_Chain {
+	now := platform.clock_now(service.clock)
+	members, err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if err.code == .None {
+		for m in members {
+			if m.role == "coordinator" && m.agent_instance_id != target_instance_id {
+				demoted := m
+				demoted.role = "member"
+				iface.taskchain_save_member(service.repo, demoted)
+			}
+		}
+	}
+	if target_instance_id != "" {
+		coordinator := domain.Task_Chain_Member{
+			chain_id = chain.chain_id,
+			agent_instance_id = target_instance_id,
+			owner_user_id = chain.owner_user_id,
+			role = "coordinator",
+			created_at = now,
+		}
+		iface.taskchain_save_member(service.repo, coordinator)
+	}
+	return coordinator_sync_mirror(service, chain)
 }
 
 list_chains :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -> ([]domain.Task_Chain, domain.Domain_Error) {
@@ -155,6 +218,20 @@ list_chains :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -
 		return filtered[:], domain.Domain_Error{}
 	}
 	return chains, domain.Domain_Error{}
+}
+
+// list_chains_coordinated_by (H9 R4): the chains an agent instance coordinates,
+// from the single canonical source (members table, role='coordinator'). When the
+// caller is an Instance_Token and no explicit target is given, defaults to the
+// caller's own instance. Owner-scoped: an instance token can only ever see its
+// own owner's chains.
+list_chains_coordinated_by :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, agent_instance_id: string) -> ([]domain.Task_Chain, domain.Domain_Error) {
+	owner, ok, err := ownership.owner_from_auth(auth)
+	if !ok do return nil, err
+	target := agent_instance_id
+	if target == "" && auth.kind == .Instance_Token do target = auth.agent_instance_id
+	if target == "" do return nil, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
+	return iface.taskchain_list_chains_by_coordinator(service.repo, target, owner)
 }
 
 get_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
@@ -194,7 +271,9 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		publish_state = .Draft,
 		status = .Active,
 		kind = kind,
-		coordinator_agent_instance_id = coordinator_id,
+		// coordinator_agent_instance_id is a DERIVED MIRROR (H9): it is stamped from
+		// the canonical members table below, never set as an independent authority.
+		coordinator_agent_instance_id = "",
 		default_reviewer_refs_json = default_reviewers,
 		created_at = now,
 		updated_at = now,
@@ -202,15 +281,19 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	saved_chain, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
 	if !save_ok do return domain.Task_Chain{}, false, save_err
 
-	if auth.kind == .Instance_Token && auth.agent_instance_id != "" {
+	// Write the coordinator to the SINGLE canonical source (members table), then
+	// stamp the derived mirror column. An instance creator defaults to coordinator;
+	// a user-token creator may name one via coordinator_agent_id.
+	if coordinator_id != "" {
 		member := domain.Task_Chain_Member{
 			chain_id = saved_chain.chain_id,
-			agent_instance_id = auth.agent_instance_id,
+			agent_instance_id = coordinator_id,
 			owner_user_id = owner,
 			role = "coordinator",
 			created_at = now,
 		}
 		iface.taskchain_save_member(service.repo, member)
+		saved_chain = coordinator_sync_mirror(service, saved_chain)
 	}
 
 	return saved_chain, true, domain.Domain_Error{}
@@ -225,12 +308,13 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	if input.title != "" do chain.title = input.title
 	if input.description != "" do chain.description = input.description
 	if input.has_coordinator {
-		// Setting/changing the coordinator: a non-empty target must belong to this
-		// chain (same-owner + membership), mirroring update_chain_coordinator.
+		// Setting/changing the coordinator goes through the SINGLE canonical source
+		// (members table) via set_chain_coordinator; the column is only the derived
+		// mirror. A non-empty target must belong to this chain (same-owner+membership).
 		if input.coordinator_agent_instance_id != "" {
 			if same, same_err := agent_instance_same_chain(service, input.coordinator_agent_instance_id, chain); !same do return domain.Task_Chain{}, false, same_err
 		}
-		chain.coordinator_agent_instance_id = input.coordinator_agent_instance_id
+		chain = set_chain_coordinator(service, chain, input.coordinator_agent_instance_id)
 	}
 	if input.status != "" {
 		st := chain_status_from_string(input.status)
@@ -851,7 +935,11 @@ add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		created_at = now,
 	}
 
-	return iface.taskchain_save_member(service.repo, member)
+	saved_member, saved_ok, save_err := iface.taskchain_save_member(service.repo, member)
+	// If a coordinator member was added/updated, keep the derived mirror column in
+	// sync with the canonical members table (H9).
+	if saved_ok && member_role == "coordinator" do _ = coordinator_sync_mirror(service, chain)
+	return saved_member, saved_ok, save_err
 }
 
 remove_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string) -> (bool, domain.Domain_Error) {
@@ -878,7 +966,11 @@ remove_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 		return false, domain.domain_error(.Conflict, "cannot remove sole coordinator from task chain")
 	}
 
-	return iface.taskchain_remove_member(service.repo, chain.chain_id, agent_instance_id, chain.owner_user_id)
+	removed, remove_err := iface.taskchain_remove_member(service.repo, chain.chain_id, agent_instance_id, chain.owner_user_id)
+	// If a coordinator member was removed, resync the derived mirror column from
+	// the canonical members table (H9).
+	if removed && is_target_coordinator do _ = coordinator_sync_mirror(service, chain)
+	return removed, remove_err
 }
 
 list_chain_members :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Member, domain.Domain_Error) {
@@ -1100,10 +1192,16 @@ get_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task
 update_chain_coordinator :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, coordinator_agent_instance_id: string) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
+	if auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
+		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can change the coordinator")
+	}
 	if coordinator_agent_instance_id != "" {
 		if same, same_err := agent_instance_same_chain(service, coordinator_agent_instance_id, chain); !same do return domain.Task_Chain{}, false, same_err
 	}
-	chain.coordinator_agent_instance_id = coordinator_agent_instance_id
+	// Change the coordinator through the SINGLE canonical source (members table);
+	// set_chain_coordinator demotes the old coordinator, promotes the target, and
+	// stamps the derived mirror column.
+	chain = set_chain_coordinator(service, chain, coordinator_agent_instance_id)
 	chain.updated_at = platform.clock_now(service.clock)
 	return iface.taskchain_save_chain(service.repo, chain)
 }

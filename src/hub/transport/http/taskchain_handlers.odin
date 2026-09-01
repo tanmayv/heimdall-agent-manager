@@ -56,10 +56,33 @@ taskchain_task_summary_json :: proc(task_id, chain_id: string) -> string {
 	return strings.to_string(b)
 }
 
+// has_coordinated_by reports whether the query string carries a coordinated_by
+// key (even empty), so an instance token can request "chains I coordinate" via
+// ?coordinated_by (value defaults to the caller's own instance server-side).
+has_coordinated_by :: proc(query: string) -> bool {
+	parts := strings.split(query, "&"); defer delete(parts)
+	for p in parts {
+		if p == "coordinated_by" do return true
+		if eq := strings.index_byte(p, '='); eq >= 0 && p[:eq] == "coordinated_by" do return true
+	}
+	return false
+}
+
 list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
+	// H9 R4: ?coordinated_by=<instance_id> returns the chains that agent instance
+	// coordinates (single canonical source). An empty value with an instance token
+	// defaults to the caller's own instance. Owner-scoped in the service.
+	if has_coordinated_by(req.query) {
+		coord_chains, coord_err := taskchain_service.list_chains_coordinated_by(h.taskchains, auth_ctx, query_value(req.query, "coordinated_by"))
+		if coord_err.code != .None do return respond_error(coord_err, req.request_id)
+		cb := strings.builder_make(); strings.write_byte(&cb, '[')
+		for chain, i in coord_chains { if i > 0 do strings.write_byte(&cb, ','); write_chain_json(&cb, chain) }
+		strings.write_byte(&cb, ']')
+		return respond_list(strings.to_string(cb), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+	}
 	chains, err := taskchain_service.list_chains(h.taskchains, auth_ctx)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')

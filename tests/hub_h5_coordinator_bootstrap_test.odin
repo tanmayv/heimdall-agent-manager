@@ -112,14 +112,21 @@ main :: proc() {
 	check(!worker_ok && worker_err.code == .Forbidden, "a worker member must not have coordinator authority")
 
 	// (3) PATCH can change the designated coordinator to another same-chain instance.
+	// H9 single-source semantics: this DEMOTES the previous coordinator member
+	// (alice_coord) and promotes alice_coord2, so authority moves with it.
 	changed, chg_ok, chg_err := taskchain_service.update_chain(&service, alice_auth, chain.chain_id, taskchain_service.Update_Chain_Input{coordinator_agent_instance_id = alice_coord2, has_coordinator = true})
 	check(chg_ok && changed.coordinator_agent_instance_id == alice_coord2, chg_err.message)
+	// The previous coordinator (alice_coord) was demoted to a plain member and no
+	// longer has coordinator authority (single canonical source).
+	_, demoted_ok, demoted_err := taskchain_service.update_chain(&service, alice_auth, chain.chain_id, taskchain_service.Update_Chain_Input{description = "old coordinator can't"})
+	check(!demoted_ok && demoted_err.code == .Forbidden, "demoted previous coordinator must lose authority")
 
 	// Setting a coordinator that does not belong to the chain must be rejected.
+	// Use the CURRENT coordinator (alice_coord2) as the actor.
 	outsider := "inst_alice_outsider"
 	data.instances[data.instance_count] = domain.Agent_Instance{agent_instance_id = outsider, owner_user_id = "alice", agent_id = "agt_a"} // no chain, not a member
 	data.instance_count += 1
-	_, bad_ok, bad_err := taskchain_service.update_chain(&service, alice_auth, chain.chain_id, taskchain_service.Update_Chain_Input{coordinator_agent_instance_id = outsider, has_coordinator = true})
+	_, bad_ok, bad_err := taskchain_service.update_chain(&service, coord2_auth, chain.chain_id, taskchain_service.Update_Chain_Input{coordinator_agent_instance_id = outsider, has_coordinator = true})
 	check(!bad_ok && bad_err.code == .Conflict, "coordinator target must belong to the same chain")
 
 	fmt.println("PASS: hub H5 coordinator bootstrap authority")

@@ -506,6 +506,12 @@ ALTER TABLE memories ADD COLUMN template_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE memories ADD COLUMN bridge_id TEXT NOT NULL DEFAULT '';
 `
 
+MIGRATION_018_COORDINATOR_MEMBER_BACKFILL :: `INSERT OR IGNORE INTO task_chain_members (chain_id, agent_instance_id, agent_id, owner_user_id, role, created_at)
+SELECT c.chain_id, c.coordinator_agent_instance_id, '', c.owner_user_id, 'coordinator', c.created_at
+FROM task_chains c
+WHERE c.coordinator_agent_instance_id IS NOT NULL AND c.coordinator_agent_instance_id <> ''
+  AND NOT EXISTS (SELECT 1 FROM task_chain_members m WHERE m.chain_id = c.chain_id AND m.role = 'coordinator');`
+
 MIGRATION_017_CHAT_MESSAGE_TYPES :: `ALTER TABLE chat_messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text';
 ALTER TABLE chat_messages ADD COLUMN message_status TEXT NOT NULL DEFAULT 'complete';
 ALTER TABLE chat_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
@@ -574,7 +580,7 @@ ON CONFLICT(memory_id) DO UPDATE SET
   updated_at=excluded.updated_at;
 `
 
-migration_order :: [17]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql"}
+migration_order :: [18]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -635,6 +641,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "015_memory_target_scope.sql" do return strings.clone(MIGRATION_015_MEMORY_TARGET_SCOPE)
 	if name == "016_memory_workflow_skill_memory.sql" do return strings.clone(MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY)
 	if name == "017_chat_message_types.sql" do return strings.clone(MIGRATION_017_CHAT_MESSAGE_TYPES)
+	if name == "018_coordinator_member_backfill.sql" do return strings.clone(MIGRATION_018_COORDINATOR_MEMBER_BACKFILL)
 	return ""
 }
 

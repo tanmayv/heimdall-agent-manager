@@ -22,6 +22,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		save_member = taskchain_save_member_sqlite,
 		remove_member = taskchain_remove_member_sqlite,
 		list_members_by_chain = taskchain_list_members_by_chain_sqlite,
+		list_chains_by_coordinator = taskchain_list_chains_by_coordinator_sqlite,
 		save_dependency = taskchain_save_dependency_sqlite,
 		remove_dependency = taskchain_remove_dependency_sqlite,
 		list_dependencies_by_chain = taskchain_list_dependencies_by_chain_sqlite,
@@ -152,6 +153,21 @@ taskchain_list_members_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Tas
 	bind_text(stmt, 1, string(chain_id)); bind_text(stmt, 2, string(owner_user_id))
 	out := make([dynamic]domain.Task_Chain_Member)
 	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, member_from_stmt(stmt))
+	return out[:], domain.Domain_Error{}
+}
+
+// H9 reverse query: the chains an agent instance coordinates (canonical members
+// table, role='coordinator'), owner-scoped. Joins so authority derives from the
+// single source, not the derived mirror column.
+taskchain_list_chains_by_coordinator_sqlite :: proc(ctx: rawptr, agent_instance_id: string, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "SELECT c.chain_id, c.owner_user_id, c.title, c.description, c.publish_state, c.status, c.kind, c.coordinator_agent_instance_id, c.default_reviewer_refs_json, c.created_at, c.updated_at, c.published_at, c.completed_at FROM task_chains c JOIN task_chain_members m ON m.chain_id = c.chain_id AND m.owner_user_id = c.owner_user_id WHERE m.role = 'coordinator' AND m.agent_instance_id = ? AND c.owner_user_id = ? ORDER BY c.updated_at DESC;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare chains-by-coordinator list")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, agent_instance_id); bind_text(stmt, 2, string(owner_user_id))
+	out := make([dynamic]domain.Task_Chain)
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, chain_from_stmt(stmt))
 	return out[:], domain.Domain_Error{}
 }
 

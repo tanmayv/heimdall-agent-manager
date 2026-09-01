@@ -459,7 +459,8 @@ bridge_local_relay_instance_lifecycle :: proc(method, params: string, rec: Bridg
 bridge_local_is_admin_method :: proc(method: string) -> bool {
 	return method == "agent.agents.list" || method == "agent.agents.create" ||
 		method == "agent.templates.list" || method == "agent.templates.create" ||
-		method == "agent.bridges.list" || method == "agent.projects.list"
+		method == "agent.bridges.list" || method == "agent.projects.list" ||
+		method == "agent.chains.coordinated"
 }
 
 // bridge_local_admin_method_route is the PURE method -> (http_method, hub path)
@@ -474,6 +475,9 @@ bridge_local_admin_method_route :: proc(method: string) -> (string, string) {
 	case "agent.templates.create": return "POST", "/api/v1/templates"
 	case "agent.bridges.list": return "GET", "/api/v1/bridges"
 	case "agent.projects.list": return "GET", "/api/v1/projects"
+	// H9 R4: chains this agent coordinates. Empty coordinated_by => hub defaults to
+	// the caller's own instance (from its instance token), so no id is spoofable.
+	case "agent.chains.coordinated": return "GET", "/api/v1/task-chains?coordinated_by="
 	}
 	return "", ""
 }
