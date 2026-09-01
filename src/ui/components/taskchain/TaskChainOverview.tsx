@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
@@ -86,11 +86,28 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
 
   // Local state
-  const [descExpanded, setDescExpanded] = useState(true);
+  // H12: chain description collapsed by default so the chain view is scannable.
+  const [descExpanded, setDescExpanded] = useState(false);
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentAttachments, setCommentAttachments] = useState<Record<string, CommentAttachment[]>>({});
   const [statusMenuOpenTaskId, setStatusMenuOpenTaskId] = useState<string | null>(null);
+  // H12: single quick-actions menu open at a time (mirrors statusMenuOpenTaskId).
+  const [actionsMenuOpenTaskId, setActionsMenuOpenTaskId] = useState<string | null>(null);
+  const actionsMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // H12: close the quick-actions menu on outside-click (one-open-at-a-time).
+  useEffect(() => {
+    if (!actionsMenuOpenTaskId) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (actionsMenuRef.current && !actionsMenuRef.current.contains(e.target as Node)) {
+        setActionsMenuOpenTaskId(null);
+        setStatusMenuOpenTaskId(null);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [actionsMenuOpenTaskId]);
 
   // Modal state
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
@@ -524,38 +541,22 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       >
                         {task.title}
                       </div>
-                      {task.description && (
-                        <p
-                          data-debug-id={`taskchain-task-description-${taskId}`}
-                          className="mt-1 whitespace-pre-wrap text-[11.5px] leading-5 text-zinc-300"
-                        >
-                          {task.description}
-                        </p>
-                      )}
-                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-zinc-400">
-                        {task.assigneeRef && (
+                      {/* H12: compact header shows ONLY the assignee; the full
+                          description + reviewers live in the expanded block. */}
+                      {task.assigneeRef && (
+                        <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-zinc-400">
                           <span data-debug-id={`taskchain-task-assignee-${taskId}`}>
                             assignee: {task.assigneeRef.agent_instance_id
                               ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
                               : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
                           </span>
-                        )}
-                        {task.reviewerRefs && task.reviewerRefs.length > 0 && (
-                          <span data-debug-id={`taskchain-task-reviewers-${taskId}`}>
-                            reviewers: {task.reviewerRefs.map((r: any, ri: number) => (
-                              <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
-                                {ri > 0 ? ', ' : ''}
-                                {r.agent_instance_id
-                                  ? <InstanceIdLink instanceId={r.agent_instance_id} />
-                                  : <span className="text-zinc-300">{r.user_id}</span>}
-                              </React.Fragment>
-                            ))}
-                          </span>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
+                  {/* H12: compact right side — status/blocked badges + a single
+                      quick-actions MENU button (actionable without expanding). */}
                   <div className="flex items-center gap-2">
                     {task.blocked && (
                       <span
@@ -571,76 +572,117 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     >
                       {task.status}
                     </span>
-                  </div>
-                </div>
-
-                {/* Quick Action Buttons Strip */}
-                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-2">
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
-                    onClick={() => handleNudge(taskId)}
-                    className="rounded bg-zinc-800 px-2 py-1 text-[11px] font-semibold text-zinc-300 hover:bg-zinc-700"
-                  >
-                    Nudge
-                  </button>
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
-                    onClick={() => handleVote(taskId, 'lgtm')}
-                    className="rounded bg-emerald-950 px-2 py-1 text-[11px] font-semibold text-emerald-400 border border-emerald-800 hover:bg-emerald-900"
-                  >
-                    LGTM
-                  </button>
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
-                    onClick={() => handleVote(taskId, 'ngtm')}
-                    className="rounded bg-red-950 px-2 py-1 text-[11px] font-semibold text-red-400 border border-red-800 hover:bg-red-900"
-                  >
-                    NGTM
-                  </button>
-
-                  {/* Status Dropdown Menu */}
-                  <div className="relative inline-block text-left">
-                    <button
-                      type="button"
-                      data-debug-id={`taskchain-task-status-menu-btn-${taskId}`}
-                      onClick={() => setStatusMenuOpenTaskId(statusMenuOpenTaskId === taskId ? null : taskId)}
-                      className="rounded bg-zinc-800 px-2 py-1 text-[11px] font-semibold text-zinc-300 hover:bg-zinc-700"
+                    <div
+                      className="relative inline-block text-left"
+                      ref={actionsMenuOpenTaskId === taskId ? actionsMenuRef : undefined}
                     >
-                      Status ▾
-                    </button>
-                    {statusMenuOpenTaskId === taskId && (
-                      <div className="absolute right-0 z-20 mt-1 w-32 rounded border border-white/10 bg-[#181818] shadow-lg">
-                        {['in_progress', 'in_validation', 'paused', 'completed'].map((st) => (
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-actions-menu-btn-${taskId}`}
+                        aria-haspopup="menu"
+                        aria-expanded={actionsMenuOpenTaskId === taskId}
+                        title="Quick actions"
+                        onClick={() => {
+                          setActionsMenuOpenTaskId(actionsMenuOpenTaskId === taskId ? null : taskId);
+                          setStatusMenuOpenTaskId(null);
+                        }}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-[13px] font-semibold text-zinc-300 hover:bg-zinc-700"
+                      >
+                        ⋯
+                      </button>
+                      {actionsMenuOpenTaskId === taskId && (
+                        <div
+                          data-debug-id={`taskchain-task-actions-menu-${taskId}`}
+                          className="absolute right-0 z-30 mt-1 w-40 rounded border border-white/10 bg-[#181818] p-1 shadow-lg"
+                        >
                           <button
-                            key={st}
                             type="button"
-                            data-debug-id={`taskchain-task-status-${st}-btn-${taskId}`}
-                            onClick={() => handleStatusChange(taskId, st)}
-                            className="block w-full px-3 py-1.5 text-left text-[11px] text-zinc-300 hover:bg-white/10"
+                            data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
+                            onClick={() => { setActionsMenuOpenTaskId(null); void handleNudge(taskId); }}
+                            className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 hover:bg-white/10"
                           >
-                            {st}
+                            Nudge
                           </button>
-                        ))}
-                      </div>
-                    )}
+                          <button
+                            type="button"
+                            data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
+                            onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'lgtm'); }}
+                            className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-emerald-400 hover:bg-emerald-900/40"
+                          >
+                            LGTM
+                          </button>
+                          <button
+                            type="button"
+                            data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
+                            onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'ngtm'); }}
+                            className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-red-400 hover:bg-red-900/40"
+                          >
+                            NGTM
+                          </button>
+                          {/* Status submenu (kept inline; one status list at a time). */}
+                          <button
+                            type="button"
+                            data-debug-id={`taskchain-task-status-menu-btn-${taskId}`}
+                            onClick={() => setStatusMenuOpenTaskId(statusMenuOpenTaskId === taskId ? null : taskId)}
+                            className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 hover:bg-white/10"
+                          >
+                            Status ▾
+                          </button>
+                          {statusMenuOpenTaskId === taskId && (
+                            <div className="ml-2 border-l border-white/10 pl-1">
+                              {['in_progress', 'in_validation', 'paused', 'completed'].map((st) => (
+                                <button
+                                  key={st}
+                                  type="button"
+                                  data-debug-id={`taskchain-task-status-${st}-btn-${taskId}`}
+                                  onClick={() => { setActionsMenuOpenTaskId(null); setStatusMenuOpenTaskId(null); void handleStatusChange(taskId, st); }}
+                                  className="block w-full rounded px-3 py-1.5 text-left text-[11px] text-zinc-300 hover:bg-white/10"
+                                >
+                                  {st}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
+                            onClick={() => { setActionsMenuOpenTaskId(null); void handleCancelTask(taskId); }}
+                            className="mt-0.5 block w-full rounded border-t border-white/10 px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-400 hover:bg-red-900/50 hover:text-red-300"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
-                    onClick={() => handleCancelTask(taskId)}
-                    className="rounded bg-zinc-800 px-2 py-1 text-[11px] font-semibold text-zinc-400 hover:bg-red-900/50 hover:text-red-300"
-                  >
-                    Cancel
-                  </button>
                 </div>
 
                 {/* Expanded Card Details (Description & Comments) */}
                 {isExpanded && (
                   <div className="mt-3 border-t border-white/5 pt-3 space-y-3">
+                    {/* H12: full description shows ONLY when expanded. */}
+                    {task.description && (
+                      <p
+                        data-debug-id={`taskchain-task-description-${taskId}`}
+                        className="whitespace-pre-wrap text-[11.5px] leading-5 text-zinc-300"
+                      >
+                        {task.description}
+                      </p>
+                    )}
+                    {/* H12: reviewers moved into the expanded details to keep the
+                        collapsed header to a compact single line. */}
+                    {task.reviewerRefs && task.reviewerRefs.length > 0 && (
+                      <div data-debug-id={`taskchain-task-reviewers-${taskId}`} className="text-[11px] text-zinc-400">
+                        reviewers: {task.reviewerRefs.map((r: any, ri: number) => (
+                          <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
+                            {ri > 0 ? ', ' : ''}
+                            {r.agent_instance_id
+                              ? <InstanceIdLink instanceId={r.agent_instance_id} />
+                              : <span className="text-zinc-300">{r.user_id}</span>}
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    )}
                     {/* Comments Thread */}
                     <div data-debug-id={`taskchain-task-comments-${taskId}`} className="space-y-2">
                       <span className="font-semibold text-zinc-400">Comments:</span>
