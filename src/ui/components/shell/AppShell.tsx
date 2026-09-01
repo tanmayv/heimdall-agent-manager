@@ -7,6 +7,7 @@ import ConversationThreadPage from '../chat/ConversationThreadPage';
 import CommandPalette from '../command-palette/CommandPalette';
 import Icon, { type IconName } from '../Icon';
 import { useViewport, MobileTabBar, MobileTopBar } from './responsive';
+import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
 import { useUserWebSocket } from '../../api/useUserWebSocket';
 import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
@@ -73,6 +74,8 @@ type ConversationSummary = {
   participants?: any[];
   bridgeId?: string;
   runtimeStatus?: string;
+  // H13: activity_status so the sidebar dot animates only when working.
+  activityStatus?: string;
 };
 
 type ProjectSummary = {
@@ -330,6 +333,7 @@ function sidebarConversationToSummary(c: SidebarConversation, agentNamesById: Ma
     participants: c.participants,
     bridgeId: c.bridgeId,
     runtimeStatus: c.runtimeStatus,
+    activityStatus: c.activityStatus,
   };
 }
 
@@ -472,11 +476,13 @@ const DOT_COLOR_CLASSES: Record<string, { solid: string; half: string }> = {
 function StatusDot({
   bridgeId,
   runtimeStatus,
+  activityStatus,
   debugId,
   label,
 }: {
   bridgeId?: string;
   runtimeStatus?: string;
+  activityStatus?: string;
   debugId?: string;
   label?: string;
 }) {
@@ -484,16 +490,18 @@ function StatusDot({
   const isLive = state === 'live';
   const isStarting = state === 'starting' || state === 'stopping';
   const isRunning = isLive || isStarting;
+  const working = isAgentWorking(state, activityStatus);
   const colorKey = isRunning ? bridgeColorSlot(bridgeId) : 'zinc';
   const colorStyle = DOT_COLOR_CLASSES[colorKey] || DOT_COLOR_CLASSES.zinc;
 
   let tooltip = label ? `${label} · ` : '';
   tooltip += isRunning ? `running on ${bridgeId || 'unknown bridge'}` : 'not running';
-  if (runtimeStatus) tooltip += ` (${runtimeStatus})`;
+  if (runtimeStatus) tooltip += ` (${runtimeStatus}${working ? ', working' : ''})`;
 
   let dot;
   if (isLive) {
-    dot = <span className={`h-2 w-2 rounded-full ${colorStyle.solid} animate-pulse`} />;
+    // H13: pulse ONLY when actually working; live-idle => static solid dot.
+    dot = <span className={`h-2 w-2 rounded-full ${colorStyle.solid}${working ? ' animate-pulse' : ''}`} />;
   } else if (isStarting) {
     dot = <span className={`h-2 w-2 rounded-full ${colorStyle.half} animate-pulse`} />;
   } else {
@@ -505,6 +513,7 @@ function StatusDot({
       data-debug-id={debugId}
       data-bridge-color={colorKey}
       data-live-state={state}
+      data-working={working ? 'true' : 'false'}
       title={tooltip}
       aria-label={tooltip}
       className="inline-flex items-center justify-center shrink-0"
@@ -569,6 +578,7 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
                   <StatusDot
                     bridgeId={conversation.bridgeId}
                     runtimeStatus={conversation.runtimeStatus}
+                    activityStatus={conversation.activityStatus}
                     debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
                     label={displayConversationTitle(conversation)}
                   />

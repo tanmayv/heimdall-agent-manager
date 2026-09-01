@@ -47,6 +47,9 @@ export type SidebarConversation = {
   participants?: SidebarConversationParticipant[];
   bridgeId?: string;
   runtimeStatus?: string;
+  // H13: activity_status of the agent instance, so the sidebar dot animates ONLY
+  // when the agent is actually working (not merely live-idle).
+  activityStatus?: string;
 };
 
 export type ConversationInboxPage = {
@@ -73,6 +76,7 @@ function normalizeSidebarConversation(raw: any): SidebarConversation {
   const projectId = String(raw?.project_id || raw?.projectId || 'default-conversations');
   const bridgeId = String(raw?.bridge_id || raw?.bridgeId || '').trim() || undefined;
   const runtimeStatus = String(raw?.runtime_status || raw?.runtimeStatus || raw?.status || '').trim() || undefined;
+  const activityStatus = String(raw?.activity_status || raw?.activityStatus || '').trim() || undefined;
   const lastMessageRaw = raw?.last_message || raw?.lastMessage || null;
   const lastMessagePreview = String(lastMessageRaw?.body_preview || lastMessageRaw?.bodyPreview || raw?.last_message_preview || raw?.lastMessagePreview || '');
   const lastMessageAt = String(lastMessageRaw?.created_at || lastMessageRaw?.createdAt || raw?.last_message_at || raw?.lastMessageAt || raw?.updated_at || raw?.updatedAt || '');
@@ -117,6 +121,7 @@ function normalizeSidebarConversation(raw: any): SidebarConversation {
     participants,
     bridgeId,
     runtimeStatus,
+    activityStatus,
   };
 }
 
