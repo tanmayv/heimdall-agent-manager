@@ -108,6 +108,13 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 				fmt.eprintln("ham-wrapper: local token invalidated (superseded runtime); terminating child and exiting", cfg.agent_instance_id)
 				_ = os.process_kill(process)
 				_, _ = os.process_wait(process, 0)
+				// Close our own tmux pane so the window disappears as a direct
+				// consequence of THIS wrapper self-reaping (e.g. after an operator
+				// stop invalidates the token). Without this the login shell that
+				// hosts us lingers on its "Agent exited. Press Enter to close..."
+				// read, leaving an empty window behind. This is wrapper-side cleanup
+				// of its OWN pane — the bridge still issues no tmux/kill commands.
+				if strings.trim_space(cfg.pane_id) != "" do _ = tmux.kill_pane(cfg.pane_id)
 				return true
 			}
 			last_liveness = now

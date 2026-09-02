@@ -16,6 +16,10 @@ BRIDGE_START_SUCCESS_PROMPT_INTERVAL_MS :: 60_000
 BRIDGE_ACTIVITY_ACTIVE_SOURCE_TTL_MS :: 12_000
 BRIDGE_ACTIVITY_IDLE_SOURCE_TTL_MS :: 30_000
 BRIDGE_STATE_SEQ_FLOOR_OFFSET_MS :: 3_600_000
+// How long an operator stop suppresses wrapper-signal resurrection. Long enough
+// to cover a slow wrapper teardown + one or two liveness ticks, short enough that
+// a genuine relaunch of the SAME instance id is never blocked (launch clears it).
+BRIDGE_STOP_INTENT_TTL_MS :: 15_000
 
 Bridge_Runtime_Instance :: struct {
 	agent_instance_id: string,
@@ -28,6 +32,11 @@ Bridge_Runtime_Instance :: struct {
 	start_deadline_unix_ms: i64,
 	start_success_seen: bool,
 	last_start_prompt_unix_ms: i64,
+	// stopped_intent_unix_ms is set when an operator-requested stop begins. While it
+	// is recent (< BRIDGE_STOP_INTENT_TTL_MS) a late wrapper liveness/subscribe
+	// signal is IGNORED for status purposes so it cannot resurrect an intentionally
+	// stopped instance back to running/starting. A fresh launch clears it.
+	stopped_intent_unix_ms: i64,
 }
 
 Bridge_Runtime_Command_Result :: struct {
@@ -477,6 +486,8 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, string) {
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id"
+	// A genuine (re)launch supersedes any prior stop intent for this instance id.
+	bridge_runtime_clear_stop_intent(instance_id)
 	if existing, ok := bridge_runtime_get_launch(instance_id); ok {
 		_ = tmux.kill_window(existing.tmux_session, existing.tmux_window)
 	}
@@ -523,18 +534,32 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	return true, ""
 }
 
+// bridge_runtime_stop_agent stops a running agent by INVALIDATING its local token
+// only — ZERO tmux involvement. The bridge never runs kill/pane commands. Instead
+// it relies on the wrapper's H7 self-reap: the ham-wrapper pings the bridge every
+// ~1s (wrapper.liveness.ping); once the token is invalid the bridge answers with
+// an auth failure, and the wrapper kills its own child agent and exits within ~1s
+// (src/wrapper/bridge_runtime.odin). Because the local-token store is persisted to
+// disk on invalidate (agent_token_store.odin -> local-tokens.jsonl), this survives
+// a bridge restart: after relaunch the reissued/invalid token still makes the
+// superseded wrapper self-terminate, with no in-memory launch record needed. A
+// stopped agent then sends no further heartbeats, so heartbeat presence is the
+// source of truth for runtime_status.
 bridge_runtime_stop_agent :: proc(instance_id: string) -> bool {
 	if strings.trim_space(instance_id) == "" do return false
+	// Record the operator's intent to stop, so a late/duplicate wrapper signal that
+	// races the ~1s self-reap window cannot resurrect the instance back to
+	// running/starting (see bridge_runtime_note_activity_signal).
+	bridge_runtime_mark_stop_intent(instance_id)
 	bridge_runtime_set_status(instance_id, "stopping", "idle")
-	stopped := false
-	if launch, ok := bridge_runtime_get_launch(instance_id); ok {
-		stopped = tmux.kill_window(launch.tmux_session, launch.tmux_window)
-		bridge_runtime_remove_launch(instance_id)
-	} else {
-		stopped = true
-	}
+	// Invalidate every local token for this instance (persisted to disk). The
+	// wrapper self-reaps on its next liveness ping; the bridge does nothing else.
+	invalidated := bridge_agent_token_invalidate_instance(instance_id)
+	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated, "(wrapper will self-reap)")
+	// Drop any in-memory launch record so we don't hold stale pane/token data.
+	bridge_runtime_remove_launch(instance_id)
 	bridge_runtime_set_status(instance_id, "stopped", "idle")
-	return stopped
+	return true
 }
 
 bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, command_json: string) -> string {
@@ -986,6 +1011,14 @@ bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activi
 	activity := bridge_runtime_normalize_activity_status(activity_status)
 	should_prompt := false
 	sync.mutex_lock(&bridge_runtime_mutex)
+	// Stop-intent guard: if an operator stop is in flight for this instance, drop
+	// the signal so a late/racing wrapper liveness or subscribe cannot resurrect a
+	// deliberately stopped instance back to running/starting. The intent is
+	// time-boxed (BRIDGE_STOP_INTENT_TTL_MS) and cleared by a genuine relaunch.
+	if bridge_runtime_stop_intent_active_locked(instance_id, now) {
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		return
+	}
 	if inst, ok := bridge_runtime_instance_snapshot_locked(instance_id); ok {
 		// A wrapper or extension activity signal proves the local process is alive,
 		// but it is NOT equivalent to agent start-success. Any pre-success state
@@ -1014,6 +1047,50 @@ bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activi
 	should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, true)
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	if should_prompt do bridge_wrapper_push_startup_prompt(instance_id)
+}
+
+// bridge_runtime_mark_stop_intent records that an operator-requested stop has
+// begun for this instance. It creates the in-memory record if missing (e.g. after
+// a bridge restart where the registry is empty) so the tombstone survives the
+// subsequent set_status calls and blocks resurrection by a late wrapper signal.
+bridge_runtime_mark_stop_intent :: proc(instance_id: string) {
+	if strings.trim_space(instance_id) == "" do return
+	now := bridge_runtime_now_ms()
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_runtime_instances) {
+		if bridge_runtime_instances[i].agent_instance_id == instance_id {
+			bridge_runtime_instances[i].stopped_intent_unix_ms = now
+			return
+		}
+	}
+	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = "stopping", activity_status = "idle", last_seen_unix_ms = now, stopped_intent_unix_ms = now})
+}
+
+// bridge_runtime_clear_stop_intent removes the stop tombstone (called when a
+// genuine launch/relaunch of the same instance begins).
+bridge_runtime_clear_stop_intent :: proc(instance_id: string) {
+	if strings.trim_space(instance_id) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_runtime_instances) {
+		if bridge_runtime_instances[i].agent_instance_id == instance_id {
+			bridge_runtime_instances[i].stopped_intent_unix_ms = 0
+			return
+		}
+	}
+}
+
+// bridge_runtime_stop_intent_active_locked reports whether a recent stop intent is
+// still in effect. Caller must hold bridge_runtime_mutex.
+bridge_runtime_stop_intent_active_locked :: proc(instance_id: string, now: i64) -> bool {
+	for i in 0..<len(bridge_runtime_instances) {
+		if bridge_runtime_instances[i].agent_instance_id == instance_id {
+			ts := bridge_runtime_instances[i].stopped_intent_unix_ms
+			return ts > 0 && now - ts < i64(BRIDGE_STOP_INTENT_TTL_MS)
+		}
+	}
+	return false
 }
 
 bridge_runtime_mark_start_success :: proc(instance_id: string) {
