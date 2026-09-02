@@ -183,11 +183,15 @@ test_assignee_serialization :: proc() {
 	a, _, _ := task_get(&r, "task_a")
 	b, _, _ := task_get(&r, "task_b")
 	check(a.status == .In_Progress, "earliest-created task must win the assignee slot")
-	check(b.status == .Assigned, "second task must wait while assignee busy")
+	// Phase 2: the runner-up work task for a busy assignee is demoted to Queued
+	// (held back), not left in Assigned, so exactly one work item is active.
+	check(b.status == .Queued, "second task must be queued while assignee busy")
 
 	// While inst_x is busy, no further promotion.
 	n = taskchain_service.recompute_chain_promotions(&service, chain)
 	check(n == 0, "busy assignee must not get a second in_progress task")
+	b, _, _ = task_get(&r, "task_b")
+	check(b.status == .Queued, "runner-up stays queued on a stable recompute")
 }
 
 // --- Nudge decision math ---

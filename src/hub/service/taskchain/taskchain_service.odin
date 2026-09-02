@@ -83,6 +83,11 @@ Update_Task_Input :: struct {
 	description: string,
 	assignee_ref_json: string,
 	reviewer_refs_json: string,
+	// priority sets the task priority (P0/P1/P2). has_priority distinguishes an
+	// explicit change from "field absent" so a PATCH that omits priority leaves it
+	// untouched. A priority change re-orders the auto-promotion selection.
+	priority: domain.Task_Priority,
+	has_priority: bool,
 	depends_on: []domain.Task_ID,
 	has_depends_on: bool,
 }
@@ -423,6 +428,8 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 		description = input.description,
 		publish_state = chain.publish_state,
 		status = .Assigned,
+		// Tasks default to the lowest priority (P2) unless explicitly escalated.
+		priority = .P2,
 		assignee_ref_json = assignee_ref,
 		reviewer_refs_json = reviewer_refs,
 		created_at = now,
@@ -436,6 +443,12 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 			return domain.Task{}, false, dep_err
 		}
 	}
+
+	// Reconcile current_task pointers: a new Published+Assigned task on an active
+	// chain is immediately actionable, so recompute keeps the persisted pointer
+	// authoritative (the Phase-3 gate depends on it) and lets a higher-priority
+	// new task preempt a busy assignee per Phase-2 ordering.
+	_ = recompute_promotions_for_chain_id(service, chain.chain_id)
 
 	return saved_task, true, domain.Domain_Error{}
 }
@@ -454,10 +467,16 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 		}
 	}
 
+	// Remember the prior assignee so a reassign-away can clear that instance's
+	// current_task pointer if it no longer holds the task (CT-7 consistency).
+	prev_assignee := primary_assignee_instance(task.assignee_ref_json)
+	defer delete(prev_assignee)
+
 	if input.title != "" do task.title = input.title
 	if input.description != "" do task.description = input.description
 	if input.assignee_ref_json != "" do task.assignee_ref_json = input.assignee_ref_json
 	if input.reviewer_refs_json != "" do task.reviewer_refs_json = input.reviewer_refs_json
+	if input.has_priority do task.priority = input.priority
 
 	// Resolve durable agent_id refs into concrete agent_instance refs before validation.
 	if norm, norm_ok, norm_err := normalize_actor_refs(service, chain, task.assignee_ref_json); norm_ok { task.assignee_ref_json = norm } else { return domain.Task{}, false, norm_err }
@@ -466,6 +485,18 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	task.updated_at = platform.clock_now(service.clock)
 	saved, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if !save_ok do return domain.Task{}, false, save_err
+
+	// CT-7: if the assignee changed, the previous assignee may have been focused on
+	// this task. If its stale current_task now points at a task it no longer owns,
+	// clear it; the chain recompute below re-selects a focus for everyone still
+	// referenced (including the new assignee).
+	new_assignee := primary_assignee_instance(saved.assignee_ref_json)
+	defer delete(new_assignee)
+	if prev_assignee != "" && prev_assignee != new_assignee && service.agents != nil {
+		if inst, inst_ok, _ := iface.agent_get_instance(service.agents, prev_assignee); inst_ok {
+			if inst.current_task_id == string(saved.task_id) do clear_instance_current_task(service, prev_assignee)
+		}
+	}
 
 	if input.has_depends_on {
 		// clear existing deps and add new ones
@@ -481,6 +512,9 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 			}
 		}
 	}
+
+	// Reconcile current-task focus after any assignee/reviewer/dependency change.
+	_ = recompute_promotions_for_chain_id(service, chain.chain_id)
 
 	return saved, true, domain.Domain_Error{}
 }
@@ -504,7 +538,12 @@ publish_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	task.status = .Assigned
 	task.published_at = now
 	task.updated_at = now
-	return iface.taskchain_save_task(service.repo, task)
+	saved, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
+	if !save_ok do return domain.Task{}, false, save_err
+	// A freshly-published task is immediately actionable; reconcile pointers so the
+	// gate stays authoritative and the assignee is surfaced/preempted correctly.
+	_ = recompute_promotions_for_chain_id(service, chain.chain_id)
+	return saved, true, domain.Domain_Error{}
 }
 
 change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, next: domain.Task_Status) -> (domain.Task, bool, domain.Domain_Error) {
@@ -547,13 +586,16 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	if next == .Completed || next == .Cancelled do task.completed_at = now
 	task_ret, saved_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if saved_ok {
+		// Auto-promotion + auto-advance (CT-4/CT-5) runs FIRST so every instance's
+		// persisted current_task pointer is up to date before we notify: a terminal
+		// transition unblocks dependents, entering/leaving In_Progress frees or
+		// claims the work slot, and entering In_Validation makes the task a review
+		// focus for its reviewers. recompute persists focus + wakes any newly
+		// promoted assignees. Then the gated status-change notify (CT-6) wakes only
+		// the recipients whose current_task is THIS task, with the correct action
+		// label (R8). Ordering matters: gating reads the persisted pointer.
+		_ = recompute_chain_promotions(service, chain)
 		notify_task_status_change(service, auth, task_ret, chain)
-		// Auto-promotion: a terminal transition may unblock dependents, and freeing
-		// an assignee slot (leaving In_Progress) may let a queued task auto-claim.
-		// Recompute the chain so the promoted status persists and shows on refresh.
-		if task_is_terminal(next) || next == .Paused || next == .Validated_Good {
-			_ = recompute_chain_promotions(service, chain)
-		}
 	}
 	return task_ret, saved_ok, save_err
 }
@@ -561,32 +603,55 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task: domain.Task, chain: domain.Task_Chain) {
 	if service.bridge_command_sink.send_runtime_command == nil do return
 	actor_agent_instance_id := auth.agent_instance_id if auth.kind == .Instance_Token else ""
-	
+
+	// CT-6 gating: the bridge derives its wake targets from the assignee/reviewer
+	// id arrays by status. We gate those arrays here through the recipient's
+	// persisted current_task so only instances whose current task is THIS task are
+	// woken (fail-open when the pointer is unset/unknown). The explicit "action"
+	// field states work-vs-review per R8 for unambiguous messaging.
+	all_assignees := extract_instances_from_ref_blob(task.assignee_ref_json)
+	defer delete(all_assignees)
+	all_reviewers := extract_instances_from_ref_blob(task.reviewer_refs_json)
+	defer delete(all_reviewers)
+	all_def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
+	defer delete(all_def_reviewers)
+
+	assignees := make([dynamic]string)
+	defer delete(assignees)
+	for id in all_assignees { if allowed, _ := notification_allowed_for_recipient(service, id, task); allowed do append(&assignees, id) }
+	reviewers := make([dynamic]string)
+	defer delete(reviewers)
+	for id in all_reviewers { if allowed, _ := notification_allowed_for_recipient(service, id, task); allowed do append(&reviewers, id) }
+	def_reviewers := make([dynamic]string)
+	defer delete(def_reviewers)
+	for id in all_def_reviewers { if allowed, _ := notification_allowed_for_recipient(service, id, task); allowed do append(&def_reviewers, id) }
+
+	action := action_for_status(task.status)
+	// R8: never fire a wake with an empty action — those statuses (assigned/queued/
+	// paused/validated_good/terminal) do not wake anyone here, so a notify would
+	// carry no actionable meaning. The status change still persists + recomputes;
+	// this only suppresses a meaningless wake command.
+	if action == "" do return
+	message := status_notify_message(task, action)
+	defer delete(message)
+
+	// Bridges to notify: the union of gated recipients' bridges plus the
+	// coordinator's (kept for cross-bridge fan-out parity). A bridge that ends up
+	// with no gated local target simply wakes no one — harmless.
 	instance_ids := make([dynamic]string)
 	defer delete(instance_ids)
-	
 	if chain.coordinator_agent_instance_id != "" do append(&instance_ids, chain.coordinator_agent_instance_id)
-	
-	assignees := extract_instances_from_ref_blob(task.assignee_ref_json)
-	defer delete(assignees)
 	for id in assignees do append(&instance_ids, id)
-	
-	reviewers := extract_instances_from_ref_blob(task.reviewer_refs_json)
-	defer delete(reviewers)
 	for id in reviewers do append(&instance_ids, id)
-	
-	def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
-	defer delete(def_reviewers)
 	for id in def_reviewers do append(&instance_ids, id)
-	
+
 	bridge_ids := make(map[string]bool)
 	defer delete(bridge_ids)
-	
 	for id in instance_ids {
 		inst, inst_ok, _ := iface.agent_get_instance(service.agents, id)
 		if inst_ok && inst.bridge_id != "" do bridge_ids[inst.bridge_id] = true
 	}
-	
+
 	for bridge_id in bridge_ids {
 		cmd_id := platform.generate_id(service.ids, "cmd_")
 		b := strings.builder_make()
@@ -598,6 +663,10 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 		contracts.write_json_string(&b, string(task.chain_id))
 		strings.write_string(&b, `","new_status":"`)
 		contracts.write_json_string(&b, task_status_string(task.status))
+		strings.write_string(&b, `","action":"`)
+		contracts.write_json_string(&b, action)
+		strings.write_string(&b, `","message":"`)
+		contracts.write_json_string(&b, message)
 		strings.write_string(&b, `","assignee_instance_ids":[`)
 		for id, i in assignees { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, `"`); contracts.write_json_string(&b, id); strings.write_string(&b, `"`) }
 		strings.write_string(&b, `],"reviewer_instance_ids":[`)
@@ -630,47 +699,81 @@ notify_task_comment :: proc(service: ^Taskchain_Service, author_agent_instance_i
 	if service.agents == nil do return
 	chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
 	if !chain_ok do return
-	role := nudge_target_for_status(task.status)
-	if role == .None do return
-	target := resolve_target_instance(service, chain, task, role)
-	defer delete(target)
-	if strings.trim_space(target) == "" do return
-	// Don't notify the author about their own comment.
-	if target == author_agent_instance_id do return
-	inst, inst_ok, _ := iface.agent_get_instance(service.agents, target)
-	if !inst_ok || inst.bridge_id == "" do return
+
+	// R4: a comment notifies ALL assignees + participants (assignees, reviewers,
+	// chain default reviewers), but per-recipient GATED on CT-6 — a participant is
+	// only woken if this task is THAT participant's persisted current task. The
+	// author is never self-notified, and each recipient is notified at most once.
+	candidates := make([dynamic]string)
+	defer delete(candidates)
+	seen := make(map[string]bool)
+	defer delete(seen)
+	add_candidate :: proc(candidates: ^[dynamic]string, seen: ^map[string]bool, id: string) {
+		t := strings.trim_space(id)
+		if t == "" do return
+		if seen[t] do return
+		seen[t] = true
+		append(candidates, t)
+	}
+	assignees := extract_instances_from_ref_blob(task.assignee_ref_json)
+	defer delete(assignees)
+	for id in assignees do add_candidate(&candidates, &seen, id)
+	reviewers := extract_instances_from_ref_blob(task.reviewer_refs_json)
+	defer delete(reviewers)
+	for id in reviewers do add_candidate(&candidates, &seen, id)
+	def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
+	defer delete(def_reviewers)
+	for id in def_reviewers do add_candidate(&candidates, &seen, id)
+
 	now := platform.clock_now(service.clock)
-	cmd_id := platform.generate_id(service.ids, "cmd_")
-	message := strings.concatenate({"New comment on task ", string(task.task_id)})
-	defer delete(message)
-	b := strings.builder_make()
-	defer strings.builder_destroy(&b)
-	strings.write_string(&b, `{"type":"notify_task_nudge","origin":"comment","command_id":"`)
-	contracts.write_json_string(&b, cmd_id)
-	strings.write_string(&b, `","agent_instance_id":"`)
-	contracts.write_json_string(&b, target)
-	strings.write_string(&b, `","task_id":"`)
-	contracts.write_json_string(&b, string(task.task_id))
-	strings.write_string(&b, `","chain_id":"`)
-	contracts.write_json_string(&b, string(task.chain_id))
-	strings.write_string(&b, `","target_instance_id":"`)
-	contracts.write_json_string(&b, target)
-	strings.write_string(&b, `","target_role":"`)
-	contracts.write_json_string(&b, target_string(role))
-	strings.write_string(&b, `","task_status":"`)
-	contracts.write_json_string(&b, task_status_string(task.status))
-	strings.write_string(&b, `","message":"`)
-	contracts.write_json_string(&b, message)
-	strings.write_string(&b, `","created_at":"`)
-	contracts.write_json_string(&b, now)
-	strings.write_string(&b, `"}`)
-	_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
+
+	for target in candidates {
+		// Don't notify the author about their own comment.
+		if target == author_agent_instance_id do continue
+		// CT-6 gate: only wake a participant whose current task is this task.
+		action, gated_ok := notification_gate_action(service, target, task.task_id)
+		if !gated_ok do continue
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, target)
+		if !inst_ok || inst.bridge_id == "" do continue
+		// R8: human-readable message states the action (work vs review) + title.
+		message := comment_notify_message(task, action)
+		defer delete(message)
+		cmd_id := platform.generate_id(service.ids, "cmd_")
+		b := strings.builder_make()
+		strings.write_string(&b, `{"type":"notify_task_nudge","origin":"comment","command_id":"`)
+		contracts.write_json_string(&b, cmd_id)
+		strings.write_string(&b, `","agent_instance_id":"`)
+		contracts.write_json_string(&b, target)
+		strings.write_string(&b, `","task_id":"`)
+		contracts.write_json_string(&b, string(task.task_id))
+		strings.write_string(&b, `","chain_id":"`)
+		contracts.write_json_string(&b, string(task.chain_id))
+		strings.write_string(&b, `","target_instance_id":"`)
+		contracts.write_json_string(&b, target)
+		strings.write_string(&b, `","target_role":"`)
+		contracts.write_json_string(&b, action)
+		strings.write_string(&b, `","action":"`)
+		contracts.write_json_string(&b, action)
+		strings.write_string(&b, `","task_status":"`)
+		contracts.write_json_string(&b, task_status_string(task.status))
+		strings.write_string(&b, `","message":"`)
+		contracts.write_json_string(&b, message)
+		strings.write_string(&b, `","created_at":"`)
+		contracts.write_json_string(&b, now)
+		strings.write_string(&b, `"}`)
+		_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
+		strings.builder_destroy(&b)
+	}
 }
 
 valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	if current == next do return true
 	switch current {
-	case .Assigned: return next == .In_Progress || next == .Paused || next == .Cancelled
+	case .Assigned: return next == .Queued || next == .In_Progress || next == .Paused || next == .Cancelled
+	// Queued is a holding state managed by the auto-promotion engine: it may be
+	// promoted back to Assigned/In_Progress when the instance is free, or paused/
+	// cancelled.
+	case .Queued: return next == .Assigned || next == .In_Progress || next == .Paused || next == .Cancelled
 	case .In_Progress: return next == .In_Validation || next == .Paused || next == .Cancelled
 	// In_Validation -> Completed is legal: it is the quorum auto-finalize path
 	// (evaluate_task_quorum advances a fully-approved task straight to Completed).
@@ -714,9 +817,124 @@ target_string :: proc(target: Nudge_Target) -> string {
 	return "none"
 }
 
+// nudge_target_action maps a Nudge_Target to the canonical R8 action label used
+// consistently across every task notification ("work" for assignee, "review" for
+// reviewer, "coordinate" for coordinator, "" for none). This keeps the wrapper's
+// parsing uniform: every task notify carries an "action" field.
+nudge_target_action :: proc(target: Nudge_Target) -> string {
+	switch target {
+	case .Assignee:    return "work"
+	case .Reviewer:    return "review"
+	case .Coordinator: return "coordinate"
+	case .None:        return ""
+	}
+	return ""
+}
+
+// current_task_role_action maps a persisted Current_Task_Role to the R8 action
+// label the notification must state: "work" (assignee) or "review" (reviewer).
+// Returns "" for None (the instance has no current task).
+current_task_role_action :: proc(role: domain.Current_Task_Role) -> string {
+	switch role {
+	case .Work:   return "work"
+	case .Review: return "review"
+	case .None:   return ""
+	}
+	return ""
+}
+
+// notification_gate_action is the STRICT CT-6 gate used for comment fan-out (R4):
+// it returns (action, true) ONLY when `task_id` is exactly `instance_id`'s
+// persisted current task, deriving the work-vs-review action from the persisted
+// role. Any other case — pointer unset, different task, no role, or no agent repo
+// — returns ("", false). Unlike notification_allowed_for_recipient (used for
+// status-change wakes, which fail open on an unknown pointer), comments are purely
+// informational and must never wake a participant who is not currently focused on
+// the task, so this variant fails CLOSED.
+notification_gate_action :: proc(service: ^Taskchain_Service, instance_id: string, task_id: domain.Task_ID) -> (string, bool) {
+	if service == nil || service.agents == nil do return "", false
+	if strings.trim_space(instance_id) == "" do return "", false
+	inst, ok, _ := iface.agent_get_instance(service.agents, instance_id)
+	if !ok do return "", false
+	if inst.current_task_id != string(task_id) do return "", false
+	action := current_task_role_action(inst.current_task_role)
+	if action == "" do return "", false
+	return action, true
+}
+
+// action_for_status is the R8 action label implied by a status-change wake: the
+// bridge wakes the ASSIGNEE (work) when a task enters In_Progress or bounces back
+// Validated_Not_Good (rework), and the REVIEWER (review) when it enters
+// In_Validation. Other statuses do not wake anyone here.
+action_for_status :: proc(status: domain.Task_Status) -> string {
+	#partial switch status {
+	case .In_Progress, .Validated_Not_Good: return "work"
+	case .In_Validation:                     return "review"
+	}
+	return ""
+}
+
+// task_display_name returns the task's human title, falling back to its id when
+// the title is empty, so notification messages are always readable.
+task_display_name :: proc(task: domain.Task) -> string {
+	t := strings.trim_space(task.title)
+	if t != "" do return t
+	return string(task.task_id)
+}
+
+// status_notify_message builds the natural-language wake message for a
+// status-change notify, derived from the R8 action + task title (R8: every notify
+// must say WORK / REVIEW unambiguously). Validated_Not_Good is phrased as a rework
+// request so the assignee knows changes were requested.
+status_notify_message :: proc(task: domain.Task, action: string) -> string {
+	name := task_display_name(task)
+	switch action {
+	case "review": return strings.concatenate({"Review requested: ", name})
+	case "work":
+		if task.status == .Validated_Not_Good do return strings.concatenate({"Rework requested (changes requested): ", name})
+		return strings.concatenate({"Work ready: ", name})
+	}
+	return strings.concatenate({"Task updated: ", name})
+}
+
+// comment_notify_message builds the natural-language wake message for a comment
+// notify, stating whether the recipient should now work or review (R8) + title.
+comment_notify_message :: proc(task: domain.Task, action: string) -> string {
+	name := task_display_name(task)
+	switch action {
+	case "review": return strings.concatenate({"New comment on \"", name, "\" — please REVIEW"})
+	case "work":   return strings.concatenate({"New comment on \"", name, "\" — please continue WORK"})
+	}
+	return strings.concatenate({"New comment on \"", name, "\""})
+}
+
+// notification_allowed_for_recipient implements CT-6 gating with a fail-open bias:
+// a recipient is SUPPRESSED only when we positively know its persisted current
+// task is a DIFFERENT task. When the instance's current_task is this task we allow
+// with the persisted role's action label; when the pointer is unset/unknown (or no
+// agent repo is wired) we allow with the status-implied action, so legitimate
+// cross-bridge/replay/promotion wakes are never dropped just because a pointer has
+// not been computed yet. The net effect is the intended noise reduction: an
+// instance actively focused on task B is never woken for an event on task A, while
+// still guaranteeing an agent is woken for its own current task.
+notification_allowed_for_recipient :: proc(service: ^Taskchain_Service, instance_id: string, task: domain.Task) -> (bool, string) {
+	status_action := action_for_status(task.status)
+	if service == nil || service.agents == nil do return true, status_action
+	if strings.trim_space(instance_id) == "" do return true, status_action
+	inst, ok, _ := iface.agent_get_instance(service.agents, instance_id)
+	if !ok do return true, status_action
+	if inst.current_task_id == "" do return true, status_action
+	if inst.current_task_id != string(task.task_id) do return false, ""
+	// Positively this recipient's current task: prefer the persisted role's label.
+	action := current_task_role_action(inst.current_task_role)
+	if action == "" do action = status_action
+	return true, action
+}
+
 task_status_string :: proc(status: domain.Task_Status) -> string {
 	switch status {
 	case .Assigned: return "assigned"
+	case .Queued: return "queued"
 	case .In_Progress: return "in_progress"
 	case .In_Validation: return "in_validation"
 	case .Validated_Good: return "validated_good"
@@ -819,6 +1037,8 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		contracts.write_json_string(&b, nudge_id)
 		strings.write_string(&b, `","target_role":"`)
 		contracts.write_json_string(&b, target_string(target))
+		strings.write_string(&b, `","action":"`)
+		contracts.write_json_string(&b, nudge_target_action(target))
 		strings.write_string(&b, `","task_status":"`)
 		contracts.write_json_string(&b, task_status_string(task.status))
 		strings.write_string(&b, `","body":"`)
@@ -1004,13 +1224,25 @@ add_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 		created_at = now,
 	}
 
-	return iface.taskchain_save_dependency(service.repo, dep)
+	saved_dep, dep_save_ok, dep_save_err := iface.taskchain_save_dependency(service.repo, dep)
+	if !dep_save_ok do return domain.Task_Dependency{}, false, dep_save_err
+	// Adding a dependency can make a task non-actionable (newly blocked); reconcile
+	// pointers so a task that WAS a current focus but is now blocked is advanced off
+	// and the gate stays authoritative.
+	_ = recompute_promotions_for_chain_id(service, task.chain_id)
+	return saved_dep, true, domain.Domain_Error{}
 }
 
 remove_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id, depends_on_task_id: domain.Task_ID) -> (bool, domain.Domain_Error) {
 	task, ok, err := get_task(service, auth, task_id)
 	if !ok do return false, err
-	return iface.taskchain_remove_dependency(service.repo, task.task_id, depends_on_task_id, task.owner_user_id)
+	removed, remove_err := iface.taskchain_remove_dependency(service.repo, task.task_id, depends_on_task_id, task.owner_user_id)
+	if remove_err.code != .None do return removed, remove_err
+	// Removing a dependency can UNBLOCK a task (make it actionable); reconcile
+	// pointers so the freshly-unblocked task is promoted/surfaced to its assignee
+	// instead of being gated out behind a stale pointer.
+	_ = recompute_promotions_for_chain_id(service, task.chain_id)
+	return removed, remove_err
 }
 
 list_chain_dependencies :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Dependency, domain.Domain_Error) {
@@ -1130,9 +1362,18 @@ evaluate_task_quorum :: proc(service: ^Taskchain_Service, task: domain.Task) {
 		t.updated_at = now
 		if updated_status == .Completed do t.completed_at = now
 		saved, ok, _ := iface.taskchain_save_task(service.repo, t)
-		// A Completed task frees its reviewer/assignee and unblocks dependents;
-		// recompute so downstream tasks auto-claim and show on refresh.
-		if ok && updated_status == .Completed {
+		// CT-10: recompute whenever a review RESOLVES the task, not just on the
+		// Completed path. Both outcomes change an instance's current focus:
+		//   * Completed (LGTM quorum): frees the reviewer + unblocks dependents so
+		//     downstream tasks auto-claim.
+		//   * Validated_Not_Good (any NGTM): the reviewer is done reviewing and must
+		//     advance to its next focus, AND the not-good task re-enters the
+		//     assignee's promotable pool (work_status_is_actionable includes
+		//     Validated_Not_Good) so auto-promotion flows the rework back to the
+		//     assignee without a manual bump.
+		// Guarding on updated_status != task.status keeps this a single recompute
+		// per real resolution and a no-op for idempotent/duplicate votes.
+		if ok && updated_status != task.status {
 			chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, saved.chain_id)
 			if chain_ok do _ = recompute_chain_promotions(service, chain)
 		}
@@ -1167,6 +1408,8 @@ list_task_votes :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Contex
 
 nudge_target_for_status :: proc(status: domain.Task_Status) -> Nudge_Target {
 	switch status {
+	// Queued tasks are held back deliberately, so they do not target a nudge.
+	case .Queued: return .None
 	case .Assigned, .In_Progress, .Validated_Not_Good, .Paused: return .Assignee
 	case .In_Validation: return .Reviewer
 	case .Validated_Good: return .Coordinator

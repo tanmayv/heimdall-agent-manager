@@ -131,6 +131,20 @@ publish_agent_messages_read :: proc(h:^Agent_Action_Handlers, owner_user_id:stri
 	events.publish_raw_to_user(h.event_bus, owner_user_id, messages_read_event_json(c, message_ids, reader_instance_id))
 }
 
+// publish_current_task_changed emits a live resource_changed event on an agent
+// instance's current task pointer so the dashboard updates its work-vs-review
+// banner without a manual refresh (CT-9). Fire-and-forget; no-op without a bus.
+publish_current_task_changed :: proc(h: ^Agent_Action_Handlers, owner_user_id, agent_instance_id, current_task_id, current_task_role: string) {
+	if h == nil || h.event_bus == nil || owner_user_id == "" do return
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, `{"agent_instance_id":"`); write_handler_json_string(&b, agent_instance_id)
+	strings.write_string(&b, `","current_task_id":"`); write_handler_json_string(&b, current_task_id)
+	strings.write_string(&b, `","current_task_role":"`); write_handler_json_string(&b, current_task_role)
+	strings.write_string(&b, `"}`)
+	events.publish_resource_changed(h.event_bus, owner_user_id, "agent_instance", agent_instance_id, "current_task_changed", strings.to_string(b))
+}
+
 agent_action_agents_live_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, _, ok, resp := require_instance_action_auth(h, req)
@@ -192,6 +206,32 @@ agent_action_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	if !changed do return respond_error(err, req.request_id)
 	b := strings.builder_make()
 	write_task_json(&b, task)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// agent_action_task_set_current_handler lets an agent set its OWN current task
+// (CT-9 self-service focus switch). The instance is taken from the authenticated
+// token, so an agent can only move its own pointer. The service validates that the
+// agent is the task's assignee/reviewer and that the task is actionable, persists
+// the pointer, notifies (R8 action label), and we emit a live event.
+agent_action_task_set_current_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	task_id := domain.Task_ID(json_string(params, "task_id"))
+	if strings.trim_space(string(task_id)) == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
+	saved, set_ok, err := taskchain_service.set_instance_current_task(h.taskchains, auth, inst.agent_instance_id, task_id)
+	if !set_ok do return respond_error(err, req.request_id)
+	publish_current_task_changed(h, string(saved.owner_user_id), saved.agent_instance_id, saved.current_task_id, domain.current_task_role_string(saved.current_task_role))
+	b := strings.builder_make()
+	strings.write_string(&b, `{"agent_instance_id":"`)
+	write_handler_json_string(&b, saved.agent_instance_id)
+	strings.write_string(&b, `","current_task_id":"`)
+	write_handler_json_string(&b, saved.current_task_id)
+	strings.write_string(&b, `","current_task_role":"`)
+	write_handler_json_string(&b, domain.current_task_role_string(saved.current_task_role))
+	strings.write_string(&b, `"}`)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
@@ -439,15 +479,31 @@ require_instance_action_auth :: proc(h: ^Agent_Action_Handlers, req: Request) ->
 	return auth, inst, true, Response{}
 }
 
+// write_agent_current_task_json serializes the instance's SERVER-AUTHORITATIVE
+// current task (CT-8/CT-9): it resolves the persisted current_task_id to the task
+// and emits it with the persisted role (work|review), rather than inferring from
+// status. Falls back to null when the pointer is unset or the task is gone.
 write_agent_current_task_json :: proc(b: ^strings.Builder, h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, inst: domain.Agent_Instance) {
-	if h.taskchains == nil || inst.chain_id == "" { strings.write_string(b, "null"); return }
+	if h.taskchains == nil || inst.chain_id == "" || inst.current_task_id == "" { strings.write_string(b, "null"); return }
 	tasks, err := taskchain_service.list_tasks(h.taskchains, auth, domain.Task_Chain_ID(inst.chain_id))
 	if err.code != .None { strings.write_string(b, "null"); return }
 	for task in tasks {
-		if strings.contains(task.assignee_ref_json, inst.agent_instance_id) && (task.status == .In_Progress || task.status == .Assigned) {
-			write_task_json(b, task)
+		if string(task.task_id) == inst.current_task_id {
+			write_current_task_json(b, task, inst.current_task_role)
 			return
 		}
 	}
 	strings.write_string(b, "null")
+}
+
+// write_current_task_json emits a task with its work-vs-review role + priority so
+// the agent/UI can render the current-task banner unambiguously (R8).
+write_current_task_json :: proc(b: ^strings.Builder, task: domain.Task, role: domain.Current_Task_Role) {
+	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(task.task_id))
+	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(task.chain_id))
+	strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, task.title)
+	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(task.status))
+	strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(task.priority))
+	strings.write_string(b, "\",\"role\":\""); write_handler_json_string(b, domain.current_task_role_string(role))
+	strings.write_string(b, "\"}")
 }

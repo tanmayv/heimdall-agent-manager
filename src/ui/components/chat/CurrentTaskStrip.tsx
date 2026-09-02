@@ -18,16 +18,53 @@ export type CurrentTaskStripProps = {
   onVote?: (taskId: string, approved: boolean) => void | Promise<void>;
   // Open the task detail in the full chain view.
   onOpenTask?: (taskId: string) => void;
+  // CT-9: candidate tasks the agent can be switched to (assignee/reviewer of).
+  // When provided with onSwitchCurrentTask, renders a manual "switch current task"
+  // control (user/coordinator action).
+  switchableTasks?: TaskLike[];
+  onSwitchCurrentTask?: (taskId: string) => void | Promise<void>;
+  // CT-3: change this task's priority (P0/P1/P2) — user/coordinator action.
+  onSetPriority?: (taskId: string, priority: string) => void | Promise<void>;
   collapsed?: boolean;
 };
 
 function statusTone(status: string): string {
   const s = status.toLowerCase();
   if (s === 'in_progress') return 'bg-teal-500/15 text-teal-200 border-teal-500/30';
-  if (s === 'review_ready') return 'bg-sky-500/15 text-sky-200 border-sky-500/30';
+  if (s === 'review_ready' || s === 'in_validation') return 'bg-sky-500/15 text-sky-200 border-sky-500/30';
+  if (s === 'validated_not_good') return 'bg-rose-500/15 text-rose-200 border-rose-500/30';
   if (s === 'blocked') return 'bg-rose-500/15 text-rose-200 border-rose-500/30';
-  if (s === 'queued' || s === 'ready' || s === 'planning') return 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30';
+  // CT-2: Queued is a distinct held-back state — amber so it reads as "waiting".
+  if (s === 'queued') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
+  if (s === 'ready' || s === 'planning') return 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30';
   return 'bg-white/5 text-zinc-400 border-white/10';
+}
+
+// CT-3: P0/P1/P2 priority indicator. P0 is most urgent (red), P1 amber, P2 muted.
+export function priorityOf(task: { priority?: string }): string {
+  return String(task?.priority || '').toLowerCase();
+}
+function priorityTone(priority: string): string {
+  const p = priority.toLowerCase();
+  if (p === 'p0') return 'bg-red-500/20 text-red-200 border-red-500/40';
+  if (p === 'p1') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
+  if (p === 'p2') return 'bg-zinc-500/10 text-zinc-400 border-zinc-500/25';
+  return '';
+}
+
+// R8: the current-task role rendered as an explicit WORK vs REVIEW action label.
+function roleActionLabel(role: string): string {
+  const r = String(role || '').toLowerCase();
+  if (r === 'reviewer') return 'REVIEW';
+  if (r === 'assignee' || r === 'assigned') return 'WORK';
+  if (r === 'coordinator') return 'COORDINATE';
+  return String(role || '').toUpperCase();
+}
+function roleActionTone(role: string): string {
+  const r = String(role || '').toLowerCase();
+  if (r === 'reviewer') return 'bg-sky-500/15 text-sky-200 border-sky-500/30';
+  if (r === 'assignee' || r === 'assigned') return 'bg-teal-500/15 text-teal-200 border-teal-500/30';
+  return 'bg-white/5 text-zinc-300 border-white/10';
 }
 
 // Derive the first 1-2 acceptance criteria from the chain description / task description.
@@ -60,6 +97,9 @@ export default function CurrentTaskStrip({
   onNudge,
   onVote,
   onOpenTask,
+  switchableTasks,
+  onSwitchCurrentTask,
+  onSetPriority,
   collapsed = false,
 }: CurrentTaskStripProps) {
   const [commenting, setCommenting] = useState(false);
@@ -68,6 +108,7 @@ export default function CurrentTaskStrip({
 
   const taskId = String(task.taskId || task.task_id || '');
   const status = taskStatusOf(task);
+  const priority = priorityOf(task as any);
   const title = String(task.title || taskId);
   const reviewer = taskReviewerOf(task);
   const userIsReviewer = isUserEffectiveReviewer(task);
@@ -103,8 +144,11 @@ export default function CurrentTaskStrip({
             <span className="truncate font-medium text-zinc-100">{title}</span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+            {/* R8: explicit WORK vs REVIEW action label for the current-task role. */}
+            <span data-debug-id={`${debugPrefix}-current-task-action`} data-current-task-action={roleActionLabel(role)} className={`rounded-full border px-2 py-0.5 font-semibold tracking-wide ${roleActionTone(role)}`}>{roleActionLabel(role)}</span>
             <span className={`rounded-full border px-2 py-0.5 ${statusTone(status)}`}>{status}</span>
-            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 capitalize">{role}</span>
+            {/* CT-3: P0/P1/P2 priority indicator (hidden when unknown). */}
+            {priorityTone(priority) ? <span data-debug-id={`${debugPrefix}-current-task-priority`} data-current-task-priority={priority} className={`rounded-full border px-2 py-0.5 font-semibold uppercase ${priorityTone(priority)}`}>{priority}</span> : null}
             <span>Assignee: <span className="text-zinc-300">{agentInstanceId}</span></span>
             {reviewer ? <span>Reviewer: <span className="text-zinc-300">{reviewer}</span></span> : null}
           </div>
@@ -131,6 +175,35 @@ export default function CurrentTaskStrip({
         ) : null}
         {onComment ? (
           <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-btn`} onClick={() => setCommenting((open) => !open)} className="rounded-full border border-white/10 px-2.5 py-1 text-zinc-300 hover:bg-white/10">Comment</button>
+        ) : null}
+        {/* CT-9: manual "switch current task" control (user/coordinator). */}
+        {onSwitchCurrentTask && switchableTasks && switchableTasks.length > 0 ? (
+          <select
+            data-debug-id={`${debugPrefix}-current-task-switch`}
+            value={taskId}
+            onChange={(event) => { const next = event.target.value; if (next && next !== taskId) void onSwitchCurrentTask(next); }}
+            className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] text-zinc-300 outline-none hover:bg-white/10"
+            title="Switch current task"
+          >
+            {switchableTasks.map((candidate) => {
+              const cid = String(candidate.taskId || candidate.task_id || '');
+              return <option key={cid} value={cid}>{String(candidate.title || cid)}</option>;
+            })}
+          </select>
+        ) : null}
+        {/* CT-3: set priority (P0/P1/P2) — user/coordinator. */}
+        {onSetPriority ? (
+          <select
+            data-debug-id={`${debugPrefix}-current-task-set-priority`}
+            value={priority || 'p2'}
+            onChange={(event) => { const next = event.target.value; if (next && next !== priority) void onSetPriority(taskId, next); }}
+            className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] uppercase text-zinc-300 outline-none hover:bg-white/10"
+            title="Set priority"
+          >
+            <option value="p0">P0</option>
+            <option value="p1">P1</option>
+            <option value="p2">P2</option>
+          </select>
         ) : null}
       </div>
 

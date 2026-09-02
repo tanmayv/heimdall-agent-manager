@@ -562,6 +562,7 @@ write_actionable_task_json :: proc(b: ^strings.Builder, t: taskchain_service.Act
 	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status))
 	strings.write_string(b, "\",\"target_instance_id\":\""); write_handler_json_string(b, t.target_instance_id)
 	strings.write_string(b, "\",\"target_role\":\""); write_handler_json_string(b, taskchain_service.target_string(t.target_role))
+	strings.write_string(b, "\",\"action\":\""); write_handler_json_string(b, t.action)
 	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, t.updated_at)
 	strings.write_string(b, "\",\"deps_satisfied\":"); strings.write_string(b, "true" if t.deps_satisfied else "false")
 	strings.write_string(b, "}")

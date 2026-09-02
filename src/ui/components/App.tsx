@@ -73,6 +73,7 @@ import ConversationWorkspaceTab from './chat/ConversationWorkspaceTab';
 import AgentSessionsTab from './chat/AgentSessionsTab';
 import AgentBridgesTab from './chat/AgentBridgesTab';
 import { useChatChainWork } from './chat/useChatChainWork';
+import { switchableTasksFor } from './chat/chainTaskInference';
 import ContextInspector from './workspace/ContextInspector';
 import GenericAgentWorkspacePage from './workspace/GenericAgentWorkspacePage';
 import UnifiedWorkspaceShell from './workspace/UnifiedWorkspaceShell';
@@ -85,7 +86,7 @@ import { agentRemoteInfo, isRemoteProxyAgent, remoteAgentStatus, remoteAgentIsLi
 import { agentHasLiveSession } from '../api/agentLiveness';
 import { selectTaskCacheProjection, mergeTaskRecord } from '../api/taskCache';
 import { selectChainViewCacheProjection } from '../api/chainViewCache';
-import { useFetchChainTasksQuery, useFetchTaskLogQuery, useFetchTaskQuery, useFetchTaskCommentsQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
+import { useFetchChainTasksQuery, useFetchTaskLogQuery, useFetchTaskQuery, useFetchTaskCommentsQuery, useLazyFetchTaskLogPageQuery, useSetInstanceCurrentTaskMutation, useUpdateTaskPriorityMutation } from '../api/endpoints/tasks';
 import { chatEndpoints, useListConversationSummariesQuery, useLazyFetchConversationSummariesPageQuery } from '../api/endpoints/chats';
 import { upsertAgentInCaches, useCreateAgentInstanceInChainMutation, useFetchAgentQuery, useFetchPeerAgentTemplateQuery, useListAgentsQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation, useLazyFetchAgentsPageQuery } from '../api/endpoints/agents';
 import { useAnswerChatApprovalMutation, useDismissChatApprovalMutation, useExecuteMergeViaChainMutation, useFetchAttentionQuery, useListChatApprovalsQuery } from '../api/endpoints/attention';
@@ -1326,6 +1327,28 @@ export default function App() {
     }
   }, [dispatch]);
 
+  // CT-9 / CT-3: manual "switch current task" + set priority (user/coordinator).
+  const [setInstanceCurrentTaskMutation] = useSetInstanceCurrentTaskMutation();
+  const [updateTaskPriorityMutation] = useUpdateTaskPriorityMutation();
+  const setCurrentTaskFor = useCallback(async (agentInstanceId: string, task: { taskId: string; chainId: string }) => {
+    try {
+      await setInstanceCurrentTaskMutation({ chainId: task.chainId, taskId: task.taskId, agentInstanceId }).unwrap();
+      dispatch(showToast({ kind: 'success', title: 'Current task switched', message: task.taskId }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Switch failed', message: err?.message || 'Unable to switch current task' }));
+      throw err;
+    }
+  }, [dispatch, setInstanceCurrentTaskMutation]);
+  const setTaskPriority = useCallback(async (task: { taskId: string; chainId: string }, priority: string) => {
+    try {
+      await updateTaskPriorityMutation({ chainId: task.chainId, taskId: task.taskId, priority }).unwrap();
+      dispatch(showToast({ kind: 'success', title: 'Priority updated', message: `${task.taskId} → ${priority.toUpperCase()}` }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Priority update failed', message: err?.message || 'Unable to set priority' }));
+      throw err;
+    }
+  }, [dispatch, updateTaskPriorityMutation]);
+
   const openChainEditor = useCallback((chainId: string, taskId = '') => {
     setAgentPageId('');
     lastUrlChainFocusKeyRef.current = `chain-editor:${chainId}`;
@@ -1643,6 +1666,8 @@ export default function App() {
                 onSetTaskStatus={setTaskStatus}
                 onVoteTask={voteTask}
                 onNudgeTask={nudgeTask}
+                onSetCurrentTask={setCurrentTaskFor}
+                onSetTaskPriority={setTaskPriority}
               />
             ) : (
               <AgentDetailPage
@@ -1657,6 +1682,8 @@ export default function App() {
                 onSetTaskStatus={setTaskStatus}
                 onVoteTask={voteTask}
                 onNudgeTask={nudgeTask}
+                onSetCurrentTask={setCurrentTaskFor}
+                onSetTaskPriority={setTaskPriority}
                 onAgentDeleted={() => { setAgentPageId(''); refetchAgents(); }}
               />
             );
@@ -3544,7 +3571,7 @@ function ChainAgentsInspectorContent({ tasks = [], coordinatorAgentId = '', defa
   );
 }
 
-function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
+function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onSetCurrentTask, onSetTaskPriority }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -3618,7 +3645,12 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   }, [agent?.id]);
 
   // UI-6: derive Work chip / Review-needed / CurrentTaskStrip from the bound chain's cached tasks.
-  const chainWork = useChatChainWork(String(agent?.id || ''), String(agent?.chainId || ''));
+  const chainWork = useChatChainWork(
+    String(agent?.id || ''),
+    String(agent?.chainId || ''),
+    String(agent?.currentTaskId || agent?.current_task_id || ''),
+    String(agent?.currentTaskRole || agent?.current_task_role || ''),
+  );
 
   useEffect(() => {
     setEditName(agent?.label || agent?.id || '');
@@ -3944,6 +3976,9 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                       onNudge={(taskId: string) => onNudgeTask?.({ taskId, chainId: chainWork.chainId })}
                       onVote={(taskId: string, approved: boolean) => onVoteTask?.({ taskId, chainId: chainWork.chainId }, approved)}
                       onOpenTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }}
+                      switchableTasks={switchableTasksFor(chainWork.tasks, String(agent?.id || ''))}
+                      onSwitchCurrentTask={onSetCurrentTask ? (taskId: string) => onSetCurrentTask(String(agent?.id || ''), { taskId, chainId: chainWork.chainId }) : undefined}
+                      onSetPriority={onSetTaskPriority ? (taskId: string, priority: string) => onSetTaskPriority({ taskId, chainId: chainWork.chainId }, priority) : undefined}
                     />
                   ) : chainWork.chainId && chainWork.progress.total === 0 ? (
                     <div data-debug-id={`${detailAgentContext.debug.composerPrefix}-current-task-empty`} className="mb-2 rounded-xl border border-dashed border-white/10 bg-[#101010] px-3 py-2 text-[11.5px] text-zinc-500">No active task — ask the agent to make a plan.</div>
@@ -4118,7 +4153,7 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
   );
 }
 
-function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
+function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onSetCurrentTask, onSetTaskPriority }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -4152,7 +4187,12 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
   }, [agent?.id]);
 
   // UI-6: derive Work chip / Review-needed / CurrentTaskStrip from the bound chain's cached tasks.
-  const chainWork = useChatChainWork(String(agent?.id || ''), String(agent?.chainId || ''));
+  const chainWork = useChatChainWork(
+    String(agent?.id || ''),
+    String(agent?.chainId || ''),
+    String(agent?.currentTaskId || agent?.current_task_id || ''),
+    String(agent?.currentTaskRole || agent?.current_task_role || ''),
+  );
 
   const submit = async (payload?: ChatComposerSubmitPayload) => {
     const body = draft.trim();
@@ -4350,6 +4390,9 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                     onNudge={(taskId: string) => onNudgeTask?.({ taskId, chainId: chainWork.chainId })}
                     onVote={(taskId: string, approved: boolean) => onVoteTask?.({ taskId, chainId: chainWork.chainId }, approved)}
                     onOpenTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }}
+                    switchableTasks={switchableTasksFor(chainWork.tasks, String(agent?.id || ''))}
+                    onSwitchCurrentTask={onSetCurrentTask ? (taskId: string) => onSetCurrentTask(String(agent?.id || ''), { taskId, chainId: chainWork.chainId }) : undefined}
+                    onSetPriority={onSetTaskPriority ? (taskId: string, priority: string) => onSetTaskPriority({ taskId, chainId: chainWork.chainId }, priority) : undefined}
                   />
                 ) : chainWork.chainId && chainWork.progress.total === 0 ? (
                   <div data-debug-id={`${conversationAgentContext.debug.composerPrefix}-current-task-empty`} className="mb-2 rounded-xl border border-dashed border-white/10 bg-[#101010] px-3 py-2 text-[11.5px] text-zinc-500">No active task — ask the agent to make a plan.</div>

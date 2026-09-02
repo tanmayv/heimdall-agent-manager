@@ -125,6 +125,9 @@ export function mapAgent(agent: any) {
     activityCheckedUnixMs,
     activitySource,
     currentTaskId: agent.current_task_id || agent.currentTaskId || '',
+    // CT-9: server-authoritative current-task role (work|review) so the UI banner
+    // can label WORK vs REVIEW without inferring from status.
+    currentTaskRole: agent.current_task_role || agent.currentTaskRole || '',
     currentTaskSince: Number(agent.current_task_since ?? agent.currentTaskSince ?? 0),
     // UI-6: bound immutable chain for this instance (drives Work chip / CurrentTaskStrip / Work tab).
     chainId: agent.chain_id || agent.chainId || '',

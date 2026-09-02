@@ -309,6 +309,10 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 	strings.write_string(b, "\",\"stopped_at\":\""); write_handler_json_string(b, inst.stopped_at)
 	strings.write_string(b, "\",\"last_seen_at\":\""); write_handler_json_string(b, inst.last_seen_at)
 	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, inst.updated_at)
+	// CT-9: surface the server-authoritative current task pointer (id + role) so the
+	// dashboard can render the work-vs-review banner from persisted state.
+	strings.write_string(b, "\",\"current_task_id\":\""); write_handler_json_string(b, inst.current_task_id)
+	strings.write_string(b, "\",\"current_task_role\":\""); write_handler_json_string(b, domain.current_task_role_string(inst.current_task_role))
 	strings.write_string(b, "\"}")
 }
 

@@ -229,6 +229,32 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
     }),
+    // CT-3: set a task's priority (P0/P1/P2). The hub recomputes current-task
+    // selection so raising priority can preempt a busy assignee.
+    updateTaskPriority: build.mutation<any, { chainId: string; taskId: string; priority: string }>({
+      queryFn: async ({ chainId, taskId, priority }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}`, 'PATCH', { priority });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
+    }),
+    // CT-9: user/coordinator manual "switch current task" — pin a specific agent
+    // instance's current task to a task it is the assignee/reviewer of.
+    setInstanceCurrentTask: build.mutation<any, { chainId: string; taskId: string; agentInstanceId: string }>({
+      queryFn: async ({ chainId, taskId, agentInstanceId }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/current-task`, 'POST', { agent_instance_id: agentInstanceId });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
+    }),
     addChainMember: build.mutation<any, { chainId: string; agentInstanceId: string; role?: string }>({
       queryFn: async ({ chainId, agentInstanceId, role }) => {
         try {
@@ -615,6 +641,8 @@ export const {
   useUpdateTaskChainMutation,
   useUpdateTaskDetailMutation,
   useCancelTaskDetailMutation,
+  useUpdateTaskPriorityMutation,
+  useSetInstanceCurrentTaskMutation,
   useAddChainMemberMutation,
   useRemoveChainMemberMutation,
 

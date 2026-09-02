@@ -24,6 +24,8 @@ Actionable_Task :: struct {
 	status:              domain.Task_Status,
 	target_instance_id: string,
 	target_role:        Nudge_Target,
+	// action is the R8 work-vs-review label for the target ("work"|"review").
+	action:             string,
 	updated_at:         string,
 	deps_satisfied:     bool,
 }
@@ -70,12 +72,21 @@ actionable_tasks_for_instances :: proc(service: ^Taskchain_Service, owner: domai
 			if target == "" do continue
 			if !local[target] do continue
 
+			// CT-6/CT-8: gate the nudge on the target's PERSISTED current task. The
+			// nudger only fires for the recipient's current task (fail-open when the
+			// pointer is unset so we don't drop legitimate ready/stale nudges), and
+			// the row carries the R8 work-vs-review action so the bridge nudge is
+			// unambiguous.
+			allowed, action := notification_allowed_for_recipient(service, target, task)
+			if !allowed { delete(target); continue }
+
 			append(&out, Actionable_Task{
 				task_id            = task.task_id,
 				chain_id           = task.chain_id,
 				status             = task.status,
 				target_instance_id = target,
 				target_role        = role,
+				action             = action,
 				updated_at         = task.updated_at,
 				deps_satisfied     = deps_satisfied_for_task(tasks, deps, task.task_id),
 			})

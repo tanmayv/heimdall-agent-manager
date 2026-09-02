@@ -195,13 +195,19 @@ main :: proc() {
 	check(tm.status == .Completed, "2-of-2 approvals must auto-complete")
 	check(tm.completed_at != "", "multi-reviewer auto-complete must stamp completed_at")
 
-	// (c) ngtm still lands in Validated_Not_Good, never Completed.
+	// (c) ngtm never completes the task. After the NGTM resolution the task lands
+	// in Validated_Not_Good, and because its assignee (worker_x) has no other work,
+	// the auto-promotion engine immediately picks the rework back up as the
+	// assignee's current task and advances it to In_Progress (agents resume their
+	// own rework automatically). The invariant this scenario guards is that ngtm
+	// never yields Completed/Validated_Good.
 	seed_task(&repo_data, "task_reject", "chain_1",
 		`[{"agent_instance_id":"rev_a"}]`, `[{"agent_instance_id":"worker_x"}]`, .In_Validation)
 	_, _, _ = taskchain_service.record_task_vote(&service, contracts.Auth_Context{kind = .Instance_Token, user_id = "alice", agent_instance_id = "rev_a"},
 		taskchain_service.Vote_Input{task_id = "task_reject", vote = "ngtm"})
 	tr, _, _ := task_get(rawptr(&repo_data), "task_reject")
-	check(tr.status == .Validated_Not_Good, "ngtm must land in Validated_Not_Good")
+	check(tr.status == .In_Progress, "ngtm rework must auto-promote back to In_Progress for its assignee")
+	check(tr.status != .Completed && tr.status != .Validated_Good, "ngtm must never complete/approve the task")
 
 	// (d) Dependency promotion: when a parent auto-completes, an Assigned child
 	//     whose only dependency is that parent must promote to In_Progress.

@@ -580,7 +580,12 @@ ON CONFLICT(memory_id) DO UPDATE SET
   updated_at=excluded.updated_at;
 `
 
-migration_order :: [18]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql"}
+MIGRATION_019_CURRENT_TASK_AND_PRIORITY :: `ALTER TABLE agent_instances ADD COLUMN current_task_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_instances ADD COLUMN current_task_role TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'p2';
+`
+
+migration_order :: [19]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -596,6 +601,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			continue
 		}
 		if name == "017_chat_message_types.sql" && table_column_exists(conn, "chat_messages", "message_type") && table_column_exists(conn, "chat_messages", "message_status") && table_column_exists(conn, "chat_messages", "metadata_json") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "019_current_task_and_priority.sql" && table_column_exists(conn, "agent_instances", "current_task_id") && table_column_exists(conn, "agent_instances", "current_task_role") && table_column_exists(conn, "tasks", "priority") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -615,6 +624,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_task_chains_v2_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_chains_v2 schema upgrade failed")
 	if !upgrade_memory_target_scope_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory target scope schema upgrade failed")
 	if !upgrade_chat_message_types_schema(conn) do return false, domain.domain_error(.Internal_Error, "chat message type schema upgrade failed")
+	if !upgrade_current_task_and_priority_schema(conn) do return false, domain.domain_error(.Internal_Error, "current task + priority schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -642,6 +652,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "016_memory_workflow_skill_memory.sql" do return strings.clone(MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY)
 	if name == "017_chat_message_types.sql" do return strings.clone(MIGRATION_017_CHAT_MESSAGE_TYPES)
 	if name == "018_coordinator_member_backfill.sql" do return strings.clone(MIGRATION_018_COORDINATOR_MEMBER_BACKFILL)
+	if name == "019_current_task_and_priority.sql" do return strings.clone(MIGRATION_019_CURRENT_TASK_AND_PRIORITY)
 	return ""
 }
 
@@ -715,5 +726,12 @@ upgrade_chat_message_types_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "chat_messages", "message_type") && !exec(conn, "ALTER TABLE chat_messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text';") do return false
 	if !table_column_exists(conn, "chat_messages", "message_status") && !exec(conn, "ALTER TABLE chat_messages ADD COLUMN message_status TEXT NOT NULL DEFAULT 'complete';") do return false
 	if !table_column_exists(conn, "chat_messages", "metadata_json") && !exec(conn, "ALTER TABLE chat_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';") do return false
+	return true
+}
+
+upgrade_current_task_and_priority_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "agent_instances", "current_task_id") && !exec(conn, "ALTER TABLE agent_instances ADD COLUMN current_task_id TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "agent_instances", "current_task_role") && !exec(conn, "ALTER TABLE agent_instances ADD COLUMN current_task_role TEXT NOT NULL DEFAULT 'none';") do return false
+	if !table_column_exists(conn, "tasks", "priority") && !exec(conn, "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'p2';") do return false
 	return true
 }

@@ -89,7 +89,11 @@ main :: proc() {
 	r: Repo
 	a: Agents
 	// Assignee + coordinator instances, both on a bridge.
-	a.instances[0] = domain.Agent_Instance{agent_instance_id = "inst_assignee", owner_user_id = "alice", bridge_id = "brg_1", runtime_status = "idle"}
+	// CT-6: comment notifications are gated on the recipient's persisted current
+	// task. The assignee's current_task is task_1 (role work), so comments on
+	// task_1 wake it; the coordinator has no current task and is never a comment
+	// target here.
+	a.instances[0] = domain.Agent_Instance{agent_instance_id = "inst_assignee", owner_user_id = "alice", bridge_id = "brg_1", runtime_status = "idle", current_task_id = "task_1", current_task_role = .Work}
 	a.instances[1] = domain.Agent_Instance{agent_instance_id = "inst_coord", owner_user_id = "alice", bridge_id = "brg_1", runtime_status = "running"}
 	a.count = 2
 
@@ -114,6 +118,7 @@ main :: proc() {
 	check(strings.contains(captured.bodies[0], `"type":"notify_task_nudge"`), "notify command type must be notify_task_nudge")
 	check(strings.contains(captured.bodies[0], `"origin":"comment"`), "notify must be tagged origin=comment")
 	check(strings.contains(captured.bodies[0], "inst_assignee"), "notify must target the assignee")
+	check(strings.contains(captured.bodies[0], `"action":"work"`), "comment notify must state action=work (R8)")
 
 	// 2) The ASSIGNEE commenting on their OWN task must NOT self-notify.
 	captured.count = 0
@@ -129,6 +134,14 @@ main :: proc() {
 	check(ok3, "coordinator comment should save")
 	check(captured.count == 1, "coordinator comment must notify the assignee")
 	check(strings.contains(captured.bodies[0], "inst_assignee"), "coordinator comment targets assignee")
+
+	// 4) CT-6 GATING: if the assignee's current task is a DIFFERENT task, a comment
+	//    on task_1 (no longer its current task) must NOT wake it.
+	captured.count = 0
+	a.instances[0].current_task_id = "task_other"
+	_, ok4, _ := taskchain_service.comment_task(&service, coord_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "gated?"})
+	check(ok4, "coordinator comment should still save")
+	check(captured.count == 0, fmt.tprintf("comment must be gated out when task is not the recipient's current task, got %d", captured.count))
 
 	fmt.println("PASS: hub comment notify")
 }

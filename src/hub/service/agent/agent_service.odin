@@ -623,11 +623,18 @@ write_bootstrap_task_context :: proc(b: ^strings.Builder, service: ^Agent_Servic
 	if service.taskchains != nil && chain_ok {
 		tasks, err := iface.taskchain_list_tasks_by_chain(service.taskchains, chain.chain_id, chain.owner_user_id)
 		if err.code == .None {
-			for task in tasks {
-				if strings.contains(task.assignee_ref_json, inst.agent_instance_id) && (task.status == .In_Progress || task.status == .Assigned) {
-					write_bootstrap_task_json(b, task)
-					current_written = true
-					break
+			// CT-8: the current task is the SERVER-AUTHORITATIVE persisted pointer
+			// on the instance (set by the auto-promotion engine), not a transient
+			// client-side inference. Resolve the concrete task and surface its role
+			// (work vs review) so the bootstrap doc is a single source of truth. Fall
+			// back to null when the pointer is unset or the task is no longer present.
+			if inst.current_task_id != "" {
+				for task in tasks {
+					if string(task.task_id) == inst.current_task_id {
+						write_bootstrap_current_task_json(b, task, inst.current_task_role)
+						current_written = true
+						break
+					}
 				}
 			}
 			if !current_written do strings.write_string(b, "null")
@@ -646,6 +653,18 @@ write_bootstrap_task_context :: proc(b: ^strings.Builder, service: ^Agent_Servic
 	}
 	if !current_written do strings.write_string(b, "null")
 	strings.write_string(b, ",\"runnable_frontier\":[]}")
+}
+
+// write_bootstrap_current_task_json serializes the persisted current task with its
+// role (work|review) and priority so the agent's bootstrap doc states, without
+// ambiguity, whether the agent should WORK or REVIEW the task (R8/CT-8).
+write_bootstrap_current_task_json :: proc(b: ^strings.Builder, task: domain.Task, role: domain.Current_Task_Role) {
+	strings.write_string(b, "{\"task_id\":\""); write_service_json_string(b, string(task.task_id))
+	strings.write_string(b, "\",\"title\":\""); write_service_json_string(b, task.title)
+	strings.write_string(b, "\",\"status\":\""); write_service_json_string(b, task_status_string(task.status))
+	strings.write_string(b, "\",\"priority\":\""); write_service_json_string(b, domain.task_priority_string(task.priority))
+	strings.write_string(b, "\",\"role\":\""); write_service_json_string(b, domain.current_task_role_string(role))
+	strings.write_string(b, "\"}")
 }
 
 write_bootstrap_task_json :: proc(b: ^strings.Builder, task: domain.Task) {
@@ -1114,7 +1133,7 @@ resolve_project_path_for_launch :: proc(service: ^Agent_Service, owner: domain.U
 
 publish_state_string :: proc(state: domain.Publish_State) -> string { if state == .Published do return "published"; return "draft" }
 chain_status_string :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; return "active" }
-task_status_string :: proc(status: domain.Task_Status) -> string { switch status { case .Assigned: return "assigned"; case .In_Progress: return "in_progress"; case .In_Validation: return "in_validation"; case .Validated_Good: return "validated_good"; case .Validated_Not_Good: return "validated_not_good"; case .Paused: return "paused"; case .Completed: return "completed"; case .Cancelled: return "cancelled" }; return "assigned" }
+task_status_string :: proc(status: domain.Task_Status) -> string { switch status { case .Assigned: return "assigned"; case .Queued: return "queued"; case .In_Progress: return "in_progress"; case .In_Validation: return "in_validation"; case .Validated_Good: return "validated_good"; case .Validated_Not_Good: return "validated_not_good"; case .Paused: return "paused"; case .Completed: return "completed"; case .Cancelled: return "cancelled" }; return "assigned" }
 json_or_empty_array :: proc(value: string) -> string { if strings.trim_space(value) == "" do return "[]"; return value }
 
 apply_runtime_startup_projection :: proc(inst: ^domain.Agent_Instance, now: string) {
@@ -1127,10 +1146,26 @@ apply_runtime_startup_projection :: proc(inst: ^domain.Agent_Instance, now: stri
 	case "failed":
 		inst.startup_status = "startup_failed"
 		inst.stopped_at = now
+		clear_instance_current_task(inst)
 	case "stopped", "unreachable":
 		inst.startup_status = "stopped"
 		inst.stopped_at = now
+		// CT-7 consistency: a stopped/unreachable instance is no longer focused on
+		// any task, so drop its persisted current_task pointer. The auto-promotion
+		// engine will re-establish focus if/when the instance comes back and a
+		// chain recompute runs.
+		clear_instance_current_task(inst)
 	}
+}
+
+// clear_instance_current_task drops an instance's persisted current_task pointer
+// in place. Used by the runtime projection when an instance reaches a terminal
+// runtime state (stopped/unreachable/failed) so the dashboard does not show a
+// stale focus for an agent that is gone.
+clear_instance_current_task :: proc(inst: ^domain.Agent_Instance) {
+	if inst == nil do return
+	inst.current_task_id = ""
+	inst.current_task_role = .None
 }
 
 runtime_expected_active :: proc(runtime_status: string) -> bool {

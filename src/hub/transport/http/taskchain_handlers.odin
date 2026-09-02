@@ -35,6 +35,20 @@ publish_task_changed :: proc(h: ^Taskchain_Handlers, owner_user_id, task_id, cha
 	events.publish_resource_changed(h.event_bus, owner_user_id, "task", task_id, change, summary)
 }
 
+// publish_instance_current_task_changed emits a live event on an agent instance's
+// current-task pointer (CT-9) so the dashboard work-vs-review banner updates when
+// a coordinator/user switches an agent's focus.
+publish_instance_current_task_changed :: proc(h: ^Taskchain_Handlers, owner_user_id, agent_instance_id, current_task_id, current_task_role: string) {
+	if h == nil || h.event_bus == nil || owner_user_id == "" do return
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, `{"agent_instance_id":"`); write_handler_json_string(&b, agent_instance_id)
+	strings.write_string(&b, `","current_task_id":"`); write_handler_json_string(&b, current_task_id)
+	strings.write_string(&b, `","current_task_role":"`); write_handler_json_string(&b, current_task_role)
+	strings.write_string(&b, `"}`)
+	events.publish_resource_changed(h.event_bus, owner_user_id, "agent_instance", agent_instance_id, "current_task_changed", strings.to_string(b))
+}
+
 taskchain_resource_summary_json :: proc(key, value: string) -> string {
 	b := strings.builder_make()
 	strings.write_byte(&b, '{')
@@ -225,7 +239,9 @@ patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
 	has_deps := strings.contains(req.body, "\"depends_on\"")
 	deps := json_array_of_strings(req.body, "depends_on")
-	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), depends_on = deps, has_depends_on = has_deps})
+	has_priority := strings.contains(req.body, "\"priority\"")
+	priority := domain.task_priority_from_string(json_string(req.body, "priority"))
+	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps, has_depends_on = has_deps})
 	if !updated do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
 	b := strings.builder_make(); write_task_json(&b, task)
@@ -310,6 +326,35 @@ nudge_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, nudge.targets_json)
 	strings.write_string(&b, `}`)
 	
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
+// set_task_current_task_handler lets a coordinator/user pin an agent instance's
+// current task to this task (CT-9 manual override). Body: {"agent_instance_id"}.
+// The service validates assignee/reviewer eligibility + actionability, persists
+// the pointer, and notifies the target agent (work vs review label).
+set_task_current_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	task_id := domain.Task_ID(path_part(req.path, 6))
+	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	instance_id := json_string(req.body, "agent_instance_id")
+	if strings.trim_space(instance_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "agent_instance_id is required"), req.request_id)
+	inst, set_ok, err := taskchain_service.set_instance_current_task(h.taskchains, auth_ctx, instance_id, task_id)
+	if !set_ok do return respond_error(err, req.request_id)
+	publish_task_changed(h, string(inst.owner_user_id), string(task_id), string(chain_id), "current_task_set")
+	publish_instance_current_task_changed(h, string(inst.owner_user_id), inst.agent_instance_id, inst.current_task_id, domain.current_task_role_string(inst.current_task_role))
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, `{"agent_instance_id":"`)
+	write_handler_json_string(&b, inst.agent_instance_id)
+	strings.write_string(&b, `","current_task_id":"`)
+	write_handler_json_string(&b, inst.current_task_id)
+	strings.write_string(&b, `","current_task_role":"`)
+	write_handler_json_string(&b, domain.current_task_role_string(inst.current_task_role))
+	strings.write_string(&b, `"}`)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -413,7 +458,7 @@ write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {
 }
 
 write_task_json :: proc(b: ^strings.Builder, t: domain.Task) {
-	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
+	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(t.priority)); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
 }
 
 write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, t: domain.Task, deps: []domain.Task_Dependency) {
@@ -497,8 +542,8 @@ path_part :: proc(path: string, index: int) -> string {
 
 publish_state_http :: proc(state: domain.Publish_State) -> string { if state == .Published do return "published"; return "draft" }
 chain_status_http :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; return "active" }
-task_status_http :: proc(status: domain.Task_Status) -> string { switch status { case .Assigned: return "assigned"; case .In_Progress: return "in_progress"; case .In_Validation: return "in_validation"; case .Validated_Good: return "validated_good"; case .Validated_Not_Good: return "validated_not_good"; case .Paused: return "paused"; case .Completed: return "completed"; case .Cancelled: return "cancelled" }; return "assigned" }
-task_status_from_http :: proc(status: string) -> (domain.Task_Status, bool) { if status == "assigned" do return .Assigned, true; if status == "in_progress" do return .In_Progress, true; if status == "in_validation" do return .In_Validation, true; if status == "validated_good" do return .Validated_Good, true; if status == "validated_not_good" do return .Validated_Not_Good, true; if status == "paused" do return .Paused, true; if status == "completed" do return .Completed, true; if status == "cancelled" do return .Cancelled, true; return .Assigned, false }
+task_status_http :: proc(status: domain.Task_Status) -> string { switch status { case .Assigned: return "assigned"; case .Queued: return "queued"; case .In_Progress: return "in_progress"; case .In_Validation: return "in_validation"; case .Validated_Good: return "validated_good"; case .Validated_Not_Good: return "validated_not_good"; case .Paused: return "paused"; case .Completed: return "completed"; case .Cancelled: return "cancelled" }; return "assigned" }
+task_status_from_http :: proc(status: string) -> (domain.Task_Status, bool) { if status == "assigned" do return .Assigned, true; if status == "queued" do return .Queued, true; if status == "in_progress" do return .In_Progress, true; if status == "in_validation" do return .In_Validation, true; if status == "validated_good" do return .Validated_Good, true; if status == "validated_not_good" do return .Validated_Not_Good, true; if status == "paused" do return .Paused, true; if status == "completed" do return .Completed, true; if status == "cancelled" do return .Cancelled, true; return .Assigned, false }
 
 
 json_or_empty_array :: proc(value: string) -> string { if strings.trim_space(value) == "" do return "[]"; return value }

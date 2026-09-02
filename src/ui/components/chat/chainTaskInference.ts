@@ -13,6 +13,7 @@ export type TaskLike = {
   task_id?: string;
   title?: string;
   status?: string;
+  priority?: string;
   chainId?: string;
   chain_id?: string;
   assigneeAgentInstanceId?: string;
@@ -163,6 +164,23 @@ export function deriveChainProgress(tasks: TaskLike[]): ChainProgressInfo {
     inProgress: live.filter((task) => taskStatusOf(task) === 'in_progress').length,
     reviewReady: live.filter((task) => taskStatusOf(task) === 'review_ready').length,
   };
+}
+
+// CT-9: tasks an instance can be MANUALLY switched to as its current task — those
+// it is the assignee of (any non-terminal work status) or an effective reviewer of
+// (awaiting validation). Ordered oldest-first for a stable dropdown.
+const SWITCHABLE_TERMINAL_STATUSES = new Set(['completed', 'approved', 'done', 'cancelled', 'archived', 'abandoned']);
+export function switchableTasksFor(tasks: TaskLike[], agentInstanceId: string): TaskLike[] {
+  if (!agentInstanceId || !tasks?.length) return [];
+  return tasks
+    .filter((task) => {
+      const status = taskStatusOf(task);
+      if (SWITCHABLE_TERMINAL_STATUSES.has(status)) return false;
+      const isAssignee = taskAssigneeOf(task) === agentInstanceId;
+      const isReviewer = isInstanceEffectiveReviewer(task, agentInstanceId) && (status === 'in_validation' || status === 'review_ready');
+      return isAssignee || isReviewer;
+    })
+    .sort((a, b) => taskCreatedMs(a) - taskCreatedMs(b));
 }
 
 // Role label for the current actor relative to a task.

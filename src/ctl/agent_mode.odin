@@ -260,6 +260,12 @@ ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.tasks.status", json_object(json_kv("task_id", task_id), json_kv("status", status)))
 		return
 	}
+	if action == "set-current" || action == "current" {
+		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
+		if task_id == "" { fmt.println("usage: ham-ctl agent tasks set-current --task-id <id>"); return }
+		ctl_agent_call(endpoint, token, "agent.tasks.set_current", json_object(json_kv("task_id", task_id)))
+		return
+	}
 	if action == "vote" {
 		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
 		result := option_value(args, "--result", option_value(args, "--vote", ""))
@@ -275,7 +281,7 @@ ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.tasks.nudge", json_object(json_kv("task_id", task_id), json_kv("message", message)))
 		return
 	}
-	fmt.println("usage: ham-ctl agent tasks <fetch|create|depend|comment|status|vote|nudge>")
+	fmt.println("usage: ham-ctl agent tasks <fetch|create|depend|comment|status|set-current|vote|nudge>")
 }
 
 ctl_agentmode_artifacts :: proc(endpoint, token, action: string, args: []string) {
@@ -625,7 +631,7 @@ print_agent_help :: proc(cmd: []string) {
 	fmt.println("  templates      Discover/create agent templates (personas): list|create")
 	fmt.println("  bridges        Discover bridges owned by this agent's owner (list)")
 	fmt.println("  projects       Discover projects owned by this agent's owner (list)")
-	fmt.println("  tasks          Fetch current task context and comment/status/vote/nudge assigned tasks")
+	fmt.println("  tasks          Fetch current task context and comment/status/set-current/vote/nudge assigned tasks")
 	fmt.println("  artifacts      List/create/read artifacts visible to this instance owner")
 	fmt.println("  memory         Propose memory")
 	fmt.println("examples:")
