@@ -47,6 +47,37 @@ agent_action_chat_send_to_agent_handler :: proc(ctx: rawptr, req: Request) -> Re
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
+// agent_action_conversation_set_title_handler lets an agent rename ITS OWN bound
+// conversation (T3/REQ-3). Marks title_source="agent" so the nudge engine stops.
+agent_action_conversation_set_title_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	c, saved, err := content_service.set_own_conversation_title(h.content, auth, inst.agent_instance_id, json_string(params, "title"))
+	if !saved do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	write_chat_json(&b, c)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// agent_action_chain_set_title_handler lets an agent rename the task chain it
+// belongs to (T3/REQ-3). Marks title_source="agent" so the nudge engine stops.
+agent_action_chain_set_title_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := json_string(params, "chain_id")
+	if strings.trim_space(chain_id) == "" do chain_id = inst.chain_id
+	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	chain, saved, err := taskchain_service.set_own_chain_title(h.taskchains, auth, chain_id, json_string(params, "title"))
+	if !saved do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return process_agent_chat_fetch_or_read(ctx, req, false)
 }

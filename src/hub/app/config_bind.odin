@@ -25,6 +25,10 @@ Hub_Config :: struct {
 	// bridge, a lost WS close, or a hub restart with a persisted DB). <=0 falls back
 	// to the default; it never blocks startup.
 	reaper_interval_seconds: int,
+	// Cooldown (seconds) between activity-gated title-nudges for the same
+	// conversation (REQ-4,5,6). Default 3600 (1h). <=0 falls back to the engine
+	// default DEFAULT_TITLE_NUDGE_COOLDOWN_SECONDS.
+	title_nudge_cooldown_seconds: int,
 }
 
 default_config :: proc() -> Hub_Config {
@@ -48,5 +52,6 @@ default_config :: proc() -> Hub_Config {
 		device_auth_rate_limit = 10,
 		device_auth_rate_window = 60,
 		reaper_interval_seconds = 20,
+		title_nudge_cooldown_seconds = 3600,
 	}
 }

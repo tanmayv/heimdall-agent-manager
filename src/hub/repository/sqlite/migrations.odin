@@ -585,7 +585,25 @@ ALTER TABLE agent_instances ADD COLUMN current_task_role TEXT NOT NULL DEFAULT '
 ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'p2';
 `
 
-migration_order :: [19]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql"}
+// MIGRATION_020_TITLE_TRACKING adds per-run auto-title tracking fields to
+// conversations and task chains, plus a per-agent monotonic counter table used
+// to mint default titles of the form "<agent-name> #<n>". The embedded fallback
+// mirrors src/hub/repository/sqlite/migrations/020_title_tracking.sql.
+MIGRATION_020_TITLE_TRACKING :: `ALTER TABLE chat_conversations ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE chat_conversations ADD COLUMN last_title_nudge_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE chat_conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE task_chains ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_chains ADD COLUMN last_title_nudge_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_chains ADD COLUMN title_source TEXT NOT NULL DEFAULT 'default';
+CREATE TABLE IF NOT EXISTS agent_title_counters (
+  agent_id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL,
+  counter INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+`
+
+migration_order :: [20]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -608,6 +626,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "020_title_tracking.sql" && table_column_exists(conn, "chat_conversations", "title_source") && table_column_exists(conn, "task_chains", "title_source") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -625,6 +647,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_memory_target_scope_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory target scope schema upgrade failed")
 	if !upgrade_chat_message_types_schema(conn) do return false, domain.domain_error(.Internal_Error, "chat message type schema upgrade failed")
 	if !upgrade_current_task_and_priority_schema(conn) do return false, domain.domain_error(.Internal_Error, "current task + priority schema upgrade failed")
+	if !upgrade_title_tracking_schema(conn) do return false, domain.domain_error(.Internal_Error, "title tracking schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -653,6 +676,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "017_chat_message_types.sql" do return strings.clone(MIGRATION_017_CHAT_MESSAGE_TYPES)
 	if name == "018_coordinator_member_backfill.sql" do return strings.clone(MIGRATION_018_COORDINATOR_MEMBER_BACKFILL)
 	if name == "019_current_task_and_priority.sql" do return strings.clone(MIGRATION_019_CURRENT_TASK_AND_PRIORITY)
+	if name == "020_title_tracking.sql" do return strings.clone(MIGRATION_020_TITLE_TRACKING)
 	return ""
 }
 
@@ -733,5 +757,16 @@ upgrade_current_task_and_priority_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "agent_instances", "current_task_id") && !exec(conn, "ALTER TABLE agent_instances ADD COLUMN current_task_id TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "agent_instances", "current_task_role") && !exec(conn, "ALTER TABLE agent_instances ADD COLUMN current_task_role TEXT NOT NULL DEFAULT 'none';") do return false
 	if !table_column_exists(conn, "tasks", "priority") && !exec(conn, "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'p2';") do return false
+	return true
+}
+
+upgrade_title_tracking_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "chat_conversations", "last_activity_at") && !exec(conn, "ALTER TABLE chat_conversations ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "chat_conversations", "last_title_nudge_at") && !exec(conn, "ALTER TABLE chat_conversations ADD COLUMN last_title_nudge_at TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "chat_conversations", "title_source") && !exec(conn, "ALTER TABLE chat_conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'default';") do return false
+	if !table_column_exists(conn, "task_chains", "last_activity_at") && !exec(conn, "ALTER TABLE task_chains ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "task_chains", "last_title_nudge_at") && !exec(conn, "ALTER TABLE task_chains ADD COLUMN last_title_nudge_at TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "task_chains", "title_source") && !exec(conn, "ALTER TABLE task_chains ADD COLUMN title_source TEXT NOT NULL DEFAULT 'default';") do return false
+	if !exec(conn, "CREATE TABLE IF NOT EXISTS agent_title_counters (agent_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, counter INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT '');") do return false
 	return true
 }

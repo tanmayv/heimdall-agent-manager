@@ -218,6 +218,9 @@ parse_args :: proc(config: ^app.Hub_Config) {
 		} else if arg == "--reaper-interval-seconds" && i + 1 < len(os.args) {
 			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.reaper_interval_seconds = int(parsed)
 			i += 1
+		} else if arg == "--title-nudge-cooldown-seconds" && i + 1 < len(os.args) {
+			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.title_nudge_cooldown_seconds = int(parsed)
+			i += 1
 		}
 	}
 }

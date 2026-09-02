@@ -16,6 +16,10 @@ Agent_List_Instances_By_Bridge_Proc :: proc(ctx: rawptr, bridge_id: string) -> (
 // Lists instances still in an active runtime state (running/idle/busy/launching/
 // starting/stopping) across all owners — used by the staleness reaper.
 Agent_List_Active_Runtime_Instances_Proc :: proc(ctx: rawptr) -> ([]domain.Agent_Instance, domain.Domain_Error)
+// Atomically increments and returns the per-agent global title counter. The
+// counter survives daemon restarts (persisted in agent_title_counters) and is
+// used to mint default per-run titles "<agent-name> #<n>".
+Agent_Next_Title_Counter_Proc :: proc(ctx: rawptr, agent_id: string, owner_user_id: domain.User_ID, now: string) -> (int, bool, domain.Domain_Error)
 
 Agent_Repository :: struct {
 	ctx: rawptr,
@@ -31,6 +35,12 @@ Agent_Repository :: struct {
 	list_instances_by_owner: Agent_List_Instances_By_Owner_Proc,
 	list_instances_by_bridge: Agent_List_Instances_By_Bridge_Proc,
 	list_active_runtime_instances: Agent_List_Active_Runtime_Instances_Proc,
+	next_title_counter: Agent_Next_Title_Counter_Proc,
+}
+
+agent_next_title_counter :: proc(repo: ^Agent_Repository, agent_id: string, owner_user_id: domain.User_ID, now: string) -> (int, bool, domain.Domain_Error) {
+	if repo == nil || repo.next_title_counter == nil do return 0, false, domain.domain_error(.Internal_Error, "agent repository is not configured")
+	return repo.next_title_counter(repo.ctx, agent_id, owner_user_id, now)
 }
 
 agent_save :: proc(repo: ^Agent_Repository, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error) {

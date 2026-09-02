@@ -85,6 +85,14 @@ Chat_Conversation :: struct {
 	// Total user-visible messages in the conversation (direction != agent_to_agent).
 	// Summary-only, populated by conversation list queries.
 	message_count: int,
+	// Title-nudge tracking fields (persisted). last_activity_at tracks the most
+	// recent meaningful agent/user activity on the conversation; last_title_nudge_at
+	// records when the auto-title nudge was last delivered; title_source records how
+	// the current title was set: "default" (auto), "agent" (agent set-title), or
+	// "user" (user override, which wins and stops nudges forever).
+	last_activity_at: string,
+	last_title_nudge_at: string,
+	title_source: string,
 	created_at: string,
 	updated_at: string,
 }

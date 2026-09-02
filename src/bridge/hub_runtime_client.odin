@@ -251,6 +251,23 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
+	if type == "notify_title_nudge" {
+		// Activity-gated title-nudge (REQ-4,5,6). Delivered over the SAME gated
+		// path as notify_task_nudge: push to a live wrapper, else wake the local
+		// agent so it picks up the nudge on boot. Never a new notifier.
+		command_id := extract_json_string(text, "command_id", "")
+		instance_id := extract_json_string(text, "agent_instance_id", "")
+		ok := bridge_wrapper_push_task_nudge(instance_id, text)
+		if !ok {
+			if bridge_task_status_notify_wake_local(instance_id) {
+				ok = true
+			} else {
+				fmt.println("bridge notify_title_nudge pending/no-wrapper-subscription", instance_id, command_id)
+			}
+		}
+		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		return
+	}
 	if type == "task_status_changed_notify" {
 		command_id := extract_json_string(text, "command_id", "")
 		task_id := extract_json_string(text, "task_id", "")

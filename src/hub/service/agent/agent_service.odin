@@ -202,7 +202,11 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Bridge_Offline, "bridge is offline")
 	resolved, resolved_ok, resolved_err := resolve_provider_tier(service, auth, agent.agent_id, bridge.bridge_id, Run_Request{provider = input.provider, tier = input.tier})
 	if !resolved_ok do return domain.Agent_Instance{}, false, resolved_err
-	chain_id, chain_ok, chain_err := resolve_instance_chain(service, owner, input.chain_id, agent.name)
+	// Mint one per-agent global counter for this run and derive the default title
+	// "<agent-name> #<n>". The same default title is used for the (new) chain and
+	// the conversation so a run is identifiable before the agent/user renames it.
+	default_title := default_title_for_agent(service, owner, agent)
+	chain_id, chain_ok, chain_err := resolve_instance_chain(service, owner, input.chain_id, default_title)
 	if !chain_ok do return domain.Agent_Instance{}, false, chain_err
 	project_path := ""
 	if input.project_id != "" {
@@ -216,7 +220,7 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	instance := domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, provider = resolved.provider, tier = resolved.tier, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, instance)
 	if !saved_ok do return domain.Agent_Instance{}, false, save_err
-	conv, conv_ok, conv_err := ensure_instance_conversation(service, saved)
+	conv, conv_ok, conv_err := ensure_instance_conversation(service, saved, default_title)
 	if !conv_ok do return domain.Agent_Instance{}, false, conv_err
 	if saved.conversation_id == "" { saved.conversation_id = conv.conversation_id; saved, saved_ok, save_err = iface.agent_save_instance(service.agents, saved); if !saved_ok do return domain.Agent_Instance{}, false, save_err }
 	if input.chain_id == "" { update_private_chain_coordinator(service, saved) }
@@ -932,7 +936,7 @@ update_private_chain_coordinator :: proc(service: ^Agent_Service, inst: domain.A
 	_, _, _ = iface.taskchain_save_chain(service.taskchains, chain)
 }
 
-resolve_instance_chain :: proc(service: ^Agent_Service, owner: domain.User_ID, chain_id: string, agent_name: string) -> (string, bool, domain.Domain_Error) {
+resolve_instance_chain :: proc(service: ^Agent_Service, owner: domain.User_ID, chain_id: string, default_title: string) -> (string, bool, domain.Domain_Error) {
 	if service.taskchains == nil do return "", false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	if chain_id != "" {
 		chain, ok, err := iface.taskchain_get_chain(service.taskchains, domain.Task_Chain_ID(chain_id))
@@ -941,14 +945,14 @@ resolve_instance_chain :: proc(service: ^Agent_Service, owner: domain.User_ID, c
 		return string(chain.chain_id), true, domain.Domain_Error{}
 	}
 	now := platform.clock_now(service.clock)
-	title := agent_name; if title == "" do title = "Private conversation"
-	chain := domain.Task_Chain{chain_id = domain.Task_Chain_ID(platform.generate_id(service.ids, "chain_")), owner_user_id = owner, title = title, publish_state = .Published, status = .Active, kind = "private_conversation", default_reviewer_refs_json = "[]", created_at = now, updated_at = now, published_at = now}
+	title := strings.trim_space(default_title); if title == "" do title = "Private conversation"
+	chain := domain.Task_Chain{chain_id = domain.Task_Chain_ID(platform.generate_id(service.ids, "chain_")), owner_user_id = owner, title = title, publish_state = .Published, status = .Active, kind = "private_conversation", default_reviewer_refs_json = "[]", last_activity_at = now, title_source = "default", created_at = now, updated_at = now, published_at = now}
 	created, saved, save_err := iface.taskchain_save_chain(service.taskchains, chain)
 	if !saved do return "", false, save_err
 	return string(created.chain_id), true, domain.Domain_Error{}
 }
 
-ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent_Instance) -> (domain.Chat_Conversation, bool, domain.Domain_Error) {
+ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent_Instance, default_title: string = "") -> (domain.Chat_Conversation, bool, domain.Domain_Error) {
 	if service.content == nil do return domain.Chat_Conversation{}, false, domain.domain_error(.Internal_Error, "content repository is not configured")
 	existing, list_err := iface.content_list_conversations(service.content, inst.owner_user_id, 512, "")
 	if list_err.code != .None do return domain.Chat_Conversation{}, false, list_err
@@ -962,8 +966,11 @@ ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent
 	}
 	now := platform.clock_now(service.clock)
 	conv_id := inst.conversation_id; if conv_id == "" do conv_id = platform.generate_id(service.ids, "chat_")
-	title := agent_display_name_for_id(service, inst.owner_user_id, inst.agent_id)
-	conv := domain.Chat_Conversation{conversation_id = conv_id, owner_user_id = inst.owner_user_id, agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, project_id = inst.project_id, chain_id = inst.chain_id, title = title, created_at = now, updated_at = now}
+	// Never emit a raw agt_ id as a title: prefer the supplied default title
+	// ("<agent-name> #<n>"), falling back to the agent's display name.
+	title := strings.trim_space(default_title)
+	if title == "" do title = agent_display_name_for_id(service, inst.owner_user_id, inst.agent_id)
+	conv := domain.Chat_Conversation{conversation_id = conv_id, owner_user_id = inst.owner_user_id, agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, project_id = inst.project_id, chain_id = inst.chain_id, title = title, last_activity_at = now, title_source = "default", created_at = now, updated_at = now}
 	return iface.content_save_conversation(service.content, conv)
 }
 
@@ -976,6 +983,19 @@ agent_display_name_for_id :: proc(service: ^Agent_Service, owner: domain.User_ID
 		}
 	}
 	return fallback
+}
+
+// default_title_for_agent mints the per-agent global counter and returns a
+// default per-run title of the form "<agent-name> #<n>". The agent name never
+// falls back to a raw agt_ id; if the display name is empty it uses "Agent".
+default_title_for_agent :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent) -> string {
+	name := strings.trim_space(agent.name)
+	if name == "" do name = strings.trim_space(agent.slug)
+	if name == "" do name = "Agent"
+	now := platform.clock_now(service.clock)
+	n, ok, _ := iface.agent_next_title_counter(service.agents, agent.agent_id, owner, now)
+	if !ok || n <= 0 do return name
+	return fmt.tprintf("%s #%d", name, n)
 }
 
 resolve_provider_tier :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id, bridge_id: string, req: Run_Request) -> (domain.Resolved_Provider_Tier, bool, domain.Domain_Error) {

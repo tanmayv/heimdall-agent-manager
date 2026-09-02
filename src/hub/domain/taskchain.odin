@@ -63,6 +63,10 @@ Task_Chain :: struct {
 	kind:                          string,
 	coordinator_agent_instance_id: string,
 	default_reviewer_refs_json:    string,
+	// Title-nudge tracking fields (persisted). See Chat_Conversation for semantics.
+	last_activity_at:              string,
+	last_title_nudge_at:           string,
+	title_source:                  string,
 	created_at:                    string,
 	updated_at:                    string,
 	published_at:                  string,

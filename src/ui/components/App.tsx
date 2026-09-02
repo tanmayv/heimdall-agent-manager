@@ -407,6 +407,19 @@ function agentInstanceId(agent: any): string {
   return String(agent?.id || agent?.agent_instance_id || '');
 }
 
+// REQ-7: resolve a raw agent-instance id (inst_/agt_/user_proxy) to a
+// user-facing NAME for display. The raw id is only kept as a tooltip/debug
+// value by callers; never render it as the primary label. Falls back to the id
+// only when no name is known (better than showing nothing).
+function agentDisplayNameForId(id: string, agents: any[] = []): string {
+  const wanted = String(id || '').trim();
+  if (!wanted) return 'unassigned';
+  if (wanted === 'user_proxy') return 'User / operator';
+  const match = (agents || []).find((agent: any) => agentInstanceId(agent) === wanted || String(agent?.agent_instance_id || '') === wanted);
+  const name = String(match?.label || match?.display_name || match?.displayName || '').trim();
+  return name || wanted;
+}
+
 function agentTemplateLabel(agent: any): string {
   return String(agent?.templateId || agent?.template_id || durableAgentId(agent) || 'agent');
 }
@@ -1894,7 +1907,7 @@ export default function App() {
                 const updatedAgent = pickerResult?.agent || pickerResult?.result?.agent;
                 if (updatedAgent) upsertAgentInCaches(dispatch, updatedAgent);
                 await dispatch(assignSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId })).unwrap();
-                dispatch(showToast({ kind: 'success', title: 'Assignee updated', message: agentInstanceId }));
+                dispatch(showToast({ kind: 'success', title: 'Assignee updated', message: agentDisplayNameForId(agentInstanceId, agents) }));
               }}
               onCloseTask={() => updateUrlParams({ taskId: null })}
               onSetReviewer={async (task: any, agentInstanceId: string, pickerResult?: any) => {
@@ -1905,7 +1918,7 @@ export default function App() {
                   await dispatch(removeParticipantFromSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: reviewerId, role: 'lgtm_required' })).unwrap().catch(() => undefined);
                 }
                 await dispatch(addParticipantToSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId, role: 'lgtm_required' })).unwrap();
-                dispatch(showToast({ kind: 'success', title: 'Reviewer updated', message: agentInstanceId }));
+                dispatch(showToast({ kind: 'success', title: 'Reviewer updated', message: agentDisplayNameForId(agentInstanceId, agents) }));
               }}
               onSetReviewers={async (task: any, agentInstanceIds: string[]) => {
                 const current = new Set(taskReviewerIds(task));
@@ -1937,7 +1950,7 @@ export default function App() {
               onMergeViaChain={(chainId: string, instructions: string) => executeMergeViaChain({ chainId, instructions }).unwrap()}
               onRemoveBlockedReviewer={async (block: any) => {
                 await dispatch(removeParticipantFromSelectedTask({ taskId: block.taskId, chainId: block.chainId, agentInstanceId: block.proxyAgentInstanceId, role: block.reviewerRole || 'lgtm_required' })).unwrap();
-                dispatch(showToast({ kind: 'success', title: 'Reviewer gate removed', message: block.proxyAgentInstanceId || block.taskId }));
+                dispatch(showToast({ kind: 'success', title: 'Reviewer gate removed', message: block.proxyAgentInstanceId ? agentDisplayNameForId(block.proxyAgentInstanceId, agents) : block.taskId }));
                 attentionQuery.refetch().catch(() => undefined);
               }}
             />
@@ -2998,7 +3011,7 @@ function agentTaskRelation(agentId: string, task: any) {
   return 'Participant';
 }
 
-function AgentChatSidebarContent({ agent, tasksById, chainsById, onOpenChain }: any) {
+function AgentChatSidebarContent({ agent, tasksById, chainsById, onOpenChain, agents = [] }: any) {
   const currentTaskId = String(agent?.currentTaskId || agent?.current_task_id || '');
   const currentTask = currentTaskId ? tasksById?.[currentTaskId] : null;
   const buckets = agentTaskBuckets(agent?.id || '', tasksById || {});
@@ -3034,7 +3047,7 @@ function AgentChatSidebarContent({ agent, tasksById, chainsById, onOpenChain }: 
                 <div className="min-w-0 flex-1 truncate font-medium text-zinc-100">{task.title || task.taskId}</div>
                 <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
               </div>
-              <div className="mt-2 ml-7 text-[11px] text-zinc-500">{task.assigneeAgentInstanceId || 'unassigned'}{current ? ' · current' : ''}</div>
+              <div className="mt-2 ml-7 text-[11px] text-zinc-500" title={task.assigneeAgentInstanceId || 'unassigned'}>{agentDisplayNameForId(task.assigneeAgentInstanceId, agents)}{current ? ' · current' : ''}</div>
             </div>
           );
         })}
@@ -3825,7 +3838,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     'task-chains': {
       id: 'task-chains',
       label: 'Task chains',
-      content: <AgentChatSidebarContent agent={agent} tasksById={tasksById} chainsById={chainsById} onOpenChain={onOpenChain} />,
+      content: <AgentChatSidebarContent agent={agent} tasksById={tasksById} chainsById={chainsById} onOpenChain={onOpenChain} agents={allAgents} />,
       buttonDebugId: 'workspace-inspector-tab-task-chains',
       panelDebugId: 'workspace-inspector-panel-task-chains',
     },
@@ -4881,7 +4894,7 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
           <div key={`blocked-${block.key}`} data-debug-id={`attention-card-federation_peer_block-${block.taskId}`} className="rounded-2xl border border-amber-400/25 bg-amber-400/[0.04] p-4">
             <div className="text-xs uppercase tracking-[0.2em] text-amber-200">Federation peer blocked</div>
             <div className="mt-1 font-semibold">{block.chainTitle || block.chainId || 'Standalone'} · {block.taskTitle || block.taskId}</div>
-            <div className="mt-1 text-sm text-zinc-300">Remote reviewer {block.proxyAgentInstanceId || '—'} is blocked because peer {block.peerId || '—'} is {block.peerStatus || 'unreachable'}.</div>
+            <div className="mt-1 text-sm text-zinc-300">Remote reviewer <span title={block.proxyAgentInstanceId || ''}>{block.proxyAgentLabel || block.proxyAgentDisplayName || block.proxyAgentName || block.proxyAgentInstanceId || '—'}</span> is blocked because peer {block.peerId || '—'} is {block.peerStatus || 'unreachable'}.</div>
             <div className="mt-1 text-xs text-zinc-500">Origin daemon: {block.peerDaemonId || 'unknown'} · Role: {block.reviewerRole || 'lgtm_required'}</div>
             <div className="mt-3 flex flex-wrap gap-2">
               <button data-debug-id={`attention-card-federation_peer_block-${block.taskId}-action-remove-reviewer`} onClick={() => onRemoveBlockedReviewer(block)} className="rounded-xl bg-amber-300 px-3 py-2 text-sm font-semibold text-black hover:bg-amber-200">Remove reviewer gate</button>
@@ -6736,8 +6749,8 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                   <div className="flex flex-wrap gap-2 text-xs">
                     <span className={`rounded-full border px-2 py-1 ${statusTone(task.status)}`}>{task.status}</span>
                     <span className="rounded-full bg-black/20 px-2 py-1 font-mono text-zinc-400">ID: {task.taskId}</span>
-                    <button data-debug-id={`task-detail-assignee-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">Assignee {task.assigneeAgentInstanceId || '—'}</button>
-                    <button data-debug-id={`task-detail-reviewer-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">{reviewerIds.length > 1 ? `Reviewers ${reviewerIds.join(', ')}` : `Reviewer ${reviewerIds[0] || task.reviewerAgentInstanceId || '—'}`}</button>
+                    <button data-debug-id={`task-detail-assignee-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} title={task.assigneeAgentInstanceId || 'unassigned'} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">Assignee {task.assigneeAgentInstanceId ? agentDisplayNameForId(task.assigneeAgentInstanceId, agents) : '—'}</button>
+                    <button data-debug-id={`task-detail-reviewer-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} title={(reviewerIds.length ? reviewerIds : [task.reviewerAgentInstanceId].filter(Boolean)).join(', ') || 'no reviewer'} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">{reviewerIds.length > 1 ? `Reviewers ${reviewerIds.map((rid: string) => agentDisplayNameForId(rid, agents)).join(', ')}` : `Reviewer ${reviewerIds[0] ? agentDisplayNameForId(reviewerIds[0], agents) : (task.reviewerAgentInstanceId ? agentDisplayNameForId(task.reviewerAgentInstanceId, agents) : '—')}`}</button>
                   </div>
                   <div data-debug-id={`task-detail-description-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
                     {task.description ? <Markdown source={task.description} className="text-sm text-zinc-300" /> : <div className="text-sm text-zinc-500">No description.</div>}
@@ -6790,7 +6803,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                     <div data-debug-id={`task-detail-votes-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
                       <div className="text-xs uppercase tracking-wider text-zinc-500">Votes / review history</div>
                       <div className="mt-2 space-y-2">
-                        {votes.map((vote: any, voteIndex: number) => <div key={`vote-${voteIndex}`} className="rounded-lg bg-white/[0.04] p-2 text-sm text-zinc-300">{vote.reviewerAgentInstanceId || 'reviewer'} · {vote.approved ? 'LGTM' : 'NGTM'}{vote.comment ? ` · ${vote.comment}` : ''}</div>)}
+                        {votes.map((vote: any, voteIndex: number) => <div key={`vote-${voteIndex}`} title={vote.reviewerAgentInstanceId || 'reviewer'} className="rounded-lg bg-white/[0.04] p-2 text-sm text-zinc-300">{vote.reviewerAgentInstanceId ? agentDisplayNameForId(vote.reviewerAgentInstanceId, agents) : 'reviewer'} · {vote.approved ? 'LGTM' : 'NGTM'}{vote.comment ? ` · ${vote.comment}` : ''}</div>)}
                         {reviewEvents.map((event: any, eventIndex: number) => <div key={event.eventId || eventIndex} className="rounded-lg bg-white/[0.04] p-2 text-sm text-zinc-300"><Markdown source={event.body || event.status || 'vote recorded'} compact /></div>)}
                       </div>
                     </div>

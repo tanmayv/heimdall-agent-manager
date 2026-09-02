@@ -66,6 +66,10 @@ Update_Chain_Input :: struct {
 	// "absent" from "explicitly clear". The target must belong to the same chain.
 	coordinator_agent_instance_id: string,
 	has_coordinator: bool,
+	// title_source records who set the title ("default"|"agent"|"user"). When an
+	// agent or user explicitly renames the chain we stamp this so the activity-
+	// gated title-nudge engine (T2) stops nudging. Empty = leave unchanged.
+	title_source: string,
 }
 
 Create_Task_Input :: struct {
@@ -311,6 +315,7 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
 	}
 	if input.title != "" do chain.title = input.title
+	if input.title_source == "agent" || input.title_source == "user" || input.title_source == "default" do chain.title_source = input.title_source
 	if input.description != "" do chain.description = input.description
 	if input.has_coordinator {
 		// Setting/changing the coordinator goes through the SINGLE canonical source
@@ -336,6 +341,19 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	}
 	chain.updated_at = platform.clock_now(service.clock)
 	return iface.taskchain_save_chain(service.repo, chain)
+}
+
+// set_own_chain_title lets an authenticated agent instance rename the chain it
+// belongs to (T3/REQ-3), stamping title_source="agent" so the activity-gated
+// nudge engine (T2) stops nudging. The instance must be the chain coordinator
+// (enforced by update_chain for instance tokens); for a private-conversation
+// chain the instance is its own coordinator.
+set_own_chain_title :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id, title: string) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "instance token is required")
+	next := strings.trim_space(title)
+	if next == "" do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain title is required")
+	if len(next) > 120 do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain title is too long")
+	return update_chain(service, auth, domain.Task_Chain_ID(chain_id), Update_Chain_Input{title = next, title_source = "agent"})
 }
 
 publish_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {

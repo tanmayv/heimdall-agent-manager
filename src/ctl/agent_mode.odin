@@ -37,6 +37,8 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	if resource == "bridges" || resource == "bridge" { ctl_agentmode_bridges(endpoint, token, action, args); return }
 	if resource == "projects" || resource == "project" { ctl_agentmode_projects(endpoint, token, action, args); return }
 	if resource == "chat" || resource == "chats" { ctl_agentmode_chat(endpoint, token, action, args); return }
+	if resource == "conversation" || resource == "conversations" { ctl_agentmode_conversation(endpoint, token, action, args); return }
+	if resource == "chain" || resource == "chains" { ctl_agentmode_chain(endpoint, token, action, args); return }
 	if resource == "tasks" || resource == "task" {
 		fmt.eprintln("Notice: 'ham-ctl agent tasks' is deprecated; use top-level 'ham-ctl tasks' instead.")
 		ctl_tasks_command(cmd[idx:], args)
@@ -176,6 +178,38 @@ ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
 		return
 	}
 	fmt.println("usage: ham-ctl agent chat <send|send-to-agent|fetch|read>")
+}
+
+// ctl_agentmode_conversation handles 'ham-ctl agent conversation set-title'
+// (REQ-3): rename this instance's bound conversation. Marks title_source=agent.
+ctl_agentmode_conversation :: proc(endpoint, token, action: string, args: []string) {
+	if action == "set-title" || action == "rename" {
+		title := option_value(args, "--title", "")
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do title = strings.trim_space(string(data)) }
+		if title == "" { fmt.println("usage: ham-ctl agent conversation set-title --title <text>"); return }
+		ctl_agent_call(endpoint, token, "agent.conversation.set_title", json_object(json_kv("title", title)))
+		return
+	}
+	fmt.println("usage: ham-ctl agent conversation set-title --title <text>")
+}
+
+// ctl_agentmode_chain handles 'ham-ctl agent chain set-title' (REQ-3): rename the
+// task chain this instance belongs to. Marks title_source=agent. --chain-id is
+// optional (defaults to the instance's own chain server-side).
+ctl_agentmode_chain :: proc(endpoint, token, action: string, args: []string) {
+	if action == "set-title" || action == "rename" {
+		title := option_value(args, "--title", "")
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do title = strings.trim_space(string(data)) }
+		if title == "" { fmt.println("usage: ham-ctl agent chain set-title --title <text> [--chain-id <id>]"); return }
+		chain_id := option_value(args, "--chain-id", "")
+		if chain_id != "" {
+			ctl_agent_call(endpoint, token, "agent.chain.set_title", json_object(json_kv("title", title), json_kv("chain_id", chain_id)))
+		} else {
+			ctl_agent_call(endpoint, token, "agent.chain.set_title", json_object(json_kv("title", title)))
+		}
+		return
+	}
+	fmt.println("usage: ham-ctl agent chain set-title --title <text> [--chain-id <id>]")
 }
 
 ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string) {
@@ -627,6 +661,8 @@ print_agent_help :: proc(cmd: []string) {
 	fmt.println("  context        Fetch instance, conversation, chain, task, and unread summary")
 	fmt.println("  start-success  Mark startup ready")
 	fmt.println("  chat           Read/send the bound user conversation")
+	fmt.println("  conversation   Set this conversation's title (set-title)")
+	fmt.println("  chain          Set this task chain's title (set-title)")
 	fmt.println("  agents         List live instances, discover durable agents, or create one (list|create)")
 	fmt.println("  templates      Discover/create agent templates (personas): list|create")
 	fmt.println("  bridges        Discover bridges owned by this agent's owner (list)")
@@ -639,6 +675,8 @@ print_agent_help :: proc(cmd: []string) {
 	fmt.println("  ham-ctl agents live")
 	fmt.println("  ham-ctl agent chat read --since 2026-07-27T10:00:00Z")
 	fmt.println("  ham-ctl agent chat send --body 'Done; tests pass.'")
+	fmt.println("  ham-ctl agent conversation set-title --title 'Fix auth bug'")
+	fmt.println("  ham-ctl agent chain set-title --title 'Auth hardening sprint'")
 }
 
 print_agent_chat_help :: proc(action: string) {

@@ -2,6 +2,7 @@ package sqlite
 
 import "core:fmt"
 import "core:strconv"
+import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
@@ -11,7 +12,28 @@ Agent_Repo_SQLite :: struct {
 
 new_agent_repository :: proc(impl: ^Agent_Repo_SQLite, conn: ^Conn) -> iface.Agent_Repository {
 	impl.conn = conn
-	return iface.Agent_Repository{ctx = rawptr(impl), save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, get_instance = agent_get_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite}
+	return iface.Agent_Repository{ctx = rawptr(impl), save = agent_save_sqlite, get = agent_get_sqlite, list_by_owner = agent_list_by_owner_sqlite, save_support = agent_save_support_sqlite, get_support = agent_get_support_sqlite, list_support = agent_list_support_sqlite, delete_support = agent_delete_support_sqlite, save_instance = agent_save_instance_sqlite, get_instance = agent_get_instance_sqlite, list_instances_by_owner = agent_list_instances_by_owner_sqlite, list_instances_by_bridge = agent_list_instances_by_bridge_sqlite, list_active_runtime_instances = agent_list_active_runtime_instances_sqlite, next_title_counter = agent_next_title_counter_sqlite}
+}
+
+// agent_next_title_counter_sqlite atomically bumps the per-agent title counter and
+// returns the new value. The UPSERT persists across daemon restarts so per-run
+// default titles keep incrementing globally per agent.
+agent_next_title_counter_sqlite :: proc(ctx: rawptr, agent_id: string, owner_user_id: domain.User_ID, now: string) -> (int, bool, domain.Domain_Error) {
+	impl := (^Agent_Repo_SQLite)(ctx)
+	if strings.trim_space(agent_id) == "" do return 0, false, domain.domain_error(.Validation_Failed, "agent_id is required for title counter")
+	up: sqlite3_stmt = nil
+	uq := "INSERT INTO agent_title_counters (agent_id, owner_user_id, counter, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT(agent_id) DO UPDATE SET counter=counter+1, updated_at=excluded.updated_at;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(uq)), -1, &up, nil) != SQLITE_OK do return 0, false, domain.domain_error(.Internal_Error, "failed to prepare title counter bump")
+	bind_text(up, 1, agent_id); bind_text(up, 2, string(owner_user_id)); bind_text(up, 3, now)
+	if sqlite3_step(up) != SQLITE_DONE { sqlite3_finalize(up); return 0, false, domain.domain_error(.Conflict, "title counter could not be updated") }
+	sqlite3_finalize(up)
+	sel: sqlite3_stmt = nil
+	sq := "SELECT counter FROM agent_title_counters WHERE agent_id = ?;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(sq)), -1, &sel, nil) != SQLITE_OK do return 0, false, domain.domain_error(.Internal_Error, "failed to prepare title counter read")
+	defer sqlite3_finalize(sel)
+	bind_text(sel, 1, agent_id)
+	if sqlite3_step(sel) != SQLITE_ROW do return 0, false, domain.domain_error(.Internal_Error, "title counter row missing after bump")
+	return string_to_i32(column_text(sel, 0)), true, domain.Domain_Error{}
 }
 
 agent_save_sqlite :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error) {
