@@ -800,7 +800,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
   const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
   const isKnownRoute = useMemo(() => {
     return [
-      '/conversations', '/conversations/new', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/settings',
+      '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/user-tokens') ||
@@ -827,7 +827,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         {path === '/conversations' ? (
           <ConversationsHomePage />
-        ) : path === '/actions' ? (
+        ) : path === '/actions' || path.startsWith('/actions/') ? (
           <ActionsPanel />
         ) : path === '/projects' ? (
           <ProjectsSurface />
