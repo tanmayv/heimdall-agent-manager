@@ -7,7 +7,6 @@ not be wired to broad durable fetch/focus APIs.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 CHAIN_VIEW = ROOT / "src" / "ui" / "store" / "chainViewSlice.ts"
 WORKSPACE = ROOT / "src" / "ui" / "api" / "endpoints" / "workspace.ts"
 
@@ -18,46 +17,18 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
-    app = APP.read_text(encoding="utf-8")
     chain_view = CHAIN_VIEW.read_text(encoding="utf-8")
     workspace = WORKSPACE.read_text(encoding="utf-8")
 
-    # URL task-log ownership is now RTKQ-backed via useFetchTaskLogQuery, with the
-    # route key still guarding rerender churn from local draft typing.
-    require("const lastUrlTaskLogKeyRef = useRef('');" in app, "missing URL task-log route guard ref")
-    require("lastUrlTaskLogKeyRef.current !== routeTaskKey" in app, "task-log URL effect must be guarded by route key")
-    require("const selectedTaskLogQuery = useFetchTaskLogQuery(" in app, "URL task-log should be owned by the RTKQ hook")
-    require("dispatch(fetchSelectedTaskLog(urlParams.taskId));" not in app, "App should not manually dispatch fetchSelectedTaskLog for route task open anymore")
+    # NOTE: the bulk of this guard scanned src/ui/components/App.tsx (URL task-log
+    # route guards, passive focus/scroll fetch avoidance, explicit chain-focus
+    # wiring, WS delegation). Those assertions were dropped when that legacy
+    # component was removed (dead code; the app mounts AppShell). The store/endpoint
+    # ownership invariants that survive are guarded below.
 
-    # Task pane focus/hover/window-focus must not refresh logs. Explicit task
-    # open, load-older, WS events, and action completion remain the allowed paths.
-    require('data-debug-id="chain-task-surface" tabIndex={0} onFocus=' not in app, "task pane must not fetch on bubbled focus/hover-like interactions")
-    require("window.addEventListener('focus'" not in app, "window focus must not trigger durable API fetches")
-    require("visibilitychange" not in app, "visibility changes must not trigger durable API fetches")
-    require('if (initialTaskId) onOpenTask?.(initialTaskId);' in app, "explicit selected task open should remain")
-
-    # Sidebar passive scroll must not call page fetches. Show More is the
-    # intentional pagination trigger.
-    require("shouldLoadMoreFromScroll" not in app, "passive scroll threshold helper should be removed")
-    require('data-debug-id="sidebar-conversations-paged-list" onScroll=' not in app, "conversation sidebar must not fetch on scroll")
-    require('data-debug-id="sidebar-agents-paged-list" onScroll=' not in app, "agents sidebar must not fetch on scroll")
-    require('data-debug-id="sidebar-conversations-show-more-btn"' in app and 'onClick={loadMoreConversations}' in app, "conversation Show More pagination must remain")
-    require('data-debug-id="sidebar-agents-show-more-btn"' in app and 'onClick={loadMoreAgents}' in app, "agent Show More pagination must remain")
-
-    # Chain focus ownership moved behind workspace RTKQ endpoints/mutations and
-    # should only be reached through explicit route/open handlers.
+    # Chain focus ownership lives behind workspace RTKQ endpoints/mutations.
     require("return daemonApi.focusTaskChain({ ...auth(session), chainId });" in workspace, "workspaceApi.focusChain should own focusTaskChain")
-    require("useFocusChainMutation" in app, "App should own explicit chain focus through useFocusChainMutation")
-    require("const routeChainKey" in app and "lastUrlChainFocusKeyRef.current !== routeChainKey" in app, "URL chain focus must be route-change guarded")
-    require("lastUrlChainFocusKeyRef.current = `chain:${chainId}`;" in app, "explicit chain open should mark route focus handled")
-    require("focusChain({ chainId }).catch(() => undefined);" in app, "App should call focusChain mutation for explicit chain focus")
     require("daemonApi.focusTaskChain" not in chain_view, "chainViewSlice should not directly own focusTaskChain anymore")
-
-    # WS handling stays delegated to wsInvalidation; App should not resurrect
-    # broad chain-view revalidation loops.
-    require("handleUserWsEvent" in app and "from '../api/wsInvalidation'" in app, "App should delegate WS handling to wsInvalidation")
-    require("dispatch(revalidateChainView(focused));" not in app and "dispatch(revalidateChainView(chainId));" not in app, "App should not broadly revalidate chain view from websocket handlers")
-    require("PERIODIC_REVALIDATE_MS" not in app, "periodic chain revalidation should be removed")
 
     print("PASS: passive UI event API churn static checks")
 

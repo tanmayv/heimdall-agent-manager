@@ -10,7 +10,6 @@ MARKDOWN_BODY = ROOT / "src" / "ui" / "components" / "MarkdownBody.tsx"
 ARTIFACT_VIEWER = ROOT / "src" / "ui" / "components" / "ArtifactViewer.tsx"
 ARTIFACT_ENDPOINTS = ROOT / "src" / "ui" / "api" / "endpoints" / "artifacts.ts"
 CHAIN_ARTIFACTS = ROOT / "src" / "ui" / "components" / "ChainArtifactsPanel.tsx"
-APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 
 
 def require(condition: bool, message: str) -> None:
@@ -24,7 +23,6 @@ def main() -> None:
     viewer = ARTIFACT_VIEWER.read_text(encoding="utf-8")
     endpoints = ARTIFACT_ENDPOINTS.read_text(encoding="utf-8")
     chain_artifacts = CHAIN_ARTIFACTS.read_text(encoding="utf-8")
-    app = APP.read_text(encoding="utf-8")
 
     pattern_match = re.search(r"export const ARTIFACT_ID_PATTERN = '([^']+)'", markdown)
     require(pattern_match is not None, "MarkdownBody should expose a shared artifact id pattern")
@@ -58,10 +56,13 @@ def main() -> None:
     require("versionsQuery.error\n      ? 'Failed to load retained artifact versions.'" not in viewer, "version history failure should not block artifact preview")
 
     require("row.mime || row.content_type || row.contentType" in chain_artifacts, "chain artifact library should display content_type fallback metadata")
-    require("artifact.mime || artifact.content_type || artifact.contentType" in app, "chat artifact side panel should display content_type fallback metadata")
     chain_project_list = "useListArtifactsQuery({ projectId, limit: 20 }" in chain_artifacts or "useListArtifactsQuery({ projectId, limit: 20, ...artifactRequestAuth }" in chain_artifacts
-    app_project_list = "useListArtifactsQuery({ projectId, limit: 20 }" in app or "useListArtifactsQuery({ projectId, limit: 20, ...artifactRequestAuth }" in app
-    require(chain_project_list and app_project_list, "artifact libraries should render backend project list results without origin-only scoping")
+    require(chain_project_list, "artifact libraries should render backend project list results without origin-only scoping")
+
+    # NOTE: the chat artifact side-panel assertions previously scanned
+    # src/ui/components/App.tsx; they were dropped when that legacy component was
+    # removed (dead code; the app mounts AppShell). MarkdownBody/ArtifactViewer/
+    # endpoints/ChainArtifactsPanel coverage above remains authoritative.
 
     print("ARTIFACT UI MARKDOWN STATIC TEST PASSED")
 

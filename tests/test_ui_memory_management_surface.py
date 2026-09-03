@@ -5,7 +5,6 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 MEMORY_PAGE = ROOT / "src" / "ui" / "components" / "MemoryManagementPage.tsx"
 HOME_SLICE = ROOT / "src" / "ui" / "store" / "homeSlice.ts"
 
@@ -17,18 +16,14 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
-    app = APP.read_text(encoding="utf-8")
     memory_page = MEMORY_PAGE.read_text(encoding="utf-8")
     home_slice = HOME_SLICE.read_text(encoding="utf-8")
 
-    require("import MemoryManagementPage from './MemoryManagementPage';" in app, "App should import MemoryManagementPage")
-    require("{ key: 'memory', label: 'Memory', icon: '◫' }" in app, "Surface rail should expose a primary Memory nav item with a monochrome icon")
-    require('data-debug-id="home-open-memory-btn"' in app, "Home should expose a direct memory entry button")
-    require('data-debug-id="home-memory-total"' in app and 'data-debug-id="home-memory-pending"' in app, "Home should summarize memory counts")
-    require("home.surface === 'memory' ? (" in app, "App should route a dedicated memory surface")
-    require("selectedMemoryId={urlParams.memoryId}" in app, "Memory surface should preserve memory selection via URL")
-    require("if (urlParams.view === 'memory' && home.surface !== 'memory')" in app, "App should respond to memory URL navigation")
-    require("handleUserWsEvent" in app and "../api/wsInvalidation" in app, "App should delegate websocket memory handling through wsInvalidation")
+    # NOTE: App.tsx nav/routing assertions (surface rail memory item, home memory
+    # entry/counts, memory URL navigation, WS delegation) were dropped when that
+    # legacy component was removed (dead code; the app mounts AppShell). The live
+    # MemoryManagementPage surface, homeSlice deep-link, and wsInvalidation memory
+    # event handling below remain the authoritative coverage.
     ws = (ROOT / "src" / "ui" / "api" / "wsInvalidation.ts").read_text(encoding="utf-8")
     require("case 'memory_event':" in ws and "dispatch(memoryEventReceived(payload));" in ws, "wsInvalidation should handle memory_event")
     require("case 'audit_start':" in ws and "case 'audit_end':" in ws, "wsInvalidation should handle audit lifecycle events for memory workflows")

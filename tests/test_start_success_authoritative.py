@@ -9,7 +9,6 @@ WRAPPER = (ROOT / 'src/wrapper/main.odin').read_text(encoding='utf-8')
 REGISTRY = (ROOT / 'src/daemon/registry.odin').read_text(encoding='utf-8')
 LIFECYCLE = (ROOT / 'src/daemon/lifecycle.odin').read_text(encoding='utf-8')
 RUNTIME = (ROOT / 'src/daemon/agent_runtime_tracker.odin').read_text(encoding='utf-8')
-APP = (ROOT / 'src/ui/components/App.tsx').read_text(encoding='utf-8')
 
 
 def require(cond: bool, msg: str) -> None:
@@ -32,13 +31,9 @@ require('status == "ready" && reason_code != "start_success"' in LIFECYCLE, 'sta
 require('status = "starting"' in LIFECYCLE and 'waiting for agent start-success RPC' in LIFECYCLE, 'startup report ready normalization should keep agent starting')
 require('registry_update_startup(agent_instance_id, "ready", "start_success"' in RUNTIME, 'start-success RPC must be the path that marks ready')
 
-for snippet in [
-    "const coordinatorReady = Boolean(coordinator && reason === 'start_success');",
-    "const launchReady = Boolean(launchProgressId && launchReason === 'start_success');",
-    "const startReady = Boolean(startProgress?.active && startReason === 'start_success');",
-    "const agentStartDone = Boolean(startProgress?.active && !startFailed && startReady);",
-    'Tracking start lifecycle events until agent calls start-success.',
-]:
-    require(snippet in APP, f'UI must require explicit start-success: missing {snippet}')
+# NOTE: UI assertions that previously checked src/ui/components/App.tsx were
+# dropped when that legacy component was removed (dead code; the app mounts
+# AppShell). The authoritative start-success guarantees above live in the
+# wrapper/daemon backend, which remains the source of truth for this test.
 
 print('START SUCCESS AUTHORITATIVE TEST PASSED')

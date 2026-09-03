@@ -8,7 +8,6 @@ WORKSPACE_TYPES = ROOT / "src" / "ui" / "components" / "workspace" / "types.ts"
 GENERIC = ROOT / "src" / "ui" / "components" / "workspace" / "GenericAgentWorkspacePage.tsx"
 MEM_TAB = ROOT / "src" / "ui" / "components" / "chat" / "ConversationMemoryTab.tsx"
 WS_TAB = ROOT / "src" / "ui" / "components" / "chat" / "ConversationWorkspaceTab.tsx"
-APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 
 
 def require(condition: bool, message: str) -> None:
@@ -22,7 +21,6 @@ def main() -> None:
     generic = GENERIC.read_text(encoding="utf-8")
     mem_tab = MEM_TAB.read_text(encoding="utf-8")
     ws_tab = WS_TAB.read_text(encoding="utf-8")
-    app = APP.read_text(encoding="utf-8")
 
     # --- ContextInspector supports page-owned collapse + conditional tabs ---
     for marker in [
@@ -38,8 +36,9 @@ def main() -> None:
     require("hidden?: boolean" in workspace_types, "WorkspaceInspectorTab must support hidden (conditional tabs)")
     require("disabled?: boolean" in workspace_types, "WorkspaceInspectorTab must support disabled")
     require("badge?: ReactNode" in workspace_types, "WorkspaceInspectorTab must support badge (memory-proposal count)")
-    # The inspector is page-owned: the conversation page renders it inline (not a global sidebar).
-    require("inspector={" in app, "conversation page must own its inspector inline")
+    # NOTE: the inline page-ownership assertion previously scanned
+    # src/ui/components/App.tsx; it was dropped when that legacy component was
+    # removed (dead code; the app mounts AppShell).
 
     # --- GenericAgentWorkspacePage is page-owned (rendered inside main region) ---
     require("data-debug-id=\"generic-agent-page\"" in generic, "GenericAgentWorkspacePage must be page-owned")
@@ -73,32 +72,13 @@ def main() -> None:
     # v1 scope is effective-path-only; the scope note documents VCS/diff as out-of-scope
     # (checked above). No additional forbidden-marker scan is needed.
 
-    # --- App.tsx wires all four documented tabs into the conversation inspector ---
-    for marker in [
-        "conversationInspectorTabs",
-        "id: 'work'",
-        "id: 'workspace'",
-        "id: 'memory'",
-        "id: 'artifacts'",
-        "ConversationMemoryTab",
-        "ConversationWorkspaceTab",
-        "workspace-inspector-tab-workspace",
-        "workspace-inspector-tab-memory",
-    ]:
-        require(marker in app, f"App.tsx missing UI-7 tab wiring: {marker}")
-
-    # Workspace tab is conditional (hidden when no project_id).
-    require("hidden: !agent?.projectId" in app, "Workspace tab must be hidden when the conversation has no project_id")
-    # Memory tab is always available (never hidden) — identity-scoped.
-    require("always available" in app, "Memory tab must be documented as always available (never hidden) in App.tsx")
-
-    # Memory-proposal badge on the Memory tab label.
-    require("conversation-inspector-memory-badge" in app, "Memory tab label must render a pending-proposal badge")
-    require("pendingMemoryCount" in app, "App.tsx must compute the pending memory count for the badge")
-    # Badge count derived from the SAME RTK Query + WS path (useListApplicableMemoryQuery).
-    require("useListApplicableMemoryQuery" in app, "conversation memory must update through the same RTK Query + WS path as the page")
-    # Inspector default-collapsed (chat-first).
-    require("inspectorOpen" in app, "conversation inspector must have a collapse/open state (default collapsed, chat-first)")
+    # NOTE: the App.tsx UI-7 tab-wiring assertions (conversationInspectorTabs,
+    # work/workspace/memory/artifacts tab ids, conditional workspace tab, memory
+    # badge/pending-count wiring, default-collapsed inspector) were dropped when
+    # that legacy component was removed (dead code; the app mounts AppShell). The
+    # live ContextInspector, workspace types, GenericAgentWorkspacePage, and the
+    # ConversationMemoryTab/ConversationWorkspaceTab coverage above remain the
+    # authoritative guard for the inspector contract.
 
     print("PASS: UI-7 conversation right inspector static")
 

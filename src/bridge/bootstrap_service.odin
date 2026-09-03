@@ -16,12 +16,14 @@ bridge_bootstrap_fetch_and_materialize :: proc(hub_url, bridge_token, instance_i
 	_ = os.make_directory_all(run_dir)
 	content := extract_json_string(resp.body, "content", strings.concatenate({"# Agent bootstrap\n\nInstance: ", instance_id, "\n"}))
 	content = strings.concatenate({content, bridge_bootstrap_ctl_guidance()})
-	if os.write_entire_file(strings.concatenate({run_dir, "/AGENTS.md"}), content) != nil do return false
+	agents_md_name := bridge_bootstrap_agents_md_name(provider)
+	bridge_bootstrap_cleanup_stale_agents_md(run_dir, agents_md_name)
+	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/", agents_md_name}), content) != nil do return false
 	skill_paths := bridge_bootstrap_write_skills(run_dir, provider, resp.body)
 	if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false
 	manifest := strings.builder_make()
 	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
-	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\"AGENTS.md\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
+	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, agents_md_name); strings.write_string(&manifest, "\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
 	for skill_path in skill_paths {
 		strings.write_string(&manifest, ",{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, skill_path); strings.write_string(&manifest, "\",\"kind\":\"SKILL\"}")
 	}
@@ -53,11 +55,13 @@ bridge_bootstrap_materialize_local_provider_test :: proc(run_dir, bridge_endpoin
 	if strings.trim_space(run_dir) == "" || strings.trim_space(bridge_endpoint) == "" || strings.trim_space(agent_token) == "" || strings.trim_space(instance_id) == "" do return false
 	_ = os.make_directory_all(run_dir)
 	content := strings.concatenate({"# Provider test bootstrap\n\nInstance: ", instance_id, "\nProvider: ", provider, "\n\nThis is a temporary Heimdall provider smoke-test run. Report readiness with `./.heimdall/bin/ham-ctl agent start-success` after the provider is usable.\n", bridge_bootstrap_ctl_guidance()})
-	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/AGENTS.md"}), content) != nil do return false
+	agents_md_name := bridge_bootstrap_agents_md_name(provider)
+	bridge_bootstrap_cleanup_stale_agents_md(run_dir, agents_md_name)
+	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/", agents_md_name}), content) != nil do return false
 	if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false
 	manifest := strings.builder_make()
 	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
-	strings.write_string(&manifest, "\",\"provider_test\":true,\"managed_files\":[{\"relative_path\":\"AGENTS.md\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}]}")
+	strings.write_string(&manifest, "\",\"provider_test\":true,\"managed_files\":[{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, agents_md_name); strings.write_string(&manifest, "\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}]}")
 	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/heimdall-bootstrap-manifest.json"}), strings.to_string(manifest)) != nil do return false
 	return true
 }
@@ -68,6 +72,47 @@ bridge_bootstrap_materialize_local_provider_test :: proc(run_dir, bridge_endpoin
 bridge_bootstrap_free_object_slice :: proc(objs: []string) {
 	for o in objs do delete(o)
 	delete(objs)
+}
+
+// bridge_bootstrap_agents_md_name resolves the bootstrap filename the agent
+// reads on startup. It honors the provider profile's configurable
+// bootstrap_file_name (surfaced from bootstrap.features['AGENTS_MD'].name); a
+// blank value falls back to the profile default (CLAUDE.md for the claude
+// profile, AGENTS.md otherwise). The name is validated to a bare, safe filename
+// so a store override can never escape the run dir.
+bridge_bootstrap_agents_md_name :: proc(provider: string) -> string {
+	if profile, ok := bridge_provider_by_name_or_default(provider); ok {
+		name := strings.trim_space(profile.bootstrap_file_name)
+		if name != "" && bridge_bootstrap_is_safe_bootstrap_name(name) do return name
+	}
+	if strings.to_lower(strings.trim_space(provider)) == "claude" do return "CLAUDE.md"
+	return "AGENTS.md"
+}
+
+// bridge_bootstrap_is_safe_bootstrap_name rejects anything that is not a plain
+// filename (no path separators, no traversal, no leading dot-slash) so the
+// bootstrap file always lands directly in the run dir.
+bridge_bootstrap_is_safe_bootstrap_name :: proc(name: string) -> bool {
+	if strings.contains(name, "/") || strings.contains(name, "\\") do return false
+	if strings.contains(name, "..") do return false
+	if name == "." do return false
+	return true
+}
+
+// bridge_bootstrap_cleanup_stale_agents_md removes a previously-generated
+// bootstrap file when the operator renames it (e.g. AGENTS.md -> CLAUDE.md) so
+// the run dir never carries two competing bootstrap docs. Only the well-known
+// default names are eligible for removal, and only when they differ from the
+// active name, so user-authored files are never touched.
+bridge_bootstrap_cleanup_stale_agents_md :: proc(run_dir, active_name: string) {
+	candidates := [?]string{"AGENTS.md", "CLAUDE.md"}
+	for candidate in candidates {
+		if candidate == active_name do continue
+		path := strings.concatenate({strings.trim_right(run_dir, "/"), "/", candidate})
+		if _, err := os.stat(path, context.allocator); err == nil {
+			_ = posix.unlink(cstring(raw_data(path)))
+		}
+	}
 }
 
 bridge_bootstrap_skill_relative_path :: proc(provider, skill_name: string) -> string {
@@ -341,7 +386,9 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 	strings.write_string(&agents_md_b, bridge_bootstrap_ctl_guidance())
 
 	_ = os.make_directory_all(run_dir)
-	agents_md_path := strings.concatenate({run_dir, "/AGENTS.md"})
+	agents_md_name := bridge_bootstrap_agents_md_name(provider)
+	bridge_bootstrap_cleanup_stale_agents_md(run_dir, agents_md_name)
+	agents_md_path := strings.concatenate({strings.trim_right(run_dir, "/"), "/", agents_md_name})
 	defer delete(agents_md_path)
 	if os.write_entire_file(agents_md_path, strings.to_string(agents_md_b)) != nil do return false
 
@@ -367,7 +414,7 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 	manifest := strings.builder_make()
 	defer strings.builder_destroy(&manifest)
 	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
-	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\"AGENTS.md\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
+	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, agents_md_name); strings.write_string(&manifest, "\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
 	for skill_path in written_skills {
 		strings.write_string(&manifest, ",{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, skill_path); strings.write_string(&manifest, "\",\"kind\":\"SKILL\"}")
 	}

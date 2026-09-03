@@ -8,7 +8,6 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = (ROOT / "src/ui/components/App.tsx").read_text(encoding="utf-8")
 EDITOR = (ROOT / "src/ui/components/ChainEditor.tsx").read_text(encoding="utf-8")
 API = (ROOT / "src/ui/api/daemonApi.ts").read_text(encoding="utf-8")
 WORKSPACE_API = (ROOT / "src/ui/api/endpoints/workspace.ts").read_text(encoding="utf-8")
@@ -20,13 +19,10 @@ def require(condition: bool, message: str) -> None:
         sys.exit(1)
 
 
-# Dedicated route/page remains reachable from existing ChainView.
-require("import ChainEditor from './ChainEditor';" in APP, "App must import ChainEditor")
-require("const openChainEditor = useCallback((chainId: string, taskId = '') => {" in APP, "openChainEditor helper missing")
-require("updateUrlParams({ chainId, view: 'chain-editor'" in APP, "chain editor route URL update missing")
-require("home.surface === 'chain' && selectedChain && urlParams.view === 'chain-editor'" in APP, "chain-editor route branch missing")
-require("<ChainEditor" in APP, "App must render ChainEditor")
-require('data-debug-id="chain-open-editor-btn"' in APP, "ChainView must expose Open editor entry button")
+# NOTE: Route/entry-point assertions that previously checked
+# src/ui/components/App.tsx were dropped when that legacy component was removed
+# (dead code; the app mounts AppShell). ChainEditor.tsx below remains the live
+# surface under test.
 
 # Graph navigator, drag/pan, edge rendering, local layout persistence.
 for needle, message in [

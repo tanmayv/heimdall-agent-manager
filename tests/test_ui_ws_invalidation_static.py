@@ -5,7 +5,6 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 WS = ROOT / "src" / "ui" / "api" / "wsInvalidation.ts"
 
 
@@ -16,12 +15,11 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
-    app = APP.read_text(encoding="utf-8")
     ws = WS.read_text(encoding="utf-8")
 
-    require("handleUserWsEvent" in app and "from '../api/wsInvalidation'" in app, "App must import wsInvalidation handler")
-    require("resyncAfterReconnect(dispatch)" in app, "App must resync RTK Query cache on WS reconnect")
-    require("handleUserWsEvent(dispatch, payload, {" in app, "App websocket onmessage must delegate to wsInvalidation")
+    # NOTE: App.tsx delegation assertions were dropped when that legacy component
+    # was removed (dead code; the app mounts AppShell). The wsInvalidation.ts
+    # targeting contract below is the authoritative coverage for this test.
 
     # WS handling should never fall back to broad component/store refresh fan-out.
     for marker in [

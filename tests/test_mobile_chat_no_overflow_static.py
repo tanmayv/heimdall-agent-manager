@@ -11,7 +11,6 @@ UPLOAD_PREVIEW = (ROOT / "src/ui/components/ArtifactAttachmentPreview.tsx").read
 CHAT_COMPOSER = (ROOT / "src/ui/components/chat/ChatComposer.tsx").read_text(encoding="utf-8")
 LAUNCH = (ROOT / "src/ui/components/chat/ConversationLaunchComposer.tsx").read_text(encoding="utf-8")
 TASK_CHAIN = (ROOT / "src/ui/components/taskchain/TaskChainOverview.tsx").read_text(encoding="utf-8")
-APP = (ROOT / "src/ui/components/App.tsx").read_text(encoding="utf-8")
 
 
 def require(condition: bool, message: str) -> None:
@@ -35,8 +34,9 @@ require('data-debug-id="new-convo-input"' in LAUNCH and 'px-4 py-3 text-base lea
         "launch composer textarea should use 16px mobile text with desktop fallback")
 require('data-debug-id={`taskchain-task-comment-input-${taskId}`}' in TASK_CHAIN and 'text-base text-white' in TASK_CHAIN and 'sm:text-sm' in TASK_CHAIN,
         "task comment input should use 16px mobile text with desktop fallback")
-require("textareaClassName: 'min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-base" in APP and 'sm:text-[15px]' in APP,
-        "agent detail ChatComposer override should use 16px mobile text with desktop fallback")
+# NOTE: the agent-detail ChatComposer 16px override previously asserted against
+# src/ui/components/App.tsx was dropped when that legacy component was removed
+# (dead code; the app mounts AppShell). Live composer coverage remains above.
 for marker in [
     "@media (max-width: 767px)",
     "input:not([type='checkbox']):not([type='radio']),",
@@ -97,7 +97,7 @@ for marker in [
 
 # Accessibility best practice: preserve user zoom; do not add maximum-scale or
 # user-scalable=no viewport hacks.
-all_text = THREAD + LIST + MARKDOWN + STYLES + CHAT_COMPOSER + LAUNCH + TASK_CHAIN + APP
+all_text = THREAD + LIST + MARKDOWN + STYLES + CHAT_COMPOSER + LAUNCH + TASK_CHAIN
 require('maximum-scale' not in all_text, "must not disable mobile pinch zoom via maximum-scale")
 require('user-scalable=no' not in all_text, "must not disable user scaling")
 

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = (ROOT / "src" / "ui" / "components" / "App.tsx").read_text(encoding="utf-8")
 URL = (ROOT / "src" / "ui" / "components" / "useUrlParams.ts").read_text(encoding="utf-8")
 MEMORY = (ROOT / "src" / "ui" / "components" / "MemoryManagementPage.tsx").read_text(encoding="utf-8")
 
@@ -21,23 +20,10 @@ def main() -> None:
     require(URL, "window.history.replaceState", "initial route state marker")
     require(URL, "window.history.pushState", "URL navigation state marker")
 
-    require(APP, "import { navigateBackOr, updateUrlParams, useUrlParams }", "App history import")
-    require(APP, "const navigateBackOrHome = useCallback", "central back helper")
-    require(APP, "navigateBackOr({ view: 'home'", "Home fallback route")
-    for snippet in [
-        "onBack: navigateBackOrHome",
-        "onBack={navigateBackOrHome}",
-        "onBackToHome={navigateBackOrHome}",
-        "data-debug-id=\"agent-detail-back-btn\"",
-        "data-debug-id=\"conversation-thread-back-btn\"",
-        "data-debug-id=\"chain-back-btn\"",
-    ]:
-        require(APP, snippet, "App back wiring")
+    # NOTE: App.tsx back-wiring assertions were dropped when that legacy component
+    # was removed (dead code; the app mounts AppShell). The URL-history helper
+    # contract above and the MemoryManagementPage label guard below remain.
 
-    if "onBack={() => selectSurfaceWithUrl('home')}" in APP:
-        raise AssertionError("page Back controls must not hard-route straight to Home")
-    if "← Home" in APP:
-        raise AssertionError("Back controls should not be labeled Home")
     if "Back to Home" in MEMORY:
         raise AssertionError("Memory back control should not be labeled Back to Home")
     print("PASS: UI Back controls use URL history with Home fallback")

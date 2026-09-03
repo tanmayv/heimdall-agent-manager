@@ -11,7 +11,6 @@ HOOK = ROOT / "src" / "ui" / "components" / "chat" / "useChatChainWork.ts"
 GENERIC = ROOT / "src" / "ui" / "components" / "workspace" / "GenericAgentWorkspacePage.tsx"
 WORKSPACE_TYPES = ROOT / "src" / "ui" / "components" / "workspace" / "types.ts"
 AGENT_CATALOG = ROOT / "src" / "ui" / "api" / "agentCatalog.ts"
-APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 
 
 def require(condition: bool, message: str) -> None:
@@ -28,7 +27,6 @@ def main() -> None:
     generic = GENERIC.read_text(encoding="utf-8")
     workspace_types = WORKSPACE_TYPES.read_text(encoding="utf-8")
     agent_catalog = AGENT_CATALOG.read_text(encoding="utf-8")
-    app = APP.read_text(encoding="utf-8")
 
     # --- Pure inference module derives current task + review-needed from cached tasks ---
     for marker in [
@@ -123,23 +121,12 @@ def main() -> None:
     require("chainId: agent.chain_id || agent.chainId" in agent_catalog,
             "mapAgent must surface bound chainId for UI-6 chat work surfaces")
 
-    # --- App.tsx wires work surfaces into BOTH conversation and direct-agent pages ---
-    for marker in [
-        "useChatChainWork",
-        "WorkChips",
-        "WorkTab",
-        "CurrentTaskStrip",
-        "currentTaskStrip: chainWork",
-        "bottom: <WorkChips",
-        "id: 'work'",
-    ]:
-        require(marker in app, f"App.tsx missing UI-6 wiring: {marker}")
-    require(app.count("useChatChainWork") >= 2,
-            "App.tsx must derive chain work for both ConversationThreadPage and AgentDetailPage")
-    require("onAddComment={addTaskComment}" in app and "onVoteTask={voteTask}" in app,
-            "App.tsx must pass shared task-action handlers to both chat pages")
-    # Task comments use the task comment thunk, not the chat send path.
-    require("addCommentToSelectedTask" in app, "task comments must use addCommentToSelectedTask (not chat send)")
+    # NOTE: the App.tsx UI-6 wiring assertions (useChatChainWork/WorkChips/WorkTab/
+    # CurrentTaskStrip wiring into both chat pages, shared task-action handlers)
+    # were dropped when that legacy component was removed (dead code; the app
+    # mounts AppShell). The pure inference module, chat work primitives,
+    # GenericAgentWorkspacePage slot, workspace types, and agent catalog coverage
+    # above remain the authoritative guard for UI-6.
 
     print("PASS: UI-6 task chain in chat static")
 

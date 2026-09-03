@@ -28,6 +28,7 @@ Bridge_Provider_Profile :: struct {
 	agent_run_dir: string,
 	use_random_dir: bool,
 	skill_dir: string,
+	bootstrap_file_name: string,
 	models: cfg_lib.Model_Tiers_Config,
 	startup_detection: cfg_lib.Startup_Detection_Config,
 	activity_detection: cfg_lib.Activity_Detection_Config,
@@ -57,6 +58,8 @@ Bridge_Provider_Override :: struct {
 	use_random_dir_set: bool,
 	skill_dir: string,
 	skill_dir_set: bool,
+	bootstrap_file_name: string,
+	bootstrap_file_name_set: bool,
 	models: cfg_lib.Model_Tiers_Config,
 	models_flag_set: bool,
 	models_cheap_set: bool,
@@ -216,6 +219,7 @@ bridge_provider_profile_from_config :: proc(cmd: cfg_lib.Agent_Command_Config) -
 		agent_run_dir = strings.clone(cmd.agent_run_dir),
 		use_random_dir = cmd.use_random_dir,
 		skill_dir = bridge_provider_skill_dir_from_config(cmd),
+		bootstrap_file_name = bridge_provider_bootstrap_file_name_from_config(cmd),
 		models = cmd.models,
 		startup_detection = cmd.startup_detection,
 		activity_detection = cmd.activity_detection,
@@ -242,6 +246,20 @@ bridge_provider_default_skill_dir :: proc(provider: string) -> string {
 	return "skills"
 }
 
+// bridge_provider_bootstrap_file_name_from_config surfaces the configured
+// bootstrap filename (bootstrap.features['AGENTS_MD'].name) so the UI can show
+// and edit it. Empty means "use the profile default" (the wrapper picks
+// CLAUDE.md for the claude profile, AGENTS.md otherwise); we deliberately do not
+// synthesize that default here so a blank value round-trips as blank.
+bridge_provider_bootstrap_file_name_from_config :: proc(cmd: cfg_lib.Agent_Command_Config) -> string {
+	if cmd.bootstrap.features != nil {
+		for key, feature in cmd.bootstrap.features {
+			if strings.to_upper(key) == "AGENTS_MD" && strings.trim_space(feature.name) != "" do return strings.clone(feature.name)
+		}
+	}
+	return ""
+}
+
 bridge_provider_profile_from_override :: proc(override: Bridge_Provider_Override) -> Bridge_Provider_Profile {
 	profile := Bridge_Provider_Profile{
 		name = strings.clone(override.name),
@@ -266,6 +284,7 @@ bridge_provider_apply_override :: proc(profile: Bridge_Provider_Profile, overrid
 	if override.agent_run_dir_set do result.agent_run_dir = strings.clone(override.agent_run_dir)
 	if override.use_random_dir_set do result.use_random_dir = override.use_random_dir
 	if override.skill_dir_set do result.skill_dir = strings.clone(override.skill_dir)
+	if override.bootstrap_file_name_set do result.bootstrap_file_name = strings.clone(override.bootstrap_file_name)
 	if override.models_flag_set do result.models.flag = strings.clone(override.models.flag)
 	if override.models_cheap_set do result.models.cheap = strings.clone(override.models.cheap)
 	if override.models_normal_set do result.models.normal = strings.clone(override.models.normal)
@@ -419,6 +438,7 @@ bridge_provider_write_profile_json :: proc(b: ^strings.Builder, profile: Bridge_
 	strings.write_string(b, ",\"agent_run_dir\":\""); json_write_string(b, profile.agent_run_dir)
 	strings.write_string(b, "\",\"use_random_dir\":"); strings.write_string(b, "true" if profile.use_random_dir else "false")
 	strings.write_string(b, ",\"skill_dir\":\""); json_write_string(b, profile.skill_dir); strings.write_byte(b, '"')
+	strings.write_string(b, ",\"bootstrap_file_name\":\""); json_write_string(b, profile.bootstrap_file_name); strings.write_byte(b, '"')
 	strings.write_string(b, ",\"startup_detection\":"); bridge_provider_write_startup_json(b, profile.startup_detection)
 	strings.write_string(b, ",\"activity_detection\":"); bridge_provider_write_activity_json(b, profile.activity_detection)
 	strings.write_string(b, "}")
@@ -449,6 +469,7 @@ bridge_provider_write_override_json :: proc(b: ^strings.Builder, override: Bridg
 	if override.agent_run_dir_set { bridge_provider_write_json_field_prefix(b, &first, "agent_run_dir"); strings.write_byte(b, '"'); json_write_string(b, override.agent_run_dir); strings.write_byte(b, '"') }
 	if override.use_random_dir_set { bridge_provider_write_json_field_prefix(b, &first, "use_random_dir"); strings.write_string(b, "true" if override.use_random_dir else "false") }
 	if override.skill_dir_set { bridge_provider_write_json_field_prefix(b, &first, "skill_dir"); strings.write_byte(b, '"'); json_write_string(b, override.skill_dir); strings.write_byte(b, '"') }
+	if override.bootstrap_file_name_set { bridge_provider_write_json_field_prefix(b, &first, "bootstrap_file_name"); strings.write_byte(b, '"'); json_write_string(b, override.bootstrap_file_name); strings.write_byte(b, '"') }
 	if bridge_provider_override_has_models(override) {
 		bridge_provider_write_json_field_prefix(b, &first, "models")
 		bridge_provider_write_override_models_json(b, override)
@@ -580,6 +601,7 @@ bridge_provider_override_from_json_with_name :: proc(obj, fallback_name: string)
 	if v, ok := bridge_provider_json_extract_string_set(obj, "agent_run_dir"); ok { o.agent_run_dir = bridge_expand_home(v); o.agent_run_dir_set = true }
 	if v, ok := bridge_provider_json_extract_bool(obj, "use_random_dir"); ok { o.use_random_dir = v; o.use_random_dir_set = true }
 	if v, ok := bridge_provider_json_extract_string_set(obj, "skill_dir"); ok { o.skill_dir = v; o.skill_dir_set = true }
+	if v, ok := bridge_provider_json_extract_string_set(obj, "bootstrap_file_name"); ok { o.bootstrap_file_name = strings.trim_space(v); o.bootstrap_file_name_set = true }
 	if models_obj, ok := bridge_provider_json_extract_object(obj, "models"); ok {
 		if v, got := bridge_provider_json_extract_string_set(models_obj, "flag"); got { o.models.flag = v; o.models_flag_set = true }
 		if v, got := bridge_provider_json_extract_string_set(models_obj, "cheap"); got { o.models.cheap = v; o.models_cheap_set = true }

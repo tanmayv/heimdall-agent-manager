@@ -318,7 +318,11 @@ export default function ConversationLaunchComposer() {
     return { effectivePath, isValidated };
   }, [projectDetail, selectedBridge]);
 
-  const canSend = status !== 'sending' && Boolean(agentId) && Boolean(selectedBridge) && launchPairSupported && body.trim().length > 0;
+  // First message is OPTIONAL: only agent + a supported bridge/provider/tier are
+  // required. The backend (POST /api/v1/chats) creates + binds the instance and
+  // conversation with an empty initial_message, skipping the first send/title.
+  const canSend = status !== 'sending' && Boolean(agentId) && Boolean(selectedBridge) && launchPairSupported;
+  const hasBody = body.trim().length > 0;
   const usingSyntheticDefault = selectedProject.project_id === SYNTHETIC_DEFAULT_PROJECT_ID;
   const hasPendingProviderTierChange = locked ? pendingProvider !== locked.provider || pendingTier !== locked.tier : false;
   const pendingProviderValid = pendingProvider === '' || pendingProviderOptions.includes(pendingProvider);
@@ -332,7 +336,6 @@ export default function ConversationLaunchComposer() {
       setError('Choose an agent before sending.');
       return;
     }
-    if (!body.trim()) return;
     if (!selectedBridge) {
       setError('Choose the Bridge to run this agent on.');
       return;
@@ -350,7 +353,7 @@ export default function ConversationLaunchComposer() {
         bridgeId,
         provider: launchProvider,
         tier: launchTier,
-        body: body.trim(),
+        body: body.trim(), // empty is allowed: backend skips the first send + title
         artifactIds: [],
       }).unwrap();
       const created = launched.conversation || {};
@@ -367,7 +370,7 @@ export default function ConversationLaunchComposer() {
       // than getting stuck on the composer.
       window.location.hash = buildRouteHash('/conversations', '');
     } catch (err: any) {
-      setError(errMsg(err, 'First send failed'));
+      setError(errMsg(err, hasBody ? 'First send failed' : 'Start failed'));
       setStatus('idle');
     }
   }
@@ -378,8 +381,8 @@ export default function ConversationLaunchComposer() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Composer launch</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Start with a message</h2>
-          <p className="mt-2 text-sm leading-6 text-zinc-400">Choose an agent in the composer, keep the default Conversations project unless needed, then first-send creates the bound AgentInstance, ChatConversation, and TaskChain through <code>POST /api/v1/chats</code>.</p>
+          <h2 className="mt-2 text-2xl font-semibold text-white">Start a conversation</h2>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">Choose an agent in the composer, keep the default Conversations project unless needed, then start to create the bound AgentInstance, ChatConversation, and TaskChain through <code>POST /api/v1/chats</code>. The first message is optional — you can start without typing one.</p>
         </div>
         <span data-debug-id="launch-default-project-chip" className="shrink-0 rounded-full bg-sky-400/10 px-3 py-1.5 text-xs font-bold text-sky-200">Default project: {selectedProject.name || 'Conversations'}</span>
       </div>
@@ -450,8 +453,8 @@ export default function ConversationLaunchComposer() {
       </fieldset>
 
       <label className="mt-5 block">
-        <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Message</span>
-        <textarea data-debug-id="new-convo-input" data-mobile-shell-chrome="hide-on-focus" value={body} onChange={(event) => setBody(event.target.value)} rows={5} placeholder="Ask the selected agent to start working…" className="mt-2 w-full resize-y rounded-3xl border border-white/10 bg-black/30 px-4 py-3 text-base leading-6 text-white sm:text-sm outline-none placeholder:text-zinc-600 focus:border-sky-400/60" />
+        <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Message <span className="font-medium normal-case tracking-normal text-zinc-600">(optional)</span></span>
+        <textarea data-debug-id="new-convo-input" data-mobile-shell-chrome="hide-on-focus" value={body} onChange={(event) => setBody(event.target.value)} rows={5} placeholder="Optional: ask the selected agent to start working, or leave blank to just start the conversation…" className="mt-2 w-full resize-y rounded-3xl border border-white/10 bg-black/30 px-4 py-3 text-base leading-6 text-white sm:text-sm outline-none placeholder:text-zinc-600 focus:border-sky-400/60" />
       </label>
 
       {usingSyntheticDefault && (
@@ -466,8 +469,8 @@ export default function ConversationLaunchComposer() {
       {error && <p data-debug-id="new-convo-error" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-100">{error}</p>}
 
       <div className="mt-5 flex items-center justify-between gap-4">
-        <p data-debug-id="launch-send-guard" className="text-xs text-zinc-500">{!agentId ? 'Agent selection is required before send.' : !selectedBridge ? 'Choose the Bridge to run on.' : launchPairSupported ? 'Ready when the first message is written.' : 'Choose a provider/tier supported by the selected Bridge.'}</p>
-        <button data-debug-id="new-convo-send-btn" type="submit" disabled={!canSend} className="rounded-2xl bg-sky-400 px-5 py-3 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{status === 'sending' ? 'Starting…' : 'Send and start'}</button>
+        <p data-debug-id="launch-send-guard" className="text-xs text-zinc-500">{!agentId ? 'Agent selection is required before starting.' : !selectedBridge ? 'Choose the Bridge to run on.' : launchPairSupported ? 'Ready to start — a first message is optional.' : 'Choose a provider/tier supported by the selected Bridge.'}</p>
+        <button data-debug-id="new-convo-send-btn" type="submit" disabled={!canSend} className="rounded-2xl bg-sky-400 px-5 py-3 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{status === 'sending' ? 'Starting…' : hasBody ? 'Send and start' : 'Start conversation'}</button>
       </div>
     </form>
   );

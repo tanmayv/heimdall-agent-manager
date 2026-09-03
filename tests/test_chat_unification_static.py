@@ -3,7 +3,6 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = (ROOT / 'src/ui/components/App.tsx').read_text(encoding='utf-8')
 ADAPTERS = (ROOT / 'src/ui/components/workspace/adapters.ts').read_text(encoding='utf-8')
 GENERIC_PAGE = (ROOT / 'src/ui/components/workspace/GenericAgentWorkspacePage.tsx').read_text(encoding='utf-8')
 SHELL = (ROOT / 'src/ui/components/workspace/UnifiedWorkspaceShell.tsx').read_text(encoding='utf-8')
@@ -26,28 +25,11 @@ def require_count(text: str, snippet: str, minimum: int, label: str) -> None:
 
 
 def main() -> None:
-    for snippet in [
-        "import GenericAgentWorkspacePage from './workspace/GenericAgentWorkspacePage';",
-        "import UnifiedWorkspaceShell from './workspace/UnifiedWorkspaceShell';",
-        "import WorkspaceLeftSidebar from './workspace/WorkspaceLeftSidebar';",
-        "import WorkspaceMainRegion from './workspace/WorkspaceMainRegion';",
-        "import ContextInspector from './workspace/ContextInspector';",
-        "import { adaptChainCoordinatorWorkspaceContext, adaptConversationWorkspaceContext, adaptDirectAgentWorkspaceContext } from './workspace/adapters';",
-    ]:
-        require(APP, snippet, 'workspace shell imports')
-
-    require_count(APP, '<GenericAgentWorkspacePage', 3, 'shared generic agent page usage')
-    require_count(APP, '<UnifiedWorkspaceShell', 3, 'shared workspace shell usage')
-    for snippet in [
-        'workspaceInspectorTabsFor(detailWorkspaceContext',
-        'workspaceInspectorTabsFor(conversationWorkspaceContext',
-        'workspaceInspectorTabsFor(coordinatorWorkspaceContext',
-        'detailWorkspaceContext.genericAgent!',
-        'conversationWorkspaceContext.genericAgent!',
-        'coordinatorWorkspaceContext.genericAgent!',
-    ]:
-        require(APP, snippet, 'normalized workspace context consumption')
-
+    # NOTE: Assertions that scanned src/ui/components/App.tsx (workspace shell
+    # imports, GenericAgentWorkspacePage/UnifiedWorkspaceShell usage counts,
+    # normalized-context consumption, and per-surface debug wiring) were dropped
+    # when that legacy component was removed (dead code; the app mounts
+    # AppShell). The shared workspace primitives below remain the live contract.
     for snippet in [
         "import ChatHeader from '../chat/ChatHeader';",
         "import ChatMessageList from '../chat/ChatMessageList';",
@@ -106,22 +88,6 @@ def main() -> None:
         "composer: 'agent-detail-chat'",
     ]:
         require(DEBUG_PREFIXES, snippet, 'chat debug prefix registry')
-
-    for snippet in [
-        "shellDebugId: detailAgentContext.debug.composerPrefix + '-composer-shell'",
-        "shellDebugId: conversationAgentContext.debug.composerPrefix + '-shell'",
-        "shellDebugId: coordinatorAgentContext.debug.composerPrefix + '-composer-shell'",
-        'debugPrefix: detailAgentContext.debug.messageListPrefix',
-        'debugPrefix: conversationAgentContext.debug.messageListPrefix',
-        'debugPrefix: coordinatorAgentContext.debug.messageListPrefix',
-        'debugPrefix: detailAgentContext.debug.workBannerPrefix',
-        'debugPrefix: conversationAgentContext.debug.workBannerPrefix',
-        'debugPrefix: coordinatorAgentContext.debug.workBannerPrefix',
-        'runtimeControls: { debugPrefix: detailAgentContext.debug.runtimePrefix',
-        'runtimeControls: { debugPrefix: conversationAgentContext.debug.runtimePrefix',
-        'runtimeControls: { debugPrefix: coordinatorAgentContext.debug.runtimePrefix',
-    ]:
-        require(APP, snippet, 'per-surface debug wiring')
 
     for snippet in [
         "export type WorkspaceRouteKind = 'workspace_home' | 'conversation' | 'agent' | 'chain_coordinator' | 'task' | 'project' | 'artifact';",

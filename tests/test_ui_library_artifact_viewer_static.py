@@ -5,7 +5,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = ROOT / "src" / "ui" / "components" / "LibraryPage.tsx"
 VIEWER = ROOT / "src" / "ui" / "components" / "ArtifactViewer.tsx"
-APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 HOME_SLICE = ROOT / "src" / "ui" / "store" / "homeSlice.ts"
 
 
@@ -17,7 +16,6 @@ def require(condition: bool, message: str) -> None:
 def main() -> None:
     library = LIBRARY.read_text(encoding="utf-8")
     viewer = VIEWER.read_text(encoding="utf-8")
-    app = APP.read_text(encoding="utf-8")
     home = HOME_SLICE.read_text(encoding="utf-8")
     daemon_api = (ROOT / "src" / "ui" / "api" / "daemonApi.ts").read_text(encoding="utf-8")
 
@@ -115,16 +113,10 @@ def main() -> None:
     require("'/artifacts/delete'" not in daemon_api,
             "daemonApi must not use legacy unserved POST /artifacts/delete")
 
-    # --- App wiring: library surface + sidebar nav ---
-    for marker in [
-        "import LibraryPage",
-        "home.surface === 'library'",
-        "<LibraryPage",
-        "onLibrary",
-        "nav-library-btn",
-        "onLibrary={() => selectSurfaceWithUrl('library')}",
-    ]:
-        require(marker in app, f"App.tsx missing library wiring: {marker}")
+    # NOTE: App.tsx library-wiring assertions were dropped when that legacy
+    # component was removed (dead code; the app mounts AppShell). The live
+    # LibraryPage/ArtifactViewer/daemonApi coverage above plus the homeSlice URL
+    # mapping below remain the authoritative guard.
 
     # URL view -> surface mapping for 'library'.
     require("view === 'library'" in home, "homeSlice must map view='library' to the library surface")

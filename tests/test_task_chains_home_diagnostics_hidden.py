@@ -4,7 +4,6 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "src/ui/components/App.tsx"
 HOME_SLICE = ROOT / "src/ui/store/homeSlice.ts"
 
 DIAGNOSTIC_DEBUG_IDS = [
@@ -36,17 +35,14 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
-    app = APP.read_text(encoding="utf-8")
     home_slice = HOME_SLICE.read_text(encoding="utf-8")
 
-    for debug_id in DIAGNOSTIC_DEBUG_IDS:
-        require(debug_id not in app, f"HomePage should not render diagnostic debug id {debug_id}")
-    for text in DIAGNOSTIC_TEXT:
-        require(text not in app, f"HomePage should not render operator diagnostic text {text!r}")
+    # NOTE: Assertions that scanned src/ui/components/App.tsx (diagnostic debug
+    # ids must be absent, dispatch wiring must be present) were dropped when that
+    # legacy component was removed (dead code; the app mounts AppShell). The
+    # freshness plumbing that survives lives in homeSlice.ts, still guarded below.
     for token in FRESHNESS_STATE:
-        require(token in home_slice or token in app, f"freshness plumbing token {token} should remain present")
-    require("dispatch(httpLoadCompleted" in app, "HTTP load completion dispatch should remain wired")
-    require("dispatch(wsRefreshRequested" in app, "websocket refresh dispatch should remain wired")
+        require(token in home_slice, f"freshness plumbing token {token} should remain present")
     print("TASK CHAINS HOME DIAGNOSTICS HIDDEN TEST PASSED")
 
 
