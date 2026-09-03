@@ -608,7 +608,26 @@ CREATE TABLE IF NOT EXISTS agent_title_counters (
 MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME :: `ALTER TABLE agent_instances ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
 `
 
-migration_order :: [21]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql"}
+// MIGRATION_022_SCHEDULED_PROMPTS adds the scheduled_prompts table for
+// delayed and recurring prompt injection into agent instances.
+MIGRATION_022_SCHEDULED_PROMPTS :: `CREATE TABLE IF NOT EXISTS scheduled_prompts (
+  id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL,
+  target_instance_id TEXT NOT NULL,
+  prompt_text TEXT NOT NULL,
+  target_run_at TEXT NOT NULL,
+  interval TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'active',
+  in_flight INTEGER NOT NULL DEFAULT 0,
+  leased_at TEXT NOT NULL DEFAULT '',
+  deleted_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);
+`
+
+migration_order :: [22]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -636,6 +655,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			continue
 		}
 		if name == "021_agent_instance_display_name.sql" && table_column_exists(conn, "agent_instances", "display_name") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "022_scheduled_prompts.sql" && table_column_exists(conn, "scheduled_prompts", "id") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -689,6 +712,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "019_current_task_and_priority.sql" do return strings.clone(MIGRATION_019_CURRENT_TASK_AND_PRIORITY)
 	if name == "020_title_tracking.sql" do return strings.clone(MIGRATION_020_TITLE_TRACKING)
 	if name == "021_agent_instance_display_name.sql" do return strings.clone(MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME)
+	if name == "022_scheduled_prompts.sql" do return strings.clone(MIGRATION_022_SCHEDULED_PROMPTS)
 	return ""
 }
 
