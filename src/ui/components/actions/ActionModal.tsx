@@ -1,10 +1,16 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useSelector } from 'react-redux';
 import {
   Action,
   parseBlackoutDates,
   useCreateActionMutation,
   usePatchActionMutation,
 } from '../../api/endpoints/actions';
+import {
+  useListAgentIdentitiesQuery,
+  useListAgentTemplatesQuery,
+} from '../../api/endpoints/agents';
+import AgentPicker from '../AgentPicker';
 import ScheduleEditor, { ScheduleEditorValue } from './ScheduleEditor';
 import { getLocalTimezone, validateCronExpression } from './scheduleUtils';
 
@@ -15,6 +21,7 @@ export type ActionModalProps = {
   defaultInstanceId?: string;
   projects: any[];
   instances: any[];
+  onRefreshAgents?: () => void | Promise<void>;
 };
 
 export default function ActionModal({
@@ -24,9 +31,18 @@ export default function ActionModal({
   defaultInstanceId,
   projects,
   instances,
+  onRefreshAgents,
 }: ActionModalProps) {
   const [createAction] = useCreateActionMutation();
   const [patchAction] = usePatchActionMutation();
+
+  const { data: identitiesData } = useListAgentIdentitiesQuery();
+  const identities = identitiesData?.agents || [];
+
+  const { data: templatesData } = useListAgentTemplatesQuery();
+  const templates = templatesData?.templates || [];
+
+  const session = useSelector((state: any) => state?.chat?.session || {});
 
   const isEdit = Boolean(action);
 
@@ -44,25 +60,13 @@ export default function ActionModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  // Project map for quick lookup
-  const projectMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const p of projects) {
-      map.set(p.project_id, p.name);
-    }
-    return map;
-  }, [projects]);
-
-  // Group instances by project
-  const instancesByProject = useMemo(() => {
-    const groups: Record<string, any[]> = {};
-    for (const inst of instances) {
-      const pid = inst.project_id || 'unassigned';
-      if (!groups[pid]) groups[pid] = [];
-      groups[pid].push(inst);
-    }
-    return groups;
-  }, [instances]);
+  // Selected instance lookup
+  const selectedInstance = useMemo(() => {
+    return instances.find(
+      (inst: any) =>
+        (inst?.agent_instance_id || inst?.id || inst?.agentInstanceId) === targetInstanceId
+    );
+  }, [instances, targetInstanceId]);
 
   // Populate or reset form when modal opens or action changes
   useEffect(() => {
@@ -84,7 +88,8 @@ export default function ActionModal({
         active_until: action.active_until || undefined,
       });
     } else {
-      const fallbackId = defaultInstanceId || (instances.length > 0 ? instances[0].agent_instance_id : '');
+      const fallbackId =
+        defaultInstanceId || (instances.length > 0 ? instances[0].agent_instance_id : '');
       setTargetInstanceId(fallbackId);
       setPromptText('');
       setIsScheduled(true);
@@ -147,7 +152,11 @@ export default function ActionModal({
       }
       onClose();
     } catch (err: any) {
-      const msg = err?.data?.error?.message || err?.error || err?.message || String(err || 'Failed to save action');
+      const msg =
+        err?.data?.error?.message ||
+        err?.error ||
+        err?.message ||
+        String(err || 'Failed to save action');
       setError(msg);
     } finally {
       setSaving(false);
@@ -164,7 +173,7 @@ export default function ActionModal({
     >
       <div
         data-debug-id="action-modal"
-        className="my-8 w-full max-w-2xl rounded-2xl border border-white/10 bg-[#121212] p-6 shadow-2xl space-y-5"
+        className="my-8 w-full max-w-3xl rounded-2xl border border-white/10 bg-[#121212] p-6 shadow-2xl space-y-5"
       >
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
           <div>
@@ -187,42 +196,66 @@ export default function ActionModal({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Target Instance Picker */}
+          {/* Target Instance Picker (Reusing shared AgentPicker) */}
           <div>
-            <label className="block text-xs font-semibold text-zinc-300 mb-1">
-              Target Agent Instance *
-            </label>
-            <select
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold text-zinc-300">
+                Target Agent Instance *
+              </label>
+              {targetInstanceId && (
+                <span className="text-[11px] text-sky-400 font-mono">
+                  Selected: {selectedInstance?.display_name || selectedInstance?.agent_name || targetInstanceId}
+                </span>
+              )}
+            </div>
+
+            {/* Hidden input for debug/test parity */}
+            <input
+              type="hidden"
               data-debug-id="action-modal-instance-select"
               value={targetInstanceId}
-              disabled={isEdit} // Instance is fixed once created
-              onChange={(e) => setTargetInstanceId(e.target.value)}
-              className="w-full rounded-xl border border-white/10 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-sky-400 disabled:opacity-60"
-            >
-              {instances.length === 0 ? (
-                <option value="">No agent instances found</option>
-              ) : (
-                Object.entries(instancesByProject).map(([pid, instList]) => {
-                  const projectName = pid === 'unassigned' ? 'Unassigned Project' : (projectMap.get(pid) || pid);
-                  return (
-                    <optgroup key={pid} label={`Project: ${projectName}`}>
-                      {instList.map((inst) => {
-                        const name = inst.display_name || inst.agent_name || inst.agent_id || inst.agent_instance_id;
-                        return (
-                          <option key={inst.agent_instance_id} value={inst.agent_instance_id}>
-                            {name} ({inst.agent_instance_id}) [{inst.runtime_status || 'idle'}]
-                          </option>
-                        );
-                      })}
-                    </optgroup>
-                  );
-                })
-              )}
-            </select>
-            {isEdit && (
-              <p className="mt-1 text-[11px] text-zinc-500">
-                Target agent instance cannot be changed after creation.
-              </p>
+            />
+
+            {isEdit ? (
+              <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/40 p-3">
+                <div className="flex items-center gap-2.5">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      selectedInstance?.runtime_status === 'running'
+                        ? 'bg-emerald-400'
+                        : 'bg-zinc-500'
+                    }`}
+                  />
+                  <div>
+                    <div className="text-xs font-semibold text-white">
+                      {selectedInstance?.display_name || selectedInstance?.agent_name || selectedInstance?.agent_id || targetInstanceId}
+                    </div>
+                    <div className="text-[11px] font-mono text-zinc-400">
+                      {targetInstanceId}
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[11px] text-zinc-500">
+                  Target instance cannot be changed after creation
+                </span>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <AgentPicker
+                  debugId="action-modal-agent-picker"
+                  daemonUrl={session?.daemonUrl || ''}
+                  clientToken={session?.clientToken || ''}
+                  agents={instances}
+                  identities={identities}
+                  projects={projects}
+                  templates={templates}
+                  value={targetInstanceId}
+                  onSelected={(selectedAgentId) => {
+                    setTargetInstanceId(selectedAgentId);
+                  }}
+                  onRefreshAgents={onRefreshAgents}
+                />
+              </div>
             )}
           </div>
 

@@ -15,7 +15,7 @@ import { describeCron, calculateNextRuns } from './scheduleUtils';
 
 export default function ActionsPanel() {
   const { data: actionsData, isLoading: actionsLoading, error: actionsError } = useListActionsQuery();
-  const { data: instancesData, isLoading: instancesLoading } = useListAllAgentInstancesQuery();
+  const { data: instancesData, isLoading: instancesLoading, refetch: refetchInstances } = useListAllAgentInstancesQuery();
   const { data: projectsData, isLoading: projectsLoading } = useListProjectsQuery();
 
   const [deleteAction, { isLoading: isDeleting }] = useDeleteActionMutation();
@@ -379,6 +379,7 @@ export default function ActionsPanel() {
         }}
         projects={projects}
         instances={instances}
+        onRefreshAgents={() => { void refetchInstances(); }}
       />
 
       <DeleteActionModal
