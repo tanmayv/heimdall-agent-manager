@@ -964,11 +964,29 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	
 	if target == .Assignee {
 		extracted := extract_instances_from_ref_blob(task.assignee_ref_json)
-		for id in extracted do append(&instance_ids, id)
+		for id in extracted {
+			found := false
+			for existing in instance_ids {
+				if existing == id {
+					found = true
+					break
+				}
+			}
+			if !found do append(&instance_ids, id)
+		}
 		delete(extracted)
 	} else if target == .Reviewer {
 		extracted := extract_instances_from_ref_blob(task.reviewer_refs_json)
-		for id in extracted do append(&instance_ids, id)
+		for id in extracted {
+			found := false
+			for existing in instance_ids {
+				if existing == id {
+					found = true
+					break
+				}
+			}
+			if !found do append(&instance_ids, id)
+		}
 		delete(extracted)
 	} else if target == .Coordinator {
 		chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)

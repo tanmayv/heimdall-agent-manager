@@ -91,6 +91,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   // Local state
   // H12: chain description collapsed by default so the chain view is scannable.
   const [descExpanded, setDescExpanded] = useState(false);
+  const [completedTasksExpanded, setCompletedTasksExpanded] = useState(false);
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentAttachments, setCommentAttachments] = useState<Record<string, CommentAttachment[]>>({});
@@ -156,6 +157,18 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const chain = data?.chain;
   const tasks: any[] = chain?.tasks || [];
   const members: any[] = chain?.members || [];
+
+  // Separate active and completed tasks.
+  // Completed tasks are sorted chronologically by completion time (updated_at / created_at).
+  const isTaskCompleted = (t: any) => t.status === 'completed' || t.status === 'validated_good';
+  const activeTasks = tasks.filter((t: any) => !isTaskCompleted(t));
+  const completedTasks = tasks
+    .filter((t: any) => isTaskCompleted(t))
+    .sort((a: any, b: any) => {
+      const timeA = new Date(a.updated_at || a.updatedAt || a.created_at || a.createdAt || 0).getTime();
+      const timeB = new Date(b.updated_at || b.updatedAt || b.created_at || b.createdAt || 0).getTime();
+      return timeA - timeB;
+    });
 
   // Add-Agent popup dependent option lists (identity -> bridge -> provider -> tier).
   const agentIdentities: any[] = agentIdentitiesQuery.data?.agents || [];
