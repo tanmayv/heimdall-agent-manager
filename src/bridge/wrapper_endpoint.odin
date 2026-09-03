@@ -469,7 +469,7 @@ bridge_local_relay_instance_lifecycle :: proc(method, params: string, rec: Bridg
 		{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_config.bridge_token})},
 		{name = "X-Heimdall-Instance-Token", value = rec.instance_token},
 	}
-	resp, ok := http.request_with_headers_timeout("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	resp, ok := bridge_http_request_retry("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
 	return Bridge_Local_Relay_Result{status = resp.status, body = resp.body, ok = ok}
 }
 

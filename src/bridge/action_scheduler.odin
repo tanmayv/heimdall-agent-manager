@@ -492,7 +492,7 @@ bridge_action_scheduler_sync :: proc() -> bool {
 		append(&headers, http.Header{name = "If-None-Match", value = last_etag})
 	}
 
-	resp, ok := http.request_with_headers_timeout("GET", bridge_config.daemon_url, "/api/v1/bridge/actions", "", headers[:], http.DEFAULT_TIMEOUT_MS)
+	resp, ok := bridge_http_request_retry("GET", bridge_config.daemon_url, "/api/v1/bridge/actions", "", headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok do return false
 	defer delete(resp.body)
 
@@ -672,7 +672,7 @@ bridge_action_scheduler_execute :: proc(action_id: string, next_target_run_at: s
 	if next_target_run_at != "" {
 		body = fmt.tprintf("{\"target_run_at\":\"%s\"}", next_target_run_at)
 	}
-	resp, ok := http.request_with_headers_timeout("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	resp, ok := bridge_http_request_retry("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok do return false, 0, ""
 	return resp.status == 200, resp.status, resp.body
 }

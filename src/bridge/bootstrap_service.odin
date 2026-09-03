@@ -22,38 +22,25 @@ Bridge_Bootstrap_Result :: struct {
 // conditional manifest GET and each per-hash blob GET retry alone with a short
 // exponential backoff so a transient failure of one small request never fails the
 // whole launch.
-BRIDGE_BOOTSTRAP_MAX_ATTEMPTS :: 4
-BRIDGE_BOOTSTRAP_BASE_BACKOFF_MS :: 150
+BRIDGE_BOOTSTRAP_MAX_ATTEMPTS :: BRIDGE_RETRY_MAX_ATTEMPTS
+BRIDGE_BOOTSTRAP_BASE_BACKOFF_MS :: BRIDGE_RETRY_BASE_BACKOFF_MS
 
 bridge_bootstrap_backoff_sleep :: proc(attempt: int) {
-	// attempt is 1-based; sleep grows 150ms, 300ms, 600ms, ...
-	ms := BRIDGE_BOOTSTRAP_BASE_BACKOFF_MS
-	for i in 1..<attempt do ms *= 2
-	time.sleep(time.Duration(ms) * time.Millisecond)
+	bridge_http_backoff_sleep(attempt, BRIDGE_BOOTSTRAP_BASE_BACKOFF_MS)
 }
 
 // bridge_bootstrap_http_get_retry issues a GET with retry/backoff. It treats a
 // transport failure OR a 5xx/429 as retriable; any other status is returned to
 // the caller to interpret (200/304/404/...). The final response+ok are returned.
 bridge_bootstrap_http_get_retry :: proc(hub_url, path: string, headers: []http.Header) -> (http.Response, bool) {
-	resp: http.Response
-	ok := false
-	for attempt in 1..=BRIDGE_BOOTSTRAP_MAX_ATTEMPTS {
-		resp, ok = http.request_with_headers_timeout("GET", hub_url, path, "", headers, http.DEFAULT_TIMEOUT_MS)
-		if ok && resp.status != 0 && resp.status < 500 && resp.status != 429 do return resp, true
-		if attempt < BRIDGE_BOOTSTRAP_MAX_ATTEMPTS {
-			fmt.println("bridge bootstrap retry", "path=", path, "attempt=", attempt, "status=", resp.status, "ok=", ok)
-			bridge_bootstrap_backoff_sleep(attempt)
-		}
-	}
-	return resp, ok
+	return bridge_http_request_retry("GET", hub_url, path, "", headers, http.DEFAULT_TIMEOUT_MS)
 }
 
 bridge_bootstrap_fetch_and_materialize :: proc(hub_url, bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider: string) -> bool {
 	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(instance_id) == "" || strings.trim_space(run_dir) == "" do return false
 	path := strings.concatenate({"/api/v1/bridge/agent-instances/", instance_id, "/bootstrap"})
 	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_token})}}
-	resp, ok := http.request_with_headers_timeout("GET", hub_url, path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
+	resp, ok := bridge_http_request_retry("GET", hub_url, path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok || resp.status != 200 do return false
 	_ = os.make_directory_all(run_dir)
 	content := extract_json_string(resp.body, "content", strings.concatenate({"# Agent bootstrap\n\nInstance: ", instance_id, "\n"}))
@@ -866,6 +853,14 @@ bridge_bootstrap_launch_materialize :: proc(hub_url, bridge_token, run_dir, brid
 		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "missing hub_url/bridge_token/instance_id"}
 	}
 	if strings.trim_space(d.agent_id) == "" {
+		if strings.trim_space(d.instance_id) != "" {
+			if bridge_bootstrap_fetch_manifest_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider, cache) {
+				return Bridge_Bootstrap_Result{ok = true, stage = "fallback_manifest"}
+			}
+			if bridge_bootstrap_fetch_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider) {
+				return Bridge_Bootstrap_Result{ok = true, stage = "fallback_legacy"}
+			}
+		}
 		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch payload missing agent_id (enriched descriptor required)"}
 	}
 	provider := d.provider
@@ -879,7 +874,7 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(instance_id) == "" || strings.trim_space(run_dir) == "" do return false
 	path := strings.concatenate({"/api/v1/bridge/agent-instances/", instance_id, "/bootstrap?format=manifest"})
 	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_token})}}
-	resp, ok := http.request_with_headers_timeout("GET", hub_url, path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
+	resp, ok := bridge_http_request_retry("GET", hub_url, path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok || resp.status != 200 do return false
 
 	data_obj, data_ok := bridge_provider_json_extract_object(resp.body, "data")

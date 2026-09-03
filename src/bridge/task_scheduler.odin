@@ -208,7 +208,7 @@ bridge_task_should_nudge :: proc(cfg: Bridge_Nudge_Config, status: string, first
 
 bridge_task_fetch_actionable :: proc() -> (string, bool) {
 	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_config.bridge_token})}}
-	resp, ok := http.request_with_headers_timeout("GET", bridge_config.daemon_url, "/api/v1/bridge/actionable-tasks", "", headers[:], http.DEFAULT_TIMEOUT_MS)
+	resp, ok := bridge_http_request_retry("GET", bridge_config.daemon_url, "/api/v1/bridge/actionable-tasks", "", headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok || resp.status != 200 do return "", false
 	return resp.body, true
 }
@@ -296,7 +296,12 @@ bridge_task_wake_if_needed :: proc(instance_id: string, now: i64) -> bool {
 	command_id := fmt.tprintf("sched_wake_%s_%d", instance_id, now)
 	command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", command_id, "\",\"agent_instance_id\":\"", instance_id, "\"}"})
 	ok, detail := bridge_runtime_launch_agent(command_id, command_json)
-	if !ok do fmt.println("bridge scheduler wake failed", instance_id, detail)
+	if !ok {
+		sync.mutex_lock(&bridge_task_sched_mutex)
+		delete_key(&bridge_agent_wake, instance_id)
+		sync.mutex_unlock(&bridge_task_sched_mutex)
+		fmt.println("bridge scheduler wake failed", instance_id, detail)
+	}
 	return ok
 }
 
