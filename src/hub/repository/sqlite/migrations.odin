@@ -658,6 +658,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_current_task_and_priority_schema(conn) do return false, domain.domain_error(.Internal_Error, "current task + priority schema upgrade failed")
 	if !upgrade_title_tracking_schema(conn) do return false, domain.domain_error(.Internal_Error, "title tracking schema upgrade failed")
 	if !upgrade_agent_instance_display_name_schema(conn) do return false, domain.domain_error(.Internal_Error, "agent instance display_name schema upgrade failed")
+	if !upgrade_scheduled_prompts_schema(conn) do return false, domain.domain_error(.Internal_Error, "scheduled prompts schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -785,5 +786,23 @@ upgrade_title_tracking_schema :: proc(conn: ^Conn) -> bool {
 upgrade_agent_instance_display_name_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "agent_instances", "display_name") && !exec(conn, "ALTER TABLE agent_instances ADD COLUMN display_name TEXT NOT NULL DEFAULT '';") do return false
 	return true
+}
+
+upgrade_scheduled_prompts_schema :: proc(conn: ^Conn) -> bool {
+	return exec(conn, `CREATE TABLE IF NOT EXISTS scheduled_prompts (
+  id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL,
+  target_instance_id TEXT NOT NULL,
+  prompt_text TEXT NOT NULL,
+  target_run_at TEXT NOT NULL,
+  interval TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'active',
+  in_flight INTEGER NOT NULL DEFAULT 0,
+  leased_at TEXT NOT NULL DEFAULT '',
+  deleted_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);`)
 }
 
