@@ -3,6 +3,7 @@ package http
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -21,24 +22,32 @@ Scheduled_Prompt_Handlers :: struct {
 	repo:            ^iface.Scheduled_Prompt_Repository,
 	clock:           ^platform.Clock,
 	ids:             ^platform.ID_Generator,
+	mutex:           sync.Mutex,
 	bridge_versions: map[string]int,
 }
 
 get_scheduled_prompts_bridge_version :: proc(raw: rawptr, bridge_id: string) -> int {
 	if raw == nil || bridge_id == "" do return 0
 	h := (^Scheduled_Prompt_Handlers)(raw)
+	sync.mutex_lock(&h.mutex)
+	defer sync.mutex_unlock(&h.mutex)
 	if h.bridge_versions == nil do return 0
 	return h.bridge_versions[bridge_id]
 }
 
 bump_bridge_version :: proc(h: ^Scheduled_Prompt_Handlers, bridge_id: string) {
 	if h == nil || bridge_id == "" do return
+	sync.mutex_lock(&h.mutex)
+	defer sync.mutex_unlock(&h.mutex)
 	if h.bridge_versions == nil {
 		h.bridge_versions = make(map[string]int)
 	}
 	h.bridge_versions[bridge_id] += 1
 }
 
+// Parses an interval string into seconds.
+// Supported formats: [0-9]+[smhd] (e.g. "60s", "5m", "2h", "1d"), or bare positive integer seconds.
+// Returns 0 if invalid or non-positive.
 parse_interval_seconds :: proc(interval: string) -> int {
 	s := strings.trim_space(interval)
 	if len(s) == 0 do return 0
@@ -52,6 +61,7 @@ parse_interval_seconds :: proc(interval: string) -> int {
 	case 'h': return val * 3600
 	case 'd': return val * 86400
 	case:
+		// Also support bare integer seconds, e.g. "90" -> 90s, format [0-9]+[smhd]
 		num, num_ok := strconv.parse_int(s)
 		if num_ok && num > 0 do return num
 		return 0
@@ -125,6 +135,12 @@ create_scheduled_prompt_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if target_instance_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "target_instance_id is required"), req.request_id)
 	if prompt_text == "" do return respond_error(domain.domain_error(.Validation_Failed, "prompt_text is required"), req.request_id)
 	if target_run_at == "" do return respond_error(domain.domain_error(.Validation_Failed, "target_run_at is required"), req.request_id)
+	if interval != "" {
+		secs := parse_interval_seconds(interval)
+		if secs < 60 {
+			return respond_error(domain.domain_error(.Validation_Failed, "interval must be at least 60 seconds (format: <number>[smhd])"), req.request_id)
+		}
+	}
 
 	inst, inst_ok, inst_err := agent_service.get_instance(h.agents, auth_ctx, target_instance_id)
 	if !inst_ok do return respond_error(inst_err, req.request_id)
@@ -184,7 +200,16 @@ patch_scheduled_prompt_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	if json_key_present(req.body, "prompt_text") do sp.prompt_text = json_string(req.body, "prompt_text")
 	if json_key_present(req.body, "target_run_at") do sp.target_run_at = json_string(req.body, "target_run_at")
-	if json_key_present(req.body, "interval") do sp.interval = json_string(req.body, "interval")
+	if json_key_present(req.body, "interval") {
+		new_interval := json_string(req.body, "interval")
+		if new_interval != "" {
+			secs := parse_interval_seconds(new_interval)
+			if secs < 60 {
+				return respond_error(domain.domain_error(.Validation_Failed, "interval must be at least 60 seconds (format: <number>[smhd])"), req.request_id)
+			}
+		}
+		sp.interval = new_interval
+	}
 	if json_key_present(req.body, "state") {
 		st := json_string(req.body, "state")
 		switch st {
@@ -297,6 +322,7 @@ bridge_execute_scheduled_prompt_handler :: proc(ctx: rawptr, req: Request) -> Re
 
 	conv_id := inst.conversation_id
 	if conv_id == "" {
+		// Deliberately construct user owner Auth_Context to resolve conversation on behalf of prompt owner
 		c, conv_ok, _ := content_service.get_conversation_by_instance(h.content, contracts.Auth_Context{kind = .User_Token, user_id = string(sp.owner_user_id)}, inst.agent_instance_id)
 		if conv_ok do conv_id = c.conversation_id
 	}
@@ -305,6 +331,7 @@ bridge_execute_scheduled_prompt_handler :: proc(ctx: rawptr, req: Request) -> Re
 		return respond_error(domain.domain_error(.Internal_Error, "target instance conversation not found"), req.request_id)
 	}
 
+	// Deliberately construct user owner Auth_Context so content_service sends message on behalf of the prompt's owner
 	msg, msg_ok, msg_err := content_service.send_message(
 		h.content,
 		contracts.Auth_Context{kind = .User_Token, user_id = string(sp.owner_user_id)},

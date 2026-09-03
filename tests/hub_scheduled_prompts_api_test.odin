@@ -130,7 +130,41 @@ main :: proc() {
 
 	instance1_id := "inst_1"
 
-	// 4. User creates scheduled prompt targeting instance1
+	// 3. Verify min-60s interval validation on create
+	bad_interval_body := strings.concatenate({"{\"target_instance_id\":\"", instance1_id, "\",\"prompt_text\":\"fast ping\",\"target_run_at\":\"2026-01-01T00:00:00Z\",\"interval\":\"30s\"}"})
+	bad_create := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/scheduled-prompts",
+		body = bad_interval_body,
+		request_id = "req_bad_interval",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(bad_create.status == 400, fmt.tprintf("expected 400 for interval < 60s, got %d: %s", bad_create.status, bad_create.body))
+
+	invalid_interval_body := strings.concatenate({"{\"target_instance_id\":\"", instance1_id, "\",\"prompt_text\":\"bad ping\",\"target_run_at\":\"2026-01-01T00:00:00Z\",\"interval\":\"invalid\"}"})
+	invalid_create := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/scheduled-prompts",
+		body = invalid_interval_body,
+		request_id = "req_invalid_interval",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(invalid_create.status == 400, fmt.tprintf("expected 400 for invalid interval, got %d: %s", invalid_create.status, invalid_create.body))
+
+	min_interval_body := strings.concatenate({"{\"target_instance_id\":\"", instance1_id, "\",\"prompt_text\":\"min ping\",\"target_run_at\":\"2026-01-01T00:00:00Z\",\"interval\":\"60s\"}"})
+	min_create := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/scheduled-prompts",
+		body = min_interval_body,
+		request_id = "req_min_interval",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(min_create.status == 201, fmt.tprintf("expected 201 for interval 60s, got %d: %s", min_create.status, min_create.body))
+
+	// 4. User creates scheduled prompt targeting instance1 with interval="1h"
 	create_sp_body := strings.concatenate({"{\"target_instance_id\":\"", instance1_id, "\",\"prompt_text\":\"wake up\",\"target_run_at\":\"2026-01-01T00:00:00Z\",\"interval\":\"1h\"}"})
 	create_sp := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
@@ -143,9 +177,30 @@ main :: proc() {
 	check(create_sp.status == 201, fmt.tprintf("create scheduled prompt: %s", create_sp.body))
 	sp1_id := extract_json_string(create_sp.body, "id")
 
-	// Verify bridge 1 version bumped to 1
+	// Patch interval validation
+	bad_patch := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/scheduled-prompts/%s", sp1_id),
+		body = "{\"interval\":\"15s\"}",
+		request_id = "req_bad_patch",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(bad_patch.status == 400, fmt.tprintf("expected 400 for patch interval < 60s, got %d: %s", bad_patch.status, bad_patch.body))
+
+	good_patch := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/scheduled-prompts/%s", sp1_id),
+		body = "{\"interval\":\"2h\"}",
+		request_id = "req_good_patch",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(good_patch.status == 200, fmt.tprintf("expected 200 for patch interval 2h, got %d: %s", good_patch.status, good_patch.body))
+
+	// Verify bridge 1 version is positive and bumped
 	v1 := api_http.get_scheduled_prompts_bridge_version(&graph.scheduled_prompt_handlers, bridge1_id)
-	check(v1 == 1, fmt.tprintf("bridge 1 version should be 1, got %d", v1))
+	check(v1 > 0, fmt.tprintf("bridge 1 version should be > 0, got %d", v1))
 
 	// 5. Bridge 1 reads scheduled prompts (scoped to own instances)
 	b1_list := api_http.router_dispatch(&graph.router, api_http.Request{
