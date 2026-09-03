@@ -71,7 +71,7 @@ export function AgentInstanceOption({
   const agentId = String(inst?.agent_id || inst?.agentId || '');
 
   const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(defaultAgentName) });
-  const agentName = defaultAgentName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
+  const agentName = defaultAgentName || inst?.display_name || inst?.displayName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   const label = agentName !== trimmed
     ? `${agentName} (${trimmed})${suffix}${runtimeStatus ? ` · ${runtimeStatus}` : ''}`
@@ -101,7 +101,7 @@ export function MemberInstanceOption({
   const agentId = String(inst?.agent_id || inst?.agentId || '');
 
   const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
-  const agentName = agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
+  const agentName = inst?.display_name || inst?.displayName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   const label = agentName !== trimmed
     ? `${role}: ${agentName} (${trimmed})`
@@ -157,6 +157,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   // H12: chain description collapsed by default so the chain view is scannable.
   const [descExpanded, setDescExpanded] = useState(false);
   const [completedTasksExpanded, setCompletedTasksExpanded] = useState(false);
+  const [cancelledTasksExpanded, setCancelledTasksExpanded] = useState(false);
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentAttachments, setCommentAttachments] = useState<Record<string, CommentAttachment[]>>({});
@@ -243,12 +244,20 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const tasks: any[] = chain?.tasks || [];
   const members: any[] = chain?.members || [];
 
-  // Separate active and completed tasks.
-  // Completed tasks are sorted chronologically by completion time (updated_at / created_at).
+  // Separate active, completed, and cancelled tasks.
+  // Completed/cancelled tasks are sorted chronologically by completion time (updated_at / created_at).
   const isTaskCompleted = (t: any) => t.status === 'completed' || t.status === 'validated_good';
-  const activeTasks = tasks.filter((t: any) => !isTaskCompleted(t));
+  const isTaskCancelled = (t: any) => t.status === 'cancelled';
+  const activeTasks = tasks.filter((t: any) => !isTaskCompleted(t) && !isTaskCancelled(t));
   const completedTasks = tasks
     .filter((t: any) => isTaskCompleted(t))
+    .sort((a: any, b: any) => {
+      const timeA = new Date(a.updated_at || a.updatedAt || a.created_at || a.createdAt || 0).getTime();
+      const timeB = new Date(b.updated_at || b.updatedAt || b.created_at || b.createdAt || 0).getTime();
+      return timeA - timeB;
+    });
+  const cancelledTasks = tasks
+    .filter((t: any) => isTaskCancelled(t))
     .sort((a: any, b: any) => {
       const timeA = new Date(a.updated_at || a.updatedAt || a.created_at || a.createdAt || 0).getTime();
       const timeB = new Date(b.updated_at || b.updatedAt || b.created_at || b.createdAt || 0).getTime();
@@ -812,14 +821,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
                 <span data-debug-id={`taskchain-task-reviewers-${taskId}`} className="inline-flex items-center gap-1">
                   reviewers: {task.reviewerRefs && task.reviewerRefs.length > 0 ? (
-                    task.reviewerRefs.map((r: any, ri: number) => (
-                      <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
-                        {ri > 0 ? ', ' : ''}
-                        {r.agent_instance_id
-                          ? <InstanceIdLink instanceId={r.agent_instance_id} />
-                          : <span className="text-zinc-300">{r.user_id}</span>}
-                      </React.Fragment>
-                    ))
+                    <span>
+                      {task.reviewerRefs.map((r: any, ri: number) => (
+                        <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
+                          {ri > 0 ? ', ' : ''}
+                          {r.agent_instance_id
+                            ? <InstanceIdLink instanceId={r.agent_instance_id} />
+                            : <span className="text-zinc-300">{r.user_id}</span>}
+                        </React.Fragment>
+                      ))}
+                    </span>
                   ) : (
                     <span className="text-zinc-500">none</span>
                   )}
@@ -1008,20 +1019,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 <p className="mt-1 text-[11px] text-zinc-500 italic">No dependencies configured.</p>
               )}
             </div>
-            {/* H12: reviewers moved into the expanded details to keep the
-                collapsed header to a compact single line. */}
-            {task.reviewerRefs && task.reviewerRefs.length > 0 && (
-              <div data-debug-id={`taskchain-task-reviewers-${taskId}`} className="text-[11px] text-zinc-400">
-                reviewers: {task.reviewerRefs.map((r: any, ri: number) => (
-                  <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
-                    {ri > 0 ? ', ' : ''}
-                    {r.agent_instance_id
-                      ? <InstanceIdLink instanceId={r.agent_instance_id} />
-                      : <span className="text-zinc-300">{r.user_id}</span>}
-                  </React.Fragment>
-                ))}
-              </div>
-            )}
+
             {/* Comments Thread */}
             <div data-debug-id={`taskchain-task-comments-${taskId}`} className="space-y-2">
               <span className="font-semibold text-zinc-400">Comments:</span>
@@ -1356,6 +1354,44 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     className="mt-3 space-y-3"
                   >
                     {completedTasks.map((task: any) => renderTaskCard(task))}
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {/* Collapsible Cancelled Tasks Section */}
+            {cancelledTasks.length > 0 && (
+              <div
+                data-debug-id="taskchain-overview-cancelled-section"
+                className="mt-6 border-t border-white/10 pt-4"
+              >
+                <button
+                  type="button"
+                  data-debug-id="taskchain-overview-cancelled-toggle-btn"
+                  onClick={() => setCancelledTasksExpanded(!cancelledTasksExpanded)}
+                  className="flex w-full items-center justify-between rounded-lg bg-[#111111] px-3 py-2 text-xs font-semibold text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                >
+                  <div className="flex items-center gap-2">
+                    <span>{cancelledTasksExpanded ? '▾' : '▸'}</span>
+                    <span>Cancelled Tasks</span>
+                    <span
+                      data-debug-id="taskchain-overview-cancelled-count"
+                      className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400"
+                    >
+                      {cancelledTasks.length}
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-normal text-zinc-500">
+                    {cancelledTasksExpanded ? 'Click to collapse' : 'Click to expand'}
+                  </span>
+                </button>
+
+                {cancelledTasksExpanded && (
+                  <div
+                    data-debug-id="taskchain-overview-cancelled-list"
+                    className="mt-3 space-y-3"
+                  >
+                    {cancelledTasks.map((task: any) => renderTaskCard(task))}
                   </div>
                 )}
               </div>
@@ -2375,7 +2411,7 @@ export function InstanceIdLink({ instanceId }: { instanceId: string }) {
   const agentId = String(inst?.agent_id || inst?.agentId || '');
 
   const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
-  const agentName = agentData?.agent?.name || agentData?.agent?.agent_id || agentId || trimmed;
+  const agentName = inst?.display_name || inst?.displayName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   if (!trimmed) return null;
   

@@ -36,7 +36,7 @@ export function durableAgentId(agent: any): string {
 
 export function agentLabel(agent: any): string {
   return String(
-    agent?.label || agent?.displayName || agent?.display_name || agentInstanceId(agent) || durableAgentId(agent) || 'Agent',
+    agent?.displayName || agent?.display_name || agent?.agentName || agent?.agent_name || agent?.label || agentInstanceId(agent) || durableAgentId(agent) || 'Agent',
   );
 }
 
