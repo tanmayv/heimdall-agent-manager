@@ -5,6 +5,7 @@ import "core:log"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import "core:unicode/utf8"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -849,6 +850,24 @@ comment_notify_message :: proc(task: domain.Task, action: string) -> string {
 	return strings.concatenate({"New comment on \"", name, "\""})
 }
 
+comment_preview_safe :: proc(body: string) -> string {
+	b := strings.builder_make()
+	count := 0
+	truncated := false
+	for r in body {
+		if count >= 30 {
+			truncated = true
+			break
+		}
+		strings.write_rune(&b, r)
+		count += 1
+	}
+	if truncated {
+		strings.write_string(&b, "...")
+	}
+	return strings.to_string(b)
+}
+
 // notification_allowed_for_recipient implements CT-6 gating with a fail-open bias:
 // a recipient is SUPPRESSED only when we positively know its persisted current
 // task is a DIFFERENT task. When the instance's current_task is this task we allow
@@ -1077,14 +1096,9 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	notified := make([dynamic]string)
 	if len(input.notify) > 0 && service.bridge_command_sink.send_runtime_command != nil && service.agents != nil {
 		author := auth.agent_instance_id if auth.kind == .Instance_Token && auth.agent_instance_id != "" else (auth.user_id if auth.user_id != "" else "user")
-		preview: string
-		if len(input.body) <= 30 {
-			preview = input.body
-		} else {
-			preview = strings.concatenate({input.body[:30], "..."})
-		}
+		preview := comment_preview_safe(input.body)
+		defer delete(preview)
 		message := fmt.tprintf("Comment from %s on task %s: %s", author, string(task.task_id), preview)
-		defer if len(input.body) > 30 do delete(preview)
 
 		seen := make(map[string]bool)
 		defer delete(seen)

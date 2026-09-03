@@ -148,5 +148,14 @@ main :: proc() {
 	check(captured.count == 0, "no notification should be emitted on validation failure")
 	check(strings.contains(err4.message, "inst_nonexistent") && strings.contains(err4.message, "inst_invalid2"), "error message must report invalid instance IDs")
 
+	// 5) UTF-8 multi-byte rune safety: truncating multi-byte characters must not split mid-byte.
+	captured.count = 0
+	// 35 emoji/CJK runes (each > 1 byte in UTF-8)
+	utf8_body := "🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨"
+	_, _, ok5, _ := taskchain_service.comment_task(&service, coord_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = utf8_body, notify = targets[:]})
+	check(ok5, "comment with utf8 body should save")
+	check(captured.count == 1, "utf8 body comment emitted 1 notification")
+	check(strings.contains(captured.bodies[0], "🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨🌟🚀🎉🔥✨..."), "must truncate at 30 runes with ellipsis")
+
 	fmt.println("PASS: hub comment notify")
 }
