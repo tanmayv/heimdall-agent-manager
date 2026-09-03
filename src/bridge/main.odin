@@ -155,6 +155,7 @@ main :: proc() {
 	bridge_hub_runtime_start()
 	bridge_task_scheduler_configure()
 	bridge_task_scheduler_start()
+	bridge_prompt_scheduler_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	bridge_peer_state_init(bridge_config.peers[:])
 	if len(bridge_config.peers) > 0 do thread.run(bridge_dialer_worker)
