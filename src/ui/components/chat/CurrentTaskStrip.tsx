@@ -141,7 +141,22 @@ export default function CurrentTaskStrip({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="shrink-0 text-[10px] uppercase tracking-wide text-teal-300/70">Current task</span>
-            <span className="truncate font-medium text-zinc-100">{title}</span>
+            {onOpenTask ? (
+              <a
+                data-debug-id={`${debugPrefix}-current-task-link`}
+                href={chain?.chainId || (chain as any)?.chain_id ? `#/chains/${encodeURIComponent(String(chain.chainId || (chain as any).chain_id))}` : undefined}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onOpenTask(taskId);
+                }}
+                className="truncate font-medium text-zinc-100 underline decoration-dotted underline-offset-2 hover:text-white"
+                title={title}
+              >
+                {title}
+              </a>
+            ) : (
+              <span className="truncate font-medium text-zinc-100">{title}</span>
+            )}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
             {/* R8: explicit WORK vs REVIEW action label for the current-task role. */}
