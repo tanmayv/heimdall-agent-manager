@@ -231,7 +231,7 @@ bridge_wrapper_push_line :: proc(instance_id, line: string) -> bool {
 bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Role) -> bool {
 	switch role {
 	case .Wrapper:
-		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe" || method == "wrapper.pane_capture.result"
+		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe" || method == "wrapper.pane_capture.result" || method == "wrapper.bootstrap.list" || method == "wrapper.bootstrap.file"
 	case .Agent:
 		return method == "agent.rest.request" || method == "agent.activity.report" || method == "agent.permission.request" || method == "agent.permission.reply" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.conversation.set_title" || method == "agent.chain.set_title" || method == "agent.agents.live" || method == "agent.instances.launch" || method == "agent.instances.restart" || method == "agent.instances.stop" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.set_current" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success" || bridge_local_is_admin_method(method)
 	}
@@ -280,6 +280,23 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		// liveness tick, without implying start-success.
 		bridge_runtime_note_wrapper_signal(rec.agent_instance_id, "idle")
 		return bridge_local_response_data(request_id, "{\"accepted\":true,\"subscribed\":true}")
+	}
+	if method == "wrapper.bootstrap.list" {
+		// List the finished bootstrap files for THIS wrapper's instance. The
+		// instance identity comes from the authenticated wrapper token, never from
+		// params (spoof-guarded upstream), so there is no instance_id argument.
+		list_json, ok := bridge_bootstrap_fileset_list_json(rec.agent_instance_id)
+		if !ok do return bridge_local_response_error(request_id, "not_found", "no bootstrap file set is published for this instance")
+		return bridge_local_response_data(request_id, list_json)
+	}
+	if method == "wrapper.bootstrap.file" {
+		// Return one finished file (content included) by file_id for THIS wrapper's
+		// instance.
+		file_id := bridge_local_extract_json_string(params, "file_id", "")
+		if strings.trim_space(file_id) == "" do return bridge_local_response_error(request_id, "bad_request", "file_id is required")
+		file_json, ok := bridge_bootstrap_fileset_file_json(rec.agent_instance_id, file_id)
+		if !ok do return bridge_local_response_error(request_id, "not_found", "unknown bootstrap file_id for this instance")
+		return bridge_local_response_data(request_id, file_json)
 	}
 	if method == "wrapper.pane_capture.result" {
 		command_id := bridge_local_extract_json_string(params,"command_id","")

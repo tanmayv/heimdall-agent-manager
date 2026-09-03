@@ -3,6 +3,7 @@ package sqlite
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
+import bootcache "odin_test:hub/bootcache"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
@@ -44,6 +45,9 @@ agent_save_sqlite :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bo
 	defer sqlite3_finalize(stmt)
 	bind_agent(stmt, agent)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Agent{}, false, domain.domain_error(.Conflict, "agent slug already exists or could not be saved")
+	// An agent write can change its identity fragment (instructions/name) which is
+	// part of the rendered bootstrap manifest; invalidate the manifest cache.
+	bootcache.bump_content_epoch()
 	return agent, true, domain.Domain_Error{}
 }
 

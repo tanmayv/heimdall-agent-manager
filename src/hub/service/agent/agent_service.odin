@@ -6,6 +6,7 @@ import "core:sync"
 import "core:crypto/hash"
 import "core:encoding/hex"
 import contracts "odin_test:contracts"
+import bootcache "odin_test:hub/bootcache"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
@@ -232,7 +233,7 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 		iface.taskchain_save_member(service.taskchains, member)
 	}
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", saved.agent_instance_id})
-	command := project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = launch_command_json(command_id, saved)}
+	command := project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, saved)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
 	return saved, true, domain.Domain_Error{}
 }
@@ -325,98 +326,6 @@ mark_instance_start_success :: proc(service: ^Agent_Service, auth: contracts.Aut
 	inst.stopped_at = ""
 	inst.updated_at = now
 	return iface.agent_save_instance(service.agents, inst)
-}
-
-bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id: string) -> (string, bool, domain.Domain_Error) {
-	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
-	if !ok do return "", false, err
-	if inst.bridge_id != bridge_id || inst.owner_user_id != owner do return "", false, domain.domain_error(.Not_Found, "agent instance not found")
-	if !(inst.runtime_status == "launching" || inst.runtime_status == "starting" || inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy") do return "", false, domain.domain_error(.Conflict, "agent instance is not launchable")
-	agent, agent_ok, agent_err := iface.agent_get(service.agents, inst.agent_id)
-	if !agent_ok do return "", false, agent_err
-	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
-	if !bridge_ok do return "", false, bridge_err
-	project_name := ""
-	project_repo := ""
-	project_vcs := ""
-	project_desc := ""
-	project_path := inst.project_path
-	if inst.project_id != "" && service.projects != nil {
-		if project, project_ok, _ := iface.project_get(service.projects, inst.project_id); project_ok {
-			project_name = project.name
-			project_repo = project.repo_url
-			project_vcs = project.vcs_kind
-			project_desc = project.description
-			if strings.trim_space(project_path) == "" do project_path = project.default_path
-		}
-	}
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"agent_instance_id\":\""); write_service_json_string(&b, inst.agent_instance_id)
-	strings.write_string(&b, "\",\"chain_id\":\""); write_service_json_string(&b, inst.chain_id)
-	strings.write_string(&b, "\",\"conversation_id\":\""); write_service_json_string(&b, inst.conversation_id)
-	strings.write_string(&b, "\",\"agent\":{\"agent_id\":\""); write_service_json_string(&b, agent.agent_id)
-	strings.write_string(&b, "\",\"name\":\""); write_service_json_string(&b, agent.name)
-	strings.write_string(&b, "\",\"instructions\":\""); write_service_json_string(&b, agent.instructions)
-	strings.write_string(&b, "\"},\"owner_user\":{\"user_id\":\""); write_service_json_string(&b, string(owner))
-	strings.write_string(&b, "\"},\"bridge\":{\"bridge_id\":\""); write_service_json_string(&b, bridge.bridge_id)
-	strings.write_string(&b, "\",\"label\":\""); write_service_json_string(&b, bridge.label)
-	strings.write_string(&b, "\",\"machine_hostname\":\""); write_service_json_string(&b, bridge.machine_hostname)
-	strings.write_string(&b, "\"},\"runtime\":{\"provider\":\""); write_service_json_string(&b, inst.provider)
-	strings.write_string(&b, "\",\"tier\":\""); write_service_json_string(&b, inst.tier)
-	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, string(inst.project_id))
-	strings.write_string(&b, "\",\"project_path\":\""); write_service_json_string(&b, inst.project_path)
-	strings.write_string(&b, "\"},\"project\":{\"project_id\":\""); write_service_json_string(&b, string(inst.project_id))
-	strings.write_string(&b, "\",\"name\":\""); write_service_json_string(&b, project_name)
-	strings.write_string(&b, "\",\"repo_url\":\""); write_service_json_string(&b, project_repo)
-	strings.write_string(&b, "\",\"vcs_kind\":\""); write_service_json_string(&b, project_vcs)
-	chain := domain.Task_Chain{}
-	chain_ok := false
-	if inst.chain_id != "" && service.taskchains != nil { chain, chain_ok, _ = iface.taskchain_get_chain(service.taskchains, domain.Task_Chain_ID(inst.chain_id)) }
-	strings.write_string(&b, "\",\"chain_id\":\""); write_service_json_string(&b, inst.chain_id)
-	strings.write_string(&b, "\",\"conversation_id\":\""); write_service_json_string(&b, inst.conversation_id)
-	strings.write_string(&b, "\"},\"chain\":{\"chain_id\":\""); write_service_json_string(&b, inst.chain_id)
-	strings.write_string(&b, "\",\"kind\":\""); if chain_ok { write_service_json_string(&b, chain.kind) }
-	strings.write_string(&b, "\",\"title\":\""); if chain_ok { write_service_json_string(&b, chain.title) }
-	strings.write_string(&b, "\",\"coordinator_agent_instance_id\":\""); if chain_ok { write_service_json_string(&b, chain.coordinator_agent_instance_id) }
-	strings.write_string(&b, "\",\"default_reviewer_refs\":"); if chain_ok { strings.write_string(&b, json_or_empty_array(chain.default_reviewer_refs_json)) } else { strings.write_string(&b, "[]") }
-	strings.write_string(&b, ",\"publish_state\":\""); if chain_ok { write_service_json_string(&b, publish_state_string(chain.publish_state)) }
-	strings.write_string(&b, "\",\"status\":\""); if chain_ok { write_service_json_string(&b, chain_status_string(chain.status)) }
-	strings.write_string(&b, "\"},\"task_context\":")
-	write_bootstrap_task_context(&b, service, inst, chain, chain_ok)
-	strings.write_string(&b, ",\"conversation\":{\"conversation_id\":\""); write_service_json_string(&b, inst.conversation_id)
-	strings.write_string(&b, "\",\"summary\":\"\",\"recent_messages\":[")
-	write_bootstrap_messages(&b, service, inst)
-	strings.write_string(&b, "],\"messages\":[")
-	write_bootstrap_messages(&b, service, inst)
-	strings.write_string(&b, "]},\"memory\":[")
-	write_bootstrap_memories(&b, service, owner, inst)
-	strings.write_string(&b, "],\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"content\":\"# Agent bootstrap\\n\\nAgent: "); write_service_json_string(&b, agent.name)
-	strings.write_string(&b, "\\nInstance: "); write_service_json_string(&b, inst.agent_instance_id)
-	is_coordinator := chain_ok && chain.coordinator_agent_instance_id == inst.agent_instance_id
-	if chain_ok {
-		strings.write_string(&b, "\\nTask chain: "); write_service_json_string(&b, chain.title); strings.write_string(&b, " ("); write_service_json_string(&b, string(chain.chain_id)); strings.write_string(&b, ")")
-		strings.write_string(&b, "\\nCoordinator: "); if is_coordinator { strings.write_string(&b, "you (coordinator)") } else { write_service_json_string(&b, chain.coordinator_agent_instance_id) }
-	}
-	if strings.trim_space(project_name) != "" || strings.trim_space(project_path) != "" {
-		strings.write_string(&b, "\\n\\n## Project\\nThis agent is associated with a project. You run in your own managed working directory (not the project directory). Work against the project checkout below when the task requires it.\\n")
-		if strings.trim_space(project_name) != "" { strings.write_string(&b, "\\n- Name: "); write_service_json_string(&b, project_name) }
-		if strings.trim_space(project_path) != "" { strings.write_string(&b, "\\n- Path: "); write_service_json_string(&b, project_path) }
-		if strings.trim_space(project_repo) != "" { strings.write_string(&b, "\\n- Repo: "); write_service_json_string(&b, project_repo) }
-		if strings.trim_space(project_vcs) != "" { strings.write_string(&b, "\\n- VCS: "); write_service_json_string(&b, project_vcs) }
-		if strings.trim_space(project_desc) != "" { strings.write_string(&b, "\\n- Description: "); write_service_json_string(&b, project_desc) }
-	}
-	strings.write_string(&b, "\\n\\n## Working with tasks (REQUIRED)\\nYou MUST track all substantial work as tasks in this task chain. This is not optional.\\n\\nRules you must follow:\\n1. Before starting work, ALWAYS run ./.heimdall/bin/ham-ctl agent tasks fetch to see the current tasks in your chain.\\n2. Do NOT do meaningful work that is not represented by a task. If a task does not exist for what you are about to do, create one (coordinator) or ask the coordinator to create one.\\n3. When you begin a task, move it to in_progress: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress\\n4. As you make progress, you MUST post a comment on the task describing what you did, what changed, and what is next: ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \\\"<progress update>\\\". Add a comment at every meaningful step, on blockers, and before handing off for review.\\n5. When the work is complete, submit it for review: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_validation (or ./.heimdall/bin/ham-ctl agent tasks done --task-id <id>). Include a summary comment of what to review.\\n6. Reviewers vote with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \\\"<feedback>\\\". If you receive ngtm, address the feedback, comment what you changed, and re-submit.\\n7. Use ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id> to request attention on a stalled task.\\n\\nKeep task status and comments current at all times so the whole chain reflects real progress.")
-	if is_coordinator {
-		strings.write_string(&b, "\\n\\n## You are the COORDINATOR of this task chain (delegate — do not do the work yourself)\\nYour role is to PLAN and ORCHESTRATE the chain, not to implement it. Doing substantial work yourself instead of delegating is a failure mode.\\n\\nWhat this means in practice:\\n1. Break the goal into discrete tasks and ASSIGN each to a worker agent. Do not implement features, write the code, run the research, or produce the deliverable yourself — that is the assignees' job.\\n2. Add the agents you need to the chain (`./.heimdall/bin/ham-ctl agent chains add-agent ...` / create tasks with an explicit `--assignee <agent_instance_id>`), set dependencies with `--depends-on`, and add required reviewers with `tasks participant --role lgtm_required`.\\n3. Own the chain description as the canonical design doc (goal, scope, REQ-IDs, task plan, validation strategy). Keep it in sync as scope changes.\\n4. Be the ONLY point of contact for the user. Team agents route questions/blockers through you; you synthesize and reply. Acknowledge user messages promptly with chain-scoped chat.\\n5. Enforce review gates: `tasks done` -> `review_ready` -> reviewers LGTM -> `approved`. The chain is `completed` only when YOU move it to completed with a verifiable final summary.\\n6. Only do work yourself for trivial coordination glue (creating/annotating tasks, nudging, synthesizing results). Anything a worker can own, delegate.\\n\\nRead the `coordinator-task-management` skill for the full ham-ctl command reference and the delegation workflow.")
-	} else if chain_ok {
-		strings.write_string(&b, "\\n\\n## You are a WORKER on this task chain\\nExecute the tasks ASSIGNED to you. Do not take on work outside your assigned tasks or coordinate the whole chain — that is the coordinator's job. Route questions, blockers, and user-facing messages to the coordinator (chat with chain context is redirected to them automatically). Keep your task status and comments current, and hand off for review with `tasks done` when complete. Read the `worker-task-management` skill for the ham-ctl command reference.")
-	}
-	write_bootstrap_memory_markdown(&b, service, owner, inst)
-	strings.write_string(&b, "\"}]")
-	write_bootstrap_skill_fields(&b, service, owner, inst, is_coordinator, chain_ok)
-	strings.write_string(&b, ",\"instance_token\":\"hit_"); write_service_json_string(&b, inst.agent_instance_id)
-	strings.write_string(&b, "\",\"hub_url\":\""); write_service_json_string(&b, bridge.hub_url); strings.write_string(&b, "\"}")
-	return strings.to_string(b), true, domain.Domain_Error{}
 }
 
 write_bootstrap_skill_fields :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance, is_coordinator: bool, chain_ok: bool) {
@@ -746,7 +655,7 @@ relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 	next.updated_at = now
 	next.last_seen_at = now
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", next.agent_instance_id})
-	command := project_service.Runtime_Command{bridge_id = next.bridge_id, command_id = command_id, body_json = launch_command_json(command_id, next)}
+	command := project_service.Runtime_Command{bridge_id = next.bridge_id, command_id = command_id, body_json = launch_command_json_full(service, command_id, next)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
 	return iface.agent_save_instance(service.agents, next)
 }
@@ -1198,11 +1107,44 @@ string_slice_contains :: proc(values: []string, needle: string) -> bool {
 }
 
 launch_command_json :: proc(command_id: string, inst: domain.Agent_Instance) -> string {
+	return launch_command_json_full(nil, command_id, inst)
+}
+
+// launch_command_json_full builds the enriched launch_agent WS payload. Beyond
+// the routing fields it carries the per-instance DESCRIPTOR the bridge needs to
+// (a) form the (agent_id, role, provider, project_id) key for the conditional
+// bootstrap-manifest GET and (b) render the AGENTS.md header + coordinator wiring
+// locally — WITHOUT the bridge querying hub chains/agents tables. When `service`
+// is nil (or lookups fail) the descriptor fields degrade to empty strings and the
+// role defaults to "worker"; the routing fields are always present.
+launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, inst: domain.Agent_Instance) -> string {
+	role := "worker"
+	coordinator_id := ""
+	chain_title := ""
+	agent_name := ""
+	if service != nil {
+		if service.taskchains != nil && inst.chain_id != "" {
+			if chain, chain_ok, _ := iface.taskchain_get_chain(service.taskchains, domain.Task_Chain_ID(inst.chain_id)); chain_ok {
+				coordinator_id = chain.coordinator_agent_instance_id
+				chain_title = chain.title
+				if chain.coordinator_agent_instance_id == inst.agent_instance_id do role = "coordinator"
+			}
+		}
+		if service.agents != nil && inst.agent_id != "" {
+			if agent, agent_ok, _ := iface.agent_get(service.agents, inst.agent_id); agent_ok {
+				agent_name = agent.name
+			}
+		}
+	}
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"launch_agent\",\"protocol_version\":1,\"message_id\":\""); write_service_json_string(&b, strings.concatenate({"msg_", command_id}))
 	strings.write_string(&b, "\",\"command_id\":\""); write_service_json_string(&b, command_id)
 	strings.write_string(&b, "\",\"payload\":{\"agent_instance_id\":\""); write_service_json_string(&b, inst.agent_instance_id)
 	strings.write_string(&b, "\",\"agent_id\":\""); write_service_json_string(&b, inst.agent_id)
+	strings.write_string(&b, "\",\"agent_name\":\""); write_service_json_string(&b, agent_name)
+	strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, role)
+	strings.write_string(&b, "\",\"coordinator_agent_instance_id\":\""); write_service_json_string(&b, coordinator_id)
+	strings.write_string(&b, "\",\"chain_title\":\""); write_service_json_string(&b, chain_title)
 	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, string(inst.project_id))
 	strings.write_string(&b, "\",\"project_path\":\""); write_service_json_string(&b, inst.project_path)
 	strings.write_string(&b, "\",\"chain_id\":\""); write_service_json_string(&b, inst.chain_id)
@@ -1608,5 +1550,304 @@ resolve_blobs_json :: proc(service: ^Agent_Service, request_body: string) -> str
 		strings.write_string(&b, "\"")
 	}
 	strings.write_string(&b, "]}")
+	return strings.to_string(b)
+}
+
+// resolve_single_blob returns one immutable content-addressed fragment body by
+// hash (HUB-3). Fragment bodies are populated in the in-process cache during
+// manifest render, so a per-hash GET always follows a manifest render for the
+// same agent and finds its blob. Returns ("", false) for an unknown hash.
+resolve_single_blob :: proc(service: ^Agent_Service, hash: string) -> (string, bool) {
+	_ = service
+	if strings.trim_space(hash) == "" do return "", false
+	return hub_fragment_cache_get(hash)
+}
+
+// -----------------------------------------------------------------------------
+// Conditional, agent-keyed bootstrap manifest (HUB-1, HUB-2).
+//
+// The manifest is keyed by (agent_id, role, provider, project) and carries NO
+// per-instance data — the bridge injects the per-instance header/tokens locally.
+// A per-agent `bootstrap_version = sha256(concat of input fragment hashes)` is
+// computed during render and embedded in the ETag. A shared content epoch (see
+// hub/bootcache) lets a warm request short-circuit to a 304 with an indexed
+// compare only (no render, no memories scan, no multi-table SQL).
+// -----------------------------------------------------------------------------
+
+Bootstrap_Manifest_Cache_Entry :: struct {
+	epoch:         u64,
+	version:       string,
+	etag:          string,
+	manifest_json: string,
+}
+
+Bootstrap_Manifest_Cache :: struct {
+	entries: map[string]Bootstrap_Manifest_Cache_Entry,
+	lock:    sync.Mutex,
+}
+
+global_bootstrap_manifest_cache: Bootstrap_Manifest_Cache
+
+// manifest_render_count counts full manifest renders (each a memories scan +
+// fragment hashing). Warm 304s must NOT increment it; tests assert an unchanged
+// agent's second launch does not re-render. Exposed for observability/tests.
+manifest_render_count: u64
+
+bootstrap_manifest_render_count :: proc() -> u64 {
+	return sync.atomic_load(&manifest_render_count)
+}
+
+bootstrap_manifest_cache_key :: proc(agent_id, role, provider, project: string) -> string {
+	return strings.concatenate({agent_id, "|", role, "|", provider, "|", project})
+}
+
+// Bootstrap_Manifest_Result carries everything the transport layer needs to emit
+// a conditional response without knowing manifest internals.
+Bootstrap_Manifest_Result :: struct {
+	status:        int, // 200 or 304
+	etag:          string,
+	version:       string,
+	manifest_json: string, // empty on 304
+	was_render:    bool, // true when this request performed a full render (MISS)
+}
+
+// bootstrap_manifest_conditional resolves the conditional agent-keyed manifest.
+// On a warm cache (cached epoch == current content epoch) it does an indexed
+// ETag compare only: a matching If-None-Match yields 304 with no render/scan;
+// otherwise it returns the cached 200 body (still no render). When the epoch has
+// advanced (some memory/agent/project write) or nothing is cached, it renders
+// once, recomputes the version, and then compares.
+bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.User_ID, agent_id, role, provider, project, if_none_match: string) -> (Bootstrap_Manifest_Result, bool, domain.Domain_Error) {
+	if service == nil || service.agents == nil do return {}, false, domain.domain_error(.Internal_Error, "agent service is not configured")
+	agent, agent_ok, agent_err := iface.agent_get(service.agents, agent_id)
+	if !agent_ok do return {}, false, agent_err
+	if agent.owner_user_id != owner do return {}, false, domain.domain_error(.Not_Found, "agent not found")
+
+	norm_role := role
+	if norm_role != "coordinator" do norm_role = "worker"
+	is_coordinator := norm_role == "coordinator"
+
+	current_epoch := bootcache.content_epoch()
+	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project)
+	defer delete(key)
+
+	sync.mutex_lock(&global_bootstrap_manifest_cache.lock)
+	defer sync.mutex_unlock(&global_bootstrap_manifest_cache.lock)
+	if global_bootstrap_manifest_cache.entries == nil {
+		global_bootstrap_manifest_cache.entries = make(map[string]Bootstrap_Manifest_Cache_Entry)
+	}
+
+	entry, have := global_bootstrap_manifest_cache.entries[key]
+	did_render := false
+	if !have || entry.epoch != current_epoch {
+		// MISS: (re)render the manifest and recompute the version. This is the
+		// only path that scans memories / hashes fragments.
+		manifest_json, version := render_agent_manifest(service, owner, agent, is_coordinator, provider, project)
+		etag := strings.concatenate({agent_id, ":", norm_role, ":", provider, ":", project, ":", version})
+		new_entry := Bootstrap_Manifest_Cache_Entry{epoch = current_epoch, version = version, etag = etag, manifest_json = manifest_json}
+		if have {
+			// Overwrite under the ALREADY-STORED (stable) key: Odin maps store the
+			// string header without copying the key bytes, so we must not insert a
+			// transient key here. Free the superseded value strings first to avoid a
+			// per-re-render leak.
+			delete(entry.version)
+			delete(entry.etag)
+			delete(entry.manifest_json)
+			global_bootstrap_manifest_cache.entries[key] = new_entry
+		} else {
+			// First insert: clone the key so the map owns a stable buffer that
+			// outlives this call's `defer delete(key)` (mirrors device_auth/service).
+			global_bootstrap_manifest_cache.entries[strings.clone(key)] = new_entry
+		}
+		entry = new_entry
+		did_render = true
+		sync.atomic_add(&manifest_render_count, 1)
+	}
+
+	result := Bootstrap_Manifest_Result{etag = entry.etag, version = entry.version, was_render = did_render}
+	if if_none_match != "" && if_none_match == entry.etag {
+		result.status = 304
+	} else {
+		result.status = 200
+		result.manifest_json = entry.manifest_json
+	}
+	return result, true, domain.Domain_Error{}
+}
+
+// render_agent_manifest renders the agent-keyed manifest (no per-instance data)
+// and returns (manifest_json, bootstrap_version). Every fragment/skill body is
+// pushed into the in-process blob cache so the subsequent per-hash blob GETs are
+// served without another render. The version is sha256 over the ordered set of
+// input fragment hashes (identity, project, tasks, role, memories, skills) so it
+// changes iff any input changes (HUB-1).
+render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, is_coordinator: bool, provider, project_id: string) -> (string, string) {
+	project_name := ""
+	project_repo := ""
+	project_vcs := ""
+	project_desc := ""
+	project_path := ""
+	if project_id != "" && service != nil && service.projects != nil {
+		if project, project_ok, _ := iface.project_get(service.projects, domain.Project_ID(project_id)); project_ok {
+			project_name = project.name
+			project_repo = project.repo_url
+			project_vcs = project.vcs_kind
+			project_desc = project.description
+			project_path = project.default_path
+		}
+	}
+
+	identity_body := render_agent_identity(agent, owner)
+	identity_hash := ""
+	if identity_body != "" {
+		identity_hash = bootstrap_fragment_hash(identity_body)
+		hub_fragment_cache_put(identity_hash, identity_body)
+	}
+
+	project_body := render_project(project_name, project_path, project_repo, project_vcs, project_desc)
+	project_hash := ""
+	if project_body != "" {
+		project_hash = bootstrap_fragment_hash(project_body)
+		hub_fragment_cache_put(project_hash, project_body)
+	}
+
+	tasks_body := render_tasks_guidance()
+	tasks_hash := bootstrap_fragment_hash(tasks_body)
+	hub_fragment_cache_put(tasks_hash, tasks_body)
+
+	role_body := render_role_guidance(is_coordinator, true)
+	role_hash := ""
+	if role_body != "" {
+		role_hash = bootstrap_fragment_hash(role_body)
+		hub_fragment_cache_put(role_hash, role_body)
+	}
+
+	memories_body := render_memories_markdown_agent(service, owner, agent, domain.Project_ID(project_id))
+	memories_hash := ""
+	if memories_body != "" {
+		memories_hash = bootstrap_fragment_hash(memories_body)
+		hub_fragment_cache_put(memories_hash, memories_body)
+	}
+
+	Skill_Manifest_Item :: struct {
+		name: string,
+		hash: string,
+	}
+	skills_list := make([dynamic]Skill_Manifest_Item)
+	defer delete(skills_list)
+	// Role-specific task-management skill, always present for a chain role.
+	role_skill_name: string
+	role_skill_content: string
+	if is_coordinator {
+		role_skill_name, role_skill_content = bootstrap_coordinator_task_skill()
+	} else {
+		role_skill_name, role_skill_content = bootstrap_worker_task_skill()
+	}
+	role_skill_hash := bootstrap_fragment_hash(role_skill_content)
+	hub_fragment_cache_put(role_skill_hash, role_skill_content)
+	append(&skills_list, Skill_Manifest_Item{name = role_skill_name, hash = role_skill_hash})
+	if service != nil && service.content != nil {
+		memories, err := iface.content_list_memories(service.content, owner)
+		if err.code == .None {
+			for m in memories {
+				if !bootstrap_memory_applies_agent(m, agent, owner, domain.Project_ID(project_id)) || m.type != .Skill do continue
+				name, content := render_skill(m)
+				skill_hash := bootstrap_fragment_hash(content)
+				hub_fragment_cache_put(skill_hash, content)
+				append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
+			}
+		}
+	}
+
+	// bootstrap_version = sha256(concat of input fragment hashes) in a stable
+	// order. Empty (absent) fragments contribute an empty slot so adding/removing
+	// a fragment also changes the version.
+	vb := strings.builder_make()
+	defer strings.builder_destroy(&vb)
+	strings.write_string(&vb, identity_hash); strings.write_byte(&vb, '\n')
+	strings.write_string(&vb, project_hash); strings.write_byte(&vb, '\n')
+	strings.write_string(&vb, tasks_hash); strings.write_byte(&vb, '\n')
+	strings.write_string(&vb, role_hash); strings.write_byte(&vb, '\n')
+	strings.write_string(&vb, memories_hash); strings.write_byte(&vb, '\n')
+	for item in skills_list {
+		strings.write_string(&vb, item.name); strings.write_byte(&vb, '=')
+		strings.write_string(&vb, item.hash); strings.write_byte(&vb, '\n')
+	}
+	version := bootstrap_fragment_hash(strings.to_string(vb))
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"protocol\":2,\"version\":\"")
+	write_service_json_string(&b, version)
+	strings.write_string(&b, "\",\"agent_id\":\""); write_service_json_string(&b, agent.agent_id)
+	strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, "coordinator" if is_coordinator else "worker")
+	strings.write_string(&b, "\",\"provider\":\""); write_service_json_string(&b, provider)
+	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, project_id)
+	strings.write_string(&b, "\",\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"assembly\":[")
+
+	assembly_written := 0
+	write_assembly_section :: proc(b: ^strings.Builder, written: ^int, section, hash: string) {
+		if hash == "" do return
+		if written^ > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "{\"section\":\"")
+		write_service_json_string(b, section)
+		strings.write_string(b, "\",\"hash\":\"")
+		write_service_json_string(b, hash)
+		strings.write_string(b, "\"}")
+		written^ += 1
+	}
+	write_assembly_section(&b, &assembly_written, "agent_identity", identity_hash)
+	write_assembly_section(&b, &assembly_written, "project", project_hash)
+	write_assembly_section(&b, &assembly_written, "tasks_guidance", tasks_hash)
+	write_assembly_section(&b, &assembly_written, "role_guidance", role_hash)
+	write_assembly_section(&b, &assembly_written, "memories", memories_hash)
+
+	strings.write_string(&b, "]}]")
+
+	strings.write_string(&b, ",\"skills\":[")
+	for item, i in skills_list {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_string(&b, "{\"kind\":\"SKILL\",\"name\":\"")
+		write_service_json_string(&b, item.name)
+		strings.write_string(&b, "\",\"target_hint\":\"")
+		write_service_json_string(&b, fmt.tprintf(".agents/skills/%s/SKILL.md", item.name))
+		strings.write_string(&b, "\",\"hash\":\"")
+		write_service_json_string(&b, item.hash)
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_string(&b, "]}")
+	return strings.to_string(b), version
+}
+
+// bootstrap_memory_applies_agent is the agent-keyed (instance-free) variant of
+// bootstrap_memory_applies used by the manifest render. It resolves scope from
+// the agent + selected project only; bridge-scoped memories are excluded because
+// the manifest is not per-instance and no bridge is bound at render time.
+bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, owner: domain.User_ID, project_id: domain.Project_ID) -> bool {
+	if m.status != "active" do return false
+	if strings.trim_space(m.agent_id) != "" && m.agent_id != agent.agent_id do return false
+	if string(m.project_id) != "" && m.project_id != project_id do return false
+	if strings.trim_space(m.template_id) != "" {
+		if agent.owner_user_id != owner || agent.template_id != m.template_id do return false
+	}
+	// Bridge-scoped memories cannot be resolved for an agent-keyed manifest.
+	if strings.trim_space(m.bridge_id) != "" do return false
+	return true
+}
+
+// render_memories_markdown_agent is the agent-keyed variant of
+// render_memories_markdown (fact + habit memories, inline in AGENTS.md).
+render_memories_markdown_agent :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, project_id: domain.Project_ID) -> string {
+	if service == nil || service.content == nil do return ""
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None do return ""
+	b := strings.builder_make()
+	written := 0
+	for m in memories {
+		if !bootstrap_memory_applies_agent(m, agent, owner, project_id) do continue
+		if m.type != .Fact && m.type != .Habit do continue
+		if written == 0 do strings.write_string(&b, "\n\n## Applicable Memories")
+		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n", m.title, domain.memory_type_string(m.type))
+		write_raw_markdown_string(&b, m.body)
+		written += 1
+	}
 	return strings.to_string(b)
 }

@@ -73,6 +73,72 @@ bootstrap_cache_init :: proc(cache: ^Bootstrap_Cache, base_dir: string, max_byte
 	}
 }
 
+// -----------------------------------------------------------------------------
+// Manifest + ETag store (BRG-1): persist the last conditional-manifest response
+// per (agent_id, role, provider, project) next to the blob cache so a warm launch
+// can send If-None-Match and, on a 304, reuse the cached manifest with zero blob
+// fetches. The key is sanitized to a safe filename; the value is the raw manifest
+// JSON with its ETag on the first line ("ETag: <etag>\n<manifest-json>").
+// -----------------------------------------------------------------------------
+
+bootstrap_manifest_store_dir :: proc(cache: ^Bootstrap_Cache) -> string {
+	return strings.concatenate({strings.trim_right(cache.base_dir, "/"), "/bootstrap-cache/manifests"})
+}
+
+// bootstrap_manifest_key_filename maps a (agent,role,provider,project) key to a
+// safe flat filename (non-alphanumerics collapsed to '_').
+bootstrap_manifest_key_filename :: proc(agent_id, role, provider, project: string) -> string {
+	raw := strings.concatenate({agent_id, "_", role, "_", provider, "_", project})
+	defer delete(raw)
+	b := strings.builder_make()
+	for i in 0..<len(raw) {
+		ch := raw[i]
+		switch ch {
+		case 'a'..='z', 'A'..='Z', '0'..='9', '-', '_': strings.write_byte(&b, ch)
+		case: strings.write_byte(&b, '_')
+		}
+	}
+	strings.write_string(&b, ".manifest")
+	return strings.to_string(b)
+}
+
+bootstrap_manifest_store_path :: proc(cache: ^Bootstrap_Cache, agent_id, role, provider, project: string) -> string {
+	dir := bootstrap_manifest_store_dir(cache)
+	defer delete(dir)
+	name := bootstrap_manifest_key_filename(agent_id, role, provider, project)
+	defer delete(name)
+	return strings.concatenate({dir, "/", name})
+}
+
+// bootstrap_manifest_store_save persists the ETag + manifest JSON for a key.
+bootstrap_manifest_store_save :: proc(cache: ^Bootstrap_Cache, agent_id, role, provider, project, etag, manifest_json: string) -> bool {
+	dir := bootstrap_manifest_store_dir(cache)
+	defer delete(dir)
+	_ = os.make_directory_all(dir)
+	path := bootstrap_manifest_store_path(cache, agent_id, role, provider, project)
+	defer delete(path)
+	body := strings.concatenate({"ETag: ", etag, "\n", manifest_json})
+	defer delete(body)
+	return os.write_entire_file(path, body) == nil
+}
+
+// bootstrap_manifest_store_load returns (etag, manifest_json, ok) for a key.
+bootstrap_manifest_store_load :: proc(cache: ^Bootstrap_Cache, agent_id, role, provider, project: string) -> (string, string, bool) {
+	path := bootstrap_manifest_store_path(cache, agent_id, role, provider, project)
+	defer delete(path)
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil do return "", "", false
+	text := string(data)
+	nl := strings.index_byte(text, '\n')
+	if nl < 0 do return "", "", false
+	first := text[:nl]
+	if !strings.has_prefix(first, "ETag: ") do return "", "", false
+	etag := strings.clone(strings.trim_space(first[len("ETag: "):]))
+	manifest_json := strings.clone(text[nl + 1:])
+	delete(data)
+	return etag, manifest_json, true
+}
+
 bootstrap_cache_has :: proc(cache: ^Bootstrap_Cache, hash_str: string) -> bool {
 	sync.mutex_lock(&cache.lock)
 	defer sync.mutex_unlock(&cache.lock)
@@ -136,8 +202,14 @@ bootstrap_cache_put :: proc(cache: ^Bootstrap_Cache, hash_str, body: string) -> 
 		cache.total_bytes -= existing.size_bytes
 		delete(existing.hash)
 		delete(existing.path)
+		delete_key(&cache.items, hash_str)
 	}
-	cache.items[hash_str] = Bootstrap_Cache_Item{
+	// The map key MUST be an owned clone: Odin maps store the string header without
+	// copying the bytes, so using the caller's transient `hash_str` as the key
+	// leaves a dangling key once the caller frees it (crashes/misses on later
+	// lookups). Key the map on a stable clone (same buffer as the item's hash).
+	key_clone := strings.clone(hash_str)
+	cache.items[key_clone] = Bootstrap_Cache_Item{
 		hash = strings.clone(hash_str),
 		path = strings.clone(blob_path),
 		size_bytes = size,

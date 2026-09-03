@@ -5,7 +5,49 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/posix"
+import "core:time"
 import http "odin_test:lib/http_client"
+
+// Bridge_Bootstrap_Result carries the staged outcome of a conditional bootstrap
+// fetch so callers (and logs) can distinguish WHERE a launch failed instead of
+// collapsing every cause to one opaque message (BRG-4).
+Bridge_Bootstrap_Result :: struct {
+	ok:          bool,
+	stage:       string, // e.g. "manifest_get", "blob_fetch", "assemble", "write_run_dir"
+	http_status: int,    // last HTTP status seen at the failing stage (0 if N/A)
+	detail:      string,
+}
+
+// Retry/backoff for the individually-retriable hub calls (BRG-4/RETRY-1): the
+// conditional manifest GET and each per-hash blob GET retry alone with a short
+// exponential backoff so a transient failure of one small request never fails the
+// whole launch.
+BRIDGE_BOOTSTRAP_MAX_ATTEMPTS :: 4
+BRIDGE_BOOTSTRAP_BASE_BACKOFF_MS :: 150
+
+bridge_bootstrap_backoff_sleep :: proc(attempt: int) {
+	// attempt is 1-based; sleep grows 150ms, 300ms, 600ms, ...
+	ms := BRIDGE_BOOTSTRAP_BASE_BACKOFF_MS
+	for i in 1..<attempt do ms *= 2
+	time.sleep(time.Duration(ms) * time.Millisecond)
+}
+
+// bridge_bootstrap_http_get_retry issues a GET with retry/backoff. It treats a
+// transport failure OR a 5xx/429 as retriable; any other status is returned to
+// the caller to interpret (200/304/404/...). The final response+ok are returned.
+bridge_bootstrap_http_get_retry :: proc(hub_url, path: string, headers: []http.Header) -> (http.Response, bool) {
+	resp: http.Response
+	ok := false
+	for attempt in 1..=BRIDGE_BOOTSTRAP_MAX_ATTEMPTS {
+		resp, ok = http.request_with_headers_timeout("GET", hub_url, path, "", headers, http.DEFAULT_TIMEOUT_MS)
+		if ok && resp.status != 0 && resp.status < 500 && resp.status != 429 do return resp, true
+		if attempt < BRIDGE_BOOTSTRAP_MAX_ATTEMPTS {
+			fmt.println("bridge bootstrap retry", "path=", path, "attempt=", attempt, "status=", resp.status, "ok=", ok)
+			bridge_bootstrap_backoff_sleep(attempt)
+		}
+	}
+	return resp, ok
+}
 
 bridge_bootstrap_fetch_and_materialize :: proc(hub_url, bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider: string) -> bool {
 	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(instance_id) == "" || strings.trim_space(run_dir) == "" do return false
@@ -165,6 +207,22 @@ bridge_bootstrap_ctl_guidance :: proc() -> string {
 	return "\n\n## Heimdall CLI\n\nUse the managed CLI at `./.heimdall/bin/ham-ctl` for Heimdall actions from this run directory. Examples:\n\n```bash\n./.heimdall/bin/ham-ctl agent start-success\n./.heimdall/bin/ham-ctl agent chat read\n./.heimdall/bin/ham-ctl agent chat send --body \"...\"\n```\n\nThe bridge also exports `HEIMDALL_AGENT_TOKEN` and `HEIMDALL_AGENT_INSTANCE_ID` in your process environment.\n"
 }
 
+// bridge_bootstrap_render_ham_ctl_shim renders the ham-ctl shim script content in
+// memory (BRG-3): the bridge holds the tokens/endpoint + resolved ctl-binary path,
+// so it renders the shim and the wrapper merely places it (chmod +x). Returns
+// ("", false) when ham-ctl cannot be resolved.
+bridge_bootstrap_render_ham_ctl_shim :: proc(bridge_endpoint, agent_token, instance_id: string) -> (string, bool) {
+	ctl := bridge_bootstrap_ham_ctl_path()
+	if strings.trim_space(ctl) == "" do return "", false
+	b := strings.builder_make()
+	strings.write_string(&b, "#!/bin/sh\n")
+	strings.write_string(&b, "export HEIMDALL_BRIDGE_ENDPOINT="); bridge_bootstrap_shell_quote(&b, bridge_endpoint); strings.write_byte(&b, '\n')
+	strings.write_string(&b, "export HEIMDALL_AGENT_TOKEN="); bridge_bootstrap_shell_quote(&b, agent_token); strings.write_byte(&b, '\n')
+	strings.write_string(&b, "export HEIMDALL_AGENT_INSTANCE_ID="); bridge_bootstrap_shell_quote(&b, instance_id); strings.write_byte(&b, '\n')
+	strings.write_string(&b, "exec "); bridge_bootstrap_shell_quote(&b, ctl); strings.write_string(&b, " \"$@\"\n")
+	return strings.to_string(b), true
+}
+
 bridge_bootstrap_write_ham_ctl_wrapper :: proc(run_dir, bridge_endpoint, agent_token, instance_id: string) -> bool {
 	ctl := bridge_bootstrap_ham_ctl_path()
 	if strings.trim_space(ctl) == "" {
@@ -243,6 +301,393 @@ bridge_bootstrap_find_on_path :: proc(name: string) -> string {
 }
 
 bootstrap_global_cache: Bootstrap_Cache
+
+// Bridge_Bootstrap_Descriptor is the per-instance data the bridge receives inside
+// the enriched launch_agent WS payload. It supplies (a) the (agent_id, role,
+// provider, project) key for the conditional manifest GET and (b) the values the
+// bridge injects locally into the AGENTS.md header + ctl shim, so the bridge never
+// queries hub chains/agents tables for this.
+Bridge_Bootstrap_Descriptor :: struct {
+	instance_id:      string,
+	agent_id:         string,
+	agent_name:       string,
+	role:             string, // "coordinator" | "worker"
+	coordinator_id:   string,
+	chain_id:         string,
+	chain_title:      string,
+	project_id:       string,
+	project_path:     string,
+	conversation_id:  string,
+	provider:         string,
+}
+
+// bridge_bootstrap_descriptor_from_launch parses the enriched launch_agent
+// payload into a descriptor. Missing fields degrade to empty; role defaults to
+// "worker".
+bridge_bootstrap_descriptor_from_launch :: proc(command_json: string) -> Bridge_Bootstrap_Descriptor {
+	payload := bridge_provider_payload_object(command_json)
+	d := Bridge_Bootstrap_Descriptor{
+		instance_id     = bridge_provider_json_extract_string(payload, "agent_instance_id", ""),
+		agent_id        = bridge_provider_json_extract_string(payload, "agent_id", ""),
+		agent_name      = bridge_provider_json_extract_string(payload, "agent_name", ""),
+		role            = bridge_provider_json_extract_string(payload, "role", ""),
+		coordinator_id  = bridge_provider_json_extract_string(payload, "coordinator_agent_instance_id", ""),
+		chain_id        = bridge_provider_json_extract_string(payload, "chain_id", ""),
+		chain_title     = bridge_provider_json_extract_string(payload, "chain_title", ""),
+		project_id      = bridge_provider_json_extract_string(payload, "project_id", ""),
+		project_path    = bridge_provider_json_extract_string(payload, "project_path", ""),
+		conversation_id = bridge_provider_json_extract_string(payload, "conversation_id", ""),
+		provider        = bridge_provider_json_extract_string(payload, "name", ""),
+	}
+	if strings.trim_space(d.role) == "" do d.role = "worker"
+	return d
+}
+
+// bridge_bootstrap_conditional_manifest performs the HUB-FACING half (BRG-1/BRG-2/
+// BRG-4 + LOG-1): a single conditional GET to the agent-keyed bootstrap-manifest
+// endpoint with If-None-Match from the persisted per-key ETag, then per-hash blob
+// GETs for only the hashes missing from disk. Returns the resolved manifest JSON.
+//
+//   - 304 => HIT: reuse the cached manifest, fetch zero blobs.
+//   - 200 => MISS: persist the new manifest+ETag, fetch only missing hashes.
+//
+// All hub calls retry individually with backoff; failures surface the stage +
+// HTTP status via Bridge_Bootstrap_Result.
+bridge_bootstrap_conditional_manifest :: proc(hub_url, bridge_token, provider: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> (string, Bridge_Bootstrap_Result) {
+	auth := strings.concatenate({"Bearer ", bridge_token})
+	defer delete(auth)
+
+	// Load any persisted ETag/manifest for this key to drive If-None-Match.
+	prev_etag, prev_manifest, have_prev := bootstrap_manifest_store_load(cache, d.agent_id, d.role, provider, d.project_id)
+	defer if have_prev { delete(prev_etag); delete(prev_manifest) }
+
+	path := strings.concatenate({
+		"/api/v1/bridge/agents/", d.agent_id, "/bootstrap-manifest",
+		"?role=", d.role, "&provider=", provider, "&project=", d.project_id,
+	})
+	defer delete(path)
+
+	manifest_json := ""
+	{
+		headers_dyn := make([dynamic]http.Header)
+		defer delete(headers_dyn)
+		append(&headers_dyn, http.Header{name = "Authorization", value = auth})
+		inm_value := ""
+		if have_prev {
+			inm_value = strings.concatenate({"\"", prev_etag, "\""})
+			append(&headers_dyn, http.Header{name = "If-None-Match", value = inm_value})
+		}
+		defer if inm_value != "" do delete(inm_value)
+
+		resp, ok := bridge_bootstrap_http_get_retry(hub_url, path, headers_dyn[:])
+		if !ok {
+			return "", Bridge_Bootstrap_Result{ok = false, stage = "manifest_get", http_status = resp.status, detail = "conditional manifest GET failed after retries"}
+		}
+		defer delete(resp.body)
+		if resp.status == 304 {
+			if !have_prev {
+				return "", Bridge_Bootstrap_Result{ok = false, stage = "manifest_get", http_status = 304, detail = "hub returned 304 but bridge has no cached manifest"}
+			}
+			fmt.println("bridge bootstrap manifest HIT (304)", "agent=", d.agent_id, "role=", d.role, "provider=", provider, "project=", d.project_id)
+			manifest_json = strings.clone(prev_manifest)
+		} else if resp.status == 200 {
+			// The manifest body is wrapped in the hub API envelope {"data": ...}.
+			data_obj, data_ok := bridge_provider_json_extract_object(resp.body, "data")
+			if !data_ok {
+				return "", Bridge_Bootstrap_Result{ok = false, stage = "manifest_get", http_status = 200, detail = "manifest 200 missing data object"}
+			}
+			// NOTE: data_obj is an ALIAS into resp.body (not an owned clone), so it
+			// must NOT be freed here — resp.body is freed by the defer above. version
+			// is json_unescape'd (owned) so it IS freed.
+			version := bridge_provider_json_extract_string(data_obj, "version", "")
+			defer delete(version)
+			// Reconstruct the ETag from the manifest body (the http_client does not
+			// surface response headers): {agent}:{role}:{provider}:{project}:{version}.
+			etag := strings.concatenate({d.agent_id, ":", d.role, ":", provider, ":", d.project_id, ":", version})
+			defer delete(etag)
+			fmt.println("bridge bootstrap manifest MISS (200)", "agent=", d.agent_id, "role=", d.role, "provider=", provider, "project=", d.project_id, "version=", version)
+			_ = bootstrap_manifest_store_save(cache, d.agent_id, d.role, provider, d.project_id, etag, data_obj)
+			manifest_json = strings.clone(data_obj)
+		} else {
+			return "", Bridge_Bootstrap_Result{ok = false, stage = "manifest_get", http_status = resp.status, detail = "unexpected manifest status"}
+		}
+	}
+
+	// Resolve every fragment/skill hash: served from disk (HIT) or fetched per-hash
+	// from the hub (FETCH). Each fetch is individually retriable.
+	if res := bridge_bootstrap_fetch_missing_blobs(hub_url, auth, manifest_json, cache); !res.ok {
+		delete(manifest_json)
+		return "", res
+	}
+	return manifest_json, Bridge_Bootstrap_Result{ok = true, stage = "done"}
+}
+
+// bridge_bootstrap_fetch_missing_blobs walks the manifest's assembly + skill
+// hashes and ensures each is present in the disk cache, fetching only the missing
+// ones via GET /api/v1/bridge/blobs/{hash} (BRG-2). Logs HIT(disk) vs FETCH(hub)
+// per hash (LOG-1).
+bridge_bootstrap_fetch_missing_blobs :: proc(hub_url, auth, manifest_json: string, cache: ^Bootstrap_Cache) -> Bridge_Bootstrap_Result {
+	hashes := bridge_bootstrap_collect_manifest_hashes(manifest_json)
+	defer { for h in hashes do delete(h); delete(hashes) }
+	headers := [?]http.Header{{name = "Authorization", value = auth}}
+	for h in hashes {
+		if cache != nil && bootstrap_cache_has(cache, h) {
+			fmt.println("bridge bootstrap blob HIT (disk)", "hash=", h)
+			continue
+		}
+		blob_path := strings.concatenate({"/api/v1/bridge/blobs/", bridge_bootstrap_url_encode(h)})
+		resp, ok := bridge_bootstrap_http_get_retry(hub_url, blob_path, headers[:])
+		delete(blob_path)
+		if !ok || resp.status != 200 {
+			status := resp.status
+			delete(resp.body)
+			return Bridge_Bootstrap_Result{ok = false, stage = "blob_fetch", http_status = status, detail = strings.concatenate({"blob fetch failed for ", h})}
+		}
+		body := bridge_provider_json_extract_string(resp.body, "body", "")
+		delete(resp.body)
+		if cache != nil {
+			if !bootstrap_cache_put(cache, h, body) {
+				delete(body)
+				return Bridge_Bootstrap_Result{ok = false, stage = "blob_fetch", http_status = 200, detail = strings.concatenate({"blob hash verify/cache failed for ", h})}
+			}
+		}
+		delete(body)
+		fmt.println("bridge bootstrap blob FETCH (hub)", "hash=", h)
+	}
+	return Bridge_Bootstrap_Result{ok = true, stage = "blobs_done"}
+}
+
+// bridge_bootstrap_collect_manifest_hashes returns every fragment (files[].
+// assembly[].hash) and skill (skills[].hash) hash referenced by the manifest, in
+// document order. Caller owns the returned strings.
+bridge_bootstrap_collect_manifest_hashes :: proc(manifest_json: string) -> [dynamic]string {
+	out := make([dynamic]string)
+	if files_array, files_ok := bridge_provider_json_extract_array(manifest_json, "files"); files_ok {
+		file_objs := bridge_provider_json_top_level_objects(files_array)
+		defer bridge_bootstrap_free_object_slice(file_objs)
+		for f_obj in file_objs {
+			if ass_arr, got := bridge_provider_json_extract_array(f_obj, "assembly"); got {
+				ass_objs := bridge_provider_json_top_level_objects(ass_arr)
+				defer bridge_bootstrap_free_object_slice(ass_objs)
+				for a_obj in ass_objs {
+					h := bridge_provider_json_extract_string(a_obj, "hash", "")
+					if h != "" { append(&out, h) } else { delete(h) }
+				}
+			}
+		}
+	}
+	if skills_array, skills_ok := bridge_provider_json_extract_array(manifest_json, "skills"); skills_ok {
+		skill_objs := bridge_provider_json_top_level_objects(skills_array)
+		defer bridge_bootstrap_free_object_slice(skill_objs)
+		for s_obj in skill_objs {
+			h := bridge_provider_json_extract_string(s_obj, "hash", "")
+			if h != "" { append(&out, h) } else { delete(h) }
+		}
+	}
+	return out
+}
+
+// bridge_bootstrap_url_encode percent-encodes the ':' in a sha256:<hex> hash so it
+// survives as a single path segment (the hub decodes %3A back to ':').
+bridge_bootstrap_url_encode :: proc(value: string) -> string {
+	b := strings.builder_make()
+	for i in 0..<len(value) {
+		ch := value[i]
+		switch ch {
+		case 'a'..='z', 'A'..='Z', '0'..='9', '-', '_', '.': strings.write_byte(&b, ch)
+		case: fmt.sbprintf(&b, "%%%02X", ch)
+		}
+	}
+	return strings.to_string(b)
+}
+
+// bridge_bootstrap_render_header renders the AGENTS.md header LOCALLY from the
+// per-instance descriptor (comment 3 / DM): the hub's agent-keyed manifest carries
+// NO per-instance data, so the bridge injects the instance/chain/coordinator
+// header itself. Mirrors the hub's former render_header_inline format so the
+// assembled doc is byte-identical to the legacy bundle header.
+bridge_bootstrap_render_header :: proc(d: Bridge_Bootstrap_Descriptor) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "# Agent bootstrap\n\nAgent: ")
+	strings.write_string(&b, d.agent_name)
+	strings.write_string(&b, "\nInstance: ")
+	strings.write_string(&b, d.instance_id)
+	is_coordinator := d.role == "coordinator"
+	if d.chain_title != "" || d.chain_id != "" {
+		strings.write_string(&b, "\nTask chain: ")
+		strings.write_string(&b, d.chain_title)
+		strings.write_string(&b, " (")
+		strings.write_string(&b, d.chain_id)
+		strings.write_string(&b, ")")
+		if is_coordinator {
+			strings.write_string(&b, "\nCoordinator: you (coordinator)")
+		} else if d.coordinator_id != "" {
+			strings.write_string(&b, "\nCoordinator: ")
+			strings.write_string(&b, d.coordinator_id)
+		}
+	}
+	return strings.to_string(b)
+}
+
+// bridge_bootstrap_assemble_agents_md assembles the full AGENTS.md body: the
+// locally-rendered header + each cached fragment (in manifest assembly order) +
+// the ctl guidance appendix. Returns ("", false) if any referenced fragment is
+// missing from the disk cache (should not happen after fetch_missing_blobs).
+bridge_bootstrap_assemble_agents_md :: proc(manifest_json: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> (string, bool) {
+	b := strings.builder_make()
+	header := bridge_bootstrap_render_header(d)
+	strings.write_string(&b, header)
+	delete(header)
+
+	files_array, files_ok := bridge_provider_json_extract_array(manifest_json, "files")
+	if !files_ok { strings.builder_destroy(&b); return "", false }
+	file_objs := bridge_provider_json_top_level_objects(files_array)
+	defer bridge_bootstrap_free_object_slice(file_objs)
+	for f_obj in file_objs {
+		kind := bridge_provider_json_extract_string(f_obj, "kind", "")
+		is_agents := kind == "AGENTS_MD"
+		delete(kind)
+		if !is_agents do continue
+		ass_arr, got := bridge_provider_json_extract_array(f_obj, "assembly")
+		if !got do continue
+		ass_objs := bridge_provider_json_top_level_objects(ass_arr)
+		defer bridge_bootstrap_free_object_slice(ass_objs)
+		for a_obj in ass_objs {
+			// A section is either an inline literal or a content-addressed hash.
+			inline_str := bridge_provider_json_extract_string(a_obj, "inline", "")
+			if inline_str != "" {
+				strings.write_string(&b, inline_str)
+				delete(inline_str)
+				continue
+			}
+			delete(inline_str)
+			h := bridge_provider_json_extract_string(a_obj, "hash", "")
+			if h == "" { delete(h); continue }
+			body, found := bootstrap_cache_get(cache, h)
+			delete(h)
+			if !found { strings.builder_destroy(&b); return "", false }
+			strings.write_string(&b, body)
+			delete(body)
+		}
+	}
+	strings.write_string(&b, bridge_bootstrap_ctl_guidance())
+	return strings.to_string(b), true
+}
+
+// Bridge_Bootstrap_File is one FINISHED file the wrapper places into the run_dir
+// (BRG-3): relative_path is resolved by the bridge (provider layout), content is
+// the fully-assembled body, mode is the octal file mode (0644 default, 0755 for
+// the ctl shim). kind lets the wrapper reason about the file if needed.
+Bridge_Bootstrap_File :: struct {
+	file_id:       string, // stable id = relative_path
+	relative_path: string,
+	kind:          string, // AGENTS_MD | SKILL | CTL_WRAPPER | MANIFEST
+	content:       string,
+	mode:          int,
+}
+
+// bridge_bootstrap_build_file_set assembles the complete FINISHED file set in
+// memory (AGENTS.md, skills, ctl shim, bootstrap manifest json) from the resolved
+// manifest + descriptor. This is the single source of truth used both to write
+// the run_dir (current launch path) and to serve the wrapper bootstrap RPCs
+// (BRG-3). Caller owns the returned files (free via bridge_bootstrap_free_file_set).
+bridge_bootstrap_build_file_set :: proc(manifest_json: string, d: Bridge_Bootstrap_Descriptor, bridge_endpoint, agent_token, provider: string, cache: ^Bootstrap_Cache) -> ([dynamic]Bridge_Bootstrap_File, Bridge_Bootstrap_Result) {
+	files := make([dynamic]Bridge_Bootstrap_File)
+
+	agents_md, asm_ok := bridge_bootstrap_assemble_agents_md(manifest_json, d, cache)
+	if !asm_ok {
+		bridge_bootstrap_free_file_set(files)
+		return nil, Bridge_Bootstrap_Result{ok = false, stage = "assemble", detail = "failed to assemble AGENTS.md from cached fragments"}
+	}
+	agents_md_name := bridge_bootstrap_agents_md_name(provider)
+	append(&files, Bridge_Bootstrap_File{file_id = strings.clone(agents_md_name), relative_path = strings.clone(agents_md_name), kind = "AGENTS_MD", content = agents_md, mode = 0o644})
+
+	if skills_array, skills_ok := bridge_provider_json_extract_array(manifest_json, "skills"); skills_ok {
+		skill_objs := bridge_provider_json_top_level_objects(skills_array)
+		defer bridge_bootstrap_free_object_slice(skill_objs)
+		for s_obj in skill_objs {
+			name := bridge_provider_json_extract_string(s_obj, "name", "")
+			h := bridge_provider_json_extract_string(s_obj, "hash", "")
+			content, found := bootstrap_cache_get(cache, h)
+			if !found {
+				delete(name); delete(h)
+				bridge_bootstrap_free_file_set(files)
+				return nil, Bridge_Bootstrap_Result{ok = false, stage = "assemble", detail = "skill blob missing from cache"}
+			}
+			path := bridge_bootstrap_skill_relative_path(provider, name)
+			delete(name); delete(h)
+			if strings.trim_space(path) == "" { delete(path); delete(content); continue }
+			append(&files, Bridge_Bootstrap_File{file_id = strings.clone(path), relative_path = path, kind = "SKILL", content = content, mode = 0o644})
+		}
+	}
+
+	ctl_shim, shim_ok := bridge_bootstrap_render_ham_ctl_shim(bridge_endpoint, agent_token, d.instance_id)
+	if !shim_ok {
+		bridge_bootstrap_free_file_set(files)
+		return nil, Bridge_Bootstrap_Result{ok = false, stage = "assemble", detail = "ham-ctl not found; set HEIMDALL_HAM_CTL_BIN or put ham-ctl on PATH"}
+	}
+	append(&files, Bridge_Bootstrap_File{file_id = strings.clone(".heimdall/bin/ham-ctl"), relative_path = strings.clone(".heimdall/bin/ham-ctl"), kind = "CTL_WRAPPER", content = ctl_shim, mode = 0o755})
+
+	// heimdall-bootstrap-manifest.json listing the managed files.
+	mb := strings.builder_make()
+	strings.write_string(&mb, "{\"agent_instance_id\":\""); strings.write_string(&mb, d.instance_id)
+	strings.write_string(&mb, "\",\"managed_files\":[")
+	for f, i in files {
+		if i > 0 do strings.write_byte(&mb, ',')
+		strings.write_string(&mb, "{\"relative_path\":\""); bridge_bootstrap_json_string(&mb, f.relative_path)
+		strings.write_string(&mb, "\",\"kind\":\""); bridge_bootstrap_json_string(&mb, f.kind); strings.write_string(&mb, "\"}")
+	}
+	strings.write_string(&mb, "]}")
+	append(&files, Bridge_Bootstrap_File{file_id = strings.clone("heimdall-bootstrap-manifest.json"), relative_path = strings.clone("heimdall-bootstrap-manifest.json"), kind = "MANIFEST", content = strings.to_string(mb), mode = 0o644})
+
+	return files, Bridge_Bootstrap_Result{ok = true, stage = "done"}
+}
+
+bridge_bootstrap_free_file_set :: proc(files: [dynamic]Bridge_Bootstrap_File) {
+	for f in files {
+		delete(f.file_id)
+		delete(f.relative_path)
+		delete(f.content)
+	}
+	delete(files)
+}
+
+// bridge_bootstrap_publish_file_set builds the finished file set and PUBLISHES it
+// for the wrapper bootstrap RPCs (BRG-3). The bridge intentionally does NOT write
+// the run_dir — the WRAPPER is the sole writer (WRP-1). This keeps the e2e test
+// honest: if the wrapper's fetch-and-place path is broken, no run_dir appears.
+bridge_bootstrap_publish_file_set :: proc(manifest_json: string, d: Bridge_Bootstrap_Descriptor, bridge_endpoint, agent_token, provider: string, cache: ^Bootstrap_Cache) -> Bridge_Bootstrap_Result {
+	files, build_res := bridge_bootstrap_build_file_set(manifest_json, d, bridge_endpoint, agent_token, provider, cache)
+	if !build_res.ok do return build_res
+	// Publish for the wrapper RPCs BEFORE freeing; the store clones what it keeps.
+	bridge_bootstrap_fileset_store_put(d.instance_id, provider, files[:])
+	bridge_bootstrap_free_file_set(files)
+	return Bridge_Bootstrap_Result{ok = true, stage = "published"}
+}
+
+bridge_bootstrap_dir_exists :: proc(path: string) -> bool {
+	return os.is_dir(path)
+}
+
+// bridge_bootstrap_launch_materialize is the top-level bootstrap entry for
+// launch_agent: parse the descriptor, run the conditional manifest + per-hash blob
+// fetch, then ASSEMBLE + PUBLISH the finished file set for the wrapper RPCs. It
+// does NOT write the run_dir (the wrapper does that via bootstrap.list/.file).
+// Returns a staged result so callers can log/report WHERE it failed (BRG-4).
+bridge_bootstrap_launch_materialize :: proc(hub_url, bridge_token, run_dir, bridge_endpoint, agent_token: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> Bridge_Bootstrap_Result {
+	_ = run_dir // run_dir is materialized by the wrapper, not the bridge (WRP-1).
+	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(d.instance_id) == "" {
+		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "missing hub_url/bridge_token/instance_id"}
+	}
+	if strings.trim_space(d.agent_id) == "" {
+		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch payload missing agent_id (enriched descriptor required)"}
+	}
+	provider := d.provider
+	manifest_json, res := bridge_bootstrap_conditional_manifest(hub_url, bridge_token, provider, d, cache)
+	if !res.ok do return res
+	defer delete(manifest_json)
+	return bridge_bootstrap_publish_file_set(manifest_json, d, bridge_endpoint, agent_token, provider, cache)
+}
 
 bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider: string, cache: ^Bootstrap_Cache) -> bool {
 	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(instance_id) == "" || strings.trim_space(run_dir) == "" do return false

@@ -3,6 +3,7 @@ package sqlite
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
+import bootcache "odin_test:hub/bootcache"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
@@ -19,6 +20,10 @@ content_save_memory_sqlite :: proc(ctx: rawptr, m: domain.Memory) -> (domain.Mem
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return {}, false, domain.domain_error(.Internal_Error,"failed to prepare memory save")
 	defer sqlite3_finalize(stmt); bind_memory(stmt,m)
 	if sqlite3_step(stmt) != SQLITE_DONE do return {}, false, domain.domain_error(.Conflict,"memory could not be saved")
+	// A memory write can change any agent's rendered memories fragment (and, for
+	// `system`-scoped memories, every agent's), so invalidate the bootstrap
+	// manifest cache by bumping the shared content epoch.
+	bootcache.bump_content_epoch()
 	return m,true,{}
 }
 content_get_memory_sqlite :: proc(ctx: rawptr, id: string) -> (domain.Memory,bool,domain.Domain_Error) { impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="SELECT memory_id, owner_user_id, agent_id, project_id, template_id, bridge_id, type, status, title, body, evidence, created_at, updated_at FROM memories WHERE memory_id=?;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed memory lookup"); defer sqlite3_finalize(stmt); bind_text(stmt,1,id); if sqlite3_step(stmt)!=SQLITE_ROW do return {},false,domain.domain_error(.Not_Found,"memory not found"); return memory_from_stmt(stmt),true,{} }

@@ -24,7 +24,7 @@ def main() -> None:
 
     for marker in [
         "bridge_runtime_launch_agent :: proc",
-        "bridge_bootstrap_fetch_and_materialize",
+        "bridge_bootstrap_launch_materialize",
         "bridge_runtime_ensure_local_endpoint",
         "bridge_agent_token_issue(instance_id, instance_token, .Wrapper)",
         "bridge_agent_token_issue(instance_id, instance_token, .Agent)",

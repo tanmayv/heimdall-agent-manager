@@ -42,6 +42,15 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 	if strings.trim_space(cfg.working_dir) == "" do cfg.working_dir = os.get_env_alloc("PWD", context.allocator)
 	if strings.trim_space(cfg.pane_id) == "" do cfg.pane_id = os.get_env_alloc("TMUX_PANE", context.allocator)
 	_ = os.make_directory_all(cfg.working_dir)
+	// WRP-1: the wrapper materializes the run_dir itself from the bridge socket
+	// (list -> per-file fetch -> place), before launching the agent. The bridge no
+	// longer needs to pre-write the run_dir; this is the authoritative materializer.
+	// A bootstrap failure is fatal — the agent must not start without AGENTS.md +
+	// the ham-ctl shim.
+	if !wrapper_bridge_materialize_bootstrap(cfg) {
+		_ = wrapper_bridge_report_startup(cfg, "startup_failed", "bootstrap materialization failed")
+		return false
+	}
 	// NOTE: the Heimdall pi activity extension has been removed. The harness-agnostic
 	// pane-capture detector (source=pane_diff) is now the SOLE activity source for
 	// every provider (incl. pi), which eliminated the source-priority conflict where

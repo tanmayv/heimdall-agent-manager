@@ -1,6 +1,7 @@
 package sqlite
 
 import "core:fmt"
+import bootcache "odin_test:hub/bootcache"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
@@ -45,6 +46,9 @@ project_save_sqlite :: proc(ctx: rawptr, project: domain.Project) -> (domain.Pro
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(project.project_id)); bind_text(stmt, 2, string(project.owner_user_id)); bind_text(stmt, 3, project.name); bind_text(stmt, 4, project.slug); bind_text(stmt, 5, project.description); bind_text(stmt, 6, project.repo_url); bind_text(stmt, 7, project.vcs_kind); bind_text(stmt, 8, project.default_path); bind_text(stmt, 9, project.created_at); bind_text(stmt, 10, project.updated_at)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Project{}, false, domain.domain_error(.Conflict, "project could not be saved")
+	// A project write can change the rendered project fragment (name/path/repo/vcs/
+	// description) of any agent bound to it; invalidate the manifest cache.
+	bootcache.bump_content_epoch()
 	return project, true, domain.Domain_Error{}
 }
 

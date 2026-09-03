@@ -500,6 +500,10 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	// The project path/description is provided to the agent via AGENTS.md instead,
 	// so the agent decides when/how to work against the project checkout.
 	run_dir := bridge_runtime_default_run_dir(instance_id)
+	// The bridge creates the EMPTY run dir (tmux `cd`s into it to launch the
+	// wrapper) but writes NO bootstrap files there — the wrapper is the sole writer
+	// of run_dir contents (WRP-1). This keeps the e2e test honest.
+	_ = os.make_directory_all(run_dir)
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable"
 	bridge_runtime_set_status(instance_id, "starting", "active")
@@ -515,8 +519,20 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
 	provider, tier := bridge_runtime_provider_tier(command_json)
-	if !bridge_bootstrap_fetch_manifest_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_issue.plaintext_token, provider, &bootstrap_global_cache) {
-		if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_issue.plaintext_token, provider) do return false, "bootstrap fetch/materialization failed"
+	// Conditional, per-hash bootstrap (BRG-1..BRG-4): build the per-instance
+	// descriptor from the enriched launch payload, run one conditional manifest GET
+	// + per-hash blob fetches (only what is missing from disk), then ASSEMBLE +
+	// PUBLISH the finished file set for the wrapper RPCs. The bridge does NOT write
+	// the run_dir — the wrapper materializes it via bootstrap.list/.file (WRP-1).
+	// A staged failure surfaces the stage + HTTP status instead of a generic string.
+	descriptor := bridge_bootstrap_descriptor_from_launch(command_json)
+	if strings.trim_space(descriptor.provider) == "" do descriptor.provider = provider
+	boot_res := bridge_bootstrap_launch_materialize(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
+	if !boot_res.ok {
+		bridge_runtime_set_status(instance_id, "failed", "idle")
+		detail := fmt.tprintf("bootstrap failed at stage=%s http_status=%d: %s", boot_res.stage, boot_res.http_status, boot_res.detail)
+		fmt.println("bridge launch_agent bootstrap failed", "instance=", instance_id, "stage=", boot_res.stage, "http_status=", boot_res.http_status, "detail=", boot_res.detail)
+		return false, detail
 	}
 	session := bridge_runtime_tmux_session()
 	window := bridge_runtime_tmux_window(instance_id)

@@ -22,8 +22,12 @@ def main():
     require('events.publish_resource_changed' in bridge and 'agent_instance_status_summary_json' in bridge, 'Bridge status reports must publish user invalidations')
     require('events.publish_resource_changed' in read('src/hub/transport/http/agent_handlers.odin'), 'AgentInstance create/stop must publish invalidations')
     require('bridge_instance_bootstrap_handler' in bridge and 'verify_bridge_token' in bridge and 'reject_query_or_body_token' in bridge, 'bootstrap fetch must be Bridge bearer-only')
-    require('bootstrap_json_for_bridge' in agent and 'instance_token' in agent and 'files' in agent, 'bootstrap bundle must include token and managed files')
-    for s in ['bridge_bootstrap_fetch_and_materialize','Authorization','Bearer','AGENTS.md','heimdall-bootstrap-manifest.json','os.write_entire_file']:
+    # Bootstrap caching refactor: the legacy bundle (bootstrap_json_for_bridge) is
+    # replaced by the conditional, agent-keyed manifest + per-hash blobs. The
+    # manifest still carries the instance token + managed files (assembly/skills).
+    require('bootstrap_manifest_json_for_bridge' in agent and 'instance_token' in agent and 'files' in agent, 'bootstrap manifest must include token and managed files')
+    require('bridge_agent_manifest_handler' in bridge and 'bridge_blob_handler' in bridge, 'hub must expose conditional manifest + per-hash blob handlers')
+    for s in ['bridge_bootstrap_launch_materialize','Authorization','Bearer','AGENTS.md','heimdall-bootstrap-manifest.json','os.write_entire_file']:
         require(s in bridge_boot, f'Bridge bootstrap materialization missing {s}')
     print('PASS: hub phase10 static')
 if __name__=='__main__': main()

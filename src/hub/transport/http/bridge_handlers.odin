@@ -511,17 +511,75 @@ bridge_instance_bootstrap_handler :: proc(ctx: rawptr, req: Request) -> Response
 	if !token_ok do return respond_error(domain.domain_error(.Unauthenticated, "bridge bearer token is required"), req.request_id)
 	bridge_auth, bridge_ok, bridge_err := bridge_service.verify_bridge_token(h.bridges, token)
 	if !bridge_ok do return respond_error(bridge_err, req.request_id)
+	// Manifest-only path: the legacy bundle response has been removed (HUB-4).
+	// The bridge always fetches the manifest and resolves fragment/skill blobs
+	// via per-hash GETs; per-instance data is injected by the bridge locally.
 	instance_id := path_part(req.path, 5)
-	if strings.contains(req.query, "format=manifest") || strings.contains(req.path, "format=manifest") {
-		manifest, manifest_ok, manifest_err := agent_service.bootstrap_manifest_json_for_bridge(h.agents, domain.User_ID(bridge_auth.user_id), bridge_auth.bridge_id, instance_id)
-		if !manifest_ok do return respond_error(manifest_err, req.request_id)
-		return respond_success(manifest, req.request_id, auth_ctx_server_time(req))
-	}
-	bundle, bundle_ok, bundle_err := agent_service.bootstrap_json_for_bridge(h.agents, domain.User_ID(bridge_auth.user_id), bridge_auth.bridge_id, instance_id)
-	if !bundle_ok do return respond_error(bundle_err, req.request_id)
-	return respond_success(bundle, req.request_id, auth_ctx_server_time(req))
+	manifest, manifest_ok, manifest_err := agent_service.bootstrap_manifest_json_for_bridge(h.agents, domain.User_ID(bridge_auth.user_id), bridge_auth.bridge_id, instance_id)
+	if !manifest_ok do return respond_error(manifest_err, req.request_id)
+	return respond_success(manifest, req.request_id, auth_ctx_server_time(req))
 }
 
+// bridge_agent_manifest_handler serves the conditional, agent-keyed bootstrap
+// manifest (HUB-2). It is keyed by (agent_id, role, provider, project) — NO
+// per-instance data — and honors If-None-Match: an unchanged agent yields a 304
+// (indexed version compare only; no render, no memories scan), while a changed
+// input yields 200 + manifest + a fresh ETag. LOG-1: every request logs whether
+// it was a 304 HIT or a 200 MISS (render) with agent/role/provider/version.
+bridge_agent_manifest_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	if rejected, resp := reject_query_or_body_token(req); rejected do return resp
+	token, token_ok := bearer_token(req)
+	if !token_ok do return respond_error(domain.domain_error(.Unauthenticated, "bridge bearer token is required"), req.request_id)
+	bridge_auth, bridge_ok, bridge_err := bridge_service.verify_bridge_token(h.bridges, token)
+	if !bridge_ok do return respond_error(bridge_err, req.request_id)
+	// /api/v1/bridge/agents/{agent_id}/bootstrap-manifest -> agent_id at index 5.
+	agent_id := path_part(req.path, 5)
+	role := query_value(req.query, "role")
+	provider := query_value(req.query, "provider")
+	project := query_value(req.query, "project")
+	// If-None-Match arrives quoted on the wire (RFC 7232); the service compares
+	// against the raw ETag value, so strip the surrounding quotes first.
+	if_none_match := etag_unquote(strings.trim_space(header_value(req.headers, "If-None-Match")))
+
+	result, ok, err := agent_service.bootstrap_manifest_conditional(h.agents, domain.User_ID(bridge_auth.user_id), agent_id, role, provider, project, if_none_match)
+	if !ok do return respond_error(err, req.request_id)
+
+	if result.status == 304 {
+		fmt.println("bootstrap-manifest HIT (304)", "agent=", agent_id, "role=", role, "provider=", provider, "project=", project, "version=", result.version)
+		headers := make([]contracts.HTTP_Header, 1)
+		headers[0] = contracts.HTTP_Header{name = "ETag", value = etag_quote(result.etag)}
+		return Response{status = 304, content_type = "application/json", body = "", headers = headers}
+	}
+	fmt.println("bootstrap-manifest MISS (200 render)", "agent=", agent_id, "role=", role, "provider=", provider, "project=", project, "version=", result.version)
+	resp := respond_success(result.manifest_json, req.request_id, auth_ctx_server_time(req))
+	headers := make([]contracts.HTTP_Header, 1)
+	headers[0] = contracts.HTTP_Header{name = "ETag", value = etag_quote(result.etag)}
+	resp.headers = headers
+	return resp
+}
+
+// etag_quote wraps a raw ETag value in double quotes if not already quoted, per
+// RFC 7232. Matching against If-None-Match uses the raw value; the wire form is
+// quoted.
+etag_quote :: proc(value: string) -> string {
+	if strings.has_prefix(value, "\"") do return value
+	return strings.concatenate({"\"", value, "\""})
+}
+
+// etag_unquote strips surrounding double quotes (and an optional weak "W/"
+// prefix) from a wire ETag so it can be compared against the raw stored value.
+etag_unquote :: proc(value: string) -> string {
+	v := value
+	if strings.has_prefix(v, "W/") do v = v[2:]
+	v = strings.trim_space(v)
+	if len(v) >= 2 && strings.has_prefix(v, "\"") && strings.has_suffix(v, "\"") do return v[1:len(v) - 1]
+	return v
+}
+
+// bridge_blobs_handler is the optional cold-start warmup: POST a batch of hashes,
+// receive the fragment bodies (HUB-3 keeps this only as a warmup convenience; the
+// primary path is the per-hash immutable GET below).
 bridge_blobs_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	if rejected, resp := reject_query_or_body_token(req); rejected do return resp
@@ -531,6 +589,39 @@ bridge_blobs_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !bridge_ok do return respond_error(bridge_err, req.request_id)
 	result := agent_service.resolve_blobs_json(h.agents, req.body)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// bridge_blob_handler serves ONE immutable content-addressed fragment by hash
+// (HUB-3). Because a sha256 hash is its own validity token, the response is
+// marked immutable with a one-year max-age so the bridge's disk cache and any
+// intermediary can cache it forever. LOG-1: log the hash served.
+bridge_blob_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	if rejected, resp := reject_query_or_body_token(req); rejected do return resp
+	token, token_ok := bearer_token(req)
+	if !token_ok do return respond_error(domain.domain_error(.Unauthenticated, "bridge bearer token is required"), req.request_id)
+	_, bridge_ok, bridge_err := bridge_service.verify_bridge_token(h.bridges, token)
+	if !bridge_ok do return respond_error(bridge_err, req.request_id)
+	// /api/v1/bridge/blobs/{hash} -> hash at index 5. Hashes are url-encoded
+	// ("sha256%3A..") since they contain a colon; decode before lookup.
+	hash := query_component_decode(path_part(req.path, 5))
+	body, found := agent_service.resolve_single_blob(h.agents, hash)
+	if !found {
+		fmt.println("bootstrap-blob MISS (404)", "hash=", hash)
+		return respond_error(domain.domain_error(.Not_Found, "blob not found"), req.request_id)
+	}
+	fmt.println("bootstrap-blob served", "hash=", hash)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"hash\":\"")
+	write_handler_json_string(&b, hash)
+	strings.write_string(&b, "\",\"body\":\"")
+	write_handler_json_string(&b, body)
+	strings.write_string(&b, "\"}")
+	resp := respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+	headers := make([]contracts.HTTP_Header, 1)
+	headers[0] = contracts.HTTP_Header{name = "Cache-Control", value = "immutable, max-age=31536000"}
+	resp.headers = headers
+	return resp
 }
 
 // bridge_actionable_tasks_handler returns the compact actionable-task set for the
