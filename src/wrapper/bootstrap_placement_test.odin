@@ -58,60 +58,36 @@ bt4_is_safe_name :: proc(t: ^testing.T) {
 }
 
 @(test)
-bt4_prune_removes_stale_keeps_current :: proc(t: ^testing.T) {
-	dir := wrapper_bt4_tmpdir("prune")
+bt4_rmdir_all_clears_run_dir :: proc(t: ^testing.T) {
+	// wrapper_bootstrap_rmdir_all removes all contents recursively so the run dir
+	// is always a clean slate before materialisation (replaces the prune approach).
+	dir := wrapper_bt4_tmpdir("rmdir")
 	defer delete(dir)
 	_ = os.make_directory_all(dir)
-	defer wrapper_bt4_rmrf(dir)
+	// put a stale CLAUDE.md + a skill subdir
+	claude := strings.concatenate({dir, "/CLAUDE.md"})
+	_ = os.write_entire_file(claude, transmute([]byte)string("old content"))
+	defer delete(claude)
+	skill_dir := strings.concatenate({dir, "/skills/old-skill"})
+	_ = os.make_directory_all(skill_dir)
+	defer delete(skill_dir)
+	skill_file := strings.concatenate({skill_dir, "/SKILL.md"})
+	_ = os.write_entire_file(skill_file, transmute([]byte)string("old skill"))
+	defer delete(skill_file)
 
-	// Simulate a prior launch that placed a stale skill + AGENTS.md.
-	stale_skill := strings.concatenate({dir, "/skills/old-skill/SKILL.md"})
-	_ = os.make_directory_all(strings.concatenate({dir, "/skills/old-skill"}))
-	_ = os.write_entire_file(stale_skill, transmute([]byte)string("stale"))
-	agents := strings.concatenate({dir, "/AGENTS.md"})
-	_ = os.write_entire_file(agents, transmute([]byte)string("kept"))
-	defer { delete(stale_skill); delete(agents) }
+	wrapper_bootstrap_rmdir_all(dir)
+	_ = os.make_directory_all(dir) // recreate as materialise would
 
-	prev := []string{"skills/old-skill/SKILL.md", "AGENTS.md"}
-	current := []string{"AGENTS.md", "skills/new-skill/SKILL.md"}
-	wrapper_bootstrap_prune_stale(dir, prev, current)
-
-	// Stale skill file removed; its parent dir removed; AGENTS.md (still current) kept.
-	if _, e1 := os.stat(stale_skill, context.allocator); e1 == nil {
-		testing.expect(t, false, "stale skill file should have been pruned")
+	// CLAUDE.md and skill must be gone; dir must exist and be empty
+	if _, e := os.stat(claude, context.allocator); e == nil {
+		testing.expect(t, false, "CLAUDE.md should have been removed")
 	}
-	if _, e2 := os.stat(agents, context.allocator); e2 != nil {
-		testing.expect(t, false, "current AGENTS.md must be kept")
+	if _, e := os.stat(skill_file, context.allocator); e == nil {
+		testing.expect(t, false, "old skill file should have been removed")
 	}
-}
-
-@(test)
-bt4_placement_record_roundtrip :: proc(t: ^testing.T) {
-	dir := wrapper_bt4_tmpdir("rec")
-	defer delete(dir)
-	_ = os.make_directory_all(dir)
-	defer wrapper_bt4_rmrf(dir)
-
-	placed := []string{"AGENTS.md", "skills/a/SKILL.md", ".heimdall/bin/ham-ctl"}
-	wrapper_bootstrap_write_placement_record(dir, placed)
-	got := wrapper_bootstrap_read_placement_record(dir)
-	defer { for g in got do delete(g); delete(got) }
-	testing.expect_value(t, len(got), 3)
-	testing.expect_value(t, got[0], "AGENTS.md")
-	testing.expect_value(t, got[1], "skills/a/SKILL.md")
-	testing.expect_value(t, got[2], ".heimdall/bin/ham-ctl")
-}
-
-@(test)
-bt4_prune_ignores_traversal :: proc(t: ^testing.T) {
-	// A malicious prior record must not delete anything outside the run dir.
-	dir := wrapper_bt4_tmpdir("trav")
-	defer delete(dir)
-	_ = os.make_directory_all(dir)
-	defer wrapper_bt4_rmrf(dir)
-	// Should be a no-op (no crash, no traversal delete).
-	wrapper_bootstrap_prune_stale(dir, []string{"../../etc/passwd", "/abs/path"}, []string{})
-	testing.expect(t, true)
+	if _, e := os.stat(dir, context.allocator); e != nil {
+		testing.expect(t, false, "run dir should exist after recreate")
+	}
 }
 
 // --- helpers ---------------------------------------------------------------

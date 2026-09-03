@@ -25,6 +25,10 @@ WRAPPER_BOOTSTRAP_MAX_ATTEMPTS :: 4
 WRAPPER_BOOTSTRAP_BASE_BACKOFF_MS :: 150
 
 // wrapper_bridge_materialize_bootstrap drives the full list->file->place loop.
+// Before fetching it DELETES the entire run_dir so the directory is always empty
+// before materialisation — this is simpler and more correct than diffing a prior
+// placement record: no stale files (old CLAUDE.md, removed skills, etc.) can
+// ever be left behind regardless of why the previous launch ended.
 // Returns false (with a diagnostic on stderr) if the instance has no published
 // file set or any file cannot be fetched/written after retries.
 wrapper_bridge_materialize_bootstrap :: proc(cfg: Bridge_Runtime_Config) -> bool {
@@ -33,6 +37,9 @@ wrapper_bridge_materialize_bootstrap :: proc(cfg: Bridge_Runtime_Config) -> bool
 		fmt.eprintln("ham-wrapper bootstrap: empty run_dir")
 		return false
 	}
+	// Nuke then recreate — guarantees a clean slate on every (re)launch.
+	wrapper_bootstrap_rmdir_all(run_dir)
+	_ = os.make_directory_all(run_dir)
 
 	list_resp, list_ok := wrapper_bridge_bootstrap_call_retry(cfg, "wrapper.bootstrap.list", "{}")
 	if !list_ok {
@@ -67,13 +74,6 @@ wrapper_bridge_materialize_bootstrap :: proc(cfg: Bridge_Runtime_Config) -> bool
 		fmt.eprintln("ham-wrapper bootstrap: empty file list")
 		return false
 	}
-
-	// BT-4: read the PRIOR placement record so we can prune stale managed files
-	// (e.g. a skill removed between launches) after the new set is placed.
-	prev_placed := wrapper_bootstrap_read_placement_record(run_dir)
-	defer { for p in prev_placed do delete(p); delete(prev_placed) }
-	placed := make([dynamic]string)
-	defer { for p in placed do delete(p); delete(placed) }
 
 	for item in items {
 		file_id := extract_json_string(item, "file_id", "")
@@ -110,68 +110,28 @@ wrapper_bridge_materialize_bootstrap :: proc(cfg: Bridge_Runtime_Config) -> bool
 			return false
 		}
 		delete(content)
-		if strings.trim_space(target_rel) != "" do append(&placed, strings.clone(target_rel))
 		fmt.eprintln("ham-wrapper bootstrap: placed", kind, "->", target_rel)
 	}
-
-	// BT-4: prune files placed on a PREVIOUS launch that are no longer in the set.
-	wrapper_bootstrap_prune_stale(run_dir, prev_placed[:], placed[:])
-	// Persist the current placement set for the next launch's prune pass.
-	wrapper_bootstrap_write_placement_record(run_dir, placed[:])
 	return true
 }
 
-// WRAPPER_PLACEMENT_RECORD is a wrapper-owned newline-delimited list of the
-// run-dir-relative paths the wrapper placed on the last bootstrap. It is the
-// source of truth for stale-file pruning (BT-4) — distinct from the bridge's
-// informational heimdall-bootstrap-manifest.json (which the wrapper also writes
-// as a normal MANIFEST file), because the wrapper OWNS placement and must prune
-// by the paths it actually wrote.
-WRAPPER_PLACEMENT_RECORD :: ".heimdall-wrapper-placed"
-
-wrapper_bootstrap_read_placement_record :: proc(run_dir: string) -> [dynamic]string {
-	out := make([dynamic]string)
-	path := strings.concatenate({run_dir, "/", WRAPPER_PLACEMENT_RECORD})
-	defer delete(path)
-	data, err := os.read_entire_file(path, context.allocator)
-	if err != nil do return out
-	defer delete(data)
-	text := string(data)
-	for line in strings.split_lines_iterator(&text) {
-		name := strings.trim_space(line)
-		if name != "" do append(&out, strings.clone(name))
-	}
-	return out
-}
-
-wrapper_bootstrap_write_placement_record :: proc(run_dir: string, placed: []string) {
-	b := strings.builder_make()
-	defer strings.builder_destroy(&b)
-	for p in placed { strings.write_string(&b, p); strings.write_byte(&b, '\n') }
-	path := strings.concatenate({run_dir, "/", WRAPPER_PLACEMENT_RECORD})
-	defer delete(path)
-	_ = os.write_entire_file(path, transmute([]byte)strings.to_string(b))
-}
-
-// wrapper_bootstrap_prune_stale removes each path in `prev` that is NOT in
-// `current`. Only run-dir-relative, traversal-safe paths are touched, and empty
-// parent skill dirs left behind by a removed SKILL are cleaned up.
-wrapper_bootstrap_prune_stale :: proc(run_dir: string, prev, current: []string) {
-	for old in prev {
-		if strings.trim_space(old) == "" do continue
-		if strings.has_prefix(old, "/") || strings.contains(old, "..") do continue
-		still_present := false
-		for cur in current { if cur == old { still_present = true; break } }
-		if still_present do continue
-		full := strings.concatenate({run_dir, "/", old})
-		_ = os.remove(full)
-		fmt.eprintln("ham-wrapper bootstrap: pruned stale", old)
-		// Remove a now-empty skill parent dir (skills/<slug>/SKILL.md -> skills/<slug>).
-		if strings.has_suffix(old, "/SKILL.md") {
-			if slash := strings.last_index_byte(full, '/'); slash > 0 do _ = os.remove(full[:slash])
+// wrapper_bootstrap_rmdir_all removes the entire directory tree rooted at dir
+// (best-effort, depth-first). The run_dir is always recreated immediately after
+// by the caller so a partial removal is harmless.
+wrapper_bootstrap_rmdir_all :: proc(dir: string) {
+	fd, err := os.open(dir)
+	if err != nil do return
+	infos, rerr := os.read_dir(fd, -1, context.allocator)
+	os.close(fd)
+	if rerr == nil {
+		for info in infos {
+			full := strings.concatenate({dir, "/", info.name})
+			if info.type == .Directory { wrapper_bootstrap_rmdir_all(full) } else { _ = os.remove(full) }
+			delete(full)
 		}
-		delete(full)
+		delete(infos)
 	}
+	_ = os.remove(dir)
 }
 
 // wrapper_bootstrap_place resolves the run-dir-relative path for a file kind.
