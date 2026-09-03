@@ -20,6 +20,7 @@ import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
 import TemplatesPanel from '../settings/TemplatesPanel';
 import ProjectsSurface from '../projects/ProjectsSurface';
+import ActionsPanel from '../actions/ActionsPanel';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
@@ -99,6 +100,7 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
 };
 const NAV_ROUTES: ShellRoute[] = [
   { path: '/conversations', label: 'Conversations', icon: 'chat', description: 'Chat sessions grouped by project and agent', group: 'primary' },
+  { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts grouped by project', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
   { path: '/agents', label: 'Agents', icon: 'tasks', description: 'Agent identities and sessions', group: 'primary' },
   { path: '/library', label: 'Library', icon: 'device', description: 'Artifacts and files', group: 'primary' },
@@ -113,6 +115,7 @@ function routeFromLocation(): string {
 
 function isRouteActive(currentPath: string, itemPath: string): boolean {
   if (itemPath === '/conversations') return currentPath === '/conversations' || currentPath.startsWith('/conversations/');
+  if (itemPath === '/actions') return currentPath === '/actions' || currentPath.startsWith('/actions/');
   if (itemPath === '/settings/bridges') return currentPath.startsWith('/settings');
   return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
 }
@@ -120,6 +123,7 @@ function isRouteActive(currentPath: string, itemPath: string): boolean {
 function routeTitle(path: string): string {
   if (path === '/conversations/new') return 'New conversation';
   if (path.startsWith('/conversations/')) return 'Conversation';
+  if (path.startsWith('/actions')) return 'Actions';
   if (path === '/chains/new') return 'New task chain';
   if (path.startsWith('/chains/') && path.includes('/tasks/')) return 'Task detail';
   if (path.startsWith('/chains/')) return 'Task chain';
@@ -143,6 +147,7 @@ function routeTitle(path: string): string {
 function routeDescription(path: string): string {
   if (path === '/conversations/new') return 'Composer-first launch surface. Agent, project, Bridge, provider, and tier controls belong here in later UI tasks.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
+  if (path.startsWith('/actions')) return 'Scheduled and on-demand prompts grouped by project.';
   if (path.startsWith('/chains/')) return 'Creation-ordered task list and task-detail route outlet. No graph editor or global inspector is present.';
   if (path.startsWith('/agents/')) return 'Agent overview, sessions, Bridges, and memory tabs will attach to this route.';
   if (path.startsWith('/library/artifacts/')) return 'Fullscreen artifact viewer route owned by the Library surface.';
@@ -187,6 +192,7 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
     return [{ label: 'Settings', href: '/settings/bridges' }, { label: match?.label || decodeSegment(key) }];
   }
   if (path.startsWith('/chains/')) return [{ label: 'Task Chains', href: '/chains' }, { label: decodeSegment(path.split('/')[2] || 'Chain') }];
+  if (path.startsWith('/actions')) return [{ label: 'Actions' }];
   if (path.startsWith('/library')) return [{ label: 'Library' }];
   if (path.startsWith('/agents')) return [{ label: 'Agents' }];
   return [{ label: 'Conversations' }];
@@ -821,6 +827,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         {path === '/conversations' ? (
           <ConversationsHomePage />
+        ) : path === '/actions' ? (
+          <ActionsPanel />
         ) : path === '/projects' ? (
           <ProjectsSurface />
         ) : path === '/conversations/new' ? (

@@ -8,3 +8,4 @@ export * from './projects';
 export * from './settings';
 export * from './artifacts';
 export * from './sidebar';
+export * from './actions';

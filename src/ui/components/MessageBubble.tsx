@@ -333,6 +333,7 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
 
   const isUser = message.author === 'user';
   const isInterrupt = !!message.interrupt || (typeof message.body === 'string' && message.body.startsWith('\u001b'));
+  const isAction = message.message_type === 'action' || message.messageType === 'action';
   const displayBody = (typeof message.body === 'string' && message.body.startsWith('\u001b')) ? message.body.slice(1) : (message.body || '');
 
   type MultiQuestion = {
@@ -525,7 +526,9 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
             ? (message.error
               ? 'border-red-500 bg-red-950/20 text-red-200 before:right-[-12px] before:border-l-[12px] before:border-l-red-950/20'
               : 'border-[var(--fd-accent-blue)]/70 bg-[var(--fd-accent-blue)] text-black before:right-[-12px] before:border-l-[12px] before:border-l-[var(--fd-accent-blue)]')
-            : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-white before:-left-3 before:border-r-[12px] before:border-r-[var(--fd-surface-1)]'
+            : (isAction
+              ? 'border-amber-500/50 bg-amber-950/20 text-amber-100 before:-left-3 before:border-r-[12px] before:border-r-amber-950/20 shadow-[0_0_16px_rgba(245,158,11,0.12)]'
+              : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-white before:-left-3 before:border-r-[12px] before:border-r-[var(--fd-surface-1)]')
         } ${message.sending ? 'opacity-60 animate-pulse' : ''}`}
       >
         <ChatHoverCopyButton
@@ -540,6 +543,18 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
               : 'bg-[var(--fd-accent-blue)]/10 border-[var(--fd-accent-blue)]/20 text-[var(--fd-accent-blue)]'
           }`}>
             <span>⚡ Interrupt</span>
+          </div>
+        )}
+        {isAction && (
+          <div
+            data-debug-id={`message-bubble-action-badge-${message.id || message.messageId || 'message'}`}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider mb-2 border ${
+              isUser 
+                ? 'bg-black/10 border-black/20 text-black/80' 
+                : 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+            }`}
+          >
+            <span>⚡ Action</span>
           </div>
         )}
         {multiQuestion ? (
