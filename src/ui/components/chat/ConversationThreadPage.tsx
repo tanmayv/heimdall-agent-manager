@@ -439,7 +439,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       return asg && asg === agentInstanceId;
     });
     const inProgress = mine.find((t: TaskLike) => String(t.status || '') === 'in_progress');
-    return inProgress || mine.find((t: TaskLike) => !['completed', 'cancelled', 'validated_good'].includes(String(t.status || ''))) || mine[0] || null;
+    return inProgress || null;
   }, [chainTasks, instance?.current_task_id, instance?.currentTaskId, agentInstanceId]);
 
   const switchableTasks = useMemo(() => {
