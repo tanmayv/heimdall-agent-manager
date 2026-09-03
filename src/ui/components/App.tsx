@@ -394,6 +394,26 @@ function conversationTitle(agent: any, messages: any[] = [], summary?: any): str
   return body.length > 56 ? `${body.slice(0, 53)}…` : body;
 }
 
+// T6 Part B: sidebar conversation rows read as '<agent-name> #<id>' where
+// '<id>' is the per-run number (the '#<n>' suffix of the default title, e.g.
+// 'coder #3'), NEVER a raw inst_ id. The hub mints the default title as
+// '<agent-name> #<n>' (T1); when the title is still in that default form we
+// render the persona NAME + the run number. If the user/agent set a custom
+// (non-default) title we keep showing that real title untouched.
+function conversationRunLabel(agent: any, messages: any[] = [], summary?: any): string {
+  const title = conversationTitle(agent, messages, summary);
+  const match = /^\s*(.*\S)\s+#(\d+)\s*$/.exec(String(title || ''));
+  if (match) {
+    const rawName = String(match[1] || '').trim();
+    const runNumber = match[2];
+    // Prefer the name embedded in the default title; fall back to the durable
+    // persona id only if that name is empty or itself an internal id.
+    const name = rawName && !conversationTitleLooksInternal(rawName) ? rawName : (durableAgentId(agent) || 'agent');
+    return `${name} #${runNumber}`;
+  }
+  return title;
+}
+
 function conversationSortUnixMs(agent: any, messages: any[] = [], summary?: any): number {
   // Daemon-provided last_message_unix_ms is authoritative for ordering so the
   // sidebar does not depend on locally-loaded messages (avoids extra fetches).
@@ -1740,7 +1760,7 @@ export default function App() {
               defaultProjectId={urlParams.projectId || selectedProjectId}
               busy={newConversationBusy}
               onBack={navigateBackOrHome}
-              onFirstMessage={startFirstMessageConversation}
+              onStartConversation={startEmptyConversation}
               onOpenChain={() => {
                 const chain = chains.find((item: any) => !isChainCompleted(item)) || chains[0];
                 if (chain?.chainId) openChain(chain.chainId);
@@ -2299,7 +2319,8 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
                 <div className="space-y-0.5">
                   {group.rows.map((agent: any) => {
                     const active = selectedAgentId === agent.id;
-                    const title = conversationTitle(agent, chats?.[agent.id] || [], summaryById?.[agent.id]);
+                    // '<agent-name> #<id>' for default titles (e.g. 'coder #3'); real custom titles kept as-is.
+                    const title = conversationRunLabel(agent, chats?.[agent.id] || [], summaryById?.[agent.id]);
                     const unread = Number(summaryById?.[agent.id]?.unreadCount ?? agent?.unreadCount ?? 0);
                     const runtime = agentRuntimeDot(agent);
                     const live = isAgentRunning(agent);
@@ -2309,7 +2330,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
                         <button
                           data-debug-id={`conversation-thread-open-btn-${agent.id}`}
                           onClick={() => onOpenConversation?.(agent.id)}
-                          title={`${title} · ${group.projectName}`}
+                          title={`${title} · ${group.projectName} · ${agent.id}`}
                           className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px]"
                         >
                           <span data-debug-id={`conversation-thread-status-${agent.id}`} aria-label={`${agent.id} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color} ${status.pulse}`}></span>
@@ -4026,8 +4047,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
 }
 
 
-function NewConversationPage({ session, projects = [], providers = [], identities = [], defaultProjectId = '', busy = false, onBack, onFirstMessage, onOpenChain, onPickAgent, onPlanWork }: any) {
-  const [draft, setDraft] = useState('');
+function NewConversationPage({ session, projects = [], providers = [], identities = [], defaultProjectId = '', busy = false, onBack, onStartConversation, onOpenChain, onPickAgent, onPlanWork }: any) {
   const [projectId, setProjectId] = useState(() => {
     const initial = defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '';
     return initial === 'default' ? '' : initial;
@@ -4035,7 +4055,6 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
   const [provider, setProvider] = useState(defaultConversationProvider(providers, identities));
   const [tier, setTier] = useState('smart');
   const [error, setError] = useState('');
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const providerOptions = providers?.length ? providers : [{ name: 'pi' }];
   const selectedProject = projectId ? ((projects || []).find((project: any) => (project.projectId || project.project_id) === projectId) || null) : null;
   const projectName = selectedProject?.name || projectId || 'No project';
@@ -4050,20 +4069,22 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
     setProvider(defaultConversationProvider(providers, identities));
   }, [providers, identities]);
  
+  // T6 Part A: starting a conversation no longer requires a first message. The
+  // primary button just creates + starts the conversation instance and
+  // navigates to the new thread; the title-nudge engine will prompt for a real
+  // title after the first genuine exchange.
   const submit = async () => {
-    const body = draft.trim();
-    if (!body || busy) return;
+    if (busy) return;
     setError('');
     try {
-      await onFirstMessage?.({ body, projectId, provider, modelTier: tier });
-      setDraft('');
+      await onStartConversation?.({ projectId, provider, modelTier: tier });
     } catch (err: any) {
       setError(`Unable to start the conversation. ${String(err?.message || err || 'Try again.')}`);
     }
   };
  
   const optionCards = [
-    { id: 'ask', title: 'Ask a question', detail: 'One-off help using shared memory & skills.', action: () => inputRef.current?.focus() },
+    { id: 'ask', title: 'Start chatting', detail: 'Open a fresh thread using shared memory & skills.', action: () => { void submit(); } },
     { id: 'open-chain', title: 'Open a task chain →', detail: 'Escalate to a multi-agent chain with review.', action: () => onOpenChain?.() },
     { id: 'pick-agent', title: 'Pick another agent', detail: 'Run a coder / reviewer / planner identity.', action: () => onPickAgent?.() },
     { id: 'plan-work', title: 'Plan work', detail: 'Draft tasks in the chain editor.', action: () => onPlanWork?.() },
@@ -4102,7 +4123,7 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
             </div>
             <h1 data-debug-id="new-convo-title" className="text-[32px] font-semibold tracking-[-0.04em] text-zinc-100 sm:text-[38px]">What should we work on?</h1>
             <p data-debug-id="new-convo-subtitle" className="mx-auto mt-3 max-w-[660px] text-sm leading-6 text-zinc-500">
-              Your first message starts a fresh <code className="rounded bg-white/5 px-1 py-0.5 text-zinc-300">conversation</code> instance. The thread gets its own history, inherits this project&apos;s context, and can later become task work without losing the chat.
+              Pick a project, provider, and tier, then start a fresh <code className="rounded bg-white/5 px-1 py-0.5 text-zinc-300">conversation</code> instance. The thread gets its own history, inherits this project&apos;s context, and can later become task work without losing the chat.
             </p>
             <div data-debug-id="new-convo-suggestion-grid" className="mx-auto mt-7 grid max-w-[720px] grid-cols-1 gap-3 sm:grid-cols-2">
               {optionCards.map((card) => (
@@ -4122,23 +4143,9 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
 
         <div className="px-5 pb-[18px] pt-2">
           <div data-debug-id="new-convo-composer-shell" className="mx-auto max-w-[820px] rounded-[18px] border border-white/10 bg-[#141414] p-0 shadow-[0_18px_70px_rgba(0,0,0,0.30)] focus-within:border-white/35">
-            <textarea
-              ref={inputRef}
-              data-debug-id="new-convo-input"
-              value={draft}
-              onChange={(event) => { setDraft(event.target.value); setError(''); }}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
-                event.preventDefault();
-                void submit();
-              }}
-              placeholder="Ask anything…"
-              rows={3}
-              className="w-full resize-none bg-transparent px-4 py-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
-            />
-            {error && <div data-debug-id="new-convo-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{error}</div>}
-            {busy && <div data-debug-id="new-convo-progress" className="mx-3 mb-2 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-100">Creating <code>conversation@s-…</code> and sending your first message…</div>}
-            <div className="flex items-center justify-between gap-3 px-3 py-2">
+            {error && <div data-debug-id="new-convo-error" className="mx-3 mt-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{error}</div>}
+            {busy && <div data-debug-id="new-convo-progress" className="mx-3 mt-3 mb-2 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-100">Creating <code>conversation@s-…</code> and opening the thread…</div>}
+            <div className="flex items-center justify-between gap-3 px-3 py-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-500">＋</span>
                 <select data-debug-id="new-convo-agent-select" value="conversation" onChange={() => undefined} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
@@ -4153,11 +4160,10 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
                   <option value="cheap">Tier: cheap</option>
                 </select>
               </div>
-              <button data-debug-id="new-convo-send-btn" aria-label="Start conversation with first message" title={busy ? 'Starting…' : 'Send'} onClick={() => { void submit(); }} disabled={busy || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button>
+              <button data-debug-id="new-convo-send-btn" aria-label="Start conversation" title={busy ? 'Starting…' : 'Start conversation'} onClick={() => { void submit(); }} disabled={busy} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 bg-[#1c1c1c] px-4 text-sm font-medium text-zinc-100 hover:border-sky-400 hover:bg-[#222] disabled:cursor-not-allowed disabled:opacity-50">{busy ? 'Starting…' : 'Start conversation'}</button>
             </div>
             <div className="flex items-center justify-between border-t border-white/5 px-3 py-2 text-[11.5px] text-zinc-500">
-              <span>🗂 {projectName} · new instance <code>conversation@s-…</code> is created on first message</span>
-              <span>⌘↵ to send</span>
+              <span>{projectName} · a new instance <code>conversation@s-…</code> is created when you start</span>
             </div>
           </div>
         </div>
