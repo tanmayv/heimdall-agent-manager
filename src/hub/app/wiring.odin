@@ -31,6 +31,7 @@ App_Graph :: struct {
 	sqlite_content: sqlite.Content_Repo_SQLite,
 	sqlite_taskchains: sqlite.Taskchain_Repo_SQLite,
 	sqlite_search: sqlite.Search_Repo_SQLite,
+	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
 	uow_factory: iface.Unit_Of_Work_Factory,
@@ -53,6 +54,7 @@ App_Graph :: struct {
 	taskchain_handlers: http.Taskchain_Handlers,
 	search_handlers: http.Search_Handlers,
 	agent_action_handlers: http.Agent_Action_Handlers,
+	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
 	router: http.Router,
 }
 
@@ -75,6 +77,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.content = sqlite.new_content_repository(&graph.sqlite_content, &graph.db)
 	graph.repos.taskchains = sqlite.new_taskchain_repository(&graph.sqlite_taskchains, &graph.db)
 	graph.repos.search = sqlite.new_search_repository(&graph.sqlite_search, &graph.db)
+	graph.repos.scheduled_prompts = sqlite.new_scheduled_prompt_repository(&graph.sqlite_scheduled_prompts, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
@@ -117,6 +120,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, event_bus = &graph.event_bus}
+	graph.scheduled_prompt_handlers = http.Scheduled_Prompt_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, repo = &graph.repos.scheduled_prompts, clock = &graph.clock, ids = &graph.ids}
+	graph.bridge_handlers.scheduled_prompts = rawptr(&graph.scheduled_prompt_handlers)
 	graph.router = http.new_router()
 	register_routes(graph)
 	return true, ""
@@ -254,6 +259,13 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*", rawptr(&graph.bridge_handlers), http.bridge_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/bridges/*", rawptr(&graph.bridge_handlers), http.rename_bridge_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/revoke", rawptr(&graph.bridge_handlers), http.revoke_bridge_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts", rawptr(&graph.scheduled_prompt_handlers), http.list_scheduled_prompts_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/scheduled-prompts", rawptr(&graph.scheduled_prompt_handlers), http.create_scheduled_prompt_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts/*", rawptr(&graph.scheduled_prompt_handlers), http.get_scheduled_prompt_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/scheduled-prompts/*", rawptr(&graph.scheduled_prompt_handlers), http.patch_scheduled_prompt_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/scheduled-prompts/*", rawptr(&graph.scheduled_prompt_handlers), http.delete_scheduled_prompt_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridge/scheduled-prompts", rawptr(&graph.scheduled_prompt_handlers), http.bridge_list_scheduled_prompts_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridge/scheduled-prompts/*/execute", rawptr(&graph.scheduled_prompt_handlers), http.bridge_execute_scheduled_prompt_handler)
 }
 
 health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {
