@@ -1,0 +1,6 @@
+
+
+## Agent Identity & Instructions
+
+### Instructions
+Follow the house style. Write tests first.

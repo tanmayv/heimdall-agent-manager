@@ -484,6 +484,23 @@ bridge_bootstrap_collect_manifest_hashes :: proc(manifest_json: string) -> [dyna
 			if h != "" { append(&out, h) } else { delete(h) }
 		}
 	}
+	// BT-3: the single-template blob hash (must be cached to render).
+	if tpl_obj, ok := bridge_provider_json_extract_object(manifest_json, "template"); ok {
+		h := bridge_provider_json_extract_string(tpl_obj, "hash", "")
+		if h != "" { append(&out, h) } else { delete(h) }
+	}
+	// BT-3: variable value blobs — only fetch those WITHOUT an inline value (the hub
+	// inlines tiny values, so these are usually skipped; a hash-only variable is
+	// fetched as a blob).
+	if vars_arr, ok := bridge_provider_json_extract_array(manifest_json, "variables"); ok {
+		var_objs := bridge_provider_json_top_level_objects(vars_arr)
+		defer bridge_bootstrap_free_object_slice(var_objs)
+		for v_obj in var_objs {
+			if _, has_val := bridge_provider_json_extract_string_set(v_obj, "value"); has_val do continue
+			h := bridge_provider_json_extract_string(v_obj, "hash", "")
+			if h != "" { append(&out, h) } else { delete(h) }
+		}
+	}
 	return out
 }
 
@@ -529,11 +546,26 @@ bridge_bootstrap_render_header :: proc(d: Bridge_Bootstrap_Descriptor) -> string
 	return strings.to_string(b)
 }
 
-// bridge_bootstrap_assemble_agents_md assembles the full AGENTS.md body: the
-// locally-rendered header + each cached fragment (in manifest assembly order) +
-// the ctl guidance appendix. Returns ("", false) if any referenced fragment is
-// missing from the disk cache (should not happen after fetch_missing_blobs).
+// bridge_bootstrap_assemble_agents_md produces the full AGENTS.md body. BT-3: when
+// the manifest carries a single-template blob ("template":{...}) it renders via the
+// substitution + role-conditional engine (bridge_bootstrap_render_template);
+// otherwise it falls back to the legacy concat-by-assembly path so older manifests
+// still work. In both cases the ctl guidance appendix is appended.
 bridge_bootstrap_assemble_agents_md :: proc(manifest_json: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> (string, bool) {
+	// Prefer the single-template path when the hub advertised a template blob.
+	if tpl_obj, ok := bridge_provider_json_extract_object(manifest_json, "template"); ok {
+		if rendered, r_ok := bridge_bootstrap_render_template(tpl_obj, manifest_json, d, cache); r_ok {
+			return rendered, true
+		}
+		return "", false
+	}
+	return bridge_bootstrap_assemble_agents_md_legacy(manifest_json, d, cache)
+}
+
+// bridge_bootstrap_assemble_agents_md_legacy is the pre-BT-3 assembler: the
+// locally-rendered header + each cached fragment (in manifest assembly order) +
+// the ctl guidance appendix. Kept as a fallback for manifests without a template.
+bridge_bootstrap_assemble_agents_md_legacy :: proc(manifest_json: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> (string, bool) {
 	b := strings.builder_make()
 	header := bridge_bootstrap_render_header(d)
 	strings.write_string(&b, header)
@@ -572,6 +604,160 @@ bridge_bootstrap_assemble_agents_md :: proc(manifest_json: string, d: Bridge_Boo
 	}
 	strings.write_string(&b, bridge_bootstrap_ctl_guidance())
 	return strings.to_string(b), true
+}
+
+// -----------------------------------------------------------------------------
+// BT-3: single-template substitution + role-conditional engine.
+//
+// The bridge renders AGENTS.md by taking the hub-served static template and
+// (a) substituting {scalar} placeholders with variable values and (b) evaluating
+// the three role blocks {{#is_coordinator}}/{{#is_worker}}/{{#is_reviewer}}.
+// Syntax (BT-1 §3): single-brace {name} scalars; double-brace {{#flag}}..{{/flag}}
+// role sections for exactly is_coordinator|is_worker|is_reviewer. No expressions,
+// no nesting, no inverted sections. Unknown {name} -> empty. Empty value -> empty
+// substitution (its static heading may remain; no hiding).
+// -----------------------------------------------------------------------------
+
+// bridge_bootstrap_render_template loads the template blob referenced by tpl_obj,
+// builds the variable set (hub DB variables + bridge-local header values + role
+// flags from the descriptor), substitutes/evaluates, and appends the ctl guidance.
+// Returns ("", false) if the template blob is missing from the cache.
+bridge_bootstrap_render_template :: proc(tpl_obj, manifest_json: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> (string, bool) {
+	tpl_hash := bridge_provider_json_extract_string(tpl_obj, "hash", "")
+	defer delete(tpl_hash)
+	if tpl_hash == "" do return "", false
+	template_body, found := bootstrap_cache_get(cache, tpl_hash)
+	if !found do return "", false
+	defer delete(template_body)
+
+	// Scalar variable set: names -> values. Hub DB variables first.
+	names := make([dynamic]string)
+	values := make([dynamic]string)
+	defer { for n in names do delete(n); delete(names) }
+	defer { for v in values do delete(v); delete(values) }
+	add_var :: proc(names, values: ^[dynamic]string, name, value: string) {
+		append(names, strings.clone(name)); append(values, strings.clone(value))
+	}
+	if vars_arr, ok := bridge_provider_json_extract_array(manifest_json, "variables"); ok {
+		var_objs := bridge_provider_json_top_level_objects(vars_arr)
+		defer bridge_bootstrap_free_object_slice(var_objs)
+		for v_obj in var_objs {
+			n := bridge_provider_json_extract_string(v_obj, "name", "")
+			if n == "" { delete(n); continue }
+			// Prefer the inline value; fall back to the cached blob by hash.
+			val, has_val := bridge_provider_json_extract_string_set(v_obj, "value")
+			if !has_val {
+				h := bridge_provider_json_extract_string(v_obj, "hash", "")
+				if h != "" { if body, ok2 := bootstrap_cache_get(cache, h); ok2 { val = body; has_val = true } }
+				delete(h)
+			}
+			add_var(&names, &values, n, val if has_val else "")
+			delete(n); if has_val do delete(val)
+		}
+	}
+	// Bridge-local header values (the agent-keyed manifest is instance-free, so the
+	// hub does not carry these; BT-1 §2/§5).
+	add_var(&names, &values, "agent_name", d.agent_name)
+	add_var(&names, &values, "instance_id", d.instance_id)
+	add_var(&names, &values, "chain_title", d.chain_title)
+	add_var(&names, &values, "chain_id", d.chain_id)
+	add_var(&names, &values, "coordinator_id", d.coordinator_id)
+
+	// Role flags from the descriptor role. Exactly one is true for a chain member;
+	// all false leaves every role block dropped.
+	is_coordinator := d.role == "coordinator"
+	is_reviewer := d.role == "reviewer"
+	is_worker := !is_coordinator && !is_reviewer
+
+	body := bridge_bootstrap_eval_role_sections(template_body, is_coordinator, is_worker, is_reviewer)
+	defer delete(body)
+	substituted := bridge_bootstrap_substitute_scalars(body, names[:], values[:])
+
+	b := strings.builder_make()
+	strings.write_string(&b, substituted)
+	delete(substituted)
+	strings.write_string(&b, bridge_bootstrap_ctl_guidance())
+	return strings.to_string(b), true
+}
+
+// bridge_bootstrap_eval_role_sections drops or keeps each {{#flag}}..{{/flag}}
+// block for flag in {is_coordinator,is_worker,is_reviewer} based on the booleans.
+// A block's opening/closing tag each consume the single newline immediately after
+// the tag (when present) so a dropped block leaves no blank line and a kept block
+// starts cleanly (BT-1 §3 whitespace rule). Non-role {{...}} are left untouched.
+bridge_bootstrap_eval_role_sections :: proc(template: string, is_coordinator, is_worker, is_reviewer: bool) -> string {
+	flags := [3]string{"is_coordinator", "is_worker", "is_reviewer"}
+	vals := [3]bool{is_coordinator, is_worker, is_reviewer}
+	result := strings.clone(template)
+	for fi in 0..<3 {
+		open := strings.concatenate({"{{#", flags[fi], "}}"})
+		close := strings.concatenate({"{{/", flags[fi], "}}"})
+		defer { delete(open); delete(close) }
+		for {
+			os := strings.index(result, open)
+			if os < 0 do break
+			inner_start := os + len(open)
+			ce := strings.index(result[inner_start:], close)
+			if ce < 0 do break // malformed: leave as-is to avoid corrupting output
+			inner_end := inner_start + ce
+			after_close := inner_end + len(close)
+			// consume one newline right after the opening tag and after the closing tag.
+			content_start := inner_start
+			if content_start < len(result) && result[content_start] == '\n' do content_start += 1
+			content_end := inner_end
+			tail_start := after_close
+			if tail_start < len(result) && result[tail_start] == '\n' do tail_start += 1
+			new_result: string
+			if vals[fi] {
+				new_result = strings.concatenate({result[:os], result[content_start:content_end], result[tail_start:]})
+			} else {
+				new_result = strings.concatenate({result[:os], result[tail_start:]})
+			}
+			delete(result)
+			result = new_result
+		}
+	}
+	return result
+}
+
+// bridge_bootstrap_substitute_scalars replaces each {name} occurrence with its
+// value. Longer names are matched first is unnecessary because names are matched
+// exactly against the braces content; unknown {name} tokens are replaced with "".
+// Only tokens whose inner text is a known variable name are substituted; any other
+// {..} (e.g. code braces) is left verbatim.
+bridge_bootstrap_substitute_scalars :: proc(body: string, names, values: []string) -> string {
+	b := strings.builder_make()
+	i := 0
+	for i < len(body) {
+		if body[i] == '{' && (i+1 >= len(body) || body[i+1] != '{') {
+			// find closing brace on the same token (no nested braces)
+			j := i + 1
+			for j < len(body) && body[j] != '}' && body[j] != '{' && body[j] != '\n' do j += 1
+			if j < len(body) && body[j] == '}' {
+				key := body[i+1:j]
+				matched := false
+				for n, ni in names {
+					if n == key { strings.write_string(&b, values[ni]); matched = true; break }
+				}
+				if matched { i = j + 1; continue }
+				// Unknown single-brace token: emit empty (BT-1 §3 fail-soft) ONLY if it
+				// looks like a placeholder (letters/underscore); otherwise keep verbatim.
+				if bridge_bootstrap_is_placeholder_key(key) { i = j + 1; continue }
+			}
+		}
+		strings.write_byte(&b, body[i])
+		i += 1
+	}
+	return strings.to_string(b)
+}
+
+bridge_bootstrap_is_placeholder_key :: proc(key: string) -> bool {
+	if len(key) == 0 do return false
+	for i in 0..<len(key) {
+		ch := key[i]
+		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || (ch >= '0' && ch <= '9')) do return false
+	}
+	return true
 }
 
 // Bridge_Bootstrap_File is one FINISHED file the wrapper places into the run_dir

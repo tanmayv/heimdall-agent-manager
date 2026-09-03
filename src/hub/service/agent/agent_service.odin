@@ -1214,18 +1214,184 @@ bootstrap_fragment_hash :: proc(body: string) -> string {
 	return strings.concatenate({"sha256:", string(hex_str)})
 }
 
-render_agent_identity :: proc(agent: domain.Agent, owner: domain.User_ID) -> string {
-	if strings.trim_space(agent.instructions) == "" do return ""
+// Static AGENTS.md fragment prose is authored in src/prompts/*.md and embedded at
+// compile time via #load (paths are relative to this source file). Only the
+// STATIC prose lives in the .md files; all DB interpolation (project fields,
+// agent instructions, memory rows) stays in the render_* procs below. Each proc
+// re-adds the structural "\n\n" section separator (and, where the original had
+// one, a trailing "\n") around the trimmed file body so the rendered fragment
+// bytes—and therefore its content-addressed hash—are identical to the previous
+// inline literals.
+BOOTSTRAP_FRAGMENT_AGENT_IDENTITY :: #load("../../../prompts/bootstrap_agent_identity.md", string)
+BOOTSTRAP_FRAGMENT_PROJECT        :: #load("../../../prompts/bootstrap_project.md", string)
+BOOTSTRAP_FRAGMENT_TASKS_GUIDANCE :: #load("../../../prompts/bootstrap_tasks_guidance.md", string)
+BOOTSTRAP_FRAGMENT_ROLE_COORDINATOR :: #load("../../../prompts/bootstrap_role_coordinator.md", string)
+BOOTSTRAP_FRAGMENT_ROLE_WORKER    :: #load("../../../prompts/bootstrap_role_worker.md", string)
+BOOTSTRAP_FRAGMENT_MEMORIES_HEADER :: #load("../../../prompts/bootstrap_memories_header.md", string)
+BOOTSTRAP_FRAGMENT_IDENTITY_PERSONA_HEADING :: #load("../../../prompts/bootstrap_identity_persona_heading.md", string)
+BOOTSTRAP_FRAGMENT_IDENTITY_INSTRUCTIONS_HEADING :: #load("../../../prompts/bootstrap_identity_instructions_heading.md", string)
+
+// BT-2: the single static AGENTS.md template. All static prose is inline; the
+// bridge substitutes {scalar} placeholders and evaluates the three role blocks
+// {{#is_coordinator}}/{{#is_worker}}/{{#is_reviewer}}. Served as a
+// content-addressed blob in the manifest (kind=AGENTS_TEMPLATE) so an unchanged
+// template skips re-transfer, exactly like every fragment blob.
+BOOTSTRAP_AGENTS_TEMPLATE :: #load("../../../prompts/bootstrap_agents.md", string)
+
+// Bootstrap_Variable is one DB-derived value the hub serves individually so the
+// bridge can substitute it into the template. `value` is inlined in the manifest
+// (the strings are tiny) AND the value is pushed into the fragment cache under
+// `hash` so a bridge that prefers a per-hash blob GET can still fetch it. `hash`
+// feeds the manifest version so a changed value re-bases the ETag.
+Bootstrap_Variable :: struct {
+	name:  string,
+	value: string,
+	hash:  string,
+}
+
+// bootstrap_build_project_variables produces the five project_* variables in a
+// FIXED order (always all five, even when empty, for a deterministic version and
+// explicit empty substitution). Each value is hashed + cached. BT-2a appends the
+// identity variables (template_persona/template_instructions/agent_instructions)
+// onto the slice this returns.
+bootstrap_build_project_variables :: proc(project_name, project_path, project_repo, project_vcs, project_desc: string) -> [dynamic]Bootstrap_Variable {
+	vars := make([dynamic]Bootstrap_Variable)
+	add :: proc(vars: ^[dynamic]Bootstrap_Variable, name, value: string) {
+		h := bootstrap_fragment_hash(value)
+		hub_fragment_cache_put(h, value)
+		append(vars, Bootstrap_Variable{name = name, value = value, hash = h})
+	}
+	add(&vars, "project_name", project_name)
+	add(&vars, "project_path", project_path)
+	add(&vars, "project_repo", project_repo)
+	add(&vars, "project_vcs", project_vcs)
+	add(&vars, "project_description", project_desc)
+	return vars
+}
+
+// bootstrap_append_identity_variables appends the three identity variables
+// (BT-2a) onto a variable slice in FIXED order: template_persona,
+// template_instructions, agent_instructions. Each is hashed + cached. The bridge
+// substitutes them into the template's {template_persona}/{template_instructions}/
+// {agent_instructions} slots; the template's static ### Persona / ### Instructions
+// headings + the approved persona->template_instructions->agent_instructions
+// order live in bootstrap_agents.md (BT-1 §2.1). Empty values are still emitted
+// (deterministic version + explicit empty substitution; a stray empty heading is
+// acceptable per the approved design).
+bootstrap_append_identity_variables :: proc(vars: ^[dynamic]Bootstrap_Variable, template_persona, template_instructions, agent_instructions: string) {
+	add :: proc(vars: ^[dynamic]Bootstrap_Variable, name, value: string) {
+		h := bootstrap_fragment_hash(value)
+		hub_fragment_cache_put(h, value)
+		append(vars, Bootstrap_Variable{name = name, value = value, hash = h})
+	}
+	add(vars, "template_persona", template_persona)
+	add(vars, "template_instructions", template_instructions)
+	add(vars, "agent_instructions", agent_instructions)
+}
+
+// bootstrap_template_hash hashes the template body and caches it under that hash
+// so the existing /blobs/<hash> path serves it. Returns the hash.
+bootstrap_template_hash :: proc() -> string {
+	h := bootstrap_fragment_hash(BOOTSTRAP_AGENTS_TEMPLATE)
+	hub_fragment_cache_put(h, BOOTSTRAP_AGENTS_TEMPLATE)
+	return h
+}
+
+// bootstrap_write_template_and_variables_json appends the `template` object and
+// the `variables` array to a manifest builder. Shared by both hub render paths
+// so the contract is identical (BT-2). Caller writes the leading comma context.
+bootstrap_write_template_and_variables_json :: proc(b: ^strings.Builder, template_hash: string, vars: []Bootstrap_Variable) {
+	strings.write_string(b, ",\"template\":{\"kind\":\"AGENTS_TEMPLATE\",\"hash\":\"")
+	write_service_json_string(b, template_hash)
+	strings.write_string(b, "\"},\"variables\":[")
+	for v, i in vars {
+		if i > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "{\"name\":\""); write_service_json_string(b, v.name)
+		strings.write_string(b, "\",\"hash\":\""); write_service_json_string(b, v.hash)
+		strings.write_string(b, "\",\"value\":\""); write_service_json_string(b, v.value)
+		strings.write_string(b, "\"}")
+	}
+	strings.write_string(b, "]")
+}
+
+// render_agent_identity composes the `## Agent Identity & Instructions` fragment
+// from up to THREE DB-backed sources, per reports/bootstrap_template_design.md
+// §2.1 (IMPL 2). Precedence is COMPOSE-not-replace: persona first, then the
+// effective instructions = template.instructions (base) followed by
+// agent.instructions (agent-specific augmentation appended after the base).
+//
+// Presence handling (each source independently gated on trim_space != ""):
+//   - `### Persona` sub-heading + body when template_persona is present.
+//   - `### Instructions` sub-heading is emitted only when there is at least one
+//     instruction source AND something to disambiguate it from (persona or a
+//     template base). When agent.instructions is the ONLY source (no persona, no
+//     template.instructions) the output is byte-identical to the pre-IMPL-2
+//     behavior (raw instructions directly under the section heading, no
+//     `### Instructions` sub-heading) — the §2.1 matrix "today's behavior" row.
+//   - Whole fragment dropped (empty string) when all three sources are empty.
+// No source is ever silently dropped; there is no full-override mode.
+render_agent_identity :: proc(agent: domain.Agent, owner: domain.User_ID, template_persona: string = "", template_instructions: string = "") -> string {
+	has_persona := strings.trim_space(template_persona) != ""
+	has_tmpl_instr := strings.trim_space(template_instructions) != ""
+	has_agent_instr := strings.trim_space(agent.instructions) != ""
+	// Widened guard: render when ANY of the three sources is present.
+	if !has_persona && !has_tmpl_instr && !has_agent_instr do return ""
+
 	b := strings.builder_make()
-	strings.write_string(&b, "\n\n## Agent Identity & Instructions\n")
-	strings.write_string(&b, agent.instructions)
+	strings.write_string(&b, "\n\n")
+	strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_AGENT_IDENTITY))
+
+	if has_persona {
+		strings.write_string(&b, "\n\n")
+		strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_IDENTITY_PERSONA_HEADING))
+		strings.write_string(&b, "\n")
+		strings.write_string(&b, template_persona)
+	}
+
+	if has_tmpl_instr || has_agent_instr {
+		// Emit the `### Instructions` sub-heading only when it separates the
+		// instructions from a persona block or a template base; when only
+		// agent.instructions exists, preserve the pre-IMPL-2 heading-less layout.
+		show_instr_heading := has_persona || has_tmpl_instr
+		if show_instr_heading {
+			strings.write_string(&b, "\n\n")
+			strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_IDENTITY_INSTRUCTIONS_HEADING))
+			strings.write_string(&b, "\n")
+			if has_tmpl_instr {
+				strings.write_string(&b, template_instructions)
+				if has_agent_instr {
+					strings.write_string(&b, "\n\n")
+					strings.write_string(&b, agent.instructions)
+				}
+			} else {
+				strings.write_string(&b, agent.instructions)
+			}
+		} else {
+			// today's behavior: agent.instructions only, directly under heading.
+			strings.write_string(&b, "\n")
+			strings.write_string(&b, agent.instructions)
+		}
+	}
 	return strings.to_string(b)
+}
+
+// bootstrap_template_identity_fields fetches the agent's template persona +
+// instructions for the identity fragment. Returns empty strings when the agent
+// has no template or the lookup misses (miss treated as empty, never an error).
+bootstrap_template_identity_fields :: proc(service: ^Agent_Service, agent: domain.Agent) -> (persona: string, instructions: string) {
+	if strings.trim_space(agent.template_id) == "" do return "", ""
+	if service == nil || service.content == nil do return "", ""
+	tmpl, ok, _ := iface.content_get_template(service.content, agent.template_id)
+	if !ok do return "", ""
+	return tmpl.persona, tmpl.instructions
 }
 
 render_project :: proc(project_name, project_path, project_repo, project_vcs, project_desc: string) -> string {
 	if strings.trim_space(project_name) == "" && strings.trim_space(project_path) == "" do return ""
 	b := strings.builder_make()
-	strings.write_string(&b, "\n\n## Project\nThis agent is associated with a project. You run in your own managed working directory (not the project directory). Work against the project checkout below when the task requires it.\n")
+	strings.write_string(&b, "\n\n")
+	strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_PROJECT))
+	strings.write_string(&b, "\n")
 	if strings.trim_space(project_name) != "" { strings.write_string(&b, "\n- Name: "); strings.write_string(&b, project_name) }
 	if strings.trim_space(project_path) != "" { strings.write_string(&b, "\n- Path: "); strings.write_string(&b, project_path) }
 	if strings.trim_space(project_repo) != "" { strings.write_string(&b, "\n- Repo: "); strings.write_string(&b, project_repo) }
@@ -1235,7 +1401,7 @@ render_project :: proc(project_name, project_path, project_repo, project_vcs, pr
 }
 
 render_tasks_guidance :: proc() -> string {
-	return "\n\n## Working with tasks (REQUIRED)\nYou MUST track all substantial work as tasks in this task chain. This is not optional.\n\nRules you must follow:\n1. Before starting work, ALWAYS run ./.heimdall/bin/ham-ctl agent tasks fetch to see the current tasks in your chain.\n2. Do NOT do meaningful work that is not represented by a task. If a task does not exist for what you are about to do, create one (coordinator) or ask the coordinator to create one.\n3. When you begin a task, move it to in_progress: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress\n4. As you make progress, you MUST post a comment on the task describing what you did, what changed, and what is next: ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \"<progress update>\". Add a comment at every meaningful step, on blockers, and before handing off for review.\n5. When the work is complete, submit it for review: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_validation (or ./.heimdall/bin/ham-ctl agent tasks done --task-id <id>). Include a summary comment of what to review.\n6. Reviewers vote with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \"<feedback>\". If you receive ngtm, address the feedback, comment what you changed, and re-submit.\n7. Use ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id> to request attention on a stalled task.\n\nKeep task status and comments current at all times so the whole chain reflects real progress."
+	return strings.concatenate({"\n\n", strings.trim_space(BOOTSTRAP_FRAGMENT_TASKS_GUIDANCE)})
 }
 
 // Role-specific AGENTS.md guidance for the manifest/fragment assembler. The
@@ -1245,9 +1411,9 @@ render_tasks_guidance :: proc() -> string {
 render_role_guidance :: proc(is_coordinator: bool, chain_ok: bool) -> string {
 	if !chain_ok do return ""
 	if is_coordinator {
-		return "\n\n## You are the COORDINATOR of this task chain (delegate — do not do the work yourself)\nYour role is to PLAN and ORCHESTRATE the chain, not to implement it. Doing substantial work yourself instead of delegating is a failure mode.\n\nWhat this means in practice:\n1. Break the goal into discrete tasks and ASSIGN each to a worker agent. Do not implement features, write the code, run the research, or produce the deliverable yourself — that is the assignees' job.\n2. Add the agents you need to the chain (`./.heimdall/bin/ham-ctl agent chains add-agent ...`) and create tasks with an explicit `--assignee <agent_instance_id>`; set order with `--depends-on` and blocking reviewers with `tasks participant --role lgtm_required`.\n3. Own the chain description as the canonical design doc (goal, scope, REQ-IDs, task plan, validation strategy). Keep it in sync as scope changes.\n4. Be the ONLY point of contact for the user. Team agents route questions/blockers through you; you synthesize and reply. Acknowledge user messages promptly.\n5. Enforce review gates: `tasks done` -> `review_ready` -> required reviewers LGTM -> `approved`. The chain is `completed` only when YOU complete it with a verifiable final summary.\n6. Only do work yourself for trivial coordination glue. Anything a worker can own, delegate.\n\nRead the `coordinator-task-management` skill for the full ham-ctl command reference and delegation workflow."
+		return strings.concatenate({"\n\n", strings.trim_space(BOOTSTRAP_FRAGMENT_ROLE_COORDINATOR)})
 	}
-	return "\n\n## You are a WORKER on this task chain\nExecute the tasks ASSIGNED to you. Do not take on work outside your assigned tasks or coordinate the whole chain — that is the coordinator's job. Route questions, blockers, and user-facing messages to the coordinator (chat with chain context is redirected to them automatically). Keep your task status and comments current, and hand off for review with `tasks done` when complete. Read the `worker-task-management` skill for the ham-ctl command reference."
+	return strings.concatenate({"\n\n", strings.trim_space(BOOTSTRAP_FRAGMENT_ROLE_WORKER)})
 }
 
 render_memories_markdown :: proc(service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) -> string {
@@ -1263,7 +1429,7 @@ render_memories_markdown :: proc(service: ^Agent_Service, owner: domain.User_ID,
 		// duplicated here (that just pollutes the bootstrap doc). Other types
 		// (episode/expertise) are intentionally excluded from the inline doc.
 		if m.type != .Fact && m.type != .Habit do continue
-		if written == 0 do strings.write_string(&b, "\n\n## Applicable Memories")
+		if written == 0 { strings.write_string(&b, "\n\n"); strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_MEMORIES_HEADER)) }
 		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n", m.title, domain.memory_type_string(m.type))
 		write_raw_markdown_string(&b, m.body)
 		written += 1
@@ -1359,7 +1525,8 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 
 	header_inline := render_header_inline(agent.name, inst.agent_instance_id, chain.title, string(chain.chain_id), chain.coordinator_agent_instance_id, chain.coordinator_agent_instance_id == inst.agent_instance_id)
 
-	identity_body := render_agent_identity(agent, owner)
+	template_persona, template_instructions := bootstrap_template_identity_fields(service, agent)
+	identity_body := render_agent_identity(agent, owner, template_persona, template_instructions)
 	identity_hash := ""
 	if identity_body != "" {
 		identity_hash = bootstrap_fragment_hash(identity_body)
@@ -1471,6 +1638,13 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	}
 
 	strings.write_string(&b, "]}]")
+
+	// BT-2/BT-2a: single-template blob + all DB-derived variables (project_* + identity).
+	instance_template_hash := bootstrap_template_hash()
+	instance_variables := bootstrap_build_project_variables(project_name, project_path, project_repo, project_vcs, project_desc)
+	defer delete(instance_variables)
+	bootstrap_append_identity_variables(&instance_variables, template_persona, template_instructions, agent.instructions)
+	bootstrap_write_template_and_variables_json(&b, instance_template_hash, instance_variables[:])
 
 	strings.write_string(&b, ",\"skills\":[")
 	for item, i in skills_list {
@@ -1696,7 +1870,8 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 		}
 	}
 
-	identity_body := render_agent_identity(agent, owner)
+	template_persona, template_instructions := bootstrap_template_identity_fields(service, agent)
+	identity_body := render_agent_identity(agent, owner, template_persona, template_instructions)
 	identity_hash := ""
 	if identity_body != "" {
 		identity_hash = bootstrap_fragment_hash(identity_body)
@@ -1758,9 +1933,16 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 		}
 	}
 
+	// BT-2/BT-2a: single-template blob + all DB-derived variables (project_* + identity).
+	template_hash := bootstrap_template_hash()
+	variables := bootstrap_build_project_variables(project_name, project_path, project_repo, project_vcs, project_desc)
+	defer delete(variables)
+	bootstrap_append_identity_variables(&variables, template_persona, template_instructions, agent.instructions)
+
 	// bootstrap_version = sha256(concat of input fragment hashes) in a stable
 	// order. Empty (absent) fragments contribute an empty slot so adding/removing
-	// a fragment also changes the version.
+	// a fragment also changes the version. BT-2 folds the template hash + each
+	// variable (name=hash) so the ETag changes iff the template or any value does.
 	vb := strings.builder_make()
 	defer strings.builder_destroy(&vb)
 	strings.write_string(&vb, identity_hash); strings.write_byte(&vb, '\n')
@@ -1771,6 +1953,11 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	for item in skills_list {
 		strings.write_string(&vb, item.name); strings.write_byte(&vb, '=')
 		strings.write_string(&vb, item.hash); strings.write_byte(&vb, '\n')
+	}
+	strings.write_string(&vb, "template="); strings.write_string(&vb, template_hash); strings.write_byte(&vb, '\n')
+	for v in variables {
+		strings.write_string(&vb, v.name); strings.write_byte(&vb, '=')
+		strings.write_string(&vb, v.hash); strings.write_byte(&vb, '\n')
 	}
 	version := bootstrap_fragment_hash(strings.to_string(vb))
 
@@ -1801,6 +1988,8 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	write_assembly_section(&b, &assembly_written, "memories", memories_hash)
 
 	strings.write_string(&b, "]}]")
+
+	bootstrap_write_template_and_variables_json(&b, template_hash, variables[:])
 
 	strings.write_string(&b, ",\"skills\":[")
 	for item, i in skills_list {
@@ -1844,7 +2033,7 @@ render_memories_markdown_agent :: proc(service: ^Agent_Service, owner: domain.Us
 	for m in memories {
 		if !bootstrap_memory_applies_agent(m, agent, owner, project_id) do continue
 		if m.type != .Fact && m.type != .Habit do continue
-		if written == 0 do strings.write_string(&b, "\n\n## Applicable Memories")
+		if written == 0 { strings.write_string(&b, "\n\n"); strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_MEMORIES_HEADER)) }
 		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n", m.title, domain.memory_type_string(m.type))
 		write_raw_markdown_string(&b, m.body)
 		written += 1

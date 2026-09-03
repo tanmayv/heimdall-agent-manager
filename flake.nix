@@ -153,6 +153,7 @@
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
           ham-task-store-repository-test = mkOdinPackageWithRuntime pkgs odin "ham-task-store-repository-test" "tests/task_store_repository_test" [ pkgs.sqlite ];
+          ham-bootstrap-golden-test = mkOdinPackage pkgs odin "ham-bootstrap-golden-test" "tests/hub_bootstrap_golden_test";
           ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
           heimdall = mkOdinUiPackage pkgs;
           heimdall-node-modules = mkNodeModules pkgs;

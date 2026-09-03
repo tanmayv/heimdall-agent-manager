@@ -1,0 +1,6 @@
+# Agent bootstrap
+
+Agent: Backend Agent
+Instance: inst_2
+Task chain: Prompts audit (chain_1)
+Coordinator: inst_coord
