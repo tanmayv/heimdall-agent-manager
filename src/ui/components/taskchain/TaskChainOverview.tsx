@@ -541,6 +541,316 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     }
   };
 
+  const renderTaskCard = (task: any) => {
+    const taskId = task.taskId || task.id;
+    const isExpanded = Boolean(expandedTaskIds[taskId]);
+    const taskCommentAttachments = commentAttachments[taskId] || [];
+    const taskCommentUploading = taskCommentAttachments.some((item) => item.status === 'uploading');
+    const taskCommentFailed = taskCommentAttachments.some((item) => item.status === 'error');
+    const taskCommentReady = taskCommentAttachments.filter((item) => item.status === 'uploaded' && item.link);
+    const taskCommentCanSend = !taskCommentUploading && !taskCommentFailed && (Boolean((commentInputs[taskId] || '').trim()) || taskCommentReady.length > 0);
+
+    return (
+      <div
+        key={taskId}
+        data-debug-id={`taskchain-task-row-${taskId}`}
+        className="rounded-lg border border-white/10 bg-[#111111] p-3 text-xs"
+      >
+        {/* Main Card Header */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-start gap-2">
+            <button
+              type="button"
+              data-debug-id={`taskchain-task-expand-btn-${taskId}`}
+              onClick={() => toggleTaskExpanded(taskId)}
+              className="mt-0.5 text-zinc-400 hover:text-white"
+            >
+              {isExpanded ? '▾' : '▸'}
+            </button>
+            <div>
+              <div
+                data-debug-id={`taskchain-task-title-${taskId}`}
+                className="font-semibold text-white"
+              >
+                {task.title}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-zinc-400">
+                <span data-debug-id={`taskchain-task-assignee-${taskId}`} className="inline-flex items-center gap-1">
+                  {task.assigneeRef ? (
+                    <>
+                      assignee: {task.assigneeRef.agent_instance_id
+                        ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
+                        : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
+                    </>
+                  ) : (
+                    <span>assignee: <span className="text-zinc-500">unassigned</span></span>
+                  )}
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-edit-assignee-btn-${taskId}`}
+                    title="Change assignee"
+                    onClick={(e) => { e.stopPropagation(); openEditAssigneeModal(task); }}
+                    className="ml-0.5 text-zinc-400 hover:text-white"
+                  >
+                    <Icon name="pencil" size={11} />
+                  </button>
+                </span>
+
+                <span data-debug-id={`taskchain-task-reviewers-${taskId}`} className="inline-flex items-center gap-1">
+                  reviewers: {task.reviewerRefs && task.reviewerRefs.length > 0 ? (
+                    task.reviewerRefs.map((r: any, ri: number) => (
+                      <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
+                        {ri > 0 ? ', ' : ''}
+                        {r.agent_instance_id
+                          ? <InstanceIdLink instanceId={r.agent_instance_id} />
+                          : <span className="text-zinc-300">{r.user_id}</span>}
+                      </React.Fragment>
+                    ))
+                  ) : (
+                    <span className="text-zinc-500">none</span>
+                  )}
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-edit-reviewers-btn-${taskId}`}
+                    title="Edit reviewers"
+                    onClick={(e) => { e.stopPropagation(); openEditReviewersModal(task); }}
+                    className="ml-0.5 text-zinc-400 hover:text-white"
+                  >
+                    <Icon name="pencil" size={11} />
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* H12: compact right side — status/blocked badges + a single
+              quick-actions MENU button (actionable without expanding). */}
+          <div className="flex items-center gap-2">
+            {task.blocked && (
+              <span
+                data-debug-id={`taskchain-task-blocked-${taskId}`}
+                className="rounded bg-amber-900/50 px-2 py-0.5 font-semibold text-amber-300"
+              >
+                ⛔ blocked
+              </span>
+            )}
+            <span
+              data-debug-id={`taskchain-task-status-${taskId}`}
+              className="rounded bg-zinc-800 px-2 py-0.5 font-mono uppercase text-zinc-300"
+            >
+              {task.status}
+            </span>
+            <div
+              className="relative inline-block text-left"
+              ref={actionsMenuOpenTaskId === taskId ? actionsMenuRef : undefined}
+            >
+              <button
+                type="button"
+                data-debug-id={`taskchain-task-actions-menu-btn-${taskId}`}
+                aria-haspopup="menu"
+                aria-expanded={actionsMenuOpenTaskId === taskId}
+                title="Quick actions"
+                onClick={() => {
+                  setActionsMenuOpenTaskId(actionsMenuOpenTaskId === taskId ? null : taskId);
+                  setStatusMenuOpenTaskId(null);
+                }}
+                className="rounded bg-zinc-800 px-2 py-0.5 text-[13px] font-semibold text-zinc-300 hover:bg-zinc-700"
+              >
+                ⋯
+              </button>
+              {actionsMenuOpenTaskId === taskId && (
+                <div
+                  data-debug-id={`taskchain-task-actions-menu-${taskId}`}
+                  className="absolute right-0 z-30 mt-1 w-40 rounded border border-white/10 bg-[#181818] p-1 shadow-lg"
+                >
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
+                    onClick={() => { setActionsMenuOpenTaskId(null); void handleNudge(taskId); }}
+                    className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 hover:bg-white/10"
+                  >
+                    Nudge
+                  </button>
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
+                    onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'lgtm'); }}
+                    className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-emerald-400 hover:bg-emerald-900/40"
+                  >
+                    LGTM
+                  </button>
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
+                    onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'ngtm'); }}
+                    className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-red-400 hover:bg-red-900/40"
+                  >
+                    NGTM
+                  </button>
+                  {/* Status submenu (kept inline; one status list at a time). */}
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-status-menu-btn-${taskId}`}
+                    onClick={() => setStatusMenuOpenTaskId(statusMenuOpenTaskId === taskId ? null : taskId)}
+                    className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 hover:bg-white/10"
+                  >
+                    Status ▾
+                  </button>
+                  {statusMenuOpenTaskId === taskId && (
+                    <div className="ml-2 border-l border-white/10 pl-1">
+                      {['in_progress', 'in_validation', 'paused', 'completed'].map((st) => (
+                        <button
+                          key={st}
+                          type="button"
+                          data-debug-id={`taskchain-task-status-${st}-btn-${taskId}`}
+                          onClick={() => { setActionsMenuOpenTaskId(null); setStatusMenuOpenTaskId(null); void handleStatusChange(taskId, st); }}
+                          className="block w-full rounded px-3 py-1.5 text-left text-[11px] text-zinc-300 hover:bg-white/10"
+                        >
+                          {st}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
+                    onClick={() => { setActionsMenuOpenTaskId(null); void handleCancelTask(taskId); }}
+                    className="mt-0.5 block w-full rounded border-t border-white/10 px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-400 hover:bg-red-900/50 hover:text-red-300"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Expanded Card Details (Description & Comments) */}
+        {isExpanded && (
+          <div className="mt-3 border-t border-white/5 pt-3 space-y-3">
+            {/* H12: full description shows ONLY when expanded. */}
+            {task.description && (
+              <div
+                data-debug-id={`taskchain-task-description-${taskId}`}
+                className="text-[11.5px] leading-5 text-zinc-300"
+              >
+                <Markdown source={task.description} compact copyAll={false} />
+              </div>
+            )}
+            {/* H12: reviewers moved into the expanded details to keep the
+                collapsed header to a compact single line. */}
+            {task.reviewerRefs && task.reviewerRefs.length > 0 && (
+              <div data-debug-id={`taskchain-task-reviewers-${taskId}`} className="text-[11px] text-zinc-400">
+                reviewers: {task.reviewerRefs.map((r: any, ri: number) => (
+                  <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
+                    {ri > 0 ? ', ' : ''}
+                    {r.agent_instance_id
+                      ? <InstanceIdLink instanceId={r.agent_instance_id} />
+                      : <span className="text-zinc-300">{r.user_id}</span>}
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
+            {/* Comments Thread */}
+            <div data-debug-id={`taskchain-task-comments-${taskId}`} className="space-y-2">
+              <span className="font-semibold text-zinc-400">Comments:</span>
+              {(task.comments || []).map((comment: any, idx: number) => (
+                <div
+                  key={comment.commentId || idx}
+                  data-debug-id={`taskchain-task-comment-${taskId}-${idx}`}
+                  className="rounded bg-zinc-900 p-2 text-[11px]"
+                >
+                  <div className="font-semibold text-zinc-400">
+                    {comment.authorAgentInstanceId || 'user'}:
+                  </div>
+                  <div className="mt-1 text-zinc-200">
+                    <Markdown source={comment.body || ''} compact copyAll={false} data-debug-id={`taskchain-task-comment-body-${taskId}-${idx}`} />
+                    {artifactIdsFromText(comment.body || '').length > 0 ? (
+                      <div data-debug-id={`taskchain-task-comment-artifacts-${taskId}-${idx}`} className="mt-2 flex flex-wrap gap-2">
+                        {artifactIdsFromText(comment.body || '').map((artifactId) => (
+                          <ArtifactAttachmentPreview
+                            key={artifactId}
+                            artifactId={artifactId}
+                            session={{ daemonUrl: '', clientToken: '' }}
+                            debugId={`taskchain-task-comment-artifact-${taskId}-${idx}-${artifactId}`}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+
+              {/* Comment Composer */}
+              <div className="space-y-2 pt-1">
+                {taskCommentAttachments.length > 0 ? (
+                  <div data-debug-id={`taskchain-task-comment-attachment-tray-${taskId}`} className="space-y-1 rounded border border-white/10 bg-black/20 p-2">
+                    {taskCommentAttachments.map((attachment) => (
+                      <div key={attachment.localId} data-debug-id={`taskchain-task-comment-attachment-${taskId}-${attachment.localId}`} className="rounded bg-zinc-950/60 px-2 py-1.5">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className={attachment.status === 'uploaded' ? 'text-emerald-300' : attachment.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{attachment.status === 'uploading' ? '⇧' : attachment.status === 'uploaded' ? '✓' : '!'}</span>
+                          <span className="min-w-0 flex-1 truncate" title={attachment.name}>{attachment.name}</span>
+                          <span className={attachment.status === 'uploaded' ? 'text-emerald-300' : attachment.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{attachment.status === 'uploading' ? 'Uploading…' : attachment.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
+                          {attachment.status === 'error' ? (
+                            <button type="button" data-debug-id={`taskchain-task-comment-attachment-retry-${taskId}-${attachment.localId}`} onClick={() => void uploadCommentAttachment(taskId, attachment.file, attachment.localId)} className="rounded border border-white/10 px-2 py-0.5 text-zinc-300 hover:bg-white/10">
+                              Retry
+                            </button>
+                          ) : null}
+                          <button type="button" data-debug-id={`taskchain-task-comment-attachment-remove-${taskId}-${attachment.localId}`} onClick={() => updateCommentAttachments(taskId, (items) => items.filter((item) => item.localId !== attachment.localId))} className="rounded border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">
+                            Remove
+                          </button>
+                        </div>
+                        {attachment.status === 'uploading' ? <div data-debug-id={`taskchain-task-comment-attachment-progress-${taskId}-${attachment.localId}`} className="mt-1 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
+                        {attachment.error ? <div data-debug-id={`taskchain-task-comment-attachment-error-${taskId}-${attachment.localId}`} className="mt-1 text-red-300">{attachment.error}</div> : null}
+                      </div>
+                    ))}
+                    {taskCommentUploading ? <div data-debug-id={`taskchain-task-comment-uploading-hint-${taskId}`} className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
+                    {taskCommentFailed ? <div data-debug-id={`taskchain-task-comment-failed-hint-${taskId}`} className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
+                  </div>
+                ) : null}
+                <div className="flex min-w-0 gap-2">
+                  <label data-debug-id={`taskchain-task-comment-attach-btn-${taskId}`} className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded border border-white/10 bg-zinc-900 text-sm font-semibold text-zinc-400 hover:border-sky-500 hover:text-white" title="Upload attachment">
+                    <input
+                      type="file"
+                      multiple
+                      data-debug-id={`taskchain-task-comment-attach-input-${taskId}`}
+                      className="hidden"
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files || []) as File[];
+                        e.target.value = '';
+                        files.forEach((file) => void uploadCommentAttachment(taskId, file));
+                      }}
+                    />
+                    ＋
+                  </label>
+                  <input
+                    type="text"
+                    data-debug-id={`taskchain-task-comment-input-${taskId}`}
+                    placeholder="Write a comment, paste an image/file, or attach one..."
+                    value={commentInputs[taskId] || ''}
+                    onChange={(e) => setCommentInputs({ ...commentInputs, [taskId]: e.target.value })}
+                    onPaste={(e) => handleCommentPaste(e, taskId)}
+                    className="min-w-0 flex-1 rounded border border-white/10 bg-zinc-900 px-2 py-1 text-base text-white placeholder-zinc-500 focus:border-sky-500 focus:outline-none sm:text-sm"
+                  />
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-comment-submit-btn-${taskId}`}
+                    disabled={!taskCommentCanSend}
+                    onClick={() => handleAddComment(taskId)}
+                    title={taskCommentUploading ? 'Wait for uploads to finish before sending' : taskCommentFailed ? 'Retry or remove failed uploads before sending' : 'Send comment'}
+                    className="rounded bg-sky-600 px-3 py-1 font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+                  >
+                    {taskCommentUploading ? 'Uploading…' : 'Send'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (!chainId) {
     return (
       <div data-debug-id="taskchain-overview" className="p-4 text-zinc-400">
@@ -732,315 +1042,54 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             No tasks in this chain yet. Click "+ New task" to get started.
           </div>
         ) : (
-          tasks.map((task: any) => {
-            const taskId = task.taskId || task.id;
-            const isExpanded = Boolean(expandedTaskIds[taskId]);
-            const taskCommentAttachments = commentAttachments[taskId] || [];
-            const taskCommentUploading = taskCommentAttachments.some((item) => item.status === 'uploading');
-            const taskCommentFailed = taskCommentAttachments.some((item) => item.status === 'error');
-            const taskCommentReady = taskCommentAttachments.filter((item) => item.status === 'uploaded' && item.link);
-            const taskCommentCanSend = !taskCommentUploading && !taskCommentFailed && (Boolean((commentInputs[taskId] || '').trim()) || taskCommentReady.length > 0);
+          <>
+            {/* Active Tasks */}
+            {activeTasks.length === 0 && completedTasks.length > 0 ? (
+              <div className="rounded-lg border border-dashed border-white/10 p-4 text-center text-xs text-zinc-500">
+                All tasks in this chain are completed.
+              </div>
+            ) : (
+              activeTasks.map((task: any) => renderTaskCard(task))
+            )}
 
-            return (
+            {/* Collapsible Completed Tasks Section */}
+            {completedTasks.length > 0 && (
               <div
-                key={taskId}
-                data-debug-id={`taskchain-task-row-${taskId}`}
-                className="rounded-lg border border-white/10 bg-[#111111] p-3 text-xs"
+                data-debug-id="taskchain-overview-completed-section"
+                className="mt-6 border-t border-white/10 pt-4"
               >
-                {/* Main Card Header */}
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-start gap-2">
-                    <button
-                      type="button"
-                      data-debug-id={`taskchain-task-expand-btn-${taskId}`}
-                      onClick={() => toggleTaskExpanded(taskId)}
-                      className="mt-0.5 text-zinc-400 hover:text-white"
-                    >
-                      {isExpanded ? '▾' : '▸'}
-                    </button>
-                    <div>
-                      <div
-                        data-debug-id={`taskchain-task-title-${taskId}`}
-                        className="font-semibold text-white"
-                      >
-                        {task.title}
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-zinc-400">
-                        <span data-debug-id={`taskchain-task-assignee-${taskId}`} className="inline-flex items-center gap-1">
-                          {task.assigneeRef ? (
-                            <>
-                              assignee: {task.assigneeRef.agent_instance_id
-                                ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
-                                : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
-                            </>
-                          ) : (
-                            <span>assignee: <span className="text-zinc-500">unassigned</span></span>
-                          )}
-                          <button
-                            type="button"
-                            data-debug-id={`taskchain-task-edit-assignee-btn-${taskId}`}
-                            title="Change assignee"
-                            onClick={(e) => { e.stopPropagation(); openEditAssigneeModal(task); }}
-                            className="ml-0.5 text-zinc-400 hover:text-white"
-                          >
-                            <Icon name="pencil" size={11} />
-                          </button>
-                        </span>
-
-                        <span data-debug-id={`taskchain-task-reviewers-${taskId}`} className="inline-flex items-center gap-1">
-                          reviewers: {task.reviewerRefs && task.reviewerRefs.length > 0 ? (
-                            task.reviewerRefs.map((r: any, ri: number) => (
-                              <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
-                                {ri > 0 ? ', ' : ''}
-                                {r.agent_instance_id
-                                  ? <InstanceIdLink instanceId={r.agent_instance_id} />
-                                  : <span className="text-zinc-300">{r.user_id}</span>}
-                              </React.Fragment>
-                            ))
-                          ) : (
-                            <span className="text-zinc-500">none</span>
-                          )}
-                          <button
-                            type="button"
-                            data-debug-id={`taskchain-task-edit-reviewers-btn-${taskId}`}
-                            title="Edit reviewers"
-                            onClick={(e) => { e.stopPropagation(); openEditReviewersModal(task); }}
-                            className="ml-0.5 text-zinc-400 hover:text-white"
-                          >
-                            <Icon name="pencil" size={11} />
-                          </button>
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* H12: compact right side — status/blocked badges + a single
-                      quick-actions MENU button (actionable without expanding). */}
+                <button
+                  type="button"
+                  data-debug-id="taskchain-overview-completed-toggle-btn"
+                  onClick={() => setCompletedTasksExpanded(!completedTasksExpanded)}
+                  className="flex w-full items-center justify-between rounded-lg bg-[#111111] px-3 py-2 text-xs font-semibold text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                >
                   <div className="flex items-center gap-2">
-                    {task.blocked && (
-                      <span
-                        data-debug-id={`taskchain-task-blocked-${taskId}`}
-                        className="rounded bg-amber-900/50 px-2 py-0.5 font-semibold text-amber-300"
-                      >
-                        ⛔ blocked
-                      </span>
-                    )}
+                    <span>{completedTasksExpanded ? '▾' : '▸'}</span>
+                    <span>Completed Tasks</span>
                     <span
-                      data-debug-id={`taskchain-task-status-${taskId}`}
-                      className="rounded bg-zinc-800 px-2 py-0.5 font-mono uppercase text-zinc-300"
+                      data-debug-id="taskchain-overview-completed-count"
+                      className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-[10px] text-emerald-400"
                     >
-                      {task.status}
+                      {completedTasks.length}
                     </span>
-                    <div
-                      className="relative inline-block text-left"
-                      ref={actionsMenuOpenTaskId === taskId ? actionsMenuRef : undefined}
-                    >
-                      <button
-                        type="button"
-                        data-debug-id={`taskchain-task-actions-menu-btn-${taskId}`}
-                        aria-haspopup="menu"
-                        aria-expanded={actionsMenuOpenTaskId === taskId}
-                        title="Quick actions"
-                        onClick={() => {
-                          setActionsMenuOpenTaskId(actionsMenuOpenTaskId === taskId ? null : taskId);
-                          setStatusMenuOpenTaskId(null);
-                        }}
-                        className="rounded bg-zinc-800 px-2 py-0.5 text-[13px] font-semibold text-zinc-300 hover:bg-zinc-700"
-                      >
-                        ⋯
-                      </button>
-                      {actionsMenuOpenTaskId === taskId && (
-                        <div
-                          data-debug-id={`taskchain-task-actions-menu-${taskId}`}
-                          className="absolute right-0 z-30 mt-1 w-40 rounded border border-white/10 bg-[#181818] p-1 shadow-lg"
-                        >
-                          <button
-                            type="button"
-                            data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
-                            onClick={() => { setActionsMenuOpenTaskId(null); void handleNudge(taskId); }}
-                            className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 hover:bg-white/10"
-                          >
-                            Nudge
-                          </button>
-                          <button
-                            type="button"
-                            data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
-                            onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'lgtm'); }}
-                            className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-emerald-400 hover:bg-emerald-900/40"
-                          >
-                            LGTM
-                          </button>
-                          <button
-                            type="button"
-                            data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
-                            onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'ngtm'); }}
-                            className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-red-400 hover:bg-red-900/40"
-                          >
-                            NGTM
-                          </button>
-                          {/* Status submenu (kept inline; one status list at a time). */}
-                          <button
-                            type="button"
-                            data-debug-id={`taskchain-task-status-menu-btn-${taskId}`}
-                            onClick={() => setStatusMenuOpenTaskId(statusMenuOpenTaskId === taskId ? null : taskId)}
-                            className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 hover:bg-white/10"
-                          >
-                            Status ▾
-                          </button>
-                          {statusMenuOpenTaskId === taskId && (
-                            <div className="ml-2 border-l border-white/10 pl-1">
-                              {['in_progress', 'in_validation', 'paused', 'completed'].map((st) => (
-                                <button
-                                  key={st}
-                                  type="button"
-                                  data-debug-id={`taskchain-task-status-${st}-btn-${taskId}`}
-                                  onClick={() => { setActionsMenuOpenTaskId(null); setStatusMenuOpenTaskId(null); void handleStatusChange(taskId, st); }}
-                                  className="block w-full rounded px-3 py-1.5 text-left text-[11px] text-zinc-300 hover:bg-white/10"
-                                >
-                                  {st}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                          <button
-                            type="button"
-                            data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
-                            onClick={() => { setActionsMenuOpenTaskId(null); void handleCancelTask(taskId); }}
-                            className="mt-0.5 block w-full rounded border-t border-white/10 px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-400 hover:bg-red-900/50 hover:text-red-300"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      )}
-                    </div>
                   </div>
-                </div>
+                  <span className="text-[11px] font-normal text-zinc-500">
+                    {completedTasksExpanded ? 'Click to collapse' : 'Click to expand'}
+                  </span>
+                </button>
 
-                {/* Expanded Card Details (Description & Comments) */}
-                {isExpanded && (
-                  <div className="mt-3 border-t border-white/5 pt-3 space-y-3">
-                    {/* H12: full description shows ONLY when expanded. */}
-                    {task.description && (
-                      <div
-                        data-debug-id={`taskchain-task-description-${taskId}`}
-                        className="text-[11.5px] leading-5 text-zinc-300"
-                      >
-                        <Markdown source={task.description} compact copyAll={false} />
-                      </div>
-                    )}
-                    {/* H12: reviewers moved into the expanded details to keep the
-                        collapsed header to a compact single line. */}
-                    {task.reviewerRefs && task.reviewerRefs.length > 0 && (
-                      <div data-debug-id={`taskchain-task-reviewers-${taskId}`} className="text-[11px] text-zinc-400">
-                        reviewers: {task.reviewerRefs.map((r: any, ri: number) => (
-                          <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
-                            {ri > 0 ? ', ' : ''}
-                            {r.agent_instance_id
-                              ? <InstanceIdLink instanceId={r.agent_instance_id} />
-                              : <span className="text-zinc-300">{r.user_id}</span>}
-                          </React.Fragment>
-                        ))}
-                      </div>
-                    )}
-                    {/* Comments Thread */}
-                    <div data-debug-id={`taskchain-task-comments-${taskId}`} className="space-y-2">
-                      <span className="font-semibold text-zinc-400">Comments:</span>
-                      {(task.comments || []).map((comment: any, idx: number) => (
-                        <div
-                          key={comment.commentId || idx}
-                          data-debug-id={`taskchain-task-comment-${taskId}-${idx}`}
-                          className="rounded bg-zinc-900 p-2 text-[11px]"
-                        >
-                          <div className="font-semibold text-zinc-400">
-                            {comment.authorAgentInstanceId || 'user'}:
-                          </div>
-                          <div className="mt-1 text-zinc-200">
-                            <Markdown source={comment.body || ''} compact copyAll={false} data-debug-id={`taskchain-task-comment-body-${taskId}-${idx}`} />
-                            {artifactIdsFromText(comment.body || '').length > 0 ? (
-                              <div data-debug-id={`taskchain-task-comment-artifacts-${taskId}-${idx}`} className="mt-2 flex flex-wrap gap-2">
-                                {artifactIdsFromText(comment.body || '').map((artifactId) => (
-                                  <ArtifactAttachmentPreview
-                                    key={artifactId}
-                                    artifactId={artifactId}
-                                    session={{ daemonUrl: '', clientToken: '' }}
-                                    debugId={`taskchain-task-comment-artifact-${taskId}-${idx}-${artifactId}`}
-                                  />
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
-                      ))}
-
-                      {/* Comment Composer */}
-                      <div className="space-y-2 pt-1">
-                        {taskCommentAttachments.length > 0 ? (
-                          <div data-debug-id={`taskchain-task-comment-attachment-tray-${taskId}`} className="space-y-1 rounded border border-white/10 bg-black/20 p-2">
-                            {taskCommentAttachments.map((attachment) => (
-                              <div key={attachment.localId} data-debug-id={`taskchain-task-comment-attachment-${taskId}-${attachment.localId}`} className="rounded bg-zinc-950/60 px-2 py-1.5">
-                                <div className="flex min-w-0 items-center gap-2">
-                                  <span className={attachment.status === 'uploaded' ? 'text-emerald-300' : attachment.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{attachment.status === 'uploading' ? '⇧' : attachment.status === 'uploaded' ? '✓' : '!'}</span>
-                                  <span className="min-w-0 flex-1 truncate" title={attachment.name}>{attachment.name}</span>
-                                  <span className={attachment.status === 'uploaded' ? 'text-emerald-300' : attachment.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{attachment.status === 'uploading' ? 'Uploading…' : attachment.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
-                                  {attachment.status === 'error' ? (
-                                    <button type="button" data-debug-id={`taskchain-task-comment-attachment-retry-${taskId}-${attachment.localId}`} onClick={() => void uploadCommentAttachment(taskId, attachment.file, attachment.localId)} className="rounded border border-white/10 px-2 py-0.5 text-zinc-300 hover:bg-white/10">
-                                      Retry
-                                    </button>
-                                  ) : null}
-                                  <button type="button" data-debug-id={`taskchain-task-comment-attachment-remove-${taskId}-${attachment.localId}`} onClick={() => updateCommentAttachments(taskId, (items) => items.filter((item) => item.localId !== attachment.localId))} className="rounded border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">
-                                    Remove
-                                  </button>
-                                </div>
-                                {attachment.status === 'uploading' ? <div data-debug-id={`taskchain-task-comment-attachment-progress-${taskId}-${attachment.localId}`} className="mt-1 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
-                                {attachment.error ? <div data-debug-id={`taskchain-task-comment-attachment-error-${taskId}-${attachment.localId}`} className="mt-1 text-red-300">{attachment.error}</div> : null}
-                              </div>
-                            ))}
-                            {taskCommentUploading ? <div data-debug-id={`taskchain-task-comment-uploading-hint-${taskId}`} className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
-                            {taskCommentFailed ? <div data-debug-id={`taskchain-task-comment-failed-hint-${taskId}`} className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
-                          </div>
-                        ) : null}
-                        <div className="flex min-w-0 gap-2">
-                          <label data-debug-id={`taskchain-task-comment-attach-btn-${taskId}`} className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded border border-white/10 bg-zinc-900 text-sm font-semibold text-zinc-400 hover:border-sky-500 hover:text-white" title="Upload attachment">
-                            <input
-                              type="file"
-                              multiple
-                              data-debug-id={`taskchain-task-comment-attach-input-${taskId}`}
-                              className="hidden"
-                              onChange={(e) => {
-                                const files = Array.from(e.target.files || []) as File[];
-                                e.target.value = '';
-                                files.forEach((file) => void uploadCommentAttachment(taskId, file));
-                              }}
-                            />
-                            ＋
-                          </label>
-                          <input
-                            type="text"
-                            data-debug-id={`taskchain-task-comment-input-${taskId}`}
-                            placeholder="Write a comment, paste an image/file, or attach one..."
-                            value={commentInputs[taskId] || ''}
-                            onChange={(e) => setCommentInputs({ ...commentInputs, [taskId]: e.target.value })}
-                            onPaste={(e) => handleCommentPaste(e, taskId)}
-                            className="min-w-0 flex-1 rounded border border-white/10 bg-zinc-900 px-2 py-1 text-base text-white placeholder-zinc-500 focus:border-sky-500 focus:outline-none sm:text-sm"
-                          />
-                          <button
-                            type="button"
-                            data-debug-id={`taskchain-task-comment-submit-btn-${taskId}`}
-                            disabled={!taskCommentCanSend}
-                            onClick={() => handleAddComment(taskId)}
-                            title={taskCommentUploading ? 'Wait for uploads to finish before sending' : taskCommentFailed ? 'Retry or remove failed uploads before sending' : 'Send comment'}
-                            className="rounded bg-sky-600 px-3 py-1 font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-                          >
-                            {taskCommentUploading ? 'Uploading…' : 'Send'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
+                {completedTasksExpanded && (
+                  <div
+                    data-debug-id="taskchain-overview-completed-list"
+                    className="mt-3 space-y-3"
+                  >
+                    {completedTasks.map((task: any) => renderTaskCard(task))}
                   </div>
                 )}
               </div>
-            );
-          })
+            )}
+          </>
         )}
       </div>
 
