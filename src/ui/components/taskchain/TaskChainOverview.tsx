@@ -233,6 +233,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [savingReviewers, setSavingReviewers] = useState(false);
   const [reviewersError, setReviewersError] = useState('');
 
+  // Edit Dependencies Modal State
+  const [editingDependenciesTask, setEditingDependenciesTask] = useState<any | null>(null);
+  const [stagedDependsOnIds, setStagedDependsOnIds] = useState<string[]>([]);
+  const [savingDependencies, setSavingDependencies] = useState(false);
+  const [dependenciesError, setDependenciesError] = useState('');
+
   const chain = data?.chain;
   const tasks: any[] = chain?.tasks || [];
   const members: any[] = chain?.members || [];
@@ -617,6 +623,32 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     }
   };
 
+  const openEditDependenciesModal = (task: any) => {
+    setEditingDependenciesTask(task);
+    setStagedDependsOnIds(task.dependsOn ? [...task.dependsOn] : []);
+    setDependenciesError('');
+  };
+
+  const handleSaveDependencies = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingDependenciesTask) return;
+    setSavingDependencies(true);
+    setDependenciesError('');
+    try {
+      await updateTask({
+        chainId,
+        taskId: editingDependenciesTask.taskId,
+        dependsOn: stagedDependsOnIds,
+      }).unwrap();
+      setEditingDependenciesTask(null);
+      await refetch();
+    } catch (err: any) {
+      setDependenciesError(String(err?.data?.error?.message || err?.data?.message || err?.message || 'Failed to update dependencies'));
+    } finally {
+      setSavingDependencies(false);
+    }
+  };
+
   const updateCommentAttachments = (taskId: string, updater: (items: CommentAttachment[]) => CommentAttachment[]) => {
     setCommentAttachments((prev) => ({
       ...prev,
@@ -801,6 +833,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     <Icon name="pencil" size={11} />
                   </button>
                 </span>
+
+                <span data-debug-id={`taskchain-task-depends-on-${taskId}`} className="inline-flex items-center gap-1">
+                  <span>depends on: <span className={task.dependsOn && task.dependsOn.length > 0 ? 'text-zinc-200' : 'text-zinc-500'}>{task.dependsOn ? task.dependsOn.length : 0}</span></span>
+                  <button
+                    type="button"
+                    data-debug-id={`taskchain-task-edit-dependencies-btn-${taskId}`}
+                    title="Edit dependencies"
+                    onClick={(e) => { e.stopPropagation(); openEditDependenciesModal(task); }}
+                    className="ml-0.5 text-zinc-400 hover:text-white"
+                  >
+                    <Icon name="pencil" size={11} />
+                  </button>
+                </span>
               </div>
             </div>
           </div>
@@ -907,7 +952,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           </div>
         </div>
 
-        {/* Expanded Card Details (Description & Comments) */}
+        {/* Expanded Card Details (Description, Dependencies & Comments) */}
         {isExpanded && (
           <div className="mt-3 border-t border-white/5 pt-3 space-y-3">
             {/* H12: full description shows ONLY when expanded. */}
@@ -919,6 +964,50 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 <Markdown source={task.description} compact copyAll={false} />
               </div>
             )}
+            {/* Dependencies in expanded view */}
+            <div data-debug-id={`taskchain-task-dependencies-section-${taskId}`} className="rounded border border-white/5 bg-zinc-900/40 p-2 text-[11px]">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-zinc-400">
+                  Blocked on ({task.dependsOn ? task.dependsOn.length : 0}):
+                </span>
+                <button
+                  type="button"
+                  data-debug-id={`taskchain-task-manage-dependencies-btn-${taskId}`}
+                  onClick={() => openEditDependenciesModal(task)}
+                  className="rounded bg-zinc-800 px-2 py-0.5 text-sky-400 hover:bg-zinc-700 hover:text-sky-300"
+                >
+                  Manage dependencies
+                </button>
+              </div>
+              {task.dependsOn && task.dependsOn.length > 0 ? (
+                <div data-debug-id={`taskchain-task-dependencies-list-${taskId}`} className="mt-1.5 space-y-1">
+                  {task.dependsOn.map((depId: string) => {
+                    const depTask = tasks.find((t: any) => String(t.taskId || t.id) === String(depId));
+                    return (
+                      <div
+                        key={depId}
+                        data-debug-id={`taskchain-task-dependency-item-${taskId}-${depId}`}
+                        className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono text-zinc-400 text-[10px]">{depId}</span>
+                          <span className="truncate font-medium text-zinc-200">
+                            {depTask ? depTask.title : depId}
+                          </span>
+                        </div>
+                        {depTask ? (
+                          <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase font-mono text-zinc-300">
+                            {depTask.status}
+                          </span>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="mt-1 text-[11px] text-zinc-500 italic">No dependencies configured.</p>
+              )}
+            </div>
             {/* H12: reviewers moved into the expanded details to keep the
                 collapsed header to a compact single line. */}
             {task.reviewerRefs && task.reviewerRefs.length > 0 && (
@@ -2152,6 +2241,110 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
               >
                 {savingReviewers ? 'Saving…' : 'Save Reviewers'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Edit Dependencies Modal */}
+      {editingDependenciesTask && (
+        <div
+          data-debug-id="taskchain-edit-dependencies-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+        >
+          <form
+            onSubmit={handleSaveDependencies}
+            data-debug-id="taskchain-edit-dependencies-form"
+            className="w-full max-w-md rounded-xl border border-white/10 bg-[#121212] p-5 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-white">Manage Dependencies</h3>
+              <button
+                type="button"
+                onClick={() => setEditingDependenciesTask(null)}
+                className="text-zinc-500 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-zinc-400">
+              Task: <span className="text-zinc-200">{editingDependenciesTask.title}</span>
+            </p>
+
+            <div className="mt-4">
+              <label className="block text-xs font-semibold text-zinc-400">
+                Blocked On (Depends On) {stagedDependsOnIds.length > 0 && `(${stagedDependsOnIds.length})`}
+              </label>
+              <p className="mt-0.5 text-[11px] text-zinc-500">
+                Select tasks that must be completed before this task can start.
+              </p>
+
+              {tasks.filter((t: any) => String(t.taskId || t.id) !== String(editingDependenciesTask.taskId || editingDependenciesTask.id)).length === 0 ? (
+                <div className="mt-2 rounded border border-white/10 bg-zinc-900/50 p-3 text-center text-xs text-zinc-500 italic">
+                  No other tasks in this chain.
+                </div>
+              ) : (
+                <div
+                  data-debug-id="taskchain-edit-dependencies-list"
+                  className="mt-2 max-h-56 overflow-y-auto space-y-1.5 rounded border border-white/10 bg-zinc-900/50 p-2"
+                >
+                  {tasks
+                    .filter((t: any) => String(t.taskId || t.id) !== String(editingDependenciesTask.taskId || editingDependenciesTask.id))
+                    .map((t: any) => {
+                      const tid = String(t.taskId || t.id);
+                      const isSelected = stagedDependsOnIds.includes(tid);
+                      return (
+                        <label
+                          key={tid}
+                          data-debug-id={`taskchain-edit-dependency-option-${tid}`}
+                          className={`flex items-center gap-2 rounded px-2 py-1.5 cursor-pointer text-xs select-none transition-colors ${
+                            isSelected ? 'bg-sky-950/60 border border-sky-500/30 text-white' : 'hover:bg-white/5 text-zinc-300'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setStagedDependsOnIds((prev) => [...prev, tid]);
+                              } else {
+                                setStagedDependsOnIds((prev) => prev.filter((id) => id !== tid));
+                              }
+                            }}
+                            className="rounded border-zinc-700 bg-zinc-900 text-sky-500 focus:ring-0 focus:ring-offset-0"
+                          />
+                          <span className="font-mono text-zinc-400 text-[11px]">{tid}</span>
+                          <span className="truncate flex-1 font-medium">{t.title}</span>
+                          <span className="text-[10px] text-zinc-500 uppercase">{t.status}</span>
+                        </label>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+
+            {dependenciesError && (
+              <p data-debug-id="taskchain-edit-dependencies-error" className="mt-2 text-[11px] text-red-300">
+                {dependenciesError}
+              </p>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setEditingDependenciesTask(null)}
+                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                data-debug-id="taskchain-edit-dependencies-submit"
+                type="submit"
+                disabled={savingDependencies}
+                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                {savingDependencies ? 'Saving…' : 'Save Dependencies'}
               </button>
             </div>
           </form>

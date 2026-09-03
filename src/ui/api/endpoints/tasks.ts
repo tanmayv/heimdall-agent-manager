@@ -205,14 +205,15 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList'],
     }),
-    updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[] }>({
-      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs }) => {
+    updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
+      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, dependsOn }) => {
         try {
           const body: any = {};
           if (title !== undefined) body.title = title;
           if (description !== undefined) body.description = description;
           if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
           if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
+          if (dependsOn !== undefined) body.depends_on = dependsOn;
           const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}`, 'PATCH', body);
           return { data };
         } catch (error: any) {
