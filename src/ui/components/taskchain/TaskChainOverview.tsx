@@ -749,17 +749,52 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       >
                         {task.title}
                       </div>
-                      {/* H12: compact header shows ONLY the assignee; the full
-                          description + reviewers live in the expanded block. */}
-                      {task.assigneeRef && (
-                        <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-zinc-400">
-                          <span data-debug-id={`taskchain-task-assignee-${taskId}`}>
-                            assignee: {task.assigneeRef.agent_instance_id
-                              ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
-                              : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
-                          </span>
-                        </div>
-                      )}
+                      <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-zinc-400">
+                        <span data-debug-id={`taskchain-task-assignee-${taskId}`} className="inline-flex items-center gap-1">
+                          {task.assigneeRef ? (
+                            <>
+                              assignee: {task.assigneeRef.agent_instance_id
+                                ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
+                                : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
+                            </>
+                          ) : (
+                            <span>assignee: <span className="text-zinc-500">unassigned</span></span>
+                          )}
+                          <button
+                            type="button"
+                            data-debug-id={`taskchain-task-edit-assignee-btn-${taskId}`}
+                            title="Change assignee"
+                            onClick={(e) => { e.stopPropagation(); openEditAssigneeModal(task); }}
+                            className="ml-0.5 text-zinc-400 hover:text-white"
+                          >
+                            <Icon name="pencil" size={11} />
+                          </button>
+                        </span>
+
+                        <span data-debug-id={`taskchain-task-reviewers-${taskId}`} className="inline-flex items-center gap-1">
+                          reviewers: {task.reviewerRefs && task.reviewerRefs.length > 0 ? (
+                            task.reviewerRefs.map((r: any, ri: number) => (
+                              <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
+                                {ri > 0 ? ', ' : ''}
+                                {r.agent_instance_id
+                                  ? <InstanceIdLink instanceId={r.agent_instance_id} />
+                                  : <span className="text-zinc-300">{r.user_id}</span>}
+                              </React.Fragment>
+                            ))
+                          ) : (
+                            <span className="text-zinc-500">none</span>
+                          )}
+                          <button
+                            type="button"
+                            data-debug-id={`taskchain-task-edit-reviewers-btn-${taskId}`}
+                            title="Edit reviewers"
+                            onClick={(e) => { e.stopPropagation(); openEditReviewersModal(task); }}
+                            className="ml-0.5 text-zinc-400 hover:text-white"
+                          >
+                            <Icon name="pencil" size={11} />
+                          </button>
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -1191,6 +1226,346 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 {addMode === 'existing'
                   ? (addingExisting ? 'Adding…' : 'Add member')
                   : (addingAgent ? 'Launching…' : 'Launch & Add')}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Edit Assignee Modal */}
+      {editingAssigneeTask && (
+        <div
+          data-debug-id="taskchain-edit-assignee-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+        >
+          <form
+            onSubmit={handleSaveAssignee}
+            data-debug-id="taskchain-edit-assignee-form"
+            className="w-full max-w-md rounded-xl border border-white/10 bg-[#121212] p-5 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-white">Change Assignee</h3>
+              <button
+                type="button"
+                onClick={() => setEditingAssigneeTask(null)}
+                className="text-zinc-500 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-zinc-400">
+              Task: <span className="text-zinc-200">{editingAssigneeTask.title}</span>
+            </p>
+
+            <div className="mt-3 flex gap-2 border-b border-white/10 pb-2 text-xs">
+              <button
+                type="button"
+                data-debug-id="taskchain-edit-assignee-mode-member"
+                onClick={() => setEditAssigneeMode('member')}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'member' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+              >
+                Chain member
+              </button>
+              <button
+                type="button"
+                data-debug-id="taskchain-edit-assignee-mode-existing"
+                onClick={() => setEditAssigneeMode('existing')}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+              >
+                Other instance
+              </button>
+              <button
+                type="button"
+                data-debug-id="taskchain-edit-assignee-mode-user"
+                onClick={() => setEditAssigneeMode('user')}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'user' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+              >
+                User
+              </button>
+              <button
+                type="button"
+                data-debug-id="taskchain-edit-assignee-mode-unassigned"
+                onClick={() => setEditAssigneeMode('unassigned')}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'unassigned' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+              >
+                Unassigned
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 text-xs">
+              {editAssigneeMode === 'member' && (
+                <div>
+                  <label className="block text-zinc-400">Choose chain member</label>
+                  <select
+                    data-debug-id="taskchain-edit-assignee-member-select"
+                    value={editAssigneeMemberInstanceId}
+                    onChange={(e) => setEditAssigneeMemberInstanceId(e.target.value)}
+                    className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                  >
+                    <option value="">Select member…</option>
+                    {members.map((m: any) => {
+                      const id = String(m.agentInstanceId || m.agent_instance_id || '');
+                      return <option key={id} value={id}>{m.role}: {id}</option>;
+                    })}
+                  </select>
+                  {members.length === 0 && (
+                    <p className="mt-1 text-[11px] text-amber-300/80">No members in this task chain.</p>
+                  )}
+                </div>
+              )}
+
+              {editAssigneeMode === 'existing' && (
+                <>
+                  <div>
+                    <label className="block text-zinc-400">Agent identity</label>
+                    <select
+                      data-debug-id="taskchain-edit-assignee-agentid-select"
+                      value={editAssigneeAgentId}
+                      onChange={(e) => { setEditAssigneeAgentId(e.target.value); setEditAssigneeInstanceId(''); }}
+                      className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="">Choose agent…</option>
+                      {agentIdentities.map((a: any) => {
+                        const id = String(a.agent_id || a.agentId || a.id || '');
+                        return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-zinc-400">Existing instance</label>
+                    <select
+                      data-debug-id="taskchain-edit-assignee-existing-instance-select"
+                      value={editAssigneeInstanceId}
+                      onChange={(e) => setEditAssigneeInstanceId(e.target.value)}
+                      disabled={!editAssigneeAgentId || assigneeInstancesQuery.isFetching}
+                      className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
+                    >
+                      <option value="">{!editAssigneeAgentId ? 'Choose an agent first…' : assigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                      {assigneeExistingInstances.map((inst: any) => {
+                        const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                        return <option key={iid} value={iid}>{iid}{inst.runtime_status ? ` · ${inst.runtime_status}` : ''}</option>;
+                      })}
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {editAssigneeMode === 'user' && (
+                <div>
+                  <label className="block text-zinc-400">User ID</label>
+                  <input
+                    data-debug-id="taskchain-edit-assignee-userid-input"
+                    type="text"
+                    value={editAssigneeUserId}
+                    onChange={(e) => setEditAssigneeUserId(e.target.value)}
+                    placeholder="e.g. user"
+                    className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+              )}
+
+              {editAssigneeMode === 'unassigned' && (
+                <p className="text-zinc-400">The task will have no assignee.</p>
+              )}
+
+              {assigneeError && <p data-debug-id="taskchain-edit-assignee-error" className="text-[11px] text-red-300">{assigneeError}</p>}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setEditingAssigneeTask(null)}
+                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                data-debug-id="taskchain-edit-assignee-submit"
+                type="submit"
+                disabled={savingAssignee}
+                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                {savingAssignee ? 'Saving…' : 'Save Assignee'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Edit Reviewers Modal */}
+      {editingReviewersTask && (
+        <div
+          data-debug-id="taskchain-edit-reviewers-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+        >
+          <form
+            onSubmit={handleSaveReviewers}
+            data-debug-id="taskchain-edit-reviewers-form"
+            className="w-full max-w-lg rounded-xl border border-white/10 bg-[#121212] p-5 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-white">Edit Reviewers</h3>
+              <button
+                type="button"
+                onClick={() => setEditingReviewersTask(null)}
+                className="text-zinc-500 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-zinc-400">
+              Task: <span className="text-zinc-200">{editingReviewersTask.title}</span>
+            </p>
+
+            {/* Current Reviewers List */}
+            <div className="mt-3">
+              <label className="block text-xs font-semibold text-zinc-400">Current Reviewers ({stagedReviewerRefs.length})</label>
+              <div data-debug-id="taskchain-edit-reviewers-list" className="mt-1.5 flex flex-wrap gap-2 min-h-[36px] rounded border border-white/10 bg-zinc-900/50 p-2">
+                {stagedReviewerRefs.map((r: any, idx: number) => (
+                  <span
+                    key={r.agent_instance_id || r.user_id || idx}
+                    data-debug-id={`taskchain-edit-reviewer-chip-${idx}`}
+                    className="inline-flex items-center gap-1.5 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200"
+                  >
+                    {r.agent_instance_id ? <InstanceIdLink instanceId={r.agent_instance_id} /> : <span>{r.user_id}</span>}
+                    <button
+                      type="button"
+                      data-debug-id={`taskchain-edit-reviewer-remove-btn-${idx}`}
+                      onClick={() => handleRemoveStagedReviewer(idx)}
+                      className="text-zinc-400 hover:text-red-400"
+                      title="Remove reviewer"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                {stagedReviewerRefs.length === 0 && (
+                  <span className="text-xs text-zinc-500">No reviewers selected</span>
+                )}
+              </div>
+            </div>
+
+            {/* Add Reviewer Section */}
+            <div className="mt-4 rounded border border-white/10 bg-white/[0.02] p-3 text-xs">
+              <span className="font-semibold text-zinc-300">Add Reviewer</span>
+              <div className="mt-2 flex gap-2 border-b border-white/10 pb-2">
+                <button
+                  type="button"
+                  data-debug-id="taskchain-add-reviewer-mode-member"
+                  onClick={() => setAddReviewerMode('member')}
+                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'member' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                >
+                  Chain member
+                </button>
+                <button
+                  type="button"
+                  data-debug-id="taskchain-add-reviewer-mode-existing"
+                  onClick={() => setAddReviewerMode('existing')}
+                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                >
+                  Other instance
+                </button>
+                <button
+                  type="button"
+                  data-debug-id="taskchain-add-reviewer-mode-user"
+                  onClick={() => setAddReviewerMode('user')}
+                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'user' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                >
+                  User
+                </button>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                {addReviewerMode === 'member' && (
+                  <div>
+                    <select
+                      data-debug-id="taskchain-add-reviewer-member-select"
+                      value={addReviewerMemberInstanceId}
+                      onChange={(e) => setAddReviewerMemberInstanceId(e.target.value)}
+                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="">Select member…</option>
+                      {members.map((m: any) => {
+                        const id = String(m.agentInstanceId || m.agent_instance_id || '');
+                        return <option key={id} value={id}>{m.role}: {id}</option>;
+                      })}
+                    </select>
+                  </div>
+                )}
+
+                {addReviewerMode === 'existing' && (
+                  <div className="space-y-2">
+                    <select
+                      data-debug-id="taskchain-add-reviewer-agentid-select"
+                      value={addReviewerAgentId}
+                      onChange={(e) => { setAddReviewerAgentId(e.target.value); setAddReviewerInstanceId(''); }}
+                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="">Choose agent…</option>
+                      {agentIdentities.map((a: any) => {
+                        const id = String(a.agent_id || a.agentId || a.id || '');
+                        return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
+                      })}
+                    </select>
+                    <select
+                      data-debug-id="taskchain-add-reviewer-existing-instance-select"
+                      value={addReviewerInstanceId}
+                      onChange={(e) => setAddReviewerInstanceId(e.target.value)}
+                      disabled={!addReviewerAgentId || reviewerInstancesQuery.isFetching}
+                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
+                    >
+                      <option value="">{!addReviewerAgentId ? 'Choose an agent first…' : reviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                      {reviewerExistingInstances.map((inst: any) => {
+                        const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                        return <option key={iid} value={iid}>{iid}{inst.runtime_status ? ` · ${inst.runtime_status}` : ''}</option>;
+                      })}
+                    </select>
+                  </div>
+                )}
+
+                {addReviewerMode === 'user' && (
+                  <div>
+                    <input
+                      data-debug-id="taskchain-add-reviewer-userid-input"
+                      type="text"
+                      value={addReviewerUserId}
+                      onChange={(e) => setAddReviewerUserId(e.target.value)}
+                      placeholder="e.g. user"
+                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+                )}
+
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    data-debug-id="taskchain-add-reviewer-btn"
+                    onClick={handleAddStagedReviewer}
+                    className="rounded bg-zinc-800 px-3 py-1 font-semibold text-sky-400 hover:bg-zinc-700"
+                  >
+                    + Add to list
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {reviewersError && <p data-debug-id="taskchain-edit-reviewers-error" className="mt-2 text-[11px] text-red-300">{reviewersError}</p>}
+
+            <div className="mt-5 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setEditingReviewersTask(null)}
+                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                data-debug-id="taskchain-edit-reviewers-submit"
+                type="submit"
+                disabled={savingReviewers}
+                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                {savingReviewers ? 'Saving…' : 'Save Reviewers'}
               </button>
             </div>
           </form>
