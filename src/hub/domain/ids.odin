@@ -16,4 +16,5 @@ Template_ID :: distinct string
 id_is_empty :: proc(id: string) -> bool {
 	return id == ""
 }
-Scheduled_Prompt_ID :: distinct string
+Action_ID :: distinct string
+Scheduled_Prompt_ID :: Action_ID

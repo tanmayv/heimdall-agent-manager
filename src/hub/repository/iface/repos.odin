@@ -8,5 +8,6 @@ Repositories :: struct {
 	content: Content_Repository,
 	taskchains: Taskchain_Repository,
 	search: Search_Repository,
+	actions: Action_Repository,
 	scheduled_prompts: Scheduled_Prompt_Repository,
 }

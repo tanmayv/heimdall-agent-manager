@@ -31,6 +31,7 @@ App_Graph :: struct {
 	sqlite_content: sqlite.Content_Repo_SQLite,
 	sqlite_taskchains: sqlite.Taskchain_Repo_SQLite,
 	sqlite_search: sqlite.Search_Repo_SQLite,
+	sqlite_actions: sqlite.Action_Repo_SQLite,
 	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
@@ -77,7 +78,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.content = sqlite.new_content_repository(&graph.sqlite_content, &graph.db)
 	graph.repos.taskchains = sqlite.new_taskchain_repository(&graph.sqlite_taskchains, &graph.db)
 	graph.repos.search = sqlite.new_search_repository(&graph.sqlite_search, &graph.db)
-	graph.repos.scheduled_prompts = sqlite.new_scheduled_prompt_repository(&graph.sqlite_scheduled_prompts, &graph.db)
+	graph.repos.actions = sqlite.new_action_repository(&graph.sqlite_actions, &graph.db)
+	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)

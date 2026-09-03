@@ -627,7 +627,59 @@ MIGRATION_022_SCHEDULED_PROMPTS :: `CREATE TABLE IF NOT EXISTS scheduled_prompts
 CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);
 `
 
-migration_order :: [22]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql"}
+// MIGRATION_023_ACTIONS creates the actions table with recurring-schedule fields,
+// replacing scheduled_prompts and migrating existing rows.
+MIGRATION_023_ACTIONS :: `CREATE TABLE IF NOT EXISTS actions (
+  id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL,
+  target_instance_id TEXT NOT NULL,
+  prompt_text TEXT NOT NULL,
+  cron_expr TEXT NOT NULL DEFAULT '',
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  blackout_dates TEXT NOT NULL DEFAULT '[]',
+  active_from TEXT NOT NULL DEFAULT '',
+  active_until TEXT NOT NULL DEFAULT '',
+  target_run_at TEXT NOT NULL DEFAULT '',
+  interval TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'active',
+  in_flight INTEGER NOT NULL DEFAULT 0,
+  leased_at TEXT NOT NULL DEFAULT '',
+  deleted_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_actions_target ON actions(target_instance_id);
+CREATE INDEX IF NOT EXISTS idx_actions_owner_run ON actions(owner_user_id, target_run_at);
+CREATE INDEX IF NOT EXISTS idx_actions_due ON actions(target_run_at) WHERE state = 'active' AND in_flight = 0 AND deleted_at = '';
+CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user_id ON actions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
+
+CREATE TABLE IF NOT EXISTS scheduled_prompts (
+  id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL DEFAULT '',
+  target_instance_id TEXT NOT NULL DEFAULT '',
+  prompt_text TEXT NOT NULL DEFAULT '',
+  target_run_at TEXT NOT NULL DEFAULT '',
+  interval TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'active',
+  in_flight INTEGER NOT NULL DEFAULT 0,
+  leased_at TEXT NOT NULL DEFAULT '',
+  deleted_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+
+INSERT OR IGNORE INTO actions (
+  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
+  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
+)
+SELECT
+  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
+  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
+FROM scheduled_prompts;
+`
+
+migration_order :: [23]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -662,6 +714,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "023_actions.sql" && table_column_exists(conn, "actions", "cron_expr") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -682,6 +738,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_title_tracking_schema(conn) do return false, domain.domain_error(.Internal_Error, "title tracking schema upgrade failed")
 	if !upgrade_agent_instance_display_name_schema(conn) do return false, domain.domain_error(.Internal_Error, "agent instance display_name schema upgrade failed")
 	if !upgrade_scheduled_prompts_schema(conn) do return false, domain.domain_error(.Internal_Error, "scheduled prompts schema upgrade failed")
+	if !upgrade_actions_schema(conn) do return false, domain.domain_error(.Internal_Error, "actions schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -713,6 +770,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "020_title_tracking.sql" do return strings.clone(MIGRATION_020_TITLE_TRACKING)
 	if name == "021_agent_instance_display_name.sql" do return strings.clone(MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME)
 	if name == "022_scheduled_prompts.sql" do return strings.clone(MIGRATION_022_SCHEDULED_PROMPTS)
+	if name == "023_actions.sql" do return strings.clone(MIGRATION_023_ACTIONS)
 	return ""
 }
 
@@ -829,4 +887,51 @@ upgrade_scheduled_prompts_schema :: proc(conn: ^Conn) -> bool {
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);`)
 }
+
+upgrade_actions_schema :: proc(conn: ^Conn) -> bool {
+	if !exec(conn, `CREATE TABLE IF NOT EXISTS actions (
+  id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL,
+  target_instance_id TEXT NOT NULL,
+  prompt_text TEXT NOT NULL,
+  cron_expr TEXT NOT NULL DEFAULT '',
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  blackout_dates TEXT NOT NULL DEFAULT '[]',
+  active_from TEXT NOT NULL DEFAULT '',
+  active_until TEXT NOT NULL DEFAULT '',
+  target_run_at TEXT NOT NULL DEFAULT '',
+  interval TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'active',
+  in_flight INTEGER NOT NULL DEFAULT 0,
+  leased_at TEXT NOT NULL DEFAULT '',
+  deleted_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_actions_target ON actions(target_instance_id);
+CREATE INDEX IF NOT EXISTS idx_actions_owner_run ON actions(owner_user_id, target_run_at);
+CREATE INDEX IF NOT EXISTS idx_actions_due ON actions(target_run_at) WHERE state = 'active' AND in_flight = 0 AND deleted_at = '';
+CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user_id ON actions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`) {
+		return false
+	}
+
+	if !table_column_exists(conn, "actions", "cron_expr") && !exec(conn, "ALTER TABLE actions ADD COLUMN cron_expr TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "actions", "timezone") && !exec(conn, "ALTER TABLE actions ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC';") do return false
+	if !table_column_exists(conn, "actions", "blackout_dates") && !exec(conn, "ALTER TABLE actions ADD COLUMN blackout_dates TEXT NOT NULL DEFAULT '[]';") do return false
+	if !table_column_exists(conn, "actions", "active_from") && !exec(conn, "ALTER TABLE actions ADD COLUMN active_from TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "actions", "active_until") && !exec(conn, "ALTER TABLE actions ADD COLUMN active_until TEXT NOT NULL DEFAULT '';") do return false
+
+	if table_column_exists(conn, "scheduled_prompts", "id") {
+		exec(conn, `INSERT OR IGNORE INTO actions (
+  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
+  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
+)
+SELECT
+  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
+  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
+FROM scheduled_prompts;`)
+	}
+	return true
+}
+
 
