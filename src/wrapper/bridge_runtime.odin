@@ -9,6 +9,8 @@ import "core:strings"
 import "core:sys/posix"
 import "core:thread"
 import "core:time"
+import agent_runtime "odin_test:lib/agent_runtime"
+import cfg_lib "odin_test:lib/config"
 import tmux "odin_test:lib/tmux"
 
 Bridge_Runtime_Config :: struct {
@@ -30,6 +32,11 @@ Bridge_Runtime_Config :: struct {
 	// for harnesses without a native activity extension.
 	pane_activity_enabled: bool,
 	pane_activity_interval_ms: int,
+	// AE-2: resolved provider startup detection config, deserialized from the
+	// --startup-detection <json> arg the bridge passes (bridge_runtime_ham_wrapper_argv).
+	// Drives the concurrent startup probe that auto-dismisses folder-trust /
+	// bypass-mode prompts. Empty/disabled when the arg is absent.
+	startup_detection: cfg_lib.Startup_Detection_Config,
 }
 
 wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
@@ -85,6 +92,18 @@ wrapper_bridge_runtime_main :: proc(args: []string) -> bool {
 		return false
 	}
 	_ = wrapper_bridge_report_startup(cfg, "ready", "agent child process launched")
+	// AE-3: run the startup probe CONCURRENTLY in a short-lived thread (mirrors the
+	// wrapper_bridge_notifications_thread pattern). The child owns the pane
+	// foreground via inherited stdio, so we cannot block the main loop — it must go
+	// straight into process_wait. The probe presses keys (auto-enter / pre-keys) to
+	// dismiss folder-trust / bypass-mode prompts and, on a blocked/failed outcome,
+	// reports it via wrapper.startup.report so startup_blocked surfaces in the UI.
+	// Skips cleanly when detection is disabled or no pane is available.
+	if cfg.startup_detection.enabled && strings.trim_space(cfg.pane_id) != "" {
+		probe_cfg := new(Bridge_Runtime_Config)
+		probe_cfg^ = cfg
+		thread.run_with_data(rawptr(probe_cfg), wrapper_bridge_startup_probe_thread)
+	}
 	last_liveness := time.to_unix_nanoseconds(time.now())
 	last_activity := last_liveness
 	pane_cfg := pane_activity_default_config()
@@ -282,6 +301,7 @@ wrapper_bridge_runtime_config_from_args :: proc(args: []string) -> Bridge_Runtim
 		// HEIMDALL_WRAPPER_PANE_ACTIVITY=0.
 		pane_activity_enabled = wrapper_bridge_pane_activity_default(args),
 		pane_activity_interval_ms = wrapper_bridge_int_arg(args, "--pane-activity-interval-ms", 2000),
+		startup_detection = wrapper_bridge_startup_detection_from_args(args),
 	}
 	if sep := wrapper_bridge_command_separator(args); sep >= 0 && sep + 1 < len(args) {
 		cmd := make([dynamic]string)
@@ -289,6 +309,62 @@ wrapper_bridge_runtime_config_from_args :: proc(args: []string) -> Bridge_Runtim
 		cfg.agent_argv = cmd[:]
 	}
 	return cfg
+}
+
+// wrapper_bridge_startup_detection_from_args parses the --startup-detection <json>
+// blob emitted by the bridge (bridge_runtime_startup_detection_arg) back into a
+// cfg_lib.Startup_Detection_Config. Absent/blank arg yields a zero (disabled)
+// config. The JSON shape mirrors bridge_provider_write_startup_json exactly.
+wrapper_bridge_startup_detection_from_args :: proc(args: []string) -> cfg_lib.Startup_Detection_Config {
+	return wrapper_bridge_parse_startup_detection(option_value(args, "--startup-detection", ""))
+}
+
+wrapper_bridge_parse_startup_detection :: proc(json: string) -> cfg_lib.Startup_Detection_Config {
+	sd: cfg_lib.Startup_Detection_Config
+	if strings.trim_space(json) == "" do return sd
+	sd.enabled = extract_json_bool(json, "enabled", false)
+	sd.startup_probe_seconds = extract_json_int(json, "startup_probe_seconds", 0)
+	sd.capture_interval_ms = extract_json_int(json, "capture_interval_ms", 0)
+	sd.blocked_patterns = wrapper_bridge_json_string_array(json, "blocked_patterns")
+	sd.auto_enter_patterns = wrapper_bridge_json_string_array(json, "auto_enter_patterns")
+	sd.auto_enter_pre_keys = wrapper_bridge_json_string_array(json, "auto_enter_pre_keys")
+	sd.startup_unknown_is_blocked = extract_json_bool(json, "startup_unknown_is_blocked", false)
+	sd.sanitized_reason_mapping = wrapper_bridge_json_string_array(json, "sanitized_reason_mapping")
+	return sd
+}
+
+// wrapper_bridge_json_string_array parses the JSON string array at key into a
+// []string, tolerating commas inside quoted values (e.g. a pattern like
+// "Yes, I trust this folder"). Returns an empty (nil-backed) slice when the key
+// is absent. Reuses the string-aware balanced-array scanner from bootstrap.odin.
+wrapper_bridge_json_string_array :: proc(json, key: string) -> []string {
+	array := extract_json_array(json, key)
+	if strings.trim_space(array) == "" do return {}
+	out := make([dynamic]string)
+	i := 0
+	for i < len(array) {
+		if array[i] != '"' { i += 1; continue }
+		start := i + 1
+		j := start
+		escaped := false
+		found := false
+		for j < len(array) {
+			ch := array[j]
+			if escaped {
+				escaped = false
+			} else if ch == '\\' {
+				escaped = true
+			} else if ch == '"' {
+				append(&out, json_unescape(array[start:j]))
+				i = j + 1
+				found = true
+				break
+			}
+			j += 1
+		}
+		if !found do break
+	}
+	return out[:]
 }
 
 wrapper_bridge_command_separator :: proc(args: []string) -> int {
@@ -480,6 +556,45 @@ wrapper_bridge_int_string :: proc(value: string) -> int {
 	parsed, ok := strconv.parse_int(strings.trim_space(value))
 	if !ok do return 0
 	return int(parsed)
+}
+
+// wrapper_bridge_startup_probe_thread runs agent_runtime.startup_probe_agent
+// against the child's tmux pane and forwards the outcome to the bridge. It runs
+// in its own thread so the main runtime loop can immediately reap the child; the
+// probe presses keys while the child holds the pane foreground. It frees the
+// heap Bridge_Runtime_Config the launcher allocated for it.
+wrapper_bridge_startup_probe_thread :: proc(data: rawptr) {
+	if data == nil do return
+	cfg := (^Bridge_Runtime_Config)(data)^
+	free(data)
+	if !cfg.startup_detection.enabled || strings.trim_space(cfg.pane_id) == "" do return
+	result := agent_runtime.startup_probe_agent(cfg.startup_detection, cfg.pane_id)
+	wrapper_bridge_report_startup_result(cfg, result)
+}
+
+// wrapper_bridge_report_startup_result maps a probe outcome to a
+// wrapper.startup.report phase and forwards it. Only blocked/failed outcomes are
+// surfaced: a "ready" probe result must NOT downgrade the agent's real readiness,
+// which is established by the child's own start-success RPC (the bridge treats
+// wrapper "ready" as "child launched", not "agent ready").
+wrapper_bridge_report_startup_result :: proc(cfg: Bridge_Runtime_Config, result: agent_runtime.Startup_Probe_Result) {
+	if phase, ok := wrapper_bridge_startup_phase_for_result(result); ok {
+		_ = wrapper_bridge_report_startup(cfg, phase, result.detail)
+	}
+}
+
+// wrapper_bridge_startup_phase_for_result is the pure mapping from a probe status
+// to the wrapper.startup.report phase. Returns ok=false for statuses that must
+// not be reported (ready/disabled/unknown), so a completed-but-fine probe never
+// overwrites the agent's readiness.
+wrapper_bridge_startup_phase_for_result :: proc(result: agent_runtime.Startup_Probe_Result) -> (string, bool) {
+	switch result.status {
+	case "startup_blocked":
+		return "startup_blocked", true
+	case "startup_failed":
+		return "startup_failed", true
+	}
+	return "", false
 }
 
 wrapper_bridge_notifications_thread :: proc(data: rawptr) {

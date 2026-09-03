@@ -6,6 +6,7 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
+import cfg_lib "odin_test:lib/config"
 import tmux "odin_test:lib/tmux"
 import ws "odin_test:lib/ws"
 
@@ -879,9 +880,23 @@ bridge_runtime_ham_wrapper_argv :: proc(endpoint, wrapper_token, agent_token, in
 	append(&out, bridge_runtime_ham_wrapper_bin(), "bridge-runtime", "--bridge-endpoint", endpoint, "--agent-token", wrapper_token, "--child-agent-token", agent_token, "--agent-instance-id", instance_id, "--run-dir", run_dir)
 	if provider != "" do append(&out, "--provider", provider)
 	if tier != "" do append(&out, "--tier", tier)
+	// AE-1: serialize the resolved provider startup_detection to a compact JSON
+	// blob so the wrapper can auto-dismiss folder-trust / bypass-mode prompts. The
+	// same JSON shape the wrapper parses back in wrapper_bridge_runtime_config_from_args.
+	append(&out, "--startup-detection", bridge_runtime_startup_detection_arg(profile.startup_detection))
 	append(&out, "--")
 	append(&out, ..agent_argv)
 	return out[:], true
+}
+
+// bridge_runtime_startup_detection_arg renders a Startup_Detection_Config as the
+// compact JSON blob passed via --startup-detection. Reuses the same writer that
+// serializes provider startup_detection for the provider store JSON so the shape
+// stays identical on both sides of the round-trip.
+bridge_runtime_startup_detection_arg :: proc(sd: cfg_lib.Startup_Detection_Config) -> string {
+	b := strings.builder_make()
+	bridge_provider_write_startup_json(&b, sd)
+	return strings.to_string(b)
 }
 
 bridge_runtime_ham_wrapper_bin :: proc() -> string {
@@ -1085,6 +1100,13 @@ bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activi
 			if inst.runtime_status == "failed" {
 				bridge_runtime_set_status_with_source_locked(instance_id, "failed", activity, activity_source, now, true, false)
 				should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, true)
+			} else if inst.runtime_status == "blocked" {
+				// A wrapper liveness/activity ping proves the process is alive but does NOT
+				// resolve a blocked startup prompt. Keep the instance "blocked" (updating
+				// only liveness/activity) instead of forcing it back to "starting", which
+				// would erase the blocked signal on the very next ping. Only an explicit
+				// start-success (-> "running", start_success_seen) clears it.
+				bridge_runtime_set_status_with_source_locked(instance_id, "blocked", activity, activity_source, now, true, false)
 			} else {
 				bridge_runtime_set_status_with_source_locked(instance_id, "starting", activity, activity_source, now, true, false)
 				should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, inst.runtime_status == "unreachable" || inst.runtime_status == "stopped")
@@ -1188,6 +1210,11 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 				inst.start_success_seen = true
 				inst.start_deadline_unix_ms = 0
 				inst.last_start_prompt_unix_ms = 0
+			} else if runtime_status == "blocked" {
+				// Blocked is a terminal-until-operator startup state: not ready (do NOT
+				// set start_success_seen) but no longer racing the start-success deadline,
+				// so clear the deadline to stop the starting->failed reaper from firing.
+				inst.start_deadline_unix_ms = 0
 			} else if !bridge_runtime_status_active(runtime_status) {
 				inst.start_deadline_unix_ms = 0
 			}
@@ -1373,7 +1400,10 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 }
 
 bridge_runtime_status_active :: proc(runtime_status: string) -> bool {
-	return runtime_status == "launching" || runtime_status == "starting" || runtime_status == "running" || runtime_status == "idle" || runtime_status == "busy" || runtime_status == "stopping"
+	// "blocked" is active-but-not-ready: the wrapper is alive and still pinging, so
+	// the instance must stay in the heartbeat digest and must NOT be reconciled to
+	// unreachable, but it is not "ready" (that requires start-success -> "running").
+	return runtime_status == "launching" || runtime_status == "starting" || runtime_status == "running" || runtime_status == "idle" || runtime_status == "busy" || runtime_status == "stopping" || runtime_status == "blocked"
 }
 
 bridge_runtime_cached_command :: proc(command_id: string) -> (string, bool) {
