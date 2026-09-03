@@ -428,19 +428,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   }, [chainDetailQuery.data, chainTasksQuery.data]);
 
   const currentTask: TaskLike | null = useMemo(() => {
-    const tasks = chainTasks;
     const explicitTaskId = String(instance?.current_task_id || instance?.currentTaskId || '');
-    if (explicitTaskId) {
-      const explicit = tasks.find((t: TaskLike) => String(t.taskId || (t as any).id || '') === explicitTaskId);
-      if (explicit) return explicit;
-    }
-    const mine = tasks.filter((t: TaskLike) => {
-      const asg = String(t.assigneeAgentInstanceId || t.assignee_agent_instance_id || (t as any).assigneeRef?.agent_instance_id || '');
-      return asg && asg === agentInstanceId;
-    });
-    const inProgress = mine.find((t: TaskLike) => String(t.status || '') === 'in_progress');
-    return inProgress || null;
-  }, [chainTasks, instance?.current_task_id, instance?.currentTaskId, agentInstanceId]);
+    if (!explicitTaskId) return null;
+    return chainTasks.find((t: TaskLike) => String(t.taskId || (t as any).id || '') === explicitTaskId) || null;
+  }, [chainTasks, instance?.current_task_id, instance?.currentTaskId]);
 
   const switchableTasks = useMemo(() => {
     return switchableTasksFor(chainTasks, agentInstanceId);
