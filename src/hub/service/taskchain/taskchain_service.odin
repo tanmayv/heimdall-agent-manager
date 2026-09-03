@@ -5,6 +5,7 @@ import "core:log"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import "core:time"
 import "core:unicode/utf8"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -46,6 +47,8 @@ Taskchain_Service :: struct {
 	// set on every connect. Guarded by replay_mutex.
 	replay_mutex: sync.Mutex,
 	replay_last_unix_ms: map[string]i64,
+	nudge_debounce_mutex: sync.Mutex,
+	nudge_debounce_last_unix_ms: map[string]i64,
 }
 
 Create_Chain_Input :: struct {
@@ -868,6 +871,29 @@ comment_preview_safe :: proc(body: string) -> string {
 	return strings.to_string(b)
 }
 
+should_debounce_nudge_dispatch :: proc(service: ^Taskchain_Service, instance_id, task_id: string) -> bool {
+	if service == nil || instance_id == "" || task_id == "" do return false
+	key := strings.concatenate({instance_id, ":", task_id})
+	defer delete(key)
+	now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
+
+	sync.mutex_lock(&service.nudge_debounce_mutex)
+	defer sync.mutex_unlock(&service.nudge_debounce_mutex)
+
+	if service.nudge_debounce_last_unix_ms == nil {
+		service.nudge_debounce_last_unix_ms = make(map[string]i64)
+	}
+
+	if last_ms, ok := service.nudge_debounce_last_unix_ms[key]; ok {
+		if now_ms - last_ms < 1500 {
+			return true
+		}
+	}
+
+	service.nudge_debounce_last_unix_ms[strings.clone(key)] = now_ms
+	return false
+}
+
 // notification_allowed_for_recipient implements CT-6 gating with a fail-open bias:
 // a recipient is SUPPRESSED only when we positively know its persisted current
 // task is a DIFFERENT task. When the instance's current_task is this task we allow
@@ -976,6 +1002,12 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		if !inst_ok || inst.bridge_id == "" {
 			failed += 1
 			strings.write_string(&targets_b, `","state":"failed"}`)
+			continue
+		}
+
+		if should_debounce_nudge_dispatch(service, id, string(task.task_id)) {
+			live_delivered += 1
+			strings.write_string(&targets_b, `","state":"delivered"}`)
 			continue
 		}
 		

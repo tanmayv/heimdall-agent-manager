@@ -95,8 +95,8 @@ function taskMutationAuth(session: any, agentToken?: string) {
   };
 }
 
-function preciseTaskTags(taskId?: string, chainId?: string, includeComments = false) {
-  const tags: Array<{ type: 'TaskLog' | 'Task' | 'TaskComments' | 'ChainTasks' | 'Chain'; id: string }> = [];
+function preciseTaskTags(taskId?: string, chainId?: string, includeComments = true) {
+  const tags: Array<{ type: 'TaskLog' | 'Task' | 'TaskComments' | 'ChainTasks' | 'Chain' | 'ChainList'; id: string }> = [];
   if (taskId) {
     tags.push({ type: 'Task', id: taskId });
     tags.push({ type: 'TaskLog', id: taskId });

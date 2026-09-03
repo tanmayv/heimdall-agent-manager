@@ -610,9 +610,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <span>{descExpanded ? '▾' : '▸'}</span> description
             </button>
             {descExpanded && (
-              <p className="mt-1 text-sm text-zinc-300">
-                {chain.description}
-              </p>
+              <div
+                data-debug-id="taskchain-overview-description"
+                className="mt-1 text-sm text-zinc-300"
+              >
+                <Markdown source={chain.description} compact copyAll={false} />
+              </div>
             )}
           </div>
         )}
@@ -905,12 +908,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   <div className="mt-3 border-t border-white/5 pt-3 space-y-3">
                     {/* H12: full description shows ONLY when expanded. */}
                     {task.description && (
-                      <p
+                      <div
                         data-debug-id={`taskchain-task-description-${taskId}`}
-                        className="whitespace-pre-wrap text-[11.5px] leading-5 text-zinc-300"
+                        className="text-[11.5px] leading-5 text-zinc-300"
                       >
-                        {task.description}
-                      </p>
+                        <Markdown source={task.description} compact copyAll={false} />
+                      </div>
                     )}
                     {/* H12: reviewers moved into the expanded details to keep the
                         collapsed header to a compact single line. */}

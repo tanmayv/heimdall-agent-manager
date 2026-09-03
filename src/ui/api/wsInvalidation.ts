@@ -219,7 +219,7 @@ function handleTaskEvent(dispatch: any, payload: any) {
     dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskLog', id: taskId }]));
   }
 
-  if (payload.chain_fetch_required && chainId) {
+  if (chainId) {
     dispatch(heimdallApi.util.invalidateTags([
       { type: 'Chain', id: chainId },
       { type: 'ChainList', id: 'ALL' },
@@ -239,7 +239,11 @@ function handleTaskEvent(dispatch: any, payload: any) {
     };
     patchLog({ taskId });
     patchLog({ taskId, limit: 50 });
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskComments', id: taskId }]));
+    dispatch(heimdallApi.util.invalidateTags([
+      { type: 'Task', id: taskId },
+      { type: 'TaskLog', id: taskId },
+      { type: 'TaskComments', id: taskId },
+    ]));
   }
 }
 

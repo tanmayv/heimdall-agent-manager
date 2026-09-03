@@ -398,6 +398,7 @@ set_instance_current_task :: proc(service: ^Taskchain_Service, auth: contracts.A
 notify_current_task_changed :: proc(service: ^Taskchain_Service, inst: domain.Agent_Instance, task: domain.Task, role: domain.Current_Task_Role) {
 	if service.bridge_command_sink.send_runtime_command == nil do return
 	if inst.bridge_id == "" do return
+	if should_debounce_nudge_dispatch(service, inst.agent_instance_id, string(task.task_id)) do return
 	action := "work"
 	if role == .Review do action = "review"
 	now := platform.clock_now(service.clock)

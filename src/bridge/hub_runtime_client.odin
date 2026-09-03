@@ -182,6 +182,43 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	}
 }
 
+Bridge_Nudge_Record :: struct {
+	key: string,
+	timestamp_ms: i64,
+}
+bridge_recent_nudges: [dynamic]Bridge_Nudge_Record
+bridge_recent_nudges_mutex: sync.Mutex
+
+bridge_should_debounce_nudge :: proc(instance_id, task_id: string) -> bool {
+	if instance_id == "" || task_id == "" do return false
+	key := strings.concatenate({instance_id, ":", task_id})
+	defer delete(key)
+	now := time.now()
+	now_ms := time.to_unix_nanoseconds(now) / 1_000_000
+
+	sync.mutex_lock(&bridge_recent_nudges_mutex)
+	defer sync.mutex_unlock(&bridge_recent_nudges_mutex)
+
+	i := 0
+	for i < len(bridge_recent_nudges) {
+		if now_ms - bridge_recent_nudges[i].timestamp_ms > 3000 {
+			delete(bridge_recent_nudges[i].key)
+			unordered_remove(&bridge_recent_nudges, i)
+		} else {
+			i += 1
+		}
+	}
+
+	for rec in bridge_recent_nudges {
+		if rec.key == key && (now_ms - rec.timestamp_ms < 1500) {
+			return true
+		}
+	}
+
+	append(&bridge_recent_nudges, Bridge_Nudge_Record{key = strings.clone(key), timestamp_ms = now_ms})
+	return false
+}
+
 bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	type := extract_json_string(text, "type", "")
 	if type == "bridge_heartbeat_ack" {
@@ -246,6 +283,11 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if type == "notify_task_nudge" {
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
+		task_id := extract_json_string(text, "task_id", "")
+		if bridge_should_debounce_nudge(instance_id, task_id) {
+			if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded", ""))
+			return
+		}
 		ok := bridge_wrapper_push_task_nudge(instance_id, text)
 		if !ok {
 			// Wrapper not connected: wake the local agent (coalesced) so it picks up
