@@ -230,6 +230,15 @@ recompute_chain_promotions :: proc(service: ^Taskchain_Service, chain: domain.Ta
 		}
 	}
 
+	// Demote any In_Progress task whose dependencies are not satisfied to Queued.
+	// This ensures that adding a blocking dependency to an active task pauses/queues
+	// it immediately until its dependencies resolve.
+	for t in tasks {
+		if t.status == .In_Progress && !deps_satisfied_for_task(tasks[:], deps[:], t.task_id) {
+			queue[t.task_id] = true
+		}
+	}
+
 	// Apply task status mutations first (promotions win over demotions for the same
 	// id; they never collide, but be defensive). We stage promoted tasks and defer
 	// their notifications until AFTER the instance current_task pointers are

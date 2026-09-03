@@ -719,7 +719,7 @@ valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	// promoted back to Assigned/In_Progress when the instance is free, or paused/
 	// cancelled.
 	case .Queued: return next == .Assigned || next == .In_Progress || next == .Paused || next == .Cancelled
-	case .In_Progress: return next == .In_Validation || next == .Paused || next == .Cancelled
+	case .In_Progress: return next == .Queued || next == .In_Validation || next == .Paused || next == .Cancelled
 	// In_Validation -> Completed is legal: it is the quorum auto-finalize path
 	// (evaluate_task_quorum advances a fully-approved task straight to Completed).
 	case .In_Validation: return next == .Validated_Good || next == .Validated_Not_Good || next == .Completed || next == .Paused || next == .Cancelled

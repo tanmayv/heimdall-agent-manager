@@ -94,6 +94,16 @@ ag_inst_save :: proc(ctx: rawptr, inst: domain.Agent_Instance) -> (domain.Agent_
 	f.instances[f.inst_n] = inst; f.inst_n += 1; return inst, true, {}
 }
 
+tc_dep_save :: proc(ctx: rawptr, dep: domain.Task_Dependency) -> (domain.Task_Dependency, bool, domain.Domain_Error) {
+	f := (^Fake)(ctx)
+	for i in 0..<f.dep_n {
+		if f.deps[i].task_id == dep.task_id && f.deps[i].depends_on_task_id == dep.depends_on_task_id {
+			f.deps[i] = dep; return dep, true, {}
+		}
+	}
+	f.deps[f.dep_n] = dep; f.dep_n += 1; return dep, true, {}
+}
+
 tc_dep_remove :: proc(ctx: rawptr, task_id, depends_on_task_id: domain.Task_ID, owner: domain.User_ID) -> (bool, domain.Domain_Error) {
 	f := (^Fake)(ctx)
 	for i in 0..<f.dep_n {
@@ -121,6 +131,7 @@ make_tc_repo :: proc(f: ^Fake) -> iface.Taskchain_Repository {
 		get_chain = tc_chain_get, save_chain = tc_chain_save,
 		get_task = tc_task_get, save_task = tc_task_save,
 		list_tasks_by_chain = tc_task_list,
+		save_dependency = tc_dep_save,
 		list_dependencies_by_chain = tc_dep_list,
 		remove_dependency = tc_dep_remove,
 		save_vote = tc_vote_save, list_votes_by_task = tc_vote_list,
@@ -165,6 +176,7 @@ main :: proc() {
 	test_priority_patch_reorders()
 	test_not_good_autopromotes_to_in_progress()
 	test_unblock_preempts_busy_assignee()
+	test_blocking_dep_added_demotes_in_progress()
 	test_self_set_current_task()
 	fmt.println("PASS: hub CT promotion engine (CT-4/CT-5/CT-7/CT-10 + manual set + priority patch)")
 }
@@ -579,4 +591,47 @@ test_priority_patch_reorders :: proc() {
 	check(first.status == .Queued, "previously-focused task demoted to Queued after priority bump")
 	second, _, _ := tc_task_get(&f, "t_second")
 	check(second.status == .In_Progress, "newly-prioritized task promoted to In_Progress")
+}
+
+// --- Adding a blocking dependency demotes In_Progress task to Queued ---------
+test_blocking_dep_added_demotes_in_progress :: proc() {
+	f: Fake
+	clock := platform.Clock{ctx = nil, now = clock_now}
+	ids := platform.ID_Generator{ctx = rawptr(&f), generate = gen_id}
+	tc := make_tc_repo(&f); ag := make_ag_repo(&f)
+	service := new_service(&f, &tc, &ag, &clock, &ids)
+	auth := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "alice"}
+
+	tc_chain_save(&f, domain.Task_Chain{chain_id = "chain_p", owner_user_id = "alice", publish_state = .Published, status = .Active})
+	seed_instance(&f, "inst_x")
+	seed_instance(&f, "inst_y")
+
+	// Task 1 is assigned to inst_x and is currently In_Progress.
+	tc_task_save(&f, domain.Task{task_id = "t_active", chain_id = "chain_p", owner_user_id = "alice", publish_state = .Published, status = .In_Progress, priority = .P1, assignee_ref_json = aref("inst_x"), created_at = "2026-07-22T09:00:00Z", started_at = "2026-07-22T09:00:00Z"})
+	// Task 2 is assigned to inst_y and is In_Progress.
+	tc_task_save(&f, domain.Task{task_id = "t_blocker", chain_id = "chain_p", owner_user_id = "alice", publish_state = .Published, status = .In_Progress, priority = .P1, assignee_ref_json = aref("inst_y"), created_at = "2026-07-22T09:05:00Z", started_at = "2026-07-22T09:05:00Z"})
+
+	chain, _, _ := tc_chain_get(&f, "chain_p")
+	_ = taskchain_service.recompute_chain_promotions(&service, chain)
+	inst, _, _ := ag_inst_get(&f, "inst_x")
+	check(inst.current_task_id == "t_active", "inst_x focused on t_active initially")
+
+	// Now add a dependency: t_active depends on t_blocker (which is not yet finished).
+	_, ok, err := taskchain_service.add_task_dependency(&service, auth, "t_active", "t_blocker")
+	check(ok, fmt.tprintf("add dep failed: %s", err.message))
+
+	// t_active should now be demoted to Queued, and inst_x's current task pointer cleared.
+	active, _, _ := tc_task_get(&f, "t_active")
+	check(active.status == .Queued, fmt.tprintf("t_active must be demoted to Queued, got %v", active.status))
+	inst, _, _ = ag_inst_get(&f, "inst_x")
+	check(inst.current_task_id == "" && inst.current_task_role == .None, "inst_x current task cleared when active task blocked")
+
+	// When t_blocker completes, t_active should auto-promote back to In_Progress.
+	tc_task_save(&f, domain.Task{task_id = "t_blocker", chain_id = "chain_p", owner_user_id = "alice", publish_state = .Published, status = .Completed, priority = .P1, assignee_ref_json = aref("inst_y"), created_at = "2026-07-22T09:05:00Z", started_at = "2026-07-22T09:05:00Z", completed_at = "2026-07-22T10:00:00Z"})
+	_ = taskchain_service.recompute_chain_promotions(&service, chain)
+
+	active_after, _, _ := tc_task_get(&f, "t_active")
+	check(active_after.status == .In_Progress, fmt.tprintf("t_active must auto-promote back to In_Progress after blocker completes, got %v", active_after.status))
+	inst, _, _ = ag_inst_get(&f, "inst_x")
+	check(inst.current_task_id == "t_active" && inst.current_task_role == .Work, "inst_x focus restored to t_active")
 }
