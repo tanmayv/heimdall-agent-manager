@@ -106,6 +106,9 @@ main :: proc() {
 	// --- BT-2a: identity variables (template_persona/instructions/agent_instructions)
 	bt2a_identity_variables_checks()
 
+	// --- BT-5: fully-assembled single-template AGENTS.md goldens (real render path)
+	bt5_render_goldens_checks()
+
 	if failures > 0 {
 		fmt.eprintfln("bootstrap golden test: %d case(s) FAILED", failures)
 		os.exit(1)
