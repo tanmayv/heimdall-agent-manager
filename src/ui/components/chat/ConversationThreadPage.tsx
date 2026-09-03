@@ -29,7 +29,7 @@ import RuntimeChip, { runtimeStateFromStatus } from '../runtime/RuntimeChip';
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
 import CurrentTaskStrip from './CurrentTaskStrip';
-import { switchableTasksFor, taskRoleLabel } from './chainTaskInference';
+import { switchableTasksFor, taskRoleLabel, type TaskLike } from './chainTaskInference';
 import { useViewport } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
@@ -379,9 +379,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     // Prefer the cookie-auth chain detail (works in the live shell); fall back to
     // the legacy client-token fetchChainTasks. Without this the live shell always
     // read 0/0 because fetchChainTasks needs a client token the shell doesn't have.
-    const tasks = chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || [];
+    const tasks: TaskLike[] = (chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || []) as TaskLike[];
     const total = tasks.length;
-    const done = tasks.filter((t: any) => t.status === 'validated_good' || t.status === 'completed').length;
+    const done = tasks.filter((t: TaskLike) => t.status === 'validated_good' || t.status === 'completed').length;
     return { total, done };
   }, [chainDetailQuery.data, chainTasksQuery.data]);
   const rawTitle = String(conversation?.title || '').trim();
@@ -423,24 +423,24 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
   const activityStatus = String(instance?.activity_status || instance?.activityStatus || '').toLowerCase();
   const isWorking = runtimeStateFromStatus(runtimeStatus) === 'live' && (activityStatus === 'active' || activityStatus === 'busy' || activityStatus === 'working');
-  const chainTasks: any[] = useMemo(() => {
-    return chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || [];
+  const chainTasks: TaskLike[] = useMemo(() => {
+    return (chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || []) as TaskLike[];
   }, [chainDetailQuery.data, chainTasksQuery.data]);
 
-  const currentTask = useMemo(() => {
+  const currentTask: TaskLike | null = useMemo(() => {
     const tasks = chainTasks;
     const explicitTaskId = String(instance?.current_task_id || instance?.currentTaskId || '');
     if (explicitTaskId) {
-      const explicit = tasks.find((t: any) => String(t.taskId || t.id || '') === explicitTaskId);
+      const explicit = tasks.find((t: TaskLike) => String(t.taskId || (t as any).id || '') === explicitTaskId);
       if (explicit) return explicit;
     }
-    const mine = tasks.filter((t: any) => {
-      const asg = String(t.assigneeAgentInstanceId || t.assignee_agent_instance_id || t.assigneeRef?.agent_instance_id || '');
+    const mine = tasks.filter((t: TaskLike) => {
+      const asg = String(t.assigneeAgentInstanceId || t.assignee_agent_instance_id || (t as any).assigneeRef?.agent_instance_id || '');
       return asg && asg === agentInstanceId;
     });
-    const inProgress = mine.find((t: any) => String(t.status || '') === 'in_progress');
-    return inProgress || mine.find((t: any) => !['completed', 'cancelled', 'validated_good'].includes(String(t.status || ''))) || mine[0] || null;
-  }, [chainDetailQuery.data, chainTasksQuery.data, instance?.current_task_id, instance?.currentTaskId, agentInstanceId]);
+    const inProgress = mine.find((t: TaskLike) => String(t.status || '') === 'in_progress');
+    return inProgress || mine.find((t: TaskLike) => !['completed', 'cancelled', 'validated_good'].includes(String(t.status || ''))) || mine[0] || null;
+  }, [chainTasks, instance?.current_task_id, instance?.currentTaskId, agentInstanceId]);
 
   const switchableTasks = useMemo(() => {
     return switchableTasksFor(chainTasks, agentInstanceId);
