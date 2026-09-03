@@ -492,10 +492,14 @@ export const tasksApi = heimdallApi.injectEndpoints({
         }
       },
     }),
-    createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string }>({
-      queryFn: async ({ chainId, title, description }) => {
+    createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
+      queryFn: async ({ chainId, title, description, assigneeRef, reviewerRefs, dependsOn }) => {
         try {
-          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks`, 'POST', { title, description: description || '' });
+          const body: any = { title, description: description || '' };
+          if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
+          if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
+          if (dependsOn !== undefined) body.depends_on = dependsOn;
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks`, 'POST', body);
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

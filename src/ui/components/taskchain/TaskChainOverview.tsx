@@ -182,6 +182,20 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDesc, setNewTaskDesc] = useState('');
+  const [newTaskAssigneeMode, setNewTaskAssigneeMode] = useState<'unassigned' | 'member' | 'existing' | 'user'>('unassigned');
+  const [newTaskAssigneeMemberInstanceId, setNewTaskAssigneeMemberInstanceId] = useState('');
+  const [newTaskAssigneeAgentId, setNewTaskAssigneeAgentId] = useState('');
+  const [newTaskAssigneeInstanceId, setNewTaskAssigneeInstanceId] = useState('');
+  const [newTaskAssigneeUserId, setNewTaskAssigneeUserId] = useState('');
+  const [newTaskStagedReviewerRefs, setNewTaskStagedReviewerRefs] = useState<any[]>([]);
+  const [newTaskAddReviewerMode, setNewTaskAddReviewerMode] = useState<'member' | 'existing' | 'user'>('member');
+  const [newTaskAddReviewerMemberInstanceId, setNewTaskAddReviewerMemberInstanceId] = useState('');
+  const [newTaskAddReviewerAgentId, setNewTaskAddReviewerAgentId] = useState('');
+  const [newTaskAddReviewerInstanceId, setNewTaskAddReviewerInstanceId] = useState('');
+  const [newTaskAddReviewerUserId, setNewTaskAddReviewerUserId] = useState('');
+  const [newTaskDependsOnIds, setNewTaskDependsOnIds] = useState<string[]>([]);
+  const [newTaskError, setNewTaskError] = useState('');
+  const [creatingTask, setCreatingTask] = useState(false);
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [newMemberRole, setNewMemberRole] = useState('worker');
   // H14: two modes — add an EXISTING agent instance (default; the user's mental
@@ -242,6 +256,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const selectedAddAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addAgentId);
   const selectedAssigneeAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === editAssigneeAgentId);
   const selectedReviewerAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addReviewerAgentId);
+  const selectedNewTaskAssigneeAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === newTaskAssigneeAgentId);
+  const selectedNewTaskReviewerAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === newTaskAddReviewerAgentId);
   // H14: existing instances of the chosen identity (cookieJsonFetch — works in the
   // shell). Only offered in 'existing' mode; skip the fetch otherwise.
   const existingInstancesQuery = useListAgentInstancesQuery(
@@ -259,6 +275,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     { skip: !addReviewerAgentId || addReviewerMode !== 'existing' },
   );
   const reviewerExistingInstances: any[] = reviewerInstancesQuery.data?.instances || [];
+  const newTaskAssigneeInstancesQuery = useListAgentInstancesQuery(
+    { agentId: newTaskAssigneeAgentId },
+    { skip: !newTaskAssigneeAgentId || newTaskAssigneeMode !== 'existing' },
+  );
+  const newTaskAssigneeExistingInstances: any[] = newTaskAssigneeInstancesQuery.data?.instances || [];
+  const newTaskReviewerInstancesQuery = useListAgentInstancesQuery(
+    { agentId: newTaskAddReviewerAgentId },
+    { skip: !newTaskAddReviewerAgentId || newTaskAddReviewerMode !== 'existing' },
+  );
+  const newTaskReviewerExistingInstances: any[] = newTaskReviewerInstancesQuery.data?.instances || [];
   const memberInstanceIds = new Set(members.map((m: any) => String(m.agentInstanceId || m.agent_instance_id || '')));
   const addProviderOptions = selectedAddBridge ? launchProvidersFor(selectedAddBridge) : [];
   const addTierOptions = selectedAddBridge ? launchTiersFor(selectedAddBridge, addProvider, selectedAddAgent) : [];
@@ -276,21 +302,110 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     setExpandedTaskIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  const handleAddNewTaskStagedReviewer = () => {
+    let ref: any = null;
+    if (newTaskAddReviewerMode === 'member') {
+      if (!newTaskAddReviewerMemberInstanceId) return;
+      ref = { type: 'agent_instance', agent_instance_id: newTaskAddReviewerMemberInstanceId };
+    } else if (newTaskAddReviewerMode === 'existing') {
+      if (!newTaskAddReviewerInstanceId) return;
+      ref = { type: 'agent_instance', agent_instance_id: newTaskAddReviewerInstanceId };
+    } else if (newTaskAddReviewerMode === 'user') {
+      const uid = newTaskAddReviewerUserId.trim();
+      if (!uid) return;
+      ref = { type: 'user', user_id: uid };
+    }
+    if (!ref) return;
+    const exists = newTaskStagedReviewerRefs.some((r) =>
+      r.type === ref.type && (
+        (ref.agent_instance_id && r.agent_instance_id === ref.agent_instance_id) ||
+        (ref.user_id && r.user_id === ref.user_id)
+      )
+    );
+    if (!exists) {
+      setNewTaskStagedReviewerRefs((prev) => [...prev, ref]);
+    }
+    setNewTaskAddReviewerMemberInstanceId('');
+    setNewTaskAddReviewerInstanceId('');
+    setNewTaskAddReviewerUserId('');
+  };
+
+  const handleRemoveNewTaskStagedReviewer = (index: number) => {
+    setNewTaskStagedReviewerRefs((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const resetNewTaskForm = () => {
+    setNewTaskTitle('');
+    setNewTaskDesc('');
+    setNewTaskAssigneeMode('unassigned');
+    setNewTaskAssigneeMemberInstanceId('');
+    setNewTaskAssigneeAgentId('');
+    setNewTaskAssigneeInstanceId('');
+    setNewTaskAssigneeUserId('');
+    setNewTaskStagedReviewerRefs([]);
+    setNewTaskAddReviewerMode('member');
+    setNewTaskAddReviewerMemberInstanceId('');
+    setNewTaskAddReviewerAgentId('');
+    setNewTaskAddReviewerInstanceId('');
+    setNewTaskAddReviewerUserId('');
+    setNewTaskDependsOnIds([]);
+    setNewTaskError('');
+    setCreatingTask(false);
+  };
+
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
+    setNewTaskError('');
     if (!newTaskTitle.trim()) return;
+
+    let assigneeRef: any = undefined;
+    if (newTaskAssigneeMode === 'member') {
+      if (!newTaskAssigneeMemberInstanceId) {
+        setNewTaskError('Please select a chain member or change assignee mode.');
+        return;
+      }
+      assigneeRef = { type: 'agent_instance', agent_instance_id: newTaskAssigneeMemberInstanceId };
+    } else if (newTaskAssigneeMode === 'existing') {
+      if (!newTaskAssigneeInstanceId) {
+        setNewTaskError('Please select an existing agent instance or change assignee mode.');
+        return;
+      }
+      assigneeRef = { type: 'agent_instance', agent_instance_id: newTaskAssigneeInstanceId };
+    } else if (newTaskAssigneeMode === 'user') {
+      const uid = newTaskAssigneeUserId.trim();
+      if (!uid) {
+        setNewTaskError('Please enter a user ID.');
+        return;
+      }
+      assigneeRef = { type: 'user', user_id: uid };
+    }
+
+    setCreatingTask(true);
     try {
-      await createTask({
+      const payload: any = {
         chainId,
         title: newTaskTitle.trim(),
         description: newTaskDesc.trim(),
-      }).unwrap();
-      setNewTaskTitle('');
-      setNewTaskDesc('');
+      };
+      if (assigneeRef !== undefined) {
+        payload.assigneeRef = assigneeRef;
+      }
+      if (newTaskStagedReviewerRefs.length > 0) {
+        payload.reviewerRefs = newTaskStagedReviewerRefs;
+      }
+      if (newTaskDependsOnIds.length > 0) {
+        payload.dependsOn = newTaskDependsOnIds;
+      }
+
+      await createTask(payload).unwrap();
+      resetNewTaskForm();
       setShowNewTaskModal(false);
       refetch();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to create task:', err);
+      setNewTaskError(String(err?.data?.message || err?.message || 'Failed to create task'));
+    } finally {
+      setCreatingTask(false);
     }
   };
 
@@ -1162,13 +1277,26 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
       {/* New Task Modal */}
       {showNewTaskModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+        <div
+          data-debug-id="taskchain-new-task-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        >
           <form
             onSubmit={handleCreateTask}
-            className="w-full max-w-md rounded-lg border border-white/10 bg-[#141414] p-5 text-xs text-white"
+            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border border-white/10 bg-[#141414] p-5 text-xs text-white"
           >
-            <h3 className="text-sm font-bold text-white">Create New Task</h3>
-            <div className="mt-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white">Create New Task</h3>
+              <button
+                type="button"
+                onClick={() => { resetNewTaskForm(); setShowNewTaskModal(false); }}
+                className="text-zinc-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
               <div>
                 <label className="block text-zinc-400">Title</label>
                 <input
@@ -1181,21 +1309,320 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   placeholder="Task title..."
                 />
               </div>
+
               <div>
                 <label className="block text-zinc-400">Description</label>
                 <textarea
+                  data-debug-id="taskchain-new-task-desc-input"
                   value={newTaskDesc}
                   onChange={(e) => setNewTaskDesc(e.target.value)}
                   className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white placeholder-zinc-500 focus:outline-none focus:border-sky-500"
                   placeholder="Task description (optional)..."
-                  rows={3}
+                  rows={2}
                 />
               </div>
+
+              {/* Assignee Section */}
+              <div className="rounded border border-white/10 bg-white/[0.02] p-3">
+                <label className="block font-semibold text-zinc-300 mb-2">Initial Assignee</label>
+                <div data-debug-id="taskchain-new-task-assignee-mode" className="flex gap-1 rounded bg-zinc-900 p-1 mb-3">
+                  <button
+                    type="button"
+                    data-debug-id="taskchain-new-task-assignee-mode-unassigned"
+                    onClick={() => setNewTaskAssigneeMode('unassigned')}
+                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'unassigned' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                  >
+                    Unassigned
+                  </button>
+                  <button
+                    type="button"
+                    data-debug-id="taskchain-new-task-assignee-mode-member"
+                    onClick={() => setNewTaskAssigneeMode('member')}
+                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'member' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                  >
+                    Chain member
+                  </button>
+                  <button
+                    type="button"
+                    data-debug-id="taskchain-new-task-assignee-mode-existing"
+                    onClick={() => setNewTaskAssigneeMode('existing')}
+                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                  >
+                    Other instance
+                  </button>
+                  <button
+                    type="button"
+                    data-debug-id="taskchain-new-task-assignee-mode-user"
+                    onClick={() => setNewTaskAssigneeMode('user')}
+                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'user' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                  >
+                    User
+                  </button>
+                </div>
+
+                {newTaskAssigneeMode === 'member' && (
+                  <div>
+                    <select
+                      data-debug-id="taskchain-new-task-assignee-member-select"
+                      value={newTaskAssigneeMemberInstanceId}
+                      onChange={(e) => setNewTaskAssigneeMemberInstanceId(e.target.value)}
+                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="">Select member…</option>
+                      {members.map((m: any) => {
+                        const id = String(m.agentInstanceId || m.agent_instance_id || '');
+                        return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
+                      })}
+                    </select>
+                    {members.length === 0 && (
+                      <p className="mt-1 text-[11px] text-amber-300/80">No members in this task chain.</p>
+                    )}
+                  </div>
+                )}
+
+                {newTaskAssigneeMode === 'existing' && (
+                  <div className="space-y-2">
+                    <select
+                      data-debug-id="taskchain-new-task-assignee-agentid-select"
+                      value={newTaskAssigneeAgentId}
+                      onChange={(e) => { setNewTaskAssigneeAgentId(e.target.value); setNewTaskAssigneeInstanceId(''); }}
+                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="">Choose agent…</option>
+                      {agentIdentities.map((a: any) => {
+                        const id = String(a.agent_id || a.agentId || a.id || '');
+                        return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
+                      })}
+                    </select>
+                    <select
+                      data-debug-id="taskchain-new-task-assignee-existing-instance-select"
+                      value={newTaskAssigneeInstanceId}
+                      onChange={(e) => setNewTaskAssigneeInstanceId(e.target.value)}
+                      disabled={!newTaskAssigneeAgentId || newTaskAssigneeInstancesQuery.isFetching}
+                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
+                    >
+                      <option value="">{!newTaskAssigneeAgentId ? 'Choose an agent first…' : newTaskAssigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                      {newTaskAssigneeExistingInstances.map((inst: any) => {
+                        const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                        return (
+                          <AgentInstanceOption
+                            key={iid}
+                            value={iid}
+                            instanceId={iid}
+                            defaultAgentName={selectedNewTaskAssigneeAgent?.name || selectedNewTaskAssigneeAgent?.display_name || selectedNewTaskAssigneeAgent?.agent_id}
+                            runtimeStatus={inst.runtime_status}
+                          />
+                        );
+                      })}
+                    </select>
+                  </div>
+                )}
+
+                {newTaskAssigneeMode === 'user' && (
+                  <div>
+                    <input
+                      data-debug-id="taskchain-new-task-assignee-userid-input"
+                      type="text"
+                      value={newTaskAssigneeUserId}
+                      onChange={(e) => setNewTaskAssigneeUserId(e.target.value)}
+                      placeholder="e.g. user"
+                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Reviewers Section */}
+              <div className="rounded border border-white/10 bg-white/[0.02] p-3">
+                <label className="block font-semibold text-zinc-300 mb-1">Reviewers ({newTaskStagedReviewerRefs.length})</label>
+                {newTaskStagedReviewerRefs.length > 0 && (
+                  <div data-debug-id="taskchain-new-task-reviewers-list" className="mb-2 flex flex-wrap gap-1.5 rounded border border-white/10 bg-zinc-900/50 p-2">
+                    {newTaskStagedReviewerRefs.map((r, idx) => (
+                      <span
+                        key={r.agent_instance_id || r.user_id || idx}
+                        data-debug-id={`taskchain-new-task-reviewer-chip-${idx}`}
+                        className="inline-flex items-center gap-1.5 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200"
+                      >
+                        {r.agent_instance_id ? <InstanceIdLink instanceId={r.agent_instance_id} /> : <span>{r.user_id}</span>}
+                        <button
+                          type="button"
+                          data-debug-id={`taskchain-new-task-reviewer-remove-btn-${idx}`}
+                          onClick={() => handleRemoveNewTaskStagedReviewer(idx)}
+                          className="text-zinc-400 hover:text-red-400"
+                          title="Remove reviewer"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-2 border-t border-white/10 pt-2 space-y-2">
+                  <span className="text-[11px] text-zinc-400">Add a reviewer:</span>
+                  <div data-debug-id="taskchain-new-task-add-reviewer-mode" className="flex gap-1 rounded bg-zinc-900 p-1">
+                    <button
+                      type="button"
+                      data-debug-id="taskchain-new-task-add-reviewer-mode-member"
+                      onClick={() => setNewTaskAddReviewerMode('member')}
+                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'member' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                    >
+                      Member
+                    </button>
+                    <button
+                      type="button"
+                      data-debug-id="taskchain-new-task-add-reviewer-mode-existing"
+                      onClick={() => setNewTaskAddReviewerMode('existing')}
+                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                    >
+                      Other
+                    </button>
+                    <button
+                      type="button"
+                      data-debug-id="taskchain-new-task-add-reviewer-mode-user"
+                      onClick={() => setNewTaskAddReviewerMode('user')}
+                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'user' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                    >
+                      User
+                    </button>
+                  </div>
+
+                  {newTaskAddReviewerMode === 'member' && (
+                    <div>
+                      <select
+                        data-debug-id="taskchain-new-task-add-reviewer-member-select"
+                        value={newTaskAddReviewerMemberInstanceId}
+                        onChange={(e) => setNewTaskAddReviewerMemberInstanceId(e.target.value)}
+                        className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                      >
+                        <option value="">Select member…</option>
+                        {members.map((m: any) => {
+                          const id = String(m.agentInstanceId || m.agent_instance_id || '');
+                          return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
+                        })}
+                      </select>
+                    </div>
+                  )}
+
+                  {newTaskAddReviewerMode === 'existing' && (
+                    <div className="space-y-2">
+                      <select
+                        data-debug-id="taskchain-new-task-add-reviewer-agentid-select"
+                        value={newTaskAddReviewerAgentId}
+                        onChange={(e) => { setNewTaskAddReviewerAgentId(e.target.value); setNewTaskAddReviewerInstanceId(''); }}
+                        className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                      >
+                        <option value="">Choose agent…</option>
+                        {agentIdentities.map((a: any) => {
+                          const id = String(a.agent_id || a.agentId || a.id || '');
+                          return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
+                        })}
+                      </select>
+                      <select
+                        data-debug-id="taskchain-new-task-add-reviewer-existing-instance-select"
+                        value={newTaskAddReviewerInstanceId}
+                        onChange={(e) => setNewTaskAddReviewerInstanceId(e.target.value)}
+                        disabled={!newTaskAddReviewerAgentId || newTaskReviewerInstancesQuery.isFetching}
+                        className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
+                      >
+                        <option value="">{!newTaskAddReviewerAgentId ? 'Choose an agent first…' : newTaskReviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                        {newTaskReviewerExistingInstances.map((inst: any) => {
+                          const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                          return (
+                            <AgentInstanceOption
+                              key={iid}
+                              value={iid}
+                              instanceId={iid}
+                              defaultAgentName={selectedNewTaskReviewerAgent?.name || selectedNewTaskReviewerAgent?.display_name || selectedNewTaskReviewerAgent?.agent_id}
+                              runtimeStatus={inst.runtime_status}
+                            />
+                          );
+                        })}
+                      </select>
+                    </div>
+                  )}
+
+                  {newTaskAddReviewerMode === 'user' && (
+                    <div>
+                      <input
+                        data-debug-id="taskchain-new-task-add-reviewer-userid-input"
+                        type="text"
+                        value={newTaskAddReviewerUserId}
+                        onChange={(e) => setNewTaskAddReviewerUserId(e.target.value)}
+                        placeholder="e.g. user"
+                        className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      data-debug-id="taskchain-new-task-add-reviewer-btn"
+                      onClick={handleAddNewTaskStagedReviewer}
+                      className="rounded bg-zinc-800 px-3 py-1 font-semibold text-sky-400 hover:bg-zinc-700"
+                    >
+                      + Add reviewer
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Blocked-On (Depends-On) Section */}
+              <div className="rounded border border-white/10 bg-white/[0.02] p-3">
+                <label className="block font-semibold text-zinc-300 mb-1">
+                  Blocked On (Depends On) {newTaskDependsOnIds.length > 0 && `(${newTaskDependsOnIds.length})`}
+                </label>
+                <p className="text-[11px] text-zinc-500 mb-2">Select existing tasks that must complete before this task can begin.</p>
+                {tasks.length === 0 ? (
+                  <p className="text-[11px] text-zinc-500 italic">No existing tasks in this chain yet.</p>
+                ) : (
+                  <div
+                    data-debug-id="taskchain-new-task-depends-on-list"
+                    className="max-h-40 overflow-y-auto space-y-1.5 rounded border border-white/10 bg-zinc-900/50 p-2"
+                  >
+                    {tasks.map((t: any) => {
+                      const tid = String(t.taskId || t.id);
+                      const isSelected = newTaskDependsOnIds.includes(tid);
+                      return (
+                        <label
+                          key={tid}
+                          data-debug-id={`taskchain-new-task-depends-on-option-${tid}`}
+                          className={`flex items-center gap-2 rounded px-2 py-1.5 cursor-pointer text-xs select-none transition-colors ${
+                            isSelected ? 'bg-sky-950/60 border border-sky-500/30 text-white' : 'hover:bg-white/5 text-zinc-300'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setNewTaskDependsOnIds((prev) => [...prev, tid]);
+                              } else {
+                                setNewTaskDependsOnIds((prev) => prev.filter((id) => id !== tid));
+                              }
+                            }}
+                            className="rounded border-zinc-700 bg-zinc-900 text-sky-500 focus:ring-0 focus:ring-offset-0"
+                          />
+                          <span className="font-mono text-zinc-400 text-[11px]">{tid}</span>
+                          <span className="truncate flex-1 font-medium">{t.title}</span>
+                          <span className="text-[10px] text-zinc-500 uppercase">{t.status}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {newTaskError && (
+                <p data-debug-id="taskchain-new-task-error" className="text-[11px] text-red-300">{newTaskError}</p>
+              )}
             </div>
+
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setShowNewTaskModal(false)}
+                onClick={() => { resetNewTaskForm(); setShowNewTaskModal(false); }}
                 className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
               >
                 Cancel
@@ -1203,9 +1630,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <button
                 type="submit"
                 data-debug-id="taskchain-new-task-submit-btn"
-                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500"
+                disabled={creatingTask}
+                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
               >
-                Create Task
+                {creatingTask ? 'Creating…' : 'Create Task'}
               </button>
             </div>
           </form>
@@ -1637,7 +2065,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       <option value="">Select member…</option>
                       {members.map((m: any) => {
                         const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                        return <option key={id} value={id}>{m.role}: {id}</option>;
+                        return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
                       })}
                     </select>
                   </div>
