@@ -99,6 +99,7 @@ Update_Task_Input :: struct {
 Task_Comment_Input :: struct {
 	task_id: domain.Task_ID,
 	body: string,
+	notify: []string,
 }
 
 Comment_Input :: struct {
@@ -704,85 +705,7 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 	}
 }
 
-// notify_task_comment wakes the task's current actionable owner when a NEW comment
-// is posted, so a comment asking the assignee/reviewer to act actually reaches the
-// agent (previously only status changes notified; comments were UI-only). It
-// resolves the actionable target for the task's current status (assignee for
-// assigned/in_progress/validated_not_good, reviewer for in_validation, coordinator
-// for validated_good), skips the comment's own author, and pushes a notify_task_nudge
-// command to that target's bridge (the bridge coalesces/pushes to the live wrapper).
-// Fire-and-forget: comment creation succeeds regardless of delivery.
-notify_task_comment :: proc(service: ^Taskchain_Service, author_agent_instance_id: string, task: domain.Task) {
-	if service.bridge_command_sink.send_runtime_command == nil do return
-	if service.agents == nil do return
-	chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
-	if !chain_ok do return
 
-	// R4: a comment notifies ALL assignees + participants (assignees, reviewers,
-	// chain default reviewers), but per-recipient GATED on CT-6 — a participant is
-	// only woken if this task is THAT participant's persisted current task. The
-	// author is never self-notified, and each recipient is notified at most once.
-	candidates := make([dynamic]string)
-	defer delete(candidates)
-	seen := make(map[string]bool)
-	defer delete(seen)
-	add_candidate :: proc(candidates: ^[dynamic]string, seen: ^map[string]bool, id: string) {
-		t := strings.trim_space(id)
-		if t == "" do return
-		if seen[t] do return
-		seen[t] = true
-		append(candidates, t)
-	}
-	assignees := extract_instances_from_ref_blob(task.assignee_ref_json)
-	defer delete(assignees)
-	for id in assignees do add_candidate(&candidates, &seen, id)
-	reviewers := extract_instances_from_ref_blob(task.reviewer_refs_json)
-	defer delete(reviewers)
-	for id in reviewers do add_candidate(&candidates, &seen, id)
-	def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
-	defer delete(def_reviewers)
-	for id in def_reviewers do add_candidate(&candidates, &seen, id)
-
-	now := platform.clock_now(service.clock)
-
-	for target in candidates {
-		// Don't notify the author about their own comment.
-		if target == author_agent_instance_id do continue
-		// CT-6 gate: only wake a participant whose current task is this task.
-		action, gated_ok := notification_gate_action(service, target, task.task_id)
-		if !gated_ok do continue
-		inst, inst_ok, _ := iface.agent_get_instance(service.agents, target)
-		if !inst_ok || inst.bridge_id == "" do continue
-		// R8: human-readable message states the action (work vs review) + title.
-		message := comment_notify_message(task, action)
-		defer delete(message)
-		cmd_id := platform.generate_id(service.ids, "cmd_")
-		b := strings.builder_make()
-		strings.write_string(&b, `{"type":"notify_task_nudge","origin":"comment","command_id":"`)
-		contracts.write_json_string(&b, cmd_id)
-		strings.write_string(&b, `","agent_instance_id":"`)
-		contracts.write_json_string(&b, target)
-		strings.write_string(&b, `","task_id":"`)
-		contracts.write_json_string(&b, string(task.task_id))
-		strings.write_string(&b, `","chain_id":"`)
-		contracts.write_json_string(&b, string(task.chain_id))
-		strings.write_string(&b, `","target_instance_id":"`)
-		contracts.write_json_string(&b, target)
-		strings.write_string(&b, `","target_role":"`)
-		contracts.write_json_string(&b, action)
-		strings.write_string(&b, `","action":"`)
-		contracts.write_json_string(&b, action)
-		strings.write_string(&b, `","task_status":"`)
-		contracts.write_json_string(&b, task_status_string(task.status))
-		strings.write_string(&b, `","message":"`)
-		contracts.write_json_string(&b, message)
-		strings.write_string(&b, `","created_at":"`)
-		contracts.write_json_string(&b, now)
-		strings.write_string(&b, `"}`)
-		_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
-		strings.builder_destroy(&b)
-	}
-}
 
 valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	if current == next do return true
@@ -1112,27 +1035,94 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	return nudge, true, domain.Domain_Error{}
 }
 
-comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Task_Comment_Input) -> (domain.Task_Comment, bool, domain.Domain_Error) {
-	if strings.trim_space(input.body) == "" do return domain.Task_Comment{}, false, domain.domain_error(.Validation_Failed, "comment body is required")
+comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Task_Comment_Input) -> (domain.Task_Comment, []string, bool, domain.Domain_Error) {
+	if strings.trim_space(input.body) == "" do return domain.Task_Comment{}, nil, false, domain.domain_error(.Validation_Failed, "comment body is required")
 	task, ok, err := get_task(service, auth, input.task_id)
-	if !ok do return domain.Task_Comment{}, false, err
-	if task.publish_state != .Published do return domain.Task_Comment{}, false, domain.domain_error(.Conflict, "draft task cannot be commented on")
+	if !ok do return domain.Task_Comment{}, nil, false, err
+	if task.publish_state != .Published do return domain.Task_Comment{}, nil, false, domain.domain_error(.Conflict, "draft task cannot be commented on")
 	if auth.kind == .Instance_Token {
-		if auth.agent_instance_id == "" do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is required")
+		if auth.agent_instance_id == "" do return domain.Task_Comment{}, nil, false, domain.domain_error(.Forbidden, "instance token is required")
 		chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
 		is_coord := chain_ok && is_chain_coordinator(service, chain, auth.agent_instance_id)
 		is_actor := strings.contains(task.assignee_ref_json, auth.agent_instance_id) || strings.contains(task.reviewer_refs_json, auth.agent_instance_id)
-		if !is_coord && !is_actor do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is not assigned to or coordinator of this task")
+		if !is_coord && !is_actor do return domain.Task_Comment{}, nil, false, domain.domain_error(.Forbidden, "instance token is not assigned to or coordinator of this task")
 	}
+
+	invalid_ids := make([dynamic]string)
+	defer delete(invalid_ids)
+	if len(input.notify) > 0 {
+		for target in input.notify {
+			t := strings.trim_space(target)
+			if t == "" do continue
+			if service.agents == nil {
+				append(&invalid_ids, t)
+				continue
+			}
+			inst, inst_ok, _ := iface.agent_get_instance(service.agents, t)
+			if !inst_ok || inst.agent_instance_id == "" {
+				append(&invalid_ids, t)
+			}
+		}
+	}
+	if len(invalid_ids) > 0 {
+		msg := fmt.tprintf("invalid target instance IDs: %s", strings.join(invalid_ids[:], ", "))
+		return domain.Task_Comment{}, nil, false, domain.domain_error(.Validation_Failed, msg)
+	}
+
 	now := platform.clock_now(service.clock)
 	comment := domain.Task_Comment{comment_id = platform.generate_id(service.ids, "cmt_"), task_id = task.task_id, chain_id = task.chain_id, owner_user_id = task.owner_user_id, author_agent_instance_id = auth.agent_instance_id, body = input.body, created_at = now, updated_at = now}
 	saved, ok2, err2 := iface.taskchain_save_comment(service.repo, comment)
-	if ok2 {
-		// Wake the task's current actionable owner so a comment actually reaches the
-		// agent (not just the UI). author = the commenter (empty for user comments).
-		notify_task_comment(service, auth.agent_instance_id if auth.kind == .Instance_Token else "", task)
+	if !ok2 do return saved, nil, ok2, err2
+
+	notified := make([dynamic]string)
+	if len(input.notify) > 0 && service.bridge_command_sink.send_runtime_command != nil && service.agents != nil {
+		author := auth.agent_instance_id if auth.kind == .Instance_Token && auth.agent_instance_id != "" else (auth.user_id if auth.user_id != "" else "user")
+		preview: string
+		if len(input.body) <= 30 {
+			preview = input.body
+		} else {
+			preview = strings.concatenate({input.body[:30], "..."})
+		}
+		message := fmt.tprintf("Comment from %s on task %s: %s", author, string(task.task_id), preview)
+		defer if len(input.body) > 30 do delete(preview)
+
+		seen := make(map[string]bool)
+		defer delete(seen)
+		for target in input.notify {
+			t := strings.trim_space(target)
+			if t == "" || seen[t] do continue
+			seen[t] = true
+			inst, inst_ok, _ := iface.agent_get_instance(service.agents, t)
+			if !inst_ok || inst.bridge_id == "" do continue
+
+			cmd_id := platform.generate_id(service.ids, "cmd_")
+			b := strings.builder_make()
+			strings.write_string(&b, `{"type":"notify_task_nudge","origin":"comment","command_id":"`)
+			contracts.write_json_string(&b, cmd_id)
+			strings.write_string(&b, `","agent_instance_id":"`)
+			contracts.write_json_string(&b, t)
+			strings.write_string(&b, `","task_id":"`)
+			contracts.write_json_string(&b, string(task.task_id))
+			strings.write_string(&b, `","chain_id":"`)
+			contracts.write_json_string(&b, string(task.chain_id))
+			strings.write_string(&b, `","target_instance_id":"`)
+			contracts.write_json_string(&b, t)
+			strings.write_string(&b, `","target_role":"comment"`)
+			strings.write_string(&b, `,"action":"comment"`)
+			strings.write_string(&b, `,"task_status":"`)
+			contracts.write_json_string(&b, task_status_string(task.status))
+			strings.write_string(&b, `","message":"`)
+			contracts.write_json_string(&b, message)
+			strings.write_string(&b, `","created_at":"`)
+			contracts.write_json_string(&b, now)
+			strings.write_string(&b, `"}`)
+			_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
+			strings.builder_destroy(&b)
+			append(&notified, t)
+		}
 	}
-	return saved, ok2, err2
+
+	return saved, notified[:], true, domain.Domain_Error{}
 }
 
 list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {

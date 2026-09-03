@@ -216,8 +216,24 @@ ctl_hub_tasks :: proc(base, token, action: string, args: []string) {
 		if sub == "" || sub == "list" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), ""); return }
 		if sub == "add" {
 			body := option_value(args, "--body", "")
-			if body == "" { fmt.println("usage: ham-ctl hub tasks comments --chain-id <id> --task-id <id> add --body <text>"); return }
-			ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("body", body))); return
+			if body == "" { fmt.println("usage: ham-ctl hub tasks comments --chain-id <id> --task-id <id> add --body <text> [--notify <id,id...>]"); return }
+			fields := make([dynamic]string)
+			append(&fields, json_kv("body", body))
+			if notify := option_value(args, "--notify", ""); notify != "" {
+				parts := strings.split(notify, ",")
+				defer delete(parts)
+				buf := strings.builder_make()
+				strings.write_string(&buf, "\"notify\":[")
+				for p, i in parts {
+					if i > 0 do strings.write_byte(&buf, ',')
+					strings.write_byte(&buf, '"')
+					strings.write_string(&buf, strings.trim_space(p))
+					strings.write_byte(&buf, '"')
+				}
+				strings.write_byte(&buf, ']')
+				append(&fields, strings.to_string(buf))
+			}
+			ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), json_object_from_slice(fields[:])); return
 		}
 	}
 	if action == "votes" {

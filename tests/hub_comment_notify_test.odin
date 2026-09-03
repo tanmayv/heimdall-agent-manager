@@ -108,40 +108,45 @@ main :: proc() {
 	sink := project.Bridge_Command_Sink{ctx = nil, send_runtime_command = capture_send}
 	service := taskchain_service.new_taskchain_service_with_runtime(&repo, &agents, sink, &clock, &ids)
 
-	// 1) A USER comment (Trusted_Proxy, no agent author) must notify the assignee
-	//    (task is In_Progress -> actionable owner is the assignee).
+	// 1) Comment without --notify must NOT emit any automatic notifications.
 	captured.count = 0
 	user_auth := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "alice"}
-	_, ok, err := taskchain_service.comment_task(&service, user_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "please continue"})
+	_, notified1, ok, err := taskchain_service.comment_task(&service, user_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "please continue"})
 	check(ok, fmt.tprintf("user comment should save: %v", err))
-	check(captured.count == 1, fmt.tprintf("user comment must emit exactly one bridge notify, got %d", captured.count))
-	check(strings.contains(captured.bodies[0], `"type":"notify_task_nudge"`), "notify command type must be notify_task_nudge")
-	check(strings.contains(captured.bodies[0], `"origin":"comment"`), "notify must be tagged origin=comment")
-	check(strings.contains(captured.bodies[0], "inst_assignee"), "notify must target the assignee")
-	check(strings.contains(captured.bodies[0], `"action":"work"`), "comment notify must state action=work (R8)")
+	check(captured.count == 0, fmt.tprintf("comment without notify must emit 0 notifications, got %d", captured.count))
+	check(len(notified1) == 0, "notified list should be empty")
 
-	// 2) The ASSIGNEE commenting on their OWN task must NOT self-notify.
-	captured.count = 0
-	assignee_auth := contracts.Auth_Context{kind = .Instance_Token, user_id = "alice", agent_instance_id = "inst_assignee"}
-	_, ok2, _ := taskchain_service.comment_task(&service, assignee_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "on it"})
-	check(ok2, "assignee self-comment should save")
-	check(captured.count == 0, fmt.tprintf("assignee commenting on own task must NOT self-notify, got %d", captured.count))
-
-	// 3) The COORDINATOR commenting must notify the assignee (author != target).
+	// 2) Comment with explicit --notify target must emit notification to target.
 	captured.count = 0
 	coord_auth := contracts.Auth_Context{kind = .Instance_Token, user_id = "alice", agent_instance_id = "inst_coord"}
-	_, ok3, _ := taskchain_service.comment_task(&service, coord_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "any update?"})
-	check(ok3, "coordinator comment should save")
-	check(captured.count == 1, "coordinator comment must notify the assignee")
-	check(strings.contains(captured.bodies[0], "inst_assignee"), "coordinator comment targets assignee")
+	targets := [?]string{"inst_assignee"}
+	_, notified2, ok2, _ := taskchain_service.comment_task(&service, coord_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "short comment", notify = targets[:]})
+	check(ok2, "comment with valid notify target should save")
+	check(captured.count == 1, fmt.tprintf("must emit exactly 1 notification, got %d", captured.count))
+	check(len(notified2) == 1 && notified2[0] == "inst_assignee", "notified list must contain target")
+	check(strings.contains(captured.bodies[0], `"agent_instance_id":"inst_assignee"`), "target must match")
+	check(strings.contains(captured.bodies[0], "inst_coord"), "notification must contain author")
+	check(strings.contains(captured.bodies[0], "task_1"), "notification must contain task ID")
+	check(strings.contains(captured.bodies[0], "short comment"), "notification must contain comment preview")
 
-	// 4) CT-6 GATING: if the assignee's current task is a DIFFERENT task, a comment
-	//    on task_1 (no longer its current task) must NOT wake it.
+	// 3) Comment with body > 30 chars must be truncated with ellipsis.
 	captured.count = 0
-	a.instances[0].current_task_id = "task_other"
-	_, ok4, _ := taskchain_service.comment_task(&service, coord_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "gated?"})
-	check(ok4, "coordinator comment should still save")
-	check(captured.count == 0, fmt.tprintf("comment must be gated out when task is not the recipient's current task, got %d", captured.count))
+	long_body := "123456789012345678901234567890EXTRA_CHARS"
+	_, _, ok3, _ := taskchain_service.comment_task(&service, coord_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = long_body, notify = targets[:]})
+	check(ok3, "comment with long body should save")
+	check(captured.count == 1, "long body comment emitted 1 notification")
+	check(strings.contains(captured.bodies[0], "123456789012345678901234567890..."), "must truncate to 30 chars with ellipsis")
+	check(!strings.contains(captured.bodies[0], "EXTRA_CHARS"), "must not contain characters beyond 30")
+
+	// 4) Validation: invalid target instance IDs must fail, posting NO comment.
+	captured.count = 0
+	prev_comments := r.comment_count
+	bad_targets := [?]string{"inst_assignee", "inst_nonexistent", "inst_invalid2"}
+	_, _, ok4, err4 := taskchain_service.comment_task(&service, coord_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "fail me", notify = bad_targets[:]})
+	check(!ok4, "comment with invalid notify target must fail")
+	check(r.comment_count == prev_comments, "no comment should be saved on validation failure")
+	check(captured.count == 0, "no notification should be emitted on validation failure")
+	check(strings.contains(err4.message, "inst_nonexistent") && strings.contains(err4.message, "inst_invalid2"), "error message must report invalid instance IDs")
 
 	fmt.println("PASS: hub comment notify")
 }

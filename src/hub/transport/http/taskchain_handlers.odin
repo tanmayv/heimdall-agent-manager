@@ -382,10 +382,12 @@ create_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
-	comment, saved, err := taskchain_service.comment_task(h.taskchains, auth_ctx, taskchain_service.Task_Comment_Input{task_id = task_id, body = json_string(req.body, "body")})
+	notify := json_array_of_strings_raw(req.body, "notify")
+	comment, notified, saved, err := taskchain_service.comment_task(h.taskchains, auth_ctx, taskchain_service.Task_Comment_Input{task_id = task_id, body = json_string(req.body, "body"), notify = notify})
 	if !saved do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(comment.owner_user_id), string(comment.task_id), string(comment.chain_id), "commented")
-	b := strings.builder_make(); write_task_comment_json(&b, comment)
+	b := strings.builder_make()
+	write_task_comment_response_json(&b, comment, notified)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
@@ -534,6 +536,40 @@ write_task_comment_json :: proc(b: ^strings.Builder, c: domain.Task_Comment) {
 	strings.write_string(b, "\",\"body\":\""); write_handler_json_string(b, c.body)
 	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, c.created_at)
 	strings.write_string(b, "\"}")
+}
+
+write_task_comment_response_json :: proc(b: ^strings.Builder, c: domain.Task_Comment, notified: []string) {
+	strings.write_string(b, "{\"comment_id\":\""); write_handler_json_string(b, c.comment_id)
+	strings.write_string(b, "\",\"task_id\":\""); write_handler_json_string(b, string(c.task_id))
+	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id))
+	strings.write_string(b, "\",\"author_agent_instance_id\":\""); write_handler_json_string(b, c.author_agent_instance_id)
+	strings.write_string(b, "\",\"body\":\""); write_handler_json_string(b, c.body)
+	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, c.created_at)
+	strings.write_string(b, "\",\"notified\":[")
+	for id, i in notified {
+		if i > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "\"")
+		write_handler_json_string(b, id)
+		strings.write_string(b, "\"")
+	}
+	strings.write_string(b, "]}")
+}
+
+json_array_of_strings_raw :: proc(body: string, key: string) -> []string {
+	raw := json_array_optional(body, key)
+	if raw == "" || raw == "[]" do return nil
+	res := make([dynamic]string)
+	search := 0
+	for search < len(raw) {
+		q1 := strings.index_byte(raw[search:], '"')
+		if q1 < 0 do break
+		q2 := strings.index_byte(raw[search + q1 + 1:], '"')
+		if q2 < 0 do break
+		val := raw[search + q1 + 1 : search + q1 + 1 + q2]
+		if val != "" do append(&res, val)
+		search = search + q1 + 1 + q2 + 1
+	}
+	return res[:]
 }
 
 path_part :: proc(path: string, index: int) -> string {

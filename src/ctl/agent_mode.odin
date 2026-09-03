@@ -283,8 +283,25 @@ ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
 		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
 		body := option_value(args, "--body", "")
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
-		if task_id == "" || body == "" { fmt.println("usage: ham-ctl agent tasks comment --task-id <id> --body <text>"); return }
-		ctl_agent_call(endpoint, token, "agent.tasks.comment", json_object(json_kv("task_id", task_id), json_kv("body", body)))
+		if task_id == "" || body == "" { fmt.println("usage: ham-ctl agent tasks comment --task-id <id> --body <text> [--notify <id,id...>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("task_id", task_id))
+		append(&fields, json_kv("body", body))
+		if notify := option_value(args, "--notify", ""); notify != "" {
+			parts := strings.split(notify, ",")
+			defer delete(parts)
+			buf := strings.builder_make()
+			strings.write_string(&buf, "\"notify\":[")
+			for p, i in parts {
+				if i > 0 do strings.write_byte(&buf, ',')
+				strings.write_byte(&buf, '"')
+				strings.write_string(&buf, strings.trim_space(p))
+				strings.write_byte(&buf, '"')
+			}
+			strings.write_byte(&buf, ']')
+			append(&fields, strings.to_string(buf))
+		}
+		ctl_agent_call(endpoint, token, "agent.tasks.comment", json_object_from_slice(fields[:]))
 		return
 	}
 	if action == "status" {

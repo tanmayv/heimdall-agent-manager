@@ -452,10 +452,26 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			if err == nil do body = string(data)
 		}
 		if body == "" {
-			fmt.println("usage: ham-ctl tasks comment --chain <id> --task <id> --body <text>")
+			fmt.println("usage: ham-ctl tasks comment --chain <id> --task <id> --body <text> [--notify <id,id...>]")
 			return
 		}
-		ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("body", body)))
+		fields := make([dynamic]string)
+		append(&fields, json_kv("body", body))
+		if notify := option_value(args, "--notify", ""); notify != "" {
+			parts := strings.split(notify, ",")
+			defer delete(parts)
+			buf := strings.builder_make()
+			strings.write_string(&buf, "\"notify\":[")
+			for p, i in parts {
+				if i > 0 do strings.write_byte(&buf, ',')
+				strings.write_byte(&buf, '"')
+				strings.write_string(&buf, strings.trim_space(p))
+				strings.write_byte(&buf, '"')
+			}
+			strings.write_byte(&buf, ']')
+			append(&fields, strings.to_string(buf))
+		}
+		ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), json_object_from_slice(fields[:]))
 		return
 	}
 
@@ -473,10 +489,26 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 				if err == nil do body = string(data)
 			}
 			if body == "" {
-				fmt.println("usage: ham-ctl tasks comments --chain <id> --task <id> add --body <text>")
+				fmt.println("usage: ham-ctl tasks comments --chain <id> --task <id> add --body <text> [--notify <id,id...>]")
 				return
 			}
-			ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("body", body)))
+			fields := make([dynamic]string)
+			append(&fields, json_kv("body", body))
+			if notify := option_value(args, "--notify", ""); notify != "" {
+				parts := strings.split(notify, ",")
+				defer delete(parts)
+				buf := strings.builder_make()
+				strings.write_string(&buf, "\"notify\":[")
+				for p, i in parts {
+					if i > 0 do strings.write_byte(&buf, ',')
+					strings.write_byte(&buf, '"')
+					strings.write_string(&buf, strings.trim_space(p))
+					strings.write_byte(&buf, '"')
+				}
+				strings.write_byte(&buf, ']')
+				append(&fields, strings.to_string(buf))
+			}
+			ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), json_object_from_slice(fields[:]))
 			return
 		}
 	}

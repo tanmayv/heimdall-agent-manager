@@ -219,10 +219,11 @@ agent_action_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response
 	auth, _, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
-	comment, saved, err := taskchain_service.comment_task(h.taskchains, auth, taskchain_service.Task_Comment_Input{task_id = domain.Task_ID(json_string(params, "task_id")), body = json_string(params, "body")})
+	notify := json_array_of_strings_raw(params, "notify")
+	comment, notified, saved, err := taskchain_service.comment_task(h.taskchains, auth, taskchain_service.Task_Comment_Input{task_id = domain.Task_ID(json_string(params, "task_id")), body = json_string(params, "body"), notify = notify})
 	if !saved do return respond_error(err, req.request_id)
 	b := strings.builder_make()
-	write_task_comment_json(&b, comment)
+	write_task_comment_response_json(&b, comment, notified)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
