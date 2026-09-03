@@ -21,6 +21,7 @@ export default function ChatMessageList({
   renderMessageBody,
   formatTimestamp = () => EMPTY_TIMESTAMP,
   getDeliveryStatus = () => EMPTY_DELIVERY,
+  agentIsWorking = false,
   wrapperClassName = 'relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden',
   scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-[18px] bg-[#090909] p-5',
 }: {
@@ -37,6 +38,7 @@ export default function ChatMessageList({
   renderMessageBody?: (args: { message: ChatMessage; onReply: (reply: string) => void }) => React.ReactNode;
   formatTimestamp?: (unixMs: number) => ChatTimestamp;
   getDeliveryStatus?: (message: ChatMessage) => ChatDeliveryStatus;
+  agentIsWorking?: boolean;
   wrapperClassName?: string;
   scrollClassName?: string;
 }) {
@@ -130,6 +132,17 @@ export default function ChatMessageList({
             </div>
           );
         })}
+        {agentIsWorking && (
+          <div data-debug-id={`${debugPrefix}-working-indicator`} className="msg flex min-w-0 max-w-full justify-start">
+            <div className="flex w-full flex-col items-start text-sm text-zinc-400">
+              <div className="flex items-center gap-1.5 rounded-full border border-[#262626] bg-[#111111] px-3 py-2 shadow-sm">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500" style={{ animationDelay: '0ms' }} />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500" style={{ animationDelay: '150ms' }} />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500" style={{ animationDelay: '300ms' }} />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       {showJump ? (
         <button data-debug-id={`${debugPrefix}-jump-latest-btn`} onClick={() => scrollToBottom('smooth')} className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-[11px] text-zinc-100 shadow-lg hover:bg-black">Jump to latest ↓</button>

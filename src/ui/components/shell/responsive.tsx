@@ -167,7 +167,7 @@ export function MobileTopBar({ title, onOpenDrawer, inspectorToggle }: MobileTop
         data-debug-id="shell-mobile-drawer-open"
         onClick={onOpenDrawer}
         aria-label="Open navigation"
-        className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10 ${TOUCH_TARGET_CLASS}`}
+        className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-zinc-200 hover:bg-white/10 ${TOUCH_TARGET_CLASS}`}
       >
         <Icon name="menu" size={18} />
       </button>
@@ -208,7 +208,7 @@ export function MobileBackHeader({ title, onBack, action }: MobileBackHeaderProp
         data-debug-id="shell-mobile-back-btn"
         onClick={onBack}
         aria-label="Back"
-        className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10 ${TOUCH_TARGET_CLASS}`}
+        className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-zinc-200 hover:bg-white/10 ${TOUCH_TARGET_CLASS}`}
       >
         <Icon name="chevron-left" size={18} />
       </button>

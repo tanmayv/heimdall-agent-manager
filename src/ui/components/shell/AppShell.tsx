@@ -997,12 +997,12 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <button
             data-debug-id="shell-sidebar-collapse-toggle"
             type="button"
-            onClick={() => setCollapsed((value) => !value)}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/5 text-sm text-zinc-300 hover:bg-white/10 hover:text-white"
+            onClick={() => isMobile ? setDrawerOpen(false) : setCollapsed((value) => !value)}
+            aria-label={isMobile ? 'Close navigation' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
+            title={isMobile ? 'Close navigation' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-sm text-zinc-300 hover:bg-white/10 hover:text-white"
           >
-            <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={16} />
+            <Icon name={isMobile ? 'close' : (collapsed ? 'chevron-right' : 'chevron-left')} size={16} />
           </button>
         </div>
 

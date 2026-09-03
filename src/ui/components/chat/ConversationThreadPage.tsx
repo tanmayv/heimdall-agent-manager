@@ -1124,6 +1124,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           onLoadOlder={loadOlderMessages}
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
+          agentIsWorking={isWorking}
           renderMessageBody={({ message }) => renderConversationMessageBody(message)}
           wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
           scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
@@ -1158,6 +1159,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           onLoadOlder={loadOlderMessages}
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
+          agentIsWorking={isWorking}
           renderMessageBody={({ message }) => renderConversationMessageBody(message)}
           wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
           scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
