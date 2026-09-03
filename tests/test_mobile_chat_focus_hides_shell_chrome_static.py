@@ -6,7 +6,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SHELL = (ROOT / "src/ui/components/shell/AppShell.tsx").read_text(encoding="utf-8")
 THREAD = (ROOT / "src/ui/components/chat/ConversationThreadPage.tsx").read_text(encoding="utf-8")
 CHAT_COMPOSER = (ROOT / "src/ui/components/chat/ChatComposer.tsx").read_text(encoding="utf-8")
-LAUNCH = (ROOT / "src/ui/components/chat/ConversationLaunchComposer.tsx").read_text(encoding="utf-8")
 
 
 def require(condition: bool, message: str) -> None:
@@ -14,11 +13,12 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-# Chat inputs/composers opt in to chrome suppression while focused.
+# Chat inputs/composers opt in to chrome suppression while focused. (The
+# new-conversation composer no longer has a message textarea — PS-6 removed it;
+# the user types their first message inside the thread composer instead.)
 for marker, source_name, source in [
     ('data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus"', 'conversation thread composer', THREAD),
     ('data-mobile-shell-chrome="hide-on-focus"', 'shared ChatComposer', CHAT_COMPOSER),
-    ('data-debug-id="new-convo-input" data-mobile-shell-chrome="hide-on-focus"', 'new conversation textarea', LAUNCH),
 ]:
     require(marker in source, f"{source_name} missing mobile shell chrome suppression marker: {marker}")
 

@@ -30,8 +30,10 @@ for marker in [
     require(marker in THREAD, f"ConversationThreadPage missing mobile 16px input marker: {marker}")
 require("textareaClassName = 'w-full resize-none bg-transparent px-4 py-3 text-base" in CHAT_COMPOSER and "sm:text-sm" in CHAT_COMPOSER,
         "shared ChatComposer textarea should use 16px mobile text with desktop fallback")
-require('data-debug-id="new-convo-input"' in LAUNCH and 'px-4 py-3 text-base leading-6 text-white sm:text-sm' in LAUNCH,
-        "launch composer textarea should use 16px mobile text with desktop fallback")
+# NOTE: the new-conversation composer textarea (new-convo-input) was removed in
+# PS-6; the user now types their first message inside the thread composer
+# (covered by the ConversationThreadPage/ChatComposer 16px checks above). The
+# ConversationLaunchComposer is still scanned in the no-zoom guard below.
 require('data-debug-id={`taskchain-task-comment-input-${taskId}`}' in TASK_CHAIN and 'text-base text-white' in TASK_CHAIN and 'sm:text-sm' in TASK_CHAIN,
         "task comment input should use 16px mobile text with desktop fallback")
 # NOTE: the agent-detail ChatComposer 16px override previously asserted against

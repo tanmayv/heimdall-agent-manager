@@ -99,13 +99,15 @@ create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 		if !created do return respond_error(create_err,req.request_id)
 		c,found,find_err:=content_service.get_conversation_by_instance(h.content,auth,inst.agent_instance_id)
 		if !found do return respond_error(find_err,req.request_id)
-		if strings.trim_space(input.initial_body)!="" { _,title_ok,title_err:=content_service.update_conversation_title(h.content,auth,c.conversation_id,chat_title_from_initial(input.initial_body)); if !title_ok do return respond_error(title_err,req.request_id); _,sent,send_err := content_service.send_message(h.content,auth,c.conversation_id,initial); if !sent do return respond_error(send_err,req.request_id); updated,updated_ok,updated_err:=content_service.get_conversation(h.content,auth,c.conversation_id); if !updated_ok do return respond_error(updated_err,req.request_id); c=updated }
+		// Send the initial message when present, but do NOT derive the conversation
+		// title from it: seeding the title from the first message discourages long
+		// messages. The per-run default title ('<agent-name> #<n>', title_source=
+		// default) stays in place so the activity-gated title-nudge engine
+		// (title_nudge.odin) can set a real title later.
+		if strings.trim_space(input.initial_body)!="" { _,sent,send_err := content_service.send_message(h.content,auth,c.conversation_id,initial); if !sent do return respond_error(send_err,req.request_id); updated,updated_ok,updated_err:=content_service.get_conversation(h.content,auth,c.conversation_id); if !updated_ok do return respond_error(updated_err,req.request_id); c=updated }
 		b:=strings.builder_make(); write_chat_json(&b,c); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201)
 	}
 	c,saved,err:=content_service.create_conversation(h.content,auth,input); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_chat_json(&b,c); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201)
-}
-chat_title_from_initial :: proc(body:string)->string{
-	trimmed:=strings.trim_space(body); if len(trimmed)<=120 do return trimmed; return strings.trim_space(trimmed[:120])
 }
 patch_chat_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; c,saved,err:=content_service.update_conversation_title(h.content,auth,path_part(req.path,4),json_string(req.body,"title")); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_chat_json(&b,c); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 list_chat_messages_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; limit:=query_int(req.query,"limit",50); cursor:=query_value(req.query,"cursor"); rows,err:=content_service.list_user_visible_messages(h.content,auth,path_part(req.path,4),limit,cursor); if err.code!=.None do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_byte(&b,'['); next:=""; for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_message_json(&b,r,h.content); next=r.created_at}; strings.write_byte(&b,']'); has_more:=len(rows)>=limit; return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req)) }
