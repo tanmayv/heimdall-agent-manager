@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import http "odin_test:lib/http_client"
 
 Ctl_Transport_Kind :: enum {
 	User,
@@ -74,6 +75,28 @@ ctl_tasks_request :: proc(transport: Ctl_Transport, method, path, body_json: str
 		ctl_agent_call(transport.agent_endpoint, transport.agent_token, "agent.rest.request", params)
 		return
 	}
+}
+
+ctl_tasks_request_local :: proc(transport: Ctl_Transport, method, path, body_json: string) -> (string, bool) {
+	if transport.kind == .User {
+		if transport.user_base_url == "" || transport.user_token == "" {
+			return `{"ok":false,"message":"user transport requires --hub-url and --user-token"}`, false
+		}
+		full_path := hub_url_path_prefix_join(transport.user_base_url, path)
+		headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", transport.user_token})}}
+		response, ok := http.request_with_headers_timeout(method, transport.user_base_url, full_path, body_json, headers[:], http.DEFAULT_TIMEOUT_MS)
+		if !ok do return `{"ok":false,"message":"Hub request failed"}`, false
+		return response.body, true
+	}
+
+	if transport.kind == .Agent {
+		if transport.agent_endpoint == "" || transport.agent_token == "" {
+			return `{"ok":false,"message":"agent transport requires HEIMDALL_BRIDGE_ENDPOINT and HEIMDALL_AGENT_TOKEN"}`, false
+		}
+		params := json_object(json_kv("http_method", method), json_kv("path", path), json_kv("body", body_json))
+		return ctl_agent_local_call(transport.agent_endpoint, transport.agent_token, "agent.rest.request", params)
+	}
+	return "", false
 }
 
 resolve_chain_id :: proc(transport: Ctl_Transport, args: []string) -> string {
@@ -314,7 +337,47 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 			strings.write_byte(&buf, ']')
 			append(&fields, strings.to_string(buf))
 		}
-		ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks", safe_path_part(chain_id)), json_object_from_slice(fields[:]))
+		resp_str, ok := ctl_tasks_request_local(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks", safe_path_part(chain_id)), json_object_from_slice(fields[:]))
+		if !ok {
+			fmt.println(resp_str)
+			return
+		}
+		
+		t_id := extract_json_string_unescaped(resp_str, "task_id", "")
+		if t_id == "" {
+			fmt.println(resp_str)
+			return
+		}
+		
+		t_status := extract_json_string_unescaped(resp_str, "status", "")
+		
+		assignee := "\x1b[31mNONE\x1b[0m"
+		if !strings.contains(resp_str, "\"assignee_ref\":null") && !strings.contains(resp_str, "\"assignee_ref\":{}") && strings.contains(resp_str, "\"assignee_ref\":") { 
+			// Attempt to loosely find agent_instance_id or fallback to "assigned"
+			aref_idx := strings.index(resp_str, "\"assignee_ref\":")
+			maybe_id := extract_json_string_unescaped(resp_str[aref_idx:], "agent_instance_id", "assigned")
+			assignee = maybe_id
+		}
+		
+		reviewers := "\x1b[31mNONE\x1b[0m"
+		if !strings.contains(resp_str, "\"reviewer_refs\":null") && !strings.contains(resp_str, "\"reviewer_refs\":[]") && strings.contains(resp_str, "\"reviewer_refs\":") {
+			reviewers = "assigned"
+		}
+		
+		deps_str := "none"
+		if !strings.contains(resp_str, "\"depends_on\":null") && !strings.contains(resp_str, "\"depends_on\":[]") && strings.contains(resp_str, "\"depends_on\":[") {
+			deps_idx := strings.index(resp_str, "\"depends_on\":[")
+			end_idx := strings.index(resp_str[deps_idx:], "]")
+			if deps_idx >= 0 && end_idx > 0 {
+				deps_str = resp_str[deps_idx+13 : deps_idx+end_idx+1] // extracting `["foo"]`
+			}
+		}
+		
+		blocked_str := "false"
+		if strings.contains(resp_str, "\"blocked\":true") { blocked_str = "\x1b[31mtrue\x1b[0m" } // also highlight blocked
+		
+		fmt.printf("Task created successfully (ID: %s)\n", t_id)
+		fmt.printf("Status: %s | Assignee: %s | Reviewers: %s | Depends on: %s | Blocked: %s\n", t_status, assignee, reviewers, deps_str, blocked_str)
 		return
 	}
 

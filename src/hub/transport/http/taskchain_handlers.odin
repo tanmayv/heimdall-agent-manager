@@ -226,7 +226,9 @@ create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !created do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "created")
 	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
-	b := strings.builder_make(); write_task_json(&b, task)
+	chain_deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
+	b := strings.builder_make()
+	write_task_detail_json(&b, h, auth_ctx, task, chain_deps)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
