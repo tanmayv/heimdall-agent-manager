@@ -27,7 +27,7 @@ import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import RuntimeChip, { runtimeStateFromStatus } from '../runtime/RuntimeChip';
 import Icon from '../Icon';
-import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
+import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
 import { useViewport } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
@@ -356,6 +356,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [restartInstance, restartState] = useRestartAgentInstanceMutation();
   const [stopInstance, stopState] = useStopAgentInstanceMutation();
   const [createArtifact] = useCreateArtifactMutation();
+  const [setInstanceCurrentTask, setInstanceCurrentTaskState] = useSetInstanceCurrentTaskMutation();
 
   const conversation = convQuery.data?.conversation || null;
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
@@ -418,25 +419,31 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');
   const conversationRuntimeStatus = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
-  // Working indicator (above the composer): the instance's activity_status
-  // (driven by the harness-agnostic pane-capture detector) tells us whether the
-  // underlying agent is actively working vs idle. When working, surface the
-  // agent's current in-progress task title so it reads "Working: <task>".
   const activityStatus = String(instance?.activity_status || instance?.activityStatus || '').toLowerCase();
   const isWorking = runtimeStateFromStatus(runtimeStatus) === 'live' && (activityStatus === 'active' || activityStatus === 'busy' || activityStatus === 'working');
-  const workingTaskTitle = useMemo(() => {
-    if (!isWorking) return '';
-    const tasks = chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || [];
+  const chainTasks: any[] = useMemo(() => {
+    return chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || [];
+  }, [chainDetailQuery.data, chainTasksQuery.data]);
+
+  const currentTask = useMemo(() => {
+    const tasks = chainTasks;
+    const explicitTaskId = String(instance?.current_task_id || instance?.currentTaskId || '');
+    if (explicitTaskId) {
+      const explicit = tasks.find((t: any) => String(t.taskId || t.id || '') === explicitTaskId);
+      if (explicit) return explicit;
+    }
     const mine = tasks.filter((t: any) => {
       const asg = String(t.assigneeAgentInstanceId || t.assignee_agent_instance_id || t.assigneeRef?.agent_instance_id || '');
       return asg && asg === agentInstanceId;
     });
-    // Prefer an in-progress task; otherwise the most relevant non-terminal one
-    // the agent still owns (e.g. in_validation while it is still active).
     const inProgress = mine.find((t: any) => String(t.status || '') === 'in_progress');
-    const pick = inProgress || mine.find((t: any) => !['completed', 'cancelled', 'validated_good'].includes(String(t.status || '')));
-    return pick ? String(pick.title || pick.taskId || '') : '';
-  }, [isWorking, chainDetailQuery.data, chainTasksQuery.data, agentInstanceId]);
+    return inProgress || mine.find((t: any) => !['completed', 'cancelled', 'validated_good'].includes(String(t.status || ''))) || mine[0] || null;
+  }, [chainDetailQuery.data, chainTasksQuery.data, instance?.current_task_id, instance?.currentTaskId, agentInstanceId]);
+
+  const workingTaskTitle = useMemo(() => {
+    if (!isWorking) return '';
+    return currentTask ? String(currentTask.title || currentTask.taskId || '') : '';
+  }, [isWorking, currentTask]);
 
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const bridges = bridgesQuery.data?.bridges || [];
@@ -457,6 +464,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
   const [composerActionsOpen, setComposerActionsOpen] = useState(false);
+  const [overrideTaskModalOpen, setOverrideTaskModalOpen] = useState(false);
+  const [selectedOverrideTaskId, setSelectedOverrideTaskId] = useState('');
+  const [overrideTaskError, setOverrideTaskError] = useState('');
   const runtimeMenuRef = useRef<HTMLDivElement | null>(null);
   const runtimeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const headerActionsRef = useRef<HTMLDivElement | null>(null);
@@ -630,6 +640,26 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       void convQuery.refetch();
     } catch (err: any) {
       setTitleError(errMsg(err, 'Rename failed'));
+    }
+  }
+
+  async function openOverrideTaskModal() {
+    setOverrideTaskError('');
+    setSelectedOverrideTaskId(String(currentTask?.taskId || currentTask?.id || instance?.current_task_id || instance?.currentTaskId || ''));
+    setOverrideTaskModalOpen(true);
+  }
+
+  async function handleOverrideCurrentTask(e: React.FormEvent) {
+    e.preventDefault();
+    if (!chainId || !selectedOverrideTaskId || !agentInstanceId) return;
+    setOverrideTaskError('');
+    try {
+      await setInstanceCurrentTask({ chainId, taskId: selectedOverrideTaskId, agentInstanceId }).unwrap();
+      setOverrideTaskModalOpen(false);
+      void chainDetailQuery.refetch();
+      void instanceQuery.refetch();
+    } catch (err: any) {
+      setOverrideTaskError(errMsg(err, 'Failed to update current task'));
     }
   }
 
@@ -884,11 +914,45 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     return (
       <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 overflow-x-hidden border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
         {isWorking ? (
-          <div data-debug-id="conversation-working-indicator" className="mb-2 flex items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[12px] text-emerald-100">
-            <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">
-              <span className="font-semibold">Working</span>{workingTaskTitle ? <span className="text-emerald-200/80">: {workingTaskTitle}</span> : null}
-            </span>
+          <div data-debug-id="conversation-working-indicator" className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[12px] text-emerald-100">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">
+                <span className="font-semibold">Working</span>
+                {currentTask ? (
+                  <span className="text-emerald-200/80">
+                    : <a
+                        data-debug-id="conversation-current-task-link"
+                        href={chainId ? `#/chains/${encodeURIComponent(chainId)}` : undefined}
+                        onClick={(e) => {
+                          if (chainId) {
+                            e.preventDefault();
+                            setTaskChainOpen(true);
+                          }
+                        }}
+                        className="font-medium underline decoration-dotted underline-offset-2 hover:text-white"
+                        title={String(currentTask.title || currentTask.taskId || '')}
+                      >
+                        {String(currentTask.title || currentTask.taskId || '')}
+                      </a>
+                  </span>
+                ) : workingTaskTitle ? (
+                  <span className="text-emerald-200/80">: {workingTaskTitle}</span>
+                ) : null}
+              </span>
+            </div>
+            {chainId && (
+              <button
+                type="button"
+                data-debug-id="conversation-current-task-override-btn"
+                title="Override current assigned task"
+                aria-label="Override current task"
+                onClick={openOverrideTaskModal}
+                className="shrink-0 rounded p-1 text-emerald-300/80 hover:bg-emerald-400/20 hover:text-white"
+              >
+                <Icon name="pencil" size={12} />
+              </button>
+            )}
           </div>
         ) : null}
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
@@ -976,7 +1040,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           {/* Runtime chip: explicit "Running/Starting/Stopped · bridge · provider · tier".
               Answers "is it running and on which device/model?" and opens the runtime
               controls menu (change bridge/provider/model, start/stop). */}
-          <div data-debug-id="conversation-thread-compact-summary" className="mt-0.5 flex min-w-0 items-center gap-1.5">
+          <div data-debug-id="conversation-thread-compact-summary" className="mt-0.5 flex min-w-0 items-center gap-1.5 flex-wrap">
             <RuntimeChip
               debugId="conversation-thread-runtime-chip"
               state={runtimeStateFromStatus(runtimeStatus)}
@@ -985,7 +1049,38 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
               tier={instanceTier}
               onClick={() => setRuntimeMenuOpen(true)}
             />
-            {chainId ? <span data-debug-id="conversation-thread-chain-summary" className="hidden shrink-0 text-[11px] text-sky-300/70 sm:inline">· task chain linked</span> : null}
+            {currentTask ? (
+              <span data-debug-id="conversation-thread-current-task-summary" className="hidden shrink-0 items-center gap-1 text-[11px] text-zinc-400 sm:inline-flex">
+                <span>·</span>
+                <span className="text-zinc-500">Task:</span>
+                <a
+                  data-debug-id="conversation-thread-current-task-link"
+                  href={chainId ? `#/chains/${encodeURIComponent(chainId)}` : undefined}
+                  onClick={(e) => {
+                    if (chainId) {
+                      e.preventDefault();
+                      setTaskChainOpen(true);
+                    }
+                  }}
+                  className="max-w-[200px] truncate text-sky-300 underline decoration-dotted underline-offset-2 hover:text-sky-200"
+                  title={String(currentTask.title || currentTask.taskId || '')}
+                >
+                  {String(currentTask.title || currentTask.taskId || '')}
+                </a>
+                <button
+                  type="button"
+                  data-debug-id="conversation-thread-current-task-override-btn"
+                  title="Override current assigned task"
+                  aria-label="Override current task"
+                  onClick={openOverrideTaskModal}
+                  className="ml-0.5 text-zinc-400 hover:text-white"
+                >
+                  <Icon name="pencil" size={11} />
+                </button>
+              </span>
+            ) : chainId ? (
+              <span data-debug-id="conversation-thread-chain-summary" className="hidden shrink-0 text-[11px] text-sky-300/70 sm:inline">· task chain linked</span>
+            ) : null}
           </div>
         </div>
         <div data-debug-id="conversation-thread-mobile-actions" className="flex shrink-0 items-center gap-1.5 sm:gap-2">
@@ -1115,6 +1210,84 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
       {renderComposer()}
         </>
+      )}
+
+      {/* Manual Override Task Modal */}
+      {overrideTaskModalOpen && (
+        <div
+          data-debug-id="conversation-override-task-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+        >
+          <form
+            onSubmit={handleOverrideCurrentTask}
+            className="w-full max-w-md rounded-lg border border-white/10 bg-[#141414] p-5 text-xs text-white"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white">Override Current Task</h3>
+              <button
+                type="button"
+                onClick={() => setOverrideTaskModalOpen(false)}
+                className="text-zinc-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mt-1 text-[11px] text-zinc-400">
+              Select an active task in this chain to set as the current task for <span className="font-mono text-sky-300">{agentInstanceId}</span>.
+            </p>
+
+            <div className="mt-4 space-y-3 text-xs">
+              <div>
+                <label className="block text-zinc-400">Choose Task</label>
+                <select
+                  data-debug-id="conversation-override-task-select"
+                  value={selectedOverrideTaskId}
+                  onChange={(e) => setSelectedOverrideTaskId(e.target.value)}
+                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                >
+                  <option value="">Select a task…</option>
+                  {chainTasks.map((t: any) => {
+                    const tid = String(t.taskId || t.id || '');
+                    const asg = String(t.assigneeAgentInstanceId || t.assignee_agent_instance_id || t.assigneeRef?.agent_instance_id || '');
+                    const isMine = asg && asg === agentInstanceId;
+                    return (
+                      <option key={tid} value={tid}>
+                        {t.title || tid} ({t.status || 'pending'}{isMine ? ' · assigned to agent' : ''})
+                      </option>
+                    );
+                  })}
+                </select>
+                {chainTasks.length === 0 && (
+                  <p className="mt-1 text-[11px] text-amber-300/80">No tasks available in this chain.</p>
+                )}
+              </div>
+
+              {overrideTaskError && (
+                <p data-debug-id="conversation-override-task-error" className="text-[11px] text-red-300">
+                  {overrideTaskError}
+                </p>
+              )}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setOverrideTaskModalOpen(false)}
+                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                data-debug-id="conversation-override-task-submit"
+                type="submit"
+                disabled={!selectedOverrideTaskId || setInstanceCurrentTaskState.isLoading}
+                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                {setInstanceCurrentTaskState.isLoading ? 'Setting…' : 'Set as Current Task'}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
     </section>
   );
