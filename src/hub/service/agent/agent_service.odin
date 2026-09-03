@@ -63,10 +63,11 @@ Create_Instance_Input :: struct {
 	tier: string,
 	project_id: domain.Project_ID,
 	chain_id: string,
+	display_name: string,
 }
 
 Stop_Instance_Input :: struct { reason: string }
-Reconfigure_Instance_Input :: struct { provider, tier, agent_id, bridge_id, chain_id, conversation_id: string, project_id: domain.Project_ID, has_agent_id, has_bridge_id, has_project_id, has_chain_id, has_conversation_id: bool }
+Reconfigure_Instance_Input :: struct { provider, tier, agent_id, bridge_id, chain_id, conversation_id, display_name: string, project_id: domain.Project_ID, has_agent_id, has_bridge_id, has_project_id, has_chain_id, has_conversation_id, has_display_name: bool }
 
 new_agent_service :: proc(agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Agent_Service {
 	return Agent_Service{agents = agents, bridges = bridges, clock = clock, ids = ids}
@@ -218,7 +219,9 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	now := platform.clock_now(service.clock)
 	instance_id := platform.generate_id(service.ids, "inst_")
 	conversation_id := platform.generate_id(service.ids, "chat_")
-	instance := domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, provider = resolved.provider, tier = resolved.tier, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
+	display_name := strings.trim_space(input.display_name)
+	if display_name == "" do display_name = default_title
+	instance := domain.Agent_Instance{agent_instance_id = instance_id, owner_user_id = owner, agent_id = agent.agent_id, bridge_id = bridge.bridge_id, display_name = display_name, provider = resolved.provider, tier = resolved.tier, project_id = input.project_id, project_path = project_path, chain_id = chain_id, conversation_id = conversation_id, runtime_status = "launching", startup_status = "starting", activity_status = "unknown", last_applied_seq = 0, run_count = 1, created_at = now, updated_at = now, started_at = now, last_seen_at = now}
 	saved, saved_ok, save_err := iface.agent_save_instance(service.agents, instance)
 	if !saved_ok do return domain.Agent_Instance{}, false, save_err
 	conv, conv_ok, conv_err := ensure_instance_conversation(service, saved, default_title)
@@ -237,6 +240,8 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
 	return saved, true, domain.Domain_Error{}
 }
+
+launch_agent :: create_instance
 
 list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	return list_instances_filtered(service, auth, List_Instances_Filter{}, limit, cursor)
@@ -630,6 +635,7 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 	if !resolved_ok do return domain.Agent_Instance{}, false, resolved_err
 	inst.provider = resolved.provider
 	inst.tier = resolved.tier
+	if input.has_display_name do inst.display_name = input.display_name
 	if runtime_expected_active(inst.runtime_status) do return relaunch_instance(service, auth, inst, resolved.provider, resolved.tier)
 	inst.updated_at = platform.clock_now(service.clock)
 	return iface.agent_save_instance(service.agents, inst)
@@ -878,6 +884,7 @@ ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent
 	// Never emit a raw agt_ id as a title: prefer the supplied default title
 	// ("<agent-name> #<n>"), falling back to the agent's display name.
 	title := strings.trim_space(default_title)
+	if title == "" do title = strings.trim_space(inst.display_name)
 	if title == "" do title = agent_display_name_for_id(service, inst.owner_user_id, inst.agent_id)
 	conv := domain.Chat_Conversation{conversation_id = conv_id, owner_user_id = inst.owner_user_id, agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, project_id = inst.project_id, chain_id = inst.chain_id, title = title, last_activity_at = now, title_source = "default", created_at = now, updated_at = now}
 	return iface.content_save_conversation(service.content, conv)
@@ -1142,6 +1149,7 @@ launch_command_json_full :: proc(service: ^Agent_Service, command_id: string, in
 	strings.write_string(&b, "\",\"payload\":{\"agent_instance_id\":\""); write_service_json_string(&b, inst.agent_instance_id)
 	strings.write_string(&b, "\",\"agent_id\":\""); write_service_json_string(&b, inst.agent_id)
 	strings.write_string(&b, "\",\"agent_name\":\""); write_service_json_string(&b, agent_name)
+	strings.write_string(&b, "\",\"display_name\":\""); write_service_json_string(&b, inst.display_name)
 	strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, role)
 	strings.write_string(&b, "\",\"coordinator_agent_instance_id\":\""); write_service_json_string(&b, coordinator_id)
 	strings.write_string(&b, "\",\"chain_title\":\""); write_service_json_string(&b, chain_title)

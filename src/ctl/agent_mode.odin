@@ -138,6 +138,7 @@ ctl_agentmode_instances :: proc(endpoint, token, action: string, args: []string)
 		if v := option_value(args, "--tier", ""); v != "" do append(&fields, json_kv("tier", v))
 		if v := option_value(args, "--project-id", option_value(args, "--project", "")); v != "" do append(&fields, json_kv("project_id", v))
 		if v := option_value(args, "--chain-id", option_value(args, "--chain", "")); v != "" do append(&fields, json_kv("chain_id", v))
+		if v := option_value(args, "--display-name", ""); v != "" do append(&fields, json_kv("display_name", v))
 		ctl_agent_call(endpoint, token, "agent.instances.launch", json_object_from_slice(fields[:]))
 		return
 	}

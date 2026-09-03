@@ -223,11 +223,11 @@ agent_input_from_body :: proc(body: string) -> agent_service.Create_Agent_Input 
 }
 
 instance_input_from_body :: proc(body: string) -> agent_service.Create_Instance_Input {
-	return agent_service.Create_Instance_Input{agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), provider = json_string(body, "provider"), tier = json_string(body, "tier"), project_id = domain.Project_ID(json_string(body, "project_id")), chain_id = json_string(body, "chain_id")}
+	return agent_service.Create_Instance_Input{agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), provider = json_string(body, "provider"), tier = json_string(body, "tier"), project_id = domain.Project_ID(json_string(body, "project_id")), chain_id = json_string(body, "chain_id"), display_name = json_string(body, "display_name")}
 }
 
 reconfigure_input_from_body :: proc(body: string) -> agent_service.Reconfigure_Instance_Input {
-	return agent_service.Reconfigure_Instance_Input{provider = json_string(body, "provider"), tier = json_string(body, "tier"), agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), chain_id = json_string(body, "chain_id"), conversation_id = json_string(body, "conversation_id"), project_id = domain.Project_ID(json_string(body, "project_id")), has_agent_id = strings.contains(body, "\"agent_id\""), has_bridge_id = strings.contains(body, "\"bridge_id\""), has_project_id = strings.contains(body, "\"project_id\""), has_chain_id = strings.contains(body, "\"chain_id\""), has_conversation_id = strings.contains(body, "\"conversation_id\"")}
+	return agent_service.Reconfigure_Instance_Input{provider = json_string(body, "provider"), tier = json_string(body, "tier"), agent_id = json_string(body, "agent_id"), bridge_id = json_string(body, "bridge_id"), chain_id = json_string(body, "chain_id"), conversation_id = json_string(body, "conversation_id"), display_name = json_string(body, "display_name"), project_id = domain.Project_ID(json_string(body, "project_id")), has_agent_id = strings.contains(body, "\"agent_id\""), has_bridge_id = strings.contains(body, "\"bridge_id\""), has_project_id = strings.contains(body, "\"project_id\""), has_chain_id = strings.contains(body, "\"chain_id\""), has_conversation_id = strings.contains(body, "\"conversation_id\""), has_display_name = strings.contains(body, "\"display_name\"")}
 }
 
 support_input_from_body :: proc(body: string) -> agent_service.Support_Input {
@@ -286,6 +286,7 @@ agent_instance_summary_json :: proc(inst: domain.Agent_Instance) -> string {
 	strings.write_string(&b, "{\"runtime_status\":\""); write_handler_json_string(&b, inst.runtime_status)
 	strings.write_string(&b, "\",\"startup_status\":\""); write_handler_json_string(&b, inst.startup_status)
 	strings.write_string(&b, "\",\"activity_status\":\""); write_handler_json_string(&b, inst.activity_status)
+	strings.write_string(&b, "\",\"display_name\":\""); write_handler_json_string(&b, inst.display_name)
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }
@@ -294,6 +295,7 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 	strings.write_string(b, "{\"agent_instance_id\":\""); write_handler_json_string(b, inst.agent_instance_id)
 	strings.write_string(b, "\",\"agent_id\":\""); write_handler_json_string(b, inst.agent_id)
 	strings.write_string(b, "\",\"bridge_id\":\""); write_handler_json_string(b, inst.bridge_id)
+	strings.write_string(b, "\",\"display_name\":\""); write_handler_json_string(b, inst.display_name)
 	strings.write_string(b, "\",\"provider\":\""); write_handler_json_string(b, inst.provider)
 	strings.write_string(b, "\",\"tier\":\""); write_handler_json_string(b, inst.tier)
 	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, string(inst.project_id))

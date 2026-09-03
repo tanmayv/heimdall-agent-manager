@@ -51,6 +51,8 @@ Agent_Instance :: struct {
 	owner_user_id: User_ID,
 	agent_id: string,
 	bridge_id: string,
+	// display_name is the human-readable title for this instance (defaults to "<agent-name> #<n>").
+	display_name: string,
 	provider: string,
 	tier: string,
 	project_id: Project_ID,
