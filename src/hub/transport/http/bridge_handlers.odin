@@ -27,6 +27,7 @@ Bridge_Handlers :: struct {
 	taskchains: ^taskchain_service.Taskchain_Service,
 	event_bus: ^events.User_Event_Bus,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
+	actions: rawptr,
 	scheduled_prompts: rawptr,
 }
 
@@ -435,7 +436,9 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 				}
 			}
 			schedules_version := 0
-			if h.scheduled_prompts != nil {
+			if h.actions != nil {
+				schedules_version = get_actions_bridge_version(h.actions, bridge_id)
+			} else if h.scheduled_prompts != nil {
 				schedules_version = get_scheduled_prompts_bridge_version(h.scheduled_prompts, bridge_id)
 			}
 			_ = write_ws_text_frame(client, bridge_heartbeat_ack_payload(reconciled, superseded, schedules_version))

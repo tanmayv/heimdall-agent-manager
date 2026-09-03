@@ -1,5 +1,6 @@
 package app
 
+import "core:sync"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
@@ -55,7 +56,10 @@ App_Graph :: struct {
 	taskchain_handlers: http.Taskchain_Handlers,
 	search_handlers: http.Search_Handlers,
 	agent_action_handlers: http.Agent_Action_Handlers,
+	action_handlers: http.Action_Handlers,
 	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
+	action_mutex: sync.Mutex,
+	action_bridge_versions: map[string]int,
 	router: http.Router,
 }
 
@@ -122,8 +126,21 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, event_bus = &graph.event_bus}
-	graph.scheduled_prompt_handlers = http.Scheduled_Prompt_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, repo = &graph.repos.scheduled_prompts, clock = &graph.clock, ids = &graph.ids}
-	graph.bridge_handlers.scheduled_prompts = rawptr(&graph.scheduled_prompt_handlers)
+	graph.action_bridge_versions = make(map[string]int)
+	graph.action_handlers = http.Action_Handlers{
+		auth = &graph.auth,
+		agents = &graph.agents,
+		bridges = &graph.bridges,
+		content = &graph.content,
+		repo = &graph.repos.actions,
+		clock = &graph.clock,
+		ids = &graph.ids,
+		mutex = &graph.action_mutex,
+		bridge_versions = &graph.action_bridge_versions,
+	}
+	graph.scheduled_prompt_handlers = graph.action_handlers
+	graph.bridge_handlers.actions = rawptr(&graph.action_handlers)
+	graph.bridge_handlers.scheduled_prompts = rawptr(&graph.action_handlers)
 	graph.router = http.new_router()
 	register_routes(graph)
 	return true, ""
@@ -133,6 +150,7 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 	http.router_free(&graph.router)
 	http.user_ws_ticket_store_free(&graph.user_handlers.ws_tickets)
 	device_auth_service.grant_store_free(&graph.device_auth_store)
+	delete(graph.action_bridge_versions)
 	sqlite.close(&graph.db)
 }
 
@@ -261,13 +279,24 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*", rawptr(&graph.bridge_handlers), http.bridge_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/bridges/*", rawptr(&graph.bridge_handlers), http.rename_bridge_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/revoke", rawptr(&graph.bridge_handlers), http.revoke_bridge_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts", rawptr(&graph.scheduled_prompt_handlers), http.list_scheduled_prompts_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/scheduled-prompts", rawptr(&graph.scheduled_prompt_handlers), http.create_scheduled_prompt_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts/*", rawptr(&graph.scheduled_prompt_handlers), http.get_scheduled_prompt_handler)
-	http.router_add(&graph.router, "PATCH", "/api/v1/scheduled-prompts/*", rawptr(&graph.scheduled_prompt_handlers), http.patch_scheduled_prompt_handler)
-	http.router_add(&graph.router, "DELETE", "/api/v1/scheduled-prompts/*", rawptr(&graph.scheduled_prompt_handlers), http.delete_scheduled_prompt_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/bridge/scheduled-prompts", rawptr(&graph.scheduled_prompt_handlers), http.bridge_list_scheduled_prompts_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridge/scheduled-prompts/*/execute", rawptr(&graph.scheduled_prompt_handlers), http.bridge_execute_scheduled_prompt_handler)
+	// Actions API
+	http.router_add(&graph.router, "GET", "/api/v1/actions", rawptr(&graph.action_handlers), http.list_actions_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/actions", rawptr(&graph.action_handlers), http.create_action_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.get_action_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.patch_action_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/actions/*", rawptr(&graph.action_handlers), http.delete_action_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/actions/*/run", rawptr(&graph.action_handlers), http.run_action_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridge/actions", rawptr(&graph.action_handlers), http.bridge_list_actions_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridge/actions/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_action_handler)
+
+	// Scheduled Prompts backward compatibility
+	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts", rawptr(&graph.action_handlers), http.list_scheduled_prompts_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/scheduled-prompts", rawptr(&graph.action_handlers), http.create_scheduled_prompt_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.get_scheduled_prompt_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.patch_scheduled_prompt_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.delete_scheduled_prompt_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridge/scheduled-prompts", rawptr(&graph.action_handlers), http.bridge_list_scheduled_prompts_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridge/scheduled-prompts/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_scheduled_prompt_handler)
 }
 
 health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {
