@@ -209,6 +209,10 @@ bridge_wrapper_push_task_nudge :: proc(instance_id, json_payload: string) -> boo
 	return bridge_wrapper_push_line(instance_id, strings.concatenate({"{\"push\":\"task_nudge\",\"payload\":", json_payload, "}\n"}))
 }
 
+bridge_wrapper_push_title_nudge :: proc(instance_id, json_payload: string) -> bool {
+	return bridge_wrapper_push_line(instance_id, strings.concatenate({"{\"push\":\"title_nudge\",\"payload\":", json_payload, "}\n"}))
+}
+
 bridge_wrapper_push_startup_prompt :: proc(instance_id: string) -> bool {
 	return bridge_wrapper_push_line(instance_id, "{\"push\":\"startup_prompt\"}\n")
 }

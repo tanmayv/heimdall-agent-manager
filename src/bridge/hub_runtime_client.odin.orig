@@ -13,30 +13,16 @@ BRIDGE_WRAPPER_STALE_MS :: 10_000
 BRIDGE_START_SUCCESS_TIMEOUT_MS :: 120_000
 BRIDGE_START_SUCCESS_PROMPT_AFTER_MS :: 30_000
 BRIDGE_START_SUCCESS_PROMPT_INTERVAL_MS :: 60_000
-BRIDGE_ACTIVITY_ACTIVE_SOURCE_TTL_MS :: 12_000
-BRIDGE_ACTIVITY_IDLE_SOURCE_TTL_MS :: 30_000
-BRIDGE_STATE_SEQ_FLOOR_OFFSET_MS :: 3_600_000
-// How long an operator stop suppresses wrapper-signal resurrection. Long enough
-// to cover a slow wrapper teardown + one or two liveness ticks, short enough that
-// a genuine relaunch of the SAME instance id is never blocked (launch clears it).
-BRIDGE_STOP_INTENT_TTL_MS :: 15_000
 
 Bridge_Runtime_Instance :: struct {
 	agent_instance_id: string,
 	state_seq: int,
 	runtime_status: string,
 	activity_status: string,
-	activity_source: string,
-	activity_updated_unix_ms: i64,
 	last_seen_unix_ms: i64,
 	start_deadline_unix_ms: i64,
 	start_success_seen: bool,
 	last_start_prompt_unix_ms: i64,
-	// stopped_intent_unix_ms is set when an operator-requested stop begins. While it
-	// is recent (< BRIDGE_STOP_INTENT_TTL_MS) a late wrapper liveness/subscribe
-	// signal is IGNORED for status purposes so it cannot resurrect an intentionally
-	// stopped instance back to running/starting. A fresh launch clears it.
-	stopped_intent_unix_ms: i64,
 }
 
 Bridge_Runtime_Command_Result :: struct {
@@ -107,22 +93,7 @@ bridge_hub_runtime_init :: proc() {
 }
 
 bridge_hub_runtime_worker :: proc() {
-	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(bridge_config.bridge_token) == "" {
-		fmt.println("bridge hub runtime disabled: missing daemon_url or bridge_token (has the bridge enrolled? check the bridge_token/--bridge-token-file)")
-		return
-	}
-	// Only log each distinct failure the FIRST time (and periodically) so a down
-	// proxy/tunnel doesn't spam the log every 500ms, but the operator still sees
-	// exactly which step is failing.
-	last_failure := ""
-	attempts := 0
-	log_failure :: proc(last: ^string, count: ^int, msg: string) {
-		count^ += 1
-		if msg != last^ || count^ % 20 == 1 {
-			fmt.printfln("bridge hub runtime: %s (attempt %d)", msg, count^)
-			last^ = msg
-		}
-	}
+	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(bridge_config.bridge_token) == "" do return
 	for {
 		ws_url := bridge_hub_ws_url(bridge_config.daemon_url)
 		if ws_url == "" {
@@ -131,36 +102,27 @@ bridge_hub_runtime_worker :: proc() {
 		}
 		conn, ok := ws.connect_with_bearer(ws_url, bridge_config.bridge_token)
 		if !ok {
-			log_failure(&last_failure, &attempts, fmt.tprintf("cannot connect WS %s — proxy/tunnel down, hub unreachable, or TLS failed", ws_url))
 			time.sleep(500 * time.Millisecond)
 			continue
 		}
 		hello := bridge_hub_hello_json()
 		if !ws.send_text(&conn, hello) {
-			log_failure(&last_failure, &attempts, "WS connected but sending hello failed (connection dropped immediately)")
 			ws.close(&conn)
 			time.sleep(500 * time.Millisecond)
 			continue
 		}
 		ready_deadline := time.to_unix_nanoseconds(time.now()) + i64(5 * time.Second)
 		ready := false
-		got_error := false
 		for time.to_unix_nanoseconds(time.now()) < ready_deadline {
 			if text, got := ws.poll_text(&conn); got {
 				if extract_json_string(text, "type", "") == "bridge_ready" { ready = true; break }
-				if extract_json_string(text, "type", "") == "bridge_error" { got_error = true; break }
+				if extract_json_string(text, "type", "") == "bridge_error" do break
 			}
 			time.sleep(25 * time.Millisecond)
 		}
 		if ready {
 			fmt.println("bridge hub runtime ready")
-			last_failure = ""; attempts = 0
 			bridge_hub_runtime_loop(&conn)
-			fmt.println("bridge hub runtime: connection closed, reconnecting…")
-		} else if got_error {
-			log_failure(&last_failure, &attempts, "hub sent bridge_error after hello — token rejected or bridge not recognized (re-enroll?)")
-		} else {
-			log_failure(&last_failure, &attempts, "no bridge_ready within 5s after hello — hub didn't accept the session (slow link over the tunnel, or hub-side rejection)")
 		}
 		ws.close(&conn)
 		time.sleep(500 * time.Millisecond)
@@ -184,24 +146,6 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 
 bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	type := extract_json_string(text, "type", "")
-	if type == "bridge_heartbeat_ack" {
-		// H7 cross-bridge reap: the hub tells us which of the instances we reported
-		// active have actually been relaunched on ANOTHER bridge. We hold a stale old
-		// runtime for each, so invalidate its local tokens: the old ham-wrapper then
-		// fails its next wrapper.liveness.ping and self-terminates. Transport/host
-		// independent — no tmux/PID reaping needed.
-		superseded, _ := bridge_provider_json_extract_string_array(text, "superseded_instance_ids")
-		for id in superseded {
-			if strings.trim_space(id) == "" do continue
-			n := bridge_agent_token_invalidate_instance(id)
-			if n > 0 {
-				fmt.println("bridge reap: instance relaunched on another bridge; invalidated local tokens", id, "count", n)
-				bridge_runtime_set_status(id, "stopped", "idle")
-				bridge_runtime_remove_launch(id)
-			}
-		}
-		return
-	}
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
@@ -247,33 +191,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		ok := bridge_wrapper_push_task_nudge(instance_id, text)
-		if !ok {
-			// Wrapper not connected: wake the local agent (coalesced) so it picks up
-			// the task/comment on boot, matching the status-change notify behavior.
-			// This is what makes a comment actually reach an idle/stopped assignee.
-			if bridge_task_status_notify_wake_local(instance_id) {
-				ok = true
-			} else {
-				fmt.println("bridge notify_task_nudge pending/no-wrapper-subscription", instance_id, command_id)
-			}
-		}
-		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
-		return
-	}
-	if type == "notify_title_nudge" {
-		// Activity-gated title-nudge (REQ-4,5,6). Delivered over the SAME gated
-		// path as notify_task_nudge: push to a live wrapper, else wake the local
-		// agent so it picks up the nudge on boot. Never a new notifier.
-		command_id := extract_json_string(text, "command_id", "")
-		instance_id := extract_json_string(text, "agent_instance_id", "")
-		ok := bridge_wrapper_push_title_nudge(instance_id, text)
-		if !ok {
-			if bridge_task_status_notify_wake_local(instance_id) {
-				ok = true
-			} else {
-				fmt.println("bridge notify_title_nudge pending/no-wrapper-subscription", instance_id, command_id)
-			}
-		}
+		if !ok do fmt.println("bridge notify_task_nudge pending/no-wrapper-subscription", instance_id, command_id)
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
@@ -337,8 +255,6 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			defer strings.builder_destroy(&payload_b)
 			strings.write_string(&payload_b, "{\"type\":\"notify_task_nudge\",\"command_id\":\"")
 			bridge_runtime_write_json_string(&payload_b, command_id)
-			strings.write_string(&payload_b, "\",\"mutation_id\":\"")
-			bridge_runtime_write_json_string(&payload_b, mutation_id)
 			strings.write_string(&payload_b, "\",\"task_id\":\"")
 			bridge_runtime_write_json_string(&payload_b, task_id)
 			strings.write_string(&payload_b, "\",\"new_status\":\"")
@@ -350,21 +266,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			payload_str := strings.to_string(payload_b)
 			
 			for inst in targets {
-				// Cross-bridge cascade: a status change on another bridge (e.g. an
-				// upstream task completing) can promote a downstream task whose target
-				// lives here. Push to the live wrapper if connected; otherwise wake the
-				// local agent (coalesced) so it can pick up the work on boot. Targets
-				// that are not local to this bridge are ignored (another bridge owns them).
-				if bridge_wrapper_push_task_nudge(inst, payload_str) {
-					delivered += 1
-					continue
-				}
-				if bridge_task_status_notify_wake_local(inst) {
-					delivered += 1
-					fmt.println("bridge task_status_changed_notify woke local target", inst, command_id)
-				} else {
-					failed += 1
-					fmt.println("bridge task_status_changed_notify target not local or wake failed", inst, command_id)
+				if _, _, _, active := runtime_instance_status(&bridge_runtime_instances, inst); active {
+					ok := bridge_wrapper_push_task_nudge(inst, payload_str)
+					if ok { delivered += 1 } else { failed += 1; fmt.println("bridge task_status_changed_notify nudge pending/unsubscribed", inst, command_id) }
 				}
 			}
 		}
@@ -384,7 +288,6 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_pane_capture_command(conn, text)
 		return
 	}
-	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
 }
 
@@ -486,8 +389,6 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, string) {
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id"
-	// A genuine (re)launch supersedes any prior stop intent for this instance id.
-	bridge_runtime_clear_stop_intent(instance_id)
 	if existing, ok := bridge_runtime_get_launch(instance_id); ok {
 		_ = tmux.kill_window(existing.tmux_session, existing.tmux_window)
 	}
@@ -500,39 +401,15 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	// The project path/description is provided to the agent via AGENTS.md instead,
 	// so the agent decides when/how to work against the project checkout.
 	run_dir := bridge_runtime_default_run_dir(instance_id)
-	// The bridge creates the EMPTY run dir (tmux `cd`s into it to launch the
-	// wrapper) but writes NO bootstrap files there — the wrapper is the sole writer
-	// of run_dir contents (WRP-1). This keeps the e2e test honest.
-	_ = os.make_directory_all(run_dir)
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable"
 	bridge_runtime_set_status(instance_id, "starting", "active")
-	// H7 restart-reap: invalidate ANY prior local tokens for this instance BEFORE
-	// issuing fresh ones. A superseded old ham-wrapper will then fail its next
-	// wrapper.liveness.ping (its token is no longer valid) and self-terminate,
-	// regardless of tmux window/host/bridge. The freshly issued wrapper+agent
-	// tokens below are non-deterministic (hlat_<nanos>_<seq>), so the new runtime
-	// is cryptographically distinct from the old one.
-	invalidated := bridge_agent_token_invalidate_instance(instance_id)
-	if invalidated > 0 do fmt.println("bridge launch: invalidated prior local tokens for instance", instance_id, "count", invalidated)
 	instance_token := strings.concatenate({"hit_", instance_id})
 	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
 	provider, tier := bridge_runtime_provider_tier(command_json)
-	// Conditional, per-hash bootstrap (BRG-1..BRG-4): build the per-instance
-	// descriptor from the enriched launch payload, run one conditional manifest GET
-	// + per-hash blob fetches (only what is missing from disk), then ASSEMBLE +
-	// PUBLISH the finished file set for the wrapper RPCs. The bridge does NOT write
-	// the run_dir — the wrapper materializes it via bootstrap.list/.file (WRP-1).
-	// A staged failure surfaces the stage + HTTP status instead of a generic string.
-	descriptor := bridge_bootstrap_descriptor_from_launch(command_json)
-	if strings.trim_space(descriptor.provider) == "" do descriptor.provider = provider
-	boot_res := bridge_bootstrap_launch_materialize(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
-	if !boot_res.ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
-		detail := fmt.tprintf("bootstrap failed at stage=%s http_status=%d: %s", boot_res.stage, boot_res.http_status, boot_res.detail)
-		fmt.println("bridge launch_agent bootstrap failed", "instance=", instance_id, "stage=", boot_res.stage, "http_status=", boot_res.http_status, "detail=", boot_res.detail)
-		return false, detail
+	if !bridge_bootstrap_fetch_manifest_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_issue.plaintext_token, provider, &bootstrap_global_cache) {
+		if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_issue.plaintext_token, provider) do return false, "bootstrap fetch/materialization failed"
 	}
 	session := bridge_runtime_tmux_session()
 	window := bridge_runtime_tmux_window(instance_id)
@@ -550,32 +427,18 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	return true, ""
 }
 
-// bridge_runtime_stop_agent stops a running agent by INVALIDATING its local token
-// only — ZERO tmux involvement. The bridge never runs kill/pane commands. Instead
-// it relies on the wrapper's H7 self-reap: the ham-wrapper pings the bridge every
-// ~1s (wrapper.liveness.ping); once the token is invalid the bridge answers with
-// an auth failure, and the wrapper kills its own child agent and exits within ~1s
-// (src/wrapper/bridge_runtime.odin). Because the local-token store is persisted to
-// disk on invalidate (agent_token_store.odin -> local-tokens.jsonl), this survives
-// a bridge restart: after relaunch the reissued/invalid token still makes the
-// superseded wrapper self-terminate, with no in-memory launch record needed. A
-// stopped agent then sends no further heartbeats, so heartbeat presence is the
-// source of truth for runtime_status.
 bridge_runtime_stop_agent :: proc(instance_id: string) -> bool {
 	if strings.trim_space(instance_id) == "" do return false
-	// Record the operator's intent to stop, so a late/duplicate wrapper signal that
-	// races the ~1s self-reap window cannot resurrect the instance back to
-	// running/starting (see bridge_runtime_note_activity_signal).
-	bridge_runtime_mark_stop_intent(instance_id)
 	bridge_runtime_set_status(instance_id, "stopping", "idle")
-	// Invalidate every local token for this instance (persisted to disk). The
-	// wrapper self-reaps on its next liveness ping; the bridge does nothing else.
-	invalidated := bridge_agent_token_invalidate_instance(instance_id)
-	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated, "(wrapper will self-reap)")
-	// Drop any in-memory launch record so we don't hold stale pane/token data.
-	bridge_runtime_remove_launch(instance_id)
+	stopped := false
+	if launch, ok := bridge_runtime_get_launch(instance_id); ok {
+		stopped = tmux.kill_window(launch.tmux_session, launch.tmux_window)
+		bridge_runtime_remove_launch(instance_id)
+	} else {
+		stopped = true
+	}
 	bridge_runtime_set_status(instance_id, "stopped", "idle")
-	return true
+	return stopped
 }
 
 bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, command_json: string) -> string {
@@ -875,19 +738,7 @@ bridge_runtime_default_run_dir :: proc(instance_id: string) -> string {
 	return strings.concatenate({base, "/instances/", bridge_runtime_safe_part(instance_id)})
 }
 
-// bridge_runtime_tmux_session scopes the tmux server per bridge so multiple
-// bridges on one host do not share a single tmux daemon. A shared session caused
-// two problems: (1) all bridges' agent windows piled into one server, and (2)
-// the tmux daemon inherited a bridge's listening sockets, so killing that bridge
-// left the daemon holding its ports -> restart failed with Address_In_Use. The
-// local_endpoint_port is a reliable per-host discriminator (two bridges cannot
-// bind the same port), so we key the session on it.
-bridge_runtime_tmux_session :: proc() -> string {
-	if bridge_config.local_endpoint_port != 0 {
-		return fmt.tprintf("heimdall-bridge-%d", bridge_config.local_endpoint_port)
-	}
-	return "heimdall-bridge"
-}
+bridge_runtime_tmux_session :: proc() -> string { return "heimdall-bridge" }
 bridge_runtime_tmux_window :: proc(instance_id: string) -> string { return strings.concatenate({"agent-", bridge_runtime_safe_part(instance_id)}) }
 
 bridge_runtime_safe_part :: proc(value: string) -> string {
@@ -1012,46 +863,29 @@ bridge_runtime_set_status :: proc(instance_id, runtime_status, activity_status: 
 }
 
 bridge_runtime_note_wrapper_signal :: proc(instance_id, activity_status: string) {
-	bridge_runtime_note_activity_signal(instance_id, activity_status, "wrapper")
-}
-
-bridge_runtime_note_agent_activity :: proc(instance_id, activity_status, activity_source: string) {
-	source := strings.trim_space(activity_source)
-	if source == "" do source = "agent_extension"
-	bridge_runtime_note_activity_signal(instance_id, bridge_runtime_normalize_activity_status(activity_status), source)
-}
-
-bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activity_source: string) {
 	if strings.trim_space(instance_id) == "" do return
 	now := bridge_runtime_now_ms()
-	activity := bridge_runtime_normalize_activity_status(activity_status)
 	should_prompt := false
 	sync.mutex_lock(&bridge_runtime_mutex)
-	// Stop-intent guard: if an operator stop is in flight for this instance, drop
-	// the signal so a late/racing wrapper liveness or subscribe cannot resurrect a
-	// deliberately stopped instance back to running/starting. The intent is
-	// time-boxed (BRIDGE_STOP_INTENT_TTL_MS) and cleared by a genuine relaunch.
-	if bridge_runtime_stop_intent_active_locked(instance_id, now) {
-		sync.mutex_unlock(&bridge_runtime_mutex)
-		return
-	}
 	if inst, ok := bridge_runtime_instance_snapshot_locked(instance_id); ok {
-		// A wrapper or extension activity signal proves the local process is alive,
-		// but it is NOT equivalent to agent start-success. Any pre-success state
-		// remains "starting" until the agent explicitly calls start-success.
+		// A wrapper liveness/activity signal proves the wrapper process is alive, but
+		// it is NOT equivalent to agent start-success. Any pre-success state remains
+		// "starting" until the agent explicitly calls `ham-ctl agent start-success`.
 		if !inst.start_success_seen {
 			if inst.runtime_status == "failed" {
-				bridge_runtime_set_status_with_source_locked(instance_id, "failed", activity, activity_source, now, true, false)
+				// If startup timed out, keep it non-running until an absolute
+				// start-success arrives. Continue nudging the pane.
+				bridge_runtime_set_status_locked(instance_id, "failed", activity_status, now, true)
 				should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, true)
 			} else {
-				bridge_runtime_set_status_with_source_locked(instance_id, "starting", activity, activity_source, now, true, false)
+				bridge_runtime_set_status_locked(instance_id, "starting", activity_status, now, true)
 				should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, inst.runtime_status == "unreachable" || inst.runtime_status == "stopped")
 			}
 			sync.mutex_unlock(&bridge_runtime_mutex)
 			if should_prompt do bridge_wrapper_push_startup_prompt(instance_id)
 			return
 		}
-		bridge_runtime_set_status_with_source_locked(instance_id, "running", activity, activity_source, now, true, false)
+		bridge_runtime_set_status_locked(instance_id, "running", activity_status, now, true)
 		sync.mutex_unlock(&bridge_runtime_mutex)
 		return
 	}
@@ -1059,54 +893,10 @@ bridge_runtime_note_activity_signal :: proc(instance_id, activity_status, activi
 	// running. Rediscover it as "starting" rather than "running"; Hub will keep a
 	// durable already-ready instance running if appropriate, and otherwise the pane
 	// receives an explicit start-success prompt.
-	bridge_runtime_set_status_with_source_locked(instance_id, "starting", activity, activity_source, now, true, false)
+	bridge_runtime_set_status_locked(instance_id, "starting", activity_status, now, true)
 	should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, true)
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	if should_prompt do bridge_wrapper_push_startup_prompt(instance_id)
-}
-
-// bridge_runtime_mark_stop_intent records that an operator-requested stop has
-// begun for this instance. It creates the in-memory record if missing (e.g. after
-// a bridge restart where the registry is empty) so the tombstone survives the
-// subsequent set_status calls and blocks resurrection by a late wrapper signal.
-bridge_runtime_mark_stop_intent :: proc(instance_id: string) {
-	if strings.trim_space(instance_id) == "" do return
-	now := bridge_runtime_now_ms()
-	sync.mutex_lock(&bridge_runtime_mutex)
-	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for i in 0..<len(bridge_runtime_instances) {
-		if bridge_runtime_instances[i].agent_instance_id == instance_id {
-			bridge_runtime_instances[i].stopped_intent_unix_ms = now
-			return
-		}
-	}
-	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = "stopping", activity_status = "idle", last_seen_unix_ms = now, stopped_intent_unix_ms = now})
-}
-
-// bridge_runtime_clear_stop_intent removes the stop tombstone (called when a
-// genuine launch/relaunch of the same instance begins).
-bridge_runtime_clear_stop_intent :: proc(instance_id: string) {
-	if strings.trim_space(instance_id) == "" do return
-	sync.mutex_lock(&bridge_runtime_mutex)
-	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for i in 0..<len(bridge_runtime_instances) {
-		if bridge_runtime_instances[i].agent_instance_id == instance_id {
-			bridge_runtime_instances[i].stopped_intent_unix_ms = 0
-			return
-		}
-	}
-}
-
-// bridge_runtime_stop_intent_active_locked reports whether a recent stop intent is
-// still in effect. Caller must hold bridge_runtime_mutex.
-bridge_runtime_stop_intent_active_locked :: proc(instance_id: string, now: i64) -> bool {
-	for i in 0..<len(bridge_runtime_instances) {
-		if bridge_runtime_instances[i].agent_instance_id == instance_id {
-			ts := bridge_runtime_instances[i].stopped_intent_unix_ms
-			return ts > 0 && now - ts < i64(BRIDGE_STOP_INTENT_TTL_MS)
-		}
-	}
-	return false
 }
 
 bridge_runtime_mark_start_success :: proc(instance_id: string) {
@@ -1118,36 +908,24 @@ bridge_runtime_mark_start_success :: proc(instance_id: string) {
 }
 
 bridge_runtime_set_status_locked :: proc(instance_id, runtime_status, activity_status: string, now: i64, touch_seen: bool) {
-	bridge_runtime_set_status_with_source_locked(instance_id, runtime_status, activity_status, "bridge", now, touch_seen, true)
-}
-
-bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status, activity_status, activity_source: string, now: i64, touch_seen: bool, force_activity: bool) {
 	for i in 0..<len(bridge_runtime_instances) {
 		if bridge_runtime_instances[i].agent_instance_id == instance_id {
-			inst := &bridge_runtime_instances[i]
-			old_runtime := inst.runtime_status
-			accept_activity := activity_status != "" && (force_activity || bridge_runtime_accept_activity_update(inst, activity_source, now))
-			runtime_changed := inst.runtime_status != runtime_status
-			activity_changed := accept_activity && inst.activity_status != activity_status
-			if runtime_changed || activity_changed {
-				inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
-				inst.runtime_status = runtime_status
-				if accept_activity do inst.activity_status = activity_status
+			old_runtime := bridge_runtime_instances[i].runtime_status
+			if bridge_runtime_instances[i].runtime_status != runtime_status || bridge_runtime_instances[i].activity_status != activity_status {
+				bridge_runtime_instances[i].state_seq += 1
+				bridge_runtime_instances[i].runtime_status = runtime_status
+				bridge_runtime_instances[i].activity_status = activity_status
 			}
-			if accept_activity {
-				inst.activity_source = strings.clone(activity_source)
-				inst.activity_updated_unix_ms = now
-			}
-			if touch_seen || inst.last_seen_unix_ms == 0 do inst.last_seen_unix_ms = now
+			if touch_seen || bridge_runtime_instances[i].last_seen_unix_ms == 0 do bridge_runtime_instances[i].last_seen_unix_ms = now
 			if runtime_status == "starting" {
-				inst.start_success_seen = false
-				if old_runtime != "starting" || inst.start_deadline_unix_ms == 0 do inst.start_deadline_unix_ms = now + BRIDGE_START_SUCCESS_TIMEOUT_MS
+				bridge_runtime_instances[i].start_success_seen = false
+				if old_runtime != "starting" || bridge_runtime_instances[i].start_deadline_unix_ms == 0 do bridge_runtime_instances[i].start_deadline_unix_ms = now + BRIDGE_START_SUCCESS_TIMEOUT_MS
 			} else if runtime_status == "running" {
-				inst.start_success_seen = true
-				inst.start_deadline_unix_ms = 0
-				inst.last_start_prompt_unix_ms = 0
+				bridge_runtime_instances[i].start_success_seen = true
+				bridge_runtime_instances[i].start_deadline_unix_ms = 0
+				bridge_runtime_instances[i].last_start_prompt_unix_ms = 0
 			} else if !bridge_runtime_status_active(runtime_status) {
-				inst.start_deadline_unix_ms = 0
+				bridge_runtime_instances[i].start_deadline_unix_ms = 0
 			}
 			return
 		}
@@ -1155,66 +933,7 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 	deadline: i64 = 0
 	seen := runtime_status == "running"
 	if runtime_status == "starting" do deadline = now + BRIDGE_START_SUCCESS_TIMEOUT_MS
-	// Bridge-local state is memory-only and resets on bridge relaunch while Hub
-	// keeps the durable last_applied_seq. Seed new local records from wall-clock ms
-	// plus a safety offset so post-relaunch reports remain newer than prior Hub seqs
-	// even if direct agent-actions (like repeated start-success) advanced the DB.
-	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = bridge_runtime_next_state_seq(0, now), runtime_status = strings.clone(runtime_status), activity_status = strings.clone(activity_status), activity_source = strings.clone(activity_source), activity_updated_unix_ms = now, last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen})
-}
-
-bridge_runtime_next_state_seq :: proc(current: int, now: i64) -> int {
-	floor := int(now + i64(BRIDGE_STATE_SEQ_FLOOR_OFFSET_MS))
-	if current + 1 > floor do return current + 1
-	return floor
-}
-
-bridge_runtime_accept_activity_update :: proc(inst: ^Bridge_Runtime_Instance, source: string, now: i64) -> bool {
-	if inst == nil do return true
-	current_rank := bridge_runtime_activity_source_rank(inst.activity_source)
-	new_rank := bridge_runtime_activity_source_rank(source)
-	if current_rank <= 0 || new_rank >= current_rank do return true
-	if inst.activity_updated_unix_ms <= 0 do return true
-	ttl := i64(BRIDGE_ACTIVITY_IDLE_SOURCE_TTL_MS)
-	if inst.activity_status == "active" do ttl = i64(BRIDGE_ACTIVITY_ACTIVE_SOURCE_TTL_MS)
-	return now - inst.activity_updated_unix_ms > ttl
-}
-
-bridge_runtime_activity_source_rank :: proc(source: string) -> int {
-	s := strings.to_lower(strings.trim_space(source))
-	// NOTE: the pi_extension==100 fast-path was REMOVED with the pi activity
-	// extension (task_18d129291c6a455d). It was the high-priority source that
-	// suppressed a correct pane_diff 'idle' (the stuck 'working · settling' bug).
-	// A native harness extension (e.g. antigravity) still ranks via the generic
-	// contains("extension")=>80 branch below.
-	if strings.contains(s, "extension") do return 80
-	// Harness-agnostic tmux pane-capture detector: now the primary activity source
-	// for every provider.
-	if s == "pane_diff" do return 40
-	// Permission gate (waiting_user while a blocking approval is outstanding, then
-	// active on resolve). Ranked EQUAL to pane_diff on purpose: equal ranks always
-	// accept (new_rank >= current_rank), so the gate's waiting_user shows
-	// immediately AND the next pane_diff cycle can override it right after the gate
-	// resolves — a higher rank would recreate a mini stuck-suppression until TTL.
-	if s == "permission_gate" do return 40
-	if s == "wrapper" do return 10
-	if s == "bridge" do return 5
-	return 1
-}
-
-bridge_runtime_normalize_activity_status :: proc(status: string) -> string {
-	s := strings.to_lower(strings.trim_space(status))
-	if s == "active" || s == "working" || s == "busy" do return "active"
-	// waiting_user / waiting / waiting_approval: the agent has finished its turn and
-	// is BLOCKED on a human (an empty prompt, a y/n approval, "press enter", …). It
-	// is NOT doing work, so it must NOT surface as "active"/"working" in the hub —
-	// otherwise an idle agent sitting on the user reads as busy forever. We collapse
-	// these to the idle-equivalent projection; the finer-grained "waiting_user"
-	// signal is still available on the wrapper sample for callers that want it.
-	if s == "waiting_user" || s == "waiting" || s == "waiting_approval" do return "idle"
-	if s == "idle" || s == "inactive" do return "idle"
-	if s == "unknown" do return "unknown"
-	if s == "" do return "unknown"
-	return s
+	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = 1, runtime_status = strings.clone(runtime_status), activity_status = strings.clone(activity_status), last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen})
 }
 
 bridge_runtime_maybe_mark_start_prompt_locked :: proc(instance_id: string, now: i64, force: bool) -> bool {
@@ -1256,8 +975,6 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 	bridge_runtime_write_json_string(&b, inst.runtime_status)
 	strings.write_string(&b, "\",\"activity_status\":\"")
 	bridge_runtime_write_json_string(&b, inst.activity_status)
-	strings.write_string(&b, "\",\"activity_source\":\"")
-	bridge_runtime_write_json_string(&b, inst.activity_source)
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }
@@ -1298,8 +1015,6 @@ bridge_hub_heartbeat_json :: proc() -> string {
 		bridge_runtime_write_json_string(&b, inst.runtime_status)
 		strings.write_string(&b, "\",\"activity_status\":\"")
 		bridge_runtime_write_json_string(&b, inst.activity_status)
-		strings.write_string(&b, "\",\"activity_source\":\"")
-		bridge_runtime_write_json_string(&b, inst.activity_source)
 		strings.write_string(&b, "\"}")
 	}
 	strings.write_string(&b, "]}")
@@ -1311,20 +1026,16 @@ bridge_runtime_expire_stale_locked :: proc(now: i64) {
 		inst := &bridge_runtime_instances[i]
 		if !bridge_runtime_status_active(inst.runtime_status) do continue
 		if inst.last_seen_unix_ms > 0 && now - inst.last_seen_unix_ms > BRIDGE_WRAPPER_STALE_MS {
-			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
+			inst.state_seq += 1
 			inst.runtime_status = "unreachable"
 			inst.activity_status = "idle"
-			inst.activity_source = "bridge"
-			inst.activity_updated_unix_ms = now
 			inst.start_deadline_unix_ms = 0
 			continue
 		}
 		if inst.runtime_status == "starting" && !inst.start_success_seen && inst.start_deadline_unix_ms > 0 && now >= inst.start_deadline_unix_ms {
-			inst.state_seq = bridge_runtime_next_state_seq(inst.state_seq, now)
+			inst.state_seq += 1
 			inst.runtime_status = "failed"
 			inst.activity_status = "idle"
-			inst.activity_source = "bridge"
-			inst.activity_updated_unix_ms = now
 			inst.start_deadline_unix_ms = 0
 		}
 	}

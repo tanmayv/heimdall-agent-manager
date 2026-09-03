@@ -30,6 +30,7 @@ import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import { useViewport } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
+import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
 // e2e conversation thread for /conversations/{conversationId}. Cookie-auth,
@@ -398,6 +399,20 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     const s = String(instance?.runtime_status || instance?.runtimeStatus || '');
     if (s) lastInstanceStatusRef.current = s;
   }, [instance?.runtime_status, instance?.runtimeStatus]);
+  // Sync the agent_instance_id into the URL search params for easy sharing.
+  useEffect(() => {
+    if (!agentInstanceId) return;
+    try {
+      const search = new URLSearchParams(getRouteSearch());
+      if (search.get('agent_instance_id') !== agentInstanceId && search.get('instance') !== agentInstanceId) {
+        search.set('agent_instance_id', agentInstanceId);
+        const newHash = buildRouteHash(getRoutePathname(), search.toString());
+        window.history.replaceState(window.history.state || {}, '', newHash);
+      }
+    } catch {
+      // ignore
+    }
+  }, [agentInstanceId]);
   const instanceProvider = String(instance?.provider || '');
   const instanceTier = String(instance?.tier || '');
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');
@@ -437,7 +452,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
-  const [bridge, setBridge] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
   const [taskChainOpen, setTaskChainOpen] = useState(false);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
@@ -456,24 +470,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
 
-  // Device (bridge) selection. The reconfigure endpoint accepts an optional
-  // bridge_id to move the instance to another device. Options are the online
-  // bridges (plus the current one, always visible). Provider/tier options follow
-  // the SELECTED bridge's capability matrix.
+  // Bridge (device) is fixed per-instance. Provider/tier options follow
+  // the instance bridge's capability matrix.
   const bridgeLabel = String(instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '');
-  const selectedBridgeId = bridge || instanceBridgeId;
-  const selectedBridge = useMemo(() => bridges.find((b: any) => bridgeId(b) === selectedBridgeId) || instanceBridge, [bridges, selectedBridgeId, instanceBridge]);
-  const bridgeOptions = useMemo(() => {
-    const online = bridges.filter((b: any) => String(b?.status || b?.state || 'online').toLowerCase() === 'online');
-    const list = (online.length ? online : bridges).map((b: any) => ({ id: bridgeId(b), label: String(b?.label || b?.machine_hostname || bridgeId(b)) }));
-    if (instanceBridgeId && !list.some((b) => b.id === instanceBridgeId)) list.unshift({ id: instanceBridgeId, label: bridgeLabel || instanceBridgeId });
-    return list.filter((b) => b.id);
-  }, [bridges, instanceBridgeId, bridgeLabel]);
-
-  // Provider/tier selectable range is the SELECTED Bridge's real capability
-  // matrix; agent bridge-support provider/tier values are preferred defaults,
-  // not allowlists.
-  const caps = useMemo(() => normalizeBridgeCapabilities(selectedBridge), [selectedBridge]);
+  const caps = useMemo(() => normalizeBridgeCapabilities(instanceBridge), [instanceBridge]);
 
   const providerOptions = useMemo(() => {
     const list = caps.map((c) => c.provider).filter(Boolean);
@@ -618,8 +618,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   // instance currently runs; otherwise it's a no-op (use Restart instead).
   const effectiveProvider = provider || instanceProvider;
   const effectiveTier = tier || instanceTier;
-  const effectiveBridgeId = bridge || instanceBridgeId;
-  const selectionChangesConfig = Boolean(agentInstanceId) && ((effectiveProvider && effectiveProvider !== instanceProvider) || (effectiveTier && effectiveTier !== instanceTier) || (effectiveBridgeId && effectiveBridgeId !== instanceBridgeId));
+  const selectionChangesConfig = Boolean(agentInstanceId) && ((effectiveProvider && effectiveProvider !== instanceProvider) || (effectiveTier && effectiveTier !== instanceTier));
 
   async function saveConversationTitle() {
     const next = titleDraft.trim();
@@ -821,11 +820,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     if (!agentInstanceId) return;
     const nextProvider = provider || providerOptions[0] || '';
     const nextTier = tier || tierOptions[0] || '';
-    const nextBridgeId = bridge && bridge !== instanceBridgeId ? bridge : '';
     if (!nextProvider || !nextTier) { setReconfigStatus('Choose a provider and tier first.'); return; }
-    setReconfigStatus(nextBridgeId ? 'Moving to selected device…' : 'Applying selected runtime config…');
+    setReconfigStatus('Applying selected runtime config…');
     try {
-      await reconfigureInstance({ agentId, instanceId: agentInstanceId, provider: nextProvider, tier: nextTier, bridgeId: nextBridgeId }).unwrap();
+      await reconfigureInstance({ agentId, instanceId: agentInstanceId, provider: nextProvider, tier: nextTier }).unwrap();
       setReconfigStatus(`Applied ${nextProvider}/${nextTier} — restarting…`);
       await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
       setReconfigStatus(`Restart requested with ${nextProvider}/${nextTier}.`);
@@ -850,17 +848,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   const runtimeControls = (
     <div data-debug-id="conversation-runtime-controls" className="space-y-3">
-      <label className="block text-[11px] text-zinc-500">Device (bridge)
-        <select
-          data-debug-id="conversation-bridge-select"
-          value={selectedBridgeId}
-          onChange={(e) => { setBridge(e.target.value); setProvider(''); setTier(''); }}
-          disabled={runtimeActionBusy}
-          className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {bridgeOptions.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}
-        </select>
-      </label>
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="text-[11px] text-zinc-500">Provider
           <select data-debug-id="conversation-provider-select" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">

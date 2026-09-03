@@ -568,7 +568,14 @@ wrapper_bridge_dispatch_push_lines :: proc(cfg: Bridge_Runtime_Config, pending: 
 		if strings.contains(line, "\"push\":\"permission_request\"") { wrapper_bridge_deliver_permission_request_push(cfg, line); continue }
 		if strings.contains(line, "\"push\":\"permission_reply\"") { wrapper_bridge_deliver_permission_reply_push(cfg, line); continue }
 		if strings.contains(line, "\"push\":\"agent_message\"") do wrapper_bridge_deliver_message_push(cfg, line)
-		if strings.contains(line, "\"push\":\"task_nudge\"") do wrapper_bridge_deliver_task_nudge_push(cfg, line)
+		if strings.contains(line, "\"push\":\"title_nudge\"") do wrapper_bridge_deliver_title_nudge_push(cfg, line)
+		if strings.contains(line, "\"push\":\"task_nudge\"") {
+			if strings.contains(line, "\"type\":\"notify_title_nudge\"") {
+				wrapper_bridge_deliver_title_nudge_push(cfg, line)
+			} else {
+				wrapper_bridge_deliver_task_nudge_push(cfg, line)
+			}
+		}
 	}
 }
 
@@ -625,6 +632,14 @@ wrapper_bridge_deliver_message_push :: proc(cfg: Bridge_Runtime_Config, line: st
 	pane := wrapper_bridge_prompt_pane(cfg)
 	if strings.trim_space(pane) == "" do return
 	msg := strings.concatenate({"New message from ", sender, " — run './.heimdall/bin/ham-ctl agent chat read' to view."})
+	_ = tmux.send_text(pane, msg, true)
+}
+
+wrapper_bridge_deliver_title_nudge_push :: proc(cfg: Bridge_Runtime_Config, line: string) {
+	message := extract_json_string(line, "message", "Please set a short, human-meaningful title for this conversation and its task chain (use './.heimdall/bin/ham-ctl agent conversation set-title --title <text>' and './.heimdall/bin/ham-ctl agent chain set-title --title <text>').")
+	pane := wrapper_bridge_prompt_pane(cfg)
+	if strings.trim_space(pane) == "" do return
+	msg := strings.concatenate({"Nudge: ", message})
 	_ = tmux.send_text(pane, msg, true)
 }
 

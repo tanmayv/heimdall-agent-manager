@@ -30,10 +30,12 @@ export type IconName =
   | 'device'
   | 'menu'
   | 'refresh'
+  | 'pencil'
   | 'folder';
 
 const PATHS: Record<IconName, ReactElement> = {
   plus: <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />,
+  pencil: <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />,
   gear: (
     <g fill="none" stroke="currentColor" strokeWidth={1.8}>
       <circle cx={12} cy={12} r={3.2} />

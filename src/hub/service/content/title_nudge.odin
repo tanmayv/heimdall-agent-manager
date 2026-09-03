@@ -62,17 +62,19 @@ evaluate_title_nudge :: proc(title_source: string, has_activity: bool, last_acti
 
 // conversation_has_any_activity reports whether the conversation has had at least
 // one real message in ANY direction (user_to_agent, agent_to_user, or
-// agent_to_agent). A human message is NOT required (TN-2): agents that only ever
-// talk to other agents — e.g. an agent created by another agent — still count as
-// active. A completely empty conversation (zero messages) returns false so it is
-// never nudged.
+// agent_to_agent) that is not a system lifecycle message. A human message is NOT
+// required (TN-2): agents that only ever talk to other agents — e.g. an agent
+// created by another agent — still count as active. A conversation with zero
+// non-system messages returns false so it is never nudged on startup boilerplate alone.
 conversation_has_any_activity :: proc(s: ^Content_Service, c: domain.Chat_Conversation) -> bool {
 	if s == nil || s.content == nil do return false
-	// content_list_messages returns messages of every direction (unlike the
-	// user-visible view, which hides agent_to_agent). One row is enough.
-	rows, err := iface.content_list_messages(s.content, c.conversation_id, c.owner_user_id, 1, "")
+	// Fetch up to 10 recent messages across all directions and check for at least one non-system message.
+	rows, err := iface.content_list_messages(s.content, c.conversation_id, c.owner_user_id, 10, "")
 	if err.code != .None do return false
-	return len(rows) > 0
+	for m in rows {
+		if m.message_type != "system" do return true
+	}
+	return false
 }
 
 // record_activity_and_maybe_nudge stamps last_activity_at on the conversation (and

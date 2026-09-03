@@ -3,6 +3,7 @@ import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
+import Icon from '../Icon';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -30,6 +31,7 @@ import {
   upsertAgentInCaches,
   useCreateAgentInstanceInChainMutation,
   useFetchAgentInstanceQuery,
+  useFetchAgentIdentityQuery,
   useListAgentIdentitiesQuery,
   useListAgentInstancesQuery,
 } from '../../api/endpoints/agents';
@@ -130,6 +132,27 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [addTier, setAddTier] = useState('');
   const [addAgentError, setAddAgentError] = useState('');
 
+  // Edit Assignee Modal State
+  const [editingAssigneeTask, setEditingAssigneeTask] = useState<any | null>(null);
+  const [editAssigneeMode, setEditAssigneeMode] = useState<'member' | 'existing' | 'user' | 'unassigned'>('member');
+  const [editAssigneeMemberInstanceId, setEditAssigneeMemberInstanceId] = useState('');
+  const [editAssigneeAgentId, setEditAssigneeAgentId] = useState('');
+  const [editAssigneeInstanceId, setEditAssigneeInstanceId] = useState('');
+  const [editAssigneeUserId, setEditAssigneeUserId] = useState('');
+  const [savingAssignee, setSavingAssignee] = useState(false);
+  const [assigneeError, setAssigneeError] = useState('');
+
+  // Edit Reviewers Modal State
+  const [editingReviewersTask, setEditingReviewersTask] = useState<any | null>(null);
+  const [stagedReviewerRefs, setStagedReviewerRefs] = useState<any[]>([]);
+  const [addReviewerMode, setAddReviewerMode] = useState<'member' | 'existing' | 'user'>('member');
+  const [addReviewerMemberInstanceId, setAddReviewerMemberInstanceId] = useState('');
+  const [addReviewerAgentId, setAddReviewerAgentId] = useState('');
+  const [addReviewerInstanceId, setAddReviewerInstanceId] = useState('');
+  const [addReviewerUserId, setAddReviewerUserId] = useState('');
+  const [savingReviewers, setSavingReviewers] = useState(false);
+  const [reviewersError, setReviewersError] = useState('');
+
   const chain = data?.chain;
   const tasks: any[] = chain?.tasks || [];
   const members: any[] = chain?.members || [];
@@ -146,6 +169,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     { skip: !addAgentId || addMode !== 'existing' },
   );
   const existingInstances: any[] = existingInstancesQuery.data?.instances || [];
+  const assigneeInstancesQuery = useListAgentInstancesQuery(
+    { agentId: editAssigneeAgentId },
+    { skip: !editAssigneeAgentId || editAssigneeMode !== 'existing' },
+  );
+  const assigneeExistingInstances: any[] = assigneeInstancesQuery.data?.instances || [];
+  const reviewerInstancesQuery = useListAgentInstancesQuery(
+    { agentId: addReviewerAgentId },
+    { skip: !addReviewerAgentId || addReviewerMode !== 'existing' },
+  );
+  const reviewerExistingInstances: any[] = reviewerInstancesQuery.data?.instances || [];
   const memberInstanceIds = new Set(members.map((m: any) => String(m.agentInstanceId || m.agent_instance_id || '')));
   const addProviderOptions = selectedAddBridge ? launchProvidersFor(selectedAddBridge) : [];
   const addTierOptions = selectedAddBridge ? launchTiersFor(selectedAddBridge, addProvider, selectedAddAgent) : [];
@@ -261,6 +294,131 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       refetch();
     } catch (err) {
       console.error('Failed to remove member:', err);
+    }
+  };
+
+  const openEditAssigneeModal = (task: any) => {
+    setEditingAssigneeTask(task);
+    setAssigneeError('');
+    if (task.assigneeRef?.agent_instance_id) {
+      const instId = task.assigneeRef.agent_instance_id;
+      const isMember = members.some((m: any) => (m.agentInstanceId || m.agent_instance_id) === instId);
+      if (isMember) {
+        setEditAssigneeMode('member');
+        setEditAssigneeMemberInstanceId(instId);
+      } else {
+        setEditAssigneeMode('existing');
+        setEditAssigneeInstanceId(instId);
+      }
+    } else if (task.assigneeRef?.user_id) {
+      setEditAssigneeMode('user');
+      setEditAssigneeUserId(task.assigneeRef.user_id);
+    } else {
+      setEditAssigneeMode(members.length > 0 ? 'member' : 'unassigned');
+      setEditAssigneeMemberInstanceId(members[0]?.agentInstanceId || members[0]?.agent_instance_id || '');
+    }
+  };
+
+  const handleSaveAssignee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAssigneeTask) return;
+    setSavingAssignee(true);
+    setAssigneeError('');
+    try {
+      let assigneeRef: any = null;
+      if (editAssigneeMode === 'member') {
+        if (!editAssigneeMemberInstanceId) throw new Error('Please select a chain member.');
+        assigneeRef = { type: 'agent_instance', agent_instance_id: editAssigneeMemberInstanceId };
+      } else if (editAssigneeMode === 'existing') {
+        if (!editAssigneeInstanceId) throw new Error('Please select an agent instance.');
+        assigneeRef = { type: 'agent_instance', agent_instance_id: editAssigneeInstanceId };
+      } else if (editAssigneeMode === 'user') {
+        if (!editAssigneeUserId.trim()) throw new Error('Please enter a user ID.');
+        assigneeRef = { type: 'user', user_id: editAssigneeUserId.trim() };
+      } else if (editAssigneeMode === 'unassigned') {
+        assigneeRef = null;
+      }
+      await updateTask({
+        chainId,
+        taskId: editingAssigneeTask.taskId,
+        assigneeRef,
+      }).unwrap();
+      setEditingAssigneeTask(null);
+      await refetch();
+    } catch (err: any) {
+      setAssigneeError(String(err?.data?.error?.message || err?.message || 'Failed to update assignee'));
+    } finally {
+      setSavingAssignee(false);
+    }
+  };
+
+  const openEditReviewersModal = (task: any) => {
+    setEditingReviewersTask(task);
+    setStagedReviewerRefs(task.reviewerRefs ? [...task.reviewerRefs] : []);
+    setReviewersError('');
+    setAddReviewerMode('member');
+    setAddReviewerMemberInstanceId(members[0]?.agentInstanceId || members[0]?.agent_instance_id || '');
+    setAddReviewerAgentId('');
+    setAddReviewerInstanceId('');
+    setAddReviewerUserId('');
+  };
+
+  const handleAddStagedReviewer = () => {
+    setReviewersError('');
+    let refToAdd: any = null;
+    if (addReviewerMode === 'member') {
+      if (!addReviewerMemberInstanceId) {
+        setReviewersError('Select a chain member to add as reviewer.');
+        return;
+      }
+      refToAdd = { type: 'agent_instance', agent_instance_id: addReviewerMemberInstanceId };
+    } else if (addReviewerMode === 'existing') {
+      if (!addReviewerInstanceId) {
+        setReviewersError('Select an agent instance to add as reviewer.');
+        return;
+      }
+      refToAdd = { type: 'agent_instance', agent_instance_id: addReviewerInstanceId };
+    } else if (addReviewerMode === 'user') {
+      if (!addReviewerUserId.trim()) {
+        setReviewersError('Enter a user ID to add as reviewer.');
+        return;
+      }
+      refToAdd = { type: 'user', user_id: addReviewerUserId.trim() };
+    }
+    if (refToAdd) {
+      const exists = stagedReviewerRefs.some((r) =>
+        (r.agent_instance_id && r.agent_instance_id === refToAdd.agent_instance_id) ||
+        (r.user_id && r.user_id === refToAdd.user_id)
+      );
+      if (exists) {
+        setReviewersError('This reviewer is already added.');
+        return;
+      }
+      setStagedReviewerRefs([...stagedReviewerRefs, refToAdd]);
+    }
+  };
+
+  const handleRemoveStagedReviewer = (index: number) => {
+    setStagedReviewerRefs(stagedReviewerRefs.filter((_, i) => i !== index));
+  };
+
+  const handleSaveReviewers = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingReviewersTask) return;
+    setSavingReviewers(true);
+    setReviewersError('');
+    try {
+      await updateTask({
+        chainId,
+        taskId: editingReviewersTask.taskId,
+        reviewerRefs: stagedReviewerRefs,
+      }).unwrap();
+      setEditingReviewersTask(null);
+      await refetch();
+    } catch (err: any) {
+      setReviewersError(String(err?.data?.error?.message || err?.message || 'Failed to update reviewers'));
+    } finally {
+      setSavingReviewers(false);
     }
   };
 
@@ -1058,11 +1216,17 @@ export function InstanceIdLink({ instanceId }: { instanceId: string }) {
   const trimmed = String(instanceId || '').trim();
   // Only agent instance ids are clickable; guard against empty values.
   const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed });
-  if (!trimmed) return null;
   const inst = data?.instance || null;
   const conversationId = String(inst?.conversation_id || inst?.conversationId || '');
+  const agentId = String(inst?.agent_id || inst?.agentId || '');
+
+  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
+  const agentName = agentData?.agent?.name || agentData?.agent?.agent_id || agentId || trimmed;
+
+  if (!trimmed) return null;
+  
   const href = conversationId
-    ? shellHash(`/conversations/${conversationId}`)
+    ? shellHash(`/conversations/${conversationId}?agent_instance_id=${trimmed}`)
     : shellHash(`/agents`);
   const title = conversationId
     ? `Open chat with ${trimmed}`
@@ -1074,7 +1238,7 @@ export function InstanceIdLink({ instanceId }: { instanceId: string }) {
       title={title}
       className="font-mono text-sky-300 underline decoration-dotted underline-offset-2 hover:text-sky-200"
     >
-      {trimmed}
+      {agentName}
     </a>
   );
 }

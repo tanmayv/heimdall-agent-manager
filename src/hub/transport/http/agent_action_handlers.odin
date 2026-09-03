@@ -453,7 +453,7 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	if !ok do return resp
 	inst, saved, err := agent_service.mark_instance_start_success(h.agents, auth)
 	if !saved do return respond_error(err, req.request_id)
-	startup_note, note_saved, _ := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = "Agent has started and is ready.", artifact_ids_json = "[]"})
+	startup_note, note_saved, _ := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = "Agent has started and is ready.", artifact_ids_json = "[]", message_type = "system"})
 	conv, conv_ok, _ := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
 	if conv_ok {
 		// Only re-notify for genuinely unread inbound messages. Scanning all recent
