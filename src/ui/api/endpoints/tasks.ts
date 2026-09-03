@@ -96,13 +96,16 @@ function taskMutationAuth(session: any, agentToken?: string) {
 }
 
 function preciseTaskTags(taskId?: string, chainId?: string, includeComments = false) {
-  const tags: Array<{ type: 'TaskLog' | 'Task' | 'TaskComments' | 'ChainTasks'; id: string }> = [];
+  const tags: Array<{ type: 'TaskLog' | 'Task' | 'TaskComments' | 'ChainTasks' | 'Chain'; id: string }> = [];
   if (taskId) {
     tags.push({ type: 'Task', id: taskId });
     tags.push({ type: 'TaskLog', id: taskId });
     if (includeComments) tags.push({ type: 'TaskComments', id: taskId });
   }
-  if (chainId) tags.push({ type: 'ChainTasks', id: chainId });
+  if (chainId) {
+    tags.push({ type: 'ChainTasks', id: chainId });
+    tags.push({ type: 'Chain', id: chainId });
+  }
   return tags;
 }
 
@@ -242,8 +245,6 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
     }),
-    // CT-9: user/coordinator manual "switch current task" — pin a specific agent
-    // instance's current task to a task it is the assignee/reviewer of.
     setInstanceCurrentTask: build.mutation<any, { chainId: string; taskId: string; agentInstanceId: string }>({
       queryFn: async ({ chainId, taskId, agentInstanceId }) => {
         try {
@@ -253,7 +254,10 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
+      invalidatesTags: (_result, _error, { chainId, taskId, agentInstanceId }) => [
+        ...preciseTaskTags(taskId, chainId),
+        ...(agentInstanceId ? [{ type: 'AgentInstances' as const, id: agentInstanceId }] : []),
+      ],
     }),
     addChainMember: build.mutation<any, { chainId: string; agentInstanceId: string; role?: string }>({
       queryFn: async ({ chainId, agentInstanceId, role }) => {
