@@ -6,14 +6,16 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import project_service "odin_test:hub/service/project"
 
-// Activity-gated title-nudge engine (REQ-4,5,6).
+// Activity-gated title-nudge engine (REQ-4,5,6; TN-1..TN-5).
 //
 // A freshly-launched run gets a DEFAULT title "<agent-name> #<n>" (T1). Once the
-// user and the owning/coordinator agent have actually exchanged messages, we ask
-// that agent ONCE to set a human-meaningful conversation + chain title. We do NOT
-// build a new notifier: the nudge is delivered over the SAME bridge runtime
-// command path used by notify_agent_message (the gated-notification path), so it
-// reuses existing wake/delivery/coalescing on the bridge.
+// conversation has seen ANY real activity (a message in any direction — including
+// agent<->agent, so agents created by other agents are covered), we ask the
+// owning/coordinator agent ONCE to set a human-meaningful conversation + chain
+// title. The nudge does NOT wait for a human to get involved. We do NOT build a
+// new notifier: the nudge is delivered over the SAME bridge runtime command path
+// used by notify_agent_message (the gated-notification path), so it reuses
+// existing wake/delivery/coalescing on the bridge.
 //
 // Re-nudge is heavily gated so we never spam:
 //   - title_source must still be "default" (agent- or user-set titles stop us);
@@ -34,17 +36,20 @@ Title_Nudge_Decision :: struct {
 
 // evaluate_title_nudge is pure + clock-injectable so it is trivially testable.
 //   - title_source:    "default" | "agent" | "user"
-//   - has_exchange:    at least one user->agent AND one agent->user message exist
+//   - has_activity:    at least one real message exists in the conversation, in
+//                      ANY direction (user_to_agent, agent_to_user, agent_to_agent).
+//                      A human message is NOT required (TN-1/TN-2).
 //   - last_activity_ms: most recent meaningful activity (unix ms; 0 = none)
 //   - last_nudge_ms:   time of the previous nudge (unix ms; 0 = never nudged)
 //   - now_ms:          current time (unix ms)
 //   - cooldown_seconds: minimum gap between re-nudges
-evaluate_title_nudge :: proc(title_source: string, has_exchange: bool, last_activity_ms, last_nudge_ms, now_ms: i64, cooldown_seconds: int) -> Title_Nudge_Decision {
+evaluate_title_nudge :: proc(title_source: string, has_activity: bool, last_activity_ms, last_nudge_ms, now_ms: i64, cooldown_seconds: int) -> Title_Nudge_Decision {
 	// Guardrail: user-set title wins forever; any non-default title stops nudges.
 	if title_source != "default" do return Title_Nudge_Decision{should_nudge = false, reason = "non_default_title"}
-	// Gate on the first meaningful user<->agent exchange.
-	if !has_exchange do return Title_Nudge_Decision{should_nudge = false, reason = "no_exchange"}
-	// First nudge fires as soon as the exchange exists.
+	// Gate on agent ACTIVITY alone: the conversation must have had at least one
+	// real message (any direction). Never nudge a completely empty conversation.
+	if !has_activity do return Title_Nudge_Decision{should_nudge = false, reason = "no_activity"}
+	// First nudge fires as soon as any activity exists.
 	if last_nudge_ms <= 0 do return Title_Nudge_Decision{should_nudge = true, reason = ""}
 	// Re-nudge only when there is NEW activity since the last nudge.
 	if last_activity_ms <= last_nudge_ms do return Title_Nudge_Decision{should_nudge = false, reason = "no_new_activity"}
@@ -55,25 +60,19 @@ evaluate_title_nudge :: proc(title_source: string, has_exchange: bool, last_acti
 	return Title_Nudge_Decision{should_nudge = true, reason = ""}
 }
 
-// conversation_has_user_agent_exchange reports whether the conversation contains
-// at least one message in BOTH the user->agent and agent->user directions, i.e.
-// a real two-way exchange has happened.
-conversation_has_user_agent_exchange :: proc(s: ^Content_Service, c: domain.Chat_Conversation) -> bool {
+// conversation_has_any_activity reports whether the conversation has had at least
+// one real message in ANY direction (user_to_agent, agent_to_user, or
+// agent_to_agent). A human message is NOT required (TN-2): agents that only ever
+// talk to other agents — e.g. an agent created by another agent — still count as
+// active. A completely empty conversation (zero messages) returns false so it is
+// never nudged.
+conversation_has_any_activity :: proc(s: ^Content_Service, c: domain.Chat_Conversation) -> bool {
 	if s == nil || s.content == nil do return false
-	rows, err := iface.content_list_user_visible_messages(s.content, c.conversation_id, c.owner_user_id, 200, "")
+	// content_list_messages returns messages of every direction (unlike the
+	// user-visible view, which hides agent_to_agent). One row is enough.
+	rows, err := iface.content_list_messages(s.content, c.conversation_id, c.owner_user_id, 1, "")
 	if err.code != .None do return false
-	saw_user := false
-	saw_agent := false
-	for m in rows {
-		switch m.direction {
-		case "user_to_agent":
-			saw_user = true
-		case "agent_to_user":
-			saw_agent = true
-		}
-		if saw_user && saw_agent do return true
-	}
-	return false
+	return len(rows) > 0
 }
 
 // record_activity_and_maybe_nudge stamps last_activity_at on the conversation (and
@@ -100,12 +99,13 @@ record_activity_and_maybe_nudge :: proc(s: ^Content_Service, conversation_id: st
 		}
 	}
 
-	// 2) Evaluate the nudge gate.
-	has_exchange := conversation_has_user_agent_exchange(s, c)
+	// 2) Evaluate the nudge gate. Eligibility is agent ACTIVITY alone — any real
+	// message in the conversation (no human required).
+	has_activity := conversation_has_any_activity(s, c)
 	now_ms, _ := platform_rfc3339_to_unix_ms(now)
 	last_activity_ms, _ := platform_rfc3339_to_unix_ms(c.last_activity_at)
 	last_nudge_ms, _ := platform_rfc3339_to_unix_ms(c.last_title_nudge_at)
-	decision := evaluate_title_nudge(c.title_source, has_exchange, last_activity_ms, last_nudge_ms, now_ms, s.title_nudge_cooldown_seconds)
+	decision := evaluate_title_nudge(c.title_source, has_activity, last_activity_ms, last_nudge_ms, now_ms, s.title_nudge_cooldown_seconds)
 	if !decision.should_nudge do return
 
 	// 3) Deliver ONE nudge and stamp last_title_nudge_at on conversation + chain.

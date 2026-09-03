@@ -90,6 +90,19 @@ fc_list_user_visible :: proc(ctx: rawptr, conversation_id: string, owner: domain
 	for i in 0..<f.msg_n { if f.msgs[i].conversation_id == conversation_id && f.msgs[i].direction != "agent_to_agent" do append(&out, f.msgs[i]) }
 	return out[:], {}
 }
+// fc_list_messages returns messages of EVERY direction (incl. agent_to_agent),
+// matching the real content_list_messages. The activity gate uses this so
+// agent<->agent-only conversations count as active (TN-2/TN-3). Honors `limit`.
+fc_list_messages :: proc(ctx: rawptr, conversation_id: string, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error) {
+	out := make([dynamic]domain.Chat_Message)
+	for i in 0..<f.msg_n {
+		if f.msgs[i].conversation_id == conversation_id {
+			append(&out, f.msgs[i])
+			if limit > 0 && len(out) >= limit do break
+		}
+	}
+	return out[:], {}
+}
 
 // --- taskchain repo fakes --------------------------------------------------
 ft_get_chain :: proc(ctx: rawptr, id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
@@ -157,7 +170,7 @@ clk: platform.Clock
 idg: platform.ID_Generator
 
 wire_repos :: proc() {
-	content_repo = iface.Content_Repository{ctx = nil, save_conversation = fc_save_convo, get_conversation = fc_get_convo, list_conversations = fc_list_convos, save_message = fc_save_msg, list_user_visible_messages = fc_list_user_visible}
+	content_repo = iface.Content_Repository{ctx = nil, save_conversation = fc_save_convo, get_conversation = fc_get_convo, list_conversations = fc_list_convos, save_message = fc_save_msg, list_user_visible_messages = fc_list_user_visible, list_messages = fc_list_messages}
 	tc_repo = iface.Taskchain_Repository{ctx = nil, get_chain = ft_get_chain, save_chain = ft_save_chain, list_chains_by_owner = ft_list_chains, save_member = ft_save_member, list_members_by_chain = ft_list_members}
 	ag_repo = iface.Agent_Repository{ctx = nil, get = fa_get, get_instance = fa_get_inst, list_instances_by_bridge = fa_by_bridge, next_title_counter = fa_next_counter}
 	clk = platform.Clock{ctx = nil, now = fnow}
@@ -172,6 +185,8 @@ main :: proc() {
 	test_counter_and_default_title()
 	test_evaluate_gate_pure()
 	test_record_activity_wiring()
+	test_nudge_without_user_message()
+	test_agent_to_agent_triggers_nudge()
 	test_set_title_marks_source()
 	test_normalize_title_source()
 
@@ -209,13 +224,13 @@ test_evaluate_gate_pure :: proc() {
 	HOUR :: i64(3600) * 1000
 	base := i64(1_000_000)
 
-	// No exchange yet -> gated.
+	// No activity yet (empty conversation) -> gated.
 	d := content_service.evaluate_title_nudge("default", false, base, 0, base, 3600)
-	check(!d.should_nudge && d.reason == "no_exchange", "no exchange gates the nudge")
+	check(!d.should_nudge && d.reason == "no_activity", "no activity gates the nudge (empty conversation)")
 
-	// First exchange, never nudged -> fires.
+	// First activity (any direction), never nudged -> fires. No human required.
 	d = content_service.evaluate_title_nudge("default", true, base, 0, base, 3600)
-	check(d.should_nudge, "first exchange fires the first nudge")
+	check(d.should_nudge, "first activity fires the first nudge (no user message required)")
 
 	// Already nudged, NO new activity (activity <= last nudge) -> no re-nudge.
 	d = content_service.evaluate_title_nudge("default", true, base, base, base + 2*HOUR, 3600)
@@ -254,19 +269,19 @@ test_record_activity_wiring :: proc() {
 	f.convos[0] = domain.Chat_Conversation{conversation_id = "chat_c", owner_user_id = "alice", agent_id = "agt_c", agent_instance_id = "inst_c", chain_id = "chain_c", title = "Coder #1", title_source = "default"}
 	f.convo_n = 1
 
-	// Only a user->agent message so far (no two-way exchange): no nudge.
+	// Empty conversation (zero messages): no nudge.
+	f.msg_n = 0
+	f.cmd_n = 0
+	content_service.record_activity_and_maybe_nudge(&cs, "chat_c", "2026-07-22T10:00:00Z")
+	check(cmds_with("notify_title_nudge") == 0, "no nudge for a completely empty conversation")
+
+	// A SINGLE user->agent message is enough activity -> exactly ONE nudge (TN-1/2:
+	// no two-way exchange, no agent reply required).
 	f.msgs[0] = domain.Chat_Message{message_id = "m1", conversation_id = "chat_c", owner_user_id = "alice", direction = "user_to_agent", body = "hi"}
 	f.msg_n = 1
 	f.cmd_n = 0
-	content_service.record_activity_and_maybe_nudge(&cs, "chat_c", "2026-07-22T10:00:05Z")
-	check(cmds_with("notify_title_nudge") == 0, "no nudge before a two-way user<->agent exchange")
-
-	// Agent replies -> first meaningful exchange -> exactly ONE nudge to inst_c/brg_c.
-	f.msgs[1] = domain.Chat_Message{message_id = "m2", conversation_id = "chat_c", owner_user_id = "alice", direction = "agent_to_user", body = "hello"}
-	f.msg_n = 2
-	f.cmd_n = 0
 	content_service.record_activity_and_maybe_nudge(&cs, "chat_c", "2026-07-22T10:01:00Z")
-	check(cmds_with("notify_title_nudge") == 1, "first exchange fires EXACTLY one title nudge")
+	check(cmds_with("notify_title_nudge") == 1, "first activity (one message, no exchange) fires EXACTLY one title nudge")
 	check(cmds_with("inst_c") == 1 && cmds_with("chat_c") == 1 && cmds_with("chain_c") == 1, "nudge targets the owning instance + carries conversation/chain ids")
 
 	// last_title_nudge_at stamped on conversation AND chain.
@@ -292,6 +307,54 @@ test_record_activity_wiring :: proc() {
 	f.cmd_n = 0
 	content_service.record_activity_and_maybe_nudge(&cs, "chat_c", "2026-07-22T13:00:00Z")
 	check(cmds_with("notify_title_nudge") == 0, "a non-default (agent-set) title stops all further nudges")
+}
+
+// --- TN-5 (i): a nudge fires with NO user message present -------------------
+// An agent that only ever emits agent_to_user output (never received a human
+// message) must still be nudged once.
+test_nudge_without_user_message :: proc() {
+	f = F{counters = make(map[string]int), now = "2026-07-22T10:00:00Z"}
+	cs := content_service.new_content_service_with_runtime(&content_repo, &ag_repo, nil, nil, &tc_repo, project_service.Bridge_Command_Sink{ctx = nil, send_runtime_command = fsink}, &clk, &idg)
+	cs.title_nudge_cooldown_seconds = 3600
+
+	f.chains[0] = domain.Task_Chain{chain_id = "chain_u", owner_user_id = "alice", title = "Coder #1", title_source = "default"}
+	f.chain_n = 1
+	f.insts[0] = domain.Agent_Instance{agent_instance_id = "inst_u", owner_user_id = "alice", chain_id = "chain_u", bridge_id = "brg_u"}
+	f.inst_n = 1
+	f.convos[0] = domain.Chat_Conversation{conversation_id = "chat_u", owner_user_id = "alice", agent_id = "agt_u", agent_instance_id = "inst_u", chain_id = "chain_u", title = "Coder #1", title_source = "default"}
+	f.convo_n = 1
+
+	// ONLY an agent_to_user message — no user_to_agent at all.
+	f.msgs[0] = domain.Chat_Message{message_id = "u1", conversation_id = "chat_u", owner_user_id = "alice", direction = "agent_to_user", body = "starting work"}
+	f.msg_n = 1
+	f.cmd_n = 0
+	content_service.record_activity_and_maybe_nudge(&cs, "chat_u", "2026-07-22T10:00:05Z")
+	check(cmds_with("notify_title_nudge") == 1, "nudge fires with NO user message present (agent output alone)")
+	check(cmds_with("inst_u") == 1, "nudge targets the owning instance")
+}
+
+// --- TN-5 (ii): agent_to_agent activity triggers a nudge --------------------
+// An agent created by another agent sees only agent_to_agent traffic; it must
+// still be nudged (TN-3 wires the agent<->agent path).
+test_agent_to_agent_triggers_nudge :: proc() {
+	f = F{counters = make(map[string]int), now = "2026-07-22T10:00:00Z"}
+	cs := content_service.new_content_service_with_runtime(&content_repo, &ag_repo, nil, nil, &tc_repo, project_service.Bridge_Command_Sink{ctx = nil, send_runtime_command = fsink}, &clk, &idg)
+	cs.title_nudge_cooldown_seconds = 3600
+
+	f.chains[0] = domain.Task_Chain{chain_id = "chain_a", owner_user_id = "alice", title = "Coder #1", title_source = "default"}
+	f.chain_n = 1
+	f.insts[0] = domain.Agent_Instance{agent_instance_id = "inst_a", owner_user_id = "alice", chain_id = "chain_a", bridge_id = "brg_a"}
+	f.inst_n = 1
+	f.convos[0] = domain.Chat_Conversation{conversation_id = "chat_a", owner_user_id = "alice", agent_id = "agt_a", agent_instance_id = "inst_a", chain_id = "chain_a", title = "Coder #1", title_source = "default"}
+	f.convo_n = 1
+
+	// ONLY an agent_to_agent message (agent created by another agent).
+	f.msgs[0] = domain.Chat_Message{message_id = "a1", conversation_id = "chat_a", owner_user_id = "alice", direction = "agent_to_agent", body = "peer ping"}
+	f.msg_n = 1
+	f.cmd_n = 0
+	content_service.record_activity_and_maybe_nudge(&cs, "chat_a", "2026-07-22T10:00:05Z")
+	check(cmds_with("notify_title_nudge") == 1, "agent_to_agent activity alone triggers a nudge")
+	check(cmds_with("inst_a") == 1, "nudge targets the owning instance")
 }
 
 // --- REQ-3 / T3: set-title marks title_source='agent' + auth ----------------
