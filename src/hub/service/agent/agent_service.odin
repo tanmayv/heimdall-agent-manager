@@ -1151,23 +1151,6 @@ bootstrap_fragment_hash :: proc(body: string) -> string {
 	return strings.concatenate({"sha256:", string(hex_str)})
 }
 
-// Static AGENTS.md fragment prose is authored in src/prompts/*.md and embedded at
-// compile time via #load (paths are relative to this source file). Only the
-// STATIC prose lives in the .md files; all DB interpolation (project fields,
-// agent instructions, memory rows) stays in the render_* procs below. Each proc
-// re-adds the structural "\n\n" section separator (and, where the original had
-// one, a trailing "\n") around the trimmed file body so the rendered fragment
-// bytes—and therefore its content-addressed hash—are identical to the previous
-// inline literals.
-BOOTSTRAP_FRAGMENT_AGENT_IDENTITY :: #load("../../../prompts/bootstrap_agent_identity.md", string)
-BOOTSTRAP_FRAGMENT_PROJECT        :: #load("../../../prompts/bootstrap_project.md", string)
-BOOTSTRAP_FRAGMENT_TASKS_GUIDANCE :: #load("../../../prompts/bootstrap_tasks_guidance.md", string)
-BOOTSTRAP_FRAGMENT_ROLE_COORDINATOR :: #load("../../../prompts/bootstrap_role_coordinator.md", string)
-BOOTSTRAP_FRAGMENT_ROLE_WORKER    :: #load("../../../prompts/bootstrap_role_worker.md", string)
-BOOTSTRAP_FRAGMENT_MEMORIES_HEADER :: #load("../../../prompts/bootstrap_memories_header.md", string)
-BOOTSTRAP_FRAGMENT_IDENTITY_PERSONA_HEADING :: #load("../../../prompts/bootstrap_identity_persona_heading.md", string)
-BOOTSTRAP_FRAGMENT_IDENTITY_INSTRUCTIONS_HEADING :: #load("../../../prompts/bootstrap_identity_instructions_heading.md", string)
-
 // BT-2: the single static AGENTS.md template. All static prose is inline; the
 // bridge substitutes {scalar} placeholders and evaluates the three role blocks
 // {{#is_coordinator}}/{{#is_worker}}/{{#is_reviewer}}. Served as a
@@ -1272,67 +1255,6 @@ bootstrap_write_template_and_variables_json :: proc(b: ^strings.Builder, templat
 	strings.write_string(b, "]")
 }
 
-// render_agent_identity composes the `## Agent Identity & Instructions` fragment
-// from up to THREE DB-backed sources, per reports/bootstrap_template_design.md
-// §2.1 (IMPL 2). Precedence is COMPOSE-not-replace: persona first, then the
-// effective instructions = template.instructions (base) followed by
-// agent.instructions (agent-specific augmentation appended after the base).
-//
-// Presence handling (each source independently gated on trim_space != ""):
-//   - `### Persona` sub-heading + body when template_persona is present.
-//   - `### Instructions` sub-heading is emitted only when there is at least one
-//     instruction source AND something to disambiguate it from (persona or a
-//     template base). When agent.instructions is the ONLY source (no persona, no
-//     template.instructions) the output is byte-identical to the pre-IMPL-2
-//     behavior (raw instructions directly under the section heading, no
-//     `### Instructions` sub-heading) — the §2.1 matrix "today's behavior" row.
-//   - Whole fragment dropped (empty string) when all three sources are empty.
-// No source is ever silently dropped; there is no full-override mode.
-render_agent_identity :: proc(agent: domain.Agent, owner: domain.User_ID, template_persona: string = "", template_instructions: string = "") -> string {
-	has_persona := strings.trim_space(template_persona) != ""
-	has_tmpl_instr := strings.trim_space(template_instructions) != ""
-	has_agent_instr := strings.trim_space(agent.instructions) != ""
-	// Widened guard: render when ANY of the three sources is present.
-	if !has_persona && !has_tmpl_instr && !has_agent_instr do return ""
-
-	b := strings.builder_make()
-	strings.write_string(&b, "\n\n")
-	strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_AGENT_IDENTITY))
-
-	if has_persona {
-		strings.write_string(&b, "\n\n")
-		strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_IDENTITY_PERSONA_HEADING))
-		strings.write_string(&b, "\n")
-		strings.write_string(&b, template_persona)
-	}
-
-	if has_tmpl_instr || has_agent_instr {
-		// Emit the `### Instructions` sub-heading only when it separates the
-		// instructions from a persona block or a template base; when only
-		// agent.instructions exists, preserve the pre-IMPL-2 heading-less layout.
-		show_instr_heading := has_persona || has_tmpl_instr
-		if show_instr_heading {
-			strings.write_string(&b, "\n\n")
-			strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_IDENTITY_INSTRUCTIONS_HEADING))
-			strings.write_string(&b, "\n")
-			if has_tmpl_instr {
-				strings.write_string(&b, template_instructions)
-				if has_agent_instr {
-					strings.write_string(&b, "\n\n")
-					strings.write_string(&b, agent.instructions)
-				}
-			} else {
-				strings.write_string(&b, agent.instructions)
-			}
-		} else {
-			// today's behavior: agent.instructions only, directly under heading.
-			strings.write_string(&b, "\n")
-			strings.write_string(&b, agent.instructions)
-		}
-	}
-	return strings.to_string(b)
-}
-
 // bootstrap_template_identity_fields fetches the agent's template persona +
 // instructions for the identity fragment. Returns empty strings when the agent
 // has no template or the lookup misses (miss treated as empty, never an error).
@@ -1342,66 +1264,6 @@ bootstrap_template_identity_fields :: proc(service: ^Agent_Service, agent: domai
 	tmpl, ok, _ := iface.content_get_template(service.content, agent.template_id)
 	if !ok do return "", ""
 	return tmpl.persona, tmpl.instructions
-}
-
-render_project :: proc(project_name, project_path, project_repo, project_vcs, project_desc: string) -> string {
-	if strings.trim_space(project_name) == "" && strings.trim_space(project_path) == "" do return ""
-	b := strings.builder_make()
-	strings.write_string(&b, "\n\n")
-	strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_PROJECT))
-	strings.write_string(&b, "\n")
-	if strings.trim_space(project_name) != "" { strings.write_string(&b, "\n- Name: "); strings.write_string(&b, project_name) }
-	if strings.trim_space(project_path) != "" { strings.write_string(&b, "\n- Path: "); strings.write_string(&b, project_path) }
-	if strings.trim_space(project_repo) != "" { strings.write_string(&b, "\n- Repo: "); strings.write_string(&b, project_repo) }
-	if strings.trim_space(project_vcs) != "" { strings.write_string(&b, "\n- VCS: "); strings.write_string(&b, project_vcs) }
-	if strings.trim_space(project_desc) != "" { strings.write_string(&b, "\n- Description: "); strings.write_string(&b, project_desc) }
-	return strings.to_string(b)
-}
-
-render_tasks_guidance :: proc() -> string {
-	return strings.concatenate({"\n\n", strings.trim_space(BOOTSTRAP_FRAGMENT_TASKS_GUIDANCE)})
-}
-
-// Role-specific AGENTS.md guidance for the manifest/fragment assembler. The
-// coordinator is told to delegate (not implement); a worker is told to execute
-// assigned tasks and route coordination to the coordinator. Empty when the
-// instance is not part of a chain.
-render_role_guidance :: proc(is_coordinator: bool, chain_ok: bool) -> string {
-	if !chain_ok do return ""
-	if is_coordinator {
-		return strings.concatenate({"\n\n", strings.trim_space(BOOTSTRAP_FRAGMENT_ROLE_COORDINATOR)})
-	}
-	return strings.concatenate({"\n\n", strings.trim_space(BOOTSTRAP_FRAGMENT_ROLE_WORKER)})
-}
-
-render_memories_markdown :: proc(service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) -> string {
-	if service == nil || service.content == nil do return ""
-	memories, err := iface.content_list_memories(service.content, owner)
-	if err.code != .None do return ""
-	b := strings.builder_make()
-	written := 0
-	for m in memories {
-		if !bootstrap_memory_applies(m, service, owner, inst) do continue
-		// Only fact and habit memories belong inline in AGENTS.md. Skill
-		// memories are materialized as separate SKILL.md files and must not be
-		// duplicated here (that just pollutes the bootstrap doc). Other types
-		// (episode/expertise) are intentionally excluded from the inline doc.
-		if m.type != .Fact && m.type != .Habit do continue
-		if written == 0 { strings.write_string(&b, "\n\n"); strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_MEMORIES_HEADER)) }
-		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n", m.title, domain.memory_type_string(m.type))
-		write_raw_markdown_string(&b, m.body)
-		written += 1
-	}
-	return strings.to_string(b)
-}
-
-write_raw_markdown_string :: proc(b: ^strings.Builder, value: string) {
-	text := value
-	if strings.index(text, "\\n") >= 0 {
-		replaced, _ := strings.replace_all(text, "\\n", "\n")
-		text = replaced
-	}
-	strings.write_string(b, text)
 }
 
 render_skill :: proc(m: domain.Memory) -> (string, string) {
@@ -1484,38 +1346,7 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	header_inline := render_header_inline(agent.name, inst.agent_instance_id, chain.title, string(chain.chain_id), chain.coordinator_agent_instance_id, chain.coordinator_agent_instance_id == inst.agent_instance_id)
 
 	template_persona, template_instructions := bootstrap_template_identity_fields(service, agent)
-	identity_body := render_agent_identity(agent, owner, template_persona, template_instructions)
-	identity_hash := ""
-	if identity_body != "" {
-		identity_hash = bootstrap_fragment_hash(identity_body)
-		hub_fragment_cache_put(identity_hash, identity_body)
-	}
-
-	project_body := render_project(project_name, project_path, project_repo, project_vcs, project_desc)
-	project_hash := ""
-	if project_body != "" {
-		project_hash = bootstrap_fragment_hash(project_body)
-		hub_fragment_cache_put(project_hash, project_body)
-	}
-
-	tasks_body := render_tasks_guidance()
-	tasks_hash := bootstrap_fragment_hash(tasks_body)
-	hub_fragment_cache_put(tasks_hash, tasks_body)
-
 	is_coordinator := chain_ok && chain.coordinator_agent_instance_id == inst.agent_instance_id
-	role_body := render_role_guidance(is_coordinator, chain_ok)
-	role_hash := ""
-	if role_body != "" {
-		role_hash = bootstrap_fragment_hash(role_body)
-		hub_fragment_cache_put(role_hash, role_body)
-	}
-
-	memories_body := render_memories_markdown(service, owner, inst)
-	memories_hash := ""
-	if memories_body != "" {
-		memories_hash = bootstrap_fragment_hash(memories_body)
-		hub_fragment_cache_put(memories_hash, memories_body)
-	}
 
 	skills_list := make([dynamic]Skill_Manifest_Item)
 	// BT-6: the SAME static skill set goes to every agent (no role gating).
@@ -1547,33 +1378,13 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	strings.write_string(&b, "\",\"hub_url\":\""); write_service_json_string(&b, bridge.hub_url)
 	strings.write_string(&b, "\"},\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"assembly\":[")
 
+	// BT-6: only the bridge-injected header is carried as an assembly section for
+	// the legacy fallback path; the live path renders from the single template
+	// blob + variables below. The old per-fragment sections (agent_identity/
+	// project/tasks_guidance/role_guidance/memories) are gone.
 	strings.write_string(&b, "{\"section\":\"header\",\"inline\":\"")
 	write_service_json_string(&b, header_inline)
 	strings.write_string(&b, "\"}")
-
-	if identity_hash != "" {
-		strings.write_string(&b, ",{\"section\":\"agent_identity\",\"hash\":\"")
-		write_service_json_string(&b, identity_hash)
-		strings.write_string(&b, "\"}")
-	}
-	if project_hash != "" {
-		strings.write_string(&b, ",{\"section\":\"project\",\"hash\":\"")
-		write_service_json_string(&b, project_hash)
-		strings.write_string(&b, "\"}")
-	}
-	strings.write_string(&b, ",{\"section\":\"tasks_guidance\",\"hash\":\"")
-	write_service_json_string(&b, tasks_hash)
-	strings.write_string(&b, "\"}")
-	if role_hash != "" {
-		strings.write_string(&b, ",{\"section\":\"role_guidance\",\"hash\":\"")
-		write_service_json_string(&b, role_hash)
-		strings.write_string(&b, "\"}")
-	}
-	if memories_hash != "" {
-		strings.write_string(&b, ",{\"section\":\"memories\",\"hash\":\"")
-		write_service_json_string(&b, memories_hash)
-		strings.write_string(&b, "\"}")
-	}
 
 	strings.write_string(&b, "]}]")
 
@@ -1809,37 +1620,6 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	}
 
 	template_persona, template_instructions := bootstrap_template_identity_fields(service, agent)
-	identity_body := render_agent_identity(agent, owner, template_persona, template_instructions)
-	identity_hash := ""
-	if identity_body != "" {
-		identity_hash = bootstrap_fragment_hash(identity_body)
-		hub_fragment_cache_put(identity_hash, identity_body)
-	}
-
-	project_body := render_project(project_name, project_path, project_repo, project_vcs, project_desc)
-	project_hash := ""
-	if project_body != "" {
-		project_hash = bootstrap_fragment_hash(project_body)
-		hub_fragment_cache_put(project_hash, project_body)
-	}
-
-	tasks_body := render_tasks_guidance()
-	tasks_hash := bootstrap_fragment_hash(tasks_body)
-	hub_fragment_cache_put(tasks_hash, tasks_body)
-
-	role_body := render_role_guidance(is_coordinator, true)
-	role_hash := ""
-	if role_body != "" {
-		role_hash = bootstrap_fragment_hash(role_body)
-		hub_fragment_cache_put(role_hash, role_body)
-	}
-
-	memories_body := render_memories_markdown_agent(service, owner, agent, domain.Project_ID(project_id))
-	memories_hash := ""
-	if memories_body != "" {
-		memories_hash = bootstrap_fragment_hash(memories_body)
-		hub_fragment_cache_put(memories_hash, memories_body)
-	}
 
 	skills_list := make([dynamic]Skill_Manifest_Item)
 	defer delete(skills_list)
@@ -1865,17 +1645,12 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	defer delete(variables)
 	bootstrap_append_identity_variables(&variables, template_persona, template_instructions, agent.instructions)
 
-	// bootstrap_version = sha256(concat of input fragment hashes) in a stable
-	// order. Empty (absent) fragments contribute an empty slot so adding/removing
-	// a fragment also changes the version. BT-2 folds the template hash + each
-	// variable (name=hash) so the ETag changes iff the template or any value does.
+	// bootstrap_version = sha256(concat of input hashes) in a stable order. BT-6:
+	// the per-fragment sections are gone; the version now folds each skill
+	// (name=hash), the single template hash, and each variable (name=hash), so the
+	// ETag changes iff the template, a variable value, or the skill set changes.
 	vb := strings.builder_make()
 	defer strings.builder_destroy(&vb)
-	strings.write_string(&vb, identity_hash); strings.write_byte(&vb, '\n')
-	strings.write_string(&vb, project_hash); strings.write_byte(&vb, '\n')
-	strings.write_string(&vb, tasks_hash); strings.write_byte(&vb, '\n')
-	strings.write_string(&vb, role_hash); strings.write_byte(&vb, '\n')
-	strings.write_string(&vb, memories_hash); strings.write_byte(&vb, '\n')
 	for item in skills_list {
 		strings.write_string(&vb, item.name); strings.write_byte(&vb, '=')
 		strings.write_string(&vb, item.hash); strings.write_byte(&vb, '\n')
@@ -1896,23 +1671,9 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, project_id)
 	strings.write_string(&b, "\",\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"assembly\":[")
 
-	assembly_written := 0
-	write_assembly_section :: proc(b: ^strings.Builder, written: ^int, section, hash: string) {
-		if hash == "" do return
-		if written^ > 0 do strings.write_byte(b, ',')
-		strings.write_string(b, "{\"section\":\"")
-		write_service_json_string(b, section)
-		strings.write_string(b, "\",\"hash\":\"")
-		write_service_json_string(b, hash)
-		strings.write_string(b, "\"}")
-		written^ += 1
-	}
-	write_assembly_section(&b, &assembly_written, "agent_identity", identity_hash)
-	write_assembly_section(&b, &assembly_written, "project", project_hash)
-	write_assembly_section(&b, &assembly_written, "tasks_guidance", tasks_hash)
-	write_assembly_section(&b, &assembly_written, "role_guidance", role_hash)
-	write_assembly_section(&b, &assembly_written, "memories", memories_hash)
-
+	// BT-6: no per-fragment assembly sections — the bridge renders AGENTS.md from
+	// the single template blob + variables below. This agent-keyed manifest carries
+	// no header section (the bridge injects the header locally).
 	strings.write_string(&b, "]}]")
 
 	bootstrap_write_template_and_variables_json(&b, template_hash, variables[:])
@@ -1948,21 +1709,3 @@ bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, ow
 	return true
 }
 
-// render_memories_markdown_agent is the agent-keyed variant of
-// render_memories_markdown (fact + habit memories, inline in AGENTS.md).
-render_memories_markdown_agent :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, project_id: domain.Project_ID) -> string {
-	if service == nil || service.content == nil do return ""
-	memories, err := iface.content_list_memories(service.content, owner)
-	if err.code != .None do return ""
-	b := strings.builder_make()
-	written := 0
-	for m in memories {
-		if !bootstrap_memory_applies_agent(m, agent, owner, project_id) do continue
-		if m.type != .Fact && m.type != .Habit do continue
-		if written == 0 { strings.write_string(&b, "\n\n"); strings.write_string(&b, strings.trim_space(BOOTSTRAP_FRAGMENT_MEMORIES_HEADER)) }
-		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n", m.title, domain.memory_type_string(m.type))
-		write_raw_markdown_string(&b, m.body)
-		written += 1
-	}
-	return strings.to_string(b)
-}

@@ -1,40 +1,31 @@
-// IMPL 4 — Golden-output (no-drift) guard for the bootstrap AGENTS.md fragments.
+// Golden-output (no-drift) guard for the bootstrap AGENTS.md.
 //
-// The bootstrap AGENTS.md body is assembled from independent, content-addressed
-// fragments produced by the hub `render_*` procs (src/hub/service/agent/
-// agent_service.odin). Each fragment's exact bytes determine its sha256 hash and
-// therefore the bootstrap_version/ETag, so ANY drift in the rendered bytes is a
-// behavior change. This test pins those bytes.
+// Two complementary layers:
+//   1. This file pins the surviving per-renderer output: the AGENTS.md header
+//      (render_header_inline — the bridge injects it locally) plus the BT-2/BT-2a
+//      hub manifest producers (template blob hash, project + identity variables,
+//      the shared template+variables JSON writer).
+//   2. bt5_render_golden.odin pins the FULLY-ASSEMBLED AGENTS.md rendered through
+//      the real hub->bridge single-template engine (see bt5_render_goldens_checks).
 //
-// It calls the exported render_* procs directly (no DB needed — these fragments
-// are pure functions of their inputs) and compares each rendered body against a
-// committed golden file under tests/hub_bootstrap_golden_test/golden/.
+// BT-6 removed the old per-fragment renderers (render_agent_identity/project/
+// tasks_guidance/role_guidance) and their goldens: the single template now owns
+// that prose, so the assembled-document goldens (layer 2) are the source of truth
+// for it and per-fragment goldens would be redundant/misleading.
 //
 // Regenerate goldens intentionally with:  HEIMDALL_GOLDEN_UPDATE=1 <run test>
-// (only do this when the change to the rendered output is deliberate — e.g. the
-// IMPL 2 persona/instructions feature updates the agent_identity_* goldens).
+// (only when the change to the rendered output is deliberate).
 //
-// Case coverage (RV/§2.1):
-//   - tasks_guidance                (static; IMPL 1 must not change)
-//   - role_coordinator / role_worker (static; IMPL 1 must not change)
-//   - role_none                     (empty when not in a chain)
-//   - project_full / project_name_path_only (DB fields interpolated in code)
-//   - agent_identity_instructions   (agent.instructions ONLY; pre-IMPL-2 byte-identical)
-//   - agent_identity_empty          (no instructions -> fragment absent)
-//   - agent_identity_persona_tmpl_agent / _persona_only / _tmpl_only /
-//     _persona_agent / _tmpl_agent   (IMPL 2 §2.1 persona/instructions matrix)
-//   - header_coordinator / header_worker / header_no_chain (IMPL 3 dedup target)
-//
-// IMPL 2 (persona/instructions) ADDED the five identity composition cases above
-// (§2.1 presence matrix). The pre-existing agent_identity_instructions golden is
-// intentionally UNCHANGED: when agent.instructions is the only source the output
-// is byte-identical to the pre-IMPL-2 behavior (no ### Instructions sub-heading).
+// Case coverage:
+//   - header_coordinator / header_worker / header_no_chain (render_header_inline)
+//   - BT-2 template blob + project variables (bt2_template_and_variables_checks)
+//   - BT-2a identity variables (bt2a_identity_variables_checks)
+//   - BT-5 assembled AGENTS.md, all role/identity cases (bt5_render_goldens_checks)
 package hub_bootstrap_golden_test
 
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import domain "odin_test:hub/domain"
 import agent_service "odin_test:hub/service/agent"
 
 GOLDEN_DIR :: "tests/hub_bootstrap_golden_test/golden"
@@ -42,56 +33,12 @@ GOLDEN_DIR :: "tests/hub_bootstrap_golden_test/golden"
 failures := 0
 
 main :: proc() {
-	// A representative agent with instructions set (identity fragment non-empty).
-	agent_with := domain.Agent{
-		agent_id     = "agt_test",
-		name         = "Backend Agent",
-		instructions = "You are a backend specialist. Prefer small, tested changes.",
-	}
-	agent_without := domain.Agent{agent_id = "agt_bare", name = "Bare Agent"}
-	owner := domain.User_ID("alice")
-
-	// --- Fragment goldens ---------------------------------------------------
-	check_golden("tasks_guidance", agent_service.render_tasks_guidance())
-
-	check_golden("role_coordinator", agent_service.render_role_guidance(true, true))
-	check_golden("role_worker", agent_service.render_role_guidance(false, true))
-	check_golden("role_none", agent_service.render_role_guidance(false, false))
-
-	check_golden("project_full", agent_service.render_project(
-		"Heimdall", "~/heimdall-hub-rewrite", "git@example.com:heimdall.git", "git",
-		"Enterprise multi-agent orchestrator."))
-	check_golden("project_name_path_only", agent_service.render_project(
-		"Heimdall", "~/heimdall-hub-rewrite", "", "", ""))
-
-	check_golden("agent_identity_instructions", agent_service.render_agent_identity(agent_with, owner))
-	check_golden("agent_identity_empty", agent_service.render_agent_identity(agent_without, owner))
-
-	// --- IMPL 2 (§2.1) persona/template-instructions composition cases --------
-	// The identity fragment now composes up to three DB-backed sources:
-	// template.persona, template.instructions, agent.instructions. These goldens
-	// were added deliberately for the persona/instructions feature (intentional
-	// output change). agent_identity_instructions above pins the unchanged
-	// "agent.instructions only" row (byte-identical to pre-IMPL-2 behavior).
-	tmpl_persona :: "You are Odin, a meticulous systems engineer."
-	tmpl_instr :: "Follow the house style. Write tests first."
-	// persona + template.instructions + agent.instructions (full compose).
-	check_golden("agent_identity_persona_tmpl_agent",
-		agent_service.render_agent_identity(agent_with, owner, tmpl_persona, tmpl_instr))
-	// persona only (no template instructions, no agent instructions).
-	check_golden("agent_identity_persona_only",
-		agent_service.render_agent_identity(agent_without, owner, tmpl_persona, ""))
-	// template.instructions only.
-	check_golden("agent_identity_tmpl_only",
-		agent_service.render_agent_identity(agent_without, owner, "", tmpl_instr))
-	// persona + agent.instructions (no template base) — matrix row ✓—✓.
-	check_golden("agent_identity_persona_agent",
-		agent_service.render_agent_identity(agent_with, owner, tmpl_persona, ""))
-	// template.instructions + agent.instructions (no persona) — matrix row —✓✓.
-	check_golden("agent_identity_tmpl_agent",
-		agent_service.render_agent_identity(agent_with, owner, "", tmpl_instr))
-
-	// --- Header goldens (IMPL 3 de-dup target) ------------------------------
+	// --- Header goldens -----------------------------------------------------
+	// render_header_inline is the ONLY surviving per-fragment renderer (the bridge
+	// injects the AGENTS.md header locally from the instance manifest). The
+	// BT-6 fragment cutover removed render_agent_identity/project/tasks_guidance/
+	// role_guidance and their goldens; the fully-assembled document is now pinned
+	// by the BT-5 goldens (bt5_render_goldens_checks) instead.
 	// render_header_inline(agent_name, instance_id, chain_title, chain_id, coordinator_id, is_coordinator)
 	check_golden("header_coordinator", agent_service.render_header_inline(
 		"Backend Agent", "inst_1", "Prompts audit", "chain_1", "inst_1", true))
