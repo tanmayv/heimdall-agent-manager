@@ -1,6 +1,6 @@
 # Heimdall AI Manager – Home Manager module
 #
-# Exposes programs.heimdall.{daemon,wrapper,ctl,...} options and generates
+# Exposes programs.heimdall.{hub,bridge,wrapper,ctl,...} options and generates
 # ~/.config/heimdall/config.toml.  ham-* binaries are added to $PATH via
 # home.packages.
 #
@@ -285,25 +285,6 @@ let
   bridgePkg = self.packages.${system}.ham-bridge;
   ctlPkg = self.packages.${system}.ham-ctl;
 
-  mkDaemon = d:
-    { bind_host = d.bindHost; port = d.port; data_dir = d.dataDir;
-      wrapper_bin = "${wrapperPkg}/bin/ham-wrapper"; }
-    // lib.optionalAttrs (d.daemonId != null) { daemon_id = d.daemonId; }
-    // lib.optionalAttrs (d.bridgeUrl != null) { bridge_url = d.bridgeUrl; }
-    // lib.optionalAttrs (d.bridgeToken != null) { bridge_token = d.bridgeToken; }
-    // lib.optionalAttrs (d.defaultAgentProviderProfile != null) { default_agent_provider_profile = d.defaultAgentProviderProfile; }
-    // lib.optionalAttrs (d.defaultAgentModelTier != null) { default_agent_model_tier = d.defaultAgentModelTier; }
-    // lib.optionalAttrs (d.startupStaleAfterSeconds != null)           { startup_stale_after_seconds          = d.startupStaleAfterSeconds; }
-    // lib.optionalAttrs (d.nudge.enabled != null)                      { nudge_enabled                        = d.nudge.enabled; }
-    // lib.optionalAttrs (d.nudge.intervalSeconds != null)              { nudge_interval_seconds               = d.nudge.intervalSeconds; }
-    // lib.optionalAttrs (d.nudge.readyAfterSeconds != null)            { nudge_ready_after_seconds            = d.nudge.readyAfterSeconds; }
-    // lib.optionalAttrs (d.nudge.reviewAfterSeconds != null)           { nudge_review_after_seconds           = d.nudge.reviewAfterSeconds; }
-    // lib.optionalAttrs (d.nudge.needImprovementsAfterSeconds != null) { nudge_need_improvements_after_seconds = d.nudge.needImprovementsAfterSeconds; }
-    // lib.optionalAttrs (d.nudge.workingStaleAfterSeconds != null)     { nudge_working_stale_after_seconds    = d.nudge.workingStaleAfterSeconds; }
-    // lib.optionalAttrs (d.nudge.cooldownSeconds != null)              { nudge_cooldown_seconds               = d.nudge.cooldownSeconds; }
-    // lib.optionalAttrs (d.nudge.restartGraceSeconds != null)          { nudge_restart_grace_seconds          = d.nudge.restartGraceSeconds; }
-    // lib.optionalAttrs (d.nudge.sendEscapePrefix != null)             { nudge_send_escape_prefix             = d.nudge.sendEscapePrefix; };
-
   mkGuideAgent = g: {
     enabled            = g.enabled;
     autostart          = g.autostart;
@@ -333,38 +314,19 @@ let
     // lib.optionalAttrs (w.useRandomDir != null)   { use_random_dir = w.useRandomDir; }
     // lib.optionalAttrs (w.agentCommands != {})    { "agent-cmd"   = lib.mapAttrs (_: mkAgentCmd) w.agentCommands; };
 
-  # Federation peers render as repeatable top-level [[peer]] tables. TOML
-  # arrays-of-tables come from a Nix list of attrsets.
-  mkPeers = peers: map (p: { name = p.name; endpoint = p.endpoint; token = p.token; }) peers;
-
   configAttrs =
-    lib.optionalAttrs cfg.daemon.enable  { daemon  = mkDaemon cfg.daemon; }
-    // lib.optionalAttrs (cfg.daemon.enable && cfg.daemon.peers != []) { peer = mkPeers cfg.daemon.peers; }
-    // { guide_agent = mkGuideAgent cfg.guideAgent; }
+    { guide_agent = mkGuideAgent cfg.guideAgent; }
     // lib.optionalAttrs cfg.wrapper.enable { wrapper = mkWrapper cfg.wrapper; }
     // lib.optionalAttrs cfg.ctl.enable     { ctl     = { daemon_url = cfg.ctl.daemonUrl; }; };
 
   resolvePackage = name:
     let
       basePkg = self.packages.${system}.${
-        { daemon = "ham-daemon"; hub = "ham-hub"; bridge = "ham-bridge"; wrapper = "ham-wrapper"; ctl = "ham-ctl";
+        { hub = "ham-hub"; bridge = "ham-bridge"; wrapper = "ham-wrapper"; ctl = "ham-ctl";
           test-agent = "ham-test-agent"; ui = "heimdall"; }.${name}
       };
-      daemonUrlForUi = "http://${cfg.daemon.bindHost}:${toString cfg.daemon.port}";
     in
-    if name == "ui" && cfg.daemon.enable then
-      pkgs.symlinkJoin {
-        name = "heimdall-wrapped";
-        paths = [ basePkg ];
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        postBuild = ''
-          wrapProgram $out/bin/heimdall \
-            --set HEIMDALL_DAEMON_URL "${daemonUrlForUi}"
-        '';
-      }
-    else basePkg;
-
-  daemonPkg = self.packages.${system}.ham-daemon;
+    basePkg;
 
   bridgeInstanceType = lib.types.submodule ({ name, ... }: {
     options = {
@@ -453,12 +415,11 @@ in
     enable = lib.mkEnableOption "Heimdall Agent Manager";
 
     packageNames = lib.mkOption {
-      type    = lib.types.listOf (lib.types.enum [ "daemon" "hub" "bridge" "wrapper" "ctl" "test-agent" "ui" ]);
-      default = [ "daemon" "wrapper" "ctl" ];
-      example = [ "daemon" "wrapper" "ctl" "ui" ];
+      type    = lib.types.listOf (lib.types.enum [ "hub" "bridge" "wrapper" "ctl" "test-agent" "ui" ]);
+      default = [ "hub" "bridge" "wrapper" "ctl" ];
+      example = [ "hub" "bridge" "wrapper" "ctl" "ui" ];
       description = ''
         Heimdall packages to install and add to $PATH.
-        "daemon"     → ham-daemon  (+ bc-odin-daemon symlink)
         "hub"        → ham-hub
         "bridge"     → ham-bridge
         "wrapper"    → ham-wrapper (+ bc-agent-wrapper symlink)
@@ -472,161 +433,6 @@ in
       type        = lib.types.listOf lib.types.package;
       default     = [];
       description = "Additional packages to install alongside the Heimdall binaries.";
-    };
-
-    # ── [daemon] ──────────────────────────────────────────────────────────────
-
-    daemon = {
-      enable = lib.mkOption {
-        type        = lib.types.bool;
-        default     = true;
-        description = "Generate the [daemon] section in config.toml.";
-      };
-
-      service = {
-        enable = lib.mkOption {
-          type        = lib.types.bool;
-          default     = true;
-          description = "Create a systemd user service (heimdall-daemon.service) that starts ham-daemon on login.";
-        };
-        startOnBoot = lib.mkOption {
-          type        = lib.types.bool;
-          default     = false;
-          description = "Whether to start the daemon service automatically on boot/login. If false, the systemd user service is not registered.";
-        };
-      };
-      bindHost = lib.mkOption {
-        type        = lib.types.str;
-        default     = "127.0.0.1";
-        description = "IP address the daemon HTTP server binds to.";
-      };
-      port = lib.mkOption {
-        type        = lib.types.port;
-        default     = 49322;
-        description = "TCP port the daemon listens on.";
-      };
-      daemonId = lib.mkOption {
-        type        = lib.types.nullOr lib.types.str;
-        default     = null;
-        example     = "home-A";
-        description = ''
-          Stable, globally-unique identifier for this daemon (`[daemon].daemon_id`).
-          Required for federation: peers match incoming requests on both the shared
-          token AND the caller's daemon_id (learned via /daemon/info). Leave null for
-          a standalone daemon (falls back to the built-in "local-daemon"); set a
-          distinct value on every daemon that participates in a peer mesh.
-        '';
-      };
-      bridgeUrl = lib.mkOption {
-        type        = lib.types.nullOr lib.types.str;
-        default     = null;
-        example     = "http://127.0.0.1:49324";
-        description = "Local ham-bridge loopback URL emitted as `[daemon].bridge_url`. Null = bridge disabled.";
-      };
-      bridgeToken = lib.mkOption {
-        type        = lib.types.nullOr lib.types.str;
-        default     = null;
-        example     = "br_loopback_secret";
-        description = "Local ham-bridge loopback bearer token emitted as `[daemon].bridge_token`.";
-      };
-      defaultAgentProviderProfile = lib.mkOption {
-        type        = lib.types.nullOr lib.types.str;
-        default     = null;
-        example     = "pi";
-        description = "Default provider profile for generated team agents. Null = omit.";
-      };
-      defaultAgentModelTier = lib.mkOption {
-        type        = lib.types.nullOr lib.types.str;
-        default     = null;
-        example     = "normal";
-        description = "Default model tier for generated team agents. Null = omit.";
-      };
-      dataDir = lib.mkOption {
-        type        = lib.types.str;
-        default     = "~/.local/share/heimdall";
-        description = "Directory for daemon-persisted data (tasks, memory, agent store, event log).";
-      };
-      startupStaleAfterSeconds = lib.mkOption {
-        type        = lib.types.nullOr lib.types.int;
-        default     = null;
-        example     = 120;
-        description = "Agents stuck in 'starting' longer than this many seconds are marked startup_failed. Null = use daemon built-in default.";
-      };
-
-      nudge = {
-        enabled = lib.mkOption {
-          type        = lib.types.nullOr lib.types.bool;
-          default     = null;
-          description = "Enable scheduled task nudges. Null omits the key (daemon default: false).";
-        };
-        intervalSeconds = lib.mkOption {
-          type        = lib.types.nullOr lib.types.int;
-          default     = null;
-          example     = 60;
-          description = "Seconds between nudge scans.";
-        };
-        readyAfterSeconds = lib.mkOption {
-          type    = lib.types.nullOr lib.types.int;
-          default = null;
-        };
-        reviewAfterSeconds = lib.mkOption {
-          type    = lib.types.nullOr lib.types.int;
-          default = null;
-        };
-        needImprovementsAfterSeconds = lib.mkOption {
-          type    = lib.types.nullOr lib.types.int;
-          default = null;
-        };
-        workingStaleAfterSeconds = lib.mkOption {
-          type    = lib.types.nullOr lib.types.int;
-          default = null;
-        };
-        cooldownSeconds = lib.mkOption {
-          type    = lib.types.nullOr lib.types.int;
-          default = null;
-        };
-        restartGraceSeconds = lib.mkOption {
-          type    = lib.types.nullOr lib.types.int;
-          default = null;
-        };
-        sendEscapePrefix = lib.mkOption {
-          type    = lib.types.nullOr lib.types.bool;
-          default = null;
-        };
-      };
-
-      peers = lib.mkOption {
-        type = lib.types.listOf (lib.types.submodule {
-          options = {
-            name = lib.mkOption {
-              type        = lib.types.str;
-              description = "Stable peer link name (peer_id). Emitted as `[[peer]].name`.";
-            };
-            endpoint = lib.mkOption {
-              type        = lib.types.str;
-              example     = "http://studio-mini.local:49322";
-              description = "Peer daemon base URL. Emitted as `[[peer]].endpoint`.";
-            };
-            token = lib.mkOption {
-              type        = lib.types.str;
-              description = ''
-                Shared bearer token used for every federation call to this peer.
-                Emitted as `[[peer]].token`. This is the whole auth story for the
-                link; there is no per-request/session re-authentication.
-              '';
-            };
-          };
-        });
-        default     = [];
-        example     = [
-          { name = "studio-mini"; endpoint = "http://studio-mini.local:49322"; token = "plk_studio_mini_shared_secret"; }
-        ];
-        description = ''
-          Peer daemons this daemon can federate with (remote reviewers/agents).
-          Each entry is emitted as a repeatable top-level `[[peer]]` table with
-          exactly `name`, `endpoint`, and `token`. No other persistent state.
-        '';
-      };
     };
 
     # ── [guide_agent] ────────────────────────────────────────────────────────
@@ -974,19 +780,6 @@ in
       );
 
       systemd.user.services = {
-        heimdall-daemon = lib.mkIf (cfg.daemon.enable && cfg.daemon.service.enable && cfg.daemon.service.startOnBoot) {
-          Unit = {
-            Description = "Heimdall Agent Manager Daemon";
-            After       = [ "network.target" ];
-          };
-          Service = {
-            ExecStart = "${daemonPkg}/bin/ham-daemon";
-            Restart    = "on-failure";
-            RestartSec = "5s";
-            KillMode   = "process";
-          };
-          Install.WantedBy = [ "default.target" ];
-        };
       } // builtins.listToAttrs (map (entry: {
         name = entry.serviceName;
         value = {

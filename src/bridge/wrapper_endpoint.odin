@@ -251,6 +251,11 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		// Wrapper "ready" only means the child process was launched. The agent is
 		// not running from Heimdall's perspective until explicit start-success.
 		if phase == "startup_failed" do runtime = "failed"
+		// A startup probe that classifies the pane as blocked (e.g. an interactive
+		// prompt the wrapper could not auto-dismiss) surfaces as a distinct "blocked"
+		// runtime state: active-but-not-ready, so it neither expires as stale nor
+		// counts as ready. It is projected to startup_status "startup_blocked" upstream.
+		if phase == "startup_blocked" do runtime = "blocked"
 		if runtime == "starting" { bridge_runtime_note_wrapper_signal(rec.agent_instance_id, "idle") } else { bridge_runtime_set_status(rec.agent_instance_id, runtime, "idle") }
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
