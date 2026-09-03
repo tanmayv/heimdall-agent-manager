@@ -580,9 +580,9 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
                     runtimeStatus={conversation.runtimeStatus}
                     activityStatus={conversation.activityStatus}
                     debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
-                    label={displayConversationTitle(conversation)}
+                    label={conversation.agentName}
                   />
-                  <span className="min-w-0 flex-1 truncate">{displayConversationTitle(conversation)}</span>
+                  <span className="min-w-0 flex-1 truncate">{conversation.agentName}</span>
                   {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
                   <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
                 </a>
