@@ -56,23 +56,6 @@
         '';
       };
 
-      mkOdinDaemonPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
-        pname = "ham-daemon";
-        version = appVersion;
-        src = ./.;
-        nativeBuildInputs = [ odin pkgs.makeWrapper ];
-        buildInputs = [ pkgs.sqlite ];
-        dontConfigure = true;
-        dontInstall = true;
-        buildPhase = ''
-          runHook preBuild
-          mkdir -p $out/bin
-          odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
-          wrapProgram $out/bin/ham-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.sqlite ]}
-          runHook postBuild
-        '';
-      };
-
       mkOdinCtlPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
         pname = "ham-ctl";
         version = appVersion;
@@ -141,13 +124,12 @@
           odin = pkgs.odin.override { llvmPackages_18 = pkgs.llvmPackages_21; };
         in
         {
-          ham-daemon = mkOdinDaemonPackage pkgs odin;
           ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
           ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl pkgs.tmux ];
           ham-dev-proxy = mkOdinPackage pkgs odin "ham-dev-proxy" "src/dev_proxy";
           # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
-          # workspaces). It must carry those on PATH because the daemon launches
-          # the wrapper detached with only the daemon's PATH, which does not
+          # workspaces). It must carry those on PATH because the bridge launches
+          # the wrapper detached with only the bridge's PATH, which does not
           # include tmux. Without this the wrapper fails with tmux_launch_failed.
           ham-wrapper = mkOdinPackageWithRuntime pkgs odin "ham-wrapper" "src/wrapper" [ pkgs.tmux pkgs.git pkgs.jujutsu ];
           ham-ctl = mkOdinCtlPackage pkgs odin;
@@ -159,16 +141,12 @@
           heimdall-node-modules = mkNodeModules pkgs;
           bc-agent-wrapper = self.packages.${system}.ham-wrapper;
           bc-test-agent = self.packages.${system}.ham-test-agent;
-          default = self.packages.${system}.ham-daemon;
+          default = self.packages.${system}.ham-hub;
         });
 
       apps = forAllSystems (system: 
         let pkgs = pkgsFor system;
         in {
-        daemon = {
-          type = "app";
-          program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
-        };
         # hub: wraps ham-hub so `nix run .#hub` works from any CWD. The ham-hub
         # package bundles its migrations under share/ham-hub/migrations; this
         # wrapper injects the absolute store path via --migrations-dir and
@@ -196,248 +174,6 @@
         dev-proxy = {
           type = "app";
           program = "${self.packages.${system}.ham-dev-proxy}/bin/ham-dev-proxy";
-        };
-        # daemon-with-wrapper: builds the current ham-wrapper and ham-ctl
-        # alongside the ham-daemon and launches the daemon with a generated
-        # config whose [daemon].wrapper_bin and [wrapper].ham_ctl_bin point at
-        # those exact same-build store paths. This is stronger than relying on
-        # repo symlinks because it works from any CWD/config and cannot
-        # accidentally use a stale wrapper or ctl binary.
-        #
-        # Extra args are forwarded. If --config is supplied, that config is used
-        # as the base and rewritten into a temp file with the current wrapper
-        # and ctl.
-        daemon-with-wrapper = {
-          type = "app";
-          program = "${pkgs.writeShellScriptBin "ham-daemon-with-wrapper" ''
-            #!/usr/bin/env bash
-            set -euo pipefail
-
-            HAM_DAEMON="${self.packages.${system}.ham-daemon}/bin/ham-daemon"
-            HAM_WRAPPER="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
-            HAM_WRAPPER_DIR="${self.packages.${system}.ham-wrapper}"
-            HAM_CTL="${self.packages.${system}.ham-ctl}/bin/ham-ctl"
-            HAM_CTL_DIR="${self.packages.${system}.ham-ctl}"
-
-            # Keep legacy repo symlinks fresh for tools/tests that still read
-            # config.toml directly, but do not depend on them for this daemon run.
-            if [ -L result-wrapper ] || [ ! -e result-wrapper ]; then
-              ln -sfn "$HAM_WRAPPER_DIR" result-wrapper
-              echo "[ham-daemon-with-wrapper] refreshed ./result-wrapper -> $HAM_WRAPPER_DIR"
-            fi
-            if [ -L result-ctl ] || [ ! -e result-ctl ]; then
-              ln -sfn "$HAM_CTL_DIR" result-ctl
-              echo "[ham-daemon-with-wrapper] refreshed ./result-ctl -> $HAM_CTL_DIR"
-            fi
-
-            CONFIG_PATH=""
-            REST=()
-            while [ "$#" -gt 0 ]; do
-              case "$1" in
-                --config)
-                  if [ "$#" -lt 2 ]; then
-                    echo "[ham-daemon-with-wrapper] --config requires a path" >&2
-                    exit 2
-                  fi
-                  CONFIG_PATH="$2"
-                  shift 2
-                  ;;
-                *)
-                  REST+=("$1")
-                  shift
-                  ;;
-              esac
-            done
-            if [ -z "$CONFIG_PATH" ]; then
-              XDG_CONFIG="''${XDG_CONFIG_HOME:-$HOME/.config}/heimdall/config.toml"
-              if [ -f "$XDG_CONFIG" ]; then
-                CONFIG_PATH="$XDG_CONFIG"
-                echo "[ham-daemon-with-wrapper] using $CONFIG_PATH"
-              else
-                echo "[ham-daemon-with-wrapper] no config at $XDG_CONFIG; pass --config <path> to override" >&2
-              fi
-            fi
-
-            TMP_CONFIG=""
-            if [ -n "$CONFIG_PATH" ]; then
-              TMP_CONFIG="$(${pkgs.coreutils}/bin/mktemp "''${TMPDIR:-/tmp}/heimdall-daemon-with-wrapper.XXXXXX")"
-              ${pkgs.gawk}/bin/awk -v wrapper="$HAM_WRAPPER" -v ctl="$HAM_CTL" '
-                function flush_section() {
-                  if (section == "daemon" && !replaced_daemon) {
-                    print "wrapper_bin = \"" wrapper "\""
-                    replaced_daemon = 1
-                  } else if (section == "wrapper" && !replaced_wrapper) {
-                    print "ham_ctl_bin = \"" ctl "\""
-                    replaced_wrapper = 1
-                  }
-                }
-                BEGIN { section = ""; replaced_daemon = 0; replaced_wrapper = 0; appended_section = 0 }
-                /^\[daemon\][[:space:]]*$/ { flush_section(); section = "daemon"; print; next }
-                /^\[wrapper\][[:space:]]*$/ { flush_section(); section = "wrapper"; print; next }
-                /^\[/ {
-                  flush_section()
-                  section = ""
-                  print
-                  next
-                }
-                section == "daemon" && /^[[:space:]]*wrapper_bin[[:space:]]*=/ {
-                  print "wrapper_bin = \"" wrapper "\""
-                  replaced_daemon = 1
-                  next
-                }
-                section == "wrapper" && /^[[:space:]]*ham_ctl_bin[[:space:]]*=/ {
-                  print "ham_ctl_bin = \"" ctl "\""
-                  replaced_wrapper = 1
-                  next
-                }
-                { print }
-                END {
-                  flush_section()
-                  if (!replaced_daemon) {
-                    if (section != "" || appended_section) print ""
-                    print "[daemon]"
-                    print "wrapper_bin = \"" wrapper "\""
-                    appended_section = 1
-                  }
-                  if (!replaced_wrapper) {
-                    if (section != "" || appended_section) print ""
-                    print "[wrapper]"
-                    print "ham_ctl_bin = \"" ctl "\""
-                  }
-                }
-              ' "$CONFIG_PATH" > "$TMP_CONFIG"
-              trap 'rm -f "$TMP_CONFIG"' EXIT
-              set -- --config "$TMP_CONFIG" "''${REST[@]}"
-              echo "[ham-daemon-with-wrapper] base config: $CONFIG_PATH"
-              echo "[ham-daemon-with-wrapper] generated config: $TMP_CONFIG"
-            else
-              set -- "''${REST[@]}"
-            fi
-
-            echo "[ham-daemon-with-wrapper] daemon: $HAM_DAEMON"
-            echo "[ham-daemon-with-wrapper] wrapper: $HAM_WRAPPER"
-            echo "[ham-daemon-with-wrapper] ctl: $HAM_CTL"
-            exec "$HAM_DAEMON" "$@"
-          ''}/bin/ham-daemon-with-wrapper";
-        };
-        daemon-with-bridge = {
-          type = "app";
-          program = "${pkgs.writeShellScriptBin "ham-daemon-with-bridge" ''
-            #!/usr/bin/env bash
-            set -euo pipefail
-
-            HAM_DAEMON="${self.packages.${system}.ham-daemon}/bin/ham-daemon"
-            HAM_BRIDGE="${self.packages.${system}.ham-bridge}/bin/ham-bridge"
-            BRIDGE_PORT="''${HAM_BRIDGE_PORT:-49323}"
-            BRIDGE_TOKEN="''${HAM_BRIDGE_TOKEN:-br_loopback_dev_token}"
-            BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
-
-            CONFIG_PATH=""
-            REST=()
-            while [ "$#" -gt 0 ]; do
-              case "$1" in
-                --config)
-                  if [ "$#" -lt 2 ]; then
-                    echo "[ham-daemon-with-bridge] --config requires a path" >&2
-                    exit 2
-                  fi
-                  CONFIG_PATH="$2"
-                  shift 2
-                  ;;
-                --bridge-port)
-                  if [ "$#" -lt 2 ]; then
-                    echo "[ham-daemon-with-bridge] --bridge-port requires a value" >&2
-                    exit 2
-                  fi
-                  BRIDGE_PORT="$2"
-                  BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
-                  shift 2
-                  ;;
-                --bridge-token)
-                  if [ "$#" -lt 2 ]; then
-                    echo "[ham-daemon-with-bridge] --bridge-token requires a value" >&2
-                    exit 2
-                  fi
-                  BRIDGE_TOKEN="$2"
-                  shift 2
-                  ;;
-                *)
-                  REST+=("$1")
-                  shift
-                  ;;
-              esac
-            done
-            if [ -z "$CONFIG_PATH" ]; then
-              XDG_CONFIG="''${XDG_CONFIG_HOME:-$HOME/.config}/heimdall/config.toml"
-              if [ -f "$XDG_CONFIG" ]; then
-                CONFIG_PATH="$XDG_CONFIG"
-                echo "[ham-daemon-with-bridge] using $CONFIG_PATH"
-              else
-                echo "[ham-daemon-with-bridge] no config at $XDG_CONFIG; pass --config <path> to override" >&2
-              fi
-            fi
-
-            TMP_CONFIG=""
-            if [ -n "$CONFIG_PATH" ]; then
-              TMP_CONFIG="$(${pkgs.coreutils}/bin/mktemp "''${TMPDIR:-/tmp}/heimdall-daemon-with-bridge.XXXXXX")"
-              ${pkgs.gawk}/bin/awk -v bridge_url="$BRIDGE_URL" -v bridge_token="$BRIDGE_TOKEN" '
-                function flush_section() {
-                  if (section == "daemon") {
-                    if (!replaced_bridge_url) {
-                      print "bridge_url = \"" bridge_url "\""
-                      replaced_bridge_url = 1
-                    }
-                    if (!replaced_bridge_token) {
-                      print "bridge_token = \"" bridge_token "\""
-                      replaced_bridge_token = 1
-                    }
-                  }
-                }
-                BEGIN { section = ""; replaced_bridge_url = 0; replaced_bridge_token = 0; saw_daemon = 0 }
-                /^\[daemon\][[:space:]]*$/ { flush_section(); section = "daemon"; saw_daemon = 1; print; next }
-                /^\[/ { flush_section(); section = ""; print; next }
-                section == "daemon" && /^[[:space:]]*bridge_url[[:space:]]*=/ {
-                  print "bridge_url = \"" bridge_url "\""
-                  replaced_bridge_url = 1
-                  next
-                }
-                section == "daemon" && /^[[:space:]]*bridge_token[[:space:]]*=/ {
-                  print "bridge_token = \"" bridge_token "\""
-                  replaced_bridge_token = 1
-                  next
-                }
-                { print }
-                END {
-                  flush_section()
-                  if (!saw_daemon) {
-                    print ""
-                    print "[daemon]"
-                    print "bridge_url = \"" bridge_url "\""
-                    print "bridge_token = \"" bridge_token "\""
-                  }
-                }
-              ' "$CONFIG_PATH" > "$TMP_CONFIG"
-              set -- --config "$TMP_CONFIG" "''${REST[@]}"
-            else
-              TMP_CONFIG="$(${pkgs.coreutils}/bin/mktemp "''${TMPDIR:-/tmp}/heimdall-daemon-with-bridge.XXXXXX")"
-              printf '[daemon]\nbridge_url = "%s"\nbridge_token = "%s"\n' "$BRIDGE_URL" "$BRIDGE_TOKEN" > "$TMP_CONFIG"
-              set -- --config "$TMP_CONFIG" "''${REST[@]}"
-            fi
-            cleanup() {
-              if [ -n "''${BRIDGE_PID:-}" ]; then
-                kill "$BRIDGE_PID" 2>/dev/null || true
-              fi
-              rm -f "$TMP_CONFIG"
-            }
-            trap cleanup EXIT INT TERM
-
-            echo "[ham-daemon-with-bridge] daemon: $HAM_DAEMON"
-            echo "[ham-daemon-with-bridge] bridge: $HAM_BRIDGE"
-            echo "[ham-daemon-with-bridge] bridge_url: $BRIDGE_URL"
-            "$HAM_BRIDGE" --config "$TMP_CONFIG" --bind-host 127.0.0.1 --port "$BRIDGE_PORT" --bridge-token "$BRIDGE_TOKEN" &
-            BRIDGE_PID=$!
-            exec "$HAM_DAEMON" "$@"
-          ''}/bin/ham-daemon-with-bridge";
         };
         wrapper = {
           type = "app";
@@ -593,7 +329,7 @@
             exec ${pkgs.nodejs}/bin/npx vite preview --host 127.0.0.1 --port "$PORT"
           ''}/bin/ham-ui-server";
         };
-        default = self.apps.${system}.daemon;
+        default = self.apps.${system}.hub;
       });
 
       devShells = forAllSystems (system:
