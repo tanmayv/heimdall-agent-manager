@@ -108,7 +108,7 @@ function normalizeSidebarConversation(raw: any): SidebarConversation {
     conversationId,
     agentId: agentId || 'unknown-agent',
     agentInstanceId,
-    agentName: String(raw?.agent_name || raw?.agentName || raw?.agent_display_name || raw?.agentDisplayName || '').trim() || undefined,
+    agentName: String(raw?.agent_display_name || raw?.agentDisplayName || raw?.agent_name || raw?.agentName || '').trim() || undefined,
     projectId: projectId || 'default-conversations',
     title: String(raw?.title || lastMessagePreview || agentInstanceId || conversationId || 'Untitled session'),
     unreadCount: asNumber(raw?.unread_count ?? raw?.unreadCount),

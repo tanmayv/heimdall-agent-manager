@@ -500,8 +500,17 @@ function StatusDot({
 
   let dot;
   if (isLive) {
-    // H13: pulse ONLY when actually working; live-idle => static solid dot.
-    dot = <span className={`h-2 w-2 rounded-full ${colorStyle.solid}${working ? ' animate-pulse' : ''}`} />;
+    if (working) {
+      dot = (
+        <span className="flex items-center gap-[2px]">
+          <span className={`h-1.5 w-1.5 animate-bounce rounded-full ${colorStyle.solid}`} style={{ animationDelay: '0ms' }} />
+          <span className={`h-1.5 w-1.5 animate-bounce rounded-full ${colorStyle.solid}`} style={{ animationDelay: '150ms' }} />
+          <span className={`h-1.5 w-1.5 animate-bounce rounded-full ${colorStyle.solid}`} style={{ animationDelay: '300ms' }} />
+        </span>
+      );
+    } else {
+      dot = <span className={`h-2 w-2 rounded-full ${colorStyle.solid}`} />;
+    }
   } else if (isStarting) {
     dot = <span className={`h-2 w-2 rounded-full ${colorStyle.half} animate-pulse`} />;
   } else {

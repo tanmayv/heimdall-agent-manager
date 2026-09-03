@@ -441,10 +441,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     return currentTask ? taskRoleLabel(currentTask, agentInstanceId, chainDetailQuery.data?.chain) : 'assignee';
   }, [currentTask, agentInstanceId, chainDetailQuery.data?.chain]);
 
-  const workingTaskTitle = useMemo(() => {
-    if (!isWorking) return '';
-    return currentTask ? String(currentTask.title || currentTask.taskId || '') : '';
-  }, [isWorking, currentTask]);
 
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const bridges = bridgesQuery.data?.bridges || [];
@@ -913,18 +909,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
               if (chainId) setTaskChainOpen(true);
             }}
           />
-        ) : isWorking ? (
-          <div data-debug-id="conversation-working-indicator" className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[12px] text-emerald-100">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate">
-                <span className="font-semibold">Working</span>
-                {workingTaskTitle ? (
-                  <span className="text-emerald-200/80">: {workingTaskTitle}</span>
-                ) : null}
-              </span>
-            </div>
-          </div>
         ) : null}
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
         {attachments.length > 0 && (
