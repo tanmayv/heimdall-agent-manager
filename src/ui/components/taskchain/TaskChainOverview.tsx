@@ -49,6 +49,71 @@ interface TaskChainOverviewProps {
   isMobile?: boolean;
 }
 
+// Resolves and displays durable agent name for an instance in a select option
+export function AgentInstanceOption({
+  value,
+  instanceId,
+  defaultAgentName,
+  runtimeStatus,
+  disabled,
+  suffix = '',
+}: {
+  value: string;
+  instanceId: string;
+  defaultAgentName?: string;
+  runtimeStatus?: string;
+  disabled?: boolean;
+  suffix?: string;
+}) {
+  const trimmed = String(instanceId || '').trim();
+  const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed || Boolean(defaultAgentName) });
+  const inst = data?.instance || null;
+  const agentId = String(inst?.agent_id || inst?.agentId || '');
+
+  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(defaultAgentName) });
+  const agentName = defaultAgentName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
+
+  const label = agentName !== trimmed
+    ? `${agentName} (${trimmed})${suffix}${runtimeStatus ? ` · ${runtimeStatus}` : ''}`
+    : `${trimmed}${suffix}${runtimeStatus ? ` · ${runtimeStatus}` : ''}`;
+
+  return (
+    <option value={value} disabled={disabled}>
+      {label}
+    </option>
+  );
+}
+
+export function MemberInstanceOption({
+  value,
+  role,
+  instanceId,
+  disabled,
+}: {
+  value: string;
+  role: string;
+  instanceId: string;
+  disabled?: boolean;
+}) {
+  const trimmed = String(instanceId || '').trim();
+  const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed });
+  const inst = data?.instance || null;
+  const agentId = String(inst?.agent_id || inst?.agentId || '');
+
+  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
+  const agentName = agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
+
+  const label = agentName !== trimmed
+    ? `${role}: ${agentName} (${trimmed})`
+    : `${role}: ${trimmed}`;
+
+  return (
+    <option value={value} disabled={disabled}>
+      {label}
+    </option>
+  );
+}
+
 type CommentAttachmentStatus = 'uploading' | 'uploaded' | 'error';
 
 type CommentAttachment = {
@@ -175,6 +240,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const addBridgeRows = launchableBridgeRows(bridgesQuery.data?.bridges || []);
   const selectedAddBridge = addBridgeRows.find((row) => row.bridgeId === addBridgeId)?.bridge;
   const selectedAddAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addAgentId);
+  const selectedAssigneeAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === editAssigneeAgentId);
+  const selectedReviewerAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addReviewerAgentId);
   // H14: existing instances of the chosen identity (cookieJsonFetch — works in the
   // shell). Only offered in 'existing' mode; skip the fetch otherwise.
   const existingInstancesQuery = useListAgentInstancesQuery(
@@ -1206,7 +1273,17 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     {existingInstances.map((inst: any) => {
                       const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
                       const already = memberInstanceIds.has(iid);
-                      return <option key={iid} value={iid} disabled={already}>{iid}{already ? ' (already a member)' : ''}{inst.runtime_status ? ` · ${inst.runtime_status}` : ''}</option>;
+                      return (
+                        <AgentInstanceOption
+                          key={iid}
+                          value={iid}
+                          instanceId={iid}
+                          defaultAgentName={selectedAddAgent?.name || selectedAddAgent?.display_name || selectedAddAgent?.agent_id}
+                          disabled={already}
+                          suffix={already ? ' (already a member)' : ''}
+                          runtimeStatus={inst.runtime_status}
+                        />
+                      );
                     })}
                   </select>
                   {addAgentId && !existingInstancesQuery.isFetching && existingInstances.length === 0 && (
@@ -1370,7 +1447,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     <option value="">Select member…</option>
                     {members.map((m: any) => {
                       const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                      return <option key={id} value={id}>{m.role}: {id}</option>;
+                      return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
                     })}
                   </select>
                   {members.length === 0 && (
@@ -1408,7 +1485,15 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       <option value="">{!editAssigneeAgentId ? 'Choose an agent first…' : assigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
                       {assigneeExistingInstances.map((inst: any) => {
                         const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                        return <option key={iid} value={iid}>{iid}{inst.runtime_status ? ` · ${inst.runtime_status}` : ''}</option>;
+                        return (
+                          <AgentInstanceOption
+                            key={iid}
+                            value={iid}
+                            instanceId={iid}
+                            defaultAgentName={selectedAssigneeAgent?.name || selectedAssigneeAgent?.display_name || selectedAssigneeAgent?.agent_id}
+                            runtimeStatus={inst.runtime_status}
+                          />
+                        );
                       })}
                     </select>
                   </div>
@@ -1582,7 +1667,15 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       <option value="">{!addReviewerAgentId ? 'Choose an agent first…' : reviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
                       {reviewerExistingInstances.map((inst: any) => {
                         const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                        return <option key={iid} value={iid}>{iid}{inst.runtime_status ? ` · ${inst.runtime_status}` : ''}</option>;
+                        return (
+                          <AgentInstanceOption
+                            key={iid}
+                            value={iid}
+                            instanceId={iid}
+                            defaultAgentName={selectedReviewerAgent?.name || selectedReviewerAgent?.display_name || selectedReviewerAgent?.agent_id}
+                            runtimeStatus={inst.runtime_status}
+                          />
+                        );
                       })}
                     </select>
                   </div>
