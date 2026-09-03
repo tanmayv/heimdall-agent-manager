@@ -509,3 +509,30 @@ HEIMDALL_GOLDEN_UPDATE=1 /tmp/gt
 | 2026-09-03 | **Template identity:** `template_persona`/`template_instructions` only appear in the bootstrap if the agent has a `template_id` that resolves via `content_get_template`. Daemon deletion (BT-6) does NOT remove the template API path — templates are seeded via `POST /api/v1/templates` + `ham-ctl agent templates create`. |
 | 2026-09-03 | **Bridge run dir layout:** `<bridge-run-dir>/instances/<inst_id>/` contains `CLAUDE.md`/`AGENTS.md`, `.pi/skills/*/SKILL.md`, `.heimdall/bin/ham-ctl`, `heimdall-bootstrap-manifest.json`, `.heimdall-wrapper-placed`. |
 | 2026-09-03 | **`wrapper.bootstrap.list` RPC:** the bridge local endpoint is a unix socket (`<bridge-run-dir>/bridge.sock`), not an HTTP port. The wrapper calls it over the socket; you can't curl it directly from outside the bridge process. |
+
+---
+
+## 14. Bootstrap file cleanup — provider switch behaviour (verified 2026-09-03)
+
+The wrapper's stale-prune path (`wrapper_bootstrap_prune_stale`, `src/wrapper/bootstrap.odin:159`,
+added BT-4) is responsible for cleaning up old bootstrap files when the file set changes
+between launches of the same instance. The prune is unit-tested and proven correct
+(`bt4_prune_removes_stale_keeps_current` — removes stale skill/AGENTS files, keeps
+current ones, cleans empty parent skill dirs, guards against traversal).
+
+**What is guaranteed (live-verified):**
+- Each *new* instance gets exactly one bootstrap file: `CLAUDE.md` for `provider=claude`,
+  `AGENTS.md` for any other provider (e.g. `pi`). Both files never coexist in the same run dir.
+- If a skill is added or removed between restarts of the same instance (same provider), the
+  `.heimdall-wrapper-placed` record is diffed and the stale skill file is pruned.
+
+**Limitation — provider switch via restart:**
+`POST /api/v1/agent-instances/:id/restart` relaunches using the **hub's persisted instance
+provider** from the WS `launch_agent` payload (see `bridge_runtime_launch_agent`,
+`hub_runtime_client.odin:486`). `PATCH`ing the provider before restart is not sufficient —
+the hub re-reads the stored value. Therefore, restarting a claude instance as pi within the
+same instance run dir cannot be triggered via the normal restart API; you would need to
+stop the instance and create a new one.
+
+The prune code is correct and exercises on every re-materialise; the provider-switch path
+is simply not reachable via restart because the hub controls the provider in the WS payload.
