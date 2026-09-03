@@ -25,6 +25,10 @@
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
+          # BT-6: regenerate the static-skills table from src/prompts/skills/ before
+          # compiling any package that embeds the hub agent service (the golden test
+          # imports it). Committed + regenerated-clean so local `odin build` also works.
+          ${if name == "ham-bootstrap-golden-test" then "odin run tools/gen_static_skills -collection:odin_test=src -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin" else ""}
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
           ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
           ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
@@ -43,6 +47,10 @@
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
+          # BT-6: regenerate the static-skills table from src/prompts/skills/ before
+          # the hub compile so the STATIC_SKILLS set can never drift from the folder.
+          # Committed to the repo (reviewable) + regenerated here (verify-clean).
+          ${if name == "ham-hub" then "odin run tools/gen_static_skills -collection:odin_test=src -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin" else ""}
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
           wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
           # Bundle the hub migrations SQL into the store output so the apps.hub

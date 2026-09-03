@@ -333,77 +333,6 @@ mark_instance_start_success :: proc(service: ^Agent_Service, auth: contracts.Aut
 	return iface.agent_save_instance(service.agents, inst)
 }
 
-write_bootstrap_skill_fields :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance, is_coordinator: bool, chain_ok: bool) {
-	strings.write_string(b, ",\"skills\":[")
-	written := 0
-	default_name := ""
-	default_content := ""
-	// Role-specific task-management skill (coordinator delegation playbook vs
-	// worker execution guide). Injected first so it is always present for chain
-	// members regardless of the memory-backed skill set.
-	if chain_ok {
-		role_skill_name: string
-		role_skill_content: string
-		if is_coordinator {
-			role_skill_name, role_skill_content = bootstrap_coordinator_task_skill()
-		} else {
-			role_skill_name, role_skill_content = bootstrap_worker_task_skill()
-		}
-		write_bootstrap_skill_json(b, role_skill_name, role_skill_content)
-		default_name = role_skill_name; default_content = role_skill_content
-		written += 1
-	}
-	if service != nil && service.content != nil {
-		memories, err := iface.content_list_memories(service.content, owner)
-		if err.code == .None {
-			for m in memories {
-				if !bootstrap_memory_applies(m, service, owner, inst) || m.type != .Skill do continue
-				name := bootstrap_skill_name(m)
-				content := bootstrap_skill_file_content(m, name)
-				if written > 0 do strings.write_byte(b, ',')
-				write_bootstrap_skill_json(b, name, content)
-				if default_name == "" { default_name = name; default_content = content }
-				written += 1
-			}
-		}
-	}
-	if written == 0 {
-		name, content := bootstrap_fallback_skill()
-		write_bootstrap_skill_json(b, name, content)
-		default_name = name
-		default_content = content
-	}
-	strings.write_string(b, "]")
-	strings.write_string(b, ",\"default_skill_name\":\""); write_service_json_string(b, default_name)
-	strings.write_string(b, "\",\"default_skill_content\":\""); write_service_json_string(b, default_content)
-	strings.write_string(b, "\"")
-}
-
-write_bootstrap_skill_json :: proc(b: ^strings.Builder, name, content: string) {
-	strings.write_string(b, "{\"name\":\""); write_service_json_string(b, name)
-	strings.write_string(b, "\",\"content\":\""); write_service_json_string(b, content)
-	strings.write_string(b, "\"}")
-}
-
-// Detailed coordinator task-management + delegation skill, materialized as a
-// SKILL.md the coordinator loads. Emphasis: delegate, don't implement.
-bootstrap_coordinator_task_skill :: proc() -> (string, string) {
-	content := "---\nname: coordinator-task-management\ndescription: How a task-chain COORDINATOR uses ham-ctl to plan, delegate to worker agents, enforce review gates, and complete the chain. Load whenever you are the coordinator of a chain.\n---\n\n# Coordinator task management (delegate — do not do the work yourself)\n\nYou are the coordinator. Your job is to PLAN and ORCHESTRATE. Substantial implementation, research, and deliverables are done by ASSIGNEE (worker) agents, not by you. Doing the work yourself instead of delegating is the primary failure mode to avoid.\n\nAll commands use the managed wrapper from your run directory: `./.heimdall/bin/ham-ctl`.\n\n## 1. See the current state\n- `./.heimdall/bin/ham-ctl agent tasks fetch` — list tasks in your chain with status, assignee, and blockers.\n- `./.heimdall/bin/ham-ctl agent chains show` — inspect chain metadata, members, and the chain description.\n\n## 2. Plan the work (chain description = design doc)\n- Own the chain description as a markdown design doc: goal, scope, a REQ-ID list (stable ids like `WS-1`, `AUTH-3`), task plan, validation strategy, risks.\n- Update it whenever scope/tasks/dependencies/reviewers change: `./.heimdall/bin/ham-ctl agent chains update --description \\\"<markdown>\\\"`. A stale description is a correctness bug.\n\n## 3. Add the agents you need\n- `./.heimdall/bin/ham-ctl agent chains add-agent --agent <agent_id> [--provider <p>] [--tier <t>]` — bring a worker/reviewer into the chain.\n\n## 4. Create tasks and DELEGATE them\n- Create a task and assign it to a worker: `./.heimdall/bin/ham-ctl agent tasks create --title \\\"<title>\\\" --description \\\"<what + which REQ-IDs>\\\" --assignee <agent_instance_id>`.\n- Order work with dependencies: add `--depends-on <task_id[,task_id]>`.\n- Require blocking reviewers: `./.heimdall/bin/ham-ctl agent tasks participant --task-id <id> --agent-instance-id <reviewer> --role lgtm_required` (use `lgtm_optional` for advisory, `subscriber` for FYI).\n- Reassign if needed: `./.heimdall/bin/ham-ctl agent tasks assign --task-id <id> --agent-instance-id <agent>`.\n- Do NOT create one giant task you then implement yourself. Split the goal so each substantial piece has an assignee.\n\n## 5. Drive the work without doing it\n- Nudge a stalled task's current owner: `./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id>`.\n- Read progress via `tasks fetch` and task comments. Answer worker questions; unblock dependencies; add missing reviewers.\n- Only touch a task's own status for coordination glue. Implementation status transitions are the assignee's responsibility.\n\n## 6. Review gates and completion\n- `tasks done` moves a task to `review_ready` (assignee handoff). Required `lgtm_required` reviewers then vote `lgtm`/`ngtm`.\n- A task becomes `approved` only after every required reviewer LGTMs.\n- The chain is `completed` ONLY when you explicitly complete it with a verifiable final summary: `./.heimdall/bin/ham-ctl agent chains status --status completed --final-summary \\\"<results, evidence, commits, files, quality rating + reasoning>\\\"`.\n\n## 7. User communication (coordinator-only)\n- You are the only agent who talks to the user. Acknowledge user messages promptly, state your next action, and route worker questions through yourself.\n- `./.heimdall/bin/ham-ctl agent chat send --body \\\"<update>\\\"` for user replies. Keep the user informed of progress and blockers.\n\nGolden rule: if a worker agent could do it, delegate it. Reserve your own hands-on effort for planning, coordination, synthesis, and completion."
-	return "coordinator-task-management", content
-}
-
-// Detailed worker task-management skill, materialized as a SKILL.md the worker
-// loads. Emphasis: execute your assigned tasks, route coordination to the lead.
-bootstrap_worker_task_skill :: proc() -> (string, string) {
-	content := "---\nname: worker-task-management\ndescription: How a WORKER agent uses ham-ctl to execute assigned tasks, report progress, and hand off for review in a task chain. Load whenever you are a non-coordinator member of a chain.\n---\n\n# Worker task management (execute your assigned tasks)\n\nYou are a worker on this chain. Do the tasks ASSIGNED to you and report progress. Do not coordinate the whole chain or take on unassigned work — route that to the coordinator.\n\nAll commands use the managed wrapper: `./.heimdall/bin/ham-ctl`.\n\n## 1. Find your work\n- `./.heimdall/bin/ham-ctl agent tasks fetch` — list tasks; focus on those assigned to you and currently actionable.\n- Read the task description and the chain description for the REQ-IDs your task must satisfy.\n\n## 2. Do the work with visible progress\n- Start: `./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress`.\n- Comment at every meaningful step, on blockers, and before handoff: `./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \\\"<what you did, what changed, what is next>\\\"`.\n- Do not do substantial work that has no task. If one is missing, ask the coordinator to create it (do not silently expand scope).\n\n## 3. Hand off for review\n- When done: `./.heimdall/bin/ham-ctl agent tasks done --task-id <id>` (moves it to `review_ready`). Include a summary comment of what to review and the evidence (tests, commits, files).\n- If you receive an `ngtm` vote, address the feedback, comment what you changed, and re-submit.\n\n## 4. Reviewing (when you are a reviewer)\n- Vote with `./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \\\"<feedback>\\\"`.\n\n## 5. Communication\n- Route questions, blockers, and user-facing messages to the coordinator. Chat sent with chain context is redirected to them automatically.\n- Use `./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id>` to request attention on a stalled task you own.\n\nKeep your task status and comments current at all times so the chain reflects real progress."
-	return "worker-task-management", content
-}
-
-bootstrap_fallback_skill :: proc() -> (string, string) {
-	content := "---\nname: heimdall-ctl-communication\ndescription: Use Heimdall CLI for agent startup, chat communication, task coordination, and concise status reporting. Load when communicating through Heimdall or reacting to message notifications.\n---\n\n# Heimdall CLI communication basics\n\nUse the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: `./.heimdall/bin/ham-ctl`.\n\nStartup: after you are fully ready, report readiness with `./.heimdall/bin/ham-ctl agent start-success`.\n\nRead inbound messages with `./.heimdall/bin/ham-ctl agent chat read` and reply to the user with `./.heimdall/bin/ham-ctl agent chat send --body \"...\"`. Keep replies concise and include blockers, concrete results, and next steps."
-	return "heimdall-ctl-communication", content
-}
-
 bootstrap_skill_file_content :: proc(m: domain.Memory, name: string) -> string {
 	body := m.body
 	if strings.index(body, "\\n") >= 0 {
@@ -1297,6 +1226,27 @@ bootstrap_append_identity_variables :: proc(vars: ^[dynamic]Bootstrap_Variable, 
 	add(vars, "agent_instructions", agent_instructions)
 }
 
+// Skill_Manifest_Item is one skill entry in the manifest skills[] array: the
+// slug (name) plus the content-addressed hash the bridge fetches + caches.
+Skill_Manifest_Item :: struct {
+	name: string,
+	hash: string,
+}
+
+// bootstrap_append_static_skills appends the compile-time static skill set
+// (STATIC_SKILLS, generated by tools/gen_static_skills from src/prompts/skills/)
+// to skills_list. BT-6: the SAME set goes to EVERY agent — no role gating — so
+// the hashes are identical across agents and dedupe in the bridge cache. Each
+// entry is hashed + cached under that hash so the existing /blobs/<hash> path
+// serves it, exactly like the former hardcoded skill procs did.
+bootstrap_append_static_skills :: proc(skills_list: ^[dynamic]Skill_Manifest_Item) {
+	for s in STATIC_SKILLS {
+		hash := bootstrap_fragment_hash(s.content)
+		hub_fragment_cache_put(hash, s.content)
+		append(skills_list, Skill_Manifest_Item{name = s.slug, hash = hash})
+	}
+}
+
 // bootstrap_template_hash hashes the template body and caches it under that hash
 // so the existing /blobs/<hash> path serves it. Returns the hash.
 bootstrap_template_hash :: proc() -> string {
@@ -1567,25 +1517,11 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 		hub_fragment_cache_put(memories_hash, memories_body)
 	}
 
-	Skill_Manifest_Item :: struct {
-		name: string,
-		hash: string,
-	}
 	skills_list := make([dynamic]Skill_Manifest_Item)
-	// Role-specific task-management skill (coordinator delegation playbook vs worker
-	// execution guide), always present for chain members.
-	if chain_ok {
-		role_skill_name: string
-		role_skill_content: string
-		if is_coordinator {
-			role_skill_name, role_skill_content = bootstrap_coordinator_task_skill()
-		} else {
-			role_skill_name, role_skill_content = bootstrap_worker_task_skill()
-		}
-		role_skill_hash := bootstrap_fragment_hash(role_skill_content)
-		hub_fragment_cache_put(role_skill_hash, role_skill_content)
-		append(&skills_list, Skill_Manifest_Item{name = role_skill_name, hash = role_skill_hash})
-	}
+	// BT-6: the SAME static skill set goes to every agent (no role gating).
+	// STATIC_SKILLS is generated by tools/gen_static_skills from
+	// src/prompts/skills/<slug>/SKILL.md (see static_skills_gen.odin).
+	bootstrap_append_static_skills(&skills_list)
 	if service != nil && service.content != nil {
 		memories, err := iface.content_list_memories(service.content, owner)
 		if err.code == .None {
@@ -1597,12 +1533,6 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 				append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
 			}
 		}
-	}
-	if len(skills_list) == 0 {
-		name, content := bootstrap_fallback_skill()
-		skill_hash := bootstrap_fragment_hash(content)
-		hub_fragment_cache_put(skill_hash, content)
-		append(&skills_list, Skill_Manifest_Item{name = name, hash = skill_hash})
 	}
 
 	b := strings.builder_make()
@@ -1911,23 +1841,11 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 		hub_fragment_cache_put(memories_hash, memories_body)
 	}
 
-	Skill_Manifest_Item :: struct {
-		name: string,
-		hash: string,
-	}
 	skills_list := make([dynamic]Skill_Manifest_Item)
 	defer delete(skills_list)
-	// Role-specific task-management skill, always present for a chain role.
-	role_skill_name: string
-	role_skill_content: string
-	if is_coordinator {
-		role_skill_name, role_skill_content = bootstrap_coordinator_task_skill()
-	} else {
-		role_skill_name, role_skill_content = bootstrap_worker_task_skill()
-	}
-	role_skill_hash := bootstrap_fragment_hash(role_skill_content)
-	hub_fragment_cache_put(role_skill_hash, role_skill_content)
-	append(&skills_list, Skill_Manifest_Item{name = role_skill_name, hash = role_skill_hash})
+	// BT-6: the SAME static skill set goes to every agent (no role gating),
+	// generated by tools/gen_static_skills from src/prompts/skills/.
+	bootstrap_append_static_skills(&skills_list)
 	if service != nil && service.content != nil {
 		memories, err := iface.content_list_memories(service.content, owner)
 		if err.code == .None {
