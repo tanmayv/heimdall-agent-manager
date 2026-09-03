@@ -238,7 +238,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			}
 		}
 		schedules_version := extract_json_int(text, "schedules_version", 0)
-		bridge_prompt_scheduler_notify_version(schedules_version)
+		bridge_action_scheduler_notify_version(schedules_version)
 		return
 	}
 	if type == "launch_agent" {
