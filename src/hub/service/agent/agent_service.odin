@@ -1008,6 +1008,11 @@ apply_runtime_startup_projection :: proc(inst: ^domain.Agent_Instance, now: stri
 		inst.startup_status = "ready"
 	case "launching", "starting":
 		inst.startup_status = "starting"
+	case "blocked":
+		// Startup probe classified the agent as blocked (e.g. an interactive prompt
+		// the wrapper could not auto-dismiss). Surface it as startup_blocked so the UI
+		// flags it. It stays active-but-not-ready: no stopped_at, keep current_task.
+		inst.startup_status = "startup_blocked"
 	case "failed":
 		inst.startup_status = "startup_failed"
 		inst.stopped_at = now
@@ -1034,7 +1039,10 @@ clear_instance_current_task :: proc(inst: ^domain.Agent_Instance) {
 }
 
 runtime_expected_active :: proc(runtime_status: string) -> bool {
-	return runtime_status == "launching" || runtime_status == "starting" || runtime_status == "running" || runtime_status == "idle" || runtime_status == "busy" || runtime_status == "stopping"
+	// "blocked" is active-but-not-ready: the wrapper is alive (still heartbeating),
+	// so the instance counts as live and must not be reaped, but its startup_status
+	// projects to startup_blocked rather than ready.
+	return runtime_status == "launching" || runtime_status == "starting" || runtime_status == "running" || runtime_status == "idle" || runtime_status == "busy" || runtime_status == "stopping" || runtime_status == "blocked"
 }
 
 string_slice_contains :: proc(values: []string, needle: string) -> bool {

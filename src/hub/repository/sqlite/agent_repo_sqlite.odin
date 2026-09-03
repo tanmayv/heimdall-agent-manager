@@ -184,7 +184,7 @@ agent_list_instances_by_bridge_sqlite :: proc(ctx: rawptr, bridge_id: string) ->
 agent_list_active_runtime_instances_sqlite :: proc(ctx: rawptr) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE runtime_status IN ('running','idle','busy','launching','starting','stopping') ORDER BY last_seen_at ASC;"
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, display_name, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, current_task_id, current_task_role, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE runtime_status IN ('running','idle','busy','launching','starting','stopping','blocked') ORDER BY last_seen_at ASC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare active runtime instance list")
 	defer sqlite3_finalize(stmt)
 	out := make([dynamic]domain.Agent_Instance)
