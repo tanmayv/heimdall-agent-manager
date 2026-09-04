@@ -13,10 +13,12 @@
 //!   * [`daemon`]  — per-machine daemon: agent registry + spawn/close/restart/list (HOST-1).
 //!   * [`detect`]  — pure config-driven startup detector + activity hash (HOST-2).
 //!   * [`dashboard_tui`] — pure multi-agent dashboard state machine (HOST-3).
+//!   * [`dclient`]  — single-agent raw-passthrough attach over the daemon (HOST-4).
 
 pub mod client;
 pub mod daemon;
 pub mod dashboard_tui;
+pub mod dclient;
 pub mod dashboard_ui;
 pub mod debug_tui;
 pub mod debug_ui;

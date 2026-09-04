@@ -1247,6 +1247,81 @@ mod tests {
         server.shutdown();
     }
 
+    // ---- HOST-4: single-agent attach isolation (real PTY) ----------------
+
+    /// The single-agent `attach --instance <id>` client (src/dclient.rs) relies
+    /// on the daemon delivering ONLY the attached instance's `Output`. Spawn two
+    /// agents, attach to just one, drive both, and assert every `Output` frame
+    /// we receive is for the attached instance (never the other). Also proves
+    /// the child survives `Detach`.
+    #[test]
+    fn socket_attach_one_instance_isolates_output() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("h4iso");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        // Spawn both agents via the daemon handle (drive_until needs it).
+        let d = server.daemon();
+        d.spawn(sh_spec("solo", &sh)).unwrap();
+        d.spawn(sh_spec("other", &sh)).unwrap();
+
+        // A wire client that attaches to ONLY "solo".
+        let mut c = UnixStream::connect(&sock).unwrap();
+        c.set_read_timeout(Some(Duration::from_millis(200))).ok();
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "solo".into() }).unwrap();
+        // The Attach ack is a Screen for "solo".
+        assert!(
+            await_reply(
+                &mut c,
+                |r| matches!(r, CtlReply::Screen { instance, .. } if instance == "solo"),
+                Duration::from_secs(3),
+            )
+            .is_some(),
+            "no Screen ack for solo attach"
+        );
+
+        // Drive BOTH agents so each produces output.
+        assert!(drive_until(d, "solo", b"echo SOLO_OUT\n", "SOLO_OUT", Duration::from_secs(6)));
+        assert!(drive_until(d, "other", b"echo OTHER_OUT\n", "OTHER_OUT", Duration::from_secs(6)));
+
+        // Collect Output frames for ~1s; every one must be for "solo", and we
+        // must actually see solo's marker stream through.
+        let mut saw_solo = false;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            match dproto::read_ctl_reply(&mut c) {
+                Ok(Some(CtlReply::Output { instance, data })) => {
+                    assert_eq!(instance, "solo", "leaked output from another instance");
+                    if String::from_utf8_lossy(&data).contains("SOLO_OUT") {
+                        saw_solo = true;
+                    }
+                }
+                Ok(Some(_)) => {} // Screen/ScreenChanged for solo etc. — fine.
+                Ok(None) => break,
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(_) => break,
+            }
+        }
+        assert!(saw_solo, "never received solo's live output while attached");
+
+        // Detach solo; the child must survive.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Detach { instance: "solo".into() }).unwrap();
+        assert!(
+            wait_for(|| server.daemon().is_alive("solo"), Duration::from_secs(1)),
+            "solo child must survive detach"
+        );
+        assert!(server.daemon().is_alive("other"));
+
+        server.shutdown();
+    }
+
     // ---- HOST-2: detector integration over the daemon (real PTY) ---------
 
     /// A blocked pattern in the child's output must produce a StartupBlocked

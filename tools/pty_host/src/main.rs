@@ -310,7 +310,13 @@ fn run_attach(socket: String, debug: bool, instance: Option<String>) -> Result<(
         eprintln!("[ham-pty-host] debug TUI exited (child still running unless it exited)");
         return Ok(());
     }
-    match attach(&path)? {
+    // HOST-4: --instance => single-agent raw passthrough against the daemon,
+    // no sidebar (for tiling one agent per tmux pane). Ctrl-\ detaches.
+    let outcome = match &instance {
+        Some(id) => ham_pty_host::dclient::attach_instance(&path, id)?,
+        None => attach(&path)?,
+    };
+    match outcome {
         AttachOutcome::Detached => {
             eprintln!("[ham-pty-host] detached (child still running)");
             Ok(())
@@ -320,7 +326,7 @@ fn run_attach(socket: String, debug: bool, instance: Option<String>) -> Result<(
             std::process::exit(code);
         }
         AttachOutcome::Disconnected => {
-            eprintln!("[ham-pty-host] disconnected from host");
+            eprintln!("[ham-pty-host] disconnected from host/agent");
             Ok(())
         }
     }

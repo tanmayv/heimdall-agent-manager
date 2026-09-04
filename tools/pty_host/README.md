@@ -40,6 +40,7 @@ Ctrl-\ detaches the passthrough client (child survives); F10 quits the debug TUI
 | `src/detect.rs` | HOST-2 | pure config-driven startup detector (auto-enter/blocked) + activity hash |
 | `src/dashboard_tui.rs` | HOST-3 | pure multi-agent dashboard state machine (selection/focus/switch/resize) |
 | `src/dashboard_ui.rs` | HOST-3 | ratatui/crossterm dashboard runtime (sidebar + selected pane + debug widgets) |
+| `src/dclient.rs` | HOST-4 | single-agent `attach --instance` raw passthrough (no sidebar) |
 
 ## Multi-agent daemon (HOST-1)
 ```bash
@@ -127,3 +128,25 @@ recomputes the right-pane geometry and sends an instance-scoped `Resize`, so the
 contained process's PTY reflows to the pane. Newly-attached/switched agents are
 also sized to the current geometry immediately. (Verified: attaching in a 40x120
 terminal resized the agent PTY from 24x80 to the pane's 36x86.)
+
+## Single-agent attach (HOST-4)
+
+```bash
+# raw passthrough to ONE agent, no sidebar — ideal for tiling one agent per
+# tmux pane and laying them out manually.
+./target/debug/ham-pty-host attach --socket /tmp/ham-daemon.sock --instance agent-alpha
+```
+
+Streams only that instance's live `Output` to stdout and forwards stdin as
+`Input{instance}`; async events for other agents (and control replies) are
+filtered out so many single-agent panes can share one daemon. SIGWINCH sends an
+instance-scoped `Resize` so the child reflows to the pane. **Ctrl-\ detaches
+without killing the child**; if the child exits, the client restores the terminal
+and exits with the child's code.
+
+Verified live (real PTY harness, 30x100 window): live `LIVE_LINE_N` output
+streamed through, Ctrl-\ detached, and `list` showed the child still `alive` at
+`30x100`. Isolation is also covered by an automated real-PTY test
+(`socket_attach_one_instance_isolates_output`): with two agents driven
+concurrently, every `Output` frame the attached client receives is for the
+attached instance only.
