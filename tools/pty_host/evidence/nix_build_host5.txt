@@ -1,0 +1,3 @@
+this derivation will be built:
+  /nix/store/03anl5qfbnfgmpjvpcvxbr5sn9r0rlc9-ham-pty-host-0.1.0.drv
+building '/nix/store/03anl5qfbnfgmpjvpcvxbr5sn9r0rlc9-ham-pty-host-0.1.0.drv'...

@@ -1,0 +1,527 @@
+//! REQ PTYH-1: Host core — spawn a child under a PTY and maintain a live VT
+//! screen model from its output.
+//!
+//! `PtyHost` owns:
+//!   * the platform PTY pair (via `portable-pty`),
+//!   * the child process,
+//!   * a reader thread pumping PTY bytes into a shared `VtEngine`,
+//!   * a writer handle for sending input to the child.
+//!
+//! The screen model is shared behind a `Mutex` so callers (and, in later tasks,
+//! socket clients / the TUI) can `capture()` at any time and write input.
+
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+
+use anyhow::{Context, Result};
+use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
+
+use crate::vt::{Capture, VtEngine};
+
+/// Environment we hand to the child. We start from a filtered copy of our own
+/// env and force interactive-terminal defaults (REQ PTYH-1).
+fn build_child_env() -> HashMap<String, String> {
+    // Variables that would confuse an interactive child or leak host tooling.
+    const DROP: &[&str] = &[
+        "TERM",         // we set our own
+        "TERM_PROGRAM",
+        "TERM_PROGRAM_VERSION",
+        "COLUMNS",
+        "LINES",
+        "TMUX",
+        "TMUX_PANE",
+        "STY",          // screen
+    ];
+    let mut env: HashMap<String, String> = std::env::vars()
+        .filter(|(k, _)| !DROP.contains(&k.as_str()))
+        .collect();
+    env.insert("TERM".into(), "xterm-256color".into());
+    // Signal to well-behaved programs that they're on a color-capable terminal.
+    env.entry("COLORTERM".into()).or_insert_with(|| "truecolor".into());
+    env
+}
+
+/// Configuration for spawning a child under the host.
+#[derive(Clone, Debug)]
+pub struct SpawnConfig {
+    pub program: String,
+    pub args: Vec<String>,
+    pub rows: u16,
+    pub cols: u16,
+    /// If true and the program is a shell, launch it as a login shell.
+    pub login_shell: bool,
+    pub cwd: Option<String>,
+    /// Extra environment variables merged over the filtered base env. Used by
+    /// the multi-agent daemon (HOST-1) to inject HEIMDALL_* per instance.
+    pub extra_env: Vec<(String, String)>,
+}
+
+impl SpawnConfig {
+    pub fn new(program: impl Into<String>, args: Vec<String>) -> Self {
+        SpawnConfig {
+            program: program.into(),
+            args,
+            rows: 24,
+            cols: 80,
+            login_shell: true,
+            cwd: None,
+            extra_env: Vec::new(),
+        }
+    }
+}
+
+/// Handle to a running PTY-hosted child + its live screen model.
+pub struct PtyHost {
+    engine: Arc<Mutex<VtEngine>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
+    child_alive: Arc<AtomicBool>,
+    exit_code: Arc<AtomicI32>,
+    pid: i32,
+    reader_thread: Option<JoinHandle<()>>,
+    wait_thread: Option<JoinHandle<()>>,
+    /// Broadcast raw PTY output chunks to interested consumers (sockets/TUI).
+    output_rx: Option<Receiver<Vec<u8>>>,
+    size: (u16, u16),
+}
+
+impl PtyHost {
+    /// Spawn `config.program` under a fresh PTY.
+    pub fn spawn(config: SpawnConfig) -> Result<Self> {
+        let pty_system = NativePtySystem::default();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: config.rows,
+                cols: config.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("openpty failed")?;
+
+        let mut cmd = CommandBuilder::new(&config.program);
+        // Login shell: many shells treat argv[0] starting with '-' as login.
+        let is_shellish = config.program.ends_with("sh");
+        if config.login_shell && is_shellish && config.args.is_empty() {
+            cmd.arg("-l");
+        }
+        for a in &config.args {
+            cmd.arg(a);
+        }
+        for (k, v) in build_child_env() {
+            cmd.env(k, v);
+        }
+        // Per-instance overrides win over the filtered base env (HOST-1).
+        for (k, v) in &config.extra_env {
+            cmd.env(k, v);
+        }
+        if let Some(cwd) = &config.cwd {
+            cmd.cwd(cwd);
+        }
+
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .context("failed to spawn child under PTY")?;
+        let pid = child.process_id().map(|p| p as i32).unwrap_or(-1);
+        let killer = child.clone_killer();
+        // Slave is owned by the child now; drop our handle so EOF propagates.
+        drop(pair.slave);
+
+        let engine = Arc::new(Mutex::new(VtEngine::new(
+            config.rows as usize,
+            config.cols as usize,
+        )));
+        let writer = pair
+            .master
+            .take_writer()
+            .context("failed to take PTY writer")?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .context("failed to clone PTY reader")?;
+
+        let child_alive = Arc::new(AtomicBool::new(true));
+        let exit_code = Arc::new(AtomicI32::new(-1));
+        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>();
+
+        // Reader thread: pump PTY bytes into the VT engine + broadcast raw bytes.
+        let reader_thread = {
+            let engine = Arc::clone(&engine);
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break, // EOF: child closed the PTY
+                        Ok(n) => {
+                            {
+                                let mut eng = engine.lock().unwrap();
+                                eng.feed(&buf[..n]);
+                            }
+                            // Best-effort broadcast; ignore if no consumer.
+                            let _ = output_tx.send(buf[..n].to_vec());
+                        }
+                        Err(e) => {
+                            if e.kind() == std::io::ErrorKind::Interrupted {
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                }
+            })
+        };
+
+        // Wait thread: reap the child + record its exit status.
+        let wait_thread = {
+            let child_alive = Arc::clone(&child_alive);
+            let exit_code = Arc::clone(&exit_code);
+            std::thread::spawn(move || {
+                if let Ok(status) = child.wait() {
+                    exit_code.store(status.exit_code() as i32, Ordering::SeqCst);
+                }
+                child_alive.store(false, Ordering::SeqCst);
+            })
+        };
+
+        Ok(PtyHost {
+            engine,
+            writer: Arc::new(Mutex::new(writer)),
+            master: pair.master,
+            killer: Arc::new(Mutex::new(killer)),
+            child_alive,
+            exit_code,
+            pid,
+            reader_thread: Some(reader_thread),
+            wait_thread: Some(wait_thread),
+            output_rx: Some(output_rx),
+            size: (config.rows, config.cols),
+        })
+    }
+
+    /// Send raw bytes to the child's stdin (via the PTY).
+    pub fn write_input(&self, bytes: &[u8]) -> Result<()> {
+        let mut w = self.writer.lock().unwrap();
+        w.write_all(bytes).context("write to PTY failed")?;
+        w.flush().ok();
+        Ok(())
+    }
+
+    /// Snapshot the current rendered screen.
+    pub fn capture(&self) -> Capture {
+        self.engine.lock().unwrap().capture()
+    }
+
+    /// Shared engine handle (used by socket server / TUI in later tasks).
+    pub fn engine(&self) -> Arc<Mutex<VtEngine>> {
+        Arc::clone(&self.engine)
+    }
+
+    /// Shared writer handle.
+    pub fn writer(&self) -> Arc<Mutex<Box<dyn Write + Send>>> {
+        Arc::clone(&self.writer)
+    }
+
+    /// Take the raw-output receiver (single consumer). Later tasks fan this out.
+    pub fn take_output_rx(&mut self) -> Option<Receiver<Vec<u8>>> {
+        self.output_rx.take()
+    }
+
+    /// Resize the PTY window + the VT model together (REQ PTYH-1 winsize).
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        self.master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("PTY resize failed")?;
+        self.engine
+            .lock()
+            .unwrap()
+            .resize(rows as usize, cols as usize);
+        self.size = (rows, cols);
+        Ok(())
+    }
+
+    pub fn size(&self) -> (u16, u16) {
+        self.size
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.child_alive.load(Ordering::SeqCst)
+    }
+
+    /// OS process id of the child (or -1 if unknown).
+    pub fn pid(&self) -> i32 {
+        self.pid
+    }
+
+    /// Send SIGTERM to the child for a graceful shutdown (HOST-1 close path).
+    /// Falls back to no-op if the pid is unknown. The hard SIGKILL fallback is
+    /// [`PtyHost::kill`].
+    pub fn terminate(&self) {
+        if self.pid > 0 {
+            unsafe {
+                libc::kill(self.pid, libc::SIGTERM);
+            }
+        }
+    }
+
+    /// Forcibly terminate the child (SIGKILL). Used for host shutdown so the
+    /// PTY closes and the reader/fan-out threads can exit. No-op if already
+    /// dead. Safe to call from any thread via the shared killer handle.
+    pub fn kill(&self) {
+        let _ = self.killer.lock().unwrap().kill();
+    }
+
+    /// Shared killer handle for shutting the child down from another thread.
+    pub fn killer(&self) -> Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>> {
+        Arc::clone(&self.killer)
+    }
+
+    /// Exit code if the child has exited, else `None`.
+    pub fn exit_code(&self) -> Option<i32> {
+        if self.is_alive() {
+            None
+        } else {
+            Some(self.exit_code.load(Ordering::SeqCst))
+        }
+    }
+
+    pub fn alive_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.child_alive)
+    }
+
+    /// Shared exit-code cell (used by the daemon's per-agent exit watcher).
+    pub fn exit_code_arc(&self) -> Arc<AtomicI32> {
+        Arc::clone(&self.exit_code)
+    }
+
+    /// Block until the child exits, then join background threads.
+    pub fn wait(&mut self) -> i32 {
+        if let Some(t) = self.wait_thread.take() {
+            let _ = t.join();
+        }
+        if let Some(t) = self.reader_thread.take() {
+            let _ = t.join();
+        }
+        self.exit_code.load(Ordering::SeqCst)
+    }
+
+    /// Block until the child exits or `timeout` elapses. Returns exit code if it
+    /// exited. Used by tests + graceful shutdown.
+    pub fn wait_timeout(&self, timeout: std::time::Duration) -> Option<i32> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if !self.is_alive() {
+                return Some(self.exit_code.load(Ordering::SeqCst));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn wait_for<F: Fn() -> bool>(pred: F, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if pred() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        pred()
+    }
+
+    /// Resolve a program by absolute path or via $PATH. Returns None if it
+    /// cannot be found, so tests can skip in a minimal sandbox (e.g. the nix
+    /// build sandbox, which has no /bin/sh). Keeps `cargo test` green both
+    /// locally and hermetically (PTYH-4).
+    pub(crate) fn resolve(prog: &str) -> Option<String> {
+        if prog.contains('/') {
+            return if std::path::Path::new(prog).exists() {
+                Some(prog.to_string())
+            } else {
+                None
+            };
+        }
+        for dir in std::env::var("PATH").unwrap_or_default().split(':') {
+            if dir.is_empty() {
+                continue;
+            }
+            let cand = std::path::Path::new(dir).join(prog);
+            if cand.exists() {
+                return cand.to_str().map(|s| s.to_string());
+            }
+        }
+        None
+    }
+
+    /// Resolve a POSIX shell for tests, or None to skip.
+    pub(crate) fn shell() -> Option<String> {
+        resolve("sh").or_else(|| resolve("/bin/sh")).or_else(|| resolve("bash"))
+    }
+
+    /// True if this environment can actually spawn a child under a PTY. The nix
+    /// build sandbox has no /dev/pts, so even when openpty() half-succeeds the
+    /// fork/exec into the slave fails; PTY-dependent tests skip when this is
+    /// false (they still run locally + in CI where a real PTY exists). We probe
+    /// with a real end-to-end spawn of `true` so the check matches production.
+    pub(crate) fn pty_available() -> bool {
+        let prog = match resolve("true").or_else(|| resolve("/usr/bin/true")) {
+            Some(p) => p,
+            None => return false,
+        };
+        PtyHost::spawn(SpawnConfig {
+            program: prog,
+            args: vec![],
+            rows: 24,
+            cols: 80,
+            login_shell: false,
+            cwd: None,
+            extra_env: Vec::new(),
+        })
+        .is_ok()
+    }
+
+    macro_rules! skip_if_none {
+        ($opt:expr, $name:literal) => {
+            match $opt {
+                Some(v) => v,
+                None => {
+                    eprintln!("[skip] {} unavailable in this environment", $name);
+                    return;
+                }
+            }
+        };
+    }
+
+    #[test]
+    fn spawn_echo_and_capture_rendered_output() {
+        if !pty_available() {
+            eprintln!("[skip] no PTY available in this environment");
+            return;
+        }
+        // `echo hi` should render "hi" in the grid, not raw bytes.
+        let echo = skip_if_none!(resolve("echo").or_else(|| resolve("/bin/echo")), "echo");
+        let host = PtyHost::spawn(SpawnConfig {
+            program: echo,
+            args: vec!["hi".into()],
+            rows: 10,
+            cols: 40,
+            login_shell: false,
+            cwd: None,
+            extra_env: Vec::new(),
+        })
+        .unwrap();
+        host.wait_timeout(Duration::from_secs(5));
+        // Give the reader a moment to drain final bytes.
+        wait_for(|| host.capture().lines[0].contains("hi"), Duration::from_secs(2));
+        let cap = host.capture();
+        assert!(
+            cap.lines.iter().any(|l| l.contains("hi")),
+            "expected 'hi' in capture, got: {:?}",
+            cap.lines
+        );
+        assert_eq!(host.exit_code(), Some(0));
+    }
+
+    #[test]
+    fn write_input_to_shell_is_reflected_in_capture() {
+        if !pty_available() {
+            eprintln!("[skip] no PTY available in this environment");
+            return;
+        }
+        let sh = skip_if_none!(shell(), "sh");
+        let host = PtyHost::spawn(SpawnConfig {
+            program: sh,
+            args: vec![],
+            rows: 20,
+            cols: 60,
+            login_shell: false,
+            cwd: None,
+            extra_env: Vec::new(),
+        })
+        .unwrap();
+        // Let the shell come up.
+        std::thread::sleep(Duration::from_millis(300));
+        host.write_input(b"echo marker123\n").unwrap();
+        let ok = wait_for(
+            || {
+                host.capture()
+                    .lines
+                    .iter()
+                    .any(|l| l.contains("marker123"))
+            },
+            Duration::from_secs(3),
+        );
+        assert!(ok, "capture did not reflect echoed marker: {:?}", host.capture().lines);
+        // Child should still be alive (interactive shell).
+        assert!(host.is_alive());
+        host.write_input(b"exit\n").unwrap();
+        host.wait_timeout(Duration::from_secs(3));
+    }
+
+    #[test]
+    fn color_output_records_rendition() {
+        if !pty_available() {
+            eprintln!("[skip] no PTY available in this environment");
+            return;
+        }
+        // printf a red 'R' then reset; capture must record fg color on the cell.
+        let sh = skip_if_none!(shell(), "sh");
+        let host = PtyHost::spawn(SpawnConfig {
+            program: sh,
+            args: vec!["-c".into(), "printf '\\033[31mR\\033[0m'".into()],
+            rows: 5,
+            cols: 20,
+            login_shell: false,
+            cwd: None,
+            extra_env: Vec::new(),
+        })
+        .unwrap();
+        host.wait_timeout(Duration::from_secs(5));
+        wait_for(|| host.capture().lines[0].contains('R'), Duration::from_secs(2));
+        let cap = host.capture();
+        let cell = cap.cell_at(0, 0).unwrap();
+        assert_eq!(cell.c, 'R');
+        assert_eq!(cell.fg, crate::vt::Color::Indexed(1));
+    }
+
+    #[test]
+    fn resize_updates_model() {
+        if !pty_available() {
+            eprintln!("[skip] no PTY available in this environment");
+            return;
+        }
+        let sh = skip_if_none!(shell(), "sh");
+        let mut host = PtyHost::spawn(SpawnConfig {
+            program: sh,
+            args: vec![],
+            rows: 24,
+            cols: 80,
+            login_shell: false,
+            cwd: None,
+            extra_env: Vec::new(),
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        host.resize(30, 100).unwrap();
+        let cap = host.capture();
+        assert_eq!(cap.rows, 30);
+        assert_eq!(cap.cols, 100);
+        host.write_input(b"exit\n").unwrap();
+        host.wait_timeout(Duration::from_secs(3));
+    }
+}

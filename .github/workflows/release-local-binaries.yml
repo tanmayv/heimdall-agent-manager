@@ -92,17 +92,19 @@ jobs:
             .#ham-bridge \
             .#ham-wrapper \
             .#ham-ctl \
+            .#ham-pty-host \
             --print-out-paths \
             --no-link | tee "$RUNNER_TEMP/nix-paths.txt"
           mapfile -t paths < "$RUNNER_TEMP/nix-paths.txt"
-          if [ "${#paths[@]}" -ne 3 ]; then
-            echo "expected three Nix output paths, got ${#paths[@]}" >&2
+          if [ "${#paths[@]}" -ne 4 ]; then
+            echo "expected four Nix output paths, got ${#paths[@]}" >&2
             exit 1
           fi
           {
             echo "bridge=${paths[0]}"
             echo "wrapper=${paths[1]}"
             echo "ctl=${paths[2]}"
+            echo "pty_host=${paths[3]}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Package heimdall-local tarball
@@ -115,7 +117,8 @@ jobs:
             dist \
             "${{ steps.nix-build.outputs.bridge }}" \
             "${{ steps.nix-build.outputs.wrapper }}" \
-            "${{ steps.nix-build.outputs.ctl }}"
+            "${{ steps.nix-build.outputs.ctl }}" \
+            "${{ steps.nix-build.outputs.pty_host }}"
           tar -tzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" | sort | tee "dist/heimdall-local-${{ matrix.target }}.contents.txt"
           case "$(uname -s)" in
             Darwin) shasum -a 256 "dist/heimdall-local-${{ matrix.target }}.tar.gz" > "dist/SHA256SUMS-${{ matrix.target }}.txt" ;;

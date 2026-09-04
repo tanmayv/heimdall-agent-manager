@@ -1,0 +1,37 @@
+# HOST-3 cargo test (clean worktree ~/pty-host-rust, real PTY)
+# Fri Sep  4 12:47:04 UTC 2026
+# cargo test -- --test-threads=1
+
+running 102 tests
+test dashboard_tui::tests::attach_after_known_pane_size_resizes_new_agent ... ok
+test dashboard_tui::tests::bridge_label_is_carried ... ok
+test dashboard_tui::tests::click_out_of_range_is_noop ... ok
+test dashboard_tui::tests::click_respects_scroll_offset ... ok
+test dashboard_tui::tests::click_row_selects_switches_and_focuses_list ... ok
+test dashboard_tui::tests::debug_capture_scoped_to_selected ... ok
+test dashboard_tui::tests::debug_resize_scoped_to_selected ... ok
+test dashboard_tui::tests::debug_send_keys_scoped_to_selected ... ok
+test dashboard_tui::tests::debug_tab_cycles_widgets_and_named_key_scoped ... ok
+test dashboard_tui::tests::ensure_visible_scrolls_window ... ok
+test dashboard_tui::tests::enter_switches_and_emits_attach ... ok
+test dashboard_tui::tests::focus_cycles_list_pane_debug_with_f2 ... ok
+test dashboard_tui::tests::home_end_jump_selection ... ok
+test dashboard_tui::tests::list_up_down_moves_selection_clamped ... ok
+test dashboard_tui::tests::on_screen_ignores_non_attached_instance ... ok
+test dashboard_tui::tests::pane_focus_sends_instance_scoped_input ... ok
+test dashboard_tui::tests::pane_resize_emits_instance_scoped_resize ... ok
+test dashboard_tui::tests::pane_resize_without_attach_records_but_emits_nothing ... ok
+test dashboard_tui::tests::quit_detaches_attached_and_sets_flag ... ok
+test dashboard_tui::tests::quit_without_attach_emits_nothing ... ok
+test dashboard_tui::tests::re_selecting_attached_agent_is_noop ... ok
+test dashboard_tui::tests::switch_clears_stale_screen ... ok
+test dashboard_tui::tests::switching_agent_detaches_old_then_attaches_new ... ok
+test dashboard_tui::tests::switching_agent_sizes_the_new_agent_too ... ok
+test dashboard_tui::tests::update_agents_from_empty_to_populated ... ok
+test dashboard_tui::tests::update_agents_handles_removed_selection ... ok
+test dashboard_tui::tests::update_agents_preserves_selection_by_id ... ok
+test result: ok. 102 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.58s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
