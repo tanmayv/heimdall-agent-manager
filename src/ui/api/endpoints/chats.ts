@@ -249,7 +249,7 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       providesTags: (_r, _e, { conversationId }) => [{ type: 'ConversationSummaries' as const, id: conversationId }],
     }),
     fetchConversationMessages: build.query<any, { conversationId: string; limit?: number; cursor?: string }>({
-      queryFn: async ({ conversationId, limit = 100, cursor = '' }) => {
+      queryFn: async ({ conversationId, limit = 30, cursor = '' }) => {
         if (!conversationId) return { data: { messages: [], nextCursor: '', hasMore: false } };
         try {
           const params = new URLSearchParams({ limit: String(limit) });

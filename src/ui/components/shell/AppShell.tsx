@@ -906,7 +906,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // The rail shows live agents + unread counts; the hub doesn't push all of these
   // over the user WS, so poll periodically (paused when the tab is unfocused) so a
   // just-started/stopped agent appears/disappears without a manual refresh.
-  const conversationsQuery = useListSidebarConversationsQuery({ limit: 100 }, { pollingInterval: 10000, skipPollingIfUnfocused: true });
+  const conversationsQuery = useListSidebarConversationsQuery({ limit: 30 }, { pollingInterval: 10000, skipPollingIfUnfocused: true });
   const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentNamesById = useMemo(() => {

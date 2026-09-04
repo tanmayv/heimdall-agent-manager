@@ -174,7 +174,7 @@ export const sidebarApi = heimdallApi.injectEndpoints({
     listSidebarConversations: build.query<SidebarConversation[], { limit?: number } | void>({
       queryFn: async (arg) => {
         try {
-          const limit = (arg && typeof arg === 'object' && arg.limit) || 100;
+          const limit = (arg && typeof arg === 'object' && arg.limit) || 30;
           const rows = await fetchCookieList(`/chats?limit=${limit}`, ['conversations', 'chats']);
           const conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
           return { data: conversations };

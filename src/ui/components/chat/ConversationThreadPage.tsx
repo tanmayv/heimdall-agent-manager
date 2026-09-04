@@ -387,12 +387,18 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
 }
 
 export default function ConversationThreadPage({ conversationId }: { conversationId: string }) {
-  // The hub does not push per-conversation runtime/message events over the user
-  // WS in this rewrite, so the open thread relies on polling to stay fresh. Poll
-  // the visible view frequently, but pause polling when the tab is unfocused so we
-  // don't hammer the hub in the background. (skipPollingIfUnfocused, RTKQ 2.x.)
-  const convQuery = useFetchConversationQuery({ conversationId }, { skip: !conversationId, pollingInterval: 8000, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
-  const messagesQuery = useFetchConversationMessagesQuery({ conversationId }, { skip: !conversationId, pollingInterval: 4000, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
+  // New messages, read receipts and delivery status arrive live over the user WS
+  // (`chat_event` -> wsInvalidation patches the `Chat`/`ConversationSummaries`
+  // caches and invalidates the `Chat` tag for this conversation). Polling is only
+  // a slow fallback for missed events, so we poll at 10s and pause when the tab is
+  // unfocused so we don't hammer the hub in the background. (skipPollingIfUnfocused.)
+  const convQuery = useFetchConversationQuery({ conversationId }, { skip: !conversationId, pollingInterval: 10000, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
+  // Do NOT force a refetch on every conversation switch: with keepUnusedDataFor
+  // (30s) a recently-viewed thread renders instantly from cache, and the user WS
+  // `chat_event` already invalidates this conversation's `Chat` tag when anything
+  // changes. refetchOnMountOrArgChange:true made every switch blank the transcript
+  // behind a "Loading messages…" gate while it re-hit the hub — the perceived hang.
+  const messagesQuery = useFetchConversationMessagesQuery({ conversationId }, { skip: !conversationId, pollingInterval: 10000, skipPollingIfUnfocused: true });
   const [fetchOlderMessages, olderMessagesState] = useLazyFetchConversationMessagesQuery();
   const [updateConversationTitle, updateTitleState] = useUpdateConversationTitleMutation();
   const [requestPaneCapture, requestPaneCaptureState] = useRequestPaneCaptureMutation();
@@ -698,7 +704,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     if (!olderCursor || olderMessagesState.isFetching) return;
     setError('');
     try {
-      const data = await fetchOlderMessages({ conversationId, limit: 100, cursor: olderCursor }).unwrap();
+      const data = await fetchOlderMessages({ conversationId, limit: 30, cursor: olderCursor }).unwrap();
       const rows: Message[] = data?.messages || [];
       setOlderMessages((current) => {
         const seen = new Set(current.map((message, index) => msgId(message, index)));
