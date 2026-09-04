@@ -8,6 +8,7 @@ import { useListAgentsQuery } from '../api/endpoints/agents';
 import ArtifactUploadButton, { useArtifactUpload } from './ArtifactUpload';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
+import Icon from './Icon';
 
 export type LibraryPageProps = {
   session: any;
@@ -274,8 +275,8 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                   </button>
                   {/* per-card rename / delete menu */}
                   <div className="mt-2 flex justify-end gap-1 opacity-0 transition group-hover:opacity-100">
-                    <button type="button" data-debug-id={`library-card-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md border border-white/10 px-1.5 py-0.5 text-[10.5px] text-zinc-400 hover:bg-white/10">✎</button>
-                    <button type="button" data-debug-id={`library-card-delete-${id}`} onClick={() => setDeleteConfirmId(id)} className="rounded-md border border-white/10 px-1.5 py-0.5 text-[10.5px] text-rose-300 hover:bg-rose-500/10">🗑</button>
+                    <button type="button" aria-label="Rename" title="Rename" data-debug-id={`library-card-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md border border-white/10 px-1.5 py-0.5 text-zinc-400 hover:bg-white/10"><Icon name="pencil" size={12} /></button>
+                    <button type="button" aria-label="Delete" title="Delete" data-debug-id={`library-card-delete-${id}`} onClick={() => setDeleteConfirmId(id)} className="rounded-md border border-white/10 px-1.5 py-0.5 text-rose-300 hover:bg-rose-500/10"><Icon name="trash" size={12} /></button>
                   </div>
                   {renamingId === id ? (
                     <div data-debug-id={`library-card-rename-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl bg-[#0b0d12]/95 p-3">
@@ -324,8 +325,8 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                   <span className="truncate text-[11.5px] text-zinc-500">{project?.name || projectId(a) || '—'}</span>
                   <span className="truncate text-[11.5px] text-zinc-500">{timeAgo(Number(a?.updated_unix_ms || a?.created_unix_ms))}</span>
                   <span className="flex justify-end gap-1">
-                    <button type="button" data-debug-id={`library-row-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md px-1 text-[11px] text-zinc-500 hover:text-zinc-200">✎</button>
-                    <button type="button" data-debug-id={`library-row-delete-${id}`} onClick={() => setDeleteConfirmId(id)} className="rounded-md px-1 text-[11px] text-rose-300 hover:text-rose-100">🗑</button>
+                    <button type="button" aria-label="Rename" title="Rename" data-debug-id={`library-row-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md px-1 text-zinc-500 hover:text-zinc-200"><Icon name="pencil" size={12} /></button>
+                    <button type="button" aria-label="Delete" title="Delete" data-debug-id={`library-row-delete-${id}`} onClick={() => setDeleteConfirmId(id)} className="rounded-md px-1 text-rose-300 hover:text-rose-100"><Icon name="trash" size={12} /></button>
                   </span>
                 </div>
               );
@@ -335,7 +336,12 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
       </div>
 
       {/* Fullscreen viewer */}
-      {activeArtifactId && daemonUrl && clientToken ? (
+      {activeArtifactId && clientToken ? (
+        // Hub-only: the artifact endpoints resolve clientToken==='v1' (and
+        // Electron/browser-ambient) to the /api/v1 cookie path, so an empty
+        // daemonUrl is expected and correct. Gating the viewer on daemonUrl
+        // (always '' on the hub) silently no-oped opening — so it's dropped.
+        // Mirrors AppShell's /library/artifacts route mount.
         <ArtifactViewer artifactId={activeArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setActiveArtifactId('')} />
       ) : null}
     </div>

@@ -41,12 +41,22 @@ export function clipboardFilesFromEvent(event: any): File[] {
   const seen = new Set<string>();
   const push = (file: File | null | undefined) => {
     if (!file) return;
-    const key = [file.name || '', file.type || '', file.size || 0, file.lastModified || 0].join(':');
+    // Dedup WITHOUT lastModified: a pasted screenshot surfaces in both
+    // clipboardData.files and clipboardData.items[].getAsFile() with a
+    // DIFFERENT lastModified, so including it would defeat the dedup and
+    // upload the same image twice. name:type:size identifies a paste uniquely.
+    const key = [file.name || '', file.type || '', file.size || 0].join(':');
     if (seen.has(key)) return;
     seen.add(key);
     out.push(file);
   };
-  Array.from(data?.files || []).forEach((file) => push(file as File));
+  // Prefer clipboardData.files; only fall back to items[] when files is empty
+  // (mirrors ChatComposer.clipboardFiles) so a single paste yields each file once.
+  const files = Array.from(data?.files || []) as File[];
+  if (files.length > 0) {
+    files.forEach(push);
+    return out;
+  }
   Array.from(data?.items || []).forEach((item: any) => {
     if (item?.kind === 'file' || String(item?.type || '').startsWith('image/')) push(item?.getAsFile?.() || null);
   });
