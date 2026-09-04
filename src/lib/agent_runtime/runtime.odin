@@ -94,9 +94,15 @@ startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: stri
 			if now - last_auto_enter >= i64(2 * time.Second) {
 				if idx := first_pattern(pane_text, cfg.auto_enter_patterns); idx >= 0 {
 					if idx < len(cfg.auto_enter_pre_keys) && strings.trim_space(cfg.auto_enter_pre_keys[idx]) != "" {
-						_ = tmux.send_text(pane_id, cfg.auto_enter_pre_keys[idx], true)
+						// pre-keys are tmux NAMED keys (e.g. "Down", "Tab Tab") used to
+						// navigate the prompt off its default option BEFORE confirming.
+						// They must be sent as key presses, not literal text: send_text
+						// would type the word "Down" into the prompt instead of pressing
+						// the arrow, leaving the wrong option selected and the launch
+						// stuck at the trust/ToS/bypass screen (startup_blocked).
+						_ = tmux.send_named_keys(pane_id, cfg.auto_enter_pre_keys[idx], true)
 					} else {
-						_ = tmux.send_text(pane_id, "", true)
+						_ = tmux.send_named_keys(pane_id, "Enter", false)
 					}
 					last_auto_enter = now
 					deadline = now + i64(time.Duration(probe_seconds) * time.Second)
