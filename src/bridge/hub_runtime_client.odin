@@ -10,7 +10,15 @@ import cfg_lib "odin_test:lib/config"
 import tmux "odin_test:lib/tmux"
 import ws "odin_test:lib/ws"
 
-BRIDGE_WRAPPER_STALE_MS :: 10_000
+// BRIDGE_WRAPPER_STALE_MS is how long an ACTIVE instance may go without any
+// liveness signal before the bridge reconciles it to "unreachable". In the
+// pty-host runtime, per-child liveness is proven by the periodic
+// bridge_pty_host_liveness_worker tick (PTY_HOST_LIVENESS_TICK_MS), NOT by pane
+// activity — so an alive-but-idle agent, or one that legitimately takes several
+// seconds before calling start-success, stays fresh. Kept generously above the
+// tick cadence so a couple of missed ticks (a briefly busy daemon) never falsely
+// reaps a live agent; only a genuinely gone child/daemon crosses this window.
+BRIDGE_WRAPPER_STALE_MS :: 60_000
 BRIDGE_START_SUCCESS_TIMEOUT_MS :: 120_000
 BRIDGE_START_SUCCESS_PROMPT_AFTER_MS :: 30_000
 BRIDGE_START_SUCCESS_PROMPT_INTERVAL_MS :: 60_000
@@ -1410,6 +1418,30 @@ bridge_runtime_instance_snapshot :: proc(instance_id: string) -> (Bridge_Runtime
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	return bridge_runtime_instance_snapshot_locked(instance_id)
+}
+
+// bridge_runtime_touch_liveness refreshes an ACTIVE instance's last_seen without
+// otherwise mutating its runtime/activity state. It is the pty-host per-child
+// liveness proof: the events subscriber (pane activity) is not a reliable liveness
+// clock because an alive-but-idle agent emits no ScreenChanged, so a periodic
+// worker calls this for every child the daemon still reports alive. The
+// stop-intent guard is honored so a deliberately-stopped instance is never kept
+// alive by a racing liveness tick, and start-success/deadline bookkeeping is left
+// untouched (this proves "process alive", not "agent ready").
+bridge_runtime_touch_liveness :: proc(instance_id: string) {
+	if strings.trim_space(instance_id) == "" do return
+	now := bridge_runtime_now_ms()
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	if bridge_runtime_stop_intent_active_locked(instance_id, now) do return
+	for i in 0..<len(bridge_runtime_instances) {
+		if bridge_runtime_instances[i].agent_instance_id == instance_id {
+			inst := &bridge_runtime_instances[i]
+			if !bridge_runtime_status_active(inst.runtime_status) do return
+			inst.last_seen_unix_ms = now
+			return
+		}
+	}
 }
 
 bridge_runtime_instance_snapshot_locked :: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) {

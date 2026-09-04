@@ -46,11 +46,21 @@ bridge_http_request_retry :: proc(
 	ok := false
 	for attempt in 1..=max_attempts {
 		resp, ok = http.request_with_headers_timeout(method, hub_url, path, body, headers, timeout_ms)
-		if bridge_http_is_terminal(resp.status, ok) do return resp, ok
+		if bridge_http_is_terminal(resp.status, ok) {
+			// Log the terminal outcome when it followed at least one retry, so a
+			// retried-then-succeeded (or retried-then-failed-hard) sequence is
+			// visible in the log rather than trailing off at the last "retry" line.
+			if attempt > 1 {
+				fmt.println("bridge http retry DONE", "method=", method, "path=", path, "attempts=", attempt, "final_status=", resp.status, "ok=", ok, "outcome=", ok && resp.status >= 200 && resp.status < 300 ? "succeeded_after_retry" : "failed_terminal")
+			}
+			return resp, ok
+		}
 		if attempt < max_attempts {
 			fmt.println("bridge http retry", "method=", method, "path=", path, "attempt=", attempt, "status=", resp.status, "ok=", ok)
 			bridge_http_backoff_sleep(attempt, base_backoff_ms)
 		}
 	}
+	// All attempts were retriable and none terminal-succeeded: retries exhausted.
+	fmt.println("bridge http retry EXHAUSTED", "method=", method, "path=", path, "attempts=", max_attempts, "final_status=", resp.status, "ok=", ok)
 	return resp, ok
 }
