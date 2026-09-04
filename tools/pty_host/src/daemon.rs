@@ -117,11 +117,19 @@ struct Subscriber {
 type Registry = Arc<Mutex<HashMap<String, Agent>>>;
 type Subscribers = Arc<Mutex<HashMap<u64, Subscriber>>>;
 
+/// A registered connection's event sink, before/independent of any Attach.
+type Sinks = Arc<Mutex<HashMap<u64, Sender<CtlReply>>>>;
+
 /// The per-machine multi-agent daemon.
 #[derive(Clone)]
 pub struct Daemon {
     agents: Registry,
+    /// Clients that have Attached and are receiving instance-scoped events.
     subs: Subscribers,
+    /// All connected clients' sinks (HOST-5): a sink here is NOT subscribed to
+    /// any events until the client Attaches; control-only clients live here
+    /// only, so they never receive async event frames.
+    sinks: Sinks,
 }
 
 impl Default for Daemon {
@@ -135,6 +143,7 @@ impl Daemon {
         Daemon {
             agents: Arc::new(Mutex::new(HashMap::new())),
             subs: Arc::new(Mutex::new(HashMap::new())),
+            sinks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -379,39 +388,61 @@ impl Daemon {
     }
 
     // ---- subscription plumbing (used by the socket server) --------------
+    //
+    // HOST-5: a connection is NOT auto-subscribed. Control-only clients
+    // (spawn/close/restart/list) never enter the `subs` map, so async events
+    // (Output/ScreenChanged/StartupReady/StartupBlocked/ChildExited) — which
+    // are delivered ONLY through `subs` — can never be interleaved with a
+    // control reply. A subscription is created lazily on the first `Attach` and
+    // torn down when the client detaches from its last instance (or drops).
 
-    /// Register a client's event sink. Returns nothing; use [`Daemon::attach`]
-    /// to start receiving a given instance's output.
-    fn subscribe(&self, id: u64, tx: Sender<CtlReply>) {
-        self.subs.lock().unwrap().insert(
-            id,
-            Subscriber {
-                tx,
-                instances: HashSet::new(),
-            },
-        );
+    /// Remember a client's event sink so it can be (re)subscribed on Attach.
+    /// Idempotent; does NOT by itself cause any events to be delivered.
+    fn register_sink(&self, id: u64, tx: Sender<CtlReply>) {
+        self.sinks.lock().unwrap().insert(id, tx);
     }
 
+    /// Drop a client entirely: its sink and any active subscription.
     fn unsubscribe(&self, id: u64) {
         self.subs.lock().unwrap().remove(&id);
+        self.sinks.lock().unwrap().remove(&id);
     }
 
-    /// Attach client `id` to `instance`'s output stream. Returns the current
-    /// screen so the client renders live state immediately. Does not affect the
-    /// child. Errors if the instance does not exist.
+    /// Attach client `id` to `instance`'s output stream. Creates the client's
+    /// subscription on first attach. Returns the current screen so the client
+    /// renders live state immediately. Does not affect the child. Errors if the
+    /// instance does not exist.
     fn attach(&self, id: u64, instance: &str) -> Result<ScreenSnapshot> {
         let snap = self
             .capture(instance)
             .ok_or_else(|| anyhow!("attach: no such instance {instance}"))?;
-        if let Some(sub) = self.subs.lock().unwrap().get_mut(&id) {
-            sub.instances.insert(instance.to_string());
-        }
+        // Look up the sink before locking subs to avoid a lock-ordering hazard.
+        let tx = self
+            .sinks
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| anyhow!("attach: connection {id} has no registered sink"))?;
+        let mut subs = self.subs.lock().unwrap();
+        let sub = subs.entry(id).or_insert_with(|| Subscriber {
+            tx,
+            instances: HashSet::new(),
+        });
+        sub.instances.insert(instance.to_string());
         Ok(snap)
     }
 
+    /// Detach client `id` from `instance`. When it has no instances left the
+    /// whole subscription is removed so it stops receiving ALL events (returns
+    /// to control-only status).
     fn detach(&self, id: u64, instance: &str) {
-        if let Some(sub) = self.subs.lock().unwrap().get_mut(&id) {
+        let mut subs = self.subs.lock().unwrap();
+        if let Some(sub) = subs.get_mut(&id) {
             sub.instances.remove(instance);
+            if sub.instances.is_empty() {
+                subs.remove(&id);
+            }
         }
     }
 
@@ -422,6 +453,7 @@ impl Daemon {
             let _ = self.close(&id);
         }
         self.subs.lock().unwrap().clear();
+        self.sinks.lock().unwrap().clear();
     }
 }
 
@@ -626,7 +658,10 @@ fn accept_loop(listener: UnixListener, daemon: Daemon, shutdown: Arc<AtomicBool>
 
 fn handle_client(id: u64, stream: UnixStream, daemon: Daemon, shutdown: Arc<AtomicBool>) {
     let (tx, rx) = std::sync::mpsc::channel::<CtlReply>();
-    daemon.subscribe(id, tx.clone());
+    // HOST-5: register the sink but do NOT subscribe to events. Async events
+    // only flow to clients that later Attach; a control-only client stays out
+    // of the `subs` map entirely and thus never sees an event frame.
+    daemon.register_sink(id, tx.clone());
 
     let mut write_stream = match stream.try_clone() {
         Ok(s) => s,
@@ -1322,6 +1357,133 @@ mod tests {
         server.shutdown();
     }
 
+    // ---- HOST-5: control/event stream separation (real PTY) --------------
+
+    /// Read the NEXT control reply on a control-only connection, mirroring the
+    /// CLI's `request()`: async event frames (Output/ChildExited/ScreenChanged/
+    /// StartupReady/StartupBlocked) must NEVER reach a client that did not
+    /// Attach, so encountering one here is a hard failure (the bug this task
+    /// fixes). Screen is only produced in reply to Attach/Capture, so it is
+    /// also unexpected on a control-only op.
+    fn ctl_reply_strict(c: &mut UnixStream, timeout: Duration) -> CtlReply {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            match dproto::read_ctl_reply(c) {
+                Ok(Some(
+                    ev @ (CtlReply::Output { .. }
+                    | CtlReply::ChildExited { .. }
+                    | CtlReply::ScreenChanged { .. }
+                    | CtlReply::StartupReady { .. }
+                    | CtlReply::StartupBlocked { .. }),
+                )) => {
+                    panic!("control-only connection received async event: {ev:?}");
+                }
+                Ok(Some(reply)) => return reply,
+                Ok(None) => panic!("daemon closed connection without replying"),
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(e) => panic!("read error: {e}"),
+            }
+        }
+        panic!("timed out waiting for control reply");
+    }
+
+    /// ACCEPTANCE (HOST-5): with an agent ACTIVELY producing output, a
+    /// control-only client must be able to run list/restart/close repeatedly
+    /// with no "unexpected reply" — i.e. it only ever sees its command's reply,
+    /// never an async event frame. Before the fix this failed within a couple
+    /// iterations because every connection was auto-subscribed and events were
+    /// broadcast to all connections.
+    #[test]
+    fn control_only_client_never_sees_async_events_under_busy_agent() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("h5ctl");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        // A busy agent that spews output continuously (drives ScreenChanged +
+        // Output constantly). Runs a tight echo loop like the task's repro.
+        let d = server.daemon();
+        d.spawn(SpawnRequest {
+            instance: "busy".into(),
+            argv: vec![
+                sh.clone(),
+                "-c".into(),
+                "i=0; while :; do echo tick $i; i=$((i+1)); done".into(),
+            ],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 20,
+            cols: 60,
+        })
+        .unwrap();
+
+        // A SECOND agent used as the restart/close target so the busy one keeps
+        // streaming throughout (close removes an agent; we want sustained load).
+        // We restart/close/re-spawn "victim" each round while "busy" spews.
+        let timeout = Duration::from_secs(4);
+        for round in 0..8 {
+            // Fresh control-only connection each round (like the CLI's one-shot
+            // `request()`), plus one long-lived connection tested below.
+            let mut c = UnixStream::connect(&sock).unwrap();
+            c.set_read_timeout(Some(Duration::from_millis(100))).ok();
+
+            // list
+            dproto::write_ctl_msg(&mut c, &CtlMsg::List).unwrap();
+            match ctl_reply_strict(&mut c, timeout) {
+                CtlReply::AgentList(_) => {}
+                other => panic!("round {round}: list got {other:?}"),
+            }
+
+            // spawn a victim, then restart it, then close it — all control ops
+            // that must return exactly their own reply despite busy's output.
+            let vic = format!("victim{round}");
+            dproto::write_ctl_msg(
+                &mut c,
+                &CtlMsg::Spawn(sh_spec(&vic, &sh)),
+            )
+            .unwrap();
+            match ctl_reply_strict(&mut c, timeout) {
+                CtlReply::Spawned { instance, .. } if instance == vic => {}
+                other => panic!("round {round}: spawn got {other:?}"),
+            }
+
+            dproto::write_ctl_msg(&mut c, &CtlMsg::Restart { instance: vic.clone() }).unwrap();
+            match ctl_reply_strict(&mut c, timeout) {
+                CtlReply::Restarted { instance, .. } if instance == vic => {}
+                other => panic!("round {round}: restart got {other:?}"),
+            }
+
+            dproto::write_ctl_msg(&mut c, &CtlMsg::Close { instance: vic.clone() }).unwrap();
+            match ctl_reply_strict(&mut c, timeout) {
+                CtlReply::Closed { instance } if instance == vic => {}
+                other => panic!("round {round}: close got {other:?}"),
+            }
+        }
+
+        // Also prove a SINGLE long-lived control connection stays clean across
+        // many ops (the CLI can reuse a socket).
+        let mut c = UnixStream::connect(&sock).unwrap();
+        c.set_read_timeout(Some(Duration::from_millis(100))).ok();
+        for _ in 0..10 {
+            dproto::write_ctl_msg(&mut c, &CtlMsg::List).unwrap();
+            match ctl_reply_strict(&mut c, timeout) {
+                CtlReply::AgentList(_) => {}
+                other => panic!("long-lived list got {other:?}"),
+            }
+        }
+
+        // The busy agent is still alive and was never disturbed.
+        assert!(server.daemon().is_alive("busy"));
+        server.shutdown();
+    }
+
     // ---- HOST-2: detector integration over the daemon (real PTY) ---------
 
     /// A blocked pattern in the child's output must produce a StartupBlocked
@@ -1363,6 +1525,8 @@ mod tests {
             }),
         )
         .unwrap();
+        // HOST-5: events flow only to attached clients — opt in.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "b".into() }).unwrap();
 
         let ev = await_reply(
             &mut c,
@@ -1478,6 +1642,8 @@ mod tests {
             }),
         )
         .unwrap();
+        // HOST-5: events flow only to attached clients — opt in.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "r".into() }).unwrap();
 
         let ev = await_reply(
             &mut c,
@@ -1519,6 +1685,8 @@ mod tests {
         )
         .unwrap();
         assert!(await_reply(&mut c, |r| matches!(r, CtlReply::Spawned { .. }), Duration::from_secs(3)).is_some());
+        // HOST-5: events flow only to attached clients — opt in.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "ch".into() }).unwrap();
 
         // Collect ScreenChanged hashes while driving new content on a retry loop.
         let mut hashes = std::collections::HashSet::new();

@@ -58,6 +58,17 @@ The daemon manages N agents keyed by instance id; `restart` reuses the remembere
 argv/cwd/env/detect. `--detect` is stored verbatim in HOST-1 and consumed by the
 per-agent startup detector in HOST-2.
 
+**Control vs. event separation (HOST-5).** A connection is *not* auto-subscribed
+to events. On accept it only registers an event *sink*; it is added to the
+subscriber set (and starts receiving async events) *only* after an explicit
+`Attach`, and is removed again when it detaches from its last instance. Async
+events (`Output` / `ScreenChanged` / `StartupReady` / `StartupBlocked` /
+`ChildExited`) flow exclusively through the subscriber set, so a control-only
+client (`spawn`/`close`/`restart`/`list`) receives *only* its command's reply and
+can never read an unsolicited event frame — even while another agent streams
+output continuously. (Regression covered by
+`control_only_client_never_sees_async_events_under_busy_agent`.)
+
 ## Config-driven startup detection + activity signal (HOST-2)
 Each agent may carry a `--detect` JSON blob reusing the Heimdall
 `Startup_Detection_Config` shape:
