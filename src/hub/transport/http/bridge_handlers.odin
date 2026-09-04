@@ -408,7 +408,11 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, client: net.TCP_Socket) {
 	defer bridge_ws_disconnect(h, bridge_id, connection_generation)
 	for {
-		text, ok := read_ws_text_blocking(client, 60 * time.Second)
+		// 120s read deadline decoupled from the bridge's idle heartbeat cadence
+		// (BRIDGE_HUB_HEARTBEAT_INTERVAL = 45s): a single delayed/dropped heartbeat
+		// still leaves a full extra beat of margin before we treat the bridge as
+		// gone, so we never tear down a healthy connection at the cadence edge.
+		text, ok := read_ws_text_blocking(client, 120 * time.Second)
 		if !ok do return
 		if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation {
 			_ = write_ws_text_frame(client, bridge_connection_replaced_payload())

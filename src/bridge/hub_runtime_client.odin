@@ -12,13 +12,14 @@ import ws "odin_test:lib/ws"
 
 // BRIDGE_WRAPPER_STALE_MS is how long an ACTIVE instance may go without any
 // liveness signal before the bridge reconciles it to "unreachable". In the
-// pty-host runtime, per-child liveness is proven by the periodic
-// bridge_pty_host_liveness_worker tick (PTY_HOST_LIVENESS_TICK_MS), NOT by pane
-// activity — so an alive-but-idle agent, or one that legitimately takes several
-// seconds before calling start-success, stays fresh. Kept generously above the
-// tick cadence so a couple of missed ticks (a briefly busy daemon) never falsely
-// reaps a live agent; only a genuinely gone child/daemon crosses this window.
-BRIDGE_WRAPPER_STALE_MS :: 60_000
+// pty-host runtime, per-child liveness is proven by the daemon's pushed
+// Host_Heartbeat digest (HOST_HEARTBEAT_INTERVAL = 30s in the Rust daemon), NOT
+// by pane activity — so an alive-but-idle agent, or one that legitimately takes
+// several seconds before calling start-success, stays fresh. Kept at 3x the
+// 30s digest cadence so a couple of missed digests (a briefly busy daemon or an
+// event-connection reconnect) never falsely reap a live agent; only a genuinely
+// gone child/daemon crosses this window (and ChildExited reaps that instantly).
+BRIDGE_WRAPPER_STALE_MS :: 90_000
 BRIDGE_START_SUCCESS_TIMEOUT_MS :: 120_000
 BRIDGE_START_SUCCESS_PROMPT_AFTER_MS :: 30_000
 BRIDGE_START_SUCCESS_PROMPT_INTERVAL_MS :: 60_000
@@ -176,14 +177,28 @@ bridge_hub_runtime_worker :: proc() {
 	}
 }
 
+// BRIDGE_HUB_HEARTBEAT_INTERVAL is the idle cadence of the bridge->hub
+// bridge_heartbeat digest. It is only a reconciliation/keepalive/schedules-version
+// backstop: live instance status changes are pushed IMMEDIATELY as separate
+// agent_instance_status frames (see bridge_runtime_set_status callers), so the
+// hub and UI stay live regardless of this cadence. Kept comfortably below the
+// hub's 120s bridge-WS read deadline so a single delayed heartbeat never trips a
+// spurious disconnect, and below the 90s stale-reap window so reconciliation stays
+// timely. schedules_version rides the heartbeat ack, so this also bounds
+// scheduled-prompt pickup latency (~45s), which is fine for cron/interval work.
+BRIDGE_HUB_HEARTBEAT_INTERVAL :: 45 * time.Second
+
 bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	last_heartbeat := time.to_unix_nanoseconds(time.now())
+	// Send one heartbeat immediately on connect so the hub gets the initial
+	// instance digest + schedules_version handshake without waiting a full cycle.
+	_ = ws.send_text(conn, bridge_hub_heartbeat_json())
 	for conn.connected {
 		if text, got := ws.poll_text(conn); got do bridge_hub_handle_command(conn, text)
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
 		now := time.to_unix_nanoseconds(time.now())
-		if now - last_heartbeat >= i64(2 * time.Second) {
+		if now - last_heartbeat >= i64(BRIDGE_HUB_HEARTBEAT_INTERVAL) {
 			_ = ws.send_text(conn, bridge_hub_heartbeat_json())
 			last_heartbeat = now
 		}

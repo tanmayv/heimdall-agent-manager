@@ -31,48 +31,23 @@ import "core:time"
 PTY_HOST_BURST_FRAMES :: 3
 PTY_HOST_BURST_GAP_MS :: 400
 
-// PTY_HOST_LIVENESS_TICK_MS is the cadence of the per-child liveness worker. It
-// polls the daemon's agent list and touches last_seen for every alive child, so an
-// alive-but-idle agent (no ScreenChanged) stays fresh well inside
-// BRIDGE_WRAPPER_STALE_MS. Kept several times smaller than the stale window so a
-// couple of missed ticks never falsely reap a live agent.
-PTY_HOST_LIVENESS_TICK_MS :: 3_000
-
 pty_host_events_started: bool
 pty_host_events_lock: sync.Mutex
 
-// bridge_pty_host_events_ensure starts the single event-subscription worker AND
-// the per-child liveness worker once (idempotent). Called after the first
-// successful spawn so there is a daemon to attach to. Safe to call repeatedly.
+// bridge_pty_host_events_ensure starts the single event-subscription worker once
+// (idempotent). Called after the first successful spawn so there is a daemon to
+// attach to. Safe to call repeatedly.
+//
+// Per-child liveness is delivered by the daemon's pushed Host_Heartbeat digest on
+// this same event connection (see bridge_pty_host_dispatch_event), so there is no
+// bridge-side polling worker: the party that owns the PTYs pushes liveness, the
+// bridge only touches last_seen on receipt.
 bridge_pty_host_events_ensure :: proc() {
 	sync.mutex_lock(&pty_host_events_lock)
 	defer sync.mutex_unlock(&pty_host_events_lock)
 	if pty_host_events_started do return
 	pty_host_events_started = true
 	thread.run(bridge_pty_host_events_worker)
-	thread.run(bridge_pty_host_liveness_worker)
-}
-
-// bridge_pty_host_liveness_worker is the per-child liveness clock. The event
-// subscriber only refreshes last_seen on pane activity, which an idle agent does
-// not produce, so without this a live-but-quiet agent (or one that takes several
-// seconds before start-success) would be reaped to "unreachable" after
-// BRIDGE_WRAPPER_STALE_MS. This worker instead polls the daemon's agent list on a
-// fixed cadence and touches last_seen for every child the daemon still reports
-// alive. A dead child drops out of the list (or reports alive=false), so it stops
-// being touched and is correctly reaped; the authoritative "gone" signal remains
-// the ChildExited event.
-bridge_pty_host_liveness_worker :: proc() {
-	for {
-		time.sleep(PTY_HOST_LIVENESS_TICK_MS * time.Millisecond)
-		socket := pty_host_socket_path()
-		reply, ok := bridge_pty_host_list(socket)
-		if !ok do continue
-		for a in reply.agents {
-			if a.alive do bridge_runtime_touch_liveness(a.instance_id)
-		}
-		pty_host_reply_delete(reply)
-	}
 }
 
 // bridge_pty_host_events_worker is the long-lived reader. It (re)dials the daemon,
@@ -134,6 +109,14 @@ bridge_pty_host_dispatch_event :: proc(socket: string, reply: Pty_Host_Reply) {
 		bridge_pty_host_apply_startup_blocked(reply.instance, reply.reason_code, reply.message)
 	case .Screen_Changed:
 		bridge_pty_host_handle_screen_changed(socket, reply.instance)
+	case .Host_Heartbeat:
+		// Per-child liveness digest pushed by the daemon on a fixed cadence:
+		// refresh last_seen for every child the daemon reports alive. A dead child
+		// reports alive=false (or drops from the roster) and stops being touched,
+		// so it is still correctly reaped; ChildExited remains the instant path.
+		for a in reply.heartbeat_agents {
+			if a.alive do bridge_runtime_touch_liveness(a.instance_id)
+		}
 	}
 }
 

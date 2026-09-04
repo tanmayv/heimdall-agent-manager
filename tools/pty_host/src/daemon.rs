@@ -28,17 +28,30 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Context, Result};
 
 use crate::detect::{screen_hash, DetectAction, Detector, StartupDetectionConfig, StartupOutcome};
-use crate::dproto::{self, AgentInfo, CtlMsg, CtlReply, SpawnRequest};
+use crate::dproto::{self, AgentInfo, CtlMsg, CtlReply, HostHeartbeatAgent, SpawnRequest};
 use crate::host::{PtyHost, SpawnConfig};
 use crate::proto::ScreenSnapshot;
 
 /// How long `close`/`restart` wait for a graceful SIGTERM exit before SIGKILL.
 const TERM_GRACE: Duration = Duration::from_millis(750);
 
+/// Cadence of the host-level liveness digest ([`Daemon::broadcast_heartbeat`]).
+/// Chosen well below the bridge's BRIDGE_WRAPPER_STALE_MS (90s) so several missed
+/// ticks never falsely reap a live-but-idle agent. `ChildExited` is the instant
+/// death path; this is only the silent-failure/idle backstop.
+const HOST_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
@@ -447,6 +460,29 @@ impl Daemon {
         }
     }
 
+    /// Broadcast one host-level liveness digest to every connected client: the
+    /// full agent roster with each child's current alive flag. This is the
+    /// periodic backstop that lets the bridge refresh per-instance last_seen from
+    /// a single pushed frame instead of polling `List`; `ChildExited` remains the
+    /// instant authoritative death signal.
+    pub fn broadcast_heartbeat(&self) {
+        let agents: Vec<HostHeartbeatAgent> = self
+            .agents
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, a)| HostHeartbeatAgent {
+                instance_id: id.clone(),
+                alive: a.alive.load(Ordering::SeqCst),
+            })
+            .collect();
+        let reply = CtlReply::HostHeartbeat {
+            ts_unix_ms: now_millis(),
+            agents,
+        };
+        broadcast_all(&self.subs, &reply);
+    }
+
     /// Stop all agents + drop all subscribers. Idempotent.
     pub fn shutdown(&self) {
         let ids: Vec<String> = self.agents.lock().unwrap().keys().cloned().collect();
@@ -583,6 +619,7 @@ pub struct DaemonServer {
     daemon: Daemon,
     shutdown: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
+    heartbeat: Option<JoinHandle<()>>,
 }
 
 impl DaemonServer {
@@ -602,11 +639,21 @@ impl DaemonServer {
             std::thread::spawn(move || accept_loop(listener, daemon, shutdown))
         };
 
+        // Host-level liveness digest ticker: broadcasts the agent roster + alive
+        // flags every HOST_HEARTBEAT_INTERVAL so the bridge refreshes last_seen
+        // without polling. Wakes frequently to observe the shutdown flag promptly.
+        let heartbeat = {
+            let daemon = daemon.clone();
+            let shutdown = Arc::clone(&shutdown);
+            std::thread::spawn(move || heartbeat_loop(daemon, shutdown))
+        };
+
         Ok(DaemonServer {
             socket_path,
             daemon,
             shutdown,
             accept: Some(accept),
+            heartbeat: Some(heartbeat),
         })
     }
 
@@ -627,7 +674,28 @@ impl DaemonServer {
         if let Some(t) = self.accept.take() {
             let _ = t.join();
         }
+        if let Some(t) = self.heartbeat.take() {
+            let _ = t.join();
+        }
         let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+/// Periodic host-liveness broadcaster. Sleeps in short slices so a shutdown is
+/// observed within ~250ms rather than up to a full interval.
+fn heartbeat_loop(daemon: Daemon, shutdown: Arc<AtomicBool>) {
+    let mut elapsed = Duration::ZERO;
+    let slice = Duration::from_millis(250);
+    while !shutdown.load(Ordering::SeqCst) {
+        std::thread::sleep(slice);
+        elapsed += slice;
+        if elapsed >= HOST_HEARTBEAT_INTERVAL {
+            elapsed = Duration::ZERO;
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            daemon.broadcast_heartbeat();
+        }
     }
 }
 

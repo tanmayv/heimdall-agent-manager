@@ -41,6 +41,7 @@
 //! | 0xA7 | Pong        | ping reply                                           |
 //! | 0xA8 | Error       | an operation failed (instance + message)             |
 //! | 0xAC | ShuttingDown| ack Shutdown; daemon is terminating                  |
+//! | 0xAD | HostHeartbeat| periodic host liveness digest (roster + alive)      |
 
 use std::io::{self, Read, Write};
 
@@ -130,9 +131,23 @@ pub enum CtlReply {
     /// hash of the rendered screen; the bridge classifies activity from the
     /// change stream without polling (spinner masking is bridge-side).
     ScreenChanged { instance: String, hash: u64 },
+    /// Periodic host-level liveness digest broadcast to every connected client
+    /// on a fixed cadence. It carries the full agent roster with each child's
+    /// alive flag so the bridge can refresh per-instance last_seen from a SINGLE
+    /// pushed frame instead of polling `List`. `ChildExited` remains the instant,
+    /// authoritative death signal; this digest is only the silent-failure/idle
+    /// liveness backstop.
+    HostHeartbeat { ts_unix_ms: u64, agents: Vec<HostHeartbeatAgent> },
     /// Ack for [`CtlMsg::Shutdown`]: the daemon accepted the request and is
     /// terminating (all agents stopped). The socket closes right after.
     ShuttingDown,
+}
+
+/// One agent's liveness entry inside a [`CtlReply::HostHeartbeat`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostHeartbeatAgent {
+    pub instance_id: String,
+    pub alive: bool,
 }
 
 // ---- tags ---------------------------------------------------------------
@@ -163,6 +178,7 @@ const T_STARTUP_READY: u8 = 0xA9;
 const T_STARTUP_BLOCKED: u8 = 0xAA;
 const T_SCREEN_CHANGED: u8 = 0xAB;
 const T_SHUTTING_DOWN: u8 = 0xAC;
+const T_HOST_HEARTBEAT: u8 = 0xAD;
 
 // ---- primitive codecs ---------------------------------------------------
 
@@ -505,6 +521,15 @@ impl CtlReply {
                 put_str(&mut p, instance);
                 put_u64(&mut p, *hash);
             }
+            CtlReply::HostHeartbeat { ts_unix_ms, agents } => {
+                p.push(T_HOST_HEARTBEAT);
+                put_u64(&mut p, *ts_unix_ms);
+                put_u16(&mut p, agents.len() as u16);
+                for a in agents {
+                    put_str(&mut p, &a.instance_id);
+                    p.push(a.alive as u8);
+                }
+            }
             CtlReply::ShuttingDown => p.push(T_SHUTTING_DOWN),
         }
         frame(&p)
@@ -617,6 +642,18 @@ impl CtlReply {
                     instance,
                     hash: get_u64(rest, &mut off)?,
                 }
+            }
+            T_HOST_HEARTBEAT => {
+                let ts_unix_ms = get_u64(rest, &mut off)?;
+                let n = get_u16(rest, &mut off)? as usize;
+                let mut agents = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let instance_id = get_str(rest, &mut off)?;
+                    let alive = *rest.get(off).ok_or_else(|| bad("host heartbeat: short alive"))? != 0;
+                    off += 1;
+                    agents.push(HostHeartbeatAgent { instance_id, alive });
+                }
+                CtlReply::HostHeartbeat { ts_unix_ms, agents }
             }
             _ => return Err(bad("unknown reply tag")),
         })
@@ -777,6 +814,14 @@ mod tests {
             instance: "a".into(),
             hash: 0xdead_beef_cafe_1234,
         });
+        round_reply(CtlReply::HostHeartbeat {
+            ts_unix_ms: 1_788_549_000_123,
+            agents: vec![
+                HostHeartbeatAgent { instance_id: "inst_a".into(), alive: true },
+                HostHeartbeatAgent { instance_id: "inst_b".into(), alive: false },
+            ],
+        });
+        round_reply(CtlReply::HostHeartbeat { ts_unix_ms: 0, agents: vec![] });
         round_reply(CtlReply::ShuttingDown);
     }
 

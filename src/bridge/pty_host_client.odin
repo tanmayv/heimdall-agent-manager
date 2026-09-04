@@ -48,6 +48,8 @@ PTY_HOST_T_ERROR :: 0xA8
 PTY_HOST_T_STARTUP_READY :: 0xA9
 PTY_HOST_T_STARTUP_BLOCKED :: 0xAA
 PTY_HOST_T_SCREEN_CHANGED :: 0xAB
+PTY_HOST_T_SHUTTING_DOWN :: 0xAC
+PTY_HOST_T_HOST_HEARTBEAT :: 0xAD
 
 PTY_HOST_MAX_FRAME_BYTES :: 64 * 1024 * 1024
 
@@ -124,19 +126,29 @@ Pty_Host_Reply_Kind :: enum {
 	Startup_Ready,
 	Startup_Blocked,
 	Screen_Changed,
+	// Periodic host-level liveness digest (roster + alive flags).
+	Host_Heartbeat,
+}
+
+// One agent's liveness entry inside a Host_Heartbeat reply.
+Pty_Host_Heartbeat_Agent :: struct {
+	instance_id: string,
+	alive:       bool,
 }
 
 Pty_Host_Reply :: struct {
-	kind:        Pty_Host_Reply_Kind,
-	instance:    string,
-	pid:         i32,
-	code:        i32, // ChildExited code
-	message:     string, // Error message / StartupBlocked safe_diagnostic
-	reason_code: string, // StartupBlocked reason_code
-	hash:        u64, // ScreenChanged content hash
-	data:        []byte, // Output bytes
-	screen:      Pty_Host_Screen,
-	agents:      []Pty_Host_Agent_Info,
+	kind:             Pty_Host_Reply_Kind,
+	instance:         string,
+	pid:              i32,
+	code:             i32, // ChildExited code
+	message:          string, // Error message / StartupBlocked safe_diagnostic
+	reason_code:      string, // StartupBlocked reason_code
+	hash:             u64, // ScreenChanged content hash
+	ts_unix_ms:       u64, // HostHeartbeat timestamp
+	data:             []byte, // Output bytes
+	screen:           Pty_Host_Screen,
+	agents:           []Pty_Host_Agent_Info,
+	heartbeat_agents: []Pty_Host_Heartbeat_Agent, // HostHeartbeat roster
 }
 
 Pty_Host_Screen :: struct {
@@ -399,6 +411,19 @@ pty_host_decode_reply :: proc(payload: []byte) -> (Pty_Host_Reply, bool) {
 		inst, ok := pty_host_get_str(rest, &off); if !ok do return {}, false
 		h, ok2 := pty_host_get_u64(rest, &off); if !ok2 { delete(inst); return {}, false }
 		r.instance = inst; r.hash = h
+	case PTY_HOST_T_HOST_HEARTBEAT:
+		r.kind = .Host_Heartbeat
+		ts, tok := pty_host_get_u64(rest, &off); if !tok do return {}, false
+		n, nok := pty_host_get_u16(rest, &off); if !nok do return {}, false
+		agents := make([]Pty_Host_Heartbeat_Agent, int(n))
+		for i in 0..<int(n) {
+			id, idok := pty_host_get_str(rest, &off)
+			if !idok { for j in 0..<i do delete(agents[j].instance_id); delete(agents); return {}, false }
+			if off >= len(rest) { delete(id); for j in 0..<i do delete(agents[j].instance_id); delete(agents); return {}, false }
+			alive := rest[off] != 0; off += 1
+			agents[i] = Pty_Host_Heartbeat_Agent{instance_id = id, alive = alive}
+		}
+		r.ts_unix_ms = ts; r.heartbeat_agents = agents
 	case:
 		return {}, false
 	}
@@ -446,6 +471,8 @@ pty_host_reply_delete :: proc(r: Pty_Host_Reply) {
 	if r.screen.lines != nil do delete(r.screen.lines)
 	pty_host_free_agents(r.agents)
 	if r.agents != nil do delete(r.agents)
+	for a in r.heartbeat_agents do delete(a.instance_id)
+	if r.heartbeat_agents != nil do delete(r.heartbeat_agents)
 }
 
 // ---- socket round-trip --------------------------------------------------
@@ -551,7 +578,7 @@ PTY_HOST_REQUEST_MAX_SKIP :: 256
 // connection; a control client must skip them and keep reading for its reply.
 pty_host_reply_is_async :: proc(kind: Pty_Host_Reply_Kind) -> bool {
 	#partial switch kind {
-	case .Output, .Child_Exited, .Screen_Changed, .Startup_Ready, .Startup_Blocked:
+	case .Output, .Child_Exited, .Screen_Changed, .Startup_Ready, .Startup_Blocked, .Host_Heartbeat:
 		return true
 	}
 	return false
