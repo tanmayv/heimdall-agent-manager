@@ -1,5 +1,6 @@
 package main
 
+import "core:sys/posix"
 import "core:testing"
 
 // BR-2 codec tests: the Odin pty-host client must be byte-for-byte compatible
@@ -298,6 +299,73 @@ pty_host_decode_output_and_pong :: proc(t: ^testing.T) {
 	defer pty_host_reply_delete(pr)
 	testing.expect(t, pok, "decode Pong")
 	testing.expect_value(t, pr.kind, Pty_Host_Reply_Kind.Pong)
+}
+
+// ---- control/event interleaving (BR-3 live-repro regression) --------------
+//
+// The daemon may interleave async events (ScreenChanged/Output/...) into any
+// connection, including a control-only one. pty_host_read_control_reply must skip
+// those and return the first CONTROL reply. This reproduces the exact live failure
+// the reviewer hit (restart against a busy agent got a ScreenChanged) over a real
+// socketpair, and proves the bridge is robust to it regardless of the host fix.
+
+@(test)
+pty_host_request_skips_async_before_control_reply :: proc(t: ^testing.T) {
+	fds: [2]posix.FD
+	if posix.socketpair(.UNIX, .STREAM, posix.Protocol(0), &fds) != .OK {
+		testing.expect(t, false, "socketpair failed")
+		return
+	}
+	writer := fds[0]
+	reader := fds[1]
+	defer posix.close(writer)
+	defer posix.close(reader)
+
+	// Write two ScreenChanged events (what a busy agent emits), then the real
+	// Restarted control reply — the interleaving the reviewer observed live.
+	pty_host_test_write_screen_changed(writer, "t1", 0x1111)
+	pty_host_test_write_screen_changed(writer, "t1", 0x2222)
+	frame := make([dynamic]byte); defer delete(frame)
+	append(&frame, PTY_HOST_T_RESTARTED)
+	pty_host_put_str(&frame, "t1")
+	pty_host_put_i32(&frame, 4242)
+	framed := pty_host_frame(frame[:]); defer delete(framed)
+	_ = pty_host_send_all(writer, framed)
+
+	reply, ok := pty_host_read_control_reply(reader)
+	defer pty_host_reply_delete(reply)
+	testing.expect(t, ok, "control reply read past async events")
+	testing.expect_value(t, reply.kind, Pty_Host_Reply_Kind.Restarted)
+	testing.expect_value(t, reply.instance, "t1")
+	testing.expect_value(t, reply.pid, i32(4242))
+}
+
+@(test)
+pty_host_reply_is_async_classification :: proc(t: ^testing.T) {
+	// Async events skipped by a control read.
+	testing.expect(t, pty_host_reply_is_async(.Output), "Output async")
+	testing.expect(t, pty_host_reply_is_async(.Child_Exited), "ChildExited async")
+	testing.expect(t, pty_host_reply_is_async(.Screen_Changed), "ScreenChanged async")
+	testing.expect(t, pty_host_reply_is_async(.Startup_Ready), "StartupReady async")
+	testing.expect(t, pty_host_reply_is_async(.Startup_Blocked), "StartupBlocked async")
+	// Control replies are NOT async.
+	testing.expect(t, !pty_host_reply_is_async(.Spawned), "Spawned control")
+	testing.expect(t, !pty_host_reply_is_async(.Closed), "Closed control")
+	testing.expect(t, !pty_host_reply_is_async(.Restarted), "Restarted control")
+	testing.expect(t, !pty_host_reply_is_async(.Agent_List), "AgentList control")
+	testing.expect(t, !pty_host_reply_is_async(.Screen), "Screen control (capture reply)")
+	testing.expect(t, !pty_host_reply_is_async(.Pong), "Pong control")
+	testing.expect(t, !pty_host_reply_is_async(.Error), "Error control")
+}
+
+// pty_host_test_write_screen_changed frames+writes a ScreenChanged event to fd.
+pty_host_test_write_screen_changed :: proc(fd: posix.FD, instance: string, hash: u64) {
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_SCREEN_CHANGED)
+	pty_host_put_str(&p, instance)
+	pty_host_put_u64(&p, hash)
+	framed := pty_host_frame(p[:]); defer delete(framed)
+	_ = pty_host_send_all(fd, framed)
 }
 
 @(test)

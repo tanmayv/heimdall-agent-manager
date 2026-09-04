@@ -503,16 +503,55 @@ pty_host_read_exact :: proc(fd: posix.FD, buf: []byte) -> bool {
 	return true
 }
 
-// pty_host_request sends one framed message and reads exactly one reply frame.
-// The control ops (Spawn/Close/Restart/List/Ping) are request/response; this is
-// the blocking helper for them. Caller owns the returned reply.
+// Bound on how many unsolicited async frames pty_host_request will skip while
+// waiting for a control reply, so a misbehaving/very-busy daemon can never spin
+// this helper forever. A live agent emits at most a handful of frames per control
+// round-trip; 256 is comfortably above that while still bounded.
+PTY_HOST_REQUEST_MAX_SKIP :: 256
+
+// pty_host_reply_is_async reports whether a reply kind is an UNSOLICITED async
+// event (as opposed to a control-op reply). The daemon may interleave these on any
+// connection; a control client must skip them and keep reading for its reply.
+pty_host_reply_is_async :: proc(kind: Pty_Host_Reply_Kind) -> bool {
+	#partial switch kind {
+	case .Output, .Child_Exited, .Screen_Changed, .Startup_Ready, .Startup_Blocked:
+		return true
+	}
+	return false
+}
+
+// pty_host_request sends one framed control message and returns the matching
+// control reply. It reads in a LOOP, skipping any unsolicited async event frames
+// (Output/ChildExited/ScreenChanged/StartupReady/StartupBlocked) the daemon may
+// interleave on this connection, and returns the first genuine control reply
+// (Spawned/Closed/Restarted/AgentList/Screen/Pong/Error). This makes the bridge
+// correct-by-construction against event interleaving regardless of the daemon's
+// subscription behaviour: a control-only connection is never fooled into reading
+// an activity event as its command's reply. Bounded by PTY_HOST_REQUEST_MAX_SKIP.
+// Caller owns the returned reply.
 pty_host_request :: proc(socket_path: string, request: []byte) -> (Pty_Host_Reply, bool) {
 	fd, ok := pty_host_dial(socket_path)
 	if !ok do return {}, false
 	defer posix.close(fd)
 	if !pty_host_send_all(fd, request) do return {}, false
-	payload, pok := pty_host_read_frame(fd)
-	if !pok do return {}, false
-	defer delete(payload)
-	return pty_host_decode_reply(payload)
+	return pty_host_read_control_reply(fd)
+}
+
+// pty_host_read_control_reply reads frames from fd, skipping unsolicited async
+// events, and returns the first control reply. Split out from pty_host_request so
+// the skip loop is unit-testable over a socketpair without a live daemon.
+pty_host_read_control_reply :: proc(fd: posix.FD) -> (Pty_Host_Reply, bool) {
+	for _ in 0..<PTY_HOST_REQUEST_MAX_SKIP {
+		payload, pok := pty_host_read_frame(fd)
+		if !pok do return {}, false
+		reply, dok := pty_host_decode_reply(payload)
+		delete(payload)
+		if !dok do return {}, false
+		if pty_host_reply_is_async(reply.kind) {
+			pty_host_reply_delete(reply) // drop the async event; the event loop is its real consumer
+			continue
+		}
+		return reply, true
+	}
+	return {}, false
 }
