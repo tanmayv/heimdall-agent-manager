@@ -451,6 +451,7 @@ fn to_selector_items(list: &[AgentInfo]) -> Vec<SelectorItem> {
                 pid: a.pid,
                 alive: a.alive,
                 last_activity_secs: a.last_activity,
+                display_name: a.display_name.clone(),
             }
         })
         .collect()
@@ -542,16 +543,26 @@ fn draw_selector(f: &mut ratatui::Frame, state: &mut SelectorState) {
             let runtime_str = item.format_runtime();
             let activity_str = item.format_activity(now);
 
+            let (primary_label, id_label) = if let Some(ref d) = item.display_name {
+                (d.clone(), format!("({})", item.instance_id))
+            } else {
+                (item.instance_id.clone(), String::new())
+            };
+
             let row_spans = vec![
                 Span::styled(marker, Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(dot, dot_style),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<26}", item.instance_id),
+                    format!("{:<22}", primary_label),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(
+                    format!("{:<26}", id_label),
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(format!("{:<10} ", item.program), Style::default().fg(Color::Yellow)),
-                Span::styled(format!("dir: {:<28} ", cwd_str), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("dir: {:<24} ", cwd_str), Style::default().fg(Color::Cyan)),
                 Span::styled(format!("up: {:<8} ", runtime_str), Style::default().fg(Color::Magenta)),
                 Span::styled(format!("activity: {:<12}", activity_str), Style::default().fg(Color::DarkGray)),
             ];

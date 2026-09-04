@@ -92,6 +92,9 @@ enum Command {
         /// Startup-detection config as JSON (stored verbatim; parsed in HOST-2).
         #[arg(long)]
         detect: Option<String>,
+        /// Human-readable agent display name.
+        #[arg(long)]
+        display_name: Option<String>,
         #[arg(long, default_value_t = 24)]
         rows: u16,
         #[arg(long, default_value_t = 80)]
@@ -158,10 +161,11 @@ fn main() -> Result<()> {
             cwd,
             env,
             detect,
+            display_name,
             rows,
             cols,
             argv,
-        } => ctl_spawn(socket, instance, cwd, env, detect, rows, cols, argv),
+        } => ctl_spawn(socket, instance, cwd, env, detect, display_name, rows, cols, argv),
         Command::Close { socket, instance } => ctl_close(socket, instance),
         Command::Restart { socket, instance } => ctl_restart(socket, instance),
         Command::List { socket } => ctl_list(socket),
@@ -216,6 +220,7 @@ fn ctl_spawn(
     cwd: Option<String>,
     env: Vec<String>,
     detect: Option<String>,
+    display_name: Option<String>,
     rows: u16,
     cols: u16,
     argv: Vec<String>,
@@ -228,6 +233,7 @@ fn ctl_spawn(
         detect,
         rows,
         cols,
+        display_name,
     };
     match request(&socket, &CtlMsg::Spawn(req))? {
         CtlReply::Spawned { instance, pid } => {
@@ -273,9 +279,14 @@ fn ctl_list(socket: String) -> Result<()> {
                 } else {
                     format!("exited({})", a.exit_code.unwrap_or(-1))
                 };
+                let label = a
+                    .display_name
+                    .as_deref()
+                    .map(|d| format!(" ({d})"))
+                    .unwrap_or_default();
                 println!(
-                    "{:<24} pid={:<7} {:<12} {}x{} {}",
-                    a.instance_id, a.pid, state, a.rows, a.cols, a.program
+                    "{:<24} pid={:<7} {:<12} {}x{} {}{}",
+                    a.instance_id, a.pid, state, a.rows, a.cols, a.program, label
                 );
             }
             Ok(())

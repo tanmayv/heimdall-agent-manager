@@ -622,7 +622,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	// bridge itself materializes the run_dir (BR-1) and spawns the agent directly
 	// under the daemon PTY, with no ham-wrapper in between.
 	if bridge_pty_host_runtime_enabled() {
-		return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, tier, agent_issue.plaintext_token)
+		return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, tier, agent_issue.plaintext_token, descriptor.display_name)
 	}
 	session := bridge_runtime_tmux_session()
 	window := bridge_runtime_tmux_window(instance_id)
@@ -646,7 +646,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 // ham-pty-host daemon, and (3) spawn (or restart, if the instance is already
 // registered) the agent under the daemon PTY. Retry/backoff on spawn preserves
 // AC-5 launch resilience.
-bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, tier, agent_token: string) -> (bool, string) {
+bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, tier, agent_token, display_name: string) -> (bool, string) {
 	// BR-1: clean-slate + materialize the run_dir, and build the agent env.
 	prespawn, prespawn_ok := bridge_prespawn_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_token, provider)
 	if !prespawn_ok {
@@ -661,7 +661,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 		return false, "ham-pty-host daemon unavailable"
 	}
 
-	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, tier, agent_token, prespawn.env)
+	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, tier, agent_token, prespawn.env, display_name)
 	if !req_ok {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, "provider has no runnable command"

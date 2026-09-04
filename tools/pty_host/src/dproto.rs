@@ -61,6 +61,8 @@ pub struct SpawnRequest {
     pub detect: Option<String>,
     pub rows: u16,
     pub cols: u16,
+    /// Human-readable agent display name (e.g. "default-agent #20").
+    pub display_name: Option<String>,
 }
 
 /// A row in the `List` response: one registered agent's live state.
@@ -77,6 +79,8 @@ pub struct AgentInfo {
     pub started_at: u64,
     /// Unix epoch seconds of the last output activity.
     pub last_activity: u64,
+    /// Human-readable agent display name (e.g. "default-agent #20").
+    pub display_name: Option<String>,
 }
 
 /// client -> daemon.
@@ -286,6 +290,7 @@ impl CtlMsg {
                 put_opt_str(&mut p, &req.detect);
                 put_u16(&mut p, req.rows);
                 put_u16(&mut p, req.cols);
+                put_opt_str(&mut p, &req.display_name);
             }
             CtlMsg::Close { instance } => {
                 p.push(T_CLOSE);
@@ -352,6 +357,7 @@ impl CtlMsg {
                 let detect = get_opt_str(rest, &mut off)?;
                 let rows = get_u16(rest, &mut off)?;
                 let cols = get_u16(rest, &mut off)?;
+                let display_name = get_opt_str(rest, &mut off)?;
                 CtlMsg::Spawn(SpawnRequest {
                     instance,
                     argv,
@@ -360,6 +366,7 @@ impl CtlMsg {
                     detect,
                     rows,
                     cols,
+                    display_name,
                 })
             }
             T_CLOSE => CtlMsg::Close {
@@ -444,6 +451,7 @@ impl CtlReply {
                     put_u16(&mut p, a.cols);
                     put_u64(&mut p, a.started_at);
                     put_u64(&mut p, a.last_activity);
+                    put_opt_str(&mut p, &a.display_name);
                 }
             }
             CtlReply::Output { instance, data } => {
@@ -532,6 +540,7 @@ impl CtlReply {
                     let cols = get_u16(rest, &mut off)?;
                     let started_at = get_u64(rest, &mut off)?;
                     let last_activity = get_u64(rest, &mut off)?;
+                    let display_name = get_opt_str(rest, &mut off)?;
                     agents.push(AgentInfo {
                         instance_id,
                         program,
@@ -542,6 +551,7 @@ impl CtlReply {
                         cols,
                         started_at,
                         last_activity,
+                        display_name,
                     });
                 }
                 CtlReply::AgentList(agents)
@@ -673,6 +683,7 @@ mod tests {
             detect: Some("{\"auto_enter_patterns\":[\"❯\"]}".into()),
             rows: 40,
             cols: 120,
+            display_name: Some("default-agent #20".into()),
         }));
     }
 
@@ -686,6 +697,7 @@ mod tests {
             detect: None,
             rows: 24,
             cols: 80,
+            display_name: None,
         }));
     }
 
@@ -766,6 +778,7 @@ mod tests {
                 cols: 80,
                 started_at: 1_700_000_000,
                 last_activity: 1_700_000_050,
+                display_name: Some("default-agent #20".into()),
             },
             AgentInfo {
                 instance_id: "inst_2".into(),
@@ -777,6 +790,7 @@ mod tests {
                 cols: 120,
                 started_at: 1_700_000_100,
                 last_activity: 1_700_000_100,
+                display_name: None,
             },
         ]));
         round_reply(CtlReply::AgentList(vec![]));

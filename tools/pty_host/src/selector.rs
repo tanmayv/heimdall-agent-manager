@@ -22,6 +22,7 @@ pub struct SelectorItem {
     pub pid: i32,
     pub alive: bool,
     pub last_activity_secs: u64,
+    pub display_name: Option<String>,
 }
 
 impl SelectorItem {
@@ -238,20 +239,27 @@ impl SelectorState {
     }
 }
 
-/// Check if item matches query (matches against instance_id, program, cwd, or pid).
+/// Check if item matches query (matches against display_name, instance_id, program, cwd, or pid).
 fn item_matches(item: &SelectorItem, query: &str) -> bool {
+    let disp = item.display_name.as_deref().unwrap_or("").to_lowercase();
     let inst = item.instance_id.to_lowercase();
     let prog = item.program.to_lowercase();
     let cwd = item.cwd.as_deref().unwrap_or("").to_lowercase();
     let pid_str = item.pid.to_string();
 
     // Check simple substring match first
-    if inst.contains(query) || prog.contains(query) || cwd.contains(query) || pid_str.contains(query) {
+    if disp.contains(query)
+        || inst.contains(query)
+        || prog.contains(query)
+        || cwd.contains(query)
+        || pid_str.contains(query)
+    {
         return true;
     }
 
-    // Check fuzzy subsequence match against instance_id, program, or cwd
-    subsequence_match(&inst, query)
+    // Check fuzzy subsequence match against display_name, instance_id, program, or cwd
+    subsequence_match(&disp, query)
+        || subsequence_match(&inst, query)
         || subsequence_match(&prog, query)
         || subsequence_match(&cwd, query)
 }
@@ -289,6 +297,7 @@ mod tests {
                 pid: 1001,
                 alive: true,
                 last_activity_secs: 100,
+                display_name: Some("default-agent #20".into()),
             },
             SelectorItem {
                 instance_id: "inst_beta".into(),
@@ -298,6 +307,7 @@ mod tests {
                 pid: 1002,
                 alive: true,
                 last_activity_secs: 90,
+                display_name: Some("researcher #1".into()),
             },
             SelectorItem {
                 instance_id: "inst_gamma".into(),
@@ -307,6 +317,7 @@ mod tests {
                 pid: 1003,
                 alive: false,
                 last_activity_secs: 10,
+                display_name: None,
             },
         ]
     }
@@ -348,6 +359,17 @@ mod tests {
         }
         assert_eq!(state.filtered_indices.len(), 3);
 
+        // Filter by display_name "researcher"
+        for c in "researcher".chars() {
+            state.handle_key(Key::Char(c));
+        }
+        assert_eq!(state.filtered_indices.len(), 1);
+        assert_eq!(state.selected_item().unwrap().instance_id, "inst_beta");
+
+        // Clear query with Ctrl-U
+        state.handle_key(Key::Ctrl('u'));
+        assert_eq!(state.filtered_indices.len(), 3);
+
         // Subsequence filter "gam" -> inst_gamma
         for c in "gam".chars() {
             state.handle_key(Key::Char(c));
@@ -376,6 +398,7 @@ mod tests {
             pid: 123,
             alive: true,
             last_activity_secs: 1000,
+            display_name: None,
         };
         assert_eq!(item.format_runtime(), "1m15s");
         assert_eq!(item.format_activity(1002), "active now");

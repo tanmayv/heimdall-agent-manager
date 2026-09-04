@@ -150,11 +150,13 @@ pty_host_build_spawn_from_profile :: proc(t: ^testing.T) {
 	// covered by the codec's Spawn tests).
 	bridge_provider_store_init()
 	env := []string{"HEIMDALL_AGENT_TOKEN=hlat_x", "HEIMDALL_CTL_BIN=/run/.heimdall/bin/ham-ctl"}
-	req, ok := bridge_pty_host_build_spawn("inst_test", "/tmp/run/inst_test", "", "", "hlat_x", env)
+	req, ok := bridge_pty_host_build_spawn("inst_test", "/tmp/run/inst_test", "", "", "hlat_x", env, "test-agent #1")
 	if !ok do return // no runnable provider in this environment; nothing to assert
 	defer bridge_pty_host_spawn_request_delete(req)
 
 	testing.expect_value(t, req.instance, "inst_test")
+	testing.expect_value(t, req.display_name, "test-agent #1")
+	testing.expect(t, req.has_display_name, "display_name present")
 	testing.expect_value(t, req.cwd, "/tmp/run/inst_test")
 	testing.expect(t, req.has_cwd, "cwd present")
 	testing.expect(t, len(req.argv) > 0, "argv non-empty")

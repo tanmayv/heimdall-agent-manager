@@ -78,6 +78,7 @@ impl Agent {
             cols,
             started_at: self.started_at,
             last_activity: self.last_activity.load(Ordering::SeqCst),
+            display_name: self.spec.display_name.clone(),
         }
     }
 
@@ -855,6 +856,7 @@ mod tests {
             detect: None,
             rows: 20,
             cols: 60,
+            display_name: None,
         }
     }
 
@@ -970,6 +972,7 @@ mod tests {
             detect: None,
             rows: 10,
             cols: 40,
+            display_name: None,
         })
         .unwrap();
         assert!(
@@ -1006,6 +1009,7 @@ mod tests {
             detect: None,
             rows: 20,
             cols: 60,
+            display_name: None,
         };
         d.spawn(spec).unwrap();
         // Marker must appear on the ORIGINAL child (env applied on first spawn).
@@ -1052,6 +1056,7 @@ mod tests {
                 detect: None,
                 rows: 10,
                 cols: 40,
+                display_name: None,
             })
             .unwrap();
         }
@@ -1174,6 +1179,7 @@ mod tests {
                     detect: None,
                     rows: 20,
                     cols: 60,
+                    display_name: None,
                 }),
             )
             .unwrap();
@@ -1264,6 +1270,7 @@ mod tests {
             detect: None,
             rows: 20,
             cols: 60,
+            display_name: None,
         });
         dproto::write_ctl_msg(&mut c, &spec).unwrap();
         assert!(await_reply(
@@ -1421,6 +1428,7 @@ mod tests {
             detect: None,
             rows: 20,
             cols: 60,
+            display_name: None,
         })
         .unwrap();
 
@@ -1522,6 +1530,7 @@ mod tests {
                 detect: Some(detect.into()),
                 rows: 20,
                 cols: 60,
+                display_name: None,
             }),
         )
         .unwrap();
@@ -1586,6 +1595,7 @@ mod tests {
                 detect: Some(detect.into()),
                 rows: 20,
                 cols: 60,
+                display_name: None,
             }),
         )
         .unwrap();
@@ -1639,6 +1649,7 @@ mod tests {
                 detect: Some(detect.into()),
                 rows: 20,
                 cols: 60,
+                display_name: None,
             }),
         )
         .unwrap();
@@ -1681,6 +1692,7 @@ mod tests {
                 detect: Some(detect.into()),
                 rows: 20,
                 cols: 60,
+                display_name: None,
             }),
         )
         .unwrap();

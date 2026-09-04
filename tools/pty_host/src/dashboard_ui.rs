@@ -240,7 +240,7 @@ fn to_rows(list: Vec<AgentInfo>) -> Vec<AgentRow> {
             program: a.program,
             alive: a.alive,
             last_activity: a.last_activity,
-            bridge_label: None,
+            bridge_label: a.display_name,
         })
         .collect()
 }

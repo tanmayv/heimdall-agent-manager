@@ -298,6 +298,7 @@ Bridge_Bootstrap_Descriptor :: struct {
 	instance_id:      string,
 	agent_id:         string,
 	agent_name:       string,
+	display_name:     string,
 	role:             string, // "coordinator" | "worker"
 	coordinator_id:   string,
 	chain_id:         string,
@@ -317,6 +318,7 @@ bridge_bootstrap_descriptor_from_launch :: proc(command_json: string) -> Bridge_
 		instance_id     = bridge_provider_json_extract_string(payload, "agent_instance_id", ""),
 		agent_id        = bridge_provider_json_extract_string(payload, "agent_id", ""),
 		agent_name      = bridge_provider_json_extract_string(payload, "agent_name", ""),
+		display_name    = bridge_provider_json_extract_string(payload, "display_name", ""),
 		role            = bridge_provider_json_extract_string(payload, "role", ""),
 		coordinator_id  = bridge_provider_json_extract_string(payload, "coordinator_agent_instance_id", ""),
 		chain_id        = bridge_provider_json_extract_string(payload, "chain_id", ""),

@@ -140,7 +140,7 @@ bridge_pty_host_ping :: proc(socket: string) -> bool {
 // the resolved provider startup-detection JSON (stored verbatim; HOST-2 parses).
 // Returns ok=false when the provider has no runnable command. Caller owns the
 // returned request's heap slices (free with bridge_pty_host_spawn_request_delete).
-bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, tier, agent_token: string, env: []string) -> (Pty_Host_Spawn_Request, bool) {
+bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, tier, agent_token: string, env: []string, display_name := "") -> (Pty_Host_Spawn_Request, bool) {
 	profile, profile_ok := bridge_provider_by_name_or_default(provider)
 	if !profile_ok || !profile.enabled || len(profile.command) == 0 do return {}, false
 	agent_argv := bridge_runtime_agent_argv_for_profile(profile, tier, agent_token, instance_id)
@@ -148,15 +148,17 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, tier, agent_
 
 	detect_json := bridge_runtime_startup_detection_arg(profile.startup_detection)
 	req := Pty_Host_Spawn_Request{
-		instance   = strings.clone(instance_id),
-		argv       = agent_argv, // owned by the request now
-		cwd        = strings.clone(run_dir),
-		has_cwd    = true,
-		env        = bridge_pty_host_env_pairs(env),
-		detect     = detect_json,
-		has_detect = strings.trim_space(detect_json) != "",
-		rows       = PTY_HOST_DEFAULT_ROWS,
-		cols       = PTY_HOST_DEFAULT_COLS,
+		instance         = strings.clone(instance_id),
+		argv             = agent_argv, // owned by the request now
+		cwd              = strings.clone(run_dir),
+		has_cwd          = true,
+		env              = bridge_pty_host_env_pairs(env),
+		detect           = detect_json,
+		has_detect       = strings.trim_space(detect_json) != "",
+		display_name     = strings.clone(display_name),
+		has_display_name = strings.trim_space(display_name) != "",
+		rows             = PTY_HOST_DEFAULT_ROWS,
+		cols             = PTY_HOST_DEFAULT_COLS,
 	}
 	return req, true
 }
@@ -181,6 +183,7 @@ bridge_pty_host_spawn_request_delete :: proc(req: Pty_Host_Spawn_Request) {
 	for kv in req.env { delete(kv[0]); delete(kv[1]) }
 	if req.env != nil do delete(req.env)
 	if req.detect != "" do delete(req.detect)
+	if req.display_name != "" do delete(req.display_name)
 }
 
 // ---- control-plane ops --------------------------------------------------

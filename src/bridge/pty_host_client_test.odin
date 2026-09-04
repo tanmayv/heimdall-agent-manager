@@ -96,6 +96,8 @@ pty_host_encode_spawn_full_shape :: proc(t: ^testing.T) {
 		env = [][2]string{{"K", "V"}},
 		detect = "{}",
 		has_detect = true,
+		display_name = "default-agent #20",
+		has_display_name = true,
 		rows = 24,
 		cols = 80,
 	}
@@ -103,7 +105,8 @@ pty_host_encode_spawn_full_shape :: proc(t: ^testing.T) {
 	defer delete(msg)
 	pl := pty_host_test_reframe(t, msg)
 	// tag + instance("i") + argc(1) + argv0("true") + opt cwd(1,"/w")
-	// + envc(1) + K + V + opt detect(1,"{}") + rows(24) + cols(80)
+	// + envc(1) + K + V + opt detect(1,"{}") + rows(24) + cols(80) + opt display_name(1, "default-agent #20")
+	disp_name := "default-agent #20"
 	want := []byte{
 		PTY_HOST_T_SPAWN,
 		0, 0, 0, 1, 'i',
@@ -116,9 +119,15 @@ pty_host_encode_spawn_full_shape :: proc(t: ^testing.T) {
 		1, 0, 0, 0, 2, '{', '}', // opt detect present
 		0, 24, // rows
 		0, 80, // cols
+		1, 0, 0, 0, u8(len(disp_name)),
 	}
-	testing.expect_value(t, len(pl), len(want))
-	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+	// append disp_name bytes
+	full_want := make([dynamic]byte); defer delete(full_want)
+	append(&full_want, ..want)
+	for i in 0..<len(disp_name) do append(&full_want, disp_name[i])
+
+	testing.expect_value(t, len(pl), len(full_want))
+	for i in 0..<len(full_want) do testing.expect_value(t, pl[i], full_want[i])
 }
 
 @(test)
@@ -128,13 +137,14 @@ pty_host_encode_spawn_minimal_omits_opts :: proc(t: ^testing.T) {
 		argv = []string{"true"},
 		has_cwd = false,
 		has_detect = false,
+		has_display_name = false,
 		rows = 24,
 		cols = 80,
 	}
 	msg := pty_host_encode_spawn(req)
 	defer delete(msg)
 	pl := pty_host_test_reframe(t, msg)
-	// opt cwd absent => single 0 byte; envc 0; opt detect absent => single 0 byte
+	// opt cwd absent => single 0 byte; envc 0; opt detect absent => single 0 byte; rows; cols; opt display_name absent => single 0 byte
 	want := []byte{
 		PTY_HOST_T_SPAWN,
 		0, 0, 0, 1, 'i',
@@ -145,6 +155,7 @@ pty_host_encode_spawn_minimal_omits_opts :: proc(t: ^testing.T) {
 		0, // opt detect absent
 		0, 24,
 		0, 80,
+		0, // opt display_name absent
 	}
 	testing.expect_value(t, len(pl), len(want))
 	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
@@ -227,6 +238,7 @@ pty_host_decode_agent_list_mixed :: proc(t: ^testing.T) {
 	pty_host_put_u16(&p, 80)
 	pty_host_put_u64(&p, 1_700_000_000)
 	pty_host_put_u64(&p, 1_700_000_050)
+	pty_host_put_opt_str(&p, true, "default-agent #20")
 	// agent 2: dead, exit code 0
 	pty_host_put_str(&p, "inst_2")
 	pty_host_put_str(&p, "claude")
@@ -238,6 +250,7 @@ pty_host_decode_agent_list_mixed :: proc(t: ^testing.T) {
 	pty_host_put_u16(&p, 120)
 	pty_host_put_u64(&p, 1_700_000_100)
 	pty_host_put_u64(&p, 1_700_000_100)
+	pty_host_put_opt_str(&p, false, "")
 
 	r, ok := pty_host_decode_reply(p[:])
 	defer pty_host_reply_delete(r)
@@ -248,11 +261,14 @@ pty_host_decode_agent_list_mixed :: proc(t: ^testing.T) {
 	testing.expect_value(t, r.agents[0].alive, true)
 	testing.expect_value(t, r.agents[0].has_exit_code, false)
 	testing.expect_value(t, r.agents[0].last_activity, u64(1_700_000_050))
+	testing.expect_value(t, r.agents[0].display_name, "default-agent #20")
+	testing.expect_value(t, r.agents[0].has_display_name, true)
 	testing.expect_value(t, r.agents[1].instance_id, "inst_2")
 	testing.expect_value(t, r.agents[1].alive, false)
 	testing.expect_value(t, r.agents[1].has_exit_code, true)
 	testing.expect_value(t, r.agents[1].exit_code, i32(0))
 	testing.expect_value(t, r.agents[1].cols, u16(120))
+	testing.expect_value(t, r.agents[1].has_display_name, false)
 }
 
 @(test)

@@ -79,29 +79,33 @@ Pty_Host_Key :: enum u8 {
 // the bridge re-plumbing it. env entries are (key,value) pairs; detect is the
 // opaque startup-detection JSON (stored verbatim by HOST-1, parsed in HOST-2).
 Pty_Host_Spawn_Request :: struct {
-	instance: string,
-	argv:     []string,
-	cwd:      string, // "" => None on the wire
-	env:      [][2]string,
-	detect:   string, // "" => None on the wire
-	has_cwd:  bool,
-	has_detect: bool,
-	rows:     u16,
-	cols:     u16,
+	instance:         string,
+	argv:             []string,
+	cwd:              string, // "" => None on the wire
+	env:              [][2]string,
+	detect:           string, // "" => None on the wire
+	display_name:     string, // "" => None on the wire
+	has_cwd:          bool,
+	has_detect:       bool,
+	has_display_name: bool,
+	rows:             u16,
+	cols:             u16,
 }
 
 // Pty_Host_Agent_Info is one row of a List reply: an agent's live state.
 Pty_Host_Agent_Info :: struct {
-	instance_id:   string,
-	program:       string,
-	pid:           i32,
-	alive:         bool,
-	has_exit_code: bool,
-	exit_code:     i32,
-	rows:          u16,
-	cols:          u16,
-	started_at:    u64,
-	last_activity: u64,
+	instance_id:      string,
+	program:          string,
+	pid:              i32,
+	alive:            bool,
+	has_exit_code:    bool,
+	exit_code:        i32,
+	rows:             u16,
+	cols:             u16,
+	started_at:       u64,
+	last_activity:    u64,
+	display_name:     string,
+	has_display_name: bool,
 }
 
 // Pty_Host_Reply is a decoded daemon->client message. kind selects the active
@@ -246,6 +250,7 @@ pty_host_encode_spawn :: proc(req: Pty_Host_Spawn_Request) -> []byte {
 	pty_host_put_opt_str(&p, req.has_detect, req.detect)
 	pty_host_put_u16(&p, req.rows)
 	pty_host_put_u16(&p, req.cols)
+	pty_host_put_opt_str(&p, req.has_display_name, req.display_name)
 	return pty_host_frame(p[:])
 }
 
@@ -345,6 +350,13 @@ pty_host_decode_reply :: proc(payload: []byte) -> (Pty_Host_Reply, bool) {
 			a.cols, _ = pty_host_get_u16(rest, &off)
 			a.started_at, _ = pty_host_get_u64(rest, &off)
 			a.last_activity, _ = pty_host_get_u64(rest, &off)
+			if off < len(rest) {
+				has_disp := rest[off]; off += 1
+				if has_disp == 1 {
+					disp, dok := pty_host_get_str(rest, &off)
+					if dok { a.display_name = disp; a.has_display_name = true }
+				}
+			}
 			agents[i] = a
 		}
 		r.agents = agents
@@ -420,6 +432,7 @@ pty_host_free_agents :: proc(agents: []Pty_Host_Agent_Info) {
 	for a in agents {
 		if a.instance_id != "" do delete(a.instance_id)
 		if a.program != "" do delete(a.program)
+		if a.display_name != "" do delete(a.display_name)
 	}
 }
 
