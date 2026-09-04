@@ -367,6 +367,7 @@ mod tests {
             cols,
             login_shell: false,
             cwd: None,
+            extra_env: Vec::new(),
         }
     }
 

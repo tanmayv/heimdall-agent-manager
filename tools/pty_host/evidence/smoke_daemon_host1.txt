@@ -1,0 +1,19 @@
+# HOST-1 daemon smoke test (ham-pty-host)
+# Fri Sep  4 11:59:22 UTC 2026
+[ham-pty-host] daemon listening on /tmp/ham-daemon-ev.8924.sock
+$ spawn a (env MARK=alpha)
+spawned a (pid 8956)
+$ spawn b
+spawned b (pid 8958)
+$ list
+b                        pid=8958    alive        24x80 /bin/sh
+a                        pid=8956    alive        24x80 /bin/sh
+$ spawn a (duplicate -> error)
+Error: spawn failed: spawn: instance a already exists
+exit=1
+$ restart a (new pid, remembered spec)
+restarted a (pid 9002)
+$ close b
+closed b
+$ list (a only, a restarted)
+a                        pid=9002    alive        24x80 /bin/sh

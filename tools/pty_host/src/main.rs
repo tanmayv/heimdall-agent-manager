@@ -3,13 +3,19 @@
 //! Subcommands:
 //!   * `run`    — spawn a program under a PTY + host it on a unix socket (PTYH-1/2).
 //!   * `attach` — attach to a running host, raw-mode passthrough (PTYH-2).
+//!   * `daemon` — run the multi-agent per-machine daemon (HOST-1).
+//!   * `spawn`/`close`/`restart`/`list` — control-plane clients for the daemon (HOST-1).
 //!
-//! PTYH-3 will add `attach --debug` for the in-app ratatui debug TUI.
+//! `attach --debug` renders the in-app ratatui debug TUI (PTYH-3).
 
-use anyhow::{bail, Result};
+use std::os::unix::net::UnixStream;
+
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use ham_pty_host::client::{attach, AttachOutcome};
+use ham_pty_host::daemon;
+use ham_pty_host::dproto::{self, CtlMsg, CtlReply, SpawnRequest};
 use ham_pty_host::server::HostServer;
 use ham_pty_host::SpawnConfig;
 
@@ -52,6 +58,56 @@ enum Command {
         #[arg(long)]
         debug: bool,
     },
+    /// Run the multi-agent per-machine daemon (HOST-1). Manages N agents keyed
+    /// by instance id; clients drive it with spawn/close/restart/list.
+    Daemon {
+        /// Unix socket path to listen on.
+        #[arg(long)]
+        socket: String,
+    },
+    /// Register + launch an agent on a running daemon (HOST-1).
+    Spawn {
+        #[arg(long)]
+        socket: String,
+        /// Agent-instance id (registry key).
+        #[arg(long)]
+        instance: String,
+        /// Working directory for the child.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Extra env var(s), repeatable: --env KEY=VALUE.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Startup-detection config as JSON (stored verbatim; parsed in HOST-2).
+        #[arg(long)]
+        detect: Option<String>,
+        #[arg(long, default_value_t = 24)]
+        rows: u16,
+        #[arg(long, default_value_t = 80)]
+        cols: u16,
+        /// Program to run, followed by its arguments.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Close (SIGTERM->SIGKILL) + unregister an agent on the daemon (HOST-1).
+    Close {
+        #[arg(long)]
+        socket: String,
+        #[arg(long)]
+        instance: String,
+    },
+    /// Restart an agent from its remembered spec (HOST-1).
+    Restart {
+        #[arg(long)]
+        socket: String,
+        #[arg(long)]
+        instance: String,
+    },
+    /// List all agents registered on the daemon (HOST-1).
+    List {
+        #[arg(long)]
+        socket: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -65,6 +121,131 @@ fn main() -> Result<()> {
             argv,
         } => run(socket, rows, cols, !no_login, argv),
         Command::Attach { socket, debug } => run_attach(socket, debug),
+        Command::Daemon { socket } => daemon::serve(socket),
+        Command::Spawn {
+            socket,
+            instance,
+            cwd,
+            env,
+            detect,
+            rows,
+            cols,
+            argv,
+        } => ctl_spawn(socket, instance, cwd, env, detect, rows, cols, argv),
+        Command::Close { socket, instance } => ctl_close(socket, instance),
+        Command::Restart { socket, instance } => ctl_restart(socket, instance),
+        Command::List { socket } => ctl_list(socket),
+    }
+}
+
+// ---- daemon control-plane clients (HOST-1) -----------------------------
+
+fn connect(socket: &str) -> Result<UnixStream> {
+    UnixStream::connect(socket)
+        .with_context(|| format!("connect to daemon socket {socket} (is `daemon` running?)"))
+}
+
+/// Send one control message + await the next reply frame.
+fn request(socket: &str, msg: &CtlMsg) -> Result<CtlReply> {
+    let mut stream = connect(socket)?;
+    dproto::write_ctl_msg(&mut stream, msg).context("send control msg")?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
+    // Skip async Output/ChildExited frames; wait for a control reply.
+    loop {
+        match dproto::read_ctl_reply(&mut stream)? {
+            Some(CtlReply::Output { .. }) | Some(CtlReply::ChildExited { .. }) => continue,
+            Some(reply) => return Ok(reply),
+            None => bail!("daemon closed the connection without replying"),
+        }
+    }
+}
+
+fn parse_env(pairs: Vec<String>) -> Result<Vec<(String, String)>> {
+    pairs
+        .into_iter()
+        .map(|kv| {
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("--env expects KEY=VALUE, got {kv:?}"))?;
+            Ok((k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ctl_spawn(
+    socket: String,
+    instance: String,
+    cwd: Option<String>,
+    env: Vec<String>,
+    detect: Option<String>,
+    rows: u16,
+    cols: u16,
+    argv: Vec<String>,
+) -> Result<()> {
+    let req = SpawnRequest {
+        instance: instance.clone(),
+        argv,
+        cwd,
+        env: parse_env(env)?,
+        detect,
+        rows,
+        cols,
+    };
+    match request(&socket, &CtlMsg::Spawn(req))? {
+        CtlReply::Spawned { instance, pid } => {
+            println!("spawned {instance} (pid {pid})");
+            Ok(())
+        }
+        CtlReply::Error { message, .. } => bail!("spawn failed: {message}"),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+fn ctl_close(socket: String, instance: String) -> Result<()> {
+    match request(&socket, &CtlMsg::Close { instance })? {
+        CtlReply::Closed { instance } => {
+            println!("closed {instance}");
+            Ok(())
+        }
+        CtlReply::Error { message, .. } => bail!("close failed: {message}"),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+fn ctl_restart(socket: String, instance: String) -> Result<()> {
+    match request(&socket, &CtlMsg::Restart { instance })? {
+        CtlReply::Restarted { instance, pid } => {
+            println!("restarted {instance} (pid {pid})");
+            Ok(())
+        }
+        CtlReply::Error { message, .. } => bail!("restart failed: {message}"),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+fn ctl_list(socket: String) -> Result<()> {
+    match request(&socket, &CtlMsg::List)? {
+        CtlReply::AgentList(agents) => {
+            if agents.is_empty() {
+                println!("(no agents)");
+            }
+            for a in agents {
+                let state = if a.alive {
+                    "alive".to_string()
+                } else {
+                    format!("exited({})", a.exit_code.unwrap_or(-1))
+                };
+                println!(
+                    "{:<24} pid={:<7} {:<12} {}x{} {}",
+                    a.instance_id, a.pid, state, a.rows, a.cols, a.program
+                );
+            }
+            Ok(())
+        }
+        other => bail!("unexpected reply: {other:?}"),
     }
 }
 
@@ -84,6 +265,7 @@ fn run(
         cols,
         login_shell: login,
         cwd: None,
+        extra_env: Vec::new(),
     };
     let mut server = HostServer::start(&socket, config)?;
     eprintln!(

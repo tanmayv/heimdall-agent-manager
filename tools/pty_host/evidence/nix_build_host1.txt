@@ -1,0 +1,21 @@
+# HOST-1 nix build evidence
+# Fri Sep  4 12:00:32 UTC 2026
+$ nix build .#ham-pty-host  -> EXIT 0
+
+$ ./result/bin/ham-pty-host --help
+PTY host + attach/detach + debug TUI spike (PTYH-1..5)
+
+Usage: ham-pty-host <COMMAND>
+
+Commands:
+  run      Spawn a program under a PTY and host it on a unix socket
+  attach   Attach to a running host over its unix socket (raw passthrough)
+  daemon   Run the multi-agent per-machine daemon (HOST-1). Manages N agents keyed by instance id; clients drive it with spawn/close/restart/list
+  spawn    Register + launch an agent on a running daemon (HOST-1)
+  close    Close (SIGTERM->SIGKILL) + unregister an agent on the daemon (HOST-1)
+  restart  Restart an agent from its remembered spec (HOST-1)
+  list     List all agents registered on the daemon (HOST-1)
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

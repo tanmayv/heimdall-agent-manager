@@ -55,6 +55,9 @@ pub struct SpawnConfig {
     /// If true and the program is a shell, launch it as a login shell.
     pub login_shell: bool,
     pub cwd: Option<String>,
+    /// Extra environment variables merged over the filtered base env. Used by
+    /// the multi-agent daemon (HOST-1) to inject HEIMDALL_* per instance.
+    pub extra_env: Vec<(String, String)>,
 }
 
 impl SpawnConfig {
@@ -66,6 +69,7 @@ impl SpawnConfig {
             cols: 80,
             login_shell: true,
             cwd: None,
+            extra_env: Vec::new(),
         }
     }
 }
@@ -78,6 +82,7 @@ pub struct PtyHost {
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     child_alive: Arc<AtomicBool>,
     exit_code: Arc<AtomicI32>,
+    pid: i32,
     reader_thread: Option<JoinHandle<()>>,
     wait_thread: Option<JoinHandle<()>>,
     /// Broadcast raw PTY output chunks to interested consumers (sockets/TUI).
@@ -110,6 +115,10 @@ impl PtyHost {
         for (k, v) in build_child_env() {
             cmd.env(k, v);
         }
+        // Per-instance overrides win over the filtered base env (HOST-1).
+        for (k, v) in &config.extra_env {
+            cmd.env(k, v);
+        }
         if let Some(cwd) = &config.cwd {
             cmd.cwd(cwd);
         }
@@ -118,6 +127,7 @@ impl PtyHost {
             .slave
             .spawn_command(cmd)
             .context("failed to spawn child under PTY")?;
+        let pid = child.process_id().map(|p| p as i32).unwrap_or(-1);
         let killer = child.clone_killer();
         // Slave is owned by the child now; drop our handle so EOF propagates.
         drop(pair.slave);
@@ -185,6 +195,7 @@ impl PtyHost {
             killer: Arc::new(Mutex::new(killer)),
             child_alive,
             exit_code,
+            pid,
             reader_thread: Some(reader_thread),
             wait_thread: Some(wait_thread),
             output_rx: Some(output_rx),
@@ -246,6 +257,22 @@ impl PtyHost {
         self.child_alive.load(Ordering::SeqCst)
     }
 
+    /// OS process id of the child (or -1 if unknown).
+    pub fn pid(&self) -> i32 {
+        self.pid
+    }
+
+    /// Send SIGTERM to the child for a graceful shutdown (HOST-1 close path).
+    /// Falls back to no-op if the pid is unknown. The hard SIGKILL fallback is
+    /// [`PtyHost::kill`].
+    pub fn terminate(&self) {
+        if self.pid > 0 {
+            unsafe {
+                libc::kill(self.pid, libc::SIGTERM);
+            }
+        }
+    }
+
     /// Forcibly terminate the child (SIGKILL). Used for host shutdown so the
     /// PTY closes and the reader/fan-out threads can exit. No-op if already
     /// dead. Safe to call from any thread via the shared killer handle.
@@ -269,6 +296,11 @@ impl PtyHost {
 
     pub fn alive_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.child_alive)
+    }
+
+    /// Shared exit-code cell (used by the daemon's per-agent exit watcher).
+    pub fn exit_code_arc(&self) -> Arc<AtomicI32> {
+        Arc::clone(&self.exit_code)
     }
 
     /// Block until the child exits, then join background threads.
@@ -358,6 +390,7 @@ pub(crate) mod tests {
             cols: 80,
             login_shell: false,
             cwd: None,
+            extra_env: Vec::new(),
         })
         .is_ok()
     }
@@ -389,6 +422,7 @@ pub(crate) mod tests {
             cols: 40,
             login_shell: false,
             cwd: None,
+            extra_env: Vec::new(),
         })
         .unwrap();
         host.wait_timeout(Duration::from_secs(5));
@@ -417,6 +451,7 @@ pub(crate) mod tests {
             cols: 60,
             login_shell: false,
             cwd: None,
+            extra_env: Vec::new(),
         })
         .unwrap();
         // Let the shell come up.
@@ -453,6 +488,7 @@ pub(crate) mod tests {
             cols: 20,
             login_shell: false,
             cwd: None,
+            extra_env: Vec::new(),
         })
         .unwrap();
         host.wait_timeout(Duration::from_secs(5));
@@ -477,6 +513,7 @@ pub(crate) mod tests {
             cols: 80,
             login_shell: false,
             cwd: None,
+            extra_env: Vec::new(),
         })
         .unwrap();
         std::thread::sleep(Duration::from_millis(200));
