@@ -368,6 +368,16 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 			append(&cfg.peers, cfg_lib.Peer_Config{name = fmt.tprintf("cli-peer-%d", len(cfg.peers) + 1), endpoint = strings.clone(args[i + 1]), token = strings.clone(cfg.peer_auth_token)})
 		}
 	}
+	cfg.data_dir = option_value(args, "--data-dir", cfg.data_dir)
+	// Expand a leading ~ in data_dir. The default (and typical config value) is
+	// "~/.local/share/heimdall", but nothing expanded it before, so a bridge whose
+	// cwd is not $HOME (e.g. launchd starts it with cwd=/) resolved the bootstrap
+	// blob cache to a LITERAL "~/.local/share/heimdall" directory. That made every
+	// cache lookup miss and every cache_put fail its file write, so bootstrap blob
+	// resolution failed with "blob hash verify/cache failed" and NO agent could
+	// launch. Expand here so the cache always lands under the real home dir
+	// regardless of the process working directory.
+	cfg.data_dir = cfg_lib.expand_home(cfg.data_dir)
 	return cfg
 }
 
