@@ -579,6 +579,13 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 		fmt.println("bridge launch_agent bootstrap failed", "instance=", instance_id, "stage=", boot_res.stage, "http_status=", boot_res.http_status, "detail=", boot_res.detail)
 		return false, detail
 	}
+	// BR-2 A/B switch: when the pty-host runtime flag is on, drive the agent
+	// through ham-pty-host instead of tmux. This is the wrapper-free path — the
+	// bridge itself materializes the run_dir (BR-1) and spawns the agent directly
+	// under the daemon PTY, with no ham-wrapper in between.
+	if bridge_pty_host_runtime_enabled() {
+		return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, tier, agent_issue.plaintext_token)
+	}
 	session := bridge_runtime_tmux_session()
 	window := bridge_runtime_tmux_window(instance_id)
 	wrapper_args, wrapper_args_ok := bridge_runtime_ham_wrapper_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, provider, tier)
@@ -592,6 +599,51 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 		return false, "ham-wrapper tmux launch failed"
 	}
 	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), pane_id = strings.clone(launch.pane_id), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
+	return true, ""
+}
+
+// bridge_runtime_launch_agent_pty_host is the wrapper-free launch path (BR-2).
+// The bootstrap was already assembled/published above; here we (1) materialize
+// the run_dir + HEIMDALL_* env directly on disk via BR-1, (2) lazy-start the
+// ham-pty-host daemon, and (3) spawn (or restart, if the instance is already
+// registered) the agent under the daemon PTY. Retry/backoff on spawn preserves
+// AC-5 launch resilience.
+bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, tier, agent_token: string) -> (bool, string) {
+	// BR-1: clean-slate + materialize the run_dir, and build the agent env.
+	prespawn, prespawn_ok := bridge_prespawn_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_token, provider)
+	if !prespawn_ok {
+		bridge_runtime_set_status(instance_id, "failed", "idle")
+		return false, "pty-host bootstrap materialization failed"
+	}
+	defer bridge_prespawn_result_delete(prespawn)
+
+	socket, daemon_ok := bridge_pty_host_ensure_daemon()
+	if !daemon_ok {
+		bridge_runtime_set_status(instance_id, "failed", "idle")
+		return false, "ham-pty-host daemon unavailable"
+	}
+
+	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, tier, agent_token, prespawn.env)
+	if !req_ok {
+		bridge_runtime_set_status(instance_id, "failed", "idle")
+		return false, "provider has no runnable command"
+	}
+	defer bridge_pty_host_spawn_request_delete(req)
+
+	// A relaunch of an already-registered instance re-spawns from the remembered
+	// spec (host.restart); a fresh instance uses host.spawn.
+	pid: i32
+	ok: bool
+	if bridge_pty_host_is_registered(socket, instance_id) {
+		pid, ok = bridge_pty_host_restart(socket, instance_id)
+	} else {
+		pid, ok = bridge_pty_host_spawn(socket, req)
+	}
+	if !ok {
+		bridge_runtime_set_status(instance_id, "failed", "idle")
+		return false, "ham-pty-host spawn failed"
+	}
+	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), pane_id = fmt.tprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token)})
 	return true, ""
 }
 
@@ -613,6 +665,14 @@ bridge_runtime_stop_agent :: proc(instance_id: string) -> bool {
 	// running/starting (see bridge_runtime_note_activity_signal).
 	bridge_runtime_mark_stop_intent(instance_id)
 	bridge_runtime_set_status(instance_id, "stopping", "idle")
+	// BR-2: in the wrapper-free path there is no ham-wrapper to self-reap, so the
+	// bridge closes the instance on the daemon directly (SIGTERM->SIGKILL +
+	// unregister). Token invalidation below is still done for defense-in-depth.
+	if bridge_pty_host_runtime_enabled() {
+		if socket, ok := bridge_pty_host_ensure_daemon(); ok {
+			if bridge_pty_host_close(socket, instance_id) do fmt.println("bridge stop: closed instance on ham-pty-host", instance_id)
+		}
+	}
 	// Invalidate every local token for this instance (persisted to disk). The
 	// wrapper self-reaps on its next liveness ping; the bridge does nothing else.
 	invalidated := bridge_agent_token_invalidate_instance(instance_id)
