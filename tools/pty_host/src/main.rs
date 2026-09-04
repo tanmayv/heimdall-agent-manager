@@ -1,20 +1,22 @@
-//! ham-pty-host CLI entrypoint (REQ PTYH-1).
+//! ham-pty-host CLI entrypoint.
 //!
-//! For this task the `run` subcommand spawns a program under a PTY, streams its
-//! output to our stdout, and forwards our stdin. Later tasks (PTYH-2/3) add the
-//! unix-socket attach/detach protocol and the in-app debug TUI.
+//! Subcommands:
+//!   * `run`    — spawn a program under a PTY + host it on a unix socket (PTYH-1/2).
+//!   * `attach` — attach to a running host, raw-mode passthrough (PTYH-2).
+//!
+//! PTYH-3 will add `attach --debug` for the in-app ratatui debug TUI.
 
-use std::io::Write;
-
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
-use ham_pty_host::{PtyHost, SpawnConfig};
+use ham_pty_host::client::{attach, AttachOutcome};
+use ham_pty_host::server::HostServer;
+use ham_pty_host::SpawnConfig;
 
 #[derive(Parser)]
 #[command(
     name = "ham-pty-host",
-    about = "PTY host + VT screen model spike (PTYH-1..5)"
+    about = "PTY host + attach/detach + debug TUI spike (PTYH-1..5)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -23,8 +25,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Spawn a program under a PTY and host its terminal session.
+    /// Spawn a program under a PTY and host it on a unix socket.
     Run {
+        /// Unix socket path to listen on.
+        #[arg(long)]
+        socket: String,
         /// Terminal rows.
         #[arg(long, default_value_t = 24)]
         rows: u16,
@@ -38,44 +43,73 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         argv: Vec<String>,
     },
+    /// Attach to a running host over its unix socket (raw passthrough).
+    Attach {
+        /// Unix socket path of the host to attach to.
+        #[arg(long)]
+        socket: String,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run {
+            socket,
             rows,
             cols,
             no_login,
             argv,
-        } => run(rows, cols, !no_login, argv),
+        } => run(socket, rows, cols, !no_login, argv),
+        Command::Attach { socket } => run_attach(socket),
     }
 }
 
-fn run(rows: u16, cols: u16, login: bool, argv: Vec<String>) -> Result<()> {
+fn run(
+    socket: String,
+    rows: u16,
+    cols: u16,
+    login: bool,
+    argv: Vec<String>,
+) -> Result<()> {
     let program = argv[0].clone();
     let args = argv[1..].to_vec();
-    let mut host = PtyHost::spawn(SpawnConfig {
+    let config = SpawnConfig {
         program,
         args,
         rows,
         cols,
         login_shell: login,
         cwd: None,
-    })?;
-
-    // Simple passthrough: drain raw output to stdout until the child exits.
-    let output_rx = host.take_output_rx().expect("output rx available");
-    let printer = std::thread::spawn(move || {
-        let mut out = std::io::stdout();
-        while let Ok(chunk) = output_rx.recv() {
-            let _ = out.write_all(&chunk);
-            let _ = out.flush();
-        }
-    });
-
-    let code = host.wait();
-    let _ = printer.join();
+    };
+    let mut server = HostServer::start(&socket, config)?;
+    eprintln!(
+        "[ham-pty-host] listening on {} (attach with: ham-pty-host attach --socket {})",
+        socket, socket
+    );
+    let code = server.wait();
+    server.shutdown();
     eprintln!("[ham-pty-host] child exited with code {code}");
     std::process::exit(code);
+}
+
+fn run_attach(socket: String) -> Result<()> {
+    let path = std::path::PathBuf::from(&socket);
+    if !path.exists() {
+        bail!("socket {socket} does not exist (is the host running?)");
+    }
+    match attach(&path)? {
+        AttachOutcome::Detached => {
+            eprintln!("[ham-pty-host] detached (child still running)");
+            Ok(())
+        }
+        AttachOutcome::ChildExited(code) => {
+            eprintln!("[ham-pty-host] child exited with code {code}");
+            std::process::exit(code);
+        }
+        AttachOutcome::Disconnected => {
+            eprintln!("[ham-pty-host] disconnected from host");
+            Ok(())
+        }
+    }
 }

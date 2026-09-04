@@ -75,6 +75,7 @@ pub struct PtyHost {
     engine: Arc<Mutex<VtEngine>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn portable_pty::MasterPty + Send>,
+    killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
     child_alive: Arc<AtomicBool>,
     exit_code: Arc<AtomicI32>,
     reader_thread: Option<JoinHandle<()>>,
@@ -117,6 +118,7 @@ impl PtyHost {
             .slave
             .spawn_command(cmd)
             .context("failed to spawn child under PTY")?;
+        let killer = child.clone_killer();
         // Slave is owned by the child now; drop our handle so EOF propagates.
         drop(pair.slave);
 
@@ -180,6 +182,7 @@ impl PtyHost {
             engine,
             writer: Arc::new(Mutex::new(writer)),
             master: pair.master,
+            killer: Arc::new(Mutex::new(killer)),
             child_alive,
             exit_code,
             reader_thread: Some(reader_thread),
@@ -241,6 +244,18 @@ impl PtyHost {
 
     pub fn is_alive(&self) -> bool {
         self.child_alive.load(Ordering::SeqCst)
+    }
+
+    /// Forcibly terminate the child (SIGKILL). Used for host shutdown so the
+    /// PTY closes and the reader/fan-out threads can exit. No-op if already
+    /// dead. Safe to call from any thread via the shared killer handle.
+    pub fn kill(&self) {
+        let _ = self.killer.lock().unwrap().kill();
+    }
+
+    /// Shared killer handle for shutting the child down from another thread.
+    pub fn killer(&self) -> Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>> {
+        Arc::clone(&self.killer)
     }
 
     /// Exit code if the child has exited, else `None`.
