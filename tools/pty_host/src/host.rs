@@ -297,7 +297,7 @@ impl PtyHost {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::time::Duration;
 
@@ -312,11 +312,78 @@ mod tests {
         pred()
     }
 
+    /// Resolve a program by absolute path or via $PATH. Returns None if it
+    /// cannot be found, so tests can skip in a minimal sandbox (e.g. the nix
+    /// build sandbox, which has no /bin/sh). Keeps `cargo test` green both
+    /// locally and hermetically (PTYH-4).
+    pub(crate) fn resolve(prog: &str) -> Option<String> {
+        if prog.contains('/') {
+            return if std::path::Path::new(prog).exists() {
+                Some(prog.to_string())
+            } else {
+                None
+            };
+        }
+        for dir in std::env::var("PATH").unwrap_or_default().split(':') {
+            if dir.is_empty() {
+                continue;
+            }
+            let cand = std::path::Path::new(dir).join(prog);
+            if cand.exists() {
+                return cand.to_str().map(|s| s.to_string());
+            }
+        }
+        None
+    }
+
+    /// Resolve a POSIX shell for tests, or None to skip.
+    pub(crate) fn shell() -> Option<String> {
+        resolve("sh").or_else(|| resolve("/bin/sh")).or_else(|| resolve("bash"))
+    }
+
+    /// True if this environment can actually spawn a child under a PTY. The nix
+    /// build sandbox has no /dev/pts, so even when openpty() half-succeeds the
+    /// fork/exec into the slave fails; PTY-dependent tests skip when this is
+    /// false (they still run locally + in CI where a real PTY exists). We probe
+    /// with a real end-to-end spawn of `true` so the check matches production.
+    pub(crate) fn pty_available() -> bool {
+        let prog = match resolve("true").or_else(|| resolve("/usr/bin/true")) {
+            Some(p) => p,
+            None => return false,
+        };
+        PtyHost::spawn(SpawnConfig {
+            program: prog,
+            args: vec![],
+            rows: 24,
+            cols: 80,
+            login_shell: false,
+            cwd: None,
+        })
+        .is_ok()
+    }
+
+    macro_rules! skip_if_none {
+        ($opt:expr, $name:literal) => {
+            match $opt {
+                Some(v) => v,
+                None => {
+                    eprintln!("[skip] {} unavailable in this environment", $name);
+                    return;
+                }
+            }
+        };
+    }
+
     #[test]
     fn spawn_echo_and_capture_rendered_output() {
+        if !pty_available() {
+            eprintln!("[skip] no PTY available in this environment");
+            return;
+        }
         // `echo hi` should render "hi" in the grid, not raw bytes.
+        let echo = skip_if_none!(resolve("echo").or_else(|| resolve("/bin/echo")), "echo");
         let host = PtyHost::spawn(SpawnConfig {
-            program: "/bin/echo".into(),
+            program: echo,
             args: vec!["hi".into()],
             rows: 10,
             cols: 40,
@@ -338,8 +405,13 @@ mod tests {
 
     #[test]
     fn write_input_to_shell_is_reflected_in_capture() {
+        if !pty_available() {
+            eprintln!("[skip] no PTY available in this environment");
+            return;
+        }
+        let sh = skip_if_none!(shell(), "sh");
         let host = PtyHost::spawn(SpawnConfig {
-            program: "/bin/sh".into(),
+            program: sh,
             args: vec![],
             rows: 20,
             cols: 60,
@@ -368,9 +440,14 @@ mod tests {
 
     #[test]
     fn color_output_records_rendition() {
+        if !pty_available() {
+            eprintln!("[skip] no PTY available in this environment");
+            return;
+        }
         // printf a red 'R' then reset; capture must record fg color on the cell.
+        let sh = skip_if_none!(shell(), "sh");
         let host = PtyHost::spawn(SpawnConfig {
-            program: "/bin/sh".into(),
+            program: sh,
             args: vec!["-c".into(), "printf '\\033[31mR\\033[0m'".into()],
             rows: 5,
             cols: 20,
@@ -388,8 +465,13 @@ mod tests {
 
     #[test]
     fn resize_updates_model() {
+        if !pty_available() {
+            eprintln!("[skip] no PTY available in this environment");
+            return;
+        }
+        let sh = skip_if_none!(shell(), "sh");
         let mut host = PtyHost::spawn(SpawnConfig {
-            program: "/bin/sh".into(),
+            program: sh,
             args: vec![],
             rows: 24,
             cols: 80,

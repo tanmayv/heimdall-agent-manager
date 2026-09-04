@@ -3,9 +3,12 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # crane: hermetic Rust builds for the ham-pty-host spike (PTYH-4). Follows
+    # our nixpkgs so the Rust toolchain comes from the same pinned set.
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, crane }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -116,6 +119,34 @@
         '';
       };
 
+      # PTYH-4: hermetic Rust build for tools/pty_host via crane. Kept fully
+      # separate from the Odin targets. Uses the default rustc/cargo from the
+      # pinned nixpkgs (no rustup, no network fetches at build time).
+      mkPtyHost = pkgs:
+        let
+          craneLib = crane.mkLib pkgs;
+          src = craneLib.cleanCargoSource ./tools/pty_host;
+          commonArgs = {
+            inherit src;
+            strictDeps = true;
+            # portable-pty / crossterm need no extra system libs on Linux; on
+            # Darwin the default clang stdenv suffices. Keep buildInputs minimal.
+            buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ ];
+          };
+          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        in
+        craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
+          pname = "ham-pty-host";
+          version = appVersion;
+          doCheck = true;
+          # Server/host tests bind unix sockets + spawn shells; run them serially
+          # to avoid cross-test socket contention. Tests that need a POSIX shell
+          # skip gracefully when one isn't on PATH (the nix sandbox has no
+          # /bin/sh), so the suite stays green hermetically.
+          cargoTestExtraArgs = "-- --test-threads=1";
+        });
+
       homeManagerModule = import ./nix/home-manager.nix { inherit self; };
     in
     {
@@ -145,6 +176,7 @@
           ham-task-store-repository-test = mkOdinPackageWithRuntime pkgs odin "ham-task-store-repository-test" "tests/task_store_repository_test" [ pkgs.sqlite ];
           ham-bootstrap-golden-test = mkOdinPackage pkgs odin "ham-bootstrap-golden-test" "tests/hub_bootstrap_golden_test";
           ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
+          ham-pty-host = mkPtyHost pkgs;
           heimdall = mkOdinUiPackage pkgs;
           heimdall-node-modules = mkNodeModules pkgs;
           bc-agent-wrapper = self.packages.${system}.ham-wrapper;
@@ -355,6 +387,13 @@
               pkks.curl
               pkks.jq
               pkks.sqlite
+              # PTYH-4: Rust toolchain for tools/pty_host so `nix develop` gives
+              # cargo/rustc/clippy without rustup.
+              pkks.cargo
+              pkks.rustc
+              pkks.rustfmt
+              pkks.clippy
+              pkks.rust-analyzer
             ];
           };
         });

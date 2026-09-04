@@ -359,15 +359,34 @@ mod tests {
         p
     }
 
-    fn sh_config(rows: u16, cols: u16) -> SpawnConfig {
+    fn sh_config(sh: &str, rows: u16, cols: u16) -> SpawnConfig {
         SpawnConfig {
-            program: "/bin/sh".into(),
+            program: sh.to_string(),
             args: vec![],
             rows,
             cols,
             login_shell: false,
             cwd: None,
         }
+    }
+
+    /// Resolve a POSIX shell + a usable PTY, or skip the test in a minimal
+    /// sandbox (the nix build sandbox has no /bin/sh and no /dev/ptmx).
+    /// See host::tests::resolve / pty_available.
+    macro_rules! require_shell {
+        () => {{
+            if !crate::host::tests::pty_available() {
+                eprintln!("[skip] no PTY available in this environment");
+                return;
+            }
+            match crate::host::tests::shell() {
+                Some(sh) => sh,
+                None => {
+                    eprintln!("[skip] no POSIX shell available in this environment");
+                    return;
+                }
+            }
+        }};
     }
 
     fn wait_for<F: Fn() -> bool>(pred: F, timeout: Duration) -> bool {
@@ -411,8 +430,9 @@ mod tests {
 
     #[test]
     fn input_then_capture_shows_output() {
+        let sh = require_shell!();
         let sock = tmp_socket("cap");
-        let mut server = HostServer::start(&sock, sh_config(20, 60)).unwrap();
+        let mut server = HostServer::start(&sock, sh_config(&sh, 20, 60)).unwrap();
         std::thread::sleep(Duration::from_millis(300));
 
         let mut c = UnixStream::connect(&sock).unwrap();
@@ -430,8 +450,9 @@ mod tests {
 
     #[test]
     fn dropping_client_leaves_child_alive_and_reattach_drives_it() {
+        let sh = require_shell!();
         let sock = tmp_socket("reattach");
-        let mut server = HostServer::start(&sock, sh_config(20, 60)).unwrap();
+        let mut server = HostServer::start(&sock, sh_config(&sh, 20, 60)).unwrap();
         std::thread::sleep(Duration::from_millis(300));
 
         // First client attaches, then drops (simulating detach via disconnect).
@@ -464,8 +485,9 @@ mod tests {
 
     #[test]
     fn child_exit_broadcasts_and_shuts_down() {
+        let sh = require_shell!();
         let sock = tmp_socket("exit");
-        let mut server = HostServer::start(&sock, sh_config(20, 60)).unwrap();
+        let mut server = HostServer::start(&sock, sh_config(&sh, 20, 60)).unwrap();
         std::thread::sleep(Duration::from_millis(300));
 
         let mut c = UnixStream::connect(&sock).unwrap();
@@ -500,8 +522,9 @@ mod tests {
 
     #[test]
     fn ping_pong() {
+        let sh = require_shell!();
         let sock = tmp_socket("ping");
-        let mut server = HostServer::start(&sock, sh_config(10, 40)).unwrap();
+        let mut server = HostServer::start(&sock, sh_config(&sh, 10, 40)).unwrap();
         std::thread::sleep(Duration::from_millis(200));
         let mut c = UnixStream::connect(&sock).unwrap();
         send(&mut c, &ClientMsg::Ping).unwrap();
@@ -513,8 +536,9 @@ mod tests {
 
     #[test]
     fn multiple_clients_receive_same_output() {
+        let sh = require_shell!();
         let sock = tmp_socket("multi");
-        let mut server = HostServer::start(&sock, sh_config(20, 60)).unwrap();
+        let mut server = HostServer::start(&sock, sh_config(&sh, 20, 60)).unwrap();
         std::thread::sleep(Duration::from_millis(300));
 
         let mut a = UnixStream::connect(&sock).unwrap();
