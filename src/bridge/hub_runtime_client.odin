@@ -101,6 +101,12 @@ bridge_runtime_launches: [dynamic]Bridge_Runtime_Launch
 bridge_provider_tests: [dynamic]Bridge_Provider_Test
 bridge_pane_capture_pending: [dynamic]Bridge_Pane_Capture_Pending
 bridge_pane_capture_outgoing: [dynamic]Bridge_Pane_Capture_Outgoing
+// Queue of instance ids whose status changed on a BACKGROUND thread (e.g. the
+// pty-host events worker applying a ChildExited) and must be pushed to the hub
+// immediately, without waiting for the next 45s bridge_heartbeat. The hub runtime
+// loop (which owns the WS conn) drains this every tick. This is what keeps a
+// self-exiting/crashed agent's "stopped" visible at the hub in ~real time.
+bridge_runtime_status_outgoing: [dynamic]string
 bridge_runtime_local_endpoint_started: bool
 bridge_runtime_local_endpoint_unix_started: bool
 bridge_runtime_local_endpoint_loopback_started: bool
@@ -114,6 +120,7 @@ bridge_hub_runtime_init :: proc() {
 	bridge_provider_tests = make([dynamic]Bridge_Provider_Test)
 	bridge_pane_capture_pending = make([dynamic]Bridge_Pane_Capture_Pending)
 	bridge_pane_capture_outgoing = make([dynamic]Bridge_Pane_Capture_Outgoing)
+	bridge_runtime_status_outgoing = make([dynamic]string)
 }
 
 bridge_hub_runtime_worker :: proc() {
@@ -197,6 +204,10 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		if text, got := ws.poll_text(conn); got do bridge_hub_handle_command(conn, text)
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
+		// Flush any status transitions applied on background threads (e.g. a
+		// pty-host ChildExited) so "stopped"/"unreachable" reaches the hub now,
+		// not on the next heartbeat.
+		bridge_runtime_drain_status_pushes(conn)
 		now := time.to_unix_nanoseconds(time.now())
 		if now - last_heartbeat >= i64(BRIDGE_HUB_HEARTBEAT_INTERVAL) {
 			_ = ws.send_text(conn, bridge_hub_heartbeat_json())
@@ -1325,6 +1336,13 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 				inst.runtime_status = runtime_status
 				if accept_activity do inst.activity_status = activity_status
 			}
+			// A runtime-status transition must reach the hub immediately, not on the
+			// next 45s heartbeat. The command handlers (launch/stop) already push on
+			// their own conn; this covers transitions applied on BACKGROUND threads
+			// (notably ChildExited -> "stopped" from the pty-host events worker), which
+			// hold no conn. Enqueue for the hub loop to drain. (Idempotent: the loop
+			// coalesces duplicates by re-reading current status at send time.)
+			if runtime_changed do bridge_runtime_enqueue_status_push_locked(instance_id)
 			if accept_activity {
 				inst.activity_source = strings.clone(activity_source)
 				inst.activity_updated_unix_ms = now
@@ -1599,6 +1617,41 @@ bridge_pane_capture_enqueue_result :: proc(result_json, command_id: string) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	append(&bridge_pane_capture_outgoing, Bridge_Pane_Capture_Outgoing{command_id=strings.clone(command_id),result_json=strings.clone(result_json)})
+}
+
+// bridge_runtime_enqueue_status_push_locked records that instance_id's runtime
+// status changed and should be pushed to the hub immediately. MUST be called with
+// bridge_runtime_mutex held. Deduplicates so a burst of transitions on one
+// instance collapses to a single pending push (the drain re-reads current status).
+bridge_runtime_enqueue_status_push_locked :: proc(instance_id: string) {
+	if strings.trim_space(instance_id) == "" do return
+	for id in bridge_runtime_status_outgoing do if id == instance_id do return
+	append(&bridge_runtime_status_outgoing, strings.clone(instance_id))
+}
+
+// bridge_runtime_drain_status_pushes flushes queued immediate status pushes to the
+// hub. Called every hub-loop tick (alongside the pane-capture drain). Each entry
+// is serialized from CURRENT state via bridge_instance_status_json, so a value
+// queued slightly stale still sends the latest status. On send failure the id is
+// requeued and the connection is dropped so the reconnect path re-syncs.
+bridge_runtime_drain_status_pushes :: proc(conn: ^ws.Connection) {
+	for {
+		id := ""
+		sync.mutex_lock(&bridge_runtime_mutex)
+		if len(bridge_runtime_status_outgoing) > 0 { id = bridge_runtime_status_outgoing[0]; ordered_remove(&bridge_runtime_status_outgoing, 0) }
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		if id == "" do return
+		payload := bridge_instance_status_json(id)
+		if payload == "" || payload == "{}" { delete(id); continue }
+		if !ws.send_text(conn, payload) {
+			sync.mutex_lock(&bridge_runtime_mutex)
+			inject_at(&bridge_runtime_status_outgoing, 0, id)
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			conn.connected = false
+			return
+		}
+		delete(id)
+	}
 }
 
 bridge_pane_capture_drain_outgoing :: proc(conn: ^ws.Connection) {
