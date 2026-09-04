@@ -48,6 +48,9 @@ enum Command {
         /// Unix socket path of the host to attach to.
         #[arg(long)]
         socket: String,
+        /// Render the in-app split-screen debug TUI instead of raw passthrough.
+        #[arg(long)]
+        debug: bool,
     },
 }
 
@@ -61,7 +64,7 @@ fn main() -> Result<()> {
             no_login,
             argv,
         } => run(socket, rows, cols, !no_login, argv),
-        Command::Attach { socket } => run_attach(socket),
+        Command::Attach { socket, debug } => run_attach(socket, debug),
     }
 }
 
@@ -93,10 +96,16 @@ fn run(
     std::process::exit(code);
 }
 
-fn run_attach(socket: String) -> Result<()> {
+fn run_attach(socket: String, debug: bool) -> Result<()> {
     let path = std::path::PathBuf::from(&socket);
     if !path.exists() {
         bail!("socket {socket} does not exist (is the host running?)");
+    }
+    if debug {
+        // PTYH-3: in-app ratatui split-screen debug TUI.
+        ham_pty_host::debug_ui::run(&path)?;
+        eprintln!("[ham-pty-host] debug TUI exited (child still running unless it exited)");
+        return Ok(());
     }
     match attach(&path)? {
         AttachOutcome::Detached => {

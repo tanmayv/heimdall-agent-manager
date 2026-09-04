@@ -7,10 +7,12 @@
 //!   * [`server`]  — unix-socket host server, multi-client fan-out (PTYH-2).
 //!   * [`client`]  — raw-mode `attach` client (PTYH-2).
 //!   * [`termios`] — local terminal raw mode + winsize FFI (PTYH-2).
-//!
-//! Later task PTYH-3 adds an in-app ratatui debug TUI.
+//!   * [`debug_tui`] — pure state machine for the in-app debug TUI (PTYH-3).
+//!   * [`debug_ui`]  — ratatui/crossterm runtime for the debug TUI (PTYH-3).
 
 pub mod client;
+pub mod debug_tui;
+pub mod debug_ui;
 pub mod host;
 pub mod proto;
 pub mod server;
