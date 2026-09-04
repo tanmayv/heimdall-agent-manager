@@ -143,6 +143,21 @@ pty_host_delivery_maps_push_to_input_enter :: proc(t: ^testing.T) {
 	for i in 0..<len(want) do testing.expect_value(t, kp[i], want[i])
 }
 
+// pty_host_user_message_interrupts_with_esc pins the wire shape of the ESC key
+// that bridge_pty_host_deliver_message sends BEFORE typing a user-message notice.
+// Pressing ESC first interrupts the agent's current turn so it drops to an
+// input-ready prompt and picks up the just-arrived user message ASAP. The key
+// tag byte is the Esc discriminant (2), which must stay in sync with proto.rs.
+@(test)
+pty_host_user_message_interrupts_with_esc :: proc(t: ^testing.T) {
+	esc := pty_host_encode_key("inst_a", .Esc)
+	defer delete(esc)
+	ep := pty_host_test_reframe(t, esc)
+	want := []byte{PTY_HOST_T_KEY, 0, 0, 0, 6, 'i', 'n', 's', 't', '_', 'a', 2}
+	testing.expect_value(t, len(ep), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, ep[i], want[i])
+}
+
 @(test)
 pty_host_build_spawn_from_profile :: proc(t: ^testing.T) {
 	// Requires a runnable provider profile. Use the resolved default provider; if

@@ -312,7 +312,17 @@ bridge_pty_host_task_nudge_notice :: proc(task_id, target_role: string) -> strin
 
 // bridge_pty_host_deliver_message renders the same notice the wrapper produced for
 // an agent_message push and delivers it.
+//
+// User-initiated messages press ESC BEFORE typing the notice: this interrupts the
+// agent's current turn (most CLI agents treat ESC as "cancel/stop") so it drops
+// back to an input-ready prompt and picks up the just-arrived user message ASAP
+// instead of finishing a long autonomous run first. The ESC is followed by a
+// short settle so the pane returns to its input box before we paste the notice.
 bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> bool {
+	esc := pty_host_encode_key(instance, .Esc)
+	defer delete(esc)
+	if !bridge_pty_host_send_oneway(socket, esc) do return false
+	time.sleep(300 * time.Millisecond)
 	msg := bridge_pty_host_message_notice(sender)
 	defer delete(msg)
 	return bridge_pty_host_deliver_line(socket, instance, msg)
