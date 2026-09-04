@@ -49,12 +49,12 @@ pub enum Field {
 impl Field {
     pub const ALL: [Field; 4] = [Field::SendKeys, Field::NamedKeys, Field::Resize, Field::Capture];
 
-    fn next(self) -> Field {
+    pub fn next(self) -> Field {
         let i = Field::ALL.iter().position(|f| *f == self).unwrap();
         Field::ALL[(i + 1) % Field::ALL.len()]
     }
 
-    fn prev(self) -> Field {
+    pub fn prev(self) -> Field {
         let i = Field::ALL.iter().position(|f| *f == self).unwrap();
         Field::ALL[(i + Field::ALL.len() - 1) % Field::ALL.len()]
     }

@@ -12,9 +12,12 @@
 //!   * [`dproto`]  — instance-scoped multi-agent daemon protocol (HOST-1).
 //!   * [`daemon`]  — per-machine daemon: agent registry + spawn/close/restart/list (HOST-1).
 //!   * [`detect`]  — pure config-driven startup detector + activity hash (HOST-2).
+//!   * [`dashboard_tui`] — pure multi-agent dashboard state machine (HOST-3).
 
 pub mod client;
 pub mod daemon;
+pub mod dashboard_tui;
+pub mod dashboard_ui;
 pub mod debug_tui;
 pub mod debug_ui;
 pub mod detect;

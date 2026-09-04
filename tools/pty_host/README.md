@@ -38,6 +38,8 @@ Ctrl-\ detaches the passthrough client (child survives); F10 quits the debug TUI
 | `src/dproto.rs` | HOST-1 | instance-scoped multi-agent daemon protocol |
 | `src/daemon.rs` | HOST-1/2 | per-machine daemon: agent registry + spawn/close/restart/list; per-agent detector thread |
 | `src/detect.rs` | HOST-2 | pure config-driven startup detector (auto-enter/blocked) + activity hash |
+| `src/dashboard_tui.rs` | HOST-3 | pure multi-agent dashboard state machine (selection/focus/switch/resize) |
+| `src/dashboard_ui.rs` | HOST-3 | ratatui/crossterm dashboard runtime (sidebar + selected pane + debug widgets) |
 
 ## Multi-agent daemon (HOST-1)
 ```bash
@@ -92,3 +94,31 @@ activity.
 > host emits the raw dirty signal only; deciding that a lone spinner is *not*
 > real activity (masking) is the bridge's job (ported from `pane_activity.odin`
 > in BR-3), not the host's.
+
+## Multi-agent dashboard (HOST-3)
+```bash
+# attach with NO --instance => the dashboard against the daemon
+./target/debug/ham-pty-host attach --socket /tmp/ham-daemon.sock
+```
+```text
++----------------------+--------------------------------------+
+| agents (sidebar)     | selected agent's live VT screen       |
+|  > inst_a  claude    |                                       |
+|    inst_b  /bin/zsh  |  (debug widgets below: SendKeys /     |
+|    inst_c  (dead)    |   NamedKey / Resize / Capture)        |
++----------------------+--------------------------------------+
+```
+- **F2** cycles focus **List -> Pane -> Debug**.
+- **List**: Up/Down/Home/End move the selection; **Enter** (or a mouse **click**
+  on a row) switches the attached agent — emitting `Detach{old}` + `Attach{new}`
+  so only the visible agent streams output.
+- **Pane**: keystrokes drive the selected agent's child.
+- **Debug**: the PTYH-3 widgets (Send Keys / Named Keys / Resize / Capture)
+  scoped to the selected agent.
+- **F10** detaches + quits (agents keep running).
+
+**Responsive by design:** a terminal resize (SIGWINCH -> crossterm `Resize`)
+recomputes the right-pane geometry and sends an instance-scoped `Resize`, so the
+contained process's PTY reflows to the pane. Newly-attached/switched agents are
+also sized to the current geometry immediately. (Verified: attaching in a 40x120
+terminal resized the agent PTY from 24x80 to the pane's 36x86.)

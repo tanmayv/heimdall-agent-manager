@@ -49,14 +49,24 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         argv: Vec<String>,
     },
-    /// Attach to a running host over its unix socket (raw passthrough).
+    /// Attach to a running host/daemon over its unix socket.
+    ///
+    /// Modes:
+    ///   * `--socket <daemon>` (no `--instance`, no `--debug`) -> HOST-3 multi
+    ///     agent DASHBOARD: agent sidebar + selected agent's live pane.
+    ///   * `--socket <host> --debug` -> PTYH-3 single-host split debug TUI.
+    ///   * otherwise -> PTYH-2 raw passthrough against a single host.
     Attach {
-        /// Unix socket path of the host to attach to.
+        /// Unix socket path of the host/daemon to attach to.
         #[arg(long)]
         socket: String,
-        /// Render the in-app split-screen debug TUI instead of raw passthrough.
+        /// Render the in-app split-screen debug TUI (single-host, PTYH-3).
         #[arg(long)]
         debug: bool,
+        /// Attach to a specific daemon agent by instance id (HOST-4). Absent =>
+        /// the multi-agent dashboard (HOST-3).
+        #[arg(long)]
+        instance: Option<String>,
     },
     /// Run the multi-agent per-machine daemon (HOST-1). Manages N agents keyed
     /// by instance id; clients drive it with spawn/close/restart/list.
@@ -120,7 +130,11 @@ fn main() -> Result<()> {
             no_login,
             argv,
         } => run(socket, rows, cols, !no_login, argv),
-        Command::Attach { socket, debug } => run_attach(socket, debug),
+        Command::Attach {
+            socket,
+            debug,
+            instance,
+        } => run_attach(socket, debug, instance),
         Command::Daemon { socket } => daemon::serve(socket),
         Command::Spawn {
             socket,
@@ -278,10 +292,17 @@ fn run(
     std::process::exit(code);
 }
 
-fn run_attach(socket: String, debug: bool) -> Result<()> {
+fn run_attach(socket: String, debug: bool, instance: Option<String>) -> Result<()> {
     let path = std::path::PathBuf::from(&socket);
     if !path.exists() {
-        bail!("socket {socket} does not exist (is the host running?)");
+        bail!("socket {socket} does not exist (is the host/daemon running?)");
+    }
+    // HOST-3: no --instance + no --debug => the multi-agent dashboard against
+    // the daemon (agent sidebar + selected agent's live pane).
+    if instance.is_none() && !debug {
+        ham_pty_host::dashboard_ui::run(&path)?;
+        eprintln!("[ham-pty-host] dashboard exited (agents still running)");
+        return Ok(());
     }
     if debug {
         // PTYH-3: in-app ratatui split-screen debug TUI.
