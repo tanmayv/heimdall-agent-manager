@@ -32,6 +32,7 @@ import CurrentTaskStrip from './CurrentTaskStrip';
 import { switchableTasksFor, taskRoleLabel, type TaskLike } from './chainTaskInference';
 import { useViewport } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
+import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
@@ -220,6 +221,36 @@ function parseMessageMetadata(message: Message): any {
   if (!raw) return {};
   if (typeof raw === 'object') return raw;
   try { return JSON.parse(String(raw)); } catch (_err) { return {}; }
+}
+
+// MSG-3: derive a human-readable schedule context line for a scheduled-action
+// message from its metadata. The hub bridge_execute path may attach action
+// context (cron_expr, timezone, target_run_at, action_id) to the action
+// message's metadata_json; this reads it defensively so the card degrades
+// gracefully to just the header when no metadata is present.
+//   HOOK: once the hub emits these fields, the schedule summary + trigger time
+//   appear automatically — no further UI change required.
+function scheduleContextFromMetadata(metadata: any): { summary: string; triggeredAt: string } {
+  const meta = metadata && typeof metadata === 'object' ? metadata : {};
+  const cronExpr = String(meta.cron_expr ?? meta.cronExpr ?? meta.cron ?? '').trim();
+  const timezone = String(meta.timezone ?? meta.time_zone ?? meta.tz ?? '').trim();
+
+  let summary = '';
+  if (cronExpr) {
+    const described = describeCron(cronExpr);
+    summary = timezone ? `${described} (${timezone})` : described;
+  }
+
+  let triggeredAt = '';
+  const rawTrigger = String(meta.target_run_at ?? meta.targetRunAt ?? meta.triggered_at ?? meta.triggeredAt ?? '').trim();
+  if (rawTrigger) {
+    const date = new Date(rawTrigger);
+    if (!Number.isNaN(date.getTime())) {
+      triggeredAt = `${formatInTimeZone(date, timezone)} (${timeZoneLabel(date, timezone)})`;
+    }
+  }
+
+  return { summary, triggeredAt };
 }
 
 function capTiers(cap: BridgeCapability | undefined): string[] {
@@ -803,6 +834,35 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           </div>
           {status === 'pending' ? <div className="text-sm text-sky-100/80">Waiting for the wrapper to resize and capture the pane…</div> : <PaneCaptureOutput body={message.body} messageId={message.messageId} />}
           {status === 'failed' ? <button type="button" data-debug-id={`conversation-pane-capture-retry-${message.messageId}`} onClick={() => void requestPane()} disabled={paneCaptureDisabled} className="mt-2 rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-100 hover:bg-white/10 disabled:opacity-50">Retry</button> : null}
+        </div>
+      );
+    }
+    // MSG-1/MSG-2: scheduled actions arrive as message_type='action'. Give them a
+    // distinct card (left accent rail + border + header with an Icon badge, no
+    // emoji) so they are recognizable at a glance versus normal chat, while
+    // keeping the Markdown body + artifact previews intact.
+    if (message.messageType === 'action') {
+      const { summary, triggeredAt } = scheduleContextFromMetadata(message.metadata);
+      return (
+        <div data-debug-id={`conversation-action-message-${message.messageId}`} className="rounded-2xl border border-amber-400/25 border-l-2 border-l-amber-400/70 bg-amber-400/[0.06] p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] uppercase tracking-wide text-amber-100/80">
+            <span className="inline-flex items-center gap-1.5 font-semibold text-amber-200">
+              <Icon name="clock" size={13} title="Scheduled action" />
+              Scheduled action
+            </span>
+            {summary ? <span className="normal-case tracking-normal text-amber-100/60">{summary}</span> : null}
+          </div>
+          {triggeredAt ? (
+            <div className="mb-2 text-[11px] text-amber-100/50">Ran on schedule: {triggeredAt}</div>
+          ) : null}
+          <Markdown source={message.body} compact copyAll={false} />
+          {message.artifactIds && message.artifactIds.length > 0 && (
+            <div className="mt-2 flex max-w-full flex-wrap gap-2">
+              {message.artifactIds.map((id) => (
+                <ArtifactAttachmentPreview key={id} artifactId={id} session={{ daemonUrl: '', clientToken: '' }} debugId={`conversation-thread-artifact-${message.messageId}-${id}`} />
+              ))}
+            </div>
+          )}
         </div>
       );
     }
