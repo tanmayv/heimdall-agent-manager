@@ -176,6 +176,10 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/memories/*/*", rawptr(&graph.content_handlers), http.memory_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/chats", rawptr(&graph.content_handlers), http.list_chats_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats", rawptr(&graph.content_handlers), http.create_chat_handler)
+	// Registered BEFORE the /chats/* wildcards so the literal "by-instance"
+	// segment wins over "/chats/*/..." patterns (first-match-wins, equal segment
+	// count). Resolves the single conversation for an agent instance id.
+	http.router_add(&graph.router, "GET", "/api/v1/chats/by-instance/*", rawptr(&graph.content_handlers), http.get_chat_by_instance_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/chats/*", rawptr(&graph.content_handlers), http.patch_chat_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/chats/*/messages", rawptr(&graph.content_handlers), http.list_chat_messages_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats/*/messages", rawptr(&graph.content_handlers), http.send_chat_message_handler)

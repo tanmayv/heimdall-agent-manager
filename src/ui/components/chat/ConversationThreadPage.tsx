@@ -392,7 +392,16 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   // caches and invalidates the `Chat` tag for this conversation). Polling is only
   // a slow fallback for missed events, so we poll at 10s and pause when the tab is
   // unfocused so we don't hammer the hub in the background. (skipPollingIfUnfocused.)
-  const convQuery = useFetchConversationQuery({ conversationId }, { skip: !conversationId, pollingInterval: 10000, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
+  // The URL carries the agent_instance_id (synced below), so the conversation
+  // fetch can use the O(1) by-instance endpoint instead of scanning the whole
+  // /chats list on every 10s poll. Falls back to the list when absent.
+  const urlAgentInstanceId = useMemo(() => {
+    try {
+      const s = new URLSearchParams(getRouteSearch());
+      return String(s.get('agent_instance_id') || s.get('instance') || '').trim();
+    } catch { return ''; }
+  }, [conversationId]);
+  const convQuery = useFetchConversationQuery({ conversationId, agentInstanceId: urlAgentInstanceId }, { skip: !conversationId, pollingInterval: 10000, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
   // Do NOT force a refetch on every conversation switch: with keepUnusedDataFor
   // (30s) a recently-viewed thread renders instantly from cache, and the user WS
   // `chat_event` already invalidates this conversation's `Chat` tag when anything

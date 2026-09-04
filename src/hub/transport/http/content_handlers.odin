@@ -80,13 +80,37 @@ list_chats_handler :: proc(ctx:rawptr, req:Request)->Response{
 	// path keeps working with bare /chats?limit=N, while richer consumers can ask
 	// for conventional includes/sort without receiving a different envelope.
 	include:=query_value(req.query,"include"); sort:=query_value(req.query,"sort"); order:=query_value(req.query,"order"); _=include; _=sort; _=order
+	// Optional "active only" filter: ?active=true (or ?status=active) returns only
+	// conversations whose bound agent instance is in a live runtime state, so the
+	// sidebar can show just the running agents. Filtering is applied AFTER the
+	// durable list fetch (conversations have no runtime column; liveness lives on
+	// the instance), so pagination still advances by the underlying rows.
+	active_only:=query_bool(req.query,"active",false) || query_value(req.query,"status")=="active"
 	rows,err:=content_service.list_conversations(h.content,auth,limit,cursor); if err.code!=.None do return respond_error(err,req.request_id)
 	b:=strings.builder_make(); strings.write_byte(&b,'[')
-	next:=""
-	for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_chat_json_with_runtime(&b,r,h,auth); next=chat_page_cursor(r) }
+	next:=""; emitted:=0
+	for r,i in rows{
+		next=chat_page_cursor(r)
+		if active_only && !chat_instance_runtime_active(r,h,auth) do continue
+		if emitted>0 do strings.write_byte(&b,','); write_chat_json_with_runtime(&b,r,h,auth); emitted+=1
+		_=i
+	}
 	strings.write_byte(&b,']')
 	has_more:=len(rows)>=limit
 	return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req))
+}
+// get_chat_by_instance_handler resolves the SINGLE conversation bound to an agent
+// instance: GET /api/v1/chats/by-instance/{agent_instance_id}. The conversation
+// UI polls this instead of listing all chats to .find() one, so a conversation
+// page's periodic refresh is O(1) instead of fetching the whole inbox.
+get_chat_by_instance_handler :: proc(ctx:rawptr, req:Request)->Response{
+	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
+	instance_id:=path_part(req.path,5)
+	if strings.trim_space(instance_id)=="" do return respond_error(domain.domain_error(.Validation_Failed,"agent_instance_id is required"),req.request_id)
+	c,found,find_err:=content_service.get_conversation_by_instance(h.content,auth,instance_id)
+	if !found do return respond_error(find_err,req.request_id)
+	b:=strings.builder_make(); write_chat_json_with_runtime(&b,c,h,auth)
+	return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))
 }
 create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
@@ -472,6 +496,16 @@ write_message_json :: proc(b:^strings.Builder,m:domain.Chat_Message,svc:^content
 write_artifact_json :: proc(b:^strings.Builder,a:domain.Artifact,with_content:bool){ strings.write_string(b,"{\"artifact_id\":\""); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"kind\":\""); write_handler_json_string(b,a.kind); strings.write_string(b,"\",\"name\":\""); write_handler_json_string(b,a.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,a.description); strings.write_string(b,"\",\"content_type\":\""); write_handler_json_string(b,a.content_type); strings.write_string(b,"\",\"mime\":\""); write_handler_json_string(b,a.mime); strings.write_string(b,"\",\"ext\":\""); write_handler_json_string(b,a.ext); strings.write_string(b,"\",\"sha256\":\""); write_handler_json_string(b,a.sha256); strings.write_string(b,"\",\"origin_kind\":\""); write_handler_json_string(b,a.origin_kind); strings.write_string(b,"\",\"origin_ref\":\""); write_handler_json_string(b,a.origin_ref); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,a.agent_id); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,a.agent_instance_id); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,a.chain_id); strings.write_string(b,"\",\"task_id\":\""); write_handler_json_string(b,a.task_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(a.project_id)); strings.write_string(b,"\",\"link\":\"artifact://"); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"size_bytes\":"); strings.write_string(b,fmt.tprintf("%d",a.size_bytes)); if with_content {strings.write_string(b,",\"content\":\""); write_handler_json_string(b,a.content)}; strings.write_string(b,",\"deleted_at\":\""); write_handler_json_string(b,a.deleted_at); strings.write_string(b,"\",\"created_at\":\""); write_handler_json_string(b,a.created_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,a.updated_at); strings.write_string(b,"\"}") }
 write_template_json :: proc(b:^strings.Builder,t:domain.Template){ strings.write_string(b,"{\"template_id\":\""); write_handler_json_string(b,t.template_id); strings.write_string(b,"\",\"is_system\":"); strings.write_string(b,"true" if t.is_system else "false"); strings.write_string(b,",\"name\":\""); write_handler_json_string(b,t.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,t.description); strings.write_string(b,"\",\"persona\":\""); write_handler_json_string(b,t.persona); strings.write_string(b,"\",\"instructions\":\""); write_handler_json_string(b,t.instructions); strings.write_string(b,"\"}") }
 
+// chat_instance_runtime_active reports whether the conversation's bound agent
+// instance is in a live runtime state (used by the ?active filter). No instance,
+// or an unresolvable/stopped one, counts as inactive.
+chat_instance_runtime_active :: proc(c:domain.Chat_Conversation,h:^Content_Handlers,auth:contracts.Auth_Context)->bool{
+	if h==nil || h.agents==nil || c.agent_instance_id=="" do return false
+	inst,inst_ok,_:=agent_service.get_instance(h.agents,auth,c.agent_instance_id)
+	if !inst_ok do return false
+	return agent_service.runtime_expected_active(inst.runtime_status)
+}
+
 chat_last_message_at :: proc(c:domain.Chat_Conversation)->string{ if c.last_message_created_at!="" do return c.last_message_created_at; if c.last_message_at!="" do return c.last_message_at; if c.updated_at!="" do return c.updated_at; return c.created_at }
 chat_page_cursor :: proc(c:domain.Chat_Conversation)->string{ at:=chat_last_message_at(c); if at=="" do return ""; return strings.concatenate({at,"|",c.conversation_id}) }
 chat_last_message_standard_direction :: proc(direction:string)->string{ switch direction { case "user_to_agent": return "sent"; case "agent_to_user": return "received" }; if direction=="" do return ""; return direction }
@@ -513,6 +547,7 @@ query_component_decode :: proc(value:string)->string{
 }
 query_hex_nibble :: proc(ch:byte)->(int,bool){ if ch>='0' && ch<='9' do return int(ch-'0'),true; if ch>='a' && ch<='f' do return int(ch-'a')+10,true; if ch>='A' && ch<='F' do return int(ch-'A')+10,true; return 0,false }
 query_int :: proc(q,key:string,d:int)->int{ v:=query_value(q,key); if p,ok:=strconv.parse_int(v); ok do return int(p); return d }
+query_bool :: proc(q,key:string,d:bool)->bool{ v:=query_value(q,key); if v=="" do return d; return v=="true" || v=="1" || v=="yes" }
 json_body_int :: proc(body,key:string,d:int)->int{ needle:=strings.concatenate({"\"",key,"\""}); defer delete(needle); idx:=strings.index(body,needle); if idx<0 do return d; rest:=body[idx+len(needle):]; colon:=strings.index_byte(rest,':'); if colon<0 do return d; rest=strings.trim_space(rest[colon+1:]); end:=0; for end<len(rest)&&rest[end]>='0'&&rest[end]<='9' do end+=1; if end==0 do return d; if p,ok:=strconv.parse_int(rest[:end]); ok do return int(p); return d }
 pane_capture_request_id_from_metadata :: proc(metadata:string)->string{ return json_string(metadata,"pane_capture_request_id") }
 json_array_raw :: proc(body,key:string)->string{ needle:=strings.concatenate({"\"",key,"\""}); defer delete(needle); idx:=strings.index(body,needle); if idx<0 do return "[]"; rest:=body[idx+len(needle):]; open:=strings.index_byte(rest,'['); if open<0 do return "[]"; close:=strings.index_byte(rest[open:],']'); if close<0 do return "[]"; return rest[open:open+close+1] }

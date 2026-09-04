@@ -171,11 +171,14 @@ export const sidebarApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     // Conversations list for the sidebar tree. Tagged so the user-WS chat-event
     // path can invalidate it and refresh unread badges.
-    listSidebarConversations: build.query<SidebarConversation[], { limit?: number } | void>({
+    listSidebarConversations: build.query<SidebarConversation[], { limit?: number; activeOnly?: boolean } | void>({
       queryFn: async (arg) => {
         try {
           const limit = (arg && typeof arg === 'object' && arg.limit) || 30;
-          const rows = await fetchCookieList(`/chats?limit=${limit}`, ['conversations', 'chats']);
+          const activeOnly = Boolean(arg && typeof arg === 'object' && arg.activeOnly);
+          // ?active=true asks the hub to return only conversations whose bound
+          // agent instance is in a live runtime state (running agents only).
+          const rows = await fetchCookieList(`/chats?limit=${limit}${activeOnly ? '&active=true' : ''}`, ['conversations', 'chats']);
           const conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
           return { data: conversations };
         } catch (error: any) {

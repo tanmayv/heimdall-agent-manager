@@ -417,7 +417,9 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
     case 'agent': {
       // Reuse the agent patch/refresh path; patchAgentCachesFromWs tolerates the
       // resource_changed shape (reads agent_instance_id/record fields defensively).
-      handleAgentEvent(dispatch, { ...payload, type: 'agent_update', agent_instance_id: resourceId }, ctx);
+      // Forward the summary (runtime/startup/activity) so the caches can be patched
+      // IN PLACE without refetching the whole /agents list on every status change.
+      handleAgentEvent(dispatch, { ...payload, type: 'agent_update', agent_instance_id: resourceId, summary }, ctx);
       return;
     }
     default:

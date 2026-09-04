@@ -234,10 +234,22 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
     // Cookie-auth conversation thread endpoints (hub-native, /api/v1/chats/{id}).
     // Unlike fetchDirectChat/sendAgentMessage (legacy clientToken path), these use
     // the cookie session the rewrite shell runs on, keyed by conversation_id.
-    fetchConversation: build.query<any, { conversationId: string }>({
-      queryFn: async ({ conversationId }) => {
-        if (!conversationId) return { data: { conversation: null } };
+    // Resolve one conversation. Prefer the O(1) by-instance endpoint
+    // (GET /chats/by-instance/{agent_instance_id}) so a conversation page's 10s
+    // poll no longer fetches the entire /chats list just to .find() one row.
+    // agentInstanceId is read from the URL (the page syncs it into the query
+    // string); when it is unavailable (deep link by conversation id only) we fall
+    // back to the list scan for correctness.
+    fetchConversation: build.query<any, { conversationId: string; agentInstanceId?: string }>({
+      queryFn: async ({ conversationId, agentInstanceId }) => {
+        if (!conversationId && !agentInstanceId) return { data: { conversation: null } };
         try {
+          const instanceId = String(agentInstanceId || '').trim();
+          if (instanceId) {
+            const conversation = await cookieJsonFetch(`/chats/by-instance/${encodeURIComponent(instanceId)}`);
+            const conv = conversation?.data ?? conversation ?? null;
+            if (conv && String(conv?.conversation_id || conv?.conversationId || '')) return { data: { conversation: conv } };
+          }
           const list = await cookieJsonFetch('/chats');
           const rows = Array.isArray(list) ? list : (list?.data || list?.conversations || []);
           const conversation = rows.find((c: any) => String(c?.conversation_id || c?.conversationId) === conversationId) || null;

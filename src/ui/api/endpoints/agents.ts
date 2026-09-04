@@ -478,7 +478,42 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
     return;
   }
 
-  dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
+  // Status/runtime changes (the common, high-frequency case — now that the bridge
+  // pushes an immediate agent_instance_status on every transition) are patched IN
+  // PLACE rather than invalidating the Agents LIST tag. A blind LIST invalidation
+  // forced a full /agents refetch on every mounted useListAgentsQuery subscriber
+  // on each status blip, which is the periodic /agents traffic we want to avoid:
+  // agent IDENTITIES rarely change, and genuine identity mutations
+  // (create/archive/rename/reconfigure) already invalidate the LIST via their own
+  // mutation invalidatesTags. So here we only patch the live runtime fields.
+  const summary = payload?.summary || {};
+  const runtimePatch = {
+    agent_instance_id: agentId,
+    runtime_status: payload?.runtime_status ?? summary?.runtime_status,
+    startup_status: payload?.startup_status ?? summary?.startup_status,
+    activity_status: payload?.activity_status ?? summary?.activity_status,
+    exec_state: payload?.exec_state,
+  };
+  let known = false;
+  dispatch(agentsApi.util.updateQueryData('listAgents', undefined, (draft: any) => {
+    const rows = draft?.agents || (draft.agents = []);
+    known = rows.some((r: any) => r.id === agentId);
+    if (known) applyAgentRuntimeEvent(rows, runtimePatch);
+  }));
+  if (known) {
+    dispatch(agentsApi.util.updateQueryData('fetchAgent', { agentInstanceId: agentId }, (draft: any) => {
+      if (!draft?.agent) return;
+      const rows = [draft.agent];
+      applyAgentRuntimeEvent(rows, runtimePatch);
+      draft.agent = rows[0];
+    }));
+    return;
+  }
+  // An agent id we don't have cached yet (e.g. an instance launched elsewhere):
+  // invalidate the LIST ONCE so it appears. This is the rare case; steady-state
+  // status blips for already-known agents are patched in place above and do NOT
+  // trigger a refetch.
+  dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }]));
 }
 
 export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
