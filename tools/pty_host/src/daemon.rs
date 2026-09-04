@@ -169,7 +169,15 @@ impl Daemon {
             args,
             rows,
             cols,
-            login_shell: true,
+            // The daemon manages explicit agent commands (e.g. `claude`, a
+            // wrapper, a shell the caller chose) — NOT login shells. Forcing a
+            // login shell (`-l`) is both semantically wrong here and
+            // environment-sensitive: a login `sh` re-sources /etc/profile +
+            // ~/.profile, which on some machines mutates the injected env,
+            // prints banners, or redraws the screen. That made an env-var
+            // assertion pass on one machine and fail on another. The caller
+            // controls login behavior explicitly via argv (e.g. `-- /bin/zsh -l`).
+            login_shell: false,
             cwd: spec.cwd.clone(),
             extra_env: spec.env.clone(),
         };
@@ -788,6 +796,37 @@ mod tests {
         d.shutdown();
     }
 
+    /// REQ HOST-1 (env plumbing, deterministic): spawn a ONE-SHOT, NON-LOGIN,
+    /// non-interactive `sh -c 'echo MARK:$MARKER_ENV'` with extra_env and assert
+    /// the captured output shows the value. This removes interactive-shell,
+    /// login-shell (`-l` profile sourcing), and input-timing variables entirely
+    /// — if this passes, extra_env genuinely reaches the child's environment.
+    /// (Requested by review to disambiguate env plumbing from shell init.)
+    #[test]
+    fn extra_env_reaches_child_oneshot() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        d.spawn(SpawnRequest {
+            instance: "envp".into(),
+            argv: vec![sh, "-c".into(), "echo MARK:$MARKER_ENV; sleep 2".into()],
+            cwd: None,
+            env: vec![("MARKER_ENV".into(), "xyzzy".into())],
+            detect: None,
+            rows: 10,
+            cols: 40,
+        })
+        .unwrap();
+        assert!(
+            capture_contains(&d, "envp", "MARK:xyzzy", Duration::from_secs(5)),
+            "extra_env did not reach the child (one-shot non-login sh)"
+        );
+        d.shutdown();
+    }
+
     #[test]
     fn restart_reuses_spec_and_same_id() {
         require_pty!();
@@ -796,28 +835,46 @@ mod tests {
             None => return,
         };
         let d = Daemon::new();
-        let mut spec = sh_spec("r", &sh);
-        spec.env = vec![("MARKER_ENV".into(), "xyzzy".into())];
+        // DETERMINISTIC design: the agent's argv itself emits the env marker at
+        // startup, then blocks. So every (re)spawn from the remembered spec
+        // re-prints `BOOT:xyzzy` with NO interactive input, NO login-shell
+        // profile sourcing, and NO input-timing race — the only variables the
+        // reviewer flagged. This asserts BOTH that restart reuses the exact
+        // spec (same argv/cwd/env) AND that extra_env survives the restart.
+        let spec = SpawnRequest {
+            instance: "r".into(),
+            argv: vec![
+                sh.clone(),
+                "-c".into(),
+                // Print marker once at boot, then stay alive (read blocks).
+                "echo BOOT:$MARKER_ENV; while :; do sleep 1; done".into(),
+            ],
+            cwd: None,
+            env: vec![("MARKER_ENV".into(), "xyzzy".into())],
+            detect: None,
+            rows: 20,
+            cols: 60,
+        };
         d.spawn(spec).unwrap();
-        // Verify the env is live on the ORIGINAL child before restart, so the
-        // post-restart check is unambiguously about the remembered spec.
+        // Marker must appear on the ORIGINAL child (env applied on first spawn).
         assert!(
-            drive_until(&d, "r", b"echo $MARKER_ENV\n", "xyzzy", Duration::from_secs(5)),
+            capture_contains(&d, "r", "BOOT:xyzzy", Duration::from_secs(5)),
             "env not applied on initial spawn"
         );
         let pid1 = find(&d.list(), "r").unwrap().pid;
 
         let pid2 = d.restart("r").unwrap();
-        // Same id still registered, new child pid.
+        // Same id still registered, new child pid, still alive.
         assert_eq!(d.agent_count(), 1);
         assert!(find(&d.list(), "r").is_some());
         assert_ne!(pid1, pid2, "restart should spawn a new child");
 
-        // The remembered env spec must survive the restart. Re-send until the
-        // re-spawned shell echoes it (no fixed-sleep race on the new PTY).
+        // The re-spawned child (from the remembered spec) re-prints the marker.
+        // Its fresh VT model starts blank, so seeing BOOT:xyzzy again proves the
+        // remembered argv+env were re-applied on restart.
         assert!(
-            drive_until(&d, "r", b"echo $MARKER_ENV\n", "xyzzy", Duration::from_secs(5)),
-            "remembered env did not survive restart"
+            capture_contains(&d, "r", "BOOT:xyzzy", Duration::from_secs(5)),
+            "remembered spec/env did not survive restart"
         );
 
         d.shutdown();
