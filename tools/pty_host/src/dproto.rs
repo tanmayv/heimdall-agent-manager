@@ -109,6 +109,19 @@ pub enum CtlReply {
     ChildExited { instance: String, code: i32 },
     Pong,
     Error { instance: String, message: String },
+    /// HOST-2: startup detection succeeded (no blocked pattern within probe).
+    StartupReady { instance: String },
+    /// HOST-2: startup detection blocked (login/quota/error prompt, or unknown
+    /// with startup_unknown_is_blocked). Carries the sanitized reason.
+    StartupBlocked {
+        instance: String,
+        reason_code: String,
+        safe_diagnostic: String,
+    },
+    /// HOST-2: content-change (activity) dirty signal. `hash` is a cheap content
+    /// hash of the rendered screen; the bridge classifies activity from the
+    /// change stream without polling (spinner masking is bridge-side).
+    ScreenChanged { instance: String, hash: u64 },
 }
 
 // ---- tags ---------------------------------------------------------------
@@ -134,6 +147,9 @@ const T_SCREEN: u8 = 0xA5;
 const T_EXITED: u8 = 0xA6;
 const T_PONG: u8 = 0xA7;
 const T_ERROR: u8 = 0xA8;
+const T_STARTUP_READY: u8 = 0xA9;
+const T_STARTUP_BLOCKED: u8 = 0xAA;
+const T_SCREEN_CHANGED: u8 = 0xAB;
 
 // ---- primitive codecs ---------------------------------------------------
 
@@ -451,6 +467,25 @@ impl CtlReply {
                 put_str(&mut p, instance);
                 put_str(&mut p, message);
             }
+            CtlReply::StartupReady { instance } => {
+                p.push(T_STARTUP_READY);
+                put_str(&mut p, instance);
+            }
+            CtlReply::StartupBlocked {
+                instance,
+                reason_code,
+                safe_diagnostic,
+            } => {
+                p.push(T_STARTUP_BLOCKED);
+                put_str(&mut p, instance);
+                put_str(&mut p, reason_code);
+                put_str(&mut p, safe_diagnostic);
+            }
+            CtlReply::ScreenChanged { instance, hash } => {
+                p.push(T_SCREEN_CHANGED);
+                put_str(&mut p, instance);
+                put_u64(&mut p, *hash);
+            }
         }
         frame(&p)
     }
@@ -538,6 +573,26 @@ impl CtlReply {
                 CtlReply::Error {
                     instance,
                     message: get_str(rest, &mut off)?,
+                }
+            }
+            T_STARTUP_READY => CtlReply::StartupReady {
+                instance: get_str(rest, &mut off)?,
+            },
+            T_STARTUP_BLOCKED => {
+                let instance = get_str(rest, &mut off)?;
+                let reason_code = get_str(rest, &mut off)?;
+                let safe_diagnostic = get_str(rest, &mut off)?;
+                CtlReply::StartupBlocked {
+                    instance,
+                    reason_code,
+                    safe_diagnostic,
+                }
+            }
+            T_SCREEN_CHANGED => {
+                let instance = get_str(rest, &mut off)?;
+                CtlReply::ScreenChanged {
+                    instance,
+                    hash: get_u64(rest, &mut off)?,
                 }
             }
             _ => return Err(bad("unknown reply tag")),
@@ -685,6 +740,16 @@ mod tests {
         round_reply(CtlReply::Error {
             instance: "a".into(),
             message: "no such instance".into(),
+        });
+        round_reply(CtlReply::StartupReady { instance: "a".into() });
+        round_reply(CtlReply::StartupBlocked {
+            instance: "a".into(),
+            reason_code: "blocked_0Login_required".into(),
+            safe_diagnostic: "Provider login required".into(),
+        });
+        round_reply(CtlReply::ScreenChanged {
+            instance: "a".into(),
+            hash: 0xdead_beef_cafe_1234,
         });
     }
 

@@ -36,7 +36,8 @@ Ctrl-\ detaches the passthrough client (child survives); F10 quits the debug TUI
 | `src/debug_tui.rs` | PTYH-3 | pure TUI state machine (tested) |
 | `src/debug_ui.rs` | PTYH-3 | ratatui/crossterm runtime |
 | `src/dproto.rs` | HOST-1 | instance-scoped multi-agent daemon protocol |
-| `src/daemon.rs` | HOST-1 | per-machine daemon: agent registry + spawn/close/restart/list |
+| `src/daemon.rs` | HOST-1/2 | per-machine daemon: agent registry + spawn/close/restart/list; per-agent detector thread |
+| `src/detect.rs` | HOST-2 | pure config-driven startup detector (auto-enter/blocked) + activity hash |
 
 ## Multi-agent daemon (HOST-1)
 ```bash
@@ -53,3 +54,41 @@ Ctrl-\ detaches the passthrough client (child survives); F10 quits the debug TUI
 The daemon manages N agents keyed by instance id; `restart` reuses the remembered
 argv/cwd/env/detect. `--detect` is stored verbatim in HOST-1 and consumed by the
 per-agent startup detector in HOST-2.
+
+## Config-driven startup detection + activity signal (HOST-2)
+Each agent may carry a `--detect` JSON blob reusing the Heimdall
+`Startup_Detection_Config` shape:
+```json
+{
+  "enabled": true,
+  "startup_probe_seconds": 20,
+  "capture_interval_ms": 500,
+  "auto_enter_patterns": ["Yes, I trust this folder", "Bypass Permissions mode"],
+  "auto_enter_pre_keys": ["", "Down"],
+  "blocked_patterns": ["Login required", "quota exceeded"],
+  "startup_unknown_is_blocked": false,
+  "sanitized_reason_mapping": ["login=Provider login required"]
+}
+```
+A per-agent detector ticks every `capture_interval_ms` against the live VT model:
+- **auto-enter** (checked first): when the screen contains `auto_enter_patterns[i]`,
+  the detector sends `auto_enter_pre_keys[i]` (space-separated key tokens like
+  `Down` or `Tab Tab`, translated to named keys) followed by **Enter**, then
+  cools down 2s + extends the probe deadline (so dismissing a prompt doesn't eat
+  the ready budget) — matching the Odin `startup_probe_agent`.
+- **blocked**: when the screen contains `blocked_patterns[i]`, emits
+  `StartupBlocked{instance, reason_code, safe_diagnostic}` (sanitized reason).
+- **timeout**: no match within the probe window emits `StartupReady{instance}`,
+  unless `startup_unknown_is_blocked` (then `StartupBlocked`).
+
+Separately, the daemon emits `ScreenChanged{instance, hash}` whenever an agent's
+rendered content changes — a cheap dirty signal so the bridge classifies activity
+**without polling**. This runs for every agent (even without a `detect` config);
+agents with no/disabled detection stay silent on startup events but still emit
+activity.
+
+> **Spinner masking is bridge-side.** A spinner/clock repainting every frame will
+> change the content hash continuously, so `ScreenChanged` fires steadily. The
+> host emits the raw dirty signal only; deciding that a lone spinner is *not*
+> real activity (masking) is the bridge's job (ported from `pane_activity.odin`
+> in BR-3), not the host's.

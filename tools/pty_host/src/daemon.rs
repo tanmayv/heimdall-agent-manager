@@ -23,10 +23,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 
+use crate::detect::{screen_hash, DetectAction, Detector, StartupDetectionConfig, StartupOutcome};
 use crate::dproto::{self, AgentInfo, CtlMsg, CtlReply, SpawnRequest};
 use crate::host::{PtyHost, SpawnConfig};
 use crate::proto::ScreenSnapshot;
@@ -53,6 +54,9 @@ struct Agent {
     stop: Arc<AtomicBool>,
     pump: Option<JoinHandle<()>>,
     exit_watch: Option<JoinHandle<()>>,
+    /// HOST-2: per-agent startup detector + activity-signal thread (only present
+    /// when the spec carried a `detect` config).
+    detector: Option<JoinHandle<()>>,
 }
 
 impl Agent {
@@ -96,6 +100,9 @@ impl Agent {
             let _ = t.join();
         }
         if let Some(t) = self.exit_watch.take() {
+            let _ = t.join();
+        }
+        if let Some(t) = self.detector.take() {
             let _ = t.join();
         }
     }
@@ -235,6 +242,27 @@ impl Daemon {
             })
         };
 
+        // HOST-2: per-agent startup detector + activity (ScreenChanged) signal.
+        // Only spun up when the spec carried a detect config. It ticks every
+        // capture_interval_ms, captures the VT text, dispatches auto-enter keys
+        // to the child, and broadcasts StartupReady/StartupBlocked + a
+        // ScreenChanged dirty signal on content change. It stops on
+        // stop/child-exit and is re-plumbed on restart (build_agent runs again).
+        let detector = {
+            let cfg = StartupDetectionConfig::from_json(spec.detect.as_deref().unwrap_or(""));
+            // Always run the loop (even when disabled/absent) so we still emit
+            // the ScreenChanged activity signal; the Detector short-circuits
+            // startup to Ready immediately when disabled.
+            let subs = Arc::clone(&self.subs);
+            let alive = Arc::clone(&alive);
+            let stop = Arc::clone(&stop);
+            let host = Arc::clone(&host);
+            let instance = instance.clone();
+            Some(std::thread::spawn(move || {
+                run_detector(cfg, host, subs, instance, alive, stop);
+            }))
+        };
+
         Ok(Agent {
             spec,
             host,
@@ -245,6 +273,7 @@ impl Daemon {
             stop,
             pump: Some(pump),
             exit_watch: Some(exit_watch),
+            detector,
         })
     }
 
@@ -422,6 +451,94 @@ fn broadcast_all(subs: &Subscribers, reply: &CtlReply) {
     let map = subs.lock().unwrap();
     for sub in map.values() {
         let _ = sub.tx.send(reply.clone());
+    }
+}
+
+/// HOST-2: per-agent startup-detection + activity loop. Runs on its own thread
+/// for the life of one child. Ticks every `capture_interval_ms`:
+///   1. captures the rendered screen text,
+///   2. emits `ScreenChanged{hash}` when the content hash changes (activity
+///      signal; spinner masking is bridge-side),
+///   3. feeds the text to the [`Detector`]; performs `SendKeys` against the
+///      child and broadcasts `StartupReady`/`StartupBlocked` on `Finished`.
+/// After the detector finishes it keeps emitting the activity signal until the
+/// child exits or the agent is stopped.
+fn run_detector(
+    cfg: StartupDetectionConfig,
+    host: Arc<Mutex<PtyHost>>,
+    subs: Subscribers,
+    instance: String,
+    alive: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+) {
+    let interval = Duration::from_millis(cfg.interval_ms().max(1) as u64);
+    // Only surface startup events when detection is actually enabled. When it is
+    // absent/disabled we still run the loop for the ScreenChanged activity
+    // signal (the bridge wants activity for every agent) but stay silent on
+    // startup so a no-detect agent doesn't emit a spurious StartupReady.
+    let emit_startup = cfg.enabled;
+    let start = Instant::now();
+    let mut detector = Detector::new(cfg, 0);
+    let mut last_hash: Option<u64> = None;
+
+    loop {
+        if stop.load(Ordering::SeqCst) || !alive.load(Ordering::SeqCst) {
+            return;
+        }
+
+        // Render the current screen to a single text blob for matching/hashing.
+        let text = {
+            let cap = host.lock().unwrap().capture();
+            cap.lines.join("\n")
+        };
+
+        // Activity (ScreenChanged) dirty signal on content change.
+        let h = screen_hash(&text);
+        if last_hash != Some(h) {
+            last_hash = Some(h);
+            broadcast_all(
+                &subs,
+                &CtlReply::ScreenChanged {
+                    instance: instance.clone(),
+                    hash: h,
+                },
+            );
+        }
+
+        // Drive the startup detector (no-op once finished).
+        if !detector.is_done() {
+            let now_ms = start.elapsed().as_millis() as i64;
+            for action in detector.step(&text, now_ms) {
+                match action {
+                    DetectAction::SendKeys(keys) => {
+                        let h = host.lock().unwrap();
+                        for k in keys {
+                            let _ = h.write_input(k.to_bytes());
+                        }
+                    }
+                    DetectAction::Finished(outcome) => {
+                        if emit_startup {
+                            let reply = match outcome {
+                                StartupOutcome::Ready => CtlReply::StartupReady {
+                                    instance: instance.clone(),
+                                },
+                                StartupOutcome::Blocked {
+                                    reason_code,
+                                    safe_diagnostic,
+                                } => CtlReply::StartupBlocked {
+                                    instance: instance.clone(),
+                                    reason_code,
+                                    safe_diagnostic,
+                                },
+                            };
+                            broadcast_all(&subs, &reply);
+                        }
+                    }
+                }
+            }
+        }
+
+        std::thread::sleep(interval);
     }
 }
 
@@ -1127,6 +1244,242 @@ mod tests {
             Duration::from_secs(3),
         );
         assert!(matches!(err, Some(CtlReply::Error { .. })), "expected Error reply");
+        server.shutdown();
+    }
+
+    // ---- HOST-2: detector integration over the daemon (real PTY) ---------
+
+    /// A blocked pattern in the child's output must produce a StartupBlocked
+    /// event carrying the sanitized reason. The agent argv prints the blocked
+    /// text itself, so no interactive input or timing is involved.
+    #[test]
+    fn detector_emits_startup_blocked_on_pattern() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("blocked");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let mut c = UnixStream::connect(&sock).unwrap();
+
+        let detect = r#"{
+            "enabled": true,
+            "startup_probe_seconds": 10,
+            "capture_interval_ms": 100,
+            "blocked_patterns": ["LOGIN_REQUIRED_MARK"],
+            "sanitized_reason_mapping": ["login=Provider login required"]
+        }"#;
+        dproto::write_ctl_msg(
+            &mut c,
+            &CtlMsg::Spawn(SpawnRequest {
+                instance: "b".into(),
+                argv: vec![
+                    sh.clone(),
+                    "-c".into(),
+                    "echo LOGIN_REQUIRED_MARK; while :; do sleep 1; done".into(),
+                ],
+                cwd: None,
+                env: vec![],
+                detect: Some(detect.into()),
+                rows: 20,
+                cols: 60,
+            }),
+        )
+        .unwrap();
+
+        let ev = await_reply(
+            &mut c,
+            |r| matches!(r, CtlReply::StartupBlocked { instance, .. } if instance == "b"),
+            Duration::from_secs(6),
+        );
+        match ev {
+            Some(CtlReply::StartupBlocked {
+                reason_code,
+                safe_diagnostic,
+                ..
+            }) => {
+                assert!(reason_code.starts_with("blocked_0"), "reason: {reason_code}");
+                assert_eq!(safe_diagnostic, "Provider login required");
+            }
+            other => panic!("expected StartupBlocked, got {other:?}"),
+        }
+        server.shutdown();
+    }
+
+    /// Auto-enter: when the child prints a pattern, the detector sends the
+    /// configured pre-keys+Enter to the child. We prove the keys ARRIVE by
+    /// having the shell `read` a line after printing the prompt and echo a
+    /// confirmation once it receives the Enter the detector sends.
+    #[test]
+    fn detector_auto_enter_sends_keys_to_child() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("autoenter");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let mut c = UnixStream::connect(&sock).unwrap();
+
+        // Print the prompt, then block on `read`; when the detector sends Enter
+        // the read completes and we print AUTO_ENTER_OK.
+        let detect = r#"{
+            "enabled": true,
+            "startup_probe_seconds": 10,
+            "capture_interval_ms": 100,
+            "auto_enter_patterns": ["TRUST_PROMPT_MARK"],
+            "auto_enter_pre_keys": [""]
+        }"#;
+        dproto::write_ctl_msg(
+            &mut c,
+            &CtlMsg::Spawn(SpawnRequest {
+                instance: "ae".into(),
+                argv: vec![
+                    sh.clone(),
+                    "-c".into(),
+                    "echo TRUST_PROMPT_MARK; read _x; echo AUTO_ENTER_OK; while :; do sleep 1; done".into(),
+                ],
+                cwd: None,
+                env: vec![],
+                detect: Some(detect.into()),
+                rows: 20,
+                cols: 60,
+            }),
+        )
+        .unwrap();
+        assert!(await_reply(&mut c, |r| matches!(r, CtlReply::Spawned { .. }), Duration::from_secs(3)).is_some());
+
+        // Attach + poll the capture until AUTO_ENTER_OK appears, proving the
+        // detector's Enter reached the child's `read`.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "ae".into() }).unwrap();
+        let mut ok = false;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(6) {
+            dproto::write_ctl_msg(&mut c, &CtlMsg::Capture { instance: "ae".into() }).unwrap();
+            if await_reply(
+                &mut c,
+                |r| matches!(r, CtlReply::Screen { screen, .. } if screen.lines.iter().any(|l| l.contains("AUTO_ENTER_OK"))),
+                Duration::from_millis(400),
+            )
+            .is_some()
+            {
+                ok = true;
+                break;
+            }
+        }
+        assert!(ok, "auto-enter Enter never reached the child (no AUTO_ENTER_OK)");
+        server.shutdown();
+    }
+
+    /// A clean startup (no blocked/auto-enter patterns, unknown allowed) must
+    /// eventually emit StartupReady after the probe window.
+    #[test]
+    fn detector_emits_startup_ready_on_timeout() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("ready");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let mut c = UnixStream::connect(&sock).unwrap();
+
+        // 1s probe window, nothing matches → Ready.
+        let detect = r#"{"enabled": true, "startup_probe_seconds": 1, "capture_interval_ms": 100}"#;
+        dproto::write_ctl_msg(
+            &mut c,
+            &CtlMsg::Spawn(SpawnRequest {
+                instance: "r".into(),
+                argv: vec![sh.clone()],
+                cwd: None,
+                env: vec![],
+                detect: Some(detect.into()),
+                rows: 20,
+                cols: 60,
+            }),
+        )
+        .unwrap();
+
+        let ev = await_reply(
+            &mut c,
+            |r| matches!(r, CtlReply::StartupReady { instance } if instance == "r"),
+            Duration::from_secs(5),
+        );
+        assert!(ev.is_some(), "never received StartupReady");
+        server.shutdown();
+    }
+
+    /// ScreenChanged fires when the child's rendered content changes. We spawn a
+    /// shell, then drive it to print new text and assert we observe at least two
+    /// distinct ScreenChanged hashes.
+    #[test]
+    fn detector_emits_screen_changed_on_content_change() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let sock = tmp_socket("changed");
+        let mut server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let mut c = UnixStream::connect(&sock).unwrap();
+
+        // detect present so the loop runs; no patterns so it just emits activity.
+        let detect = r#"{"enabled": true, "capture_interval_ms": 100}"#;
+        dproto::write_ctl_msg(
+            &mut c,
+            &CtlMsg::Spawn(SpawnRequest {
+                instance: "ch".into(),
+                argv: vec![sh.clone()],
+                cwd: None,
+                env: vec![],
+                detect: Some(detect.into()),
+                rows: 20,
+                cols: 60,
+            }),
+        )
+        .unwrap();
+        assert!(await_reply(&mut c, |r| matches!(r, CtlReply::Spawned { .. }), Duration::from_secs(3)).is_some());
+
+        // Collect ScreenChanged hashes while driving new content on a retry loop.
+        let mut hashes = std::collections::HashSet::new();
+        let start = std::time::Instant::now();
+        let mut n = 0u32;
+        c.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
+        while start.elapsed() < Duration::from_secs(6) && hashes.len() < 2 {
+            n += 1;
+            dproto::write_ctl_msg(
+                &mut c,
+                &CtlMsg::Input {
+                    instance: "ch".into(),
+                    data: format!("echo CHANGE_{n}\n").into_bytes(),
+                },
+            )
+            .unwrap();
+            let until = std::time::Instant::now() + Duration::from_millis(400);
+            while std::time::Instant::now() < until {
+                match dproto::read_ctl_reply(&mut c) {
+                    Ok(Some(CtlReply::ScreenChanged { hash, .. })) => {
+                        hashes.insert(hash);
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(ref e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(_) => break,
+                }
+            }
+        }
+        assert!(
+            hashes.len() >= 2,
+            "expected >=2 distinct ScreenChanged hashes, got {}",
+            hashes.len()
+        );
         server.shutdown();
     }
 }

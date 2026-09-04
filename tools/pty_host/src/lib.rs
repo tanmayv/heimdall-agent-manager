@@ -11,11 +11,13 @@
 //!   * [`debug_ui`]  — ratatui/crossterm runtime for the debug TUI (PTYH-3).
 //!   * [`dproto`]  — instance-scoped multi-agent daemon protocol (HOST-1).
 //!   * [`daemon`]  — per-machine daemon: agent registry + spawn/close/restart/list (HOST-1).
+//!   * [`detect`]  — pure config-driven startup detector + activity hash (HOST-2).
 
 pub mod client;
 pub mod daemon;
 pub mod debug_tui;
 pub mod debug_ui;
+pub mod detect;
 pub mod dproto;
 pub mod host;
 pub mod proto;
@@ -24,6 +26,7 @@ pub mod termios;
 pub mod vt;
 
 pub use daemon::{Daemon, DaemonServer};
+pub use detect::{Detector, StartupDetectionConfig, StartupOutcome};
 pub use dproto::{AgentInfo, CtlMsg, CtlReply, SpawnRequest};
 pub use host::{PtyHost, SpawnConfig};
 pub use proto::{ClientMsg, HostMsg, NamedKey, ScreenSnapshot};
