@@ -43,6 +43,10 @@ PTY_HOST_T_SCREEN :: 0xA5
 PTY_HOST_T_EXITED :: 0xA6
 PTY_HOST_T_PONG :: 0xA7
 PTY_HOST_T_ERROR :: 0xA8
+// HOST-2 events (bridge decodes; never sent by the bridge).
+PTY_HOST_T_STARTUP_READY :: 0xA9
+PTY_HOST_T_STARTUP_BLOCKED :: 0xAA
+PTY_HOST_T_SCREEN_CHANGED :: 0xAB
 
 PTY_HOST_MAX_FRAME_BYTES :: 64 * 1024 * 1024
 
@@ -111,17 +115,23 @@ Pty_Host_Reply_Kind :: enum {
 	Child_Exited,
 	Pong,
 	Error,
+	// HOST-2 events
+	Startup_Ready,
+	Startup_Blocked,
+	Screen_Changed,
 }
 
 Pty_Host_Reply :: struct {
-	kind:     Pty_Host_Reply_Kind,
-	instance: string,
-	pid:      i32,
-	code:     i32, // ChildExited code
-	message:  string, // Error message
-	data:     []byte, // Output bytes
-	screen:   Pty_Host_Screen,
-	agents:   []Pty_Host_Agent_Info,
+	kind:        Pty_Host_Reply_Kind,
+	instance:    string,
+	pid:         i32,
+	code:        i32, // ChildExited code
+	message:     string, // Error message / StartupBlocked safe_diagnostic
+	reason_code: string, // StartupBlocked reason_code
+	hash:        u64, // ScreenChanged content hash
+	data:        []byte, // Output bytes
+	screen:      Pty_Host_Screen,
+	agents:      []Pty_Host_Agent_Info,
 }
 
 Pty_Host_Screen :: struct {
@@ -361,6 +371,21 @@ pty_host_decode_reply :: proc(payload: []byte) -> (Pty_Host_Reply, bool) {
 		inst, ok := pty_host_get_str(rest, &off); if !ok do return {}, false
 		msg, ok2 := pty_host_get_str(rest, &off); if !ok2 { delete(inst); return {}, false }
 		r.instance = inst; r.message = msg
+	case PTY_HOST_T_STARTUP_READY:
+		r.kind = .Startup_Ready
+		inst, ok := pty_host_get_str(rest, &off); if !ok do return {}, false
+		r.instance = inst
+	case PTY_HOST_T_STARTUP_BLOCKED:
+		r.kind = .Startup_Blocked
+		inst, ok := pty_host_get_str(rest, &off); if !ok do return {}, false
+		rc, ok2 := pty_host_get_str(rest, &off); if !ok2 { delete(inst); return {}, false }
+		diag, ok3 := pty_host_get_str(rest, &off); if !ok3 { delete(inst); delete(rc); return {}, false }
+		r.instance = inst; r.reason_code = rc; r.message = diag
+	case PTY_HOST_T_SCREEN_CHANGED:
+		r.kind = .Screen_Changed
+		inst, ok := pty_host_get_str(rest, &off); if !ok do return {}, false
+		h, ok2 := pty_host_get_u64(rest, &off); if !ok2 { delete(inst); return {}, false }
+		r.instance = inst; r.hash = h
 	case:
 		return {}, false
 	}
@@ -401,6 +426,7 @@ pty_host_free_agents :: proc(agents: []Pty_Host_Agent_Info) {
 pty_host_reply_delete :: proc(r: Pty_Host_Reply) {
 	if r.instance != "" do delete(r.instance)
 	if r.message != "" do delete(r.message)
+	if r.reason_code != "" do delete(r.reason_code)
 	if r.data != nil do delete(r.data)
 	for l in r.screen.lines do delete(l)
 	if r.screen.lines != nil do delete(r.screen.lines)

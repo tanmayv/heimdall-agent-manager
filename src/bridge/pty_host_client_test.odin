@@ -285,3 +285,49 @@ pty_host_decode_rejects_empty_and_unknown :: proc(t: ^testing.T) {
 	_, ok2 := pty_host_decode_reply([]byte{0xFF})
 	testing.expect(t, !ok2, "unknown tag rejected")
 }
+
+// ---- HOST-2 event decode (tags 0xA9/0xAA/0xAB, matching dproto.rs) --------
+
+@(test)
+pty_host_decode_startup_ready :: proc(t: ^testing.T) {
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_STARTUP_READY)
+	pty_host_put_str(&p, "inst_x")
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode StartupReady")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Startup_Ready)
+	testing.expect_value(t, r.instance, "inst_x")
+}
+
+@(test)
+pty_host_decode_startup_blocked :: proc(t: ^testing.T) {
+	// instance + reason_code + safe_diagnostic
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_STARTUP_BLOCKED)
+	pty_host_put_str(&p, "inst_x")
+	pty_host_put_str(&p, "blocked_0trust")
+	pty_host_put_str(&p, "folder trust prompt not auto-dismissable")
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode StartupBlocked")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Startup_Blocked)
+	testing.expect_value(t, r.instance, "inst_x")
+	testing.expect_value(t, r.reason_code, "blocked_0trust")
+	testing.expect_value(t, r.message, "folder trust prompt not auto-dismissable")
+}
+
+@(test)
+pty_host_decode_screen_changed :: proc(t: ^testing.T) {
+	// instance + u64 hash
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_SCREEN_CHANGED)
+	pty_host_put_str(&p, "inst_x")
+	pty_host_put_u64(&p, 0xDEADBEEFCAFE1234)
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode ScreenChanged")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Screen_Changed)
+	testing.expect_value(t, r.instance, "inst_x")
+	testing.expect_value(t, r.hash, u64(0xDEADBEEFCAFE1234))
+}

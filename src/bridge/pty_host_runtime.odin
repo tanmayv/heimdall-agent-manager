@@ -24,6 +24,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import "core:sys/posix"
 import "core:time"
 
 // Retry/backoff for a spawn that races daemon startup (AC-5 parity with the tmux
@@ -248,15 +249,147 @@ bridge_pty_host_backoff :: proc(attempt: int) {
 	time.sleep(time.Duration(ms) * time.Millisecond)
 }
 
+// ---- message/prompt/nudge delivery (BR-3) -------------------------------
+//
+// In the tmux/wrapper model the ham-wrapper received a hub push and injected a
+// one-line notice into the pane via tmux.send_text(pane, msg, enter=true) (type
+// the text, then press Enter). In the wrapper-free model the bridge does the same
+// thing directly against the daemon: host.input(instance, text) followed by
+// host.key(instance, Enter). bridge_pty_host_deliver_line is that primitive; the
+// hub-push handlers translate each notification into a single notice line exactly
+// as the wrapper did, then call it.
+
+// bridge_pty_host_deliver_line types text into the instance then presses Enter,
+// mirroring tmux.send_text(pane, text, enter=true). Returns false if either the
+// input or the key send fails.
+bridge_pty_host_deliver_line :: proc(socket, instance, text: string) -> bool {
+	input := pty_host_encode_input(instance, transmute([]byte)text)
+	defer delete(input)
+	if !bridge_pty_host_send_oneway(socket, input) do return false
+	// Small settle delay before Enter, matching the wrapper's 300ms pane pause so a
+	// TUI input box registers the pasted text before the submit key.
+	time.sleep(300 * time.Millisecond)
+	key := pty_host_encode_key(instance, .Enter)
+	defer delete(key)
+	return bridge_pty_host_send_oneway(socket, key)
+}
+
+// bridge_pty_host_send_oneway writes a data-plane frame that expects no reply
+// (Input/Key/Resize on an attached instance). Dials, sends, closes.
+bridge_pty_host_send_oneway :: proc(socket: string, frame: []byte) -> bool {
+	fd, ok := pty_host_dial(socket)
+	if !ok do return false
+	defer posix.close(fd)
+	return pty_host_send_all(fd, frame)
+}
+
+// bridge_pty_host_message_notice renders the agent_message notice text (pure, so
+// it is unit-testable). Mirrors the wrapper's wrapper_bridge_deliver_message_push.
+bridge_pty_host_message_notice :: proc(sender: string) -> string {
+	s := sender
+	if strings.trim_space(s) == "" do s = "user"
+	return strings.concatenate({"New message from ", s, " \u2014 run './.heimdall/bin/ham-ctl agent chat read' to view."})
+}
+
+// bridge_pty_host_task_nudge_notice renders the task-nudge notice text (pure).
+bridge_pty_host_task_nudge_notice :: proc(task_id, target_role: string) -> string {
+	tid := task_id
+	if strings.trim_space(tid) == "" do tid = "unknown"
+	role := target_role
+	if strings.trim_space(role) == "" do role = "participant"
+	return strings.concatenate({"Nudge: you have been nudged on ", tid, " (", role, "). Run './.heimdall/bin/ham-ctl tasks list' and complete your assignment."})
+}
+
+// bridge_pty_host_deliver_message renders the same notice the wrapper produced for
+// an agent_message push and delivers it.
+bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> bool {
+	msg := bridge_pty_host_message_notice(sender)
+	defer delete(msg)
+	return bridge_pty_host_deliver_line(socket, instance, msg)
+}
+
+// bridge_pty_host_deliver_task_nudge mirrors the wrapper task-nudge notice.
+bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string) -> bool {
+	msg := bridge_pty_host_task_nudge_notice(task_id, target_role)
+	defer delete(msg)
+	return bridge_pty_host_deliver_line(socket, instance, msg)
+}
+
+// bridge_pty_host_deliver_notice delivers an arbitrary prefixed nudge/notice line
+// (title-nudge, startup prompt) verbatim.
+bridge_pty_host_deliver_notice :: proc(socket, instance, notice: string) -> bool {
+	return bridge_pty_host_deliver_line(socket, instance, notice)
+}
+
+// bridge_pty_host_deliver_to_agent is the single entry the hub-push handlers call
+// in the wrapper-free path: it ensures the daemon is up, then renders+delivers the
+// notice for the given kind ("message" | "task_nudge"). Returns false if the daemon
+// is unavailable or the delivery fails.
+bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string) -> bool {
+	socket, ok := bridge_pty_host_ensure_daemon()
+	if !ok do return false
+	switch kind {
+	case "message":
+		return bridge_pty_host_deliver_message(socket, instance, sender)
+	case "task_nudge":
+		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role)
+	}
+	return false
+}
+
 // ---- event->status mapping (consumed by the BR-3 subscriber) ------------
 
 // bridge_pty_host_apply_child_exited maps a ChildExited event to the bridge's
-// runtime status. A clean stop-intent exit stays "stopped"; an unexpected exit
-// surfaces as "stopped" with idle activity so the UI reflects the dead child.
-// (Restart-on-crash policy lands in BR-3; BR-2 just wires the status transition.)
+// runtime status. The child is gone, so we drop the launch record and mark the
+// instance stopped/idle; the stop-intent guard inside the status layer prevents a
+// deliberately-stopped instance from being resurrected. Restart-reap (a superseded
+// launch closing an older child) is handled at launch time via
+// bridge_pty_host_reap_superseded, not here.
 bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
 	if strings.trim_space(instance) == "" do return
 	fmt.println("bridge pty-host: child exited", instance, "code", code)
 	bridge_runtime_remove_launch(instance)
 	bridge_runtime_set_status(instance, "stopped", "idle")
+}
+
+// bridge_pty_host_apply_startup_ready maps a StartupReady event: the startup probe
+// saw no blocked pattern. This proves the process launched but is NOT start-success
+// (only the agent calling start-success flips to "running"), so we record a
+// liveness signal exactly as the wrapper's "startup ready" did — keeping the
+// instance "starting" until the agent acknowledges.
+bridge_pty_host_apply_startup_ready :: proc(instance: string) {
+	if strings.trim_space(instance) == "" do return
+	bridge_runtime_note_wrapper_signal(instance, "idle")
+}
+
+// bridge_pty_host_apply_startup_blocked maps a StartupBlocked event to the distinct
+// "blocked" runtime state (active-but-not-ready), mirroring the wrapper's
+// wrapper.startup.report phase=startup_blocked path. reason_code/safe_diagnostic
+// are logged for operators; the status layer projects "blocked" upstream.
+bridge_pty_host_apply_startup_blocked :: proc(instance, reason_code, safe_diagnostic: string) {
+	if strings.trim_space(instance) == "" do return
+	fmt.println("bridge pty-host: startup blocked", instance, "reason=", reason_code, "detail=", safe_diagnostic)
+	bridge_runtime_set_status(instance, "blocked", "idle")
+}
+
+// bridge_pty_host_apply_activity maps a classified burst to a hub activity report,
+// tagged with the harness-agnostic "pane_diff" source (same rank the wrapper's pane
+// detector used) so it ranks above a plain liveness ping but below a native agent
+// extension. waiting_user is projected to idle by the hub.
+bridge_pty_host_apply_activity :: proc(instance: string, sample: Bridge_Activity_Sample) {
+	if strings.trim_space(instance) == "" do return
+	bridge_runtime_note_agent_activity(instance, bridge_activity_status_string(sample.status), "pane_diff")
+}
+
+// bridge_pty_host_reap_superseded implements the restart-reap rule for the
+// wrapper-free path: when a fresh launch supersedes a prior run of the same
+// instance, close the old child on the daemon (SIGTERM->SIGKILL + unregister) so no
+// orphaned agent lingers. This is the host analog of the wrapper's H7 token
+// self-reap — with a real daemon we close directly instead of waiting for a
+// liveness-ping timeout. Best-effort; safe if the instance is not registered.
+bridge_pty_host_reap_superseded :: proc(socket, instance: string) {
+	if strings.trim_space(instance) == "" do return
+	if bridge_pty_host_is_registered(socket, instance) {
+		if bridge_pty_host_close(socket, instance) do fmt.println("bridge pty-host: reaped superseded instance", instance)
+	}
 }

@@ -89,6 +89,51 @@ pty_host_socket_path_under_run_dir :: proc(t: ^testing.T) {
 }
 
 @(test)
+pty_host_message_notice_rendering :: proc(t: ^testing.T) {
+	m := bridge_pty_host_message_notice("inst_sender")
+	defer delete(m)
+	testing.expect_value(t, m, "New message from inst_sender \u2014 run './.heimdall/bin/ham-ctl agent chat read' to view.")
+	// blank sender defaults to "user"
+	m2 := bridge_pty_host_message_notice("  ")
+	defer delete(m2)
+	testing.expect(t, strings.contains(m2, "New message from user "), "blank sender => user")
+}
+
+@(test)
+pty_host_task_nudge_notice_rendering :: proc(t: ^testing.T) {
+	n := bridge_pty_host_task_nudge_notice("task_123", "assignee")
+	defer delete(n)
+	testing.expect_value(t, n, "Nudge: you have been nudged on task_123 (assignee). Run './.heimdall/bin/ham-ctl tasks list' and complete your assignment.")
+	// blank defaults
+	n2 := bridge_pty_host_task_nudge_notice("", "")
+	defer delete(n2)
+	testing.expect(t, strings.contains(n2, "nudged on unknown (participant)"), "blank task/role defaults")
+}
+
+// pty_host_delivery_maps_push_to_input_enter proves the delivery primitive's wire
+// shape: a notice becomes Input(instance, text) followed by Key(instance, Enter) —
+// the host analog of tmux.send_text(pane, text, enter=true).
+@(test)
+pty_host_delivery_maps_push_to_input_enter :: proc(t: ^testing.T) {
+	notice := bridge_pty_host_message_notice("user")
+	defer delete(notice)
+
+	input := pty_host_encode_input("inst_a", transmute([]byte)notice)
+	defer delete(input)
+	ip := pty_host_test_reframe(t, input)
+	testing.expect_value(t, ip[0], u8(PTY_HOST_T_INPUT))
+	// tag + u32 len(6) + "inst_a" + raw notice bytes
+	testing.expect_value(t, len(ip), 1 + 4 + 6 + len(notice))
+
+	key := pty_host_encode_key("inst_a", .Enter)
+	defer delete(key)
+	kp := pty_host_test_reframe(t, key)
+	want := []byte{PTY_HOST_T_KEY, 0, 0, 0, 6, 'i', 'n', 's', 't', '_', 'a', 1}
+	testing.expect_value(t, len(kp), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, kp[i], want[i])
+}
+
+@(test)
 pty_host_build_spawn_from_profile :: proc(t: ^testing.T) {
 	// Requires a runnable provider profile. Use the resolved default provider; if
 	// none is runnable in this build/test env, skip (the assembly logic is still

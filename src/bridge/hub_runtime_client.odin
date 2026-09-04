@@ -278,8 +278,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if type == "notify_agent_message" {
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
-		ok := bridge_wrapper_push(instance_id, text)
-		if !ok do fmt.println("bridge notification pending/no-wrapper-subscription", instance_id, command_id)
+		// BR-3: in the wrapper-free path deliver the notice directly to the agent via
+		// the daemon (host.input+Enter) instead of pushing to a ham-wrapper.
+		ok: bool
+		if bridge_pty_host_runtime_enabled() {
+			sender := extract_json_string(text, "sender_agent_instance_id", extract_json_string(text, "sender", "user"))
+			ok = bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
+		} else {
+			ok = bridge_wrapper_push(instance_id, text)
+		}
+		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
@@ -289,6 +297,14 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		task_id := extract_json_string(text, "task_id", "")
 		if bridge_should_debounce_nudge(instance_id, task_id) {
 			if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded", ""))
+			return
+		}
+		// BR-3: wrapper-free path delivers the task-nudge notice straight to the agent.
+		if bridge_pty_host_runtime_enabled() {
+			target_role := extract_json_string(text, "target_role", "participant")
+			ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role)
+			if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
+			if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 			return
 		}
 		ok := bridge_wrapper_push_task_nudge(instance_id, text)
@@ -311,6 +327,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		// agent so it picks up the nudge on boot. Never a new notifier.
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
+		if bridge_pty_host_runtime_enabled() {
+			message := extract_json_string(text, "message", "Please set a short, human-meaningful title for this conversation and its task chain.")
+			notice := strings.concatenate({"Nudge: ", message})
+			defer delete(notice)
+			if socket, sok := bridge_pty_host_ensure_daemon(); sok {
+				ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+				if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+				return
+			}
+		}
 		ok := bridge_wrapper_push_title_nudge(instance_id, text)
 		if !ok {
 			if bridge_task_status_notify_wake_local(instance_id) {
@@ -644,6 +670,10 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 		return false, "ham-pty-host spawn failed"
 	}
 	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), pane_id = fmt.tprintf("pty-host:%d", pid), agent_token = strings.clone(agent_token)})
+	// BR-3: ensure the event-subscription worker is running so this instance's
+	// ChildExited/StartupReady/StartupBlocked/ScreenChanged events flow to the hub
+	// status/activity surface without polling.
+	bridge_pty_host_events_ensure()
 	return true, ""
 }
 
