@@ -1,0 +1,10 @@
+[package]
+name = "ham-pty-host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+portable-pty = "0.9.0"
+vte = "0.15.0"
