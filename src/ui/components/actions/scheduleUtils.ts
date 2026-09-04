@@ -37,6 +37,47 @@ export function getLocalTimezone(): string {
   }
 }
 
+// SCHED-TZ-1: format an absolute Date instant as a wall-clock string in the given
+// IANA time zone. calculateNextRuns() returns correct absolute instants; this only
+// controls DISPLAY (previously the UI used Date.toISOString(), which always renders
+// UTC while mislabeling it with the selected zone). Returns e.g. "2026-09-04 14:30".
+// Falls back to a UTC wall-clock string when the zone is empty/invalid.
+export function formatInTimeZone(date: Date, timezone: string): string {
+  const tz = timezone || 'UTC';
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    });
+    const parts = dtf.formatToParts(date);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
+    return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
+  } catch (_e) {
+    // Invalid zone: render the UTC wall-clock instead of throwing.
+    return date.toISOString().replace('T', ' ').slice(0, 16);
+  }
+}
+
+// SCHED-TZ-1: a human label for the zone a time is shown in, with a short GMT
+// offset for clarity (e.g. "Asia/Kolkata GMT+5:30"). The offset is date-dependent
+// so DST is reflected correctly. Falls back to the bare zone name (or "UTC").
+export function timeZoneLabel(date: Date, timezone: string): string {
+  const tz = timezone || 'UTC';
+  if (tz === 'UTC') return 'UTC';
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' });
+    const offset = dtf.formatToParts(date).find((p) => p.type === 'timeZoneName')?.value || '';
+    return offset && offset !== 'GMT' ? `${tz} ${offset}` : tz;
+  } catch (_e) {
+    return 'UTC';
+  }
+}
+
 export function validateCronField(field: string, min: number, max: number): boolean {
   const f = field.trim();
   if (!f) return false;

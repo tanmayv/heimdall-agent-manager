@@ -11,7 +11,7 @@ import {
 } from '../../api/endpoints/actions';
 import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
 import DeleteActionModal from './DeleteActionModal';
-import { describeCron, calculateNextRuns } from './scheduleUtils';
+import { describeCron, calculateNextRuns, formatInTimeZone, timeZoneLabel } from './scheduleUtils';
 
 function shellHash(path: string): string {
   return buildRouteHash(path, '');
@@ -591,7 +591,8 @@ function ActionCard({
             <span>Next run:</span>
             {nextRuns.length > 0 ? (
               <span className="font-mono text-zinc-300">
-                {nextRuns[0].toISOString().replace('T', ' ').slice(0, 19)} UTC
+                {formatInTimeZone(nextRuns[0], action.timezone || 'UTC')}
+                <span className="ml-1.5 text-zinc-500">({timeZoneLabel(nextRuns[0], action.timezone || 'UTC')})</span>
               </span>
             ) : action.target_run_at ? (
               <span className="font-mono text-zinc-300">{action.target_run_at}</span>

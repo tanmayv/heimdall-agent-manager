@@ -10,6 +10,8 @@ import {
   buildEveryNHours,
   buildDaily,
   buildWeekly,
+  formatInTimeZone,
+  timeZoneLabel,
   type PresetType,
 } from './scheduleUtils';
 
@@ -373,8 +375,8 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
               {nextRuns.map((runDate, i) => (
                 <li key={i} className="flex items-center gap-2 text-xs text-zinc-300 font-mono">
                   <span className="text-zinc-500">#{i + 1}</span>
-                  <span>{runDate.toISOString().replace('T', ' ').slice(0, 19)} UTC</span>
-                  <span className="text-zinc-500 text-[11px]">({value.timezone || 'UTC'})</span>
+                  <span>{formatInTimeZone(runDate, value.timezone)}</span>
+                  <span className="text-zinc-500 text-[11px]">({timeZoneLabel(runDate, value.timezone)})</span>
                 </li>
               ))}
             </ul>
