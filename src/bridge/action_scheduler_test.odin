@@ -1,5 +1,6 @@
 package main
 
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -116,14 +117,17 @@ test_action_scheduler_can_claim :: proc(t: ^testing.T) {
 @(test)
 test_action_scheduler_claim_and_recovery :: proc(t: ^testing.T) {
 	now := i64(200_000)
+	// state is a heap-owned field (claim/recover free+clone it), so clone the
+	// initial value here just as bridge_action_scheduler_sync does for real items.
 	item := Action_Queue_Item{
 		id = "act_2",
 		target_instance_id = "inst_1",
 		target_run_at_ms = 150_000,
-		state = "active",
+		state = strings.clone("active"),
 		in_flight = false,
 		leased_at_ms = 0,
 	}
+	defer delete(item.state)
 
 	// Claim
 	action_scheduler_claim(&item, now)

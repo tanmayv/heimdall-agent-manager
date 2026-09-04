@@ -392,14 +392,23 @@ action_scheduler_claim :: proc(item: ^Action_Queue_Item, now_ms: i64) {
 	if item == nil do return
 	item.in_flight = true
 	item.leased_at_ms = now_ms
-	item.state = "in_flight"
+	// item.state is a heap-owned string (cloned in sync, freed in
+	// action_queue_item_free). Free the old value and clone the new status so the
+	// field stays heap-owned; assigning a string literal here previously caused an
+	// invalid free (SIGABRT) on the next sync tick and leaked the prior clone.
+	delete(item.state)
+	item.state = strings.clone("in_flight")
 }
 
 action_scheduler_recover_lease :: proc(item: ^Action_Queue_Item, now_ms: i64, lease_window_ms: i64 = ACTION_SCHEDULER_DEFAULT_LEASE_WINDOW_MS) -> bool {
 	if item == nil do return false
 	if item.in_flight && lease_window_ms > 0 && item.leased_at_ms > 0 && (now_ms - item.leased_at_ms >= lease_window_ms) {
 		item.in_flight = false
-		item.state = "active"
+		// Keep item.state heap-owned (see action_scheduler_claim): free the old
+		// value and clone the new status rather than assigning a string literal,
+		// which would be an invalid free when action_queue_item_free runs.
+		delete(item.state)
+		item.state = strings.clone("active")
 		return true
 	}
 	return false
