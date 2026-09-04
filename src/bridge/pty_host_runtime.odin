@@ -76,12 +76,19 @@ bridge_pty_host_bin :: proc() -> string {
 // its socket path. The daemon is spawned detached (its own process) listening on
 // pty_host_socket_path(); we then poll a Ping until it answers or the deadline
 // passes. Safe to call on every launch.
+//
+// BR-2a: the socket path is BRIDGE-UNIQUE (see pty_host_socket_path). A daemon
+// already answering on it therefore belongs to THIS bridge — a prior instance of
+// the same bridge identity (e.g. across a bridge restart), never another bridge's
+// daemon. Adopting it is correct-by-identity: we never cross-wire two bridges to
+// one daemon, and each bridge owns exactly one daemon serving its own agent set.
 bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
 	socket := pty_host_socket_path()
 	sync.mutex_lock(&pty_host_daemon_lock)
 	defer sync.mutex_unlock(&pty_host_daemon_lock)
 
-	// Already up (this bridge started it, or a prior bridge left it running)?
+	// Already up on this bridge's own socket (this process started it, or a prior
+	// instance of THIS bridge left it running across a restart)?
 	if pty_host_daemon_started && bridge_pty_host_ping(socket) do return socket, true
 	if bridge_pty_host_ping(socket) {
 		pty_host_daemon_started = true

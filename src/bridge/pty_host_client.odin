@@ -15,6 +15,7 @@ package main
 // PTY-host runtime flag.
 
 import "core:c"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/posix"
@@ -442,7 +443,30 @@ pty_host_reply_delete :: proc(r: Pty_Host_Reply) {
 pty_host_socket_path :: proc() -> string {
 	base := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
 	if base == "" do base = "/tmp/heimdall-bridge-local"
-	return strings.concatenate({base, "/pty-host.sock"})
+	// BR-2a: a daemon serves exactly ONE bridge, so the socket name embeds a stable
+	// per-bridge identity. This makes the path unique even when two bridges on one
+	// host share the DEFAULT local_endpoint_run_dir (/tmp/heimdall-bridge-local):
+	// distinct ids => distinct sockets => distinct daemons => disjoint agent sets.
+	id := pty_host_bridge_identity()
+	defer delete(id)
+	return strings.concatenate({base, "/pty-host-", id, ".sock"})
+}
+
+// pty_host_bridge_identity returns a stable, filesystem-safe token identifying
+// THIS bridge, for scoping the daemon socket. Preference order:
+//   1. daemon_id (the enrolled bridge_id persisted in config) — the true identity;
+//   2. local_endpoint_port — a reliable per-host discriminator (two bridges cannot
+//      bind the same port), matching how the tmux session is scoped;
+//   3. "default" — last resort for an unconfigured single bridge.
+// Caller owns the returned string.
+pty_host_bridge_identity :: proc() -> string {
+	if id := strings.trim_space(bridge_config.daemon_id); id != "" && id != "local-daemon" {
+		return bridge_runtime_safe_part(id)
+	}
+	if bridge_config.local_endpoint_port != 0 {
+		return fmt.aprintf("port-%d", bridge_config.local_endpoint_port)
+	}
+	return strings.clone("default")
 }
 
 // pty_host_dial connects to the daemon unix socket, returning the fd or (-1,false).

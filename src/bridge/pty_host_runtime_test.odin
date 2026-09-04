@@ -2,6 +2,7 @@ package main
 
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 
 // BR-2 runtime-layer tests: the flag gate, env-pair conversion, and spawn-request
@@ -73,19 +74,28 @@ pty_host_env_pairs_splits_on_first_eq :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_socket_path_under_run_dir :: proc(t: ^testing.T) {
-	old := bridge_config.local_endpoint_run_dir
-	defer { bridge_config.local_endpoint_run_dir = old }
+	// Shares the global bridge_config with the BR-2a socket tests; serialize on the
+	// same mutex and snapshot/restore. BR-2a made the socket name bridge-unique, so
+	// pin a known identity and assert the new <run_dir>/pty-host-<id>.sock shape.
+	sync.mutex_lock(&pty_host_socket_test_mutex)
+	defer sync.mutex_unlock(&pty_host_socket_test_mutex)
+	old_dir := bridge_config.local_endpoint_run_dir
+	old_id := bridge_config.daemon_id
+	old_port := bridge_config.local_endpoint_port
+	defer { bridge_config.local_endpoint_run_dir = old_dir; bridge_config.daemon_id = old_id; bridge_config.local_endpoint_port = old_port }
+	bridge_config.daemon_id = "brg_z"
+	bridge_config.local_endpoint_port = 0
 
 	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-x"
 	p := pty_host_socket_path()
 	defer delete(p)
-	testing.expect_value(t, p, "/tmp/heimdall-bridge-x/pty-host.sock")
+	testing.expect_value(t, p, "/tmp/heimdall-bridge-x/pty-host-brg_z.sock")
 
 	// Trailing slash must not double up.
 	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-x/"
 	p2 := pty_host_socket_path()
 	defer delete(p2)
-	testing.expect_value(t, p2, "/tmp/heimdall-bridge-x/pty-host.sock")
+	testing.expect_value(t, p2, "/tmp/heimdall-bridge-x/pty-host-brg_z.sock")
 }
 
 @(test)
