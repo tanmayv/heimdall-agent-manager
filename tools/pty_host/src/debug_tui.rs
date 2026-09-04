@@ -157,6 +157,9 @@ pub enum Key {
     Ctrl(char),
     /// Toggle focus (F2).
     ToggleFocus,
+    /// Toggle the debug panel (F3). Only the multi-agent dashboard uses this;
+    /// the single-agent debug TUI ignores it.
+    ToggleDebug,
     /// Detach + quit (F10).
     Quit,
     /// A function/other key we don't translate.
@@ -363,7 +366,9 @@ pub fn key_to_bytes(key: &Key) -> Option<Vec<u8>> {
                 }
             }
         }
-        Key::BackTab | Key::ToggleFocus | Key::Quit | Key::Other => return None,
+        Key::BackTab | Key::ToggleFocus | Key::ToggleDebug | Key::Quit | Key::Other => {
+            return None
+        }
     };
     Some(v)
 }

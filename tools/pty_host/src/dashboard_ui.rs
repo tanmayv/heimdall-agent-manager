@@ -156,7 +156,10 @@ fn event_loop(
         // Compute the right-pane geometry from the current terminal size and
         // notify the app so it can resize the attached agent's PTY to match.
         let full = term.size()?;
-        let pane_geom = pane_geometry(Rect::new(0, 0, full.width, full.height));
+        let pane_geom = pane_geometry(
+            Rect::new(0, 0, full.width, full.height),
+            app.debug_visible,
+        );
         if pane_geom != last_pane_geom {
             last_pane_geom = pane_geom;
             let msgs = app.on_pane_resize(pane_geom.0, pane_geom.1).messages;
@@ -191,9 +194,21 @@ fn event_loop(
                 }
                 Event::Mouse(me) => {
                     if let MouseEventKind::Down(MouseButton::Left) = me.kind {
-                        if let Some(row) = sidebar_hit_row(term, me.column, me.row)? {
-                            let out = app.handle_click_row(row);
-                            send_all(write_stream, &out.messages);
+                        let full = term.size()?;
+                        match hit_test(
+                            Rect::new(0, 0, full.width, full.height),
+                            app.debug_visible,
+                            me.column,
+                            me.row,
+                        ) {
+                            Some(Click::Row(row)) => {
+                                let out = app.handle_click_row(row);
+                                send_all(write_stream, &out.messages);
+                            }
+                            Some(Click::SidebarHeader) => app.focus_section(Focus::List),
+                            Some(Click::PaneHeader) => app.focus_section(Focus::Pane),
+                            Some(Click::DebugHeader) => app.focus_section(Focus::Debug),
+                            None => {}
                         }
                     }
                 }
@@ -232,9 +247,13 @@ fn to_rows(list: Vec<AgentInfo>) -> Vec<AgentRow> {
 
 /// The (rows, cols) available to the selected-agent pane given the full window.
 /// Mirrors the draw layout: 1-row banner + 1-row status, sidebar column of
-/// `SIDEBAR_WIDTH`, and the pane inside a bordered block (−2 each dimension).
-fn pane_geometry(full: Rect) -> (u16, u16) {
-    let body_h = full.height.saturating_sub(2); // banner + status
+/// `SIDEBAR_WIDTH`, the pane inside a bordered block (−2 each dimension), and
+/// — when shown — the debug panel (`DEBUG_HEIGHT` rows) below the pane.
+fn pane_geometry(full: Rect, debug_visible: bool) -> (u16, u16) {
+    let mut body_h = full.height.saturating_sub(2); // banner + status
+    if debug_visible {
+        body_h = body_h.saturating_sub(DEBUG_HEIGHT);
+    }
     let pane_w = full.width.saturating_sub(SIDEBAR_WIDTH);
     // Inside the pane's bordered Block.
     let rows = body_h.saturating_sub(2);
@@ -242,32 +261,70 @@ fn pane_geometry(full: Rect) -> (u16, u16) {
     (rows.max(1), cols.max(1))
 }
 
-/// Map a mouse click to a sidebar row index (0-based, within the visible list),
-/// or None if the click is outside the sidebar's row area.
-fn sidebar_hit_row(
-    term: &mut Terminal<Backend>,
-    col: u16,
-    row: u16,
-) -> Result<Option<usize>> {
-    let full = term.size()?;
-    // Sidebar is the left column, below the banner (row 0), inside its border
-    // (top border at body row 0). Body starts at y=1 (after banner). The list
-    // block border occupies 1 row at top, so first row is y = 1 + 1 = 2.
-    if col >= SIDEBAR_WIDTH {
-        return Ok(None);
+/// Height of the debug panel (bordered) when shown. Mirrors [`draw_pane`].
+const DEBUG_HEIGHT: u16 = 9;
+
+/// Where a left-click landed, in dashboard terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Click {
+    /// A sidebar agent row (0-based within the visible list).
+    Row(usize),
+    /// The sidebar's " agents " header/border -> focus List.
+    SidebarHeader,
+    /// The selected-agent pane header -> focus Pane.
+    PaneHeader,
+    /// The debug panel header -> focus (+reveal) Debug.
+    DebugHeader,
+}
+
+/// Classify a click at (col,row) against the current layout. Header clicks make
+/// that section the focus; a click on a sidebar row selects+switches. Geometry
+/// mirrors [`draw`]: banner (y=0), body (y=1..h-2), status (y=h-1); left column
+/// width `SIDEBAR_WIDTH`, right column split pane / debug(when visible).
+fn hit_test(full: Rect, debug_visible: bool, col: u16, row: u16) -> Option<Click> {
+    let banner_y = 0u16;
+    let status_y = full.height.saturating_sub(1);
+    if row == banner_y || row >= status_y {
+        return None;
     }
-    let first_list_y = 2u16;
-    let body_bottom = full.height.saturating_sub(1); // status line row
-    if row < first_list_y || row >= body_bottom {
-        return Ok(None);
+    let body_top = 1u16;
+    let body_bottom = status_y; // exclusive
+
+    if col < SIDEBAR_WIDTH {
+        // Sidebar: header/border at body_top, rows start at body_top+1.
+        if row == body_top {
+            return Some(Click::SidebarHeader);
+        }
+        let first_row = body_top + 1;
+        if row >= first_row && row < body_bottom {
+            return Some(Click::Row((row - first_row) as usize));
+        }
+        return None;
     }
-    Ok(Some((row - first_list_y) as usize))
+
+    // Right column: pane on top, debug (Length DEBUG_HEIGHT) at the bottom when
+    // visible. The pane header is the pane block's top border.
+    if debug_visible {
+        let debug_top = body_bottom.saturating_sub(DEBUG_HEIGHT);
+        if row >= debug_top {
+            // First row of the debug block is its header/border.
+            if row == debug_top {
+                return Some(Click::DebugHeader);
+            }
+            return None; // inside debug body: leave widget nav to keys
+        }
+    }
+    if row == body_top {
+        return Some(Click::PaneHeader);
+    }
+    None
 }
 
 /// Translate a crossterm key event into our abstract [`Key`].
 fn translate_key(ke: KeyEvent) -> Option<Key> {
     match ke.code {
         KeyCode::F(2) => return Some(Key::ToggleFocus),
+        KeyCode::F(3) => return Some(Key::ToggleDebug),
         KeyCode::F(10) => return Some(Key::Quit),
         _ => {}
     }
@@ -335,7 +392,7 @@ fn draw_banner(f: &mut ratatui::Frame, area: Rect, app: &Dashboard) {
             focus,
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  [F2] cycle focus  [Enter] switch  [F10] quit"),
+        Span::raw("  [F2] focus  [F3] debug  [Enter] switch  [F10] quit"),
     ]);
     f.render_widget(Paragraph::new(banner), area);
 }
@@ -396,10 +453,15 @@ fn draw_sidebar(f: &mut ratatui::Frame, area: Rect, app: &mut Dashboard) {
 }
 
 fn draw_pane(f: &mut ratatui::Frame, area: Rect, app: &Dashboard) {
-    // Right side: selected agent's screen on top, debug widgets below.
+    // Debug hidden by default (F3 toggles): the pane then gets the full column.
+    if !app.debug_visible {
+        draw_screen(f, area, app);
+        return;
+    }
+    // Otherwise: selected agent's screen on top, debug widgets below.
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(4), Constraint::Length(9)])
+        .constraints([Constraint::Min(4), Constraint::Length(DEBUG_HEIGHT)])
         .split(area);
     draw_screen(f, rows[0], app);
     draw_debug(f, rows[1], app);
@@ -540,5 +602,64 @@ fn field_style(active: bool) -> Style {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A 50-row x 120-col terminal for geometry tests. Layout:
+    //   row 0        banner
+    //   row 1        sidebar/pane header (block top border)
+    //   rows 2..48   body
+    //   row 49       status
+    fn full() -> Rect {
+        Rect::new(0, 0, 120, 50)
+    }
+
+    #[test]
+    fn hit_test_banner_and_status_are_ignored() {
+        assert_eq!(hit_test(full(), false, 5, 0), None); // banner
+        assert_eq!(hit_test(full(), false, 5, 49), None); // status
+    }
+
+    #[test]
+    fn hit_test_sidebar_header_and_rows() {
+        // Sidebar header is body_top (row 1).
+        assert_eq!(hit_test(full(), false, 3, 1), Some(Click::SidebarHeader));
+        // First list row is row 2 -> index 0.
+        assert_eq!(hit_test(full(), false, 3, 2), Some(Click::Row(0)));
+        assert_eq!(hit_test(full(), false, 3, 5), Some(Click::Row(3)));
+    }
+
+    #[test]
+    fn hit_test_pane_header_focuses_pane() {
+        // Right column (col >= SIDEBAR_WIDTH), header row 1.
+        let c = SIDEBAR_WIDTH + 4;
+        assert_eq!(hit_test(full(), false, c, 1), Some(Click::PaneHeader));
+        // Body of the pane (debug hidden) is not a header -> None.
+        assert_eq!(hit_test(full(), false, c, 10), None);
+    }
+
+    #[test]
+    fn hit_test_debug_header_when_visible() {
+        let c = SIDEBAR_WIDTH + 4;
+        // With debug visible, its block starts DEBUG_HEIGHT rows above status.
+        let debug_top = 49u16 - DEBUG_HEIGHT;
+        assert_eq!(hit_test(full(), true, c, debug_top), Some(Click::DebugHeader));
+        // Just above the debug block is still the pane header only at row 1.
+        assert_eq!(hit_test(full(), true, c, 1), Some(Click::PaneHeader));
+        // Inside the debug body -> None (widget nav is via keys).
+        assert_eq!(hit_test(full(), true, c, debug_top + 2), None);
+    }
+
+    #[test]
+    fn pane_geometry_grows_when_debug_hidden() {
+        let hidden = pane_geometry(full(), false);
+        let shown = pane_geometry(full(), true);
+        assert!(hidden.0 > shown.0, "pane is taller when debug is hidden");
+        // Cols unaffected by the debug panel (it stacks vertically).
+        assert_eq!(hidden.1, shown.1);
     }
 }

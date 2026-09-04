@@ -94,6 +94,10 @@ pub struct Dashboard {
     /// Last (rows, cols) we told the attached agent to size its PTY to. Used to
     /// suppress redundant Resize frames and to size a newly-attached agent.
     pub pane_size: Option<(u16, u16)>,
+    /// Whether the Debug widget panel is shown. Hidden by default; toggled with
+    /// F3. When hidden, the F2 focus cycle skips Debug and the pane gets the
+    /// full right column.
+    pub debug_visible: bool,
     pub status: String,
     pub should_quit: bool,
 }
@@ -112,7 +116,8 @@ impl Default for Dashboard {
             latest: None,
             scroll: 0,
             pane_size: None,
-            status: "F2 cycles focus · Enter switches agent · F10 quits".into(),
+            debug_visible: false,
+            status: "F2 focus · F3 debug · Enter switch · F10 quit".into(),
             should_quit: false,
         }
     }
@@ -166,16 +171,18 @@ impl Dashboard {
                 };
             }
             Key::ToggleFocus => {
+                // Cycle List -> Pane -> (Debug if shown) -> List.
                 self.focus = match self.focus {
                     Focus::List => Focus::Pane,
-                    Focus::Pane => Focus::Debug,
+                    Focus::Pane if self.debug_visible => Focus::Debug,
+                    Focus::Pane => Focus::List,
                     Focus::Debug => Focus::List,
                 };
-                self.status = match self.focus {
-                    Focus::List => "LIST focus: Up/Down select · Enter switches".into(),
-                    Focus::Pane => "PANE focus: keys drive the selected agent".into(),
-                    Focus::Debug => "DEBUG focus: Tab cycles widgets".into(),
-                };
+                self.set_focus_status();
+                return Outcome::none();
+            }
+            Key::ToggleDebug => {
+                self.toggle_debug();
                 return Outcome::none();
             }
             _ => {}
@@ -186,6 +193,39 @@ impl Dashboard {
             Focus::Pane => self.handle_pane_key(key),
             Focus::Debug => self.handle_debug_key(key),
         }
+    }
+
+    /// Show/hide the debug panel (F3). Hidden by default. When hiding while it
+    /// held focus, focus falls back to the pane so keystrokes stay meaningful.
+    pub fn toggle_debug(&mut self) {
+        self.debug_visible = !self.debug_visible;
+        if !self.debug_visible && self.focus == Focus::Debug {
+            self.focus = Focus::Pane;
+        }
+        self.status = if self.debug_visible {
+            "debug panel shown (F3 to hide)".into()
+        } else {
+            "debug panel hidden (F3 to show)".into()
+        };
+    }
+
+    /// Directly focus a section (used by header clicks). Focusing Debug also
+    /// reveals it if it was hidden, so a click on the (hidden) debug header via
+    /// its toggle affordance still works.
+    pub fn focus_section(&mut self, section: Focus) {
+        if section == Focus::Debug {
+            self.debug_visible = true;
+        }
+        self.focus = section;
+        self.set_focus_status();
+    }
+
+    fn set_focus_status(&mut self) {
+        self.status = match self.focus {
+            Focus::List => "LIST focus: Up/Down select · Enter switches".into(),
+            Focus::Pane => "PANE focus: keys drive the selected agent".into(),
+            Focus::Debug => "DEBUG focus: Tab cycles widgets".into(),
+        };
     }
 
     /// LIST focus: navigate + switch agents.
@@ -451,14 +491,55 @@ mod tests {
     }
 
     #[test]
-    fn focus_cycles_list_pane_debug_with_f2() {
+    fn debug_hidden_by_default_and_f2_cycles_list_pane_only() {
         let mut d = dash(&["a"]);
+        assert!(!d.debug_visible, "debug must be hidden by default");
         assert_eq!(d.focus, Focus::List);
         d.handle_key(Key::ToggleFocus);
         assert_eq!(d.focus, Focus::Pane);
+        // With debug hidden, F2 skips Debug and wraps back to List.
         d.handle_key(Key::ToggleFocus);
+        assert_eq!(d.focus, Focus::List);
+    }
+
+    #[test]
+    fn f3_toggles_debug_and_f2_then_includes_it() {
+        let mut d = dash(&["a"]);
+        d.handle_key(Key::ToggleDebug);
+        assert!(d.debug_visible);
+        // Now the cycle includes Debug.
+        d.handle_key(Key::ToggleFocus); // Pane
+        d.handle_key(Key::ToggleFocus); // Debug
         assert_eq!(d.focus, Focus::Debug);
-        d.handle_key(Key::ToggleFocus);
+        d.handle_key(Key::ToggleFocus); // List
+        assert_eq!(d.focus, Focus::List);
+        // Hiding again returns to hidden.
+        d.handle_key(Key::ToggleDebug);
+        assert!(!d.debug_visible);
+    }
+
+    #[test]
+    fn hiding_debug_while_focused_falls_back_to_pane() {
+        let mut d = dash(&["a"]);
+        d.focus_section(Focus::Debug);
+        assert_eq!(d.focus, Focus::Debug);
+        assert!(d.debug_visible);
+        d.toggle_debug(); // hide
+        assert!(!d.debug_visible);
+        assert_eq!(d.focus, Focus::Pane, "focus must leave the now-hidden debug");
+    }
+
+    #[test]
+    fn focus_section_sets_focus_and_reveals_debug() {
+        let mut d = dash(&["a"]);
+        d.focus_section(Focus::Pane);
+        assert_eq!(d.focus, Focus::Pane);
+        assert!(!d.debug_visible);
+        // Focusing Debug via a header click reveals it.
+        d.focus_section(Focus::Debug);
+        assert_eq!(d.focus, Focus::Debug);
+        assert!(d.debug_visible);
+        d.focus_section(Focus::List);
         assert_eq!(d.focus, Focus::List);
     }
 

@@ -108,13 +108,18 @@ activity.
 |    inst_c  (dead)    |   NamedKey / Resize / Capture)        |
 +----------------------+--------------------------------------+
 ```
-- **F2** cycles focus **List -> Pane -> Debug**.
+- **F2** cycles focus **List -> Pane -> (Debug, when shown) -> List**.
+- **F3** toggles the Debug panel. It is **hidden by default**; when hidden the
+  selected-agent pane gets the full right column. Hiding it while it holds focus
+  falls back to Pane focus.
 - **List**: Up/Down/Home/End move the selection; **Enter** (or a mouse **click**
   on a row) switches the attached agent — emitting `Detach{old}` + `Attach{new}`
   so only the visible agent streams output.
 - **Pane**: keystrokes drive the selected agent's child.
 - **Debug**: the PTYH-3 widgets (Send Keys / Named Keys / Resize / Capture)
   scoped to the selected agent.
+- **Click a section header** (agents / pane / debug) to focus that section; a
+  click on the debug header also reveals it if hidden.
 - **F10** detaches + quits (agents keep running).
 
 **Responsive by design:** a terminal resize (SIGWINCH -> crossterm `Resize`)
