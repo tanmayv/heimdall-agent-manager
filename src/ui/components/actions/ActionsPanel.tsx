@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import Icon from '../Icon';
+import { buildRouteHash } from '../../utils/appLocation';
 import {
   Action,
   parseBlackoutDates,
@@ -9,21 +10,26 @@ import {
   useListAllAgentInstancesQuery,
 } from '../../api/endpoints/actions';
 import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
-import ActionModal from './ActionModal';
 import DeleteActionModal from './DeleteActionModal';
 import { describeCron, calculateNextRuns } from './scheduleUtils';
 
+function shellHash(path: string): string {
+  return buildRouteHash(path, '');
+}
+
+function navigateTo(path: string) {
+  window.location.hash = shellHash(path);
+}
+
 export default function ActionsPanel() {
   const { data: actionsData, isLoading: actionsLoading, error: actionsError } = useListActionsQuery();
-  const { data: instancesData, isLoading: instancesLoading, refetch: refetchInstances } = useListAllAgentInstancesQuery();
+  const { data: instancesData, isLoading: instancesLoading } = useListAllAgentInstancesQuery();
   const { data: projectsData, isLoading: projectsLoading } = useListProjectsQuery();
 
   const [deleteAction, { isLoading: isDeleting }] = useDeleteActionMutation();
   const [runAction] = useRunActionMutation();
 
-  // Modal states
-  const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [editingAction, setEditingAction] = useState<Action | null>(null);
+  // Modal state (delete confirmation only; create/edit now live on dedicated pages)
   const [deletingAction, setDeletingAction] = useState<Action | null>(null);
 
   // Search filter
@@ -76,9 +82,16 @@ export default function ActionsPanel() {
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const inst = instanceMap.get(act.target_instance_id);
-        const instName = (inst?.display_name || inst?.agent_name || inst?.agent_instance_id || '').toLowerCase();
+        // Fold display name, instance id, and agent id into the filter so any of
+        // the three finds the action (mirrors the target picker's search index).
+        const instHaystack = [
+          inst?.display_name,
+          inst?.agent_name,
+          act.target_instance_id,
+          inst?.agent_id,
+        ].filter(Boolean).join(' ').toLowerCase();
         const promptMatch = act.prompt_text.toLowerCase().includes(q);
-        const instMatch = instName.includes(q);
+        const instMatch = instHaystack.includes(q);
         const cronMatch = (act.cron_expr || '').toLowerCase().includes(q);
         if (!promptMatch && !instMatch && !cronMatch) continue;
       }
@@ -193,15 +206,14 @@ export default function ActionsPanel() {
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            type="button"
+          <a
             data-debug-id="actions-create-btn"
-            onClick={() => setCreateModalOpen(true)}
+            href={shellHash('/actions/new')}
             className="flex items-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-black transition-colors shadow-sm"
           >
             <Icon name="plus" size={16} />
             <span>New Action</span>
-          </button>
+          </a>
         </div>
       </div>
 
@@ -216,15 +228,16 @@ export default function ActionsPanel() {
           }`}
         >
           <div className="flex items-center gap-2">
-            <span>{feedback.type === 'success' ? '✓' : '⚠️'}</span>
+            <Icon name={feedback.type === 'success' ? 'check' : 'alert'} size={14} />
             <span>{feedback.message}</span>
           </div>
           <button
             type="button"
+            aria-label="Dismiss"
             onClick={() => setFeedback(null)}
             className="text-zinc-400 hover:text-white transition-colors"
           >
-            ✕
+            <Icon name="close" size={14} />
           </button>
         </div>
       )}
@@ -247,10 +260,11 @@ export default function ActionsPanel() {
             {searchQuery && (
               <button
                 type="button"
+                aria-label="Clear search"
                 onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-2.5 text-zinc-500 hover:text-white text-xs"
+                className="absolute right-3 top-2.5 text-zinc-500 hover:text-white"
               >
-                ✕
+                <Icon name="close" size={14} />
               </button>
             )}
           </div>
@@ -261,7 +275,7 @@ export default function ActionsPanel() {
       {isLoading && (
         <div data-debug-id="actions-loading-state" className="flex items-center justify-center p-12 text-zinc-400 text-sm">
           <div className="flex items-center gap-2">
-            <span className="animate-spin text-sky-400">⚡</span>
+            <Icon name="refresh" size={14} className="animate-spin text-sky-400" />
             <span>Loading actions and projects...</span>
           </div>
         </div>
@@ -287,15 +301,14 @@ export default function ActionsPanel() {
           <p className="mt-1 max-w-md text-xs leading-relaxed text-zinc-400">
             Actions allow you to schedule recurring prompts or trigger on-demand automation routines for any running agent instance.
           </p>
-          <button
-            type="button"
+          <a
             data-debug-id="actions-empty-create-btn"
-            onClick={() => setCreateModalOpen(true)}
+            href={shellHash('/actions/new')}
             className="mt-5 flex items-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-black transition-colors"
           >
             <Icon name="plus" size={16} />
             <span>Create Your First Action</span>
-          </button>
+          </a>
         </div>
       )}
 
@@ -355,7 +368,7 @@ export default function ActionsPanel() {
                             instance={instanceMap.get(act.target_instance_id)}
                             isRunning={runningActionId === act.id}
                             onRun={() => handleRunNow(act)}
-                            onEdit={() => setEditingAction(act)}
+                            onEdit={() => navigateTo(`/actions/${encodeURIComponent(act.id)}/edit`)}
                             onDelete={() => setDeletingAction(act)}
                           />
                         ))}
@@ -369,19 +382,7 @@ export default function ActionsPanel() {
         </div>
       )}
 
-      {/* Modals */}
-      <ActionModal
-        isOpen={createModalOpen || Boolean(editingAction)}
-        action={editingAction}
-        onClose={() => {
-          setCreateModalOpen(false);
-          setEditingAction(null);
-        }}
-        projects={projects}
-        instances={instances}
-        onRefreshAgents={() => { void refetchInstances(); }}
-      />
-
+      {/* Delete confirmation modal (create/edit now live on dedicated pages) */}
       <DeleteActionModal
         isOpen={Boolean(deletingAction)}
         action={deletingAction}
@@ -463,7 +464,7 @@ function ActionCard({
           {/* Action State badge */}
           <span
             data-debug-id={`action-state-badge-${action.id}`}
-            className={`rounded-md px-2 py-0.5 text-[11px] font-semibold border ${
+            className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold border ${
               action.state === 'in_flight'
                 ? 'border-amber-500/40 bg-amber-950/20 text-amber-300'
                 : action.state === 'completed'
@@ -471,11 +472,16 @@ function ActionCard({
                 : 'border-emerald-500/30 bg-emerald-950/20 text-emerald-400'
             }`}
           >
-            {action.state === 'in_flight'
-              ? '⚡ In Flight'
-              : action.state === 'completed'
-              ? 'Completed'
-              : 'Active'}
+            {action.state === 'in_flight' ? (
+              <>
+                <Icon name="zap" size={11} />
+                <span>In Flight</span>
+              </>
+            ) : action.state === 'completed' ? (
+              <span>Completed</span>
+            ) : (
+              <span>Active</span>
+            )}
           </span>
 
           {/* Schedule status badge */}
@@ -522,7 +528,7 @@ function ActionCard({
           >
             {isRunning ? (
               <>
-                <span className="animate-spin text-sky-400">⟳</span>
+                <Icon name="refresh" size={11} className="animate-spin text-sky-400" />
                 <span>Running...</span>
               </>
             ) : (

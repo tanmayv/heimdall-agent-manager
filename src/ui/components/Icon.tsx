@@ -35,7 +35,9 @@ export type IconName =
   | 'clock'
   | 'calendar'
   | 'trash'
-  | 'zap';
+  | 'zap'
+  | 'check'
+  | 'alert';
 
 const PATHS: Record<IconName, ReactElement> = {
   plus: <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />,
@@ -111,6 +113,13 @@ const PATHS: Record<IconName, ReactElement> = {
     </g>
   ),
   zap: <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />,
+  check: <path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />,
+  alert: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+      <path d="M12 9v4M12 17h.01" />
+    </g>
+  ),
 };
 
 export default function Icon({

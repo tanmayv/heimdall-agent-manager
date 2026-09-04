@@ -325,7 +325,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
             : 'border-zinc-800 bg-black/20 text-zinc-400'
         }`}
       >
-        <span className="mt-0.5">⚡</span>
+        <Icon name="clock" size={13} className="mt-0.5 shrink-0" />
         <div>
           <span className="font-semibold">{description}</span>
           <span className="ml-2 font-mono text-zinc-500 text-[11px]">({value.cron_expr || '* * * * *'})</span>
@@ -408,8 +408,9 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
                   onClick={() => handleRemoveBlackoutDate(date)}
                   className="text-zinc-500 hover:text-red-400 transition-colors"
                   title="Remove blackout date"
+                  aria-label={`Remove blackout date ${date}`}
                 >
-                  ✕
+                  <Icon name="close" size={12} />
                 </button>
               </span>
             ))}

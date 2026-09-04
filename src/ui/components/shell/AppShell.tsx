@@ -21,6 +21,7 @@ import ProjectsPanel from '../settings/ProjectsPanel';
 import TemplatesPanel from '../settings/TemplatesPanel';
 import ProjectsSurface from '../projects/ProjectsSurface';
 import ActionsPanel from '../actions/ActionsPanel';
+import ActionEditorPage from '../actions/ActionEditorPage';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
@@ -123,6 +124,8 @@ function isRouteActive(currentPath: string, itemPath: string): boolean {
 function routeTitle(path: string): string {
   if (path === '/conversations/new') return 'New conversation';
   if (path.startsWith('/conversations/')) return 'Conversation';
+  if (path === '/actions/new') return 'New action';
+  if (path.startsWith('/actions/') && path.endsWith('/edit')) return 'Edit action';
   if (path.startsWith('/actions')) return 'Actions';
   if (path === '/chains/new') return 'New task chain';
   if (path.startsWith('/chains/') && path.includes('/tasks/')) return 'Task detail';
@@ -147,6 +150,8 @@ function routeTitle(path: string): string {
 function routeDescription(path: string): string {
   if (path === '/conversations/new') return 'Composer-first launch surface. Agent, project, Bridge, provider, and tier controls belong here in later UI tasks.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
+  if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
+  if (path.startsWith('/actions/') && path.endsWith('/edit')) return 'Update the prompt or schedule for this action.';
   if (path.startsWith('/actions')) return 'Scheduled and on-demand prompts grouped by project.';
   if (path.startsWith('/chains/')) return 'Creation-ordered task list and task-detail route outlet. No graph editor or global inspector is present.';
   if (path.startsWith('/agents/')) return 'Agent overview, sessions, Bridges, and memory tabs will attach to this route.';
@@ -192,6 +197,8 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
     return [{ label: 'Settings', href: '/settings/bridges' }, { label: match?.label || decodeSegment(key) }];
   }
   if (path.startsWith('/chains/')) return [{ label: 'Task Chains', href: '/chains' }, { label: decodeSegment(path.split('/')[2] || 'Chain') }];
+  if (path === '/actions/new') return [{ label: 'Actions', href: '/actions' }, { label: 'New Action' }];
+  if (path.startsWith('/actions/') && path.endsWith('/edit')) return [{ label: 'Actions', href: '/actions' }, { label: 'Edit Action' }];
   if (path.startsWith('/actions')) return [{ label: 'Actions' }];
   if (path.startsWith('/library')) return [{ label: 'Library' }];
   if (path.startsWith('/agents')) return [{ label: 'Agents' }];
@@ -827,6 +834,10 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         {path === '/conversations' ? (
           <ConversationsHomePage />
+        ) : path === '/actions/new' ? (
+          <ActionEditorPage />
+        ) : path.startsWith('/actions/') && path.endsWith('/edit') ? (
+          <ActionEditorPage actionId={decodeURIComponent(path.slice('/actions/'.length, -'/edit'.length))} />
         ) : path === '/actions' || path.startsWith('/actions/') ? (
           <ActionsPanel />
         ) : path === '/projects' ? (

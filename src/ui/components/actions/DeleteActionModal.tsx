@@ -1,3 +1,4 @@
+import Icon from '../Icon';
 import { Action } from '../../api/endpoints/actions';
 
 export type DeleteActionModalProps = {
@@ -33,10 +34,11 @@ export default function DeleteActionModal({
           <h3 className="text-base font-semibold text-white">Delete Action</h3>
           <button
             type="button"
+            aria-label="Close"
             onClick={onClose}
             className="text-zinc-400 hover:text-white transition-colors"
           >
-            ✕
+            <Icon name="close" size={16} />
           </button>
         </div>
 
