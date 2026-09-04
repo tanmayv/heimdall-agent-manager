@@ -788,6 +788,14 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &Sender<CtlReply>) {
         CtlMsg::Ping => {
             let _ = tx.send(CtlReply::Pong);
         }
+        CtlMsg::Shutdown => {
+            // Ack first so the client learns the daemon accepted the request,
+            // then flip the stop flag. The `serve` loop observes it and tears
+            // down every agent via `server.shutdown()`; the accept loop and
+            // this client's socket close right after.
+            let _ = tx.send(CtlReply::ShuttingDown);
+            STOP_REQUESTED.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -1153,6 +1161,28 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn shutdown_acks_and_flips_stop_flag() {
+        // No PTY needed: Shutdown is a pure control-plane op. Reset the process
+        // global first so a prior test/run can't leave it set.
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
+        let sock = tmp_socket("shutdown");
+        let server = DaemonServer::start(&sock).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+
+        let mut c = UnixStream::connect(&sock).unwrap();
+        dproto::write_ctl_msg(&mut c, &CtlMsg::Shutdown).unwrap();
+
+        // We get the ShuttingDown ack...
+        let ack = await_reply(&mut c, |r| matches!(r, CtlReply::ShuttingDown), Duration::from_secs(2));
+        assert!(matches!(ack, Some(CtlReply::ShuttingDown)), "expected ShuttingDown ack, got {ack:?}");
+        // ...and the daemon's serve-loop stop flag is now set.
+        assert!(STOP_REQUESTED.load(Ordering::SeqCst), "Shutdown must flip STOP_REQUESTED");
+
+        drop(server);
+        STOP_REQUESTED.store(false, Ordering::SeqCst);
     }
 
     #[test]

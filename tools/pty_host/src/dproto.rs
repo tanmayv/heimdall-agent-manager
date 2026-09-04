@@ -25,6 +25,7 @@
 //! | 0x34 | Capture | request a one-shot screen snapshot for an instance         |
 //! | 0x35 | Detach  | unsubscribe this client from an instance (child survives)  |
 //! | 0x36 | Ping    | liveness check                                             |
+//! | 0x37 | Shutdown| stop all agents and terminate the daemon process           |
 //!
 //! ## daemon -> client ([`CtlReply`])
 //!
@@ -39,6 +40,7 @@
 //! | 0xA6 | ChildExited | an instance's child exited (event)                   |
 //! | 0xA7 | Pong        | ping reply                                           |
 //! | 0xA8 | Error       | an operation failed (instance + message)             |
+//! | 0xAC | ShuttingDown| ack Shutdown; daemon is terminating                  |
 
 use std::io::{self, Read, Write};
 
@@ -99,6 +101,8 @@ pub enum CtlMsg {
     Capture { instance: String },
     Detach { instance: String },
     Ping,
+    /// Stop every agent and terminate the daemon process (HOST-1 `stop`).
+    Shutdown,
 }
 
 /// daemon -> client.
@@ -126,6 +130,9 @@ pub enum CtlReply {
     /// hash of the rendered screen; the bridge classifies activity from the
     /// change stream without polling (spinner masking is bridge-side).
     ScreenChanged { instance: String, hash: u64 },
+    /// Ack for [`CtlMsg::Shutdown`]: the daemon accepted the request and is
+    /// terminating (all agents stopped). The socket closes right after.
+    ShuttingDown,
 }
 
 // ---- tags ---------------------------------------------------------------
@@ -141,6 +148,7 @@ const T_RESIZE: u8 = 0x33;
 const T_CAPTURE: u8 = 0x34;
 const T_DETACH: u8 = 0x35;
 const T_PING: u8 = 0x36;
+const T_SHUTDOWN: u8 = 0x37;
 
 const T_SPAWNED: u8 = 0xA0;
 const T_CLOSED: u8 = 0xA1;
@@ -154,6 +162,7 @@ const T_ERROR: u8 = 0xA8;
 const T_STARTUP_READY: u8 = 0xA9;
 const T_STARTUP_BLOCKED: u8 = 0xAA;
 const T_SCREEN_CHANGED: u8 = 0xAB;
+const T_SHUTTING_DOWN: u8 = 0xAC;
 
 // ---- primitive codecs ---------------------------------------------------
 
@@ -330,6 +339,7 @@ impl CtlMsg {
                 put_str(&mut p, instance);
             }
             CtlMsg::Ping => p.push(T_PING),
+            CtlMsg::Shutdown => p.push(T_SHUTDOWN),
         }
         frame(&p)
     }
@@ -407,6 +417,7 @@ impl CtlMsg {
                 instance: get_str(rest, &mut off)?,
             },
             T_PING => CtlMsg::Ping,
+            T_SHUTDOWN => CtlMsg::Shutdown,
             _ => return Err(bad("unknown ctl tag")),
         })
     }
@@ -494,6 +505,7 @@ impl CtlReply {
                 put_str(&mut p, instance);
                 put_u64(&mut p, *hash);
             }
+            CtlReply::ShuttingDown => p.push(T_SHUTTING_DOWN),
         }
         frame(&p)
     }
@@ -585,6 +597,7 @@ impl CtlReply {
                     message: get_str(rest, &mut off)?,
                 }
             }
+            T_SHUTTING_DOWN => CtlReply::ShuttingDown,
             T_STARTUP_READY => CtlReply::StartupReady {
                 instance: get_str(rest, &mut off)?,
             },
@@ -707,6 +720,7 @@ mod tests {
         round_msg(CtlMsg::Restart { instance: "a".into() });
         round_msg(CtlMsg::List);
         round_msg(CtlMsg::Ping);
+        round_msg(CtlMsg::Shutdown);
     }
 
     #[test]
@@ -763,6 +777,7 @@ mod tests {
             instance: "a".into(),
             hash: 0xdead_beef_cafe_1234,
         });
+        round_reply(CtlReply::ShuttingDown);
     }
 
     #[test]

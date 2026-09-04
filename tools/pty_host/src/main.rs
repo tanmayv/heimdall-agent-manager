@@ -30,6 +30,56 @@ struct Cli {
     command: Command,
 }
 
+/// Default daemon socket path, mirroring how the bridge derives it
+/// (`pty_host_socket_path` / `pty_host_bridge_identity` in
+/// `src/bridge/pty_host_client.odin`):
+///
+///     <local_run_dir>/pty-host-<identity>.sock
+///     identity = daemon_id (if set & != "local-daemon")
+///              | port-<local_endpoint_port>
+///              | default
+///
+/// With no overrides this resolves to the configured main bridge's socket
+/// (run_dir=/tmp/heimdall-bridge-local, local_endpoint_port=49334):
+///
+///     /tmp/heimdall-bridge-local/pty-host-port-49334.sock
+///
+/// Env overrides (match the bridge's `--local-run-dir` / `--local-endpoint-port`
+/// / `--daemon-id`): HAM_LOCAL_RUN_DIR, HAM_LOCAL_ENDPOINT_PORT, HAM_DAEMON_ID.
+fn default_socket() -> String {
+    let run_dir = std::env::var("HAM_LOCAL_RUN_DIR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/tmp/heimdall-bridge-local".to_string());
+    let run_dir = run_dir.trim_end_matches('/');
+
+    let daemon_id = std::env::var("HAM_DAEMON_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let port = std::env::var("HAM_LOCAL_ENDPOINT_PORT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(49334);
+
+    let identity = if !daemon_id.is_empty() && daemon_id != "local-daemon" {
+        // bridge_runtime_safe_part: keep [A-Za-z0-9_-@.], others -> '_'.
+        daemon_id
+            .chars()
+            .map(|c| match c {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '@' | '.' => c,
+                _ => '_',
+            })
+            .collect::<String>()
+    } else if port != 0 {
+        format!("port-{port}")
+    } else {
+        "default".to_string()
+    };
+
+    format!("{run_dir}/pty-host-{identity}.sock")
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Spawn a program under a PTY and host it on a unix socket.
@@ -58,8 +108,10 @@ enum Command {
     ///   * `--socket <host> --debug` -> PTYH-3 single-host split debug TUI.
     ///   * otherwise -> PTYH-2 raw passthrough against a single host.
     Attach {
-        /// Unix socket path of the host/daemon to attach to.
-        #[arg(long)]
+        /// Unix socket path of the host/daemon to attach to. Defaults to the
+        /// DEFAULT-PORT bridge's socket (see `default_socket`); override with
+        /// --socket or HAM_LOCAL_RUN_DIR / HAM_LOCAL_ENDPOINT_PORT / HAM_DAEMON_ID.
+        #[arg(long, default_value_t = default_socket())]
         socket: String,
         /// Render the in-app split-screen debug TUI (single-host, PTYH-3).
         #[arg(long)]
@@ -137,6 +189,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Stop a running daemon/host: terminate all its agents and exit the daemon
+    /// process (HOST-1). Defaults to the main bridge's socket (see
+    /// `default_socket`); override with --socket or HAM_LOCAL_RUN_DIR /
+    /// HAM_LOCAL_ENDPOINT_PORT / HAM_DAEMON_ID.
+    Stop {
+        #[arg(long, default_value_t = default_socket())]
+        socket: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -174,6 +234,7 @@ fn main() -> Result<()> {
             instance,
             json,
         } => ctl_capture(socket, instance, json),
+        Command::Stop { socket } => ctl_stop(socket),
     }
 }
 
@@ -253,6 +314,30 @@ fn ctl_close(socket: String, instance: String) -> Result<()> {
         }
         CtlReply::Error { message, .. } => bail!("close failed: {message}"),
         other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+fn ctl_stop(socket: String) -> Result<()> {
+    // If the socket file is gone there's nothing to stop; treat that as success
+    // so `stop` is idempotent (e.g. re-run after the daemon already exited).
+    if !std::path::Path::new(&socket).exists() {
+        println!("no daemon at {socket} (already stopped)");
+        return Ok(());
+    }
+    match request(&socket, &CtlMsg::Shutdown) {
+        Ok(CtlReply::ShuttingDown) => {
+            println!("stopped daemon at {socket}");
+            Ok(())
+        }
+        Ok(CtlReply::Error { message, .. }) => bail!("stop failed: {message}"),
+        Ok(other) => bail!("unexpected reply: {other:?}"),
+        // The daemon may drop the connection the instant it tears down, so a
+        // clean EOF right after we sent Shutdown is an expected success race.
+        Err(_) if !std::path::Path::new(&socket).exists() => {
+            println!("stopped daemon at {socket}");
+            Ok(())
+        }
+        Err(e) => Err(e),
     }
 }
 
