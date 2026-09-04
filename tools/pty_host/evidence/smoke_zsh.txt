@@ -1,0 +1,7 @@
+=== PTYH-5 zsh smoke: send-keys / capture / detach->survive->re-attach ===
+[1] send-keys+capture OK: 'ZSH_ONE' visible
+[2] detaching client #1 (Ctrl-\ equivalent)...
+[3] re-attaching as client #2 to same live zsh...
+[3a] state restored on re-attach: prior 'ZSH_ONE' still present
+[3b] re-attached client drives child OK: 'ZSH_TWO' visible
+[4] child exit broadcast: ChildExited(0)
