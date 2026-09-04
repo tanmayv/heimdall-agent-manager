@@ -1011,15 +1011,23 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 	}
 	strings.write_string(&agents_md_b, bridge_bootstrap_ctl_guidance())
 
-	_ = os.make_directory_all(run_dir)
+	// WRP-1: PUBLISH a bootstrap file set for the wrapper's bootstrap.list/.file
+	// RPCs rather than writing run_dir here. The wrapper is the sole run_dir writer;
+	// a bridge-side disk write left bootstrap.list with nothing to serve, so a woken
+	// agent failed with "bootstrap.list failed after retries". We assemble the same
+	// file set the primary agent-keyed path produces (AGENTS.md + skills + ham-ctl
+	// shim + a managed-files manifest) and hand it to the fileset store, which clones
+	// what it keeps (so we free our locals below).
+	_ = run_dir
 	agents_md_name := bridge_bootstrap_agents_md_name(provider)
-	bridge_bootstrap_cleanup_stale_agents_md(run_dir, agents_md_name)
-	agents_md_path := strings.concatenate({strings.trim_right(run_dir, "/"), "/", agents_md_name})
-	defer delete(agents_md_path)
-	if os.write_entire_file(agents_md_path, strings.to_string(agents_md_b)) != nil do return false
+	files := make([dynamic]Bridge_Bootstrap_File)
+	defer bridge_bootstrap_free_file_set(files)
 
-	written_skills := make([dynamic]string)
-	defer { for p in written_skills do delete(p); delete(written_skills) }
+	append(&files, Bridge_Bootstrap_File{
+		file_id = strings.clone(agents_md_name), relative_path = strings.clone(agents_md_name),
+		kind = "AGENTS_MD", content = strings.clone(strings.to_string(agents_md_b)), mode = 0o644,
+	})
+
 	for s_obj in skill_objs {
 		name := bridge_provider_json_extract_string(s_obj, "name", "")
 		h := bridge_provider_json_extract_string(s_obj, "hash", "")
@@ -1030,24 +1038,33 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 			content = got
 		}
 		path := bridge_bootstrap_skill_relative_path(provider, name)
-		if bridge_bootstrap_write_skill_file(run_dir, path, content) { append(&written_skills, path) } else { delete(path) }
-		if content != "" do delete(content)
 		delete(name); delete(h)
+		if strings.trim_space(path) == "" { delete(path); if content != "" do delete(content); continue }
+		// content is an owned clone from the cache; hand ownership to the file entry.
+		append(&files, Bridge_Bootstrap_File{file_id = strings.clone(path), relative_path = path, kind = "SKILL", content = content, mode = 0o644})
 	}
 
-	if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false
+	ctl_shim, shim_ok := bridge_bootstrap_render_ham_ctl_shim(bridge_endpoint, agent_token, instance_id)
+	if !shim_ok do return false
+	append(&files, Bridge_Bootstrap_File{
+		file_id = strings.clone(".heimdall/bin/ham-ctl"), relative_path = strings.clone(".heimdall/bin/ham-ctl"),
+		kind = "CTL_WRAPPER", content = ctl_shim, mode = 0o755,
+	})
 
-	manifest := strings.builder_make()
-	defer strings.builder_destroy(&manifest)
-	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
-	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, agents_md_name); strings.write_string(&manifest, "\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
-	for skill_path in written_skills {
-		strings.write_string(&manifest, ",{\"relative_path\":\""); bridge_bootstrap_json_string(&manifest, skill_path); strings.write_string(&manifest, "\",\"kind\":\"SKILL\"}")
+	mb := strings.builder_make()
+	strings.write_string(&mb, "{\"agent_instance_id\":\""); strings.write_string(&mb, instance_id)
+	strings.write_string(&mb, "\",\"managed_files\":[")
+	for f, i in files {
+		if i > 0 do strings.write_byte(&mb, ',')
+		strings.write_string(&mb, "{\"relative_path\":\""); bridge_bootstrap_json_string(&mb, f.relative_path)
+		strings.write_string(&mb, "\",\"kind\":\""); bridge_bootstrap_json_string(&mb, f.kind); strings.write_string(&mb, "\"}")
 	}
-	strings.write_string(&manifest, "]}")
-	manifest_path := strings.concatenate({run_dir, "/heimdall-bootstrap-manifest.json"})
-	defer delete(manifest_path)
-	if os.write_entire_file(manifest_path, strings.to_string(manifest)) != nil do return false
+	strings.write_string(&mb, "]}")
+	append(&files, Bridge_Bootstrap_File{
+		file_id = strings.clone("heimdall-bootstrap-manifest.json"), relative_path = strings.clone("heimdall-bootstrap-manifest.json"),
+		kind = "MANIFEST", content = strings.to_string(mb), mode = 0o644,
+	})
 
+	bridge_bootstrap_fileset_store_put(instance_id, provider, files[:])
 	return true
 }

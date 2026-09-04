@@ -69,12 +69,6 @@ parse_interval_seconds :: proc(interval: string) -> int {
 	}
 }
 
-advance_target_run_at :: proc(curr_target_run_at: string, interval: string) -> string {
-	secs := parse_interval_seconds(interval)
-	if secs <= 0 do return curr_target_run_at
-	return platform.expires_at_after_seconds(secs)
-}
-
 validate_cron_field :: proc(field: string, min_val, max_val: int) -> bool {
 	f := strings.trim_space(field)
 	if f == "" do return false
@@ -262,7 +256,13 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !inst_ok do return respond_error(inst_err, req.request_id)
 
 	now := platform.clock_now(h.clock)
-	if target_run_at == "" && (cron_expr != "" || interval != "") {
+	// For cron actions we must NOT seed target_run_at = now, or the action fires
+	// immediately on create and (with a minutely expression) every tick after.
+	// Leaving it empty lets the bridge compute the first real cron slot in the
+	// action's timezone (bridge_action_scheduler_sync -> compute_next_run when
+	// target_run_at is unset). Interval actions have no wall-clock schedule, so
+	// firing the first run now is the intended behavior.
+	if target_run_at == "" && interval != "" && cron_expr == "" {
 		target_run_at = now
 	}
 
@@ -557,23 +557,19 @@ bridge_execute_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	next_run := json_string(req.body, "target_run_at")
 	if next_run == "" do next_run = json_string(req.body, "next_target_run_at")
 
+	// The bridge is the scheduling authority: it computes the next fire slot
+	// (cron in the action's timezone + blackout/active-window handling, or the
+	// interval advance) and sends it as target_run_at on every execute. So:
+	//   - next_run present  -> trust it verbatim (recurring; reschedule).
+	//   - next_run absent   -> the schedule is exhausted (one-shot, or the bridge
+	//                          found no further slot within the active window);
+	//                          complete the action.
+	// Previously an absent next_run made the hub blindly reschedule cron/interval
+	// actions by +60s (or +interval), which resurrected exhausted actions and,
+	// for minutely crons, produced an every-minute execute loop. The bridge never
+	// omits a genuine next slot, so a blind server-side advance is always wrong.
 	if next_run != "" {
 		act.target_run_at = next_run
-		act.state = .Active
-		act.in_flight = false
-		act.leased_at = ""
-		act.updated_at = now
-	} else if act.cron_expr != "" {
-		// Advance by at least 60 seconds
-		act.target_run_at = platform.expires_at_after_seconds(60)
-		act.state = .Active
-		act.in_flight = false
-		act.leased_at = ""
-		act.updated_at = now
-	} else if act.interval != "" {
-		secs := parse_interval_seconds(act.interval)
-		if secs <= 0 do secs = 60
-		act.target_run_at = platform.expires_at_after_seconds(secs)
 		act.state = .Active
 		act.in_flight = false
 		act.leased_at = ""

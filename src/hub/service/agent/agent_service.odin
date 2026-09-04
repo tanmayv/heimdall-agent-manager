@@ -1324,11 +1324,35 @@ hub_fragment_cache_get :: proc(hash: string) -> (string, bool) {
 	return entry.body, true
 }
 
+// bootstrap_manifest_status_launchable reports whether an instance in the given
+// runtime_status may have its bootstrap manifest fetched by the bridge. It allows
+// the already-active/launching states plus the recoverable non-active states a
+// scheduler legitimately wakes from ("stopped", "failed", "unreachable"). It does
+// NOT allow states that indicate an in-progress teardown ("stopping") or unknown
+// values, keeping the gate conservative.
+bootstrap_manifest_status_launchable :: proc(runtime_status: string) -> bool {
+	switch runtime_status {
+	case "launching", "starting", "running", "idle", "busy", "blocked",
+	     "stopped", "failed", "unreachable":
+		return true
+	}
+	return false
+}
+
 bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id: string) -> (string, bool, domain.Domain_Error) {
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return "", false, err
 	if inst.bridge_id != bridge_id || inst.owner_user_id != owner do return "", false, domain.domain_error(.Not_Found, "agent instance not found")
-	if !(inst.runtime_status == "launching" || inst.runtime_status == "starting" || inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy") do return "", false, domain.domain_error(.Conflict, "agent instance is not launchable")
+	// A scheduled action (or auto-nudge) may need to wake an instance that is not
+	// currently live. The bridge synthesizes a minimal launch and fetches this
+	// manifest by instance id to materialize the agent, so we must also permit the
+	// recoverable non-active states it legitimately wakes from -- "stopped",
+	// "failed", and "unreachable" -- in addition to the already-active/launching
+	// states. Previously those were rejected with 409 "not launchable", which meant
+	// a scheduled action could never start a stopped instance (it only churned it to
+	// startup_failed). This is a read-only manifest fetch; it does not itself change
+	// instance state.
+	if !bootstrap_manifest_status_launchable(inst.runtime_status) do return "", false, domain.domain_error(.Conflict, "agent instance is not launchable")
 	agent, agent_ok, agent_err := iface.agent_get(service.agents, inst.agent_id)
 	if !agent_ok do return "", false, agent_err
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)

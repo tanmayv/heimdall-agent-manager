@@ -293,8 +293,17 @@ bridge_task_wake_if_needed :: proc(instance_id: string, now: i64) -> bool {
 
 	// Reuse the same launch path as a hub launch_agent command; a synthetic
 	// command_id keeps the launch idempotency/caching machinery happy.
+	//
+	// The instance id MUST live inside a "payload" object, matching the real hub
+	// launch_agent contract (agent_service.launch_command_json_full): the bootstrap
+	// descriptor is parsed from payload (bridge_bootstrap_descriptor_from_launch),
+	// so a top-level-only agent_instance_id left descriptor.instance_id empty and
+	// the launch aborted at stage=validate ("missing hub_url/bridge_token/
+	// instance_id") -- meaning a scheduled action could never wake a stopped
+	// instance. With instance_id in the payload the bridge falls back to the
+	// instance bootstrap endpoint to materialize the agent.
 	command_id := fmt.tprintf("sched_wake_%s_%d", instance_id, now)
-	command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", command_id, "\",\"agent_instance_id\":\"", instance_id, "\"}"})
+	command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\"}}"})
 	ok, detail := bridge_runtime_launch_agent(command_id, command_json)
 	if !ok {
 		sync.mutex_lock(&bridge_task_sched_mutex)

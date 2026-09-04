@@ -677,10 +677,18 @@ bridge_action_scheduler_execute :: proc(action_id: string, next_target_run_at: s
 		{name = "Authorization", value = auth_header},
 		{name = "Content-Type", value = "application/json"},
 	}
+	// Build the JSON body WITHOUT fmt.tprintf: Odin's fmt treats literal '{'/'}'
+	// as format-verb delimiters, so a JSON object literal comes out corrupted
+	// (e.g. "%!(MISSING CLOSE BRACE)target_run_at..."). That corruption made the hub
+	// parse an empty target_run_at and mark cron actions completed while the bridge
+	// kept re-firing them -> the every-minute reschedule loop. next_target_run_at is
+	// a bridge-generated RFC3339 timestamp (no characters needing JSON escaping), so
+	// a plain concatenation is safe.
 	body := "{}"
 	if next_target_run_at != "" {
-		body = fmt.tprintf("{\"target_run_at\":\"%s\"}", next_target_run_at)
+		body = strings.concatenate({"{\"target_run_at\":\"", next_target_run_at, "\"}"})
 	}
+	defer if next_target_run_at != "" do delete(body)
 	resp, ok := bridge_http_request_retry("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok do return false, 0, ""
 	return resp.status == 200, resp.status, resp.body
