@@ -15,38 +15,261 @@ import "core:sys/posix"
 // behalf. Endpoint discovery: --bridge-endpoint / HEIMDALL_BRIDGE_ENDPOINT.
 // Token discovery: --agent-token / HEIMDALL_AGENT_TOKEN.
 
+// Agent API v2 dispatch (docs/agent-api-redesign.md). Groups: bridge, agents
+// (identity|template|instance), task-chain, task, chat, memory, artifact,
+// context, start-success. Positional ids; one flag per concept. The legacy
+// `agent` prefix is still accepted (idx skips it) but not required.
 ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	idx := 0
 	if len(cmd) > 0 && cmd[0] == "agent" do idx = 1
 	if idx >= len(cmd) || has_flag(args, "--help") || has_flag(args, "-h") || (idx < len(cmd) && cmd[idx] == "help") { print_agent_help(cmd[idx:]); return }
 	resource := cmd[idx]
+	rest := cmd[idx + 1:] // positional tokens after the group
 	action := ""
-	if idx + 1 < len(cmd) do action = cmd[idx + 1]
-	if action == "help" { print_agent_help(cmd[idx:]); return }
+	if len(rest) > 0 do action = rest[0]
+	if action == "help" || has_flag(args, "--help") { print_agent_help(cmd[idx:]); return }
 	endpoint := agent_mode_endpoint(args)
 	token := agent_mode_token(args)
 	if endpoint == "" || token == "" {
 		fmt.println(`{"ok":false,"message":"agent mode requires HEIMDALL_BRIDGE_ENDPOINT and HEIMDALL_AGENT_TOKEN (or --bridge-endpoint/--agent-token)"}`)
 		return
 	}
-	if resource == "context" { ctl_agentmode_context(endpoint, token, args); return }
-	if resource == "start-success" { ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return }
-	if resource == "instances" { ctl_agentmode_instances(endpoint, token, action, args); return }
-	if resource == "agents" { ctl_agentmode_agents(endpoint, token, action, args); return }
-	if resource == "templates" || resource == "template" { ctl_agentmode_templates(endpoint, token, action, args); return }
-	if resource == "bridges" || resource == "bridge" { ctl_agentmode_bridges(endpoint, token, action, args); return }
-	if resource == "projects" || resource == "project" { ctl_agentmode_projects(endpoint, token, action, args); return }
-	if resource == "chat" || resource == "chats" { ctl_agentmode_chat(endpoint, token, action, args); return }
-	if resource == "conversation" || resource == "conversations" { ctl_agentmode_conversation(endpoint, token, action, args); return }
-	if resource == "chain" || resource == "chains" { ctl_agentmode_chain(endpoint, token, action, args); return }
-	if resource == "tasks" || resource == "task" {
-		fmt.eprintln("Notice: 'ham-ctl agent tasks' is deprecated; use top-level 'ham-ctl tasks' instead.")
-		ctl_tasks_command(cmd[idx:], args)
-		return
+	switch resource {
+	case "context":       ctl_agentmode_context(endpoint, token, args); return
+	case "start-success": ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return
+	case "bridge":        ctl_v2_bridge(endpoint, token, rest, args); return
+	case "agents":        ctl_v2_agents(endpoint, token, rest, args); return
+	case "task-chain", "task-chains": ctl_v2_task_chain(endpoint, token, rest, args); return
+	case "task", "tasks": ctl_v2_task(endpoint, token, rest, args); return
+	case "chat", "chats": ctl_v2_chat(endpoint, token, rest, args); return
+	case "memory":        ctl_agentmode_memory(endpoint, token, action, args); return
+	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
 	}
-	if resource == "artifacts" || resource == "artifact" { ctl_agentmode_artifacts(endpoint, token, action, args); return }
-	if resource == "memory" { ctl_agentmode_memory(endpoint, token, action, args); return }
-	fmt.println("usage: ham-ctl agent <context|start-success|agents|templates|bridges|projects|chat|tasks|artifacts|memory> ...")
+	print_agent_help(cmd[idx:])
+}
+
+// pos returns positional token i (0-based) from the group's remaining tokens, or
+// "" if absent. tokens[0] is the verb; ids are typically tokens[1].
+pos :: proc(tokens: []string, i: int) -> string {
+	if i < len(tokens) do return tokens[i]
+	return ""
+}
+
+// ---- bridge -------------------------------------------------------------
+ctl_v2_bridge :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "", "list":
+		scope := option_value(args, "--scope", "all")
+		ctl_agent_call(endpoint, token, "agent.bridge.list", json_object(json_kv("scope", scope)))
+	case "providers":
+		bid := option_value(args, "--bridge", pos(tokens, 1))
+		if bid != "" { ctl_agent_call(endpoint, token, "agent.bridge.providers", json_object(json_kv("bridge_id", bid))) }
+		else { ctl_agent_call(endpoint, token, "agent.bridge.providers", "{}") }
+	case:
+		print_agent_help([]string{"bridge"})
+	}
+}
+
+// ---- agents (identity | template | instance + lifecycle) ----------------
+ctl_v2_agents :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "", "list":
+		ctl_agent_call(endpoint, token, "agent.agents.list", "{}")
+	case "identity":
+		sub := pos(tokens, 1)
+		if sub == "create" {
+			name := option_value(args, "--name", "")
+			if name == "" { print_agent_help([]string{"agents"}); return }
+			fields := make([dynamic]string)
+			append(&fields, json_kv("name", name))
+			if v := option_value(args, "--template", ""); v != "" do append(&fields, json_kv("template_id", v))
+			if v := option_value(args, "--provider", ""); v != "" do append(&fields, json_kv("provider", v))
+			if v := option_value(args, "--tier", ""); v != "" do append(&fields, json_kv("tier", v))
+			if v := option_value(args, "--slug", ""); v != "" do append(&fields, json_kv("slug", v))
+			if v := option_value(args, "--instructions", ""); v != "" do append(&fields, json_kv("instructions", v))
+			ctl_agent_call(endpoint, token, "agent.agents.create", json_object_from_slice(fields[:]))
+			return
+		}
+		print_agent_help([]string{"agents"})
+	case "template":
+		sub := pos(tokens, 1)
+		if sub == "" || sub == "list" { ctl_agent_call(endpoint, token, "agent.agents.template_list", "{}"); return }
+		if sub == "create" {
+			name := option_value(args, "--name", "")
+			if name == "" { print_agent_help([]string{"agents"}); return }
+			fields := make([dynamic]string)
+			append(&fields, json_kv("name", name))
+			if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
+			if v := option_value(args, "--persona", ""); v != "" do append(&fields, json_kv("persona", v))
+			if v := option_value(args, "--instructions", ""); v != "" do append(&fields, json_kv("instructions", v))
+			ctl_agent_call(endpoint, token, "agent.agents.template_create", json_object_from_slice(fields[:]))
+			return
+		}
+		print_agent_help([]string{"agents"})
+	case "instance":
+		sub := pos(tokens, 1)
+		if sub == "" || sub == "list" {
+			fields := make([dynamic]string)
+			if v := option_value(args, "--agent", ""); v != "" do append(&fields, json_kv("agent_id", v))
+			if has_flag(args, "--live") do append(&fields, json_kv_raw("live", "true"))
+			ctl_agent_call(endpoint, token, "agent.agents.instance_list", json_object_from_slice(fields[:]))
+			return
+		}
+		print_agent_help([]string{"agents"})
+	case "new-instance":
+		agent_id := pos(tokens, 1)
+		if agent_id == "" { print_agent_help([]string{"agents"}); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("agent_id", agent_id))
+		if v := option_value(args, "--project", ""); v != "" do append(&fields, json_kv("project_id", v))
+		if v := option_value(args, "--bridge", ""); v != "" do append(&fields, json_kv("bridge_id", v))
+		if v := option_value(args, "--provider", ""); v != "" do append(&fields, json_kv("provider", v))
+		if v := option_value(args, "--tier", ""); v != "" do append(&fields, json_kv("tier", v))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.agents.new_instance", json_object_from_slice(fields[:]))
+	case "start", "stop", "restart":
+		inst := pos(tokens, 1)
+		if inst == "" { print_agent_help([]string{"agents"}); return }
+		method := "agent.agents.instance_start"
+		if verb == "stop" do method = "agent.agents.instance_stop"
+		if verb == "restart" do method = "agent.agents.instance_restart"
+		fields := make([dynamic]string)
+		append(&fields, json_kv("instance_id", inst))
+		if verb == "stop" { if v := option_value(args, "--reason", ""); v != "" do append(&fields, json_kv("reason", v)) }
+		ctl_agent_call(endpoint, token, method, json_object_from_slice(fields[:]))
+	case:
+		print_agent_help([]string{"agents"})
+	}
+}
+
+// ---- task-chain ---------------------------------------------------------
+ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "", "list":
+		fields := make([dynamic]string)
+		if has_flag(args, "--mine") do append(&fields, json_kv_raw("coordinated_by_me", "true"))
+		if v := option_value(args, "--project", ""); v != "" do append(&fields, json_kv("project_id", v))
+		ctl_agent_call(endpoint, token, "agent.task_chain.list", json_object_from_slice(fields[:]))
+	case "show":
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		if cid != "" { ctl_agent_call(endpoint, token, "agent.task_chain.show", json_object(json_kv("chain_id", cid))) }
+		else { ctl_agent_call(endpoint, token, "agent.task_chain.show", "{}") }
+	case "set-title":
+		title := option_value(args, "--title", pos(tokens, 1))
+		if title == "" { print_agent_help([]string{"task-chain"}); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("title", title))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.task_chain.set_title", json_object_from_slice(fields[:]))
+	case:
+		print_agent_help([]string{"task-chain"})
+	}
+}
+
+// ---- task (one command per action) --------------------------------------
+ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "", "list":
+		fields := make([dynamic]string)
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.task.list", json_object_from_slice(fields[:]))
+	case "show":
+		tid := pos(tokens, 1)
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("task_id", tid))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.task.show", json_object_from_slice(fields[:]))
+	case "create":
+		title := option_value(args, "--title", "")
+		if title == "" { print_agent_help([]string{"task"}); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("title", title))
+		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", a))}))
+		if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", r)), "]"}))
+		ctl_agent_call(endpoint, token, "agent.task.create", json_object_from_slice(fields[:]))
+	case "comment":
+		tid := pos(tokens, 1)
+		body := option_value(args, "--body", "")
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
+		if tid == "" || body == "" { print_agent_help([]string{"task"}); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("task_id", tid))
+		append(&fields, json_kv("body", body))
+		if notify := option_value(args, "--notify", ""); notify != "" do append(&fields, ctl_v2_json_string_array("notify", notify))
+		ctl_agent_call(endpoint, token, "agent.task.comment", json_object_from_slice(fields[:]))
+	case "status":
+		tid := pos(tokens, 1)
+		status := option_value(args, "--status", "")
+		if tid == "" || status == "" { print_agent_help([]string{"task"}); return }
+		ctl_agent_call(endpoint, token, "agent.task.status", json_object(json_kv("task_id", tid), json_kv("status", status)))
+	case "vote":
+		tid := pos(tokens, 1)
+		result := option_value(args, "--result", "")
+		if tid == "" || result == "" { print_agent_help([]string{"task"}); return }
+		ctl_agent_call(endpoint, token, "agent.task.vote", json_object(json_kv("task_id", tid), json_kv("result", result), json_kv("comment", option_value(args, "--comment", ""))))
+	case "nudge":
+		tid := pos(tokens, 1)
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		ctl_agent_call(endpoint, token, "agent.task.nudge", json_object(json_kv("task_id", tid), json_kv("message", option_value(args, "--message", ""))))
+	case "set-current":
+		tid := pos(tokens, 1)
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		ctl_agent_call(endpoint, token, "agent.task.set_current", json_object(json_kv("task_id", tid)))
+	case "depend":
+		tid := pos(tokens, 1)
+		on := option_value(args, "--on", "")
+		if tid == "" || on == "" { print_agent_help([]string{"task"}); return }
+		ctl_agent_call(endpoint, token, "agent.task.depend", json_object(json_kv("task_id", tid), json_kv("depends_on_task_id", on)))
+	case:
+		print_agent_help([]string{"task"})
+	}
+}
+
+// ---- chat (send --to user|<instance-id>, read) --------------------------
+ctl_v2_chat :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "", "read":
+		ctl_agentmode_chat_fetch(endpoint, token, "read", args)
+	case "send":
+		to := option_value(args, "--to", "")
+		body := option_value(args, "--body", "")
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
+		if to == "" || body == "" { print_agent_help([]string{"chat"}); return }
+		// to == "user" or an agent-instance-id; the bridge routes accordingly.
+		ctl_agent_call(endpoint, token, "agent.chat.send", json_object(json_kv("to", to), json_kv("body", body)))
+	case:
+		print_agent_help([]string{"chat"})
+	}
+}
+
+// ---- artifact -----------------------------------------------------------
+ctl_v2_artifact :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	// artifact verbs keep their existing param shapes; only the method prefix
+	// changed (artifacts -> artifact). Delegate to the shared impl.
+	ctl_agentmode_artifacts_v2(endpoint, token, verb, tokens, args)
+}
+
+// ctl_v2_json_string_array builds "key":["a","b"] from a comma list.
+ctl_v2_json_string_array :: proc(key, csv: string) -> string {
+	parts := strings.split(csv, ",")
+	defer delete(parts)
+	b := strings.builder_make()
+	strings.write_byte(&b, '"'); strings.write_string(&b, key); strings.write_string(&b, "\":[")
+	for p, i in parts {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_byte(&b, '"'); strings.write_string(&b, strings.trim_space(p)); strings.write_byte(&b, '"')
+	}
+	strings.write_byte(&b, ']')
+	return strings.to_string(b)
 }
 
 agent_mode_endpoint :: proc(args: []string) -> string {
@@ -64,153 +287,6 @@ agent_mode_token :: proc(args: []string) -> string {
 ctl_agentmode_context :: proc(endpoint, token: string, args: []string) {
 	_ = args
 	ctl_agent_call(endpoint, token, "agent.context.get", "{}")
-}
-
-ctl_agentmode_agents :: proc(endpoint, token, action: string, args: []string) {
-	if action == "" || action == "live" || action == "running" { ctl_agent_call(endpoint, token, "agent.agents.live", "{}"); return }
-	// H5 coordinator team-bootstrap: discover durable agents (same-owner) and create
-	// a durable agent from a template, using ONLY the agent token.
-	if action == "list" { ctl_agent_call(endpoint, token, "agent.agents.list", "{}"); return }
-	if action == "create" {
-		name := option_value(args, "--name", "")
-		if name == "" { fmt.println("usage: ham-ctl agent agents create --name <name> [--template-id <id>] [--provider <p>] [--tier <t>] [--slug <slug>] [--instructions <text>]"); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("name", name))
-		if v := option_value(args, "--slug", ""); v != "" do append(&fields, json_kv("slug", v))
-		if v := option_value(args, "--template-id", option_value(args, "--template", "")); v != "" do append(&fields, json_kv("template_id", v))
-		if v := option_value(args, "--provider", option_value(args, "--default-provider", "")); v != "" do append(&fields, json_kv("default_provider", v))
-		if v := option_value(args, "--tier", option_value(args, "--default-tier", "")); v != "" do append(&fields, json_kv("default_tier", v))
-		if v := option_value(args, "--instructions", ""); v != "" do append(&fields, json_kv("instructions", v))
-		ctl_agent_call(endpoint, token, "agent.agents.create", json_object_from_slice(fields[:]))
-		return
-	}
-	fmt.println("usage: ham-ctl agent agents <live|list|create>")
-}
-
-// H5: discover/create agent templates (personas) via the agent token.
-ctl_agentmode_templates :: proc(endpoint, token, action: string, args: []string) {
-	if action == "" || action == "list" { ctl_agent_call(endpoint, token, "agent.templates.list", "{}"); return }
-	if action == "create" {
-		name := option_value(args, "--name", "")
-		if name == "" { fmt.println("usage: ham-ctl agent templates create --name <name> [--description <text>] [--persona <text>] [--instructions <text>]"); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("name", name))
-		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
-		if v := option_value(args, "--persona", ""); v != "" do append(&fields, json_kv("persona", v))
-		if v := option_value(args, "--instructions", ""); v != "" do append(&fields, json_kv("instructions", v))
-		ctl_agent_call(endpoint, token, "agent.templates.create", json_object_from_slice(fields[:]))
-		return
-	}
-	fmt.println("usage: ham-ctl agent templates <list|create>")
-}
-
-// H5: discover bridges owned by this agent's owner (read-only) via the agent token.
-ctl_agentmode_bridges :: proc(endpoint, token, action: string, args: []string) {
-	_ = args
-	if action == "" || action == "list" { ctl_agent_call(endpoint, token, "agent.bridges.list", "{}"); return }
-	fmt.println("usage: ham-ctl agent bridges <list>")
-}
-
-// H5: discover projects owned by this agent's owner (read-only) via the agent token.
-ctl_agentmode_projects :: proc(endpoint, token, action: string, args: []string) {
-	_ = args
-	if action == "" || action == "list" { ctl_agent_call(endpoint, token, "agent.projects.list", "{}"); return }
-	fmt.println("usage: ham-ctl agent projects <list>")
-}
-
-// Agent-token instance lifecycle so a running agent (e.g. a coordinator) can
-// launch/relaunch/stop agents it owns WITHOUT a user token. Routes through the
-// bridge-local agent endpoint (agent.instances.*), which relays to the raw hub
-// /api/v1/agent-instances endpoints with the instance token (same-owner scoped).
-ctl_agentmode_instances :: proc(endpoint, token, action: string, args: []string) {
-	if action == "" || action == "live" || action == "running" {
-		// Back-compat: `ham-ctl agent instances` (no verb) lists live instances.
-		ctl_agent_call(endpoint, token, "agent.agents.live", "{}")
-		return
-	}
-	if action == "launch" {
-		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
-		if agent_id == "" { fmt.println("usage: ham-ctl agent instances launch --agent-id <agent_id> [--bridge-id <id>] [--provider <p>] [--tier <t>] [--project-id <id>] [--chain-id <id>]"); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("agent_id", agent_id))
-		if v := option_value(args, "--bridge-id", option_value(args, "--bridge", "")); v != "" do append(&fields, json_kv("bridge_id", v))
-		if v := option_value(args, "--provider", ""); v != "" do append(&fields, json_kv("provider", v))
-		if v := option_value(args, "--tier", ""); v != "" do append(&fields, json_kv("tier", v))
-		if v := option_value(args, "--project-id", option_value(args, "--project", "")); v != "" do append(&fields, json_kv("project_id", v))
-		if v := option_value(args, "--chain-id", option_value(args, "--chain", "")); v != "" do append(&fields, json_kv("chain_id", v))
-		if v := option_value(args, "--display-name", ""); v != "" do append(&fields, json_kv("display_name", v))
-		ctl_agent_call(endpoint, token, "agent.instances.launch", json_object_from_slice(fields[:]))
-		return
-	}
-	if action == "restart" || action == "stop" {
-		instance_id := option_value(args, "--instance", option_value(args, "--instance-id", ""))
-		if instance_id == "" { fmt.printf("usage: ham-ctl agent instances %s --instance <agent_instance_id>%s\n", action, " [--reason <text>]" if action == "stop" else ""); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("instance_id", instance_id))
-		if action == "stop" { if v := option_value(args, "--reason", ""); v != "" do append(&fields, json_kv("reason", v)) }
-		ctl_agent_call(endpoint, token, action == "restart" ? "agent.instances.restart" : "agent.instances.stop", json_object_from_slice(fields[:]))
-		return
-	}
-	fmt.println("usage: ham-ctl agent instances <live|launch|restart|stop> ...")
-}
-
-ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
-	if action == "" || action == "send" || action == "send-to-user" {
-		body := option_value(args, "--body", "")
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
-		if body == "" { fmt.println("usage: ham-ctl agent chat send --body <text>"); return }
-		ctl_agent_call(endpoint, token, "agent.chat.send_to_user", json_object(json_kv("body", body)))
-		return
-	}
-	if action == "send-to-agent" {
-		body := option_value(args, "--body", "")
-		to_instance := option_value(args, "--to-instance", option_value(args, "--target-agent-instance-id", ""))
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
-		if body == "" || to_instance == "" { fmt.println("usage: ham-ctl agent chat send-to-agent --to-instance <id> --body <text>"); return }
-		ctl_agent_call(endpoint, token, "agent.chat.send_to_agent", json_object(json_kv("to_instance", to_instance), json_kv("body", body)))
-		return
-	}
-	if action == "fetch" || action == "read" || action == "read-messages" {
-		ctl_agentmode_chat_fetch(endpoint, token, action, args)
-		return
-	}
-	if action == "mark-read" {
-		ctl_agent_call(endpoint, token, "agent.chat.read", "{}")
-		return
-	}
-	fmt.println("usage: ham-ctl agent chat <send|send-to-agent|fetch|read>")
-}
-
-// ctl_agentmode_conversation handles 'ham-ctl agent conversation set-title'
-// (REQ-3): rename this instance's bound conversation. Marks title_source=agent.
-ctl_agentmode_conversation :: proc(endpoint, token, action: string, args: []string) {
-	if action == "set-title" || action == "rename" {
-		title := option_value(args, "--title", "")
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do title = strings.trim_space(string(data)) }
-		if title == "" { fmt.println("usage: ham-ctl agent conversation set-title --title <text>"); return }
-		ctl_agent_call(endpoint, token, "agent.conversation.set_title", json_object(json_kv("title", title)))
-		return
-	}
-	fmt.println("usage: ham-ctl agent conversation set-title --title <text>")
-}
-
-// ctl_agentmode_chain handles 'ham-ctl agent chain set-title' (REQ-3): rename the
-// task chain this instance belongs to. Marks title_source=agent. --chain-id is
-// optional (defaults to the instance's own chain server-side).
-ctl_agentmode_chain :: proc(endpoint, token, action: string, args: []string) {
-	if action == "set-title" || action == "rename" {
-		title := option_value(args, "--title", "")
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do title = strings.trim_space(string(data)) }
-		if title == "" { fmt.println("usage: ham-ctl agent chain set-title --title <text> [--chain-id <id>]"); return }
-		chain_id := option_value(args, "--chain-id", "")
-		if chain_id != "" {
-			ctl_agent_call(endpoint, token, "agent.chain.set_title", json_object(json_kv("title", title), json_kv("chain_id", chain_id)))
-		} else {
-			ctl_agent_call(endpoint, token, "agent.chain.set_title", json_object(json_kv("title", title)))
-		}
-		return
-	}
-	fmt.println("usage: ham-ctl agent chain set-title --title <text> [--chain-id <id>]")
 }
 
 ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string) {
@@ -248,143 +324,52 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 	if include_outgoing { append(&fields, json_kv_raw("include_outgoing", "true")) } else { append(&fields, json_kv_raw("include_outgoing", "false")) }
 	if include_debug { append(&fields, json_kv_raw("include_debug", "true")) } else { append(&fields, json_kv_raw("include_debug", "false")) }
 	
-	ctl_agent_call(endpoint, token, "agent.chat.fetch", json_object_from_slice(fields[:]))
+	ctl_agent_call(endpoint, token, "agent.chat.read", json_object_from_slice(fields[:]))
 }
 
-ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
-	if action == "" || action == "list" || action == "fetch" || action == "read" || action == "context" {
-		ctl_agentmode_context(endpoint, token, args)
-		return
-	}
-	if action == "done" {
-		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-		if task_id == "" { fmt.println("usage: ham-ctl agent tasks done --task-id <id>"); return }
-		ctl_agent_call(endpoint, token, "agent.tasks.status", json_object(json_kv("task_id", task_id), json_kv("status", "in_validation")))
-		return
-	}
-	if action == "create" {
-		title := option_value(args, "--title", "")
-		if title == "" { fmt.println("usage: ham-ctl agent tasks create --title <title> [--description <desc>] [--assignee <id>] [--reviewer <ref>]"); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("title", title))
-		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
-		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
-		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" do append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", reviewer)), "]"}))
-		ctl_agent_call(endpoint, token, "agent.tasks.create", json_object_from_slice(fields[:]))
-		return
-	}
-	if action == "depend" {
-		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-		on_id := option_value(args, "--depends-on", option_value(args, "--on", ""))
-		if task_id == "" || on_id == "" { fmt.println("usage: ham-ctl agent tasks depend --task-id <id> --depends-on <id>"); return }
-		ctl_agent_call(endpoint, token, "agent.tasks.depend", json_object(json_kv("task_id", task_id), json_kv("depends_on_task_id", on_id)))
-		return
-	}
-	if action == "comment" {
-		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-		body := option_value(args, "--body", "")
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
-		if task_id == "" || body == "" { fmt.println("usage: ham-ctl agent tasks comment --task-id <id> --body <text> [--notify <id,id...>]"); return }
-		fields := make([dynamic]string)
-		append(&fields, json_kv("task_id", task_id))
-		append(&fields, json_kv("body", body))
-		if notify := option_value(args, "--notify", ""); notify != "" {
-			parts := strings.split(notify, ",")
-			defer delete(parts)
-			buf := strings.builder_make()
-			strings.write_string(&buf, "\"notify\":[")
-			for p, i in parts {
-				if i > 0 do strings.write_byte(&buf, ',')
-				strings.write_byte(&buf, '"')
-				strings.write_string(&buf, strings.trim_space(p))
-				strings.write_byte(&buf, '"')
-			}
-			strings.write_byte(&buf, ']')
-			append(&fields, strings.to_string(buf))
-		}
-		ctl_agent_call(endpoint, token, "agent.tasks.comment", json_object_from_slice(fields[:]))
-		return
-	}
-	if action == "status" {
-		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-		status := option_value(args, "--status", "")
-		if task_id == "" || status == "" { fmt.println("usage: ham-ctl agent tasks status --task-id <id> --status <status>"); return }
-		ctl_agent_call(endpoint, token, "agent.tasks.status", json_object(json_kv("task_id", task_id), json_kv("status", status)))
-		return
-	}
-	if action == "set-current" || action == "current" {
-		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-		if task_id == "" { fmt.println("usage: ham-ctl agent tasks set-current --task-id <id>"); return }
-		ctl_agent_call(endpoint, token, "agent.tasks.set_current", json_object(json_kv("task_id", task_id)))
-		return
-	}
-	if action == "vote" {
-		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-		result := option_value(args, "--result", option_value(args, "--vote", ""))
-		comment := option_value(args, "--comment", "")
-		if task_id == "" || result == "" { fmt.println("usage: ham-ctl agent tasks vote --task-id <id> --result <lgtm|ngtm> [--comment <text>]"); return }
-		ctl_agent_call(endpoint, token, "agent.tasks.vote", json_object(json_kv("task_id", task_id), json_kv("result", result), json_kv("comment", comment)))
-		return
-	}
-	if action == "nudge" {
-		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-		message := option_value(args, "--message", option_value(args, "--body", ""))
-		if task_id == "" { fmt.println("usage: ham-ctl agent tasks nudge --task-id <id> [--message <text>]"); return }
-		ctl_agent_call(endpoint, token, "agent.tasks.nudge", json_object(json_kv("task_id", task_id), json_kv("message", message)))
-		return
-	}
-	fmt.println("usage: ham-ctl agent tasks <fetch|create|depend|comment|status|set-current|vote|nudge>")
-}
-
-ctl_agentmode_artifacts :: proc(endpoint, token, action: string, args: []string) {
-	if action == "" || action == "list" {
-		ctl_agent_call(endpoint, token, "agent.artifacts.list", "{}")
-		return
-	}
-	if action == "create" {
+// ctl_agentmode_artifacts_v2 is the v2 artifact dispatch: positional <artifact-id>
+// and the singular `agent.artifact.*` methods.
+ctl_agentmode_artifacts_v2 :: proc(endpoint, token, verb: string, tokens, args: []string) {
+	switch verb {
+	case "", "list":
+		ctl_agent_call(endpoint, token, "agent.artifact.list", "{}")
+	case "create":
 		name := option_value(args, "--name", "")
 		kind := option_value(args, "--kind", "markdown")
-		if name == "" { fmt.println("usage: ham-ctl agent artifacts create --name <name> [--kind <kind>] [--content <text>|--file <path>]"); return }
+		if name == "" { print_agent_help([]string{"artifact"}); return }
 		content := option_value(args, "--content", "")
 		content_base64 := ""
 		if file_path := option_value(args, "--file", ""); file_path != "" { data, err := os.read_entire_file(file_path, context.allocator); if err == nil do content_base64 = base64.encode(data) }
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do content_base64 = base64.encode(data) }
-		if content == "" do content = ""
 		fields := make([dynamic]string)
 		append(&fields, json_kv("name", name)); append(&fields, json_kv("kind", kind))
 		if content_base64 != "" { append(&fields, json_kv("content_base64", content_base64)) } else { append(&fields, json_kv("content", content)) }
 		if ct := option_value(args, "--content-type", ""); ct != "" do append(&fields, json_kv("content_type", ct))
 		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
-		ctl_agent_call(endpoint, token, "agent.artifacts.create", json_object_from_slice(fields[:]))
-		return
-	}
-	if action == "show" {
-		artifact_id := option_value(args, "--artifact-id", option_value(args, "--artifact", ""))
-		if artifact_id == "" { fmt.println("usage: ham-ctl agent artifacts show --artifact-id <id> [--with-content]"); return }
+		ctl_agent_call(endpoint, token, "agent.artifact.create", json_object_from_slice(fields[:]))
+	case "show":
+		artifact_id := pos(tokens, 1)
+		if artifact_id == "" { print_agent_help([]string{"artifact"}); return }
 		fields := make([dynamic]string)
 		append(&fields, json_kv("artifact_id", artifact_id))
 		if has_flag(args, "--with-content") do append(&fields, json_kv_raw("with_content", "true"))
-		ctl_agent_call(endpoint, token, "agent.artifacts.show", json_object_from_slice(fields[:]))
-		return
-	}
-	if action == "content" || action == "get" || action == "read" {
-		artifact_id := option_value(args, "--artifact-id", option_value(args, "--artifact", ""))
-		if artifact_id == "" { fmt.println("usage: ham-ctl agent artifacts content --artifact-id <id>"); return }
+		ctl_agent_call(endpoint, token, "agent.artifact.show", json_object_from_slice(fields[:]))
+	case "content", "get", "read":
+		artifact_id := pos(tokens, 1)
+		if artifact_id == "" { print_agent_help([]string{"artifact"}); return }
 		ctl_agent_artifact_content(endpoint, token, artifact_id)
-		return
-	}
-	if action == "download" {
-		artifact_id := option_value(args, "--artifact-id", option_value(args, "--artifact", ""))
-		dir := option_value(args, "--dir", option_value(args, "--directory", option_value(args, "--out-dir", "")))
-		if artifact_id == "" || dir == "" { fmt.println("usage: ham-ctl agent artifacts download --artifact-id <id> --dir <directory>"); return }
+	case "download":
+		artifact_id := pos(tokens, 1)
+		dir := option_value(args, "--dir", option_value(args, "--out", ""))
+		if artifact_id == "" || dir == "" { print_agent_help([]string{"artifact"}); return }
 		ctl_agent_artifact_download(endpoint, token, artifact_id, dir)
-		return
+	case:
+		print_agent_help([]string{"artifact"})
 	}
-	fmt.println("usage: ham-ctl agent artifacts <list|create|show|content|download>")
 }
 
 ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string) {
-	response, ok := ctl_agent_local_call(endpoint, token, "agent.artifacts.content", json_object(json_kv("artifact_id", artifact_id)))
+	response, ok := ctl_agent_local_call(endpoint, token, "agent.artifact.content", json_object(json_kv("artifact_id", artifact_id)))
 	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	if !strings.contains(response, `"ok":true`) {
 		fmt.println(response)
@@ -395,10 +380,10 @@ ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string) {
 }
 
 ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string) {
-	meta_response, meta_ok := ctl_agent_local_call(endpoint, token, "agent.artifacts.show", json_object(json_kv("artifact_id", artifact_id)))
+	meta_response, meta_ok := ctl_agent_local_call(endpoint, token, "agent.artifact.show", json_object(json_kv("artifact_id", artifact_id)))
 	if !meta_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	if !strings.contains(meta_response, `"ok":true`) { fmt.println(meta_response); return }
-	content_response, content_ok := ctl_agent_local_call(endpoint, token, "agent.artifacts.content", json_object(json_kv("artifact_id", artifact_id)))
+	content_response, content_ok := ctl_agent_local_call(endpoint, token, "agent.artifact.content", json_object(json_kv("artifact_id", artifact_id)))
 	if !content_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	if !strings.contains(content_response, `"ok":true`) { fmt.println(content_response); return }
 	if os.make_directory_all(dir) != nil { fmt.println(`{"ok":false,"message":"download directory could not be created"}`); os.exit(1) }
@@ -652,105 +637,188 @@ strconv_parse_int_agent :: proc(value: string) -> (int, bool) {
 	return result, true
 }
 
+// print_agent_help renders the two-level skill-style help
+// (docs/agent-api-redesign.md §4.5). Level 1 = the overview; Level 2 = a
+// detailed reference per group. Deterministic + no network.
 print_agent_help :: proc(cmd: []string) {
 	resource := ""
-	action := ""
 	if len(cmd) > 0 {
 		if cmd[0] == "agent" || cmd[0] == "help" {
 			if len(cmd) > 1 do resource = cmd[1]
-			if len(cmd) > 2 do action = cmd[2]
 		} else {
 			resource = cmd[0]
-			if len(cmd) > 1 do action = cmd[1]
 		}
 	}
-	if resource == "chat" || resource == "chats" { print_agent_chat_help(action); return }
-	if resource == "agents" || resource == "instances" { fmt.println("ham-ctl agent agents <live|list|create>\nPurpose: list live agent instances, discover durable agents, or create a durable agent (H5) — all same-owner scoped via the local Bridge.\nExamples:\n  ham-ctl agent agents live\n  ham-ctl agent agents list\n  ham-ctl agent agents create --name reviewer --template-id tmpl_x --provider claude --tier smart"); return }
-	if resource == "templates" || resource == "template" { fmt.println("ham-ctl agent templates <list|create>\nPurpose: discover or create agent templates (personas) via the agent token (H5).\nExamples:\n  ham-ctl agent templates list\n  ham-ctl agent templates create --name coder --persona 'You write code.' --instructions '...'"); return }
-	if resource == "bridges" || resource == "bridge" { fmt.println("ham-ctl agent bridges <list>\nPurpose: discover bridges owned by this agent's owner (read-only) via the agent token (H5).\nExample:\n  ham-ctl agent bridges list"); return }
-	if resource == "projects" || resource == "project" { fmt.println("ham-ctl agent projects <list>\nPurpose: discover projects owned by this agent's owner (read-only) via the agent token (H5).\nExample:\n  ham-ctl agent projects list"); return }
-	if resource == "tasks" || resource == "task" { print_agent_tasks_help(action); return }
-	if resource == "artifacts" || resource == "artifact" { print_agent_artifacts_help(action); return }
-	if resource == "memory" { print_agent_memory_help(action); return }
-	if resource == "context" { fmt.println("ham-ctl agent context\nPurpose: fetch this running instance's compact Hub context snapshot via the local Bridge.\nExample:\n  ham-ctl agent context"); return }
-	if resource == "start-success" { fmt.println("ham-ctl agent start-success\nPurpose: signal that this agent instance is ready.\nExample:\n  ham-ctl agent start-success"); return }
-	fmt.println("ham-ctl agent — Bridge-local commands for a running agent")
-	fmt.println("commands:")
-	fmt.println("  context        Fetch instance, conversation, chain, task, and unread summary")
-	fmt.println("  start-success  Mark startup ready")
-	fmt.println("  chat           Read/send the bound user conversation")
-	fmt.println("  conversation   Set this conversation's title (set-title)")
-	fmt.println("  chain          Set this task chain's title (set-title)")
-	fmt.println("  agents         List live instances, discover durable agents, or create one (list|create)")
-	fmt.println("  templates      Discover/create agent templates (personas): list|create")
-	fmt.println("  bridges        Discover bridges owned by this agent's owner (list)")
-	fmt.println("  projects       Discover projects owned by this agent's owner (list)")
-	fmt.println("  tasks          Fetch current task context and comment/status/set-current/vote/nudge assigned tasks")
-	fmt.println("  artifacts      List/create/read artifacts visible to this instance owner")
-	fmt.println("  memory         Propose memory")
-	fmt.println("examples:")
-	fmt.println("  ham-ctl agent context")
-	fmt.println("  ham-ctl agents live")
-	fmt.println("  ham-ctl agent chat read --since 2026-07-27T10:00:00Z")
-	fmt.println("  ham-ctl agent chat send --body 'Done; tests pass.'")
-	fmt.println("  ham-ctl agent conversation set-title --title 'Fix auth bug'")
-	fmt.println("  ham-ctl agent chain set-title --title 'Auth hardening sprint'")
+	switch resource {
+	case "bridge", "bridges": print_help_bridge(); return
+	case "agents": print_help_agents(); return
+	case "task-chain", "task-chains": print_help_task_chain(); return
+	case "task", "tasks": print_help_task(); return
+	case "chat", "chats": print_help_chat(); return
+	case "artifact", "artifacts": print_help_artifact(); return
+	case "memory": print_help_memory(); return
+	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
+	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
+	}
+	print_help_overview()
 }
 
-print_agent_chat_help :: proc(action: string) {
-	_ = action
-	fmt.println("ham-ctl agent chat <send|send-to-agent|fetch|read>")
-	fmt.println("Purpose: read or write this instance's bound conversation through the Bridge.")
-	fmt.println("Commands:")
-	fmt.println("  send --body <text> | --stdin")
-	fmt.println("  send-to-agent --to-instance <id> --body <text> | --stdin")
-	fmt.println("  fetch [--since <cursor|timestamp>] [--limit N]")
-	fmt.println("  read [--since <cursor|timestamp>] [--limit N]  # fetches user_to_agent and agent_to_agent messages")
-	fmt.println("  mark-read  # acknowledges without fetching")
-	fmt.println("Examples:")
-	fmt.println("  ham-ctl agent chat fetch --since 2026-07-27T10:00:00Z --limit 20")
-	fmt.println("  ham-ctl agent chat read --since msg_cursor")
-	fmt.println("  ham-ctl agent chat send --body 'I started work.'")
+print_help_overview :: proc() {
+	fmt.println("ham-ctl — Heimdall agent CLI (talks to your local Bridge with your agent token)")
+	fmt.println("")
+	fmt.println("USAGE")
+	fmt.println("  ham-ctl <group> <verb> [<positional>] [--flags]")
+	fmt.println("  Everything below is callable by any Bridge-launched agent. IDs are positional;")
+	fmt.println("  each concept has exactly one flag. Run `ham-ctl <group> --help` for details.")
+	fmt.println("")
+	fmt.println("GROUPS")
+	fmt.println("  bridge      Discover bridges + their providers (Hub-registered and configured)")
+	fmt.println("  agents      Durable identities, templates, and runtime instances")
+	fmt.println("  task-chain  Your task chains")
+	fmt.println("  task        Tasks within a chain (one command per action)")
+	fmt.println("  chat        Read your inbox / send to the user or another agent")
+	fmt.println("  memory      Propose a memory")
+	fmt.println("  artifact    Create / read / download artifacts")
+	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
+	fmt.println("  start-success  Signal this instance is ready")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl bridge list")
+	fmt.println("  ham-ctl bridge providers --bridge brg_abc")
+	fmt.println("  ham-ctl agents new-instance agt_abc --project proj_x --bridge brg_abc --provider claude --tier smart")
+	fmt.println("  ham-ctl agents start   inst_123")
+	fmt.println("  ham-ctl agents stop    inst_123 --reason \"done for now\"")
+	fmt.println("  ham-ctl agents restart inst_123")
+	fmt.println("  ham-ctl task show inst_task_1")
+	fmt.println("  ham-ctl task comment inst_task_1 --body \"pushed fix, tests green\"")
+	fmt.println("  ham-ctl task status  inst_task_1 --status in_validation")
+	fmt.println("  ham-ctl chat read")
+	fmt.println("  ham-ctl chat send --to user --body \"Done — ready for review.\"")
+	fmt.println("  ham-ctl chat send --to inst_reviewer --body \"Can you LGTM inst_task_1?\"")
+	fmt.println("")
+	fmt.println("  ham-ctl <group> --help    # detailed help for any group")
 }
 
-print_agent_tasks_help :: proc(action: string) {
-	_ = action
-	fmt.println("ham-ctl agent tasks <fetch|comment|status|vote|nudge>")
-	fmt.println("Purpose: fetch compact current task context or update tasks assigned to/reviewed by this instance.")
-	fmt.println("Examples:")
-	fmt.println("  ham-ctl agent tasks fetch")
-	fmt.println("  ham-ctl agent tasks comment --task-id task_123 --body 'Implemented the fix.'")
-	fmt.println("  ham-ctl agent tasks status --task-id task_123 --status in_validation")
-	fmt.println("  ham-ctl agent tasks vote --task-id task_123 --result lgtm")
+print_help_bridge :: proc() {
+	fmt.println("ham-ctl bridge — discover bridges and their providers")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  list [--scope hub|configured|all]   List bridges. default all: Hub-registered")
+	fmt.println("                                      + locally-configured peers + this host (self).")
+	fmt.println("  providers [--bridge <id>]           Providers (+ tiers) for one/all Hub bridges.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl bridge list")
+	fmt.println("  ham-ctl bridge list --scope configured")
+	fmt.println("  ham-ctl bridge providers --bridge brg_abc")
 }
 
-print_agent_artifacts_help :: proc(action: string) {
-	_ = action
-	fmt.println("ham-ctl agent artifacts <list|create|show|content|download>")
-	fmt.println("Purpose: list, create, and read artifacts through the local Bridge.")
-	fmt.println("Commands:")
+print_help_agents :: proc() {
+	fmt.println("ham-ctl agents — durable identities, templates, and runtime instances")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  list                                List durable agent identities.")
+	fmt.println("  identity create --name <n>          Create a durable agent.")
+	fmt.println("      [--template <id>] [--provider <p>] [--tier <t>] [--slug <s>] [--instructions <t>]")
+	fmt.println("  template list                       List agent templates (personas).")
+	fmt.println("  template create --name <n>          Create a template.")
+	fmt.println("      [--description <d>] [--persona <t>] [--instructions <t>]")
+	fmt.println("  instance list [--agent <id>] [--live]   List instances (durable, or --live).")
+	fmt.println("  new-instance <agent-id>             Launch a NEW instance of a durable agent.")
+	fmt.println("      [--project <id>] [--bridge <id>] [--provider <p>] [--tier <t>] [--chain <id>]")
+	fmt.println("  start   <agent-instance-id>          Start a STOPPED instance (409 if already running).")
+	fmt.println("  stop    <agent-instance-id> [--reason <t>]   Stop a running instance.")
+	fmt.println("  restart <agent-instance-id>          Restart (stop-then-start) an instance.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl agents list")
+	fmt.println("  ham-ctl agents new-instance agt_abc --project proj_x --provider claude --tier smart")
+	fmt.println("  ham-ctl agents start inst_123")
+	fmt.println("  ham-ctl agents template create --name coder --persona 'You write code.'")
+}
+
+print_help_task_chain :: proc() {
+	fmt.println("ham-ctl task-chain — your task chains")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  list [--mine] [--project <id>]      List chains (--mine = ones you coordinate).")
+	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
+	fmt.println("  set-title <title> [--chain <id>]    Rename a chain.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl task-chain list --mine")
+	fmt.println("  ham-ctl task-chain show chain_abc")
+	fmt.println("  ham-ctl task-chain set-title 'Auth hardening' --chain chain_abc")
+}
+
+print_help_task :: proc() {
+	fmt.println("ham-ctl task — tasks within a task chain")
+	fmt.println("")
+	fmt.println("Exactly one command per action; there is no `done`, `comments`, or `votes`.")
+	fmt.println("Positional <task-id> identifies the task. --chain defaults to your current chain.")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  list [--chain <id>]                     List tasks in the chain.")
+	fmt.println("  show <task-id>                          Show a task with its comments and votes.")
+	fmt.println("  create --title <t>                      Create a task.")
+	fmt.println("      [--description <d>] [--assignee <instance-id>] [--reviewer <instance-id>] [--chain <id>]")
+	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")
+	fmt.println("      [--notify <id,id>]")
+	fmt.println("  status <task-id> --status <s>           Change status; use in_validation to submit for")
+	fmt.println("                                          review (there is no separate `done`).")
+	fmt.println("  vote <task-id> --result <lgtm|ngtm>     Cast a review vote (the only way to vote).")
+	fmt.println("      [--comment <t>]")
+	fmt.println("  nudge <task-id> [--message <t>]         Nudge the task's owner.")
+	fmt.println("  set-current <task-id>                   Mark this task as your current task.")
+	fmt.println("  depend <task-id> --on <task-id>         Add a dependency.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl task show inst_task_1")
+	fmt.println("  ham-ctl task comment inst_task_1 --body 'pushed fix' --notify inst_rev")
+	fmt.println("  ham-ctl task status inst_task_1 --status in_validation")
+	fmt.println("  ham-ctl task vote inst_task_1 --result lgtm --comment 'clean'")
+}
+
+print_help_chat :: proc() {
+	fmt.println("ham-ctl chat — read your inbox / send to the user or another agent")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  read [--limit N] [--since T] [--include-read] [--transcript]   Read messages.")
+	fmt.println("  send --to <user|agent-instance-id> --body <t> | --stdin        Send a message.")
+	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl chat read")
+	fmt.println("  ham-ctl chat send --to user --body 'Done — ready for review.'")
+	fmt.println("  ham-ctl chat send --to inst_reviewer --body 'Can you LGTM inst_task_1?'")
+}
+
+print_help_artifact :: proc() {
+	fmt.println("ham-ctl artifact — create / read / download artifacts")
+	fmt.println("")
+	fmt.println("VERBS")
 	fmt.println("  list")
 	fmt.println("  create --name <name> [--kind <kind>] [--content <text>|--file <path>|--stdin]")
-	fmt.println("  show --artifact-id <id> [--with-content]")
-	fmt.println("  content|read|get --artifact-id <id>")
-	fmt.println("  download --artifact-id <id> --dir <directory>  # writes a random filename with the inferred extension")
-	fmt.println("Examples:")
-	fmt.println("  ham-ctl agent artifacts list")
-	fmt.println("  ham-ctl agent artifacts create --name test-log --kind markdown --file /tmp/test.log")
-	fmt.println("  ham-ctl agent artifacts read --artifact-id art_123")
-	fmt.println("  ham-ctl agent artifacts download --artifact-id art_123 --dir /tmp")
+	fmt.println("  show <artifact-id> [--with-content]")
+	fmt.println("  content <artifact-id>                Print the raw artifact content.")
+	fmt.println("  download <artifact-id> --dir <dir>   Write to a file (inferred extension).")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl artifact list")
+	fmt.println("  ham-ctl artifact create --name test-log --kind markdown --file /tmp/test.log")
+	fmt.println("  ham-ctl artifact content art_123")
+	fmt.println("  ham-ctl artifact download art_123 --dir /tmp")
 }
 
-print_agent_memory_help :: proc(action: string) {
-	_ = action
-	fmt.println("ham-ctl agent memory propose --type <type> --title <title> --body <text> [--evidence <text>] [--template-id <id>] [--project-id <id>] [--bridge-id <id>] [--agent-id <id>]")
-	fmt.println("Purpose: propose durable memory for later review.")
-	fmt.println("Scope flags (optional; omit for defaults — agent scope defaults to the caller's own agent, the rest to global):")
-	fmt.println("  --template-id <id>  (alias --template)  scope the memory to a template (guidance for agents from that template)")
-	fmt.println("  --project-id  <id>  (alias --project)   scope to a project")
-	fmt.println("  --bridge-id   <id>  (alias --bridge)    scope to a bridge")
-	fmt.println("  --agent-id    <id>  (alias --agent)     target a specific agent (defaults to the caller's own)")
-	fmt.println("Examples:")
-	fmt.println("  ham-ctl agent memory propose --type fact --title 'Project test command' --body 'Use nix develop --command odin check src/hub.'")
-	fmt.println("  ham-ctl agent memory propose --type habit --title 'Reviewer checklist' --body '...' --template-id tmpl_reviewer")
+print_help_memory :: proc() {
+	fmt.println("ham-ctl memory — propose a durable memory for later review")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  propose --type <t> --title <t> [--body <t>] [--evidence <t>]")
+	fmt.println("      [--template <id>] [--project <id>] [--bridge <id>] [--agent <id>]")
+	fmt.println("  Scope flags are optional: agent defaults to the caller's own; the rest to global.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl memory propose --type fact --title 'Test command' --body 'nix develop --command odin check src/hub'")
+	fmt.println("  ham-ctl memory propose --type habit --title 'Reviewer checklist' --body '...' --template tmpl_reviewer")
 }

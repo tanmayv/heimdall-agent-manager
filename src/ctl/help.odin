@@ -11,25 +11,30 @@ ctl_help :: proc(cmd: []string) {
 		fmt.println(strings.trim_space(#load("../prompts/bootstrap_profile_guidance.md", string)))
 		return
 	}
-	if len(cmd) >= 2 && cmd[1] == "agent" { print_agent_help(cmd[2:]); return }
 	if len(cmd) >= 2 && cmd[1] == "hub" { print_hub_help(cmd[2:]); return }
+	// `help agent` and any group name render the skill-style agent help.
+	if len(cmd) >= 2 && cmd[1] == "agent" { print_agent_help(cmd[2:]); return }
+	if len(cmd) >= 2 {
+		switch cmd[1] {
+		case "bridge", "bridges", "agents", "task-chain", "task-chains",
+		     "task", "tasks", "chat", "chats", "artifact", "artifacts",
+		     "memory", "context", "start-success":
+			print_agent_help(cmd[1:]); return
+		}
+	}
 	print_usage(cfg_lib.config_path_from_args(os.args), "")
 }
 
+// print_usage renders the Level-1 skill-style overview (agent API v2). The
+// canonical text lives in print_help_overview (agent_mode.odin) so `ham-ctl`,
+// `ham-ctl help`, and `ham-ctl --help` all show the same thing.
 print_usage :: proc(config_path, daemon_url: string) {
 	_ = config_path
 	_ = daemon_url
-	fmt.println("ham-ctl", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("command families:")
-	fmt.println("  task-chains Unified task chains commands (user or agent): list, create, show, update, members, add-agent, publish, complete")
-	fmt.println("  tasks       Unified task commands (user or agent): list, create, update, status, done, depend, cancel, comment, comments, vote, votes, nudge")
-	fmt.println("  agent       Bridge-local agent commands: context, start-success, chat, tasks, artifacts, memory")
-	fmt.println("  hub         Hub /api/v1 user commands: me, agents, launch, chats, tasks, task-chains, projects, artifacts, memories")
-	fmt.println("  help    Show detailed help: ham-ctl help agent | ham-ctl help hub | ham-ctl help work-guide")
-	fmt.println("examples:")
-	fmt.println("  ham-ctl agent context")
-	fmt.println("  ham-ctl agent chat read --since 2026-07-27T10:00:00Z")
-	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... me")
-	fmt.println("global flags: --version, --help")
+	print_help_overview()
+	fmt.println("")
+	fmt.println("OTHER")
+	fmt.println("  hub    Hub /api/v1 user commands (needs --hub-url + --user-token)")
+	fmt.println("  help   ham-ctl <group> --help | ham-ctl help hub | ham-ctl help work-guide")
 }
 

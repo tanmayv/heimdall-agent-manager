@@ -189,7 +189,7 @@ test_relay_restart_with_retry :: proc() {
 		role              = .Agent,
 	}
 
-	relay := bridge.bridge_local_relay_instance_lifecycle("agent.instances.restart", "{\"instance_id\":\"inst_relay_test\"}", rec)
+	relay := bridge.bridge_local_relay_raw("POST", "/api/v1/agent-instances/inst_relay_test/restart", "", rec)
 	check(relay.ok, "relay must succeed")
 	check(relay.status == 200, "relay status must be 200 after retry")
 	check(strings.contains(relay.body, "restarted"), "relay body must contain restarted")
@@ -197,7 +197,7 @@ test_relay_restart_with_retry :: proc() {
 	thread.join(server_thread)
 	thread.destroy(server_thread)
 
-	fmt.println("PASS: bridge_local_relay_instance_lifecycle restart retry succeeded")
+	fmt.println("PASS: bridge_local_relay_raw restart retry succeeded")
 }
 
 test_idempotency_and_dedupe :: proc() {

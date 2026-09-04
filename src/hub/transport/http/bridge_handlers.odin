@@ -255,7 +255,10 @@ bridge_provider_error_response :: proc(err: domain.Domain_Error, request_id: str
 }
 
 bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, command_type, provider_name, body: string) -> (string, bool, domain.Domain_Error) {
-	auth_ctx, auth_ok, auth_resp := require_auth(h.auth, req)
+	// Accept user tokens AND bridge-relayed instance tokens so a running agent can
+	// discover a bridge's providers (agent API v2 `bridge providers`). Same-owner
+	// scoping is enforced by get_bridge via the auth context.
+	auth_ctx, auth_ok, auth_resp := require_auth_any(h.auth, req)
 	if !auth_ok do return auth_resp.body, false, domain.domain_error(.Unauthenticated, "authentication required")
 	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
 	if !bridge_ok do return "", false, bridge_err

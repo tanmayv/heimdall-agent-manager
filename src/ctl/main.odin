@@ -37,16 +37,6 @@ main :: proc() {
 		return
 	}
 
-		if cmd[0] == "task-chains" || cmd[0] == "task-chain" || cmd[0] == "chains" || cmd[0] == "chain" {
-		ctl_task_chains_command(cmd[:], os.args)
-		return
-	}
-
-	if cmd[0] == "tasks" || cmd[0] == "task" {
-		ctl_tasks_command(cmd[:], os.args)
-		return
-	}
-
 	if cmd[0] == "hub" || has_flag(os.args, "--hub") {
 		ctl_hub_user_mode(cmd[:], os.args)
 		return
@@ -57,14 +47,39 @@ main :: proc() {
 		return
 	}
 
-	// Convenience for Bridge-launched agents: the managed .heimdall/bin/ham-ctl
-	// wrapper exports local endpoint/token env, so allow `ham-ctl agents live`
-	// without requiring the extra `agent` namespace.
-	if cmd[0] == "agents" || cmd[0] == "instances" || cmd[0] == "artifacts" || cmd[0] == "artifact" {
-		if agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != "" {
+	// Agent API v2: when running inside a Bridge-launched agent (local endpoint +
+	// token exported by the managed .heimdall/bin/ham-ctl), the agent-facing
+	// groups dispatch through agent mode WITHOUT the `agent` prefix. This takes
+	// priority over the legacy user-mode task/task-chain commands.
+	agent_ctx := agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != ""
+	if agent_ctx {
+		switch cmd[0] {
+		case "bridge", "bridges", "agents", "task-chain", "task-chains",
+		     "task", "tasks", "chat", "chats", "artifact", "artifacts",
+		     "memory", "context":
 			ctl_agent_mode(cmd[:], os.args)
 			return
 		}
+	}
+
+	// Agent-facing groups always render v2 help on --help even without an agent
+	// context (so `ham-ctl task --help` documents the agent surface).
+	if has_flag(os.args, "--help") || has_flag(os.args, "-h") {
+		switch cmd[0] {
+		case "bridge", "bridges", "agents", "chat", "chats", "artifact", "artifacts", "memory":
+			print_agent_help(cmd[:]); return
+		}
+	}
+
+	// User-mode (no agent context): legacy hub-scoped task/chain commands.
+	if cmd[0] == "task-chains" || cmd[0] == "task-chain" || cmd[0] == "chains" || cmd[0] == "chain" {
+		ctl_task_chains_command(cmd[:], os.args)
+		return
+	}
+
+	if cmd[0] == "tasks" || cmd[0] == "task" {
+		ctl_tasks_command(cmd[:], os.args)
+		return
 	}
 
 	if cmd[0] == "start-success" {

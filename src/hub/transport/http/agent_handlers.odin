@@ -133,7 +133,10 @@ delete_agent_support_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	// Accept user tokens AND bridge-relayed instance tokens so a running agent can
+	// list instances it owns (agent API v2 `agents instance list`). Same-owner
+	// scoping is enforced by list_instances_filtered via the auth context.
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	limit := query_int(req.query, "limit", 50)
 	if limit <= 0 do limit = 50
@@ -202,6 +205,19 @@ restart_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !ok do return auth_resp
 	inst, restarted, err := agent_service.restart_instance(h.agents, auth_ctx, path_part(req.path, 4))
 	if !restarted do return respond_error(err, req.request_id)
+	events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_summary_json(inst))
+	b := strings.builder_make(); write_agent_instance_json(&b, inst)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 202)
+}
+
+// start_agent_instance_handler starts a STOPPED instance. Distinct from restart:
+// returns 409 (Conflict, code=already_running) when the instance is already live.
+start_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	inst, started, err := agent_service.start_instance(h.agents, auth_ctx, path_part(req.path, 4))
+	if !started do return respond_error(err, req.request_id)
 	events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_summary_json(inst))
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 202)

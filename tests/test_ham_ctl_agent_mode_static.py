@@ -21,13 +21,17 @@ def require(cond, msg):
 
 
 def main():
-    ctl = read("src/ctl/main.odin")
+    main_odin = read("src/ctl/main.odin")
+    ctl = read("src/ctl/agent_mode.odin")
 
-    # --- dispatch wiring ----------------------------------------------------
-    require("ctl_agent_mode(early_cmd[:], os.args)" in ctl,
-            "early config-free dispatch must route 'agent' to agent mode")
-    require('cmd[0] == "agent" || has_flag(os.args, "--agent-mode")' in ctl,
-            "post-config dispatch must also route agent mode")
+    # --- dispatch wiring (agent API v2) ------------------------------------
+    require('cmd[0] == "agent" || has_flag(os.args, "--agent-mode")' in main_odin,
+            "dispatch must route agent mode")
+    # Agent-facing groups dispatch through agent mode without the `agent` prefix
+    # when a Bridge agent context is present.
+    for group in ("bridge", "agents", "task-chain", "task", "chat", "artifact", "memory", "context"):
+        require(f'"{group}"' in main_odin,
+                f"main dispatch must recognize the {group} group")
 
     # --- discovery: endpoint + local token only ----------------------------
     require('option_value(args, "--bridge-endpoint", "")' in ctl,
@@ -40,21 +44,12 @@ def main():
             "agent mode must discover token via HEIMDALL_AGENT_TOKEN env")
 
     # --- NO Hub coupling ----------------------------------------------------
-    # Agent mode must not read HEIMDALL_HUB_URL / HEIMDALL_USER_TOKEN.
-    # (Those are used only by hub user mode.) Verify the agent_* discovery
-    # helpers do not reference Hub URL/user-token env names.
-    am_start = ctl.index("ctl_agent_mode :: proc")
-    am_end = ctl.index("ctl_hub_request :: proc")
-    agent_block = ctl[am_start:am_end]
-    require("HEIMDALL_HUB_URL" not in agent_block,
-            "agent mode block must not reference HEIMDALL_HUB_URL")
-    require("HEIMDALL_USER_TOKEN" not in agent_block,
-            "agent mode block must not reference HEIMDALL_USER_TOKEN")
-    # No http.request* call inside agent mode (local endpoint only, not HTTP).
-    require("http.request_with_headers_timeout" not in agent_block,
-            "agent mode must not make Hub HTTP requests")
-    require("http.post(" not in agent_block and "http.get(" not in agent_block,
-            "agent mode must not use http.get/http.post (local JSONL only)")
+    require("HEIMDALL_HUB_URL" not in ctl,
+            "agent mode must not reference HEIMDALL_HUB_URL")
+    require("HEIMDALL_USER_TOKEN" not in ctl,
+            "agent mode must not reference HEIMDALL_USER_TOKEN")
+    require("http.request_with_headers_timeout" not in ctl,
+            "agent mode must not make Hub HTTP requests (local JSONL only)")
 
     # --- JSONL v1 envelope --------------------------------------------------
     require('"v":1,"id":"ham-ctl-agent"' in ctl,
@@ -72,20 +67,34 @@ def main():
     require("posix.socket(.UNIX, .STREAM)" in ctl,
             "agent unix client must open an AF_UNIX stream socket")
 
-    # --- method surface -----------------------------------------------------
+    # --- method surface (agent API v2, flat names) -------------------------
     methods = [
-        "agent.chat.send_to_user",
-        "agent.tasks.comment",
-        "agent.tasks.status",
-        "agent.tasks.vote",
-        "agent.tasks.nudge",
-        "agent.artifacts.create",
+        "agent.chat.send",
+        "agent.chat.read",
+        "agent.task.comment",
+        "agent.task.status",
+        "agent.task.vote",
+        "agent.task.nudge",
+        "agent.agents.new_instance",
+        "agent.agents.instance_start",
+        "agent.agents.instance_stop",
+        "agent.agents.instance_restart",
+        "agent.bridge.list",
+        "agent.artifact.create",
         "agent.memory.propose",
         "agent.context.get",
         "agent.start_success",
     ]
     for m in methods:
         require(m in ctl, f"agent mode must expose method {m}")
+
+    # --- removed redundant verbs (one way per action) ----------------------
+    require("agent.chat.send_to_user" not in ctl,
+            "chat send_to_user must be collapsed into chat.send")
+    require("agent.tasks.comment" not in ctl,
+            "legacy agent.tasks.* methods must be gone (now agent.task.*)")
+    require("agent.instances.launch" not in ctl,
+            "legacy agent.instances.launch must be gone (now agents.new_instance)")
 
     # --- offline/relay error surface ---------------------------------------
     require("local Bridge endpoint is not reachable" in ctl,

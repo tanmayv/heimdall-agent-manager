@@ -63,8 +63,8 @@ listen_loopback :: proc() -> (net.TCP_Socket, int) {
 	return listener, bound_ep.port
 }
 
-// 1. The agent-actions relay retries a 503 then succeeds on the 200 — proving
-//    bridge_local_relay_agent_method now goes through bridge_http_request_retry.
+// 1. The agent-actions envelope relay retries a 503 then succeeds on the 200 —
+//    proving bridge_local_relay_agent_envelope goes through bridge_http_request_retry.
 test_agent_relay_retries_5xx_then_200 :: proc() {
 	listener, port := listen_loopback()
 	defer net.close(listener)
@@ -83,7 +83,7 @@ test_agent_relay_retries_5xx_then_200 :: proc() {
 		role              = .Agent,
 	}
 
-	relay := bridge.bridge_local_relay_agent_method("agent.start_success", "{}", rec)
+	relay := bridge.bridge_local_relay_agent_envelope("/api/v1/agent-actions/start-success", "agent.start_success", "{}", rec)
 	check(relay.ok, "agent relay must succeed after retrying the 503")
 	check(relay.status == 200, "agent relay status must be 200 after retry")
 	check(strings.contains(relay.body, "accepted"), "relay body must carry the hub 200 payload")

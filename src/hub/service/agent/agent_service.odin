@@ -554,6 +554,21 @@ restart_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, 
 	return relaunch_instance(service, auth, inst, inst.provider, inst.tier)
 }
 
+// start_instance starts a STOPPED instance. Unlike restart (absolute
+// stop-then-start), start refuses an instance that is already live so the agent
+// gets a clear "already_running" (409/Conflict) instead of silently re-spawning.
+// The machine-readable code rides in details_json so ham-ctl can branch on it.
+start_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	inst, ok, err := get_instance(service, auth, instance_id)
+	if !ok do return domain.Agent_Instance{}, false, err
+	if runtime_expected_active(inst.runtime_status) {
+		msg := strings.concatenate({"instance ", inst.agent_instance_id, " is already running (runtime_status=", inst.runtime_status, ")"})
+		details := strings.concatenate({"{\"code\":\"already_running\",\"runtime_status\":\"", inst.runtime_status, "\"}"})
+		return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, msg, details)
+	}
+	return relaunch_instance(service, auth, inst, inst.provider, inst.tier)
+}
+
 reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
