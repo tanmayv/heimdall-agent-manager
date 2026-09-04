@@ -1,0 +1,287 @@
+package main
+
+import "core:testing"
+
+// BR-2 codec tests: the Odin pty-host client must be byte-for-byte compatible
+// with the Rust daemon protocol (tools/pty_host/src/dproto.rs). We assert exact
+// wire bytes for the encoders and full round-trips for the reply decoder, so a
+// drift on either side is caught here rather than at runtime against a live host.
+
+// pty_host_test_reframe strips the 4-byte length prefix and returns the payload
+// slice, asserting the prefix matches the payload length.
+pty_host_test_reframe :: proc(t: ^testing.T, framed: []byte) -> []byte {
+	testing.expect(t, len(framed) >= 4, "framed msg must have a length prefix")
+	length := int(framed[0]) << 24 | int(framed[1]) << 16 | int(framed[2]) << 8 | int(framed[3])
+	testing.expect_value(t, length, len(framed) - 4)
+	return framed[4:]
+}
+
+@(test)
+pty_host_encode_list_ping_are_single_tag :: proc(t: ^testing.T) {
+	lst := pty_host_encode_list()
+	defer delete(lst)
+	pl := pty_host_test_reframe(t, lst)
+	testing.expect_value(t, len(pl), 1)
+	testing.expect_value(t, pl[0], u8(PTY_HOST_T_LIST))
+
+	png := pty_host_encode_ping()
+	defer delete(png)
+	pp := pty_host_test_reframe(t, png)
+	testing.expect_value(t, len(pp), 1)
+	testing.expect_value(t, pp[0], u8(PTY_HOST_T_PING))
+}
+
+@(test)
+pty_host_encode_instance_only_shape :: proc(t: ^testing.T) {
+	// Close "ab": tag(0x21) + u32 len(2) + "ab"
+	msg := pty_host_encode_close("ab")
+	defer delete(msg)
+	pl := pty_host_test_reframe(t, msg)
+	want := []byte{PTY_HOST_T_CLOSE, 0, 0, 0, 2, 'a', 'b'}
+	testing.expect_value(t, len(pl), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+
+	restart := pty_host_encode_restart("ab")
+	defer delete(restart)
+	rpl := pty_host_test_reframe(t, restart)
+	testing.expect_value(t, rpl[0], u8(PTY_HOST_T_RESTART))
+}
+
+@(test)
+pty_host_encode_key_shape :: proc(t: ^testing.T) {
+	// Key "a" Enter: tag(0x32) + u32 len(1) + "a" + key byte(1)
+	msg := pty_host_encode_key("a", .Enter)
+	defer delete(msg)
+	pl := pty_host_test_reframe(t, msg)
+	want := []byte{PTY_HOST_T_KEY, 0, 0, 0, 1, 'a', 1}
+	testing.expect_value(t, len(pl), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+	// Verify a couple of discriminants match proto.rs NamedKey.
+	testing.expect_value(t, u8(Pty_Host_Key.Ctrl_C), 3)
+	testing.expect_value(t, u8(Pty_Host_Key.Ctrl_Backslash), 11)
+	testing.expect_value(t, u8(Pty_Host_Key.Delete), 16)
+}
+
+@(test)
+pty_host_encode_input_shape :: proc(t: ^testing.T) {
+	// Input "a" "hi": tag(0x31) + u32 len(1) + "a" + raw "hi"
+	data := []byte{'h', 'i'}
+	msg := pty_host_encode_input("a", data)
+	defer delete(msg)
+	pl := pty_host_test_reframe(t, msg)
+	want := []byte{PTY_HOST_T_INPUT, 0, 0, 0, 1, 'a', 'h', 'i'}
+	testing.expect_value(t, len(pl), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+}
+
+@(test)
+pty_host_encode_resize_shape :: proc(t: ^testing.T) {
+	// Resize "a" 50x200: tag(0x33) + len(1)+"a" + u16 50 + u16 200
+	msg := pty_host_encode_resize("a", 50, 200)
+	defer delete(msg)
+	pl := pty_host_test_reframe(t, msg)
+	want := []byte{PTY_HOST_T_RESIZE, 0, 0, 0, 1, 'a', 0, 50, 0, 200}
+	testing.expect_value(t, len(pl), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+}
+
+@(test)
+pty_host_encode_spawn_full_shape :: proc(t: ^testing.T) {
+	req := Pty_Host_Spawn_Request{
+		instance = "i",
+		argv = []string{"true"},
+		cwd = "/w",
+		has_cwd = true,
+		env = [][2]string{{"K", "V"}},
+		detect = "{}",
+		has_detect = true,
+		rows = 24,
+		cols = 80,
+	}
+	msg := pty_host_encode_spawn(req)
+	defer delete(msg)
+	pl := pty_host_test_reframe(t, msg)
+	// tag + instance("i") + argc(1) + argv0("true") + opt cwd(1,"/w")
+	// + envc(1) + K + V + opt detect(1,"{}") + rows(24) + cols(80)
+	want := []byte{
+		PTY_HOST_T_SPAWN,
+		0, 0, 0, 1, 'i',
+		0, 1, // argc u16
+		0, 0, 0, 4, 't', 'r', 'u', 'e',
+		1, 0, 0, 0, 2, '/', 'w', // opt cwd present
+		0, 1, // envc u16
+		0, 0, 0, 1, 'K',
+		0, 0, 0, 1, 'V',
+		1, 0, 0, 0, 2, '{', '}', // opt detect present
+		0, 24, // rows
+		0, 80, // cols
+	}
+	testing.expect_value(t, len(pl), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+}
+
+@(test)
+pty_host_encode_spawn_minimal_omits_opts :: proc(t: ^testing.T) {
+	req := Pty_Host_Spawn_Request{
+		instance = "i",
+		argv = []string{"true"},
+		has_cwd = false,
+		has_detect = false,
+		rows = 24,
+		cols = 80,
+	}
+	msg := pty_host_encode_spawn(req)
+	defer delete(msg)
+	pl := pty_host_test_reframe(t, msg)
+	// opt cwd absent => single 0 byte; envc 0; opt detect absent => single 0 byte
+	want := []byte{
+		PTY_HOST_T_SPAWN,
+		0, 0, 0, 1, 'i',
+		0, 1,
+		0, 0, 0, 4, 't', 'r', 'u', 'e',
+		0, // opt cwd absent
+		0, 0, // envc u16 = 0
+		0, // opt detect absent
+		0, 24,
+		0, 80,
+	}
+	testing.expect_value(t, len(pl), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+}
+
+// ---- reply decode round-trips (encode with our put_* then decode) --------
+
+@(test)
+pty_host_decode_spawned :: proc(t: ^testing.T) {
+	// Build a Spawned payload: tag + instance + i32 pid
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_SPAWNED)
+	pty_host_put_str(&p, "inst_abc")
+	pty_host_put_i32(&p, 4242)
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode Spawned")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Spawned)
+	testing.expect_value(t, r.instance, "inst_abc")
+	testing.expect_value(t, r.pid, i32(4242))
+}
+
+@(test)
+pty_host_decode_child_exited_and_error :: proc(t: ^testing.T) {
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_EXITED)
+	pty_host_put_str(&p, "a")
+	pty_host_put_i32(&p, 137)
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode ChildExited")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Child_Exited)
+	testing.expect_value(t, r.code, i32(137))
+
+	e := make([dynamic]byte); defer delete(e)
+	append(&e, PTY_HOST_T_ERROR)
+	pty_host_put_str(&e, "a")
+	pty_host_put_str(&e, "no such instance")
+	er, eok := pty_host_decode_reply(e[:])
+	defer pty_host_reply_delete(er)
+	testing.expect(t, eok, "decode Error")
+	testing.expect_value(t, er.kind, Pty_Host_Reply_Kind.Error)
+	testing.expect_value(t, er.message, "no such instance")
+}
+
+@(test)
+pty_host_decode_agent_list_mixed :: proc(t: ^testing.T) {
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_AGENTLIST)
+	pty_host_put_u16(&p, 2)
+	// agent 1: alive, no exit code
+	pty_host_put_str(&p, "inst_1")
+	pty_host_put_str(&p, "/bin/zsh")
+	pty_host_put_i32(&p, 111)
+	append(&p, 1) // alive
+	append(&p, 0) // has_code = 0
+	pty_host_put_u16(&p, 24)
+	pty_host_put_u16(&p, 80)
+	pty_host_put_u64(&p, 1_700_000_000)
+	pty_host_put_u64(&p, 1_700_000_050)
+	// agent 2: dead, exit code 0
+	pty_host_put_str(&p, "inst_2")
+	pty_host_put_str(&p, "claude")
+	pty_host_put_i32(&p, 222)
+	append(&p, 0) // dead
+	append(&p, 1) // has_code = 1
+	pty_host_put_i32(&p, 0)
+	pty_host_put_u16(&p, 40)
+	pty_host_put_u16(&p, 120)
+	pty_host_put_u64(&p, 1_700_000_100)
+	pty_host_put_u64(&p, 1_700_000_100)
+
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode AgentList")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Agent_List)
+	testing.expect_value(t, len(r.agents), 2)
+	testing.expect_value(t, r.agents[0].instance_id, "inst_1")
+	testing.expect_value(t, r.agents[0].alive, true)
+	testing.expect_value(t, r.agents[0].has_exit_code, false)
+	testing.expect_value(t, r.agents[0].last_activity, u64(1_700_000_050))
+	testing.expect_value(t, r.agents[1].instance_id, "inst_2")
+	testing.expect_value(t, r.agents[1].alive, false)
+	testing.expect_value(t, r.agents[1].has_exit_code, true)
+	testing.expect_value(t, r.agents[1].exit_code, i32(0))
+	testing.expect_value(t, r.agents[1].cols, u16(120))
+}
+
+@(test)
+pty_host_decode_screen :: proc(t: ^testing.T) {
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_SCREEN)
+	pty_host_put_str(&p, "a")
+	pty_host_put_u16(&p, 3)   // rows
+	pty_host_put_u16(&p, 10)  // cols
+	pty_host_put_u16(&p, 1)   // cursor_row
+	pty_host_put_u16(&p, 2)   // cursor_col
+	pty_host_put_u16(&p, 3)   // line count
+	pty_host_put_str(&p, "hello")
+	pty_host_put_str(&p, "")
+	pty_host_put_str(&p, "world")
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode Screen")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Screen)
+	testing.expect_value(t, r.instance, "a")
+	testing.expect_value(t, r.screen.rows, u16(3))
+	testing.expect_value(t, r.screen.cursor_col, u16(2))
+	testing.expect_value(t, len(r.screen.lines), 3)
+	testing.expect_value(t, r.screen.lines[0], "hello")
+	testing.expect_value(t, r.screen.lines[1], "")
+	testing.expect_value(t, r.screen.lines[2], "world")
+}
+
+@(test)
+pty_host_decode_output_and_pong :: proc(t: ^testing.T) {
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_OUTPUT)
+	pty_host_put_str(&p, "a")
+	append(&p, 0x1b, '[', '3', '1', 'm')
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode Output")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Output)
+	testing.expect_value(t, len(r.data), 5)
+	testing.expect_value(t, r.data[0], u8(0x1b))
+
+	pong := []byte{PTY_HOST_T_PONG}
+	pr, pok := pty_host_decode_reply(pong)
+	defer pty_host_reply_delete(pr)
+	testing.expect(t, pok, "decode Pong")
+	testing.expect_value(t, pr.kind, Pty_Host_Reply_Kind.Pong)
+}
+
+@(test)
+pty_host_decode_rejects_empty_and_unknown :: proc(t: ^testing.T) {
+	_, ok := pty_host_decode_reply([]byte{})
+	testing.expect(t, !ok, "empty payload rejected")
+	_, ok2 := pty_host_decode_reply([]byte{0xFF})
+	testing.expect(t, !ok2, "unknown tag rejected")
+}
