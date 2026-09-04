@@ -15,7 +15,7 @@ test dproto::tests::replies_roundtrip ... ok
 test dproto::tests::screen_reply_roundtrips ... ok
 test dproto::tests::spawn_request_roundtrips_full ... ok
 test dproto::tests::spawn_request_roundtrips_minimal ... ok
-test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.13s
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.42s
 running 0 tests
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 running 0 tests

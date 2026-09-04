@@ -715,6 +715,32 @@ mod tests {
         false
     }
 
+    /// Deterministically drive a freshly-spawned shell: RE-SEND `input` on a
+    /// retry loop until `needle` shows up in the capture (or timeout). A single
+    /// write after a fixed sleep races the child becoming ready to read on a
+    /// slow/loaded machine (the shell may still be sourcing rc files, or the
+    /// re-spawned PTY reader may not be plumbed yet); re-sending removes that
+    /// race without assuming any timing. Sending `echo ...` more than once is
+    /// harmless — it just prints again.
+    fn drive_until(d: &Daemon, instance: &str, input: &[u8], needle: &str, timeout: Duration) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if d.write_input(instance, input).is_err() {
+                return false;
+            }
+            let deadline = std::time::Instant::now() + Duration::from_millis(250);
+            while std::time::Instant::now() < deadline {
+                if let Some(s) = d.capture(instance) {
+                    if s.lines.iter().any(|l| l.contains(needle)) {
+                        return true;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+        false
+    }
+
     #[test]
     fn spawn_two_agents_drive_each_independently() {
         require_pty!();
@@ -729,13 +755,10 @@ mod tests {
         d.spawn(sh_spec("a", &sh)).unwrap();
         d.spawn(sh_spec("b", &sh)).unwrap();
         assert_eq!(d.agent_count(), 2);
-        std::thread::sleep(Duration::from_millis(300));
 
-        d.write_input("a", b"echo AAA111\n").unwrap();
-        d.write_input("b", b"echo BBB222\n").unwrap();
-
-        assert!(capture_contains(&d, "a", "AAA111", Duration::from_secs(3)));
-        assert!(capture_contains(&d, "b", "BBB222", Duration::from_secs(3)));
+        // Drive each independently (retry-until-ready, no fixed-sleep race).
+        assert!(drive_until(&d, "a", b"echo AAA111\n", "AAA111", Duration::from_secs(5)));
+        assert!(drive_until(&d, "b", b"echo BBB222\n", "BBB222", Duration::from_secs(5)));
         // Cross-check isolation: a's screen must not contain b's marker.
         let a = d.capture("a").unwrap();
         assert!(!a.lines.iter().any(|l| l.contains("BBB222")));
@@ -758,10 +781,9 @@ mod tests {
         d.close("drop").unwrap();
         assert_eq!(d.agent_count(), 1);
         assert!(find(&d.list(), "drop").is_none());
-        // Survivor still drivable.
+        // Survivor still drivable (retry-until-ready).
         assert!(d.is_alive("keep"));
-        d.write_input("keep", b"echo STILL_HERE\n").unwrap();
-        assert!(capture_contains(&d, "keep", "STILL_HERE", Duration::from_secs(3)));
+        assert!(drive_until(&d, "keep", b"echo STILL_HERE\n", "STILL_HERE", Duration::from_secs(5)));
 
         d.shutdown();
     }
@@ -777,7 +799,12 @@ mod tests {
         let mut spec = sh_spec("r", &sh);
         spec.env = vec![("MARKER_ENV".into(), "xyzzy".into())];
         d.spawn(spec).unwrap();
-        std::thread::sleep(Duration::from_millis(200));
+        // Verify the env is live on the ORIGINAL child before restart, so the
+        // post-restart check is unambiguously about the remembered spec.
+        assert!(
+            drive_until(&d, "r", b"echo $MARKER_ENV\n", "xyzzy", Duration::from_secs(5)),
+            "env not applied on initial spawn"
+        );
         let pid1 = find(&d.list(), "r").unwrap().pid;
 
         let pid2 = d.restart("r").unwrap();
@@ -785,11 +812,13 @@ mod tests {
         assert_eq!(d.agent_count(), 1);
         assert!(find(&d.list(), "r").is_some());
         assert_ne!(pid1, pid2, "restart should spawn a new child");
-        std::thread::sleep(Duration::from_millis(300));
 
-        // The remembered env spec must survive the restart.
-        d.write_input("r", b"echo $MARKER_ENV\n").unwrap();
-        assert!(capture_contains(&d, "r", "xyzzy", Duration::from_secs(3)));
+        // The remembered env spec must survive the restart. Re-send until the
+        // re-spawned shell echoes it (no fixed-sleep race on the new PTY).
+        assert!(
+            drive_until(&d, "r", b"echo $MARKER_ENV\n", "xyzzy", Duration::from_secs(5)),
+            "remembered env did not survive restart"
+        );
 
         d.shutdown();
     }
@@ -960,24 +989,35 @@ mod tests {
             _ => panic!("no AgentList reply"),
         }
 
-        // Attach + drive "one"; capture reflects it.
+        // Attach + drive "one"; capture reflects it. Re-send input + re-request
+        // capture on a loop so a slow/loaded machine can't lose the single
+        // write before the shell is ready (mirrors drive_until, over the wire).
         dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "one".into() }).unwrap();
-        dproto::write_ctl_msg(
-            &mut c,
-            &CtlMsg::Input {
-                instance: "one".into(),
-                data: b"echo SOCK_OK\n".to_vec(),
-            },
-        )
-        .unwrap();
-        std::thread::sleep(Duration::from_millis(400));
-        dproto::write_ctl_msg(&mut c, &CtlMsg::Capture { instance: "one".into() }).unwrap();
-        let cap = await_reply(
-            &mut c,
-            |r| matches!(r, CtlReply::Screen { screen, .. } if screen.lines.iter().any(|l| l.contains("SOCK_OK"))),
-            Duration::from_secs(3),
-        );
-        assert!(cap.is_some(), "capture never showed SOCK_OK");
+        let mut sock_ok = false;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(6) {
+            dproto::write_ctl_msg(
+                &mut c,
+                &CtlMsg::Input {
+                    instance: "one".into(),
+                    data: b"echo SOCK_OK\n".to_vec(),
+                },
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            dproto::write_ctl_msg(&mut c, &CtlMsg::Capture { instance: "one".into() }).unwrap();
+            if await_reply(
+                &mut c,
+                |r| matches!(r, CtlReply::Screen { screen, .. } if screen.lines.iter().any(|l| l.contains("SOCK_OK"))),
+                Duration::from_millis(500),
+            )
+            .is_some()
+            {
+                sock_ok = true;
+                break;
+            }
+        }
+        assert!(sock_ok, "capture never showed SOCK_OK");
 
         // Close "one" leaves "two".
         dproto::write_ctl_msg(&mut c, &CtlMsg::Close { instance: "one".into() }).unwrap();
