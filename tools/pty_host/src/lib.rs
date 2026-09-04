@@ -26,6 +26,7 @@ pub mod detect;
 pub mod dproto;
 pub mod host;
 pub mod proto;
+pub mod selector;
 pub mod server;
 pub mod termios;
 pub mod vt;
@@ -35,5 +36,7 @@ pub use detect::{Detector, StartupDetectionConfig, StartupOutcome};
 pub use dproto::{AgentInfo, CtlMsg, CtlReply, SpawnRequest};
 pub use host::{PtyHost, SpawnConfig};
 pub use proto::{ClientMsg, HostMsg, NamedKey, ScreenSnapshot};
+pub use selector::{SelectorAction, SelectorItem, SelectorState};
 pub use server::HostServer;
 pub use vt::{Capture, Cell, Color, Screen, VtEngine};
+
