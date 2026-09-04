@@ -1,11 +1,20 @@
 //! ham-pty-host CLI entrypoint.
 //!
+//! `--socket` is a single command-level (global) flag shared by every
+//! subcommand; the canonical form places it BEFORE the subcommand:
+//!
+//!     ham-pty-host --socket <path> <subcommand> [--sub-options]
+//!
+//! It is also `global`, so the legacy `ham-pty-host <subcommand> --socket <path>`
+//! form still works. When omitted it defaults to the main bridge's socket.
+//!
 //! Subcommands:
 //!   * `run`    — spawn a program under a PTY + host it on a unix socket (PTYH-1/2).
 //!   * `attach` — attach to a running host, raw-mode passthrough (PTYH-2).
 //!   * `daemon` — run the multi-agent per-machine daemon (HOST-1).
 //!   * `spawn`/`close`/`restart`/`list` — control-plane clients for the daemon (HOST-1).
 //!   * `capture` — one-shot rendered screen snapshot of an agent (HOST-1/2).
+//!   * `stop`   — stop a running daemon: terminate all agents and exit (HOST-1).
 //!
 //! `attach --debug` renders the in-app ratatui debug TUI (PTYH-3).
 
@@ -26,6 +35,14 @@ use ham_pty_host::SpawnConfig;
     about = "PTY host + attach/detach + debug TUI spike (PTYH-1..5)"
 )]
 struct Cli {
+    /// Unix socket path of the host/daemon. This is a command-level flag: pass it
+    /// BEFORE the subcommand, e.g. `ham-pty-host --socket <path> attach`. It is
+    /// also `global`, so it still works after the subcommand for back-compat.
+    /// Defaults to the main bridge's socket (see `default_socket`); override with
+    /// --socket or HAM_LOCAL_RUN_DIR / HAM_LOCAL_ENDPOINT_PORT / HAM_DAEMON_ID.
+    #[arg(long, global = true, default_value_t = default_socket())]
+    socket: String,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -84,9 +101,6 @@ fn default_socket() -> String {
 enum Command {
     /// Spawn a program under a PTY and host it on a unix socket.
     Run {
-        /// Unix socket path to listen on.
-        #[arg(long)]
-        socket: String,
         /// Terminal rows.
         #[arg(long, default_value_t = 24)]
         rows: u16,
@@ -108,11 +122,6 @@ enum Command {
     ///   * `--socket <host> --debug` -> PTYH-3 single-host split debug TUI.
     ///   * otherwise -> PTYH-2 raw passthrough against a single host.
     Attach {
-        /// Unix socket path of the host/daemon to attach to. Defaults to the
-        /// DEFAULT-PORT bridge's socket (see `default_socket`); override with
-        /// --socket or HAM_LOCAL_RUN_DIR / HAM_LOCAL_ENDPOINT_PORT / HAM_DAEMON_ID.
-        #[arg(long, default_value_t = default_socket())]
-        socket: String,
         /// Render the in-app split-screen debug TUI (single-host, PTYH-3).
         #[arg(long)]
         debug: bool,
@@ -123,15 +132,9 @@ enum Command {
     },
     /// Run the multi-agent per-machine daemon (HOST-1). Manages N agents keyed
     /// by instance id; clients drive it with spawn/close/restart/list.
-    Daemon {
-        /// Unix socket path to listen on.
-        #[arg(long)]
-        socket: String,
-    },
+    Daemon {},
     /// Register + launch an agent on a running daemon (HOST-1).
     Spawn {
-        #[arg(long)]
-        socket: String,
         /// Agent-instance id (registry key).
         #[arg(long)]
         instance: String,
@@ -158,30 +161,21 @@ enum Command {
     /// Close (SIGTERM->SIGKILL) + unregister an agent on the daemon (HOST-1).
     Close {
         #[arg(long)]
-        socket: String,
-        #[arg(long)]
         instance: String,
     },
     /// Restart an agent from its remembered spec (HOST-1).
     Restart {
         #[arg(long)]
-        socket: String,
-        #[arg(long)]
         instance: String,
     },
     /// List all agents registered on the daemon (HOST-1).
-    List {
-        #[arg(long)]
-        socket: String,
-    },
+    List {},
     /// Capture a one-shot rendered screen snapshot of an agent (HOST-1/2).
     ///
     /// Prints the current VT grid (what the pane looks like now), not the raw
     /// output stream. This is a control-only op: it does not attach, so it never
     /// affects the child or the event stream.
     Capture {
-        #[arg(long)]
-        socket: String,
         #[arg(long)]
         instance: String,
         /// Emit the snapshot as JSON (rows/cols/cursor + lines) instead of the
@@ -190,33 +184,25 @@ enum Command {
         json: bool,
     },
     /// Stop a running daemon/host: terminate all its agents and exit the daemon
-    /// process (HOST-1). Defaults to the main bridge's socket (see
-    /// `default_socket`); override with --socket or HAM_LOCAL_RUN_DIR /
-    /// HAM_LOCAL_ENDPOINT_PORT / HAM_DAEMON_ID.
-    Stop {
-        #[arg(long, default_value_t = default_socket())]
-        socket: String,
-    },
+    /// process (HOST-1).
+    Stop {},
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // `--socket` is a single command-level (global) flag shared by every
+    // subcommand, so it is resolved once here rather than per-variant.
+    let socket = cli.socket;
     match cli.command {
         Command::Run {
-            socket,
             rows,
             cols,
             no_login,
             argv,
         } => run(socket, rows, cols, !no_login, argv),
-        Command::Attach {
-            socket,
-            debug,
-            instance,
-        } => run_attach(socket, debug, instance),
-        Command::Daemon { socket } => daemon::serve(socket),
+        Command::Attach { debug, instance } => run_attach(socket, debug, instance),
+        Command::Daemon {} => daemon::serve(socket),
         Command::Spawn {
-            socket,
             instance,
             cwd,
             env,
@@ -226,15 +212,11 @@ fn main() -> Result<()> {
             cols,
             argv,
         } => ctl_spawn(socket, instance, cwd, env, detect, display_name, rows, cols, argv),
-        Command::Close { socket, instance } => ctl_close(socket, instance),
-        Command::Restart { socket, instance } => ctl_restart(socket, instance),
-        Command::List { socket } => ctl_list(socket),
-        Command::Capture {
-            socket,
-            instance,
-            json,
-        } => ctl_capture(socket, instance, json),
-        Command::Stop { socket } => ctl_stop(socket),
+        Command::Close { instance } => ctl_close(socket, instance),
+        Command::Restart { instance } => ctl_restart(socket, instance),
+        Command::List {} => ctl_list(socket),
+        Command::Capture { instance, json } => ctl_capture(socket, instance, json),
+        Command::Stop {} => ctl_stop(socket),
     }
 }
 

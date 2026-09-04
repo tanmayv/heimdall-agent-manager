@@ -48,7 +48,7 @@ while true; do
 
   # Attach the multi-agent dashboard. Returns when the daemon drops the
   # connection (restart) or you quit the TUI.
-  "$PTY_HOST" attach --socket "$SOCKET" || true
+  "$PTY_HOST" --socket "$SOCKET" attach || true
 
   echo "[attach-main] detached; reconnecting in 1s (Ctrl-C to stop) ..."
   sleep 1
