@@ -240,6 +240,17 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
                                 &CtlMsg::Attach { instance: new_inst.clone() },
                             );
                             if let Some((rows, cols)) = current_winsize() {
+                                // Micro-resize nudge: send cols - 1 then cols to guarantee
+                                // child process receives an actual winsize delta and emits a full redraw.
+                                let _ = dproto::write_ctl_msg(
+                                    &mut *ws,
+                                    &CtlMsg::Resize {
+                                        instance: new_inst.clone(),
+                                        rows,
+                                        cols: cols.saturating_sub(1),
+                                    },
+                                );
+                                std::thread::sleep(Duration::from_millis(20));
                                 let _ = dproto::write_ctl_msg(
                                     &mut *ws,
                                     &CtlMsg::Resize {
@@ -257,6 +268,15 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
                                 let _ = dproto::write_ctl_msg(
                                     &mut *ws,
                                     &CtlMsg::Resize {
+                                        instance: old_inst.clone(),
+                                        rows,
+                                        cols: cols.saturating_sub(1),
+                                    },
+                                );
+                                std::thread::sleep(Duration::from_millis(20));
+                                let _ = dproto::write_ctl_msg(
+                                    &mut *ws,
+                                    &CtlMsg::Resize {
                                         instance: old_inst,
                                         rows,
                                         cols,
@@ -269,6 +289,15 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
                         if let Some((rows, cols)) = current_winsize() {
                             let inst = current_inst_arc.lock().unwrap().clone();
                             let mut ws = write_stream.lock().unwrap();
+                            let _ = dproto::write_ctl_msg(
+                                &mut *ws,
+                                &CtlMsg::Resize {
+                                    instance: inst.clone(),
+                                    rows,
+                                    cols: cols.saturating_sub(1),
+                                },
+                            );
+                            std::thread::sleep(Duration::from_millis(20));
                             let _ = dproto::write_ctl_msg(
                                 &mut *ws,
                                 &CtlMsg::Resize {
