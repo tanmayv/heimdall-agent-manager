@@ -120,13 +120,20 @@ Instance_Focus :: struct {
 	role:    domain.Current_Task_Role,
 }
 
-// recompute_chain_promotions scans one chain and reconciles every instance's
-// single current task, promoting the chosen work task to In_Progress, demoting
-// the instance's other unblocked work tasks to Queued, and persisting the
-// current_task pointer (id + role) on each instance. It returns the number of
-// tasks newly advanced into In_Progress. Callers must have already authorized the
-// mutation that triggered the recompute; this operates with the chain's owner.
-recompute_chain_promotions :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -> int {
+// reconcile_chain is the single self-healing pass over one task chain. It:
+//   * resolves every relevant instance's single current task (deps + priority
+//     aware; review>work), promoting the chosen work task to In_Progress and
+//     demoting other unblocked work tasks to Queued,
+//   * heals current_task pointers TOTALLY (sets the focus, or CLEARS it for any
+//     instance with no eligible focus — including members no longer on any task),
+//   * notifies agents whose current_task changed, and nudges idle+actionable
+//     agents (10 min min, exponential backoff), and
+//   * never runs another reconcile (internal status writes use the low-level repo
+//     save, not the high-level status procs).
+// Returns the number of tasks newly advanced into In_Progress. Callers must have
+// already authorized the mutation/command that triggered it; it operates with the
+// chain's owner and is idempotent (change-gated writes, no-op when consistent).
+reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -> int {
 	if service == nil || service.repo == nil do return 0
 	if chain.status != .Active do return 0
 	if chain.publish_state != .Published do return 0
@@ -138,26 +145,41 @@ recompute_chain_promotions :: proc(service: ^Taskchain_Service, chain: domain.Ta
 	if deps_err.code != .None do return 0
 	defer delete(deps)
 
-	// Collect the set of instances whose focus we must (re)compute: any assignee of
-	// a task, plus any designated reviewer of a task (regardless of that task's
-	// current status). Reviewers are collected even for tasks NOT in validation so
-	// that a reviewer who just RESOLVED a task (moving it out of In_Validation)
-	// gets re-evaluated and advances off it (CT-10 req 1); an instance with no
-	// remaining eligible task simply has its pointer cleared.
+	// Collect the TOTAL set of instances that could hold a pointer in this chain:
+	//   assignees ∪ designated reviewers ∪ chain members ∪ owner-instances bound to
+	//   this chain (stale pointer holders). The union lets us CLEAR stale pointers
+	//   for instances dropped from all tasks, not just re-point referenced ones.
 	instance_ids := make([dynamic]string)
 	defer { for id in instance_ids do delete(id); delete(instance_ids) }
 	seen := make(map[string]bool)
 	defer delete(seen)
+	add_instance := proc(seen: ^map[string]bool, ids: ^[dynamic]string, id: string) {
+		if id == "" || seen[id] do return
+		seen[id] = true
+		append(ids, strings.clone(id))
+	}
 	def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
 	defer delete(def_reviewers)
 	for t in tasks {
 		a := primary_assignee_instance(t.assignee_ref_json)
-		if a != "" && !seen[a] { seen[a] = true; append(&instance_ids, strings.clone(a)) }
+		add_instance(&seen, &instance_ids, a)
 		delete(a)
 		reviewers := extract_instances_from_ref_blob(t.reviewer_refs_json)
-		for id in reviewers do if instance_reviews_task(t, chain, id) && !seen[id] { seen[id] = true; append(&instance_ids, strings.clone(id)) }
+		for id in reviewers do if instance_reviews_task(t, chain, id) do add_instance(&seen, &instance_ids, id)
 		delete(reviewers)
-		for id in def_reviewers do if instance_reviews_task(t, chain, id) && !seen[id] { seen[id] = true; append(&instance_ids, strings.clone(id)) }
+		for id in def_reviewers do if instance_reviews_task(t, chain, id) do add_instance(&seen, &instance_ids, id)
+	}
+	// Chain members (canonical) + any owner-instance bound to this chain: ensures a
+	// member/holder with a now-stale pointer is included so step 4 clears it.
+	if members, merr := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id); merr.code == .None {
+		for m in members do add_instance(&seen, &instance_ids, m.agent_instance_id)
+		delete(members)
+	}
+	if service.agents != nil {
+		if insts, ierr := iface.agent_list_instances_by_owner(service.agents, chain.owner_user_id, 500, ""); ierr.code == .None {
+			for inst in insts do if inst.chain_id == string(chain.chain_id) do add_instance(&seen, &instance_ids, inst.agent_instance_id)
+			delete(insts)
+		}
 	}
 
 	// Resolve each instance's focus and collect the resulting task mutations. We
@@ -268,9 +290,52 @@ recompute_chain_promotions :: proc(service: ^Taskchain_Service, chain: domain.Ta
 	}
 
 	// Persist each instance's current-task pointer BEFORE notifying, so the gate
-	// sees the freshly-promoted focus. Skipped when no agent repo is configured
-	// (some unit tests run the promotion engine repo-less).
-	apply_instance_focus(service, focus)
+	// sees the freshly-promoted focus. TOTAL: every instance in the candidate set
+	// gets its pointer set (to its focus) or CLEARED (no focus), and we collect
+	// which ones actually changed so we can notify only those. Also re-read the
+	// reconciled task list (statuses moved above) so focus/idle notifications use
+	// current status.
+	changed_focus := apply_instance_focus_total(service, instance_ids[:], focus)
+
+	// Re-read tasks so notifications reflect the just-applied status changes.
+	fresh_tasks, ft_err := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	defer if ft_err.code == .None do delete(fresh_tasks)
+	lookup_task :: proc(tasks: []domain.Task, id: domain.Task_ID) -> (domain.Task, bool) {
+		for t in tasks do if t.task_id == id do return t, true
+		return domain.Task{}, false
+	}
+
+	// (5a) NOTIFY current-task change: for every instance whose pointer changed to
+	// a NEW task, wake it with the WORK/REVIEW label. Cleared pointers (-> none)
+	// send no nudge. Also reset the idle-nudge backoff for the new focus.
+	for cf in changed_focus {
+		if cf.new_task_id == "" do continue
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, cf.instance_id)
+		if !inst_ok do continue
+		task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], domain.Task_ID(cf.new_task_id))
+		if !task_ok do continue
+		notify_current_task_changed(service, inst, task, cf.new_role)
+		idle_nudge_reset(service, cf.instance_id, cf.new_task_id)
+	}
+
+	// (5b) NUDGE idle + actionable: an instance whose focus DID NOT change but is
+	// live+idle while holding an actionable current task gets a gentle re-nudge,
+	// rate-limited to 10 min with exponential backoff per (instance:task).
+	changed_ids := make(map[string]bool)
+	defer delete(changed_ids)
+	for cf in changed_focus do changed_ids[cf.instance_id] = true
+	for instance_id in instance_ids {
+		if changed_ids[instance_id] do continue
+		f, has := focus[instance_id]
+		if !has || f.task_id == "" do continue
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id)
+		if !inst_ok do continue
+		if !instance_is_idle(inst) do continue
+		task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], f.task_id)
+		if !task_ok do continue
+		if !idle_nudge_due(service, instance_id, string(f.task_id)) do continue
+		notify_current_task_changed(service, inst, task, f.role)
+	}
 
 	// Now fan out promotion notifications. System-initiated promotion: empty auth
 	// actor so the runtime fan-out targets the assignee (no actor is excluded).
@@ -279,6 +344,48 @@ recompute_chain_promotions :: proc(service: ^Taskchain_Service, chain: domain.Ta
 	}
 
 	return promoted
+}
+
+// recompute_chain_promotions is kept as an alias so existing call sites compile;
+// it forwards to the unified reconcile_chain healer.
+recompute_chain_promotions :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -> int {
+	return reconcile_chain(service, chain)
+}
+
+// Focus_Change records an instance whose current_task pointer moved during a
+// reconcile (old -> new), so we notify only the ones that actually changed.
+Focus_Change :: struct {
+	instance_id: string,
+	new_task_id: string,
+	new_role:    domain.Current_Task_Role,
+}
+
+// apply_instance_focus_total writes EVERY candidate instance's pointer: to its
+// resolved focus, or cleared when it has none. Change-gated. Returns the set of
+// instances whose pointer actually changed (with the new focus).
+apply_instance_focus_total :: proc(service: ^Taskchain_Service, instance_ids: []string, focus: map[string]Instance_Focus) -> []Focus_Change {
+	changed := make([dynamic]Focus_Change)
+	if service == nil || service.agents == nil do return changed[:]
+	for instance_id in instance_ids {
+		inst, ok, _ := iface.agent_get_instance(service.agents, instance_id)
+		if !ok do continue
+		f := focus[instance_id] // zero value = {"", .None} when absent => clear
+		if inst.current_task_id == string(f.task_id) && inst.current_task_role == f.role do continue
+		inst.current_task_id = string(f.task_id)
+		inst.current_task_role = f.role
+		inst.updated_at = platform.clock_now(service.clock)
+		_, _, _ = iface.agent_save_instance(service.agents, inst)
+		append(&changed, Focus_Change{instance_id = instance_id, new_task_id = string(f.task_id), new_role = f.role})
+	}
+	return changed[:]
+}
+
+// instance_is_idle reports whether an instance is live but not actively working,
+// so a self-heal idle nudge is warranted. Live = runtime running/idle/busy;
+// idle = activity_status "idle" (a busy/working agent is never nudged).
+instance_is_idle :: proc(inst: domain.Agent_Instance) -> bool {
+	live := inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy"
+	return live && inst.activity_status == "idle"
 }
 
 // apply_instance_focus persists the resolved current_task pointer (id + role) on
@@ -315,7 +422,48 @@ clear_instance_current_task :: proc(service: ^Taskchain_Service, instance_id: st
 recompute_promotions_for_chain_id :: proc(service: ^Taskchain_Service, chain_id: domain.Task_Chain_ID) -> int {
 	chain, ok, _ := iface.taskchain_get_chain(service.repo, chain_id)
 	if !ok do return 0
-	return recompute_chain_promotions(service, chain)
+	return reconcile_chain(service, chain)
+}
+
+// reconcile_task_chain is the AUTHORIZED entry for the explicit `reconcile`
+// command (coordinator kickoff + manual re-plan). Only the chain coordinator
+// (instance token) or the owner (user/proxy token) may trigger it; workers and
+// reviewers are rejected. Returns the number of tasks advanced into In_Progress.
+reconcile_task_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (int, bool, domain.Domain_Error) {
+	if service == nil || service.repo == nil do return 0, false, domain.domain_error(.Internal_Error, "taskchain service is not configured")
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return 0, false, err
+	// Instance-token callers must be THIS chain's coordinator. User/proxy tokens are
+	// already owner-scoped by get_chain.
+	if auth.kind == .Instance_Token && !is_chain_coordinator(service, chain, auth.agent_instance_id) {
+		return 0, false, domain.domain_error(.Forbidden, "only the chain coordinator or owner can reconcile a task chain")
+	}
+	return reconcile_chain(service, chain), true, domain.Domain_Error{}
+}
+
+// current_task_pointer_valid is a READ-ONLY check (no writes) that the given
+// instance's persisted current_task pointer still resolves to an actionable role
+// for it (assignee on an actionable task, or reviewer on an In_Validation task).
+// Used by the context serializer guard so a stale pointer never surfaces a task
+// the agent should not act on, even between reconciles. Returns false if the
+// instance/chain/task can't be loaded or the pairing is no longer actionable.
+current_task_pointer_valid :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance) -> bool {
+	if service == nil || service.repo == nil do return false
+	if inst.chain_id == "" || inst.current_task_id == "" do return false
+	chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, domain.Task_Chain_ID(inst.chain_id))
+	if !chain_ok do return false
+	tasks, tasks_err := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if tasks_err.code != .None do return false
+	defer delete(tasks)
+	deps, deps_err := iface.taskchain_list_dependencies_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if deps_err.code != .None do return false
+	defer delete(deps)
+	for task in tasks {
+		if string(task.task_id) != inst.current_task_id do continue
+		_, role_ok, _ := resolve_current_task_role(tasks[:], deps[:], chain, task, inst.agent_instance_id)
+		return role_ok
+	}
+	return false
 }
 
 // resolve_current_task_role determines which role an instance would take on a

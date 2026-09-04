@@ -522,14 +522,21 @@ test_unblock_preempts_busy_assignee :: proc() {
 	inst, _, _ := ag_inst_get(&f, "inst_x")
 	check(inst.current_task_id == "t_p1", "busy on P1 while P0 is blocked")
 
-	// Unblock the P0 by removing its dependency; remove_task_dependency must
-	// recompute and preempt the busy assignee onto the P0.
+	// Unblock the P0 by removing its dependency. Dependency changes do NOT
+	// auto-reconcile (coordinator-driven model), so the pointer is unchanged until
+	// an explicit reconcile.
 	_, err := taskchain_service.remove_task_dependency(&service, auth, "t_p0", "t_gate")
 	check(err.code == .None, fmt.tprintf("remove dep failed: %s", err.message))
 	inst, _, _ = ag_inst_get(&f, "inst_x")
-	check(inst.current_task_id == "t_p0" && inst.current_task_role == .Work, "unblocked P0 must preempt the busy assignee's pointer")
+	check(inst.current_task_id == "t_p1", "dependency change alone does NOT re-focus (no auto-reconcile)")
+
+	// Coordinator reconciles → the unblocked P0 preempts the busy P1.
+	_, rok, rerr := taskchain_service.reconcile_task_chain(&service, auth, "chain_p")
+	check(rok, fmt.tprintf("reconcile failed: %s", rerr.message))
+	inst, _, _ = ag_inst_get(&f, "inst_x")
+	check(inst.current_task_id == "t_p0" && inst.current_task_role == .Work, "reconcile: unblocked P0 preempts the busy assignee's pointer")
 	p0, _, _ := tc_task_get(&f, "t_p0")
-	check(p0.status == .In_Progress, "unblocked P0 auto-promotes to In_Progress")
+	check(p0.status == .In_Progress, "unblocked P0 promotes to In_Progress after reconcile")
 	p1, _, _ := tc_task_get(&f, "t_p1")
 	check(p1.status == .Queued, "preempted P1 demoted to Queued")
 }
@@ -581,16 +588,24 @@ test_priority_patch_reorders :: proc() {
 	inst, _, _ := ag_inst_get(&f, "inst_x")
 	check(inst.current_task_id == "t_first", "earliest P2 task is the initial focus")
 
-	// Bump t_second to P0 via update_task; the recompute inside update_task must
-	// re-order so t_second becomes the focus and t_first is demoted to Queued.
+	// Bump t_second to P0 via update_task. Per the coordinator-driven model, a
+	// priority change does NOT auto-reconcile — focus stays until an explicit
+	// reconcile. So immediately after the patch, t_first is still the focus.
 	_, ok, err := taskchain_service.update_task(&service, auth, "t_second", taskchain_service.Update_Task_Input{priority = .P0, has_priority = true})
 	check(ok, fmt.tprintf("priority patch failed: %s", err.message))
 	inst, _, _ = ag_inst_get(&f, "inst_x")
-	check(inst.current_task_id == "t_second" && inst.current_task_role == .Work, "raising priority re-focuses to the P0 task")
+	check(inst.current_task_id == "t_first", "priority change alone does NOT re-focus (no auto-reconcile)")
+
+	// The coordinator explicitly reconciles → now t_second (P0) becomes the focus
+	// and t_first is demoted to Queued.
+	_, rok, rerr := taskchain_service.reconcile_task_chain(&service, auth, "chain_p")
+	check(rok, fmt.tprintf("reconcile failed: %s", rerr.message))
+	inst, _, _ = ag_inst_get(&f, "inst_x")
+	check(inst.current_task_id == "t_second" && inst.current_task_role == .Work, "reconcile re-focuses to the P0 task")
 	first, _, _ := tc_task_get(&f, "t_first")
-	check(first.status == .Queued, "previously-focused task demoted to Queued after priority bump")
+	check(first.status == .Queued, "previously-focused task demoted to Queued after reconcile")
 	second, _, _ := tc_task_get(&f, "t_second")
-	check(second.status == .In_Progress, "newly-prioritized task promoted to In_Progress")
+	check(second.status == .In_Progress, "newly-prioritized task promoted to In_Progress after reconcile")
 }
 
 // --- Adding a blocking dependency demotes In_Progress task to Queued ---------
@@ -617,14 +632,20 @@ test_blocking_dep_added_demotes_in_progress :: proc() {
 	check(inst.current_task_id == "t_active", "inst_x focused on t_active initially")
 
 	// Now add a dependency: t_active depends on t_blocker (which is not yet finished).
+	// Dependency changes do NOT auto-reconcile, so nothing changes until reconcile.
 	_, ok, err := taskchain_service.add_task_dependency(&service, auth, "t_active", "t_blocker")
 	check(ok, fmt.tprintf("add dep failed: %s", err.message))
-
-	// t_active should now be demoted to Queued, and inst_x's current task pointer cleared.
-	active, _, _ := tc_task_get(&f, "t_active")
-	check(active.status == .Queued, fmt.tprintf("t_active must be demoted to Queued, got %v", active.status))
 	inst, _, _ = ag_inst_get(&f, "inst_x")
-	check(inst.current_task_id == "" && inst.current_task_role == .None, "inst_x current task cleared when active task blocked")
+	check(inst.current_task_id == "t_active", "dependency add alone does NOT change focus (no auto-reconcile)")
+
+	// Coordinator reconciles → t_active is now blocked, demoted to Queued, and
+	// inst_x's pointer cleared.
+	_, rok, rerr := taskchain_service.reconcile_task_chain(&service, auth, "chain_p")
+	check(rok, fmt.tprintf("reconcile failed: %s", rerr.message))
+	active, _, _ := tc_task_get(&f, "t_active")
+	check(active.status == .Queued, fmt.tprintf("t_active must be demoted to Queued after reconcile, got %v", active.status))
+	inst, _, _ = ag_inst_get(&f, "inst_x")
+	check(inst.current_task_id == "" && inst.current_task_role == .None, "inst_x current task cleared when active task blocked (after reconcile)")
 
 	// When t_blocker completes, t_active should auto-promote back to In_Progress.
 	tc_task_save(&f, domain.Task{task_id = "t_blocker", chain_id = "chain_p", owner_user_id = "alice", publish_state = .Published, status = .Completed, priority = .P1, assignee_ref_json = aref("inst_y"), created_at = "2026-07-22T09:05:00Z", started_at = "2026-07-22T09:05:00Z", completed_at = "2026-07-22T10:00:00Z"})

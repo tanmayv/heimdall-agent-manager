@@ -517,6 +517,10 @@ require_instance_action_auth :: proc(h: ^Agent_Action_Handlers, req: Request) ->
 // status. Falls back to null when the pointer is unset or the task is gone.
 write_agent_current_task_json :: proc(b: ^strings.Builder, h: ^Agent_Action_Handlers, auth: contracts.Auth_Context, inst: domain.Agent_Instance) {
 	if h.taskchains == nil || inst.chain_id == "" || inst.current_task_id == "" { strings.write_string(b, "null"); return }
+	// Serializer guard (read-only): emit null if the persisted pointer no longer
+	// resolves to an actionable role for this instance, so a stale pointer never
+	// surfaces a task the agent should not act on between reconciles.
+	if !taskchain_service.current_task_pointer_valid(h.taskchains, auth, inst) { strings.write_string(b, "null"); return }
 	tasks, err := taskchain_service.list_tasks(h.taskchains, auth, domain.Task_Chain_ID(inst.chain_id))
 	if err.code != .None { strings.write_string(b, "null"); return }
 	for task in tasks {

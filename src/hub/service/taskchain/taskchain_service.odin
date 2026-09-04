@@ -49,6 +49,13 @@ Taskchain_Service :: struct {
 	replay_last_unix_ms: map[string]i64,
 	nudge_debounce_mutex: sync.Mutex,
 	nudge_debounce_last_unix_ms: map[string]i64,
+	// idle_nudge tracks self-heal idle re-nudges per (instance:task): last send
+	// time + the current backoff interval (10m, doubling each successive idle
+	// nudge for the same task, reset when the task's focus/status changes).
+	// Guarded by idle_nudge_mutex.
+	idle_nudge_mutex: sync.Mutex,
+	idle_nudge_last_unix_ms: map[string]i64,
+	idle_nudge_interval_ms: map[string]i64,
 }
 
 Create_Chain_Input :: struct {
@@ -467,11 +474,9 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 		}
 	}
 
-	// Reconcile current_task pointers: a new Published+Assigned task on an active
-	// chain is immediately actionable, so recompute keeps the persisted pointer
-	// authoritative (the Phase-3 gate depends on it) and lets a higher-priority
-	// new task preempt a busy assignee per Phase-2 ordering.
-	_ = recompute_promotions_for_chain_id(service, chain.chain_id)
+	// NO auto-reconcile on create (setup-phase rule): the coordinator stages the
+	// whole plan, then triggers `reconcile` explicitly. A newly-created task does
+	// not promote/nudge until the coordinator kicks off or re-plans.
 
 	return saved_task, true, domain.Domain_Error{}
 }
@@ -509,17 +514,9 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	saved, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if !save_ok do return domain.Task{}, false, save_err
 
-	// CT-7: if the assignee changed, the previous assignee may have been focused on
-	// this task. If its stale current_task now points at a task it no longer owns,
-	// clear it; the chain recompute below re-selects a focus for everyone still
-	// referenced (including the new assignee).
-	new_assignee := primary_assignee_instance(saved.assignee_ref_json)
-	defer delete(new_assignee)
-	if prev_assignee != "" && prev_assignee != new_assignee && service.agents != nil {
-		if inst, inst_ok, _ := iface.agent_get_instance(service.agents, prev_assignee); inst_ok {
-			if inst.current_task_id == string(saved.task_id) do clear_instance_current_task(service, prev_assignee)
-		}
-	}
+	// Pointer healing (including clearing a reassigned-away instance's stale
+	// pointer) is now handled TOTALLY by reconcile_chain — no ad-hoc clear here.
+	_ = prev_assignee
 
 	if input.has_depends_on {
 		// clear existing deps and add new ones
@@ -536,8 +533,10 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 		}
 	}
 
-	// Reconcile current-task focus after any assignee/reviewer/dependency change.
-	_ = recompute_promotions_for_chain_id(service, chain.chain_id)
+	// NO auto-reconcile on update (assignee/reviewer/priority/dependency edits are
+	// setup-phase changes): the coordinator triggers `reconcile` when the new plan
+	// should take effect. (Task STATUS changes reconcile — that's a different proc,
+	// change_task_status.)
 
 	return saved, true, domain.Domain_Error{}
 }
@@ -563,9 +562,8 @@ publish_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	task.updated_at = now
 	saved, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if !save_ok do return domain.Task{}, false, save_err
-	// A freshly-published task is immediately actionable; reconcile pointers so the
-	// gate stays authoritative and the assignee is surfaced/preempted correctly.
-	_ = recompute_promotions_for_chain_id(service, chain.chain_id)
+	// NO auto-reconcile: publishing a task is a setup-phase change. The coordinator
+	// triggers `reconcile` when the plan should take effect.
 	return saved, true, domain.Domain_Error{}
 }
 
@@ -894,6 +892,62 @@ should_debounce_nudge_dispatch :: proc(service: ^Taskchain_Service, instance_id,
 	return false
 }
 
+// IDLE_NUDGE_MIN_INTERVAL_MS is the minimum gap between self-heal idle nudges for
+// the same (instance:task); the interval doubles on each successive idle nudge.
+IDLE_NUDGE_MIN_INTERVAL_MS :: 10 * 60 * 1000
+// IDLE_NUDGE_MAX_INTERVAL_MS caps the exponential backoff so it never grows
+// unbounded (10m -> 20m -> 40m -> ... -> capped).
+IDLE_NUDGE_MAX_INTERVAL_MS :: 4 * 60 * 60 * 1000
+
+// idle_nudge_due reports whether an idle+actionable agent may be re-nudged for a
+// task now, and if so records the send and doubles the next interval. First nudge
+// for a (instance:task) is always allowed; subsequent ones wait the current
+// backoff interval (starting at 10 min, doubling, capped).
+idle_nudge_due :: proc(service: ^Taskchain_Service, instance_id, task_id: string) -> bool {
+	if service == nil || instance_id == "" || task_id == "" do return false
+	key := strings.concatenate({instance_id, ":", task_id})
+	defer delete(key)
+	now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
+
+	sync.mutex_lock(&service.idle_nudge_mutex)
+	defer sync.mutex_unlock(&service.idle_nudge_mutex)
+	if service.idle_nudge_last_unix_ms == nil {
+		service.idle_nudge_last_unix_ms = make(map[string]i64)
+		service.idle_nudge_interval_ms = make(map[string]i64)
+	}
+
+	last, seen := service.idle_nudge_last_unix_ms[key]
+	if seen {
+		interval := service.idle_nudge_interval_ms[key]
+		if interval <= 0 do interval = IDLE_NUDGE_MIN_INTERVAL_MS
+		if now_ms - last < interval do return false
+		next := interval * 2
+		if next > IDLE_NUDGE_MAX_INTERVAL_MS do next = IDLE_NUDGE_MAX_INTERVAL_MS
+		service.idle_nudge_interval_ms[key] = next
+		service.idle_nudge_last_unix_ms[key] = now_ms
+		return true
+	}
+	// first idle nudge for this pair
+	ck := strings.clone(key)
+	service.idle_nudge_last_unix_ms[ck] = now_ms
+	service.idle_nudge_interval_ms[ck] = IDLE_NUDGE_MIN_INTERVAL_MS
+	return true
+}
+
+// idle_nudge_reset clears the idle-nudge backoff for a (instance:task) — called
+// when the instance's focus/status for that task changes, so a re-focus starts
+// the backoff fresh rather than inheriting a long interval.
+idle_nudge_reset :: proc(service: ^Taskchain_Service, instance_id, task_id: string) {
+	if service == nil || instance_id == "" || task_id == "" do return
+	key := strings.concatenate({instance_id, ":", task_id})
+	defer delete(key)
+	sync.mutex_lock(&service.idle_nudge_mutex)
+	defer sync.mutex_unlock(&service.idle_nudge_mutex)
+	if service.idle_nudge_last_unix_ms == nil do return
+	delete_key(&service.idle_nudge_last_unix_ms, key)
+	delete_key(&service.idle_nudge_interval_ms, key)
+}
+
 // notification_allowed_for_recipient implements CT-6 gating with a fail-open bias:
 // a recipient is SUPPRESSED only when we positively know its persisted current
 // task is a DIFFERENT task. When the instance's current_task is this task we allow
@@ -1211,6 +1265,18 @@ list_recent_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.A
 	return iface.taskchain_list_recent_comments_by_task(service.repo, task.task_id, task.owner_user_id, last)
 }
 
+// coordinator_chain_of_instance returns the chain_id this instance already
+// coordinates (the first one found), or "" if none. Used to enforce invariant 2
+// (a coordinator instance coordinates at most one chain).
+coordinator_chain_of_instance :: proc(service: ^Taskchain_Service, owner: domain.User_ID, agent_instance_id: string) -> string {
+	if service == nil || service.repo == nil || agent_instance_id == "" do return ""
+	chains, err := iface.taskchain_list_chains_by_coordinator(service.repo, agent_instance_id, owner)
+	if err.code != .None do return ""
+	defer delete(chains)
+	if len(chains) == 0 do return ""
+	return string(chains[0].chain_id)
+}
+
 // --- Member Management ---
 
 add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string, role: string) -> (domain.Task_Chain_Member, bool, domain.Domain_Error) {
@@ -1226,12 +1292,27 @@ add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		inst, inst_ok, _ := iface.agent_get_instance(service.agents, agent_instance_id)
 		if inst_ok {
 			if inst.owner_user_id != chain.owner_user_id do return domain.Task_Chain_Member{}, false, domain.domain_error(.Conflict, "agent instance owner mismatch")
+			// Invariant 1 (Option A): an instance belongs to exactly ONE chain for
+			// its lifetime. Reject adding an instance whose own chain_id names a
+			// different chain. (An unbound instance with empty chain_id is allowed;
+			// membership in this chain is its binding.)
+			if inst.chain_id != "" && inst.chain_id != string(chain.chain_id) {
+				return domain.Task_Chain_Member{}, false, domain.domain_error(.Conflict, "an agent instance belongs to a single task chain; launch a new instance to join another chain")
+			}
 			agent_id = inst.agent_id
 		}
 	}
 
 	member_role := role
 	if member_role == "" do member_role = "worker"
+
+	// Invariant 2 (Option A): a coordinator instance coordinates AT MOST ONE chain.
+	// Reject making this instance a coordinator when it already coordinates another.
+	if member_role == "coordinator" {
+		if existing := coordinator_chain_of_instance(service, chain.owner_user_id, agent_instance_id); existing != "" && existing != string(chain.chain_id) {
+			return domain.Task_Chain_Member{}, false, domain.domain_error(.Conflict, "an agent instance can coordinate only one task chain")
+		}
+	}
 	now := platform.clock_now(service.clock)
 
 	member := domain.Task_Chain_Member{
@@ -1314,10 +1395,8 @@ add_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 
 	saved_dep, dep_save_ok, dep_save_err := iface.taskchain_save_dependency(service.repo, dep)
 	if !dep_save_ok do return domain.Task_Dependency{}, false, dep_save_err
-	// Adding a dependency can make a task non-actionable (newly blocked); reconcile
-	// pointers so a task that WAS a current focus but is now blocked is advanced off
-	// and the gate stays authoritative.
-	_ = recompute_promotions_for_chain_id(service, task.chain_id)
+	// NO auto-reconcile on dependency change (explicit decision): the coordinator
+	// restructures dependencies freely, then triggers `reconcile` when ready.
 	return saved_dep, true, domain.Domain_Error{}
 }
 
@@ -1326,10 +1405,8 @@ remove_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 	if !ok do return false, err
 	removed, remove_err := iface.taskchain_remove_dependency(service.repo, task.task_id, depends_on_task_id, task.owner_user_id)
 	if remove_err.code != .None do return removed, remove_err
-	// Removing a dependency can UNBLOCK a task (make it actionable); reconcile
-	// pointers so the freshly-unblocked task is promoted/surfaced to its assignee
-	// instead of being gated out behind a stale pointer.
-	_ = recompute_promotions_for_chain_id(service, task.chain_id)
+	// NO auto-reconcile on dependency change (explicit decision): coordinator
+	// triggers `reconcile` manually after restructuring dependencies.
 	return removed, remove_err
 }
 

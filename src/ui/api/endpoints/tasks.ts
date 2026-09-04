@@ -229,6 +229,20 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList'],
     }),
+    // Explicit self-heal: promote actionable tasks, set current-tasks, nudge idle
+    // agents. Coordinator/owner only (enforced hub-side). Invalidates the chain so
+    // the freshly-healed statuses/pointers render.
+    reconcileTaskChain: build.mutation<any, { chainId: string }>({
+      queryFn: async ({ chainId }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/reconcile`, 'POST', {});
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, { type: 'ChainTasks', id: chainId }],
+    }),
     updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
       queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, dependsOn }) => {
         try {
@@ -674,6 +688,7 @@ export const {
   useListChainsByCoordinatorQuery,
   useCreateTaskChainMutation,
   useUpdateTaskChainMutation,
+  useReconcileTaskChainMutation,
   useUpdateTaskDetailMutation,
   useCancelTaskDetailMutation,
   useUpdateTaskPriorityMutation,

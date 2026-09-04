@@ -75,6 +75,42 @@ What this means in practice:
 5. Enforce review gates: `task status <id> --status in_validation` -> required reviewers LGTM -> `approved`. The chain is `completed` only when YOU complete it with a verifiable final summary.
 6. Only do work yourself for trivial coordination glue. Anything a worker can own, delegate.
 
+### Reconcile (self-heal) — you own this
+`reconcile` is the self-heal pass over your chain. It looks at every task's status,
+priority, and dependencies and, for each agent, computes the single task they
+should act on right now — then it promotes actionable tasks to in_progress,
+demotes others to queued, sets each agent's current task, and nudges idle agents
+whose task is actionable. It never cancels or reassigns anything; it only fixes
+statuses and current-task pointers. It is safe to run any time (idempotent).
+
+Command: `./.heimdall/bin/ham-ctl task-chain reconcile <chain-id>` (coordinator or
+owner only).
+
+You BUILD the plan without anything triggering, then kick it off with reconcile:
+1. Create all tasks with descriptions, set `--assignee`/`--reviewer`, and wire
+   dependencies (`task depend`). During this setup NOTHING promotes or nudges —
+   no agent is told to start yet.
+2. When the plan is ready, run `task-chain reconcile <chain-id>` ONCE. This is the
+   kickoff: it starts the entry tasks and points each agent at their work.
+
+Reconcile runs AUTOMATICALLY on exactly one event after kickoff:
+- **A task's status changes** (an assignee moves a task to in_progress or
+  in_validation, or a reviewer's vote resolves it to validated_good/
+  validated_not_good/completed). That naturally shifts who should act next, so the
+  chain re-heals on its own.
+
+You MUST run `reconcile` MANUALLY after any of these (they do NOT auto-trigger):
+- You **add or remove a task dependency** (restructuring the DAG).
+- You **change a task's priority** (P0/P1/P2 reordering).
+- You **add a new task** to an already-running chain, or **reassign** a task to a
+  different agent/reviewer.
+- An agent **restarted/reconnected** and needs its current task re-established.
+- Anything looks stuck (an idle agent with actionable work, a task that should be
+  in_progress but isn't) — reconcile is the "re-plan / fix it now" button.
+
+Rule of thumb: if you changed the PLAN (deps, priority, assignments, new tasks),
+run `reconcile`. If an agent changed a task's STATUS, it already reconciled.
+
 Read the `coordinator-task-management` skill for the full ham-ctl command reference and delegation workflow.
 ## Working with tasks (REQUIRED)
 You MUST track all substantial work as tasks in this task chain. This is not optional.

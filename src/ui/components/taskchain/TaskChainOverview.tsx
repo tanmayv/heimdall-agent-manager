@@ -26,6 +26,7 @@ import {
   useNudgeTaskMutation,
   useAddChainMemberMutation,
   useRemoveChainMemberMutation,
+  useReconcileTaskChainMutation,
 } from '../../api/endpoints/tasks';
 import { useDispatch } from 'react-redux';
 import {
@@ -148,6 +149,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [addMember] = useAddChainMemberMutation();
   const [removeMember] = useRemoveChainMemberMutation();
   const [createInstanceInChain, { isLoading: addingAgent }] = useCreateAgentInstanceInChainMutation();
+  const [reconcileChain, reconcileState] = useReconcileTaskChainMutation();
+  const [reconcileMsg, setReconcileMsg] = useState('');
   const dispatch = useDispatch();
 
   // Data sources for the Add-Agent popup's dependent selects.
@@ -1377,6 +1380,40 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             )}
           </>
         )}
+      </div>
+
+      {/* Reconcile (self-heal) — below the task chain. Coordinator/owner only;
+          promotes actionable tasks, sets current-tasks, nudges idle agents. */}
+      <div
+        data-debug-id="taskchain-overview-reconcile-bar"
+        className="flex items-center justify-between gap-3 border-t border-white/10 px-4 py-3 sm:px-6"
+      >
+        <div className="min-w-0 text-[11px] text-zinc-500">
+          {reconcileMsg ? (
+            <span data-debug-id="taskchain-overview-reconcile-status">{reconcileMsg}</span>
+          ) : (
+            <span>Self-heal: re-plan the chain (promote tasks, set current-tasks, nudge idle agents).</span>
+          )}
+        </div>
+        <button
+          type="button"
+          data-debug-id="taskchain-overview-reconcile-btn"
+          disabled={reconcileState.isLoading || !chainId}
+          onClick={async () => {
+            setReconcileMsg('');
+            try {
+              const res: any = await reconcileChain({ chainId }).unwrap();
+              const promoted = Number(res?.promoted ?? res?.data?.promoted ?? 0);
+              setReconcileMsg(`Reconciled — ${promoted} task${promoted === 1 ? '' : 's'} promoted.`);
+              refetch();
+            } catch (e: any) {
+              setReconcileMsg(String(e?.error || e?.message || 'Reconcile failed'));
+            }
+          }}
+          className="shrink-0 rounded bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-50"
+        >
+          {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}
+        </button>
       </div>
 
       {/* New Task Modal */}

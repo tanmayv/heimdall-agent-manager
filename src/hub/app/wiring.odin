@@ -220,6 +220,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/publish", rawptr(&graph.taskchain_handlers), http.publish_task_chain_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/complete", rawptr(&graph.taskchain_handlers), http.complete_task_chain_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/reconcile", rawptr(&graph.taskchain_handlers), http.reconcile_task_chain_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks", rawptr(&graph.taskchain_handlers), http.list_tasks_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks", rawptr(&graph.taskchain_handlers), http.create_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/publish", rawptr(&graph.taskchain_handlers), http.publish_task_handler)

@@ -113,6 +113,12 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/context"}
 	case "agent.task_chain.set_title":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/set-title"}
+	case "agent.task_chain.reconcile":
+		// explicit self-heal kickoff / re-plan (coordinator or owner only, enforced
+		// hub-side). Needs chain_id; without it there's nothing to reconcile.
+		if cid := bridge_local_extract_json_string(params, "chain_id", ""); strings.trim_space(cid) != "" {
+			return Bridge_Agent_Route{kind = .Raw, http_method = "POST", path = strings.concatenate({"/api/v1/task-chains/", cid, "/reconcile"})}
+		}
 
 	// ---- task -------------------------------------------------------------
 	case "agent.task.list":
@@ -210,6 +216,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.agents.instance_stop",
 	     // task-chain + task
 	     "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
+	     "agent.task_chain.reconcile",
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.depend", "agent.task.comment", "agent.task.status",
 	     "agent.task.set_current", "agent.task.vote", "agent.task.nudge",

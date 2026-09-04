@@ -164,6 +164,10 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("title", title))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_title", json_object_from_slice(fields[:]))
+	case "reconcile":
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.reconcile", json_object(json_kv("chain_id", cid)))
 	case:
 		print_agent_help([]string{"task-chain"})
 	}
@@ -752,6 +756,9 @@ print_help_task_chain :: proc() {
 	fmt.println("  list [--mine] [--project <id>]      List chains (--mine = ones you coordinate).")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
 	fmt.println("  set-title <title> [--chain <id>]    Rename a chain.")
+	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
+	fmt.println("                                      actionable tasks, set current-tasks, nudge agents.")
+	fmt.println("                                      Coordinator/owner only. Run after staging tasks/deps.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl task-chain list --mine")

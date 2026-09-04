@@ -172,6 +172,26 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+// reconcile_task_chain_handler runs the explicit self-heal pass on a chain
+// (coordinator kickoff + manual re-plan). Coordinator instance token or owner
+// only. Returns the number of tasks advanced into In_Progress.
+reconcile_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := path_part(req.path, 4)
+	promoted, done, err := taskchain_service.reconcile_task_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
+	if !done do return respond_error(err, req.request_id)
+	if chain, cok, _ := taskchain_service.get_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id)); cok {
+		publish_chain_changed(h, string(chain.owner_user_id), chain_id, "reconciled")
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"chain_id\":\""); write_handler_json_string(&b, chain_id)
+	strings.write_string(&b, "\",\"reconciled\":true,\"promoted\":"); strings.write_string(&b, fmt.tprintf("%d", promoted))
+	strings.write_string(&b, "}")
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 publish_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
