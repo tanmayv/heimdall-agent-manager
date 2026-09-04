@@ -39,6 +39,10 @@ Bridge_Config :: struct {
 	nudge_cooldown_seconds: int,
 	nudge_restart_grace_seconds: int,
 	fs_root: string,
+	// BR-2: when true the bridge drives agents through ham-pty-host instead of
+	// tmux. Default false (tmux path) until DEL-1 flips it. Also overridable at
+	// runtime via HEIMDALL_BRIDGE_PTY_HOST for A/B testing.
+	pty_host_runtime: bool,
 }
 
 Bridge_Peer_Link_State :: struct {
@@ -333,6 +337,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 			cfg.nudge_restart_grace_seconds = loaded.config.daemon.nudge_restart_grace_seconds
 		}
 		cfg.fs_root = loaded.config.bridge.fs_root
+		cfg.pty_host_runtime = loaded.config.bridge.pty_host_runtime
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
 		for peer in loaded.config.bridge.peers {

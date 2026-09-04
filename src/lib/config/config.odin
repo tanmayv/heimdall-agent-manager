@@ -68,6 +68,10 @@ Bridge_Config :: struct {
 	// operations are confined to this root (default: $HOME). Parsed from
 	// [bridge].fs_root; ~-expanded + symlink-resolved at startup.
 	fs_root: string,
+	// BR-2: drive agents through ham-pty-host instead of tmux. Parsed from
+	// [bridge].pty_host_runtime; default false. Also overridable at runtime via
+	// the HEIMDALL_BRIDGE_PTY_HOST env var.
+	pty_host_runtime: bool,
 }
 
 Role_Default_Agent_Config :: struct {
@@ -536,6 +540,8 @@ parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
 		if n, ok := strconv.parse_int(value); ok { cfg.nudge_restart_grace_seconds = int(n); cfg.nudge_configured = true }
 	case "fs_root":
 		cfg.fs_root = parse_string(value)
+	case "pty_host_runtime":
+		cfg.pty_host_runtime = parse_bool(value)
 	case:
 	}
 }
