@@ -337,6 +337,47 @@ bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target
 	return false
 }
 
+// ---- UI capture proxy (BR-4) --------------------------------------------
+
+// bridge_pty_host_capture_result serves a UI pane_capture_request by proxying
+// host.capture(instance): it ensures the daemon, requests one Screen snapshot,
+// joins the rendered lines into pane text (honoring the request's line_limit),
+// and builds the pane_capture_result JSON in the SAME shape the wrapper produced.
+// On any failure it returns a failed result with a stable error_code so the UI
+// surfaces a clean message instead of hanging on a pending capture.
+bridge_pty_host_capture_result :: proc(pending: Bridge_Pane_Capture_Pending) -> string {
+	socket, ok := bridge_pty_host_ensure_daemon()
+	if !ok {
+		return bridge_pane_capture_result_json(pending, false, "host_unavailable", "The ham-pty-host daemon is not available.", "", 0, false)
+	}
+	frame := pty_host_encode_capture(pending.agent_instance_id)
+	defer delete(frame)
+	reply, rok := pty_host_request(socket, frame)
+	if !rok || reply.kind != .Screen {
+		if rok do pty_host_reply_delete(reply)
+		return bridge_pane_capture_result_json(pending, false, "capture_failed", "No screen snapshot was returned for this agent.", "", 0, false)
+	}
+	defer pty_host_reply_delete(reply)
+	output, line_count, truncated := bridge_pty_host_screen_to_output(reply.screen.lines, pending.line_limit)
+	defer delete(output)
+	return bridge_pane_capture_result_json(pending, true, "", "", output, line_count, truncated)
+}
+
+// bridge_pty_host_screen_to_output joins a captured screen's rendered lines into
+// pane text, keeping only the LAST line_limit lines (the tail, matching the tmux
+// capture semantics) and reporting the emitted line count + whether the screen was
+// truncated to the tail. Caller owns the returned string.
+bridge_pty_host_screen_to_output :: proc(lines: []string, line_limit: int) -> (output: string, line_count: int, truncated: bool) {
+	start := 0
+	trunc := false
+	if line_limit > 0 && len(lines) > line_limit {
+		start = len(lines) - line_limit
+		trunc = true
+	}
+	tail := lines[start:]
+	return strings.join(tail, "\n"), len(tail), trunc
+}
+
 // ---- event->status mapping (consumed by the BR-3 subscriber) ------------
 
 // bridge_pty_host_apply_child_exited maps a ChildExited event to the bridge's

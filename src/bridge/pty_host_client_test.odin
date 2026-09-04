@@ -167,6 +167,28 @@ pty_host_decode_spawned :: proc(t: ^testing.T) {
 }
 
 @(test)
+pty_host_decode_restarted :: proc(t: ^testing.T) {
+	// The UI restart control maps to host.restart; the daemon acks with Restarted{pid}.
+	p := make([dynamic]byte); defer delete(p)
+	append(&p, PTY_HOST_T_RESTARTED)
+	pty_host_put_str(&p, "inst_r")
+	pty_host_put_i32(&p, 5150)
+	r, ok := pty_host_decode_reply(p[:])
+	defer pty_host_reply_delete(r)
+	testing.expect(t, ok, "decode Restarted")
+	testing.expect_value(t, r.kind, Pty_Host_Reply_Kind.Restarted)
+	testing.expect_value(t, r.instance, "inst_r")
+	testing.expect_value(t, r.pid, i32(5150))
+	// And the restart request encodes to tag 0x22 + instance.
+	req := pty_host_encode_restart("inst_r")
+	defer delete(req)
+	rp := pty_host_test_reframe(t, req)
+	want := []byte{PTY_HOST_T_RESTART, 0, 0, 0, 6, 'i', 'n', 's', 't', '_', 'r'}
+	testing.expect_value(t, len(rp), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, rp[i], want[i])
+}
+
+@(test)
 pty_host_decode_child_exited_and_error :: proc(t: ^testing.T) {
 	p := make([dynamic]byte); defer delete(p)
 	append(&p, PTY_HOST_T_EXITED)

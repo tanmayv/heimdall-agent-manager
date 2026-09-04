@@ -470,6 +470,18 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 	}
 	instance_id := extract_json_string(text, "agent_instance_id", "")
 	pending := Bridge_Pane_Capture_Pending{command_id=strings.clone(command_id),pane_capture_request_id=strings.clone(extract_json_string(text,"pane_capture_request_id","")),conversation_id=strings.clone(extract_json_string(text,"conversation_id","")),message_id=strings.clone(extract_json_string(text,"message_id","")),agent_instance_id=strings.clone(instance_id),width=bridge_runtime_provider_test_int(text,"width",80,40,200),line_limit=bridge_runtime_provider_test_int(text,"line_limit",120,20,300),deadline_unix_ms=bridge_runtime_now_ms()+i64(bridge_runtime_provider_test_int(text,"settle_ms",3000,500,10000)+30000)}
+	// BR-4: in the wrapper-free path serve the capture by proxying host.capture
+	// synchronously (no wrapper push, no tmux capture). The daemon returns the
+	// rendered VT screen, which we join into the same pane-text result shape the UI
+	// expects.
+	if bridge_pty_host_runtime_enabled() {
+		accepted := bridge_command_result_json(command_id, "accepted", "")
+		bridge_runtime_cache_command(command_id, accepted)
+		_ = ws.send_text(conn, accepted)
+		result := bridge_pty_host_capture_result(pending)
+		_ = ws.send_text(conn, result)
+		return
+	}
 	bridge_pane_capture_register_pending(pending)
 	accepted := bridge_command_result_json(command_id, "accepted", "")
 	bridge_runtime_cache_command(command_id, accepted)
