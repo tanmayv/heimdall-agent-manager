@@ -9,8 +9,16 @@
 //
 // Cache is keyed by (projectId, bridgeId, path) in projectFs.ts, so navigating or
 // mutating only refetches the affected directory.
+//
+// PHASE-4 FOLLOW-UP (Spec 4.3/6 — list virtualization): large directories are
+// currently bounded by the contract's cursor pagination (limit 200 + "Load more"
+// via next_cursor/has_more) inside a scroll container, which keeps the mounted
+// DOM small in practice. True windowing (react-window/equiv) is deferred because
+// the pinned virtualizers require React 19 while this app is on React 18 (the
+// @vimee/* deps hold the React-19 peer); adding one needs either a React-18
+// compatible virtualizer or a React bump. Tracked as a Phase-4 follow-up.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../Icon';
 import {
   useLazyListProjectDirQuery,
@@ -168,14 +176,28 @@ export default function ProjectFilesPanel({
     [projectId, bridgeId, includeHidden, listDir],
   );
 
-  // Initial load + reload when project/bridge/hidden toggle changes. Resets to
-  // the project root so we never show a stale directory from another project.
+  // Reset to the project ROOT only when the project/bridge changes, so we never
+  // show a stale directory carried over from another project. The hidden toggle
+  // must NOT reset here (Spec 4.2/4.3 — it refetches the CURRENT dir; see below).
   useEffect(() => {
     setViewFile(null);
     setPending(null);
     void load('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, bridgeId, includeHidden]);
+  }, [projectId, bridgeId]);
+
+  // Show/hide-hidden refetches the CURRENT directory in place (Spec 4.2/4.3) —
+  // it must not jump back to root. Skip the initial mount so this doesn't
+  // double-fire alongside the project/bridge effect on first render.
+  const hiddenMounted = useRef(false);
+  useEffect(() => {
+    if (!hiddenMounted.current) {
+      hiddenMounted.current = true;
+      return;
+    }
+    void load(cwd);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includeHidden]);
 
   const openDir = useCallback(
     (path: string) => {
@@ -395,9 +417,10 @@ export default function ProjectFilesPanel({
               type="button"
               onClick={() => setIncludeHidden((v) => !v)}
               aria-pressed={includeHidden ? 'true' : 'false'}
+              title={includeHidden ? 'Hide dotfiles (names starting with ".")' : 'Show hidden dotfiles (names starting with ".")'}
               className={`ml-auto rounded-lg border px-2 py-1 text-[11px] ${includeHidden ? 'border-sky-400/40 bg-sky-400/10 text-sky-200' : 'border-white/10 text-zinc-400 hover:bg-white/10'}`}
             >
-              {includeHidden ? 'Hiding nothing' : 'Show hidden'}
+              {includeHidden ? 'Hide hidden' : 'Show hidden'}
             </button>
           </div>
 
