@@ -393,7 +393,15 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		// must NOT surface as a hard error that makes the agent retry (and
 		// double-deliver) — treat a retried-then-failed relay as accepted-locally.
 		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_data(request_id, "{\"accepted\":true,\"reconcile\":\"pending_no_instance_token\"}")
-		relay := bridge_local_relay_agent_envelope("/api/v1/agent-actions/start-success", "agent.start_success", params, rec)
+		// Use a longer (10s) timeout than the default 5s for the start-success
+		// relay: the hub does real work on this call (persist status + insert the
+		// "started and is ready" system message + inbox scan + notify), so its
+		// response can lag under load. A premature 5s timeout makes the retry loop
+		// re-send a request the hub already executed, and since the hub's handler is
+		// not idempotent that inserts DUPLICATE system messages. 10s comfortably
+		// covers the hub's normal processing so a legitimately-completed call is not
+		// retried.
+		relay := bridge_local_relay_agent_envelope("/api/v1/agent-actions/start-success", "agent.start_success", params, rec, 10000)
 		if !relay.ok do return bridge_local_response_data(request_id, "{\"accepted\":true,\"reconcile\":\"pending_relay_unavailable\"}")
 		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
 		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{\"accepted\":true}")
@@ -430,10 +438,10 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 
 // bridge_local_relay_agent_envelope wraps params in the agent-actions envelope
 // {method, agent_instance_id, params} and POSTs it, with AC-5 retry.
-bridge_local_relay_agent_envelope :: proc(path, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
+bridge_local_relay_agent_envelope :: proc(path, method, params: string, rec: Bridge_Local_Agent_Token_Record, timeout_ms: int = http.DEFAULT_TIMEOUT_MS) -> Bridge_Local_Relay_Result {
 	body := bridge_local_agent_relay_body(method, params, rec.agent_instance_id)
 	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_config.bridge_token})}, {name = "X-Heimdall-Instance-Token", value = rec.instance_token}}
-	resp, ok := bridge_http_request_retry("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	resp, ok := bridge_http_request_retry("POST", bridge_config.daemon_url, path, body, headers[:], timeout_ms)
 	return Bridge_Local_Relay_Result{status = resp.status, body = resp.body, ok = ok}
 }
 
