@@ -111,11 +111,11 @@ function extractMessageArtifactIds(message: any): string[] | undefined {
 }
 
 function mapMessage(message: any) {
-  const createdUnixMs = Number(message.created_unix_ms ?? message.createdUnixMs ?? 0);
+  const createdUnixMs = Number(message.created_unix_ms ?? message.createdUnixMs ?? 0) || (message.created_at || message.createdAt ? Date.parse(message.created_at || message.createdAt) : 0) || 0;
   const createdTime = createdUnixMs ? new Date(createdUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-  const deliveredUnixMs = Number(message.delivered_unix_ms ?? message.deliveredUnixMs ?? 0);
-  const readUnixMs = Number(message.read_unix_ms ?? message.readUnixMs ?? 0);
-  const deliveryFailedUnixMs = Number(message.delivery_failed_unix_ms ?? message.deliveryFailedUnixMs ?? 0);
+  const deliveredUnixMs = Number(message.delivered_unix_ms ?? message.deliveredUnixMs ?? 0) || (message.delivered_at || message.deliveredAt ? Date.parse(message.delivered_at || message.deliveredAt) : 0) || 0;
+  const readUnixMs = Number(message.read_unix_ms ?? message.readUnixMs ?? 0) || (message.read_at || message.readAt ? Date.parse(message.read_at || message.readAt) : 0) || 0;
+  const deliveryFailedUnixMs = Number(message.delivery_failed_unix_ms ?? message.deliveryFailedUnixMs ?? 0) || (message.delivery_failed_at || message.deliveryFailedAt ? Date.parse(message.delivery_failed_at || message.deliveryFailedAt) : 0) || 0;
   return {
     id: message.message_id ?? message.id,
     author: message.direction === 'user_to_agent' || message.author === 'user' ? 'user' : 'agent',

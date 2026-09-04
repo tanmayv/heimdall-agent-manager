@@ -54,10 +54,16 @@ type Message = {
   createdAt?: string;
   created_unix_ms?: number | string;
   createdUnixMs?: number | string;
+  delivered_at?: string;
+  deliveredAt?: string;
   delivered_unix_ms?: number | string;
   deliveredUnixMs?: number | string;
+  read_at?: string;
+  readAt?: string;
   read_unix_ms?: number | string;
   readUnixMs?: number | string;
+  delivery_failed_at?: string;
+  deliveryFailedAt?: string;
   delivery_failed_unix_ms?: number | string;
   deliveryFailedUnixMs?: number | string;
   delivery_error?: string;
@@ -352,9 +358,9 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
           body: String(message.body || ''),
           isUser,
           createdUnixMs,
-          deliveredUnixMs: coerceUnixMs(message.delivered_unix_ms ?? message.deliveredUnixMs),
-          readUnixMs: coerceUnixMs(message.read_unix_ms ?? message.readUnixMs),
-          deliveryFailedUnixMs: coerceUnixMs(message.delivery_failed_unix_ms ?? message.deliveryFailedUnixMs),
+          deliveredUnixMs: coerceUnixMs(message.delivered_unix_ms ?? message.deliveredUnixMs) || dateStringToUnixMs(message.delivered_at ?? message.deliveredAt),
+          readUnixMs: coerceUnixMs(message.read_unix_ms ?? message.readUnixMs) || dateStringToUnixMs(message.read_at ?? message.readAt),
+          deliveryFailedUnixMs: coerceUnixMs(message.delivery_failed_unix_ms ?? message.deliveryFailedUnixMs) || dateStringToUnixMs(message.delivery_failed_at ?? message.deliveryFailedAt),
           deliveryError: String(message.delivery_error || message.deliveryError || ''),
           sending: Boolean(message.sending),
           authorLabel,

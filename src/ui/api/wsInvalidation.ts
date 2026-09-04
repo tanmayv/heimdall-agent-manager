@@ -258,16 +258,19 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   const hasInlineMessage = Boolean(payload.message);
   const message = hasInlineMessage ? normalizeChatMessage(payload.message) : null;
   const direction = String(payload.direction || '');
-  const isStatusOnlyEvent = !message && (direction === 'read' || direction === 'delivered' || direction === 'delivery_failed');
+  const isStatusOnlyEvent = !message && (direction === 'read' || direction === 'delivered' || direction === 'delivery_failed' || payload.event === 'messages_read');
 
   dispatch(wsRefreshRequested(`chat_event:${agentId || payload.message_id || 'unknown'}`));
   if (isStatusOnlyEvent) {
     if (agentId) {
+      const readUnixMs = Number(payload.read_unix_ms || payload.readUnixMs || 0) || (payload.read_at ? Date.parse(payload.read_at) : 0) || 0;
+      const deliveredUnixMs = Number(payload.delivered_unix_ms || payload.deliveredUnixMs || 0) || (payload.delivered_at ? Date.parse(payload.delivered_at) : 0) || 0;
+      const messageIds: string[] = Array.isArray(payload.message_ids) ? payload.message_ids.map(String) : (payload.message_id ? [String(payload.message_id)] : []);
       const statusPatch = {
         agentId,
-        messageId: String(payload.message_id || ''),
-        deliveredUnixMs: Number(payload.delivered_unix_ms || payload.deliveredUnixMs || 0),
-        readUnixMs: Number(payload.read_unix_ms || payload.readUnixMs || 0),
+        messageId: String(payload.message_id || (messageIds.length === 1 ? messageIds[0] : '')),
+        deliveredUnixMs,
+        readUnixMs,
         deliveryFailedUnixMs: Number(payload.delivery_failed_unix_ms || payload.deliveryFailedUnixMs || 0),
         deliveryError: String(payload.delivery_error || payload.deliveryError || ''),
       };
@@ -275,9 +278,11 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
       const patchCache = (draft: any) => {
         if (!draft?.messages) return;
         const messageId = statusPatch.messageId;
+        const idSet = new Set(messageIds);
         for (const message of draft.messages) {
-          const matchesId = messageId && String(message.id || '') === messageId;
-          const matchesReadWatermark = !messageId && statusPatch.readUnixMs > 0 && message.author === 'user' && Number(message.createdUnixMs || 0) <= statusPatch.readUnixMs;
+          const mid = String(message.id || '');
+          const matchesId = (messageId && mid === messageId) || (idSet.size > 0 && idSet.has(mid));
+          const matchesReadWatermark = !messageId && idSet.size === 0 && statusPatch.readUnixMs > 0 && message.author === 'user' && Number(message.createdUnixMs || 0) <= statusPatch.readUnixMs;
           if (!matchesId && !matchesReadWatermark) continue;
           if (statusPatch.deliveredUnixMs > 0) message.deliveredUnixMs = Math.max(Number(message.deliveredUnixMs || 0), statusPatch.deliveredUnixMs);
           if (statusPatch.readUnixMs > 0) message.readUnixMs = Math.max(Number(message.readUnixMs || 0), statusPatch.readUnixMs);
