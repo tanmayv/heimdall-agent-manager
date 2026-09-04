@@ -5,6 +5,7 @@
 //!   * `attach` — attach to a running host, raw-mode passthrough (PTYH-2).
 //!   * `daemon` — run the multi-agent per-machine daemon (HOST-1).
 //!   * `spawn`/`close`/`restart`/`list` — control-plane clients for the daemon (HOST-1).
+//!   * `capture` — one-shot rendered screen snapshot of an agent (HOST-1/2).
 //!
 //! `attach --debug` renders the in-app ratatui debug TUI (PTYH-3).
 
@@ -118,6 +119,21 @@ enum Command {
         #[arg(long)]
         socket: String,
     },
+    /// Capture a one-shot rendered screen snapshot of an agent (HOST-1/2).
+    ///
+    /// Prints the current VT grid (what the pane looks like now), not the raw
+    /// output stream. This is a control-only op: it does not attach, so it never
+    /// affects the child or the event stream.
+    Capture {
+        #[arg(long)]
+        socket: String,
+        #[arg(long)]
+        instance: String,
+        /// Emit the snapshot as JSON (rows/cols/cursor + lines) instead of the
+        /// plain rendered text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -149,6 +165,11 @@ fn main() -> Result<()> {
         Command::Close { socket, instance } => ctl_close(socket, instance),
         Command::Restart { socket, instance } => ctl_restart(socket, instance),
         Command::List { socket } => ctl_list(socket),
+        Command::Capture {
+            socket,
+            instance,
+            json,
+        } => ctl_capture(socket, instance, json),
     }
 }
 
@@ -261,6 +282,59 @@ fn ctl_list(socket: String) -> Result<()> {
         }
         other => bail!("unexpected reply: {other:?}"),
     }
+}
+
+fn ctl_capture(socket: String, instance: String, json: bool) -> Result<()> {
+    match request(&socket, &CtlMsg::Capture { instance: instance.clone() })? {
+        CtlReply::Screen { screen, .. } => {
+            if json {
+                // Hand-rolled JSON (no serde dep): rows/cols/cursor + lines.
+                let mut out = String::new();
+                out.push_str(&format!(
+                    "{{\"instance\":{},\"rows\":{},\"cols\":{},\"cursor_row\":{},\"cursor_col\":{},\"lines\":[",
+                    json_str(&instance),
+                    screen.rows,
+                    screen.cols,
+                    screen.cursor_row,
+                    screen.cursor_col,
+                ));
+                for (i, line) in screen.lines.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&json_str(line));
+                }
+                out.push_str("]}");
+                println!("{out}");
+            } else {
+                for line in &screen.lines {
+                    println!("{line}");
+                }
+            }
+            Ok(())
+        }
+        CtlReply::Error { message, .. } => bail!("capture failed: {message}"),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// Minimal JSON string escaper for the `capture --json` output.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn run(

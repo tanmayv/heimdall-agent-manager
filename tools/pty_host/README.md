@@ -53,6 +53,10 @@ Ctrl-\ detaches the passthrough client (child survives); F10 quits the debug TUI
 ./target/debug/ham-pty-host list    --socket /tmp/ham-daemon.sock
 ./target/debug/ham-pty-host restart --socket /tmp/ham-daemon.sock --instance inst_a  # re-spawn same spec
 ./target/debug/ham-pty-host close   --socket /tmp/ham-daemon.sock --instance inst_a  # SIGTERM->SIGKILL
+
+# one-shot rendered screen snapshot (control-only: no attach, doesn't touch the child)
+./target/debug/ham-pty-host capture --socket /tmp/ham-daemon.sock --instance inst_a          # plain text
+./target/debug/ham-pty-host capture --socket /tmp/ham-daemon.sock --instance inst_a --json   # rows/cols/cursor + lines
 ```
 The daemon manages N agents keyed by instance id; `restart` reuses the remembered
 argv/cwd/env/detect. `--detect` is stored verbatim in HOST-1 and consumed by the
