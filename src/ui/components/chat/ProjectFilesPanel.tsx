@@ -116,6 +116,8 @@ export default function ProjectFilesPanel({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [includeHidden, setIncludeHidden] = useState(false);
+  // Timestamp of the last successful listing fetch, shown as "refreshed HH:MM".
+  const [lastRefreshed, setLastRefreshed] = useState<number | null>(null);
 
   const [pending, setPending] = useState<PendingAction>(null);
   const [nameDraft, setNameDraft] = useState('');
@@ -154,6 +156,7 @@ export default function ProjectFilesPanel({
         setNextCursor(res.next_cursor ?? null);
         setEntries((prev) => (append ? [...prev, ...(res.entries || [])] : res.entries || []));
         if (!append) setCwd(path);
+        setLastRefreshed(Date.now());
       } catch (e: any) {
         setError(str(e?.error || e?.message) || 'Bridge unavailable');
         if (!append) setEntries([]);
@@ -307,6 +310,9 @@ export default function ProjectFilesPanel({
             <div data-debug-id={`${debugPrefix}-title`} className="text-[12px] font-semibold text-zinc-100">Files</div>
             {rootAbs ? (
               <div className="truncate font-mono text-[10px] text-zinc-600" title={`Project root: ${rootAbs}`}>root: {rootAbs}</div>
+            ) : null}
+            {lastRefreshed && !viewFile ? (
+              <div data-debug-id={`${debugPrefix}-last-refreshed`} className="text-[10px] text-zinc-600">refreshed {new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
             ) : null}
           </div>
         </div>
