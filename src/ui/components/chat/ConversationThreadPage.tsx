@@ -335,7 +335,14 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
       const isUser = direction === 'user_to_agent';
       const createdUnixMs = messageCreatedUnixMs(message);
       const sender = String(message.sender_agent_instance_id || message.senderAgentInstanceId || '');
-      const authorLabel = isUser ? 'you' : direction === 'system' ? 'system' : (sender || agentLabel || 'agent');
+      const messageType = String((message as any).message_type || (message as any).messageType || 'text');
+      // SYS-2: the system message card is self-labeled ('System'), so suppress
+      // the redundant generic author label above it. System notices arrive as
+      // message_type='system' (direction is 'agent_to_user'), so key on the type,
+      // not direction. ChatMessageList renders the label span unconditionally
+      // with the timestamp beside it, so an empty label degrades cleanly
+      // (timestamp still shows) without layout changes.
+      const authorLabel = isUser ? 'you' : messageType === 'system' ? '' : (sender || agentLabel || 'agent');
       const artifactIds = extractMessageArtifactIds(message);
       return {
         order: index,
@@ -352,7 +359,7 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
           sending: Boolean(message.sending),
           authorLabel,
           artifactIds,
-          messageType: String((message as any).message_type || (message as any).messageType || 'text'),
+          messageType,
           messageStatus: String((message as any).message_status || (message as any).messageStatus || 'complete'),
           metadata: parseMessageMetadata(message),
         } satisfies ChatMessage,
@@ -834,6 +841,24 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           </div>
           {status === 'pending' ? <div className="text-sm text-sky-100/80">Waiting for the wrapper to resize and capture the pane…</div> : <PaneCaptureOutput body={message.body} messageId={message.messageId} />}
           {status === 'failed' ? <button type="button" data-debug-id={`conversation-pane-capture-retry-${message.messageId}`} onClick={() => void requestPane()} disabled={paneCaptureDisabled} className="mt-2 rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-100 hover:bg-white/10 disabled:opacity-50">Retry</button> : null}
+        </div>
+      );
+    }
+    // SYS-1: system notices (message_type='system', e.g. 'Agent has started and
+    // is ready.') get a deliberately LOW-KEY, muted treatment — a small info
+    // Icon + uppercase 'System' label + Markdown body — so they read as
+    // ambient status, clearly distinct from user bubbles and the amber action
+    // card without dominating the thread.
+    if (message.messageType === 'system') {
+      return (
+        <div data-debug-id={`conversation-system-message-${message.messageId}`} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-zinc-400">
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+            <Icon name="info" size={12} title="System message" />
+            System
+          </div>
+          <div className="text-sm text-zinc-300">
+            <Markdown source={message.body} compact copyAll={false} />
+          </div>
         </div>
       );
     }
