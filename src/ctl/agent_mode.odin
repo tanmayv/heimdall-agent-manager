@@ -184,6 +184,14 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("task_id", tid))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task.show", json_object_from_slice(fields[:]))
+	case "comments":
+		tid := pos(tokens, 1)
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("task_id", tid))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		if v := option_value(args, "--last", ""); v != "" do append(&fields, json_kv("last", v))
+		ctl_agent_call(endpoint, token, "agent.task.comments", json_object_from_slice(fields[:]))
 	case "create":
 		title := option_value(args, "--title", "")
 		if title == "" { print_agent_help([]string{"task"}); return }
@@ -758,8 +766,10 @@ print_help_task :: proc() {
 	fmt.println("Positional <task-id> identifies the task. --chain defaults to your current chain.")
 	fmt.println("")
 	fmt.println("VERBS")
-	fmt.println("  list [--chain <id>]                     List tasks in the chain.")
-	fmt.println("  show <task-id>                          Show a task with its comments and votes.")
+	fmt.println("  list [--chain <id>]                     List tasks; each carries a comment_summary")
+	fmt.println("                                          (count, last_comment_at, author, preview) — not bodies.")
+	fmt.println("  show <task-id> [--chain <id>]           Show a task + comment_summary + votes (no bodies).")
+	fmt.println("  comments <task-id> [--last N] [--chain <id>]  Fetch comment bodies; --last N = newest N (max 100).")
 	fmt.println("  create --title <t>                      Create a task.")
 	fmt.println("      [--description <d>] [--assignee <instance-id>] [--reviewer <instance-id>] [--chain <id>]")
 	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")

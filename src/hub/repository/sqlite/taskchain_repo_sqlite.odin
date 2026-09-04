@@ -1,5 +1,6 @@
 package sqlite
 
+import "core:strings"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 
@@ -19,6 +20,8 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		list_tasks_by_chain = task_list_by_chain_sqlite,
 		save_comment = task_comment_save_sqlite,
 		list_comments_by_task = task_comment_list_by_task_sqlite,
+		comment_summary_by_task = task_comment_summary_sqlite,
+		list_recent_comments_by_task = task_comment_list_recent_sqlite,
 		save_member = taskchain_save_member_sqlite,
 		remove_member = taskchain_remove_member_sqlite,
 		list_members_by_chain = taskchain_list_members_by_chain_sqlite,
@@ -115,6 +118,70 @@ task_comment_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, o
 	stmt: sqlite3_stmt = nil
 	query := "SELECT comment_id, task_id, chain_id, owner_user_id, author_agent_instance_id, body, created_at, updated_at FROM task_comments WHERE task_id = ? AND owner_user_id = ? ORDER BY created_at ASC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare task comment list")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(task_id)); bind_text(stmt, 2, string(owner_user_id))
+	out := make([dynamic]domain.Task_Comment)
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, task_comment_from_stmt(stmt))
+	return out[:], domain.Domain_Error{}
+}
+
+// task_comment_summary_sqlite computes the compact rollup cheaply: COUNT(*) plus
+// the newest comment's author + body (for the preview) in a single indexed pass.
+// No full comment bodies are loaded for the count.
+task_comment_summary_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (domain.Task_Comment_Summary, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	out := domain.Task_Comment_Summary{}
+	// count
+	{
+		stmt: sqlite3_stmt = nil
+		q := "SELECT COUNT(*) FROM task_comments WHERE task_id = ? AND owner_user_id = ?;"
+		if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return out, domain.domain_error(.Internal_Error, "failed to prepare comment count")
+		defer sqlite3_finalize(stmt)
+		bind_text(stmt, 1, string(task_id)); bind_text(stmt, 2, string(owner_user_id))
+		if sqlite3_step(stmt) == SQLITE_ROW do out.count = int_v(column_text(stmt, 0))
+	}
+	if out.count == 0 do return out, domain.Domain_Error{}
+	// newest comment: author + created_at + body (for preview)
+	{
+		stmt: sqlite3_stmt = nil
+		q := "SELECT author_agent_instance_id, body, created_at FROM task_comments WHERE task_id = ? AND owner_user_id = ? ORDER BY created_at DESC, comment_id DESC LIMIT 1;"
+		if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return out, domain.domain_error(.Internal_Error, "failed to prepare comment last row")
+		defer sqlite3_finalize(stmt)
+		bind_text(stmt, 1, string(task_id)); bind_text(stmt, 2, string(owner_user_id))
+		if sqlite3_step(stmt) == SQLITE_ROW {
+			out.last_comment_author = column_text(stmt, 0)
+			body := column_text(stmt, 1)
+			out.last_comment_at = column_text(stmt, 2)
+			out.last_comment_preview = comment_preview(body)
+		}
+	}
+	return out, domain.Domain_Error{}
+}
+
+// comment_preview truncates to TASK_COMMENT_PREVIEW_MAX runes, appending an
+// ellipsis when the body was longer. Rune-safe so multibyte text is not cut.
+comment_preview :: proc(body: string) -> string {
+	trimmed := strings.trim_space(body)
+	runes := 0
+	for _, i in trimmed {
+		runes += 1
+		if runes > domain.TASK_COMMENT_PREVIEW_MAX {
+			return strings.concatenate({trimmed[:i], "\u2026"})
+		}
+	}
+	return trimmed
+}
+
+// task_comment_list_recent_sqlite returns the newest `last` comments in ascending
+// order (or all when last <= 0). Uses a bounded subquery so only N rows are read.
+task_comment_list_recent_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID, last: int) -> ([]domain.Task_Comment, domain.Domain_Error) {
+	if last <= 0 do return task_comment_list_by_task_sqlite(ctx, task_id, owner_user_id)
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	// newest N by created_at, then re-sort ascending so the caller sees chrono
+	// order. LIMIT is a validated non-negative int (int_s), safe to inline.
+	query := strings.concatenate({"SELECT comment_id, task_id, chain_id, owner_user_id, author_agent_instance_id, body, created_at, updated_at FROM (SELECT * FROM task_comments WHERE task_id = ? AND owner_user_id = ? ORDER BY created_at DESC, comment_id DESC LIMIT ", int_s(last), ") ORDER BY created_at ASC, comment_id ASC;"})
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare recent comment list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(task_id)); bind_text(stmt, 2, string(owner_user_id))
 	out := make([dynamic]domain.Task_Comment)

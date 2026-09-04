@@ -80,6 +80,22 @@ Rules you must follow:
 
 Keep task status and comments current at all times so the whole chain reflects real progress.
 
+### Reading tasks and comments efficiently (IMPORTANT)
+`task list` and `task show` do NOT return comment bodies — they return a compact
+`comment_summary` per task so responses stay small. Use it to decide what to read:
+
+- `comment_summary` has `count`, `last_comment_at`, `last_comment_author_agent_instance_id`,
+  and a short `last_comment_preview`. It tells you a task HAS discussion and how
+  recent it is — without downloading the whole thread.
+- To read the actual comment bodies, fetch them explicitly and bounded:
+  `./.heimdall/bin/ham-ctl task comments <task-id> --last 20` (newest 20; max 100).
+  Prefer a small `--last` and only increase it when you genuinely need older history.
+- Typical loop: `task list` → notice a task's `comment_summary.last_comment_at` is
+  newer than when you last acted → `task comments <task-id> --last 10` to catch up →
+  act, then `task comment <task-id> --body "…"`.
+- Do NOT try to dump every comment on every task; that wastes context. Read the
+  summary first, then pull only the recent comments for the task you are working on.
+
 
 ## Heimdall CLI
 

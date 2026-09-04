@@ -424,7 +424,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   // Cookie-auth chain detail (works in the live shell, unlike the client-token
   // fetchChainTasks). Used to resolve the agent's current task for the working
   // indicator; polled modestly so the task title stays fresh.
-  const chainDetailQuery = useFetchTaskChainDetailQuery({ chainId }, { skip: !chainId, pollingInterval: 10000 });
+  // Tasks change infrequently and task/chain mutations invalidate the Chain tag
+  // over WS, so poll slowly (2 min) as a fallback rather than every 10s.
+  const chainDetailQuery = useFetchTaskChainDetailQuery({ chainId }, { skip: !chainId, pollingInterval: 120000 });
   const chainProgress = useMemo(() => {
     // Prefer the cookie-auth chain detail (works in the live shell); fall back to
     // the legacy client-token fetchChainTasks. Without this the live shell always

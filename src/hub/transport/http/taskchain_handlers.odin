@@ -216,6 +216,23 @@ list_tasks_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }
 
+// get_task_handler returns ONE task with its comment_summary + votes (slim: no
+// comment bodies). Agents/UI fetch the thread separately via .../comments?last=N.
+get_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	task_id := domain.Task_ID(path_part(req.path, 6))
+	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	task, got, err := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
+	if !got do return respond_error(err, req.request_id)
+	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth_ctx, chain_id)
+	b := strings.builder_make()
+	write_task_detail_json(&b, h, auth_ctx, task, deps)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -367,13 +384,21 @@ list_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
-	comments, err := taskchain_service.list_task_comments(h.taskchains, auth_ctx, task_id)
+	// ?last=N returns only the newest N comments (bounded); absent/<=0 => all.
+	// Cap at TASK_COMMENTS_LAST_MAX so a huge N can't be used to dump everything.
+	last := query_int(req.query, "last", 0)
+	if last > TASK_COMMENTS_LAST_MAX do last = TASK_COMMENTS_LAST_MAX
+	comments, err := taskchain_service.list_recent_task_comments(h.taskchains, auth_ctx, task_id, last)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
 	for c, i in comments { if i > 0 do strings.write_byte(&b, ','); write_task_comment_json(&b, c) }
 	strings.write_byte(&b, ']')
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }
+
+// TASK_COMMENTS_LAST_MAX caps the ?last=N tail fetch so agents can bound payloads
+// but can't dump an unbounded thread through the "recent" path.
+TASK_COMMENTS_LAST_MAX :: 100
 
 create_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
@@ -478,7 +503,7 @@ write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth
 		}
 	}
 
-	comments, _ := taskchain_service.list_task_comments(h.taskchains, auth_ctx, t.task_id)
+	comment_summary, _ := taskchain_service.task_comment_summary(h.taskchains, auth_ctx, t.task_id)
 	votes, _ := taskchain_service.list_task_votes(h.taskchains, auth_ctx, t.task_id)
 
 	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id))
@@ -496,12 +521,9 @@ write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth
 		if i > 0 do strings.write_byte(b, ',')
 		strings.write_string(b, "\""); write_handler_json_string(b, id); strings.write_string(b, "\"")
 	}
-	strings.write_string(b, "],\"comments\":[")
-	for c, i in comments {
-		if i > 0 do strings.write_byte(b, ',')
-		write_task_comment_json(b, c)
-	}
-	strings.write_string(b, "],\"votes\":[")
+	strings.write_string(b, "],\"comment_summary\":")
+	write_task_comment_summary_json(b, comment_summary)
+	strings.write_string(b, ",\"votes\":[")
 	for v, i in votes {
 		if i > 0 do strings.write_byte(b, ',')
 		write_task_vote_json(b, v)
@@ -535,6 +557,17 @@ write_task_comment_json :: proc(b: ^strings.Builder, c: domain.Task_Comment) {
 	strings.write_string(b, "\",\"author_agent_instance_id\":\""); write_handler_json_string(b, c.author_agent_instance_id)
 	strings.write_string(b, "\",\"body\":\""); write_handler_json_string(b, c.body)
 	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, c.created_at)
+	strings.write_string(b, "\"}")
+}
+
+// write_task_comment_summary_json emits the compact comment rollup embedded on
+// task objects (count + last comment metadata + preview), replacing the full
+// comments array so list/show/context stay cheap.
+write_task_comment_summary_json :: proc(b: ^strings.Builder, s: domain.Task_Comment_Summary) {
+	strings.write_string(b, "{\"count\":"); strings.write_string(b, fmt.tprintf("%d", s.count))
+	strings.write_string(b, ",\"last_comment_at\":\""); write_handler_json_string(b, s.last_comment_at)
+	strings.write_string(b, "\",\"last_comment_author_agent_instance_id\":\""); write_handler_json_string(b, s.last_comment_author)
+	strings.write_string(b, "\",\"last_comment_preview\":\""); write_handler_json_string(b, s.last_comment_preview)
 	strings.write_string(b, "\"}")
 }
 

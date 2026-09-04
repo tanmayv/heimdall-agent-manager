@@ -122,14 +122,26 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		// no chain_id => caller's context snapshot lists the caller's tasks.
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/context"}
 	case "agent.task.show":
-		// task detail incl. comments+votes: needs chain_id + task_id. If chain_id
-		// is absent, fall back to context (which carries the caller's task).
+		// slim task detail (task + comment_summary + votes; no comment bodies).
+		// Needs chain_id + task_id; if chain_id is absent, fall back to context.
 		cid := bridge_local_extract_json_string(params, "chain_id", "")
 		tid := bridge_agent_task_id(params)
 		if strings.trim_space(cid) != "" && tid != "" {
-			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = strings.concatenate({"/api/v1/task-chains/", cid, "/tasks/", tid, "/comments"})}
+			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = strings.concatenate({"/api/v1/task-chains/", cid, "/tasks/", tid})}
 		}
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/context"}
+	case "agent.task.comments":
+		// the newest N comments (bodies) for a task: GET .../comments?last=N.
+		cid := bridge_local_extract_json_string(params, "chain_id", "")
+		tid := bridge_agent_task_id(params)
+		if strings.trim_space(cid) != "" && tid != "" {
+			base := strings.concatenate({"/api/v1/task-chains/", cid, "/tasks/", tid, "/comments"})
+			if last := bridge_local_extract_json_string(params, "last", ""); strings.trim_space(last) != "" {
+				return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = strings.concatenate({base, "?last=", last})}
+			}
+			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = base}
+		}
+		// task_id without chain_id can't address the comments endpoint.
 	case "agent.task.create":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/create"}
 	case "agent.task.depend":
@@ -198,9 +210,9 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.agents.instance_stop",
 	     // task-chain + task
 	     "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
-	     "agent.task.list", "agent.task.show", "agent.task.create", "agent.task.depend",
-	     "agent.task.comment", "agent.task.status", "agent.task.set_current",
-	     "agent.task.vote", "agent.task.nudge",
+	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
+	     "agent.task.depend", "agent.task.comment", "agent.task.status",
+	     "agent.task.set_current", "agent.task.vote", "agent.task.nudge",
 	     // chat + self/misc
 	     "agent.chat.send", "agent.chat.read",
 	     "agent.context.get", "agent.conversation.set_title", "agent.memory.propose",

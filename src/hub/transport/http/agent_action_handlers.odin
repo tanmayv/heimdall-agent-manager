@@ -521,7 +521,8 @@ write_agent_current_task_json :: proc(b: ^strings.Builder, h: ^Agent_Action_Hand
 	if err.code != .None { strings.write_string(b, "null"); return }
 	for task in tasks {
 		if string(task.task_id) == inst.current_task_id {
-			write_current_task_json(b, task, inst.current_task_role)
+			summary, _ := taskchain_service.task_comment_summary(h.taskchains, auth, task.task_id)
+			write_current_task_json(b, task, inst.current_task_role, summary)
 			return
 		}
 	}
@@ -529,13 +530,17 @@ write_agent_current_task_json :: proc(b: ^strings.Builder, h: ^Agent_Action_Hand
 }
 
 // write_current_task_json emits a task with its work-vs-review role + priority so
-// the agent/UI can render the current-task banner unambiguously (R8).
-write_current_task_json :: proc(b: ^strings.Builder, task: domain.Task, role: domain.Current_Task_Role) {
+// the agent/UI can render the current-task banner unambiguously (R8). It also
+// carries the comment_summary so the snapshot shows fresh discussion without
+// shipping bodies (agents fetch the thread with `task comments <id> --last N`).
+write_current_task_json :: proc(b: ^strings.Builder, task: domain.Task, role: domain.Current_Task_Role, summary: domain.Task_Comment_Summary) {
 	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(task.task_id))
 	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(task.chain_id))
 	strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, task.title)
 	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(task.status))
 	strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(task.priority))
 	strings.write_string(b, "\",\"role\":\""); write_handler_json_string(b, domain.current_task_role_string(role))
-	strings.write_string(b, "\"}")
+	strings.write_string(b, "\",\"comment_summary\":")
+	write_task_comment_summary_json(b, summary)
+	strings.write_string(b, "}")
 }

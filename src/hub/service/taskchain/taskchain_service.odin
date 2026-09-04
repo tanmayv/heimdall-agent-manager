@@ -1195,6 +1195,22 @@ list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
 }
 
+// task_comment_summary returns the compact comment rollup (count + last comment
+// metadata + preview) for embedding on task objects. Owner-scoped via get_task.
+task_comment_summary :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> (domain.Task_Comment_Summary, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return domain.Task_Comment_Summary{}, err
+	return iface.taskchain_comment_summary_by_task(service.repo, task.task_id, task.owner_user_id)
+}
+
+// list_recent_task_comments returns the newest `last` comments (ascending), or
+// all when last <= 0. Owner-scoped via get_task.
+list_recent_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, last: int) -> ([]domain.Task_Comment, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return nil, err
+	return iface.taskchain_list_recent_comments_by_task(service.repo, task.task_id, task.owner_user_id, last)
+}
+
 // --- Member Management ---
 
 add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string, role: string) -> (domain.Task_Chain_Member, bool, domain.Domain_Error) {

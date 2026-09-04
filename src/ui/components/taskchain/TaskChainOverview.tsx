@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
+import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import Icon from '../Icon';
@@ -1020,36 +1021,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               )}
             </div>
 
-            {/* Comments Thread */}
-            <div data-debug-id={`taskchain-task-comments-${taskId}`} className="space-y-2">
-              <span className="font-semibold text-zinc-400">Comments:</span>
-              {(task.comments || []).map((comment: any, idx: number) => (
-                <div
-                  key={comment.commentId || idx}
-                  data-debug-id={`taskchain-task-comment-${taskId}-${idx}`}
-                  className="rounded bg-zinc-900 p-2 text-[11px]"
-                >
-                  <div className="font-semibold text-zinc-400">
-                    {comment.authorAgentInstanceId || 'user'}:
-                  </div>
-                  <div className="mt-1 text-zinc-200">
-                    <Markdown source={comment.body || ''} compact copyAll={false} data-debug-id={`taskchain-task-comment-body-${taskId}-${idx}`} />
-                    {artifactIdsFromText(comment.body || '').length > 0 ? (
-                      <div data-debug-id={`taskchain-task-comment-artifacts-${taskId}-${idx}`} className="mt-2 flex flex-wrap gap-2">
-                        {artifactIdsFromText(comment.body || '').map((artifactId) => (
-                          <ArtifactAttachmentPreview
-                            key={artifactId}
-                            artifactId={artifactId}
-                            session={{ daemonUrl: '', clientToken: '' }}
-                            debugId={`taskchain-task-comment-artifact-${taskId}-${idx}-${artifactId}`}
-                          />
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-
+            {/* Comments Thread — bodies lazy-loaded on expand; list ships only a summary. */}
+            <TaskCommentsThread
+              chainId={chainId}
+              taskId={taskId}
+              summary={task.commentSummary}
+              enabled={isExpanded}
+            />
+            <div className="space-y-2">
               {/* Comment Composer */}
               <div className="space-y-2 pt-1">
                 {taskCommentAttachments.length > 0 ? (

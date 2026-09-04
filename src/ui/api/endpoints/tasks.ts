@@ -29,6 +29,12 @@ function normalizeTask(task: any) {
     assigneeRef: task.assignee_ref || task.assigneeRef || (task.assignee_agent_instance_id ? { type: 'agent_instance', agent_instance_id: task.assignee_agent_instance_id } : null),
     reviewerRefs: task.reviewer_refs || task.reviewerRefs || (task.reviewer_agent_instance_id ? [{ type: 'agent_instance', agent_instance_id: task.reviewer_agent_instance_id }] : []),
     comments: (task.comments || []).map(normalizeTaskComments),
+    commentSummary: task.comment_summary ? {
+      count: Number(task.comment_summary.count || 0),
+      lastCommentAt: String(task.comment_summary.last_comment_at || ''),
+      lastCommentAuthorAgentInstanceId: String(task.comment_summary.last_comment_author_agent_instance_id || ''),
+      lastCommentPreview: String(task.comment_summary.last_comment_preview || ''),
+    } : null,
     createdBy: task.created_by || '',
     createdAtUnixMs: Number(task.created_at_unix_ms || 0),
     updatedAtUnixMs: Number(task.updated_at_unix_ms || 0),
@@ -151,6 +157,24 @@ export const tasksApi = heimdallApi.injectEndpoints({
         { type: 'Chain', id: chainId },
         { type: 'ChainTasks', id: chainId },
       ],
+    }),
+    // Cookie-auth lazy comment fetch for the live shell. The chain/task list now
+    // ships only a comment_summary (count + last), so the comment thread is
+    // loaded on demand (task expand) via GET .../comments?last=N.
+    fetchChainTaskComments: build.query<any, { chainId: string; taskId: string; last?: number }>({
+      queryFn: async ({ chainId, taskId, last }) => {
+        if (!chainId || !taskId) return { data: { taskId, comments: [] } };
+        try {
+          const q = last && last > 0 ? `?last=${last}` : '';
+          const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/comments${q}`);
+          const rows = unwrapData(raw);
+          const comments = (Array.isArray(rows) ? rows : (rows?.comments || [])).map(normalizeTaskComments);
+          return { data: { taskId, comments } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { taskId }) => [{ type: 'TaskComments' as const, id: taskId }],
     }),
     // H9 U1: the chains an agent instance COORDINATES (single canonical source on
     // the hub: task_chain_members role='coordinator'). An agent can coordinate
@@ -645,6 +669,8 @@ export const {
   useLazyFetchTaskLogPageQuery,
 
   useFetchTaskChainDetailQuery,
+  useFetchChainTaskCommentsQuery,
+  useLazyFetchChainTaskCommentsQuery,
   useListChainsByCoordinatorQuery,
   useCreateTaskChainMutation,
   useUpdateTaskChainMutation,

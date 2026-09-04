@@ -102,6 +102,19 @@ Task_Comment :: struct {
 	updated_at:               string,
 }
 
+// Task_Comment_Summary is the compact comment rollup embedded on task objects so
+// list/show/context can convey "there is discussion, and how recent" without
+// shipping every comment body. Derived by a cheap COUNT + last-row query.
+Task_Comment_Summary :: struct {
+	count:                    int,    // total comments on the task
+	last_comment_at:          string, // "" when count == 0
+	last_comment_author:      string, // last comment's author_agent_instance_id
+	last_comment_preview:     string, // first ~80 chars of the last comment body
+}
+
+// TASK_COMMENT_PREVIEW_MAX bounds the preview length (runes) in the summary.
+TASK_COMMENT_PREVIEW_MAX :: 80
+
 Task_Chain_Member :: struct {
 	chain_id:          Task_Chain_ID,
 	agent_instance_id: string,

@@ -10,6 +10,11 @@ Task_Get_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID) -> (domain.Task, boo
 Task_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task, domain.Domain_Error)
 Task_Comment_Save_Proc :: proc(ctx: rawptr, comment: domain.Task_Comment) -> (domain.Task_Comment, bool, domain.Domain_Error)
 Task_Comment_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Comment, domain.Domain_Error)
+// Cheap comment rollup for a task (COUNT + newest row), so list/show/context can
+// embed a summary without loading every comment body.
+Task_Comment_Summary_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (domain.Task_Comment_Summary, domain.Domain_Error)
+// List the newest `last` comments (ascending), or all when last <= 0.
+Task_Comment_List_Recent_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID, last: int) -> ([]domain.Task_Comment, domain.Domain_Error)
 
 Task_Chain_Member_Save_Proc :: proc(ctx: rawptr, member: domain.Task_Chain_Member) -> (domain.Task_Chain_Member, bool, domain.Domain_Error)
 Task_Chain_Member_Remove_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, agent_instance_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
@@ -35,6 +40,8 @@ Taskchain_Repository :: struct {
 	list_tasks_by_chain: Task_List_By_Chain_Proc,
 	save_comment: Task_Comment_Save_Proc,
 	list_comments_by_task: Task_Comment_List_By_Task_Proc,
+	comment_summary_by_task: Task_Comment_Summary_Proc,
+	list_recent_comments_by_task: Task_Comment_List_Recent_Proc,
 	save_member: Task_Chain_Member_Save_Proc,
 	remove_member: Task_Chain_Member_Remove_Proc,
 	list_members_by_chain: Task_Chain_Member_List_By_Chain_Proc,
@@ -84,6 +91,16 @@ taskchain_save_comment :: proc(repo: ^Taskchain_Repository, comment: domain.Task
 taskchain_list_comments_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {
 	if repo == nil || repo.list_comments_by_task == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	return repo.list_comments_by_task(repo.ctx, task_id, owner_user_id)
+}
+
+taskchain_comment_summary_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (domain.Task_Comment_Summary, domain.Domain_Error) {
+	if repo == nil || repo.comment_summary_by_task == nil do return domain.Task_Comment_Summary{}, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.comment_summary_by_task(repo.ctx, task_id, owner_user_id)
+}
+
+taskchain_list_recent_comments_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID, last: int) -> ([]domain.Task_Comment, domain.Domain_Error) {
+	if repo == nil || repo.list_recent_comments_by_task == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.list_recent_comments_by_task(repo.ctx, task_id, owner_user_id, last)
 }
 
 taskchain_save_member :: proc(repo: ^Taskchain_Repository, member: domain.Task_Chain_Member) -> (domain.Task_Chain_Member, bool, domain.Domain_Error) {
