@@ -206,10 +206,16 @@
           program = "${(pkgs.writeShellScriptBin "ham-bridge" ''
             #!/usr/bin/env bash
             set -euo pipefail
+            export HEIMDALL_HAM_PTY_HOST_BIN="${self.packages.${system}.ham-pty-host}/bin/ham-pty-host"
+            export HEIMDALL_BRIDGE_PTY_HOST="true"
             export HEIMDALL_HAM_WRAPPER_BIN="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
             export HEIMDALL_HAM_CTL_BIN="${self.packages.${system}.ham-ctl}/bin/ham-ctl"
             exec "${self.packages.${system}.ham-bridge}/bin/ham-bridge" "$@"
           '')}/bin/ham-bridge";
+        };
+        pty-host = {
+          type = "app";
+          program = "${self.packages.${system}.ham-pty-host}/bin/ham-pty-host";
         };
         dev-proxy = {
           type = "app";

@@ -284,6 +284,7 @@ let
   wrapperPkg = self.packages.${system}.ham-wrapper;
   bridgePkg = self.packages.${system}.ham-bridge;
   ctlPkg = self.packages.${system}.ham-ctl;
+  ptyHostPkg = self.packages.${system}.ham-pty-host;
 
   mkGuideAgent = g: {
     enabled            = g.enabled;
@@ -317,13 +318,14 @@ let
   configAttrs =
     { guide_agent = mkGuideAgent cfg.guideAgent; }
     // lib.optionalAttrs cfg.wrapper.enable { wrapper = mkWrapper cfg.wrapper; }
+    // lib.optionalAttrs cfg.bridge.enable  { bridge  = { pty_host_runtime = cfg.bridge.ptyHostRuntime; }; }
     // lib.optionalAttrs cfg.ctl.enable     { ctl     = { daemon_url = cfg.ctl.daemonUrl; }; };
 
   resolvePackage = name:
     let
       basePkg = self.packages.${system}.${
         { hub = "ham-hub"; bridge = "ham-bridge"; wrapper = "ham-wrapper"; ctl = "ham-ctl";
-          test-agent = "ham-test-agent"; ui = "heimdall"; }.${name}
+          test-agent = "ham-test-agent"; ui = "heimdall"; pty-host = "ham-pty-host"; }.${name}
       };
     in
     basePkg;
@@ -331,6 +333,7 @@ let
   bridgeInstanceType = lib.types.submodule ({ name, ... }: {
     options = {
       enable = lib.mkOption { type = lib.types.bool; default = true; description = "Enable this named ham-bridge service."; };
+      ptyHostRuntime = lib.mkOption { type = lib.types.bool; default = true; description = "Run agents directly via ham-pty-host (replacing wrapper/tmux)."; };
       hubUrl = lib.mkOption { type = lib.types.str; default = "http://127.0.0.1:8081"; example = "https://hub.mundus.in"; description = "Hub base URL used by ham-bridge (--hub)."; };
       tokenFile = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Path to a file containing this bridge's enrolled hbr_ token."; };
       bindHost = lib.mkOption { type = lib.types.str; default = "127.0.0.1"; description = "Loopback host for this bridge HTTP server."; };
@@ -349,6 +352,7 @@ let
 
   bridgePrimaryConfig = {
     enable = cfg.bridge.enable;
+    ptyHostRuntime = cfg.bridge.ptyHostRuntime;
     hubUrl = cfg.bridge.hubUrl;
     tokenFile = cfg.bridge.tokenFile;
     bindHost = cfg.bridge.bindHost;
@@ -387,6 +391,7 @@ let
     "${config.home.profileDirectory}/bin"
     "${config.home.homeDirectory}/.pi/agent/bin"
     "${config.home.homeDirectory}/.local/bin"
+    "${ptyHostPkg}/bin"
     (lib.makeBinPath [ pkgs.tmux pkgs.bashInteractive pkgs.coreutils ])
     "/run/current-system/sw/bin"
     "/etc/profiles/per-user/${config.home.username}/bin"
@@ -397,6 +402,8 @@ let
   ];
 
   bridgeEnvironmentFor = bridgeCfg: {
+    HEIMDALL_HAM_PTY_HOST_BIN = "${ptyHostPkg}/bin/ham-pty-host";
+    HEIMDALL_BRIDGE_PTY_HOST = if bridgeCfg.ptyHostRuntime then "true" else "false";
     HEIMDALL_HAM_WRAPPER_BIN = "${wrapperPkg}/bin/ham-wrapper";
     HEIMDALL_HAM_CTL_BIN = "${ctlPkg}/bin/ham-ctl";
     PATH = bridgeDefaultPath;
@@ -415,9 +422,9 @@ in
     enable = lib.mkEnableOption "Heimdall Agent Manager";
 
     packageNames = lib.mkOption {
-      type    = lib.types.listOf (lib.types.enum [ "hub" "bridge" "wrapper" "ctl" "test-agent" "ui" ]);
-      default = [ "hub" "bridge" "wrapper" "ctl" ];
-      example = [ "hub" "bridge" "wrapper" "ctl" "ui" ];
+      type    = lib.types.listOf (lib.types.enum [ "hub" "bridge" "wrapper" "ctl" "test-agent" "ui" "pty-host" ]);
+      default = [ "hub" "bridge" "wrapper" "ctl" "pty-host" ];
+      example = [ "hub" "bridge" "wrapper" "ctl" "pty-host" "ui" ];
       description = ''
         Heimdall packages to install and add to $PATH.
         "hub"        → ham-hub
@@ -425,6 +432,7 @@ in
         "wrapper"    → ham-wrapper (+ bc-agent-wrapper symlink)
         "ctl"        → ham-ctl     (+ bc-odinctl symlink)
         "test-agent" → ham-test-agent
+        "pty-host"   → ham-pty-host
         "ui"         → heimdall Electron app
       '';
     };
@@ -602,6 +610,11 @@ in
         default     = false;
         description = "Install/configure the ham-bridge user service.";
       };
+      ptyHostRuntime = lib.mkOption {
+        type        = lib.types.bool;
+        default     = true;
+        description = "Run agents directly via ham-pty-host (replacing wrapper/tmux).";
+      };
       hubUrl = lib.mkOption {
         type        = lib.types.str;
         default     = "http://127.0.0.1:8081";
@@ -725,6 +738,7 @@ in
       home.packages =
         (map resolvePackage cfg.packageNames)
         ++ lib.optional anyBridgeEnabled bridgePkg
+        ++ lib.optional anyBridgeEnabled ptyHostPkg
         ++ lib.optional anyBridgeEnabled wrapperPkg
         ++ lib.optional anyBridgeEnabled ctlPkg
         ++ lib.optional anyBridgeEnabled pkgs.tmux
