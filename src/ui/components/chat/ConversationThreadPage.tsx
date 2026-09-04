@@ -1,4 +1,5 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
+import ProjectFilesPanel from './ProjectFilesPanel';
 import { type ClipboardEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
@@ -480,6 +481,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const instanceProvider = String(instance?.provider || '');
   const instanceTier = String(instance?.tier || '');
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');
+  // Project the conversation/instance is scoped to — powers the Files (project
+  // directory browser) tab. Prefer the live instance, fall back to conversation.
+  const projectId = String(instance?.project_id || instance?.projectId || conversation?.project_id || conversation?.projectId || '');
   const conversationRuntimeStatus = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
   const activityStatus = String(instance?.activity_status || instance?.activityStatus || '').toLowerCase();
@@ -519,6 +523,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
   const [taskChainOpen, setTaskChainOpen] = useState(false);
+  // Which side panel is showing in the split view: the task chain or the project
+  // files browser. They are mutually-exclusive peers sharing the same 50/50 slot.
+  const [filesOpen, setFilesOpen] = useState(false);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
   const [composerActionsOpen, setComposerActionsOpen] = useState(false);
@@ -846,7 +853,20 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   function toggleTaskChainFromHeader() {
     setHeaderActionsOpen(false);
-    setTaskChainOpen((open) => !open);
+    setTaskChainOpen((open) => {
+      const next = !open;
+      if (next) setFilesOpen(false); // task chain + files are mutually-exclusive peers
+      return next;
+    });
+  }
+
+  function toggleFilesFromHeader() {
+    setHeaderActionsOpen(false);
+    setFilesOpen((open) => {
+      const next = !open;
+      if (next) setTaskChainOpen(false); // files + task chain are mutually-exclusive peers
+      return next;
+    });
   }
 
   function renderConversationMessageBody(message: ChatMessage) {
@@ -1161,6 +1181,12 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
               </div>
             ) : null}
           </div>
+          {projectId ? (
+            <button type="button" data-debug-id="project-files-toggle-btn" aria-label={filesOpen ? 'Hide files' : 'Show files'} title={filesOpen ? 'Hide files' : 'Show files'} onClick={toggleFilesFromHeader} aria-pressed={filesOpen ? 'true' : 'false'} className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold sm:px-3 ${filesOpen ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-sky-400/30 bg-sky-400/10 text-sky-200 hover:bg-sky-400/20'}`}>
+              <Icon name="folder" size={16} />
+              <span className="hidden sm:inline">Files</span>
+            </button>
+          ) : null}
           {chainId ? (
             <button type="button" data-debug-id="taskchain-overview-toggle-btn" aria-label={taskChainOpen ? 'Hide task chain' : 'Show task chain'} title={taskChainOpen ? 'Hide task chain' : 'Show task chain'} onClick={toggleTaskChainFromHeader} aria-pressed={taskChainOpen ? 'true' : 'false'} className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold sm:px-3 ${taskChainOpen ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-sky-400/30 bg-sky-400/10 text-sky-200 hover:bg-sky-400/20'}`}>
               <Icon name="tasks" size={16} />
@@ -1193,15 +1219,25 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
         </div>
       </header>
 
-      {taskChainOpen && chainId ? (
+      {(taskChainOpen && chainId) || (filesOpen && projectId) ? (
         <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
-          {/* Mobile view (< 768px): TaskChain 100% width (Requirement 10) */}
+          {/* Mobile view (< 768px): active side panel 100% width (Requirement 10) */}
           <div className="flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden sm:hidden">
-            <TaskChainOverview
-              chainId={chainId}
-              onClose={() => setTaskChainOpen(false)}
-              isMobile={true}
-            />
+            {filesOpen && projectId ? (
+              <ProjectFilesPanel
+                projectId={projectId}
+                bridgeId={instanceBridgeId}
+                projectName={title}
+                onClose={() => setFilesOpen(false)}
+                isMobile={true}
+              />
+            ) : (
+              <TaskChainOverview
+                chainId={chainId}
+                onClose={() => setTaskChainOpen(false)}
+                isMobile={true}
+              />
+            )}
           </div>
           {/* Desktop view (>= 768px): 50/50 split panel */}
           <div className="hidden h-full min-h-0 w-full max-w-full flex-row overflow-x-hidden sm:flex">
@@ -1231,11 +1267,21 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       {renderComposer()}
             </div>
             <div className="flex h-full min-h-0 min-w-0 w-1/2 flex-col overflow-x-hidden">
-              <TaskChainOverview
-                chainId={chainId}
-                onClose={() => setTaskChainOpen(false)}
-                isMobile={false}
-              />
+              {filesOpen && projectId ? (
+                <ProjectFilesPanel
+                  projectId={projectId}
+                  bridgeId={instanceBridgeId}
+                  projectName={title}
+                  onClose={() => setFilesOpen(false)}
+                  isMobile={false}
+                />
+              ) : (
+                <TaskChainOverview
+                  chainId={chainId}
+                  onClose={() => setTaskChainOpen(false)}
+                  isMobile={false}
+                />
+              )}
             </div>
           </div>
         </div>

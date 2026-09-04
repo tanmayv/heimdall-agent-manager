@@ -32,6 +32,8 @@ export type IconName =
   | 'refresh'
   | 'pencil'
   | 'folder'
+  | 'file'
+  | 'download'
   | 'clock'
   | 'calendar'
   | 'trash'
@@ -95,6 +97,18 @@ const PATHS: Record<IconName, ReactElement> = {
     </g>
   ),
   folder: <path d="M3 7a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinejoin="round" />,
+  file: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <path d="M14 3v5h5" />
+    </g>
+  ),
+  download: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v12M7 10l5 5 5-5" />
+      <path d="M4 19h16" />
+    </g>
+  ),
   clock: (
     <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
       <circle cx={12} cy={12} r={9} />

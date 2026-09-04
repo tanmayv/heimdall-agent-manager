@@ -5,6 +5,7 @@ export * from './memory';
 export * from './attention';
 export * from './workspace';
 export * from './projects';
+export * from './projectFs';
 export * from './settings';
 export * from './artifacts';
 export * from './sidebar';
