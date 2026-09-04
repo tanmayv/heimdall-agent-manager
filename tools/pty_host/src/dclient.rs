@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout};
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
@@ -60,7 +60,7 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
     // Raw mode so keystrokes pass through untouched.
     let _raw = RawGuard::enable().context("enable raw mode")?;
 
-    let mut current_instance = instance.to_string();
+    let current_instance = instance.to_string();
     let current_inst_arc = Arc::new(Mutex::new(current_instance.clone()));
     let write_stream = Arc::new(Mutex::new(write_stream));
 
@@ -249,8 +249,7 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
                                     },
                                 );
                             }
-                            *current_inst_arc.lock().unwrap() = new_inst.clone();
-                            current_instance = new_inst;
+                            *current_inst_arc.lock().unwrap() = new_inst;
                         } else {
                             // If reselecting same agent, nudge resize to restore display
                             if let Some((rows, cols)) = current_winsize() {
