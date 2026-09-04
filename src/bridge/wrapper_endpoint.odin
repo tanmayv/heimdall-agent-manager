@@ -411,6 +411,17 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if strings.has_prefix(rec.agent_instance_id, "inst_ptest_") {
 			return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
 		}
+		// start-success is an idempotent liveness signal whose durable effect the
+		// bridge has ALREADY applied locally (mark_start_success above); the WS
+		// status push reconciles the hub independently. So a transient relay failure
+		// must NOT surface as a hard error that makes the agent retry (and
+		// double-deliver) — treat a retried-then-failed relay as accepted-locally.
+		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_data(request_id, "{\"accepted\":true,\"reconcile\":\"pending_no_instance_token\"}")
+		relay := bridge_local_relay_agent_method(method, params, rec)
+		if !relay.ok do return bridge_local_response_data(request_id, "{\"accepted\":true,\"reconcile\":\"pending_relay_unavailable\"}")
+		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
+		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{\"accepted\":true}")
+		return bridge_local_response_data(request_id, relay.body)
 	}
 	if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
 	relay := bridge_local_relay_agent_method(method, params, rec)
@@ -534,7 +545,12 @@ bridge_local_relay_agent_method :: proc(method, params: string, rec: Bridge_Loca
 	if path == "" do return Bridge_Local_Relay_Result{status = 0, ok = false}
 	body := bridge_local_agent_relay_body(method, params, rec.agent_instance_id)
 	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_config.bridge_token})}, {name = "X-Heimdall-Instance-Token", value = rec.instance_token}}
-	resp, ok := http.request_with_headers_timeout("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	// AC-5: retry transient bridge->hub failures (transport ok=false, 5xx, 429)
+	// with bounded exponential backoff, matching the instance-lifecycle relay.
+	// The flaky HTTPS transport (openssl s_client + hand-rolled read loop) can
+	// report ok=false even when the hub already applied the POST, so a bare
+	// single-shot call surfaced spurious "Hub relay failed" to agents.
+	resp, ok := bridge_http_request_retry("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
 	return Bridge_Local_Relay_Result{status = resp.status, body = resp.body, ok = ok}
 }
 
