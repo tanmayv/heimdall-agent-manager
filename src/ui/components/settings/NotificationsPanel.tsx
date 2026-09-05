@@ -15,6 +15,7 @@ import {
   requestNotificationPermission,
   showNativeNotification,
 } from '../../services/notificationService';
+import { disablePushSubscription, enablePushSubscription } from '../../services/pushSubscriptionService';
 import { showToast } from '../../store/toastSlice';
 
 const CATEGORY_LABELS: Array<{ key: NotificationCategory; label: string; description: string }> = [
@@ -144,6 +145,9 @@ export default function NotificationsPanel() {
   async function onMasterToggle(next: boolean) {
     if (!next) {
       dispatch(notificationsEnabledSet(false));
+      // Best-effort: drop the Web Push subscription so the Hub stops sending
+      // background notifications. Non-blocking and never throws.
+      void disablePushSubscription();
       return;
     }
     // Turning ON: request permission from this explicit user gesture if needed.
@@ -153,6 +157,11 @@ export default function NotificationsPanel() {
       if (result !== 'granted') return; // denied/unsupported => stay off, no error thrown
     }
     dispatch(notificationsEnabledSet(true));
+    // Subscribe to Web Push so notifications arrive when the PWA is fully
+    // backgrounded/closed (the WS path only fires while the tab is alive). This
+    // is a no-op under Electron / insecure contexts and when the server has no
+    // VAPID key configured. Fire-and-forget: it must not block the toggle.
+    void enablePushSubscription();
   }
 
   const statusLine = electron

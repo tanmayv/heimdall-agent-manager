@@ -102,7 +102,18 @@ main :: proc() {
 	r_chat_agent := bridge.bridge_agent_route("agent.chat.send", "{\"to\":\"inst_reviewer\",\"body\":\"hi\"}")
 	check(r_chat_agent.kind == .Envelope && r_chat_agent.path == "/api/v1/agent-actions/chat/send-to-agent", "chat.send to=<instance-id> -> send-to-agent")
 	r_chat_bad := bridge.bridge_agent_route("agent.chat.send", "{\"body\":\"hi\"}")
-	check(r_chat_bad.kind == .Unknown, "chat.send without to must be Unknown (bad_request)")
+	check(r_chat_bad.kind == .Bad_Request && r_chat_bad.message != "", "chat.send without to must be Bad_Request with a message")
+	// task-chain: show defaults to the caller's chain via envelope (no context fallback);
+	// set-description is an envelope; reconcile without a chain is a Bad_Request.
+	r_chain_show := bridge.bridge_agent_route("agent.task_chain.show", "{}")
+	check(r_chain_show.kind == .Envelope && r_chain_show.path == "/api/v1/agent-actions/chain/show", "task_chain.show (no id) -> chain/show envelope, not context")
+	r_chain_desc := bridge.bridge_agent_route("agent.task_chain.set_description", "{\"description\":\"x\"}")
+	check(r_chain_desc.kind == .Envelope && r_chain_desc.path == "/api/v1/agent-actions/chain/set-description", "task_chain.set_description -> chain/set-description envelope")
+	r_recon_bad := bridge.bridge_agent_route("agent.task_chain.reconcile", "{}")
+	check(r_recon_bad.kind == .Bad_Request && r_recon_bad.message != "", "reconcile without chain -> Bad_Request with message")
+	// task show/list/comments resolve by task_id alone (envelopes).
+	r_task_show := bridge.bridge_agent_route("agent.task.show", "{\"task_id\":\"task_x\"}")
+	check(r_task_show.kind == .Envelope && r_task_show.path == "/api/v1/agent-actions/tasks/show", "task.show -> tasks/show envelope (no chain needed)")
 	r_unknown := bridge.bridge_agent_route("agent.nope", "{}")
 	check(r_unknown.kind == .Unknown, "unknown method must map to Unknown route")
 	// Spoof-guard still blocks owner/token fields on a create body.

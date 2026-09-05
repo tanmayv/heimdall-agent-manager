@@ -164,6 +164,14 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("title", title))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_title", json_object_from_slice(fields[:]))
+	case "set-description":
+		// coordinator-only; pass "" to clear. --chain defaults to your chain.
+		desc := option_value(args, "--description", pos(tokens, 1))
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do desc = string(data) }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("description", desc))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.task_chain.set_description", json_object_from_slice(fields[:]))
 	case "reconcile":
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
@@ -804,7 +812,9 @@ print_help_task_chain :: proc() {
 	fmt.println("VERBS")
 	fmt.println("  list [--mine] [--project <id>]      List chains (--mine = ones you coordinate).")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
-	fmt.println("  set-title <title> [--chain <id>]    Rename a chain.")
+	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
+	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
+	fmt.println("                                      (coordinator only; pass \"\" to clear).")
 	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
 	fmt.println("                                      actionable tasks, set current-tasks, nudge agents.")
 	fmt.println("                                      Coordinator/owner only. Run after staging tasks/deps.")
@@ -813,6 +823,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  ham-ctl task-chain list --mine")
 	fmt.println("  ham-ctl task-chain show chain_abc")
 	fmt.println("  ham-ctl task-chain set-title 'Auth hardening' --chain chain_abc")
+	fmt.println("  ham-ctl task-chain set-description 'Harden auth: rotate tokens, add tests.'")
 }
 
 print_help_task :: proc() {

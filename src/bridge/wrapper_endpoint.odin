@@ -442,7 +442,12 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 		return bridge_local_response_data(request_id, relay.body)
 	}
-	// .Unknown: not allowed / malformed (e.g. chat.send without a `to`).
+	if route.kind == .Bad_Request {
+		// Method is known but required params are missing — return the specific
+		// "which params are needed" message instead of a confusing wrong-shape body.
+		return bridge_local_response_error(request_id, "bad_request", route.message)
+	}
+	// .Unknown: method not in the allowlist.
 	return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"unknown or malformed agent method: ", method}))
 }
 

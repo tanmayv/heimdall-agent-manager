@@ -22,10 +22,11 @@ package main
 import "core:strings"
 
 Bridge_Agent_Route_Kind :: enum {
-	Unknown,   // method not allowed / not found
-	Envelope,  // agent-actions envelope POST
-	Raw,       // raw REST relay with instance token
-	Local,     // bridge-served, no hub call
+	Unknown,     // method not allowed / not found
+	Envelope,    // agent-actions envelope POST
+	Raw,         // raw REST relay with instance token
+	Local,       // bridge-served, no hub call
+	Bad_Request, // method known but required params missing -> return `message`
 }
 
 Bridge_Agent_Route :: struct {
@@ -36,6 +37,8 @@ Bridge_Agent_Route :: struct {
 	local_op:    string,
 	// send_body: for .Raw, whether params should be forwarded as the request body.
 	send_body:   bool,
+	// message: for .Bad_Request, the specific "which params are needed" error.
+	message:     string,
 }
 
 // bridge_agent_route is the ONE place that maps a v2 method + params to its
@@ -106,19 +109,20 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		}
 		return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = "/api/v1/task-chains"}
 	case "agent.task_chain.show":
-		if cid := bridge_local_extract_json_string(params, "chain_id", ""); strings.trim_space(cid) != "" {
-			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = strings.concatenate({"/api/v1/task-chains/", cid})}
-		}
-		// no chain_id => fall back to the caller's context snapshot (envelope).
-		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/context"}
+		// chain_id is optional: the hub defaults to the caller instance's own chain
+		// and returns the full chain (incl. description). No context-snapshot fallback.
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/show"}
 	case "agent.task_chain.set_title":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/set-title"}
+	case "agent.task_chain.set_description":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/set-description"}
 	case "agent.task_chain.reconcile":
 		// explicit self-heal kickoff / re-plan (coordinator or owner only, enforced
 		// hub-side). Needs chain_id; without it there's nothing to reconcile.
 		if cid := bridge_local_extract_json_string(params, "chain_id", ""); strings.trim_space(cid) != "" {
 			return Bridge_Agent_Route{kind = .Raw, http_method = "POST", path = strings.concatenate({"/api/v1/task-chains/", cid, "/reconcile"})}
 		}
+		return Bridge_Agent_Route{kind = .Bad_Request, message = "task-chain reconcile requires a chain id: pass <chain-id> (or --chain <id>)"}
 
 	// ---- task -------------------------------------------------------------
 	case "agent.task.list":
@@ -158,7 +162,7 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		if to != "" {
 			return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chat/send-to-agent"}
 		}
-		// missing to -> Unknown so the handler returns a bad_request.
+		return Bridge_Agent_Route{kind = .Bad_Request, message = "chat send requires --to: `user` for the bound user, or an agent-instance-id"}
 	case "agent.chat.read":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chat/read"}
 
@@ -201,7 +205,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.agents.instance_stop",
 	     // task-chain + task
 	     "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
-	     "agent.task_chain.reconcile",
+	     "agent.task_chain.set_description", "agent.task_chain.reconcile",
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.status",
 	     "agent.task.set_current", "agent.task.vote", "agent.task.nudge",

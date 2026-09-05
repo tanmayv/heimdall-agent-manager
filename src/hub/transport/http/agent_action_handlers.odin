@@ -135,6 +135,40 @@ agent_action_chain_set_title_handler :: proc(ctx: rawptr, req: Request) -> Respo
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
+// agent_action_chain_set_description_handler lets a chain's coordinator set/clear
+// the chain description. chain_id defaults to the caller instance's chain.
+agent_action_chain_set_description_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := json_string(params, "chain_id")
+	if strings.trim_space(chain_id) == "" do chain_id = inst.chain_id
+	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	chain, saved, err := taskchain_service.set_own_chain_description(h.taskchains, auth, chain_id, json_string(params, "description"))
+	if !saved do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// agent_action_chain_show_handler returns the full chain (incl. description).
+// chain_id is optional: defaults to the caller instance's own chain.
+agent_action_chain_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := strings.trim_space(json_string(params, "chain_id"))
+	if chain_id == "" do chain_id = inst.chain_id
+	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "no chain for this instance; pass chain_id"), req.request_id)
+	chain, got, err := taskchain_service.get_chain(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
+	if !got do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return process_agent_chat_fetch_or_read(ctx, req, false)
 }

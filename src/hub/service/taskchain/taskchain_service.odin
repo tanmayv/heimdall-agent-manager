@@ -70,6 +70,9 @@ Create_Chain_Input :: struct {
 Update_Chain_Input :: struct {
 	title: string,
 	description: string,
+	// has_description distinguishes "absent" (leave as-is) from "explicitly set"
+	// (including clearing to empty), mirroring has_coordinator.
+	has_description: bool,
 	status: string,
 	// coordinator_agent_instance_id sets/changes the chain's designated coordinator
 	// after creation (H5 finding: chains created via a user token had an empty
@@ -328,7 +331,9 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	}
 	if input.title != "" do chain.title = input.title
 	if input.title_source == "agent" || input.title_source == "user" || input.title_source == "default" do chain.title_source = input.title_source
-	if input.description != "" do chain.description = input.description
+	// has_description allows explicit clearing (pass ""); a bare non-empty
+	// description also still sets it for existing callers that don't set the flag.
+	if input.has_description || input.description != "" do chain.description = input.description
 	if input.has_coordinator {
 		// Setting/changing the coordinator goes through the SINGLE canonical source
 		// (members table) via set_chain_coordinator; the column is only the derived
@@ -366,6 +371,16 @@ set_own_chain_title :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	if next == "" do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain title is required")
 	if len(next) > 120 do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain title is too long")
 	return update_chain(service, auth, domain.Task_Chain_ID(chain_id), Update_Chain_Input{title = next, title_source = "agent"})
+}
+
+// set_own_chain_description lets an authenticated agent instance set/clear the
+// description of the chain it coordinates. Coordinator/membership auth is
+// enforced by update_chain for instance tokens. Pass "" to clear.
+set_own_chain_description :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id, description: string) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "instance token is required")
+	next := strings.trim_space(description)
+	if len(next) > 4000 do return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "chain description is too long")
+	return update_chain(service, auth, domain.Task_Chain_ID(chain_id), Update_Chain_Input{description = next, has_description = true})
 }
 
 publish_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {

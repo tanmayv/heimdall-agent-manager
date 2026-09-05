@@ -48,7 +48,8 @@ Top-level groups:
 - `task-chain` — your task chains.
   - `task-chain list [--mine] [--project <id>]` — chains (`--mine` = ones you coordinate).
   - `task-chain show [<chain-id>]` — show a chain (defaults to your current chain).
-  - `task-chain set-title <title> [--chain <id>]` — rename a chain.
+  - `task-chain set-title <title> [--chain <id>]` — rename a chain (coordinator only).
+  - `task-chain set-description <text> [--chain <id>]` — set the chain description (coordinator only; `--chain` defaults to your chain).
 - `task` — tasks within a chain (exactly one command per action).
   - `task list [--chain <id>]` — tasks in the chain.
   - `task show <task-id>` — a task with its comments and votes.
