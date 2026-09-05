@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../Icon';
 import MarkdownBody from '../MarkdownBody';
-import { highlightCode, languageForFile } from '../../utils/codeHighlight';
+import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
 import {
   useLazyListProjectDirQuery,
   useLazyReadProjectFileQuery,
@@ -36,6 +36,28 @@ import {
 
 function str(v: any): string {
   return String(v ?? '').trim();
+}
+
+// Format all pending line comments into a single markdown chat message, grouped
+// by file and ordered by line, with the source line as context.
+function formatCommentsMarkdown(comments: FileLineComment[]): string {
+  const byPath = new Map<string, FileLineComment[]>();
+  for (const c of comments) {
+    const list = byPath.get(c.path) || [];
+    list.push(c);
+    byPath.set(c.path, list);
+  }
+  const parts: string[] = ['Code review comments:', ''];
+  for (const [path, list] of byPath) {
+    parts.push(`**${path}**`);
+    for (const c of [...list].sort((a, b) => a.line - b.line || a.createdAt - b.createdAt)) {
+      const code = c.lineText.trim();
+      parts.push(`- L${c.line}: \`${code}\``);
+      for (const bodyLine of c.body.split('\n')) parts.push(`  > ${bodyLine}`);
+    }
+    parts.push('');
+  }
+  return parts.join('\n').trim();
 }
 
 // Human-friendly byte size for the entry rows + file viewer header.
@@ -92,10 +114,26 @@ type PendingAction =
   | { kind: 'rename'; entry: FsEntry }
   | null;
 
+// A single line comment (UI-local, in-memory), anchored to a file path + line.
+export type FileLineComment = {
+  id: string;
+  path: string; // project-root-relative file path
+  line: number; // 1-based
+  lineText: string; // snapshot of the source line for message context
+  body: string;
+  createdAt: number;
+};
+
 export type ProjectFilesPanelProps = {
   projectId: string;
   bridgeId?: string;
   projectName?: string;
+  // Scope key for the in-memory comment store: comments reset when this changes
+  // (e.g. switching conversations) so review notes never leak across chats.
+  conversationKey?: string;
+  // Publish the collected comments as a single chat message. Returns true on
+  // success (the panel then clears the local store). Parent owns the send.
+  onPublishComments?: (markdown: string) => Promise<boolean>;
   onClose?: () => void;
   isMobile?: boolean;
   debugPrefix?: string;
@@ -105,6 +143,8 @@ export default function ProjectFilesPanel({
   projectId,
   bridgeId = '',
   projectName,
+  conversationKey = '',
+  onPublishComments,
   onClose,
   isMobile = false,
   debugPrefix = 'project-files',
@@ -134,6 +174,53 @@ export default function ProjectFilesPanel({
 
   // The file currently open in the read-only viewer (null = list view).
   const [viewFile, setViewFile] = useState<FsReadFileResult | null>(null);
+
+  // In-memory review comments, tracked ACROSS all files in this conversation.
+  // Reset when the conversation scope changes so notes never leak between chats.
+  const [comments, setComments] = useState<FileLineComment[]>([]);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState('');
+  useEffect(() => {
+    setComments([]);
+    setPublishError('');
+  }, [conversationKey, projectId]);
+
+  const addComment = useCallback((path: string, line: number, lineText: string, body: string) => {
+    const text = str(body);
+    if (!text) return;
+    setComments((prev) => [
+      ...prev,
+      { id: `flc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, path, line, lineText, body: text, createdAt: Date.now() },
+    ]);
+  }, []);
+  const editComment = useCallback((id: string, body: string) => {
+    const text = str(body);
+    setComments((prev) => prev.map((c) => (c.id === id ? { ...c, body: text } : c)).filter((c) => c.body));
+  }, []);
+  const deleteComment = useCallback((id: string) => {
+    setComments((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
+  const commentsForPath = useCallback(
+    (path: string) => comments.filter((c) => c.path === path),
+    [comments],
+  );
+  const filesWithComments = useMemo(() => new Set(comments.map((c) => c.path)).size, [comments]);
+
+  const publishComments = useCallback(async () => {
+    if (!onPublishComments || comments.length === 0) return;
+    setPublishError('');
+    setPublishing(true);
+    try {
+      const ok = await onPublishComments(formatCommentsMarkdown(comments));
+      if (ok) setComments([]);
+      else setPublishError('Could not send comments.');
+    } catch (e: any) {
+      setPublishError(str(e?.message) || 'Could not send comments.');
+    } finally {
+      setPublishing(false);
+    }
+  }, [onPublishComments, comments]);
 
   const mutating =
     createFileState.isLoading || createDirState.isLoading || moveState.isLoading || deleteState.isLoading;
@@ -365,6 +452,35 @@ export default function ProjectFilesPanel({
         </div>
       </div>
 
+      {/* Pending review comments bar — spans ALL files in this conversation. */}
+      {comments.length > 0 ? (
+        <div data-debug-id={`${debugPrefix}-comments-bar`} className="flex items-center gap-2 border-b border-sky-400/20 bg-sky-400/[0.06] px-3 py-2">
+          <div data-debug-id={`${debugPrefix}-comments-count`} className="min-w-0 flex-1 text-[11.5px] text-sky-100">
+            {comments.length} comment{comments.length === 1 ? '' : 's'} on {filesWithComments} file{filesWithComments === 1 ? '' : 's'}
+            {publishError ? <span className="ml-2 text-red-300">{publishError}</span> : null}
+          </div>
+          <button
+            data-debug-id={`${debugPrefix}-comments-clear-btn`}
+            type="button"
+            onClick={() => { setComments([]); setPublishError(''); }}
+            disabled={publishing}
+            className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+          >
+            Clear
+          </button>
+          <button
+            data-debug-id={`${debugPrefix}-comments-send-btn`}
+            type="button"
+            onClick={() => void publishComments()}
+            disabled={publishing || !onPublishComments}
+            className="shrink-0 rounded-lg bg-sky-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+            title={onPublishComments ? 'Send all comments to the agent' : 'Sending is unavailable here'}
+          >
+            {publishing ? 'Sending…' : 'Send to agent'}
+          </button>
+        </div>
+      ) : null}
+
       {!projectId ? (
         <div data-debug-id={`${debugPrefix}-no-project`} className="grid flex-1 place-items-center p-6 text-center text-xs text-zinc-500">
           No project is associated with this conversation.
@@ -374,6 +490,10 @@ export default function ProjectFilesPanel({
           file={viewFile}
           fetching={readState.isFetching}
           debugPrefix={debugPrefix}
+          comments={commentsForPath(viewFile.path)}
+          onAddComment={(line, lineText, body) => addComment(viewFile.path, line, lineText, body)}
+          onEditComment={editComment}
+          onDeleteComment={deleteComment}
           onBack={() => setViewFile(null)}
         />
       ) : (
@@ -581,11 +701,19 @@ function FileView({
   file,
   fetching,
   debugPrefix,
+  comments,
+  onAddComment,
+  onEditComment,
+  onDeleteComment,
   onBack,
 }: {
   file: FsReadFileResult;
   fetching: boolean;
   debugPrefix: string;
+  comments: FileLineComment[];
+  onAddComment: (line: number, lineText: string, body: string) => void;
+  onEditComment: (id: string, body: string) => void;
+  onDeleteComment: (id: string) => void;
   onBack: () => void;
 }) {
   const name = baseName(file.path);
@@ -666,11 +794,15 @@ function FileView({
             <MarkdownBody source={file.content || ''} className="text-zinc-200" />
           </div>
         ) : (
-          <CodeView
+          <CodeLines
             content={file.content || ''}
             path={file.path}
             wrap={wrap}
             debugPrefix={debugPrefix}
+            comments={comments}
+            onAddComment={onAddComment}
+            onEditComment={onEditComment}
+            onDeleteComment={onDeleteComment}
           />
         )}
       </div>
@@ -684,74 +816,239 @@ function FileView({
   );
 }
 
-// CodeView renders text/code with Shiki syntax highlighting, a line-number gutter,
-// and an optional soft-wrap. It degrades gracefully: while highlighting resolves
-// (or when the language is unknown / highlighting fails) it shows plain,
-// un-highlighted text with the same gutter, so it is never blank.
-function CodeView({
+// CodeLines renders text/code as ONE ROW PER LINE (gutter cell + highlighted code
+// cell), which enables the interactive line gutter (hover comment button) and
+// inline comment widgets that a monolithic <pre> can't host. Highlighting comes
+// from Shiki per-line tokens; it degrades gracefully to plain text (same row
+// structure) while tokens resolve or when the language is unknown/unsupported.
+function CodeLines({
   content,
   path,
   wrap,
   debugPrefix,
+  comments,
+  onAddComment,
+  onEditComment,
+  onDeleteComment,
 }: {
   content: string;
   path: string;
   wrap: boolean;
   debugPrefix: string;
+  comments: FileLineComment[];
+  onAddComment: (line: number, lineText: string, body: string) => void;
+  onEditComment: (id: string, body: string) => void;
+  onDeleteComment: (id: string) => void;
 }) {
-  const [html, setHtml] = useState<string | null>(null);
+  const [tokenLines, setTokenLines] = useState<CodeToken[][] | null>(null);
   const lang = useMemo(() => languageForFile(path), [path]);
-  const lineCount = useMemo(() => {
-    if (!content) return 1;
-    // Trailing newline shouldn't add a phantom last line.
-    const n = content.split('\n').length;
-    return content.endsWith('\n') ? Math.max(1, n - 1) : n;
+
+  // Raw source split into lines (the fallback + the source-of-truth for line text
+  // used in the published message). Drop a single trailing empty line so a final
+  // newline doesn't render a phantom row.
+  const rawLines = useMemo(() => {
+    const arr = (content || '').split('\n');
+    if (arr.length > 1 && arr[arr.length - 1] === '') arr.pop();
+    return arr;
   }, [content]);
 
   useEffect(() => {
     let cancelled = false;
-    setHtml(null);
+    setTokenLines(null);
     if (!content || !lang) return;
-    highlightCode(content, lang).then((out) => {
-      if (!cancelled) setHtml(out);
+    highlightToLines(content, lang).then((out) => {
+      if (!cancelled) setTokenLines(out);
     });
     return () => {
       cancelled = true;
     };
   }, [content, lang]);
 
-  const wrapCls = wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre';
-  const gutter = (
-    <div
-      aria-hidden="true"
-      className="select-none border-r border-white/[0.06] bg-white/[0.02] px-2 py-3 text-right font-mono text-[12px] leading-5 text-zinc-600"
-    >
-      {Array.from({ length: lineCount }, (_, i) => (
-        <div key={i}>{i + 1}</div>
-      ))}
-    </div>
-  );
+  // line (1-based) -> comments; and which line has an open composer.
+  const commentsByLine = useMemo(() => {
+    const m = new Map<number, FileLineComment[]>();
+    for (const c of comments) {
+      const list = m.get(c.line) || [];
+      list.push(c);
+      m.set(c.line, list);
+    }
+    return m;
+  }, [comments]);
+  const [composerLine, setComposerLine] = useState<number | null>(null);
+
+  const lineCount = Math.max(1, rawLines.length);
+  const gutterWidthCh = Math.max(2, String(lineCount).length) + 1;
 
   return (
-    <div data-debug-id={`${debugPrefix}-file-code`} className="flex min-w-0 text-[12px]">
-      {gutter}
-      <div className="min-w-0 flex-1 overflow-x-auto">
-        {html ? (
-          // Shiki emits <pre class="shiki"><code>…</code></pre>. We control padding,
-          // leading, and wrapping via the wrapper + a scoped style block below.
-          <div
-            data-debug-id={`${debugPrefix}-file-code-highlighted`}
-            className={`ppanel-code ${wrap ? 'ppanel-code-wrap' : ''} p-3 font-mono leading-5`}
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+    <div data-debug-id={`${debugPrefix}-file-code`} className="min-w-0 py-2 font-mono text-[12px] leading-5">
+      {Array.from({ length: lineCount }, (_, i) => {
+        const lineNo = i + 1;
+        const lineText = rawLines[i] ?? '';
+        const tokens = tokenLines?.[i];
+        const lineComments = commentsByLine.get(lineNo) || [];
+        return (
+          <div key={lineNo} data-debug-id={`${debugPrefix}-line-${lineNo}`}>
+            <div className="group flex items-start hover:bg-white/[0.03]">
+              {/* Gutter: line number + hover comment button */}
+              <div
+                className="relative flex shrink-0 select-none items-center justify-end border-r border-white/[0.06] bg-white/[0.02] pr-2 text-right text-zinc-600"
+                style={{ width: `calc(${gutterWidthCh}ch + 22px)` }}
+              >
+                <button
+                  data-debug-id={`${debugPrefix}-line-comment-btn-${lineNo}`}
+                  type="button"
+                  onClick={() => setComposerLine((v) => (v === lineNo ? null : lineNo))}
+                  title="Comment on this line"
+                  aria-label={`Comment on line ${lineNo}`}
+                  className={`absolute left-1 grid h-4 w-4 place-items-center rounded text-sky-300 ${lineComments.length > 0 ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} hover:bg-sky-400/20`}
+                >
+                  {lineComments.length > 0 ? (
+                    <span className="text-[9px] font-bold">{lineComments.length}</span>
+                  ) : (
+                    <Icon name="chat" size={11} />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setComposerLine((v) => (v === lineNo ? null : lineNo))}
+                  className="cursor-pointer tabular-nums hover:text-zinc-300"
+                >
+                  {lineNo}
+                </button>
+              </div>
+              {/* Code cell */}
+              <div className={`min-w-0 flex-1 overflow-x-auto px-3 text-zinc-200 ${wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'}`}>
+                {tokens ? (
+                  tokens.length > 0 ? (
+                    tokens.map((t, ti) => (
+                      <span key={ti} style={t.color ? { color: t.color } : undefined}>{t.content}</span>
+                    ))
+                  ) : (
+                    // Preserve blank-line height.
+                    <span>{'\u00a0'}</span>
+                  )
+                ) : (
+                  <span>{lineText || '\u00a0'}</span>
+                )}
+              </div>
+            </div>
+
+            {/* Existing comments for this line */}
+            {lineComments.map((c) => (
+              <LineComment
+                key={c.id}
+                comment={c}
+                debugPrefix={debugPrefix}
+                gutterWidthCh={gutterWidthCh}
+                onEdit={onEditComment}
+                onDelete={onDeleteComment}
+              />
+            ))}
+
+            {/* Inline composer for a new comment */}
+            {composerLine === lineNo ? (
+              <LineComposer
+                debugPrefix={debugPrefix}
+                lineNo={lineNo}
+                gutterWidthCh={gutterWidthCh}
+                onCancel={() => setComposerLine(null)}
+                onSave={(body) => {
+                  onAddComment(lineNo, lineText, body);
+                  setComposerLine(null);
+                }}
+              />
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// A saved line comment bubble with edit/delete, indented under its line.
+function LineComment({
+  comment,
+  debugPrefix,
+  gutterWidthCh,
+  onEdit,
+  onDelete,
+}: {
+  comment: FileLineComment;
+  debugPrefix: string;
+  gutterWidthCh: number;
+  onEdit: (id: string, body: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(comment.body);
+  return (
+    <div className="flex" style={{ paddingLeft: `calc(${gutterWidthCh}ch + 22px)` }}>
+      <div data-debug-id={`${debugPrefix}-line-comment-${comment.id}`} className="my-1 mr-3 min-w-0 flex-1 rounded-lg border border-sky-400/20 bg-sky-400/[0.06] px-2.5 py-1.5 font-sans text-[12px]">
+        {editing ? (
+          <div>
+            <textarea
+              data-debug-id={`${debugPrefix}-line-comment-edit-input-${comment.id}`}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={2}
+              className="w-full resize-y rounded border border-white/10 bg-black/30 p-1.5 text-[12px] text-zinc-100 focus:border-sky-500 focus:outline-none"
+            />
+            <div className="mt-1 flex justify-end gap-1.5">
+              <button type="button" onClick={() => { setDraft(comment.body); setEditing(false); }} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-white/10">Cancel</button>
+              <button data-debug-id={`${debugPrefix}-line-comment-edit-save-${comment.id}`} type="button" onClick={() => { onEdit(comment.id, draft); setEditing(false); }} className="rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-sky-500">Save</button>
+            </div>
+          </div>
         ) : (
-          <pre
-            data-debug-id={`${debugPrefix}-file-text`}
-            className={`${wrapCls} p-3 font-mono leading-5 text-zinc-200`}
-          >
-            {content}
-          </pre>
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-zinc-100">{comment.body}</div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button data-debug-id={`${debugPrefix}-line-comment-edit-${comment.id}`} type="button" onClick={() => { setDraft(comment.body); setEditing(true); }} title="Edit" className="grid h-5 w-5 place-items-center rounded text-zinc-400 hover:bg-white/10 hover:text-zinc-200"><Icon name="pencil" size={12} /></button>
+              <button data-debug-id={`${debugPrefix}-line-comment-delete-${comment.id}`} type="button" onClick={() => onDelete(comment.id)} title="Delete" className="grid h-5 w-5 place-items-center rounded text-zinc-400 hover:bg-red-500/20 hover:text-red-300"><Icon name="trash" size={12} /></button>
+            </div>
+          </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Inline new-comment composer, indented under its line.
+function LineComposer({
+  debugPrefix,
+  lineNo,
+  gutterWidthCh,
+  onSave,
+  onCancel,
+}: {
+  debugPrefix: string;
+  lineNo: number;
+  gutterWidthCh: number;
+  onSave: (body: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  return (
+    <div data-debug-id={`${debugPrefix}-line-composer-${lineNo}`} className="flex" style={{ paddingLeft: `calc(${gutterWidthCh}ch + 22px)` }}>
+      <div className="my-1 mr-3 min-w-0 flex-1 font-sans">
+        <textarea
+          ref={ref}
+          data-debug-id={`${debugPrefix}-line-composer-input-${lineNo}`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); if (draft.trim()) onSave(draft); }
+          }}
+          rows={2}
+          placeholder={`Comment on line ${lineNo}… (Cmd/Ctrl+Enter to save)`}
+          className="w-full resize-y rounded border border-white/10 bg-black/30 p-1.5 text-[12px] text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+        />
+        <div className="mt-1 flex justify-end gap-1.5">
+          <button data-debug-id={`${debugPrefix}-line-composer-cancel-${lineNo}`} type="button" onClick={onCancel} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-white/10">Cancel</button>
+          <button data-debug-id={`${debugPrefix}-line-composer-save-${lineNo}`} type="button" onClick={() => { if (draft.trim()) onSave(draft); }} disabled={!draft.trim()} className="rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-sky-500 disabled:opacity-50">Comment</button>
+        </div>
       </div>
     </div>
   );

@@ -528,24 +528,3 @@ body {
 
 
 
-/* Project Files code viewer (ProjectFilesPanel > CodeView).
-   Shiki emits <pre class="shiki"><code>…</code></pre> with its own background and
-   margins; strip those so the viewer's own container/gutter control the chrome. */
-.ppanel-code pre.shiki {
-  margin: 0;
-  padding: 0;
-  background: transparent !important;
-  overflow: visible;
-  font: inherit;
-  line-height: inherit;
-}
-.ppanel-code pre.shiki code {
-  display: block;
-  background: transparent !important;
-  white-space: pre;
-}
-/* Soft-wrap mode: wrap long lines instead of horizontal scroll. */
-.ppanel-code.ppanel-code-wrap pre.shiki code {
-  white-space: pre-wrap;
-  word-break: break-word;
-}

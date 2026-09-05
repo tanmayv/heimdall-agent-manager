@@ -152,3 +152,23 @@ export async function highlightCode(code: string, lang: string): Promise<string 
     return null;
   }
 }
+
+// A single highlighted token: the text plus an inline color (from the theme).
+export type CodeToken = { content: string; color?: string };
+
+// Per-line highlighted tokens for interactive rendering (line gutters + inline
+// comments need one row per line, which the monolithic codeToHtml can't provide).
+// Returns null when the language is unknown or highlighting fails, so the caller
+// renders plain, un-highlighted lines with the same row structure.
+export async function highlightToLines(code: string, lang: string): Promise<CodeToken[][] | null> {
+  const language = String(lang || '').trim();
+  if (!language) return null;
+  try {
+    const hl = await getHighlighter();
+    if (!(await ensureLang(hl, language))) return null;
+    const { tokens } = hl.codeToTokens(code, { lang: language, theme: THEME });
+    return tokens.map((line) => line.map((t) => ({ content: t.content, color: t.color })));
+  } catch {
+    return null;
+  }
+}

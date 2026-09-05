@@ -1,6 +1,6 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
 import ProjectFilesPanel from './ProjectFilesPanel';
-import { type ClipboardEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type ClipboardEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
   useFetchConversationMessagesQuery,
@@ -426,6 +426,22 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const conversationRuntimeStatusForPoll = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const chainId = String(conversation?.chain_id || conversation?.chainId || '');
   const title = conversationDisplayTitle(conversation, agentId, agentInstanceId, conversationId);
+
+  // Publish the Files panel's collected line comments as a single chat message to
+  // this conversation's agent. Returns true on success so the panel clears its
+  // in-memory store.
+  const publishFileComments = useCallback(
+    async (markdown: string): Promise<boolean> => {
+      if (!conversationId || !markdown.trim()) return false;
+      try {
+        const res: any = await sendMessage({ conversationId, body: markdown }).unwrap();
+        return !(res?.error);
+      } catch {
+        return false;
+      }
+    },
+    [conversationId, sendMessage],
+  );
 
   // Lightweight chain-task progress for the header "Task chain N/M" button, so
   // the coordinator's chain is one glance + one click away. Only fetched when the
@@ -1228,6 +1244,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
                 projectId={projectId}
                 bridgeId={instanceBridgeId}
                 projectName={title}
+                conversationKey={conversationId}
+                onPublishComments={publishFileComments}
                 onClose={() => setFilesOpen(false)}
                 isMobile={true}
               />
@@ -1272,6 +1290,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
                   projectId={projectId}
                   bridgeId={instanceBridgeId}
                   projectName={title}
+                  conversationKey={conversationId}
+                  onPublishComments={publishFileComments}
                   onClose={() => setFilesOpen(false)}
                   isMobile={false}
                 />
