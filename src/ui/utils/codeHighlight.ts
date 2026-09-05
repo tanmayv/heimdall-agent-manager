@@ -40,7 +40,7 @@ export function languageForFile(pathOrName: string): string {
     sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'fish',
     yml: 'yaml', yaml: 'yaml', toml: 'toml', ini: 'ini', cfg: 'ini', conf: 'ini',
     sql: 'sql', graphql: 'graphql', gql: 'graphql', proto: 'proto',
-    docker: 'docker', nix: 'nix', zig: 'zig',
+    docker: 'docker', nix: 'nix', odin: 'odin', zig: 'zig',
     vue: 'vue', svelte: 'svelte', diff: 'diff', patch: 'diff',
     make: 'make', cmake: 'cmake', toml_: 'toml',
   };
@@ -105,6 +105,7 @@ const LANG_LOADERS: Record<string, () => Promise<any>> = {
   proto: () => import('@shikijs/langs/proto'),
   docker: () => import('@shikijs/langs/docker'),
   nix: () => import('@shikijs/langs/nix'),
+  odin: () => import('@shikijs/langs/odin'),
   zig: () => import('@shikijs/langs/zig'),
   vue: () => import('@shikijs/langs/vue'),
   svelte: () => import('@shikijs/langs/svelte'),
