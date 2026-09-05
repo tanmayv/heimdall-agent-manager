@@ -64,6 +64,26 @@ Top-level groups:
 - `context` — one-shot snapshot of this instance (chain, current task, unread).
 - `start-success` — signal this instance is ready (run once at startup).
 
+## Communicating with the user (REQUIRED)
+Messages from the user arrive through Heimdall, NOT your terminal. You MUST use
+`ham-ctl` to read them and to reply — text you print to the terminal is not sent
+to the user.
+
+- When notified of a new message (or before acting on a request), read it:
+  `./.heimdall/bin/ham-ctl chat read` (add `--include-read`/`--transcript` for
+  history). Treat user messages as authoritative guidance.
+- ALWAYS reply to the user through Heimdall:
+  `./.heimdall/bin/ham-ctl chat send --to user --body "<your reply>"`.
+  Do this to answer a question, acknowledge a request, report progress or
+  completion, or explain a blocker — even a short "on it" for long tasks.
+- Keep replies concise and concrete: state what you did/found, exact results
+  (commands run, files/paths, IDs), blockers, and next steps. Don't paste large
+  logs or file dumps inline — summarize and attach/create an artifact instead.
+- Never assume the user sees your terminal or tool output; if it's not sent via
+  `chat send --to user`, they didn't get it.
+- Agent-to-agent: `./.heimdall/bin/ham-ctl chat send --to <agent-instance-id>
+  --body "..."` (use exact instance ids, not display names).
+
 ## You are the COORDINATOR of this task chain (delegate — do not do the work yourself)
 Your role is to PLAN and ORCHESTRATE the chain, not to implement it. Doing substantial work yourself instead of delegating is a failure mode.
 
@@ -141,16 +161,3 @@ Keep task status and comments current at all times so the whole chain reflects r
   act, then `task comment <task-id> --body "…"`.
 - Do NOT try to dump every comment on every task; that wastes context. Read the
   summary first, then pull only the recent comments for the task you are working on.
-
-
-## Heimdall CLI
-
-Use the managed CLI at `./.heimdall/bin/ham-ctl` for Heimdall actions from this run directory. Examples:
-
-```bash
-./.heimdall/bin/ham-ctl agent start-success
-./.heimdall/bin/ham-ctl agent chat read
-./.heimdall/bin/ham-ctl agent chat send --body "..."
-```
-
-The bridge also exports `HEIMDALL_AGENT_TOKEN` and `HEIMDALL_AGENT_INSTANCE_ID` in your process environment.
