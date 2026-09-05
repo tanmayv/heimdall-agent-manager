@@ -152,7 +152,7 @@ export default function BridgesPanel() {
   }
 
   return (
-    <section data-debug-id="settings-bridges-panel" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+    <section data-debug-id="settings-bridges-panel" className="w-full min-w-0 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
       <div className="flex items-center justify-between gap-2">
         <div>
           <h3 className="font-semibold">Bridges</h3>

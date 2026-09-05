@@ -210,7 +210,7 @@ function Breadcrumbs({ crumbs }: { crumbs: BreadcrumbCrumb[] }) {
 }
 
 function SettingsSubNav({ path }: { path: string }) {
-  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex gap-2 overflow-x-auto rounded-2xl border border-white/10 bg-black/20 p-2 sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => {
+  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex w-full max-w-full flex-nowrap gap-2 overflow-x-auto overscroll-x-contain rounded-2xl border border-white/10 bg-black/20 p-2 [-webkit-overflow-scrolling:touch] sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => {
     const active = path === item.path || path.startsWith(`${item.path}/`) || (path === '/settings' && item.path === '/settings/bridges');
     const debugKey = item.label.toLowerCase().replace(/\s+/g, '-');
     return <a key={item.path} data-debug-id={`settings-sub-nav-${debugKey}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${active ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>;
@@ -819,8 +819,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
   }
 
   return (
-    <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
-      <section className="mx-auto flex min-h-full w-full max-w-6xl flex-col items-start px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5">
+    <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto overflow-x-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
+      <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         {path === '/conversations' ? (
           <ConversationsHomePage />
