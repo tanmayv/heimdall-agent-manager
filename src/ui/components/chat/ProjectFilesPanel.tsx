@@ -20,6 +20,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../Icon';
+import MarkdownBody from '../MarkdownBody';
+import { highlightCode, languageForFile } from '../../utils/codeHighlight';
 import {
   useLazyListProjectDirQuery,
   useLazyReadProjectFileQuery,
@@ -570,6 +572,11 @@ function mutationError(code?: string, message?: string): string {
 
 // ---- Read-only file viewer --------------------------------------------------
 
+function isMarkdownFile(pathOrName: string): boolean {
+  const n = String(pathOrName || '').toLowerCase();
+  return n.endsWith('.md') || n.endsWith('.markdown') || n.endsWith('.mdx');
+}
+
 function FileView({
   file,
   fetching,
@@ -584,6 +591,14 @@ function FileView({
   const name = baseName(file.path);
   const isImage = file.viewable && file.encoding === 'base64';
   const dataUri = isImage ? `data:${file.mime || 'application/octet-stream'};base64,${file.content || ''}` : '';
+  const isText = file.viewable && !isImage;
+  const isMarkdown = isText && isMarkdownFile(file.path);
+
+  // View modes for markdown: "rendered" (MarkdownBody) or "source" (highlighted).
+  const [mdRendered, setMdRendered] = useState(true);
+  // Soft-wrap toggle for the code/source view (off = horizontal scroll).
+  const [wrap, setWrap] = useState(false);
+  const showCode = isText && !(isMarkdown && mdRendered);
 
   return (
     <div data-debug-id={`${debugPrefix}-file-view`} className="flex min-h-0 flex-1 flex-col">
@@ -604,6 +619,30 @@ function FileView({
               .join(' · ')}
           </div>
         </div>
+        {/* View controls */}
+        {isMarkdown ? (
+          <button
+            data-debug-id={`${debugPrefix}-file-md-toggle-btn`}
+            type="button"
+            onClick={() => setMdRendered((v) => !v)}
+            className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10"
+            title={mdRendered ? 'View source' : 'View rendered'}
+          >
+            {mdRendered ? 'Source' : 'Rendered'}
+          </button>
+        ) : null}
+        {showCode ? (
+          <button
+            data-debug-id={`${debugPrefix}-file-wrap-toggle-btn`}
+            type="button"
+            onClick={() => setWrap((v) => !v)}
+            aria-pressed={wrap ? 'true' : 'false'}
+            className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] ${wrap ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-300 hover:bg-white/10'}`}
+            title={wrap ? 'Disable soft wrap' : 'Enable soft wrap'}
+          >
+            Wrap
+          </button>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto bg-[#090909]">
@@ -622,8 +661,17 @@ function FileView({
             {/* eslint-disable-next-line jsx-a11y/img-redundant-alt */}
             <img data-debug-id={`${debugPrefix}-file-image`} src={dataUri} alt={name} className="max-h-full max-w-full rounded-lg object-contain" />
           </div>
+        ) : isMarkdown && mdRendered ? (
+          <div data-debug-id={`${debugPrefix}-file-markdown`} className="p-3">
+            <MarkdownBody source={file.content || ''} className="text-zinc-200" />
+          </div>
         ) : (
-          <pre data-debug-id={`${debugPrefix}-file-text`} className="whitespace-pre-wrap break-words p-3 font-mono text-[12px] leading-5 text-zinc-200">{file.content || ''}</pre>
+          <CodeView
+            content={file.content || ''}
+            path={file.path}
+            wrap={wrap}
+            debugPrefix={debugPrefix}
+          />
         )}
       </div>
 
@@ -632,6 +680,79 @@ function FileView({
           Preview truncated.
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// CodeView renders text/code with Shiki syntax highlighting, a line-number gutter,
+// and an optional soft-wrap. It degrades gracefully: while highlighting resolves
+// (or when the language is unknown / highlighting fails) it shows plain,
+// un-highlighted text with the same gutter, so it is never blank.
+function CodeView({
+  content,
+  path,
+  wrap,
+  debugPrefix,
+}: {
+  content: string;
+  path: string;
+  wrap: boolean;
+  debugPrefix: string;
+}) {
+  const [html, setHtml] = useState<string | null>(null);
+  const lang = useMemo(() => languageForFile(path), [path]);
+  const lineCount = useMemo(() => {
+    if (!content) return 1;
+    // Trailing newline shouldn't add a phantom last line.
+    const n = content.split('\n').length;
+    return content.endsWith('\n') ? Math.max(1, n - 1) : n;
+  }, [content]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setHtml(null);
+    if (!content || !lang) return;
+    highlightCode(content, lang).then((out) => {
+      if (!cancelled) setHtml(out);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [content, lang]);
+
+  const wrapCls = wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre';
+  const gutter = (
+    <div
+      aria-hidden="true"
+      className="select-none border-r border-white/[0.06] bg-white/[0.02] px-2 py-3 text-right font-mono text-[12px] leading-5 text-zinc-600"
+    >
+      {Array.from({ length: lineCount }, (_, i) => (
+        <div key={i}>{i + 1}</div>
+      ))}
+    </div>
+  );
+
+  return (
+    <div data-debug-id={`${debugPrefix}-file-code`} className="flex min-w-0 text-[12px]">
+      {gutter}
+      <div className="min-w-0 flex-1 overflow-x-auto">
+        {html ? (
+          // Shiki emits <pre class="shiki"><code>…</code></pre>. We control padding,
+          // leading, and wrapping via the wrapper + a scoped style block below.
+          <div
+            data-debug-id={`${debugPrefix}-file-code-highlighted`}
+            className={`ppanel-code ${wrap ? 'ppanel-code-wrap' : ''} p-3 font-mono leading-5`}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        ) : (
+          <pre
+            data-debug-id={`${debugPrefix}-file-text`}
+            className={`${wrapCls} p-3 font-mono leading-5 text-zinc-200`}
+          >
+            {content}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }
