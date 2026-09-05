@@ -42,6 +42,11 @@ const view = { visibility: 'hidden' as 'hidden' | 'visible', focus: false, hash:
   odinApi: undefined,
 };
 (globalThis as any).Notification = FakeNotification;
+(window as any).isSecureContext = true;
+
+// showNativeNotification is async (SW path awaited, then constructor fallback in
+// this no-serviceWorker env). Flush microtasks before asserting on `created`.
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 
 // Build a minimal store from the REAL notifications reducer + thunk middleware
 // (the app store module hard-codes import.meta.env.DEV which tsx cannot stub).
@@ -74,6 +79,7 @@ created.length = 0;
 view.visibility = 'hidden';
 view.focus = false;
 handleUserWsEvent(store.dispatch, chatEvent, {});
+await flush();
 assert.equal(created.length, 1, 'backgrounded curated event fires exactly one notification');
 assert.equal(created[0].options.tag, 'heimdall:chat:conv_1');
 
@@ -82,6 +88,7 @@ created.length = 0;
 view.visibility = 'visible';
 view.focus = true;
 handleUserWsEvent(store.dispatch, chatEvent, {});
+await flush();
 assert.equal(created.length, 0, 'focused tab fires no native notification');
 
 // Backgrounded excluded event => no notification.
@@ -89,6 +96,7 @@ created.length = 0;
 view.visibility = 'hidden';
 view.focus = false;
 handleUserWsEvent(store.dispatch, { type: 'agent_runtime_changed', agent_instance_id: 'inst_a' }, {});
+await flush();
 assert.equal(created.length, 0, 'excluded event never notifies');
 
 // Backgrounded needs-attention approval => one notification.
@@ -98,6 +106,7 @@ handleUserWsEvent(store.dispatch, {
   event: 'chat_approval_created',
   approval: { approval_id: 'ap1', chain_id: 'chain_9', agent_instance_id: 'inst_a', kind: 'question', body: 'Deploy now?', state: 'open' },
 }, {});
+await flush();
 assert.equal(created.length, 1, 'chat_approval_created fires one notification');
 assert.equal(created[0].options.tag, 'heimdall:attention:approval:chain_9');
 

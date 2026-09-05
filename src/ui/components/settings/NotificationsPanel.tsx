@@ -119,14 +119,14 @@ export default function NotificationsPanel() {
     let permission = state.permission;
     try {
       if (supported && !electron && permission === 'granted') {
-        nativeShown = showNativeNotification(TEST_NOTIFICATION_PLAN);
+        nativeShown = await showNativeNotification(TEST_NOTIFICATION_PLAN);
       } else if (supported && !electron && permission === 'default') {
         // Explicit user gesture: it is safe to request permission here. If granted,
         // fire the native notification immediately.
         permission = await requestNotificationPermission();
         dispatch(notificationPermissionSet(permission));
         if (permission === 'granted') {
-          nativeShown = showNativeNotification(TEST_NOTIFICATION_PLAN);
+          nativeShown = await showNativeNotification(TEST_NOTIFICATION_PLAN);
         }
       }
     } catch (_err) {

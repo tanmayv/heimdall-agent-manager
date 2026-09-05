@@ -64,6 +64,13 @@ const state = {
 };
 // Also expose Notification globally (some code checks `'Notification' in window`).
 (globalThis as any).Notification = FakeNotification;
+// No service worker in this test env (Node's navigator has no `serviceWorker`),
+// so the service falls back to the in-page Notification constructor.
+(window as any).isSecureContext = true;
+
+// showNativeNotification is async (SW path is awaited then falls back). Flush
+// microtasks so the constructor fallback runs before we assert on `created`.
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 
 const {
   isTabBackgrounded,
@@ -118,6 +125,7 @@ state.visibility = 'hidden';
 state.focus = false;
 plan = fireNotificationForWsEvent(() => enabledState(), chatPayload);
 assert.ok(plan, 'backgrounded + enabled should notify');
+await flush();
 assert.equal(created.length, 1, 'exactly one Notification');
 assert.equal(created[0].options.tag, 'heimdall:chat:conv_1', 'tag set for coalescing');
 
@@ -156,7 +164,7 @@ const OrigNote = (window as any).Notification;
 // Case 1: focus succeeds => hash navigation on existing window.
 state.focus = false;
 state.hash = '';
-showNativeNotification({ title: 'a', body: 'b', tag: 't2', route: '/conversations/conv_2', category: 'chat' });
+await showNativeNotification({ title: 'a', body: 'b', tag: 't2', route: '/conversations/conv_2', category: 'chat' });
 lastInstance.onclick();
 assert.match(state.hash, /#\/conversations\/conv_2/, 'click routes in existing window');
 
@@ -166,7 +174,7 @@ assert.match(state.hash, /#\/conversations\/conv_2/, 'click routes in existing w
 state.focus = false;
 state.hash = '';
 (globalThis as any).__lastOpen = undefined;
-showNativeNotification({ title: 'a', body: 'b', tag: 't3', route: '/conversations/conv_3', category: 'chat' });
+await showNativeNotification({ title: 'a', body: 'b', tag: 't3', route: '/conversations/conv_3', category: 'chat' });
 lastInstance.onclick();
 assert.match(state.hash, /#\/conversations\/conv_3/, 'blocked focus still routes in the same tab');
 assert.equal((globalThis as any).__lastOpen, undefined, 'must not open a duplicate tab when focus is merely blocked');
@@ -184,7 +192,7 @@ Object.defineProperty(window, 'location', {
   },
 });
 (globalThis as any).__lastOpen = undefined;
-showNativeNotification({ title: 'a', body: 'b', tag: 't4', route: '/conversations/conv_4', category: 'chat' });
+await showNativeNotification({ title: 'a', body: 'b', tag: 't4', route: '/conversations/conv_4', category: 'chat' });
 lastInstance.onclick();
 assert.ok(String((globalThis as any).__lastOpen || '').includes('#/conversations/conv_4'), 'opens deep-link in new window only when in-place nav throws');
 if (origLocation) Object.defineProperty(window, 'location', origLocation);

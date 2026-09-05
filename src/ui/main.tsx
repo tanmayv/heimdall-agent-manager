@@ -5,6 +5,7 @@ import AppShell from './components/shell/AppShell';
 import ElectronDeviceAuthGate, { installElectronApiFetchBridge } from './components/ElectronDeviceAuthGate';
 import { store } from './store/store';
 import { buildRouteHash } from './utils/appLocation';
+import { registerNotificationServiceWorker } from './services/notificationService';
 import './debugCapture';
 import './styles.css';
 
@@ -29,6 +30,12 @@ import './styles.css';
 
 (window as any).__debugStore = store;
 installElectronApiFetchBridge();
+
+// Register the notification service worker early so OS notifications work on
+// platforms where the in-page Notification constructor is unavailable (iOS
+// Safari PWAs) and to install the click->route message listener. No-ops under
+// Electron / insecure contexts. Never blocks startup.
+void registerNotificationServiceWorker();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

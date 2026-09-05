@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="heimdall-login-url" content="%VITE_HEIMDALL_LOGIN_URL%" />
     <meta name="heimdall-logout-url" content="%VITE_HEIMDALL_LOGOUT_URL%" />
+    <!-- PWA: required for iOS Safari to allow Home-Screen install + notifications. -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon.png" />
+    <link rel="apple-touch-icon" href="icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Heimdall" />
+    <meta name="theme-color" content="#090909" />
     <title>Heimdall</title>
   </head>
   <body>

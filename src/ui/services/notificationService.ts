@@ -19,9 +19,77 @@ import {
 
 export function isNotificationSupported(): boolean {
   try {
-    return typeof window !== 'undefined' && 'Notification' in window && Boolean(window.Notification);
+    if (typeof window === 'undefined') return false;
+    // Supported if EITHER the in-page Notification constructor exists OR the
+    // service-worker path is available (iOS PWAs expose only the latter).
+    const hasConstructor = 'Notification' in window && Boolean(window.Notification);
+    const hasSW = 'serviceWorker' in navigator && 'Notification' in window;
+    return hasConstructor || hasSW;
   } catch (_err) {
     return false;
+  }
+}
+
+// A service worker is REQUIRED for notifications on iOS Safari PWAs and is the
+// preferred path everywhere else (it survives tab-close for the click handler
+// and is the only future-proof route to Web Push). We register lazily and cache
+// the registration. Registration needs a secure context (HTTPS or localhost);
+// under Electron (file://) it is skipped — Electron uses its own notifications.
+let swRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
+const NOTIFICATION_SW_URL = 'notification-sw.js';
+
+export function registerNotificationServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (swRegistrationPromise) return swRegistrationPromise;
+  swRegistrationPromise = (async () => {
+    try {
+      if (typeof window === 'undefined' || isElectronRuntime()) return null;
+      if (!('serviceWorker' in navigator)) return null;
+      if (!window.isSecureContext) return null;
+      // Resolve the SW url against the app base so it works under Vite `base:./`
+      // and when served from a sub-path.
+      const base = (import.meta as any)?.env?.BASE_URL || '/';
+      const url = new URL(NOTIFICATION_SW_URL, new URL(base, window.location.href)).toString();
+      const existing = await navigator.serviceWorker.getRegistration();
+      const reg = existing || (await navigator.serviceWorker.register(url));
+      // Ensure the page listens for click hand-offs from the SW exactly once.
+      installServiceWorkerMessageListener();
+      return reg || null;
+    } catch (_err) {
+      return null;
+    }
+  })();
+  return swRegistrationPromise;
+}
+
+let swMessageListenerInstalled = false;
+function installServiceWorkerMessageListener() {
+  if (swMessageListenerInstalled) return;
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  try {
+    navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
+      const data = (event && event.data) || {};
+      if (data && data.type === 'heimdall-notification-click' && data.route) {
+        focusAndRoute(String(data.route));
+      }
+    });
+    swMessageListenerInstalled = true;
+  } catch (_err) {
+    /* ignore */
+  }
+}
+
+async function activeNotificationRegistration(): Promise<ServiceWorkerRegistration | null> {
+  try {
+    const reg = await registerNotificationServiceWorker();
+    if (!reg) return null;
+    // showNotification needs an active worker; wait briefly if it's still
+    // installing/waiting (first load), but never block forever.
+    if (reg.active) return reg;
+    await navigator.serviceWorker.ready.catch(() => null);
+    const ready = await navigator.serviceWorker.getRegistration().catch(() => null);
+    return (ready && ready.active) ? ready : (reg.active ? reg : null);
+  } catch (_err) {
+    return null;
   }
 }
 
@@ -124,17 +192,47 @@ function focusAndRoute(route: string) {
   }
 }
 
-// Low-level: actually create the OS Notification for a resolved plan. Returns
+// Low-level: actually show the OS notification for a resolved plan. Resolves to
 // true if a notification was created. No gating here — callers gate first.
-export function showNativeNotification(plan: NotificationPlan): boolean {
-  if (!isNotificationSupported()) return false;
+//
+// Prefers the service-worker path (reg.showNotification) — required on iOS
+// Safari PWAs and preferred elsewhere — and falls back to the in-page
+// Notification constructor when no active SW is available (e.g. insecure dev
+// context or a browser without SW support). The two paths route clicks
+// differently: the SW path via `notificationclick` -> postMessage -> the page's
+// message listener; the constructor path via the in-page `onclick` below.
+export async function showNativeNotification(plan: NotificationPlan): Promise<boolean> {
+  if (typeof window === 'undefined' || !('Notification' in window)) return false;
+
+  const icon = iconUrl();
+  const data = { route: plan.route, href: routeToHref(plan.route) };
+
+  // 1) Service-worker path (preferred; only path on iOS PWAs).
+  try {
+    const reg = await activeNotificationRegistration();
+    if (reg) {
+      await reg.showNotification(plan.title, {
+        body: plan.body,
+        tag: plan.tag,
+        icon,
+        renotify: true,
+        data,
+      } as NotificationOptions);
+      return true;
+    }
+  } catch (_err) {
+    /* fall through to the constructor path */
+  }
+
+  // 2) In-page constructor fallback.
   try {
     const notification = new window.Notification(plan.title, {
       body: plan.body,
       tag: plan.tag,
-      icon: iconUrl(),
+      icon,
       // renotify keeps a fresh alert when a burst collapses onto the same tag.
       renotify: true,
+      data,
     } as NotificationOptions);
     notification.onclick = () => {
       focusAndRoute(plan.route);
@@ -179,5 +277,8 @@ export function fireNotificationForWsEvent(
   // Per-category opt-out.
   if (!categoryEnabled(settings, plan.category)) return null;
 
-  return showNativeNotification(plan) ? plan : null;
+  // Fire-and-forget: showing is async (service-worker path), but the WS funnel is
+  // synchronous and only uses the returned plan for tests/telemetry.
+  void showNativeNotification(plan);
+  return plan;
 }
