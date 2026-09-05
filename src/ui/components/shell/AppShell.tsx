@@ -937,7 +937,21 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     if (!isMobile) { setMobileChromeSuppressed(false); return; }
     const focusSuppressesChrome = (target: EventTarget | null) => {
       const node = target as Element | null;
-      return Boolean(node?.closest?.('[data-mobile-shell-chrome="hide-on-focus"]'));
+      if (!node?.closest?.('[data-mobile-shell-chrome="hide-on-focus"]')) return false;
+      // Only suppress chrome for KEYBOARD-BEARING fields (the on-screen keyboard is
+      // what crowds the viewport). Tapping other focusable controls inside the
+      // composer — e.g. the runtime status chip or the model switcher button —
+      // must NOT hide the tab bar, because that reflow moves the element out from
+      // under the tap and eats the first click (requiring a second tap).
+      const el = node as HTMLElement;
+      if (el.isContentEditable) return true;
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA') return true;
+      if (tag === 'INPUT') {
+        const type = (el as HTMLInputElement).type;
+        return !['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'file', 'color'].includes(type);
+      }
+      return false;
     };
     const updateFromActiveElement = () => setMobileChromeSuppressed(focusSuppressesChrome(document.activeElement));
     const onFocusIn = (event: FocusEvent) => setMobileChromeSuppressed(focusSuppressesChrome(event.target));
