@@ -166,7 +166,7 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, "],\"tasks\":[")
 	for task, i in tasks {
 		if i > 0 do strings.write_byte(&b, ',')
-		write_task_detail_json(&b, h, auth_ctx, task, deps)
+		write_task_detail_json(&b, h, auth_ctx, task, deps, false)
 	}
 	strings.write_string(&b, "]}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
@@ -229,7 +229,7 @@ list_tasks_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	for task in tasks {
 		if !task_matches_query(task, req.query) do continue
 		if written > 0 do strings.write_byte(&b, ',')
-		write_task_detail_json(&b, h, auth_ctx, task, deps)
+		write_task_detail_json(&b, h, auth_ctx, task, deps, false)
 		written += 1
 	}
 	strings.write_byte(&b, ']')
@@ -510,7 +510,7 @@ write_task_json :: proc(b: ^strings.Builder, t: domain.Task) {
 	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(t.priority)); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
 }
 
-write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, t: domain.Task, deps: []domain.Task_Dependency) {
+write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, t: domain.Task, deps: []domain.Task_Dependency, include_description := true) {
 	is_blocked := false
 	dep_ids := make([dynamic]string)
 	defer delete(dep_ids)
@@ -529,9 +529,14 @@ write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth
 	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id))
 	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id))
 	strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title)
-	strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description)
+	// Description is fetched lazily (task expand -> single-task GET); the list
+	// payload omits it to keep chain/task listings light.
+	if include_description {
+		strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description)
+	}
 	strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state))
 	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status))
+	strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(t.priority))
 	strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json))
 	strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json))
 	strings.write_string(b, ",\"blocked\":"); strings.write_string(b, "true" if is_blocked else "false")

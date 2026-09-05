@@ -61,6 +61,7 @@ function convoDotClass(convo: PaletteConversation): string {
 const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
   { label: 'New conversation', icon: 'plus', route: '/conversations/new' },
   { label: 'Conversations', icon: 'chat', route: '/conversations' },
+  { label: 'Actions', icon: 'clock', route: '/actions' },
   { label: 'Projects', icon: 'grid', route: '/projects' },
   { label: 'Agents', icon: 'tasks', route: '/agents' },
   { label: 'Library', icon: 'device', route: '/library' },
@@ -153,10 +154,18 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
     const q = query.trim().toLowerCase();
     const out: PaletteResult[] = [];
 
-    // Navigate (local, instant).
+    // Navigate + Actions FIRST (local, instant primary quick-jumps) so they are
+    // always reachable at the top of the list — crucial on mobile where a long
+    // Conversations list + the on-screen keyboard would otherwise push Actions
+    // out of reach at the bottom.
     const navItems = q ? DEFAULT_NAV.filter((item) => matches(item.label, q)) : DEFAULT_NAV;
     if (navItems.length) {
       navItems.forEach((item) => out.push({ kind: 'navigate', label: item.label, icon: item.icon, route: item.route, group: 'Navigate' }));
+    }
+
+    const actionItems = q ? actions.filter((a) => matches(a.label, q)) : actions;
+    if (actionItems.length) {
+      actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, icon: a.icon, actionId: a.id, group: 'Actions' }));
     }
 
     // Live conversations grouped by project — mirrors the sidebar rail. Each
@@ -182,12 +191,6 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
           out.push({ kind: 'entity', label: hit.label || hit.id, hint: hit.sublabel, hit, route: hitRoute(hit), group: ENTITY_GROUP_LABEL[group.type] || group.type || 'Entities' });
         }
       }
-    }
-
-    // Actions (local, instant).
-    const actionItems = q ? actions.filter((a) => matches(a.label, q)) : actions;
-    if (actionItems.length) {
-      actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, icon: a.icon, actionId: a.id, group: 'Actions' }));
     }
     return out;
   }, [query, searchQuery.data, actions, conversationGroups]);
@@ -250,12 +253,12 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
   return (
     <div
       data-debug-id="command-palette"
-      className="fixed inset-0 z-[90] flex items-start justify-center bg-black/60 px-4 pt-[12vh] backdrop-blur-sm"
+      className="fixed inset-0 z-[90] flex items-start justify-center bg-black/60 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[12vh]"
       onClick={onClose}
     >
       <div
         data-debug-id="command-palette-panel"
-        className="flex max-h-[70vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0d0f14] shadow-2xl shadow-black/50"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0d0f14] shadow-2xl shadow-black/50 sm:max-h-[70vh]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
@@ -315,7 +318,10 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
             ))
           )}
         </div>
-        <div className="flex items-center justify-between border-t border-white/10 px-4 py-2 text-[11px] text-zinc-600">
+        {/* Keyboard-hint footer is desktop-only: on mobile it wastes vertical
+            space the on-screen keyboard already claims, and the hints are
+            keyboard-only anyway. */}
+        <div className="hidden items-center justify-between border-t border-white/10 px-4 py-2 text-[11px] text-zinc-600 sm:flex">
           <span className="flex items-center gap-2">
             <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5">↑↓</kbd> navigate
             <kbd className="ml-2 rounded border border-white/10 bg-white/5 px-1.5 py-0.5">↵</kbd> select

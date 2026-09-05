@@ -17,6 +17,7 @@ import {
 } from '../../utils/artifactUpload';
 import {
   useFetchTaskChainDetailQuery,
+  useFetchChainTaskDetailQuery,
   useCreateTaskMutation,
   useUpdateTaskDetailMutation,
   useSetTaskStatusMutation,
@@ -126,6 +127,31 @@ type CommentAttachment = {
   file: File;
   status: CommentAttachmentStatus;
   error: string;
+};
+
+// Lazily fetches + renders a task's Markdown description. The task-list payload
+// omits description to stay light; this component only mounts when a task row is
+// expanded, so the single-task GET happens on demand. `fallback` is any
+// description already present on the list row (usually empty now).
+const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: string }> = ({ chainId, taskId, fallback }) => {
+  const { data, isFetching } = useFetchChainTaskDetailQuery(
+    { chainId, taskId },
+    { skip: !chainId || !taskId },
+  );
+  const description = String(data?.task?.description ?? fallback ?? '').trim();
+  if (isFetching && !description) {
+    return (
+      <div data-debug-id={`taskchain-task-description-${taskId}`} className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+        <Icon name="refresh" size={12} className="animate-spin" /> Loading description…
+      </div>
+    );
+  }
+  if (!description) return null;
+  return (
+    <div data-debug-id={`taskchain-task-description-${taskId}`} className="text-[11.5px] leading-5 text-zinc-300">
+      <Markdown source={description} compact copyAll={false} />
+    </div>
+  );
 };
 
 export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
@@ -880,6 +906,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 ⛔ blocked
               </span>
             )}
+            {(() => {
+              const p = String(task.priority || '').toLowerCase();
+              if (p !== 'p0' && p !== 'p1' && p !== 'p2') return null;
+              const cls = p === 'p0' ? 'bg-red-500/20 text-red-300' : p === 'p1' ? 'bg-amber-500/20 text-amber-300' : 'bg-zinc-800 text-zinc-400';
+              return (
+                <span data-debug-id={`taskchain-task-priority-${taskId}`} title={`Priority ${p.toUpperCase()}`} className={`rounded px-2 py-0.5 font-mono uppercase ${cls}`}>
+                  {p}
+                </span>
+              );
+            })()}
             <span
               data-debug-id={`taskchain-task-status-${taskId}`}
               className="rounded bg-zinc-800 px-2 py-0.5 font-mono uppercase text-zinc-300"
@@ -974,15 +1010,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         {/* Expanded Card Details (Description, Dependencies & Comments) */}
         {isExpanded && (
           <div className="mt-3 border-t border-white/5 pt-3 space-y-3">
-            {/* H12: full description shows ONLY when expanded. */}
-            {task.description && (
-              <div
-                data-debug-id={`taskchain-task-description-${taskId}`}
-                className="text-[11.5px] leading-5 text-zinc-300"
-              >
-                <Markdown source={task.description} compact copyAll={false} />
-              </div>
-            )}
+            {/* Description is lazy-fetched here (the task list omits it); this block
+                only mounts when the row is expanded, so the fetch is on-demand. */}
+            <TaskDescription chainId={chainId} taskId={taskId} fallback={task.description} />
+            {/* end description */}
             {/* Dependencies in expanded view */}
             <div data-debug-id={`taskchain-task-dependencies-section-${taskId}`} className="rounded border border-white/5 bg-zinc-900/40 p-2 text-[11px]">
               <div className="flex items-center justify-between">

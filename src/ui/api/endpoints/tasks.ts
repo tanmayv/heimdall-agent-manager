@@ -19,7 +19,7 @@ function normalizeTask(task: any) {
     chainId: task.chain_id || '',
     title: task.title || '',
     description: task.description || '',
-    priority: task.priority || 'normal',
+    priority: task.priority || 'p2',
     status: task.status || 'pending',
     assigneeAgentInstanceId: task.assignee_agent_instance_id || '',
     reviewerAgentInstanceId: task.reviewer_agent_instance_id || '',
@@ -157,6 +157,22 @@ export const tasksApi = heimdallApi.injectEndpoints({
         { type: 'Chain', id: chainId },
         { type: 'ChainTasks', id: chainId },
       ],
+    }),
+    // Cookie-auth lazy single-task fetch. The chain/task list ships tasks WITHOUT
+    // their description (to keep listings light); the full task — including the
+    // Markdown description — is loaded on demand when a task row is expanded.
+    fetchChainTaskDetail: build.query<any, { chainId: string; taskId: string }>({
+      queryFn: async ({ chainId, taskId }) => {
+        if (!chainId || !taskId) return { data: { task: null } };
+        try {
+          const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}`);
+          const data = unwrapData(raw);
+          return { data: { task: data ? normalizeTask(data) : null } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { taskId }) => [{ type: 'Task' as const, id: taskId }],
     }),
     // Cookie-auth lazy comment fetch for the live shell. The chain/task list now
     // ships only a comment_summary (count + last), so the comment thread is
@@ -683,6 +699,7 @@ export const {
   useLazyFetchTaskLogPageQuery,
 
   useFetchTaskChainDetailQuery,
+  useFetchChainTaskDetailQuery,
   useFetchChainTaskCommentsQuery,
   useLazyFetchChainTaskCommentsQuery,
   useListChainsByCoordinatorQuery,
