@@ -51,6 +51,11 @@ export type FsReadFileResult = {
   size: number;
   modified_at: string;
   truncated: boolean;
+  // Byte-range pagination (utf8 text): offset of this chunk, bytes it covers, and
+  // whether it reached end of file. Page by requesting offset += bytes_returned.
+  offset?: number;
+  bytes_returned?: number;
+  eof?: boolean;
   error: { code: string; message: string };
 };
 
@@ -100,7 +105,7 @@ type ListArgs = {
   cursor?: string | null;
   limit?: number;
 };
-type ReadFileArgs = { projectId: string; bridgeId?: string; path: string };
+type ReadFileArgs = { projectId: string; bridgeId?: string; path: string; offset?: number; limit?: number };
 type CreateArgs = { projectId: string; bridgeId?: string; path: string };
 type MoveArgs = { projectId: string; bridgeId?: string; from: string; to: string };
 type DeleteArgs = { projectId: string; bridgeId?: string; path: string; recursive?: boolean };
@@ -146,18 +151,25 @@ export const projectFsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
-    // Bounded read of a single file for the read-only viewer.
+    // Bounded, byte-range-paginated read of a single file for the viewer. Pass
+    // offset/limit to stream a large text file in chunks (avoids the one-huge-
+    // frame WS relay timeout). We assume the file doesn't change between pages.
     readProjectFile: build.query<FsReadFileResult, ReadFileArgs>({
-      queryFn: async ({ projectId, bridgeId = '', path }) => {
+      queryFn: async ({ projectId, bridgeId = '', path, offset, limit }) => {
         try {
-          const bp = bridgeParam(bridgeId);
-          const data = await cookieJsonFetch(`${base(projectId)}/file?path=${encodeURIComponent(path)}${bp ? `&${bp}` : ''}`);
+          const qs = new URLSearchParams({ path });
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (offset != null && offset > 0) qs.set('offset', String(offset));
+          if (limit != null && limit > 0) qs.set('limit', String(limit));
+          const data = await cookieJsonFetch(`${base(projectId)}/file?${qs.toString()}`);
           return { data: data as FsReadFileResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      // File views are point reads; keep them per (project, bridge, path).
+      // File views are point reads; keep them per (project, bridge, path). Chunks
+      // are fetched lazily (useLazy…) and stitched in the component, so we don't
+      // key the cache by offset.
       providesTags: (_result, _error, { projectId, bridgeId = '', path }) => [
         { type: 'ProjectFs' as const, id: `file::${fsListTagId(projectId, bridgeId, path)}` },
       ],

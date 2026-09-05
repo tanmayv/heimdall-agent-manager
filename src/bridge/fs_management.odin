@@ -93,6 +93,14 @@ Bridge_Fs_Read_File_Result :: struct {
 	size:        i64,
 	modified_at: string,
 	truncated:   bool,
+	// Byte-range pagination (utf8 text only). offset = byte offset of the first
+	// byte of `content` within the file; bytes_returned = number of file bytes
+	// this chunk covers (may be < len(content) is impossible, but may be trimmed
+	// back from the requested limit to a UTF-8 boundary); eof = this chunk reaches
+	// end of file. Callers page by requesting offset += bytes_returned until eof.
+	offset:         i64,
+	bytes_returned: i64,
+	eof:            bool,
 	error_code:  string,
 	message:     string,
 }
@@ -146,7 +154,13 @@ Bridge_Fs_Mkdir_Result :: struct {
 
 BRIDGE_FS_MAX_ENTRIES :: 2000
 BRIDGE_FS_DEFAULT_LIMIT :: 200
-BRIDGE_FS_MAX_VIEW_BYTES :: 1_000_000 // 1 MB read-file view cap
+BRIDGE_FS_MAX_VIEW_BYTES :: 1_000_000 // 1 MB read-file total-size view cap
+// Default per-request byte window for paginated text reads. Kept comfortably
+// below the WS relay's practical single-frame budget (empirically frames around
+// ~64KB+ stall/time out on the hub relay, while ~48KB and below are instant), so
+// the JSON-escaped result frame always fits. The UI pages by requesting
+// offset += bytes_returned until eof.
+BRIDGE_FS_READ_PAGE_BYTES :: 32_000
 
 // --- helpers -------------------------------------------------------------
 
@@ -403,7 +417,16 @@ bridge_fs_list_dir :: proc(requested: string, include_hidden: bool = true, curso
 // bridge_fs_read_file returns a bounded, type-gated view of a regular file. Text
 // is returned as utf8; supported images as base64; oversized files as viewable
 // false + file_too_large; unknown/binary as viewable false + unsupported_type.
-bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "") -> Bridge_Fs_Read_File_Result {
+//
+// Byte-range pagination (utf8 text only): `offset`/`limit` request a chunk so a
+// large file can be streamed page-by-page over the size-limited WS relay instead
+// of one huge frame that times out. limit <= 0 uses BRIDGE_FS_READ_PAGE_BYTES.
+// The returned chunk is trimmed back to a UTF-8 char boundary; bytes_returned is
+// the actual file bytes covered (caller's next offset = offset + bytes_returned)
+// and eof marks the final chunk. base64/images ignore offset/limit (returned
+// whole, still under the 1MB cap). The whole file (up to the cap) is still capped
+// by BRIDGE_FS_MAX_VIEW_BYTES on total size.
+bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "", offset: i64 = 0, limit: i64 = 0) -> Bridge_Fs_Read_File_Result {
 	root, root_ok := bridge_fs_effective_root(sandbox_root)
 	if !root_ok {
 		return Bridge_Fs_Read_File_Result{ok = false, path = requested, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
@@ -429,7 +452,7 @@ bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "") -> Bri
 	if encoding == "" {
 		return Bridge_Fs_Read_File_Result{ok = true, path = canonical, viewable = false, mime = mime, size = info.size, modified_at = modified_at, error_code = "unsupported_type", message = "File type is not viewable"}
 	}
-	// Size cap: metadata still populated, but no content read.
+	// Total-size cap: metadata still populated, but no content read.
 	if info.size > BRIDGE_FS_MAX_VIEW_BYTES {
 		return Bridge_Fs_Read_File_Result{ok = true, path = canonical, viewable = false, mime = mime, size = info.size, modified_at = modified_at, error_code = "file_too_large", message = "File exceeds the maximum viewable size"}
 	}
@@ -438,15 +461,37 @@ bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "") -> Bri
 		return Bridge_Fs_Read_File_Result{ok = false, path = canonical, mime = mime, size = info.size, modified_at = modified_at, error_code = "read_failed", message = "Could not read file"}
 	}
 	defer delete(data, context.allocator)
-	content := ""
+
+	// base64/images: return whole (already bounded by the size cap); no paging.
 	if encoding == "base64" {
-		content = base64.encode(data)
-	} else {
-		content = strings.clone(string(data))
+		content := base64.encode(data)
+		return Bridge_Fs_Read_File_Result{
+			ok = true, path = canonical, viewable = true, content = content,
+			encoding = encoding, mime = mime, size = info.size, modified_at = modified_at,
+			offset = 0, bytes_returned = info.size, eof = true,
+		}
 	}
+
+	// utf8 text: return the [offset, offset+page) byte window, trimmed to a valid
+	// UTF-8 boundary so a multi-byte rune isn't split across chunks.
+	total := i64(len(data))
+	start := offset
+	if start < 0 do start = 0
+	if start > total do start = total
+	page := limit
+	if page <= 0 do page = BRIDGE_FS_READ_PAGE_BYTES
+	end := start + page
+	if end > total do end = total
+	// Trim `end` back off the middle of a multi-byte UTF-8 sequence (a continuation
+	// byte has the top bits 10xxxxxx). Never trim below `start`.
+	for end > start && end < total && (data[end] & 0xC0) == 0x80 {
+		end -= 1
+	}
+	chunk := string(data[start:end])
 	return Bridge_Fs_Read_File_Result{
-		ok = true, path = canonical, viewable = true, content = content,
+		ok = true, path = canonical, viewable = true, content = strings.clone(chunk),
 		encoding = encoding, mime = mime, size = info.size, modified_at = modified_at,
+		offset = start, bytes_returned = end - start, eof = end >= total,
 	}
 }
 
@@ -642,7 +687,9 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
 		path := extract_json_string(text, "path", "")
 		root := extract_json_string(text, "root", "")
-		result := bridge_fs_read_file(path, root)
+		offset := i64(extract_json_int(text, "offset", 0))
+		limit := i64(extract_json_int(text, "limit", 0))
+		result := bridge_fs_read_file(path, root, offset, limit)
 		out := bridge_fs_read_file_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
 		_ = ws.send_text(conn, out)
@@ -738,6 +785,9 @@ bridge_fs_read_file_result_json :: proc(command_id: string, r: Bridge_Fs_Read_Fi
 	}
 	strings.write_string(&b, ",\"mime\":\""); json_write_string(&b, r.mime)
 	strings.write_string(&b, "\",\"size\":"); strings.write_string(&b, fmt.tprintf("%d", r.size))
+	strings.write_string(&b, ",\"offset\":"); strings.write_string(&b, fmt.tprintf("%d", r.offset))
+	strings.write_string(&b, ",\"bytes_returned\":"); strings.write_string(&b, fmt.tprintf("%d", r.bytes_returned))
+	strings.write_string(&b, ",\"eof\":"); strings.write_string(&b, "true" if r.eof else "false")
 	strings.write_string(&b, ",\"modified_at\":\""); json_write_string(&b, r.modified_at)
 	strings.write_string(&b, "\",\"truncated\":"); strings.write_string(&b, "true" if r.truncated else "false")
 	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)

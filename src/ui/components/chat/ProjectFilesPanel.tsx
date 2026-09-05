@@ -333,12 +333,30 @@ export default function ProjectFilesPanel({
 
   // ---- File viewer ----------------------------------------------------------
 
+  // Accumulated viewer content across paged reads. `viewFile` holds the metadata
+  // + first chunk; `viewContent` is the stitched text; `viewNextOffset`/`viewEof`
+  // drive lazy paging. We assume the file doesn't change between pages.
+  const [viewContent, setViewContent] = useState('');
+  const [viewNextOffset, setViewNextOffset] = useState(0);
+  const [viewEof, setViewEof] = useState(true);
+  const [loadingMoreFile, setLoadingMoreFile] = useState(false);
+
   const openFile = useCallback(
     async (path: string) => {
       setError('');
       try {
-        const res: FsReadFileResult = await readFile({ projectId, bridgeId, path }).unwrap();
+        const res: FsReadFileResult = await readFile({ projectId, bridgeId, path, offset: 0 }).unwrap();
         setViewFile(res);
+        if (res.viewable && res.encoding === 'utf8') {
+          setViewContent(res.content || '');
+          setViewNextOffset(Number(res.offset || 0) + Number(res.bytes_returned || (res.content ? res.content.length : 0)));
+          setViewEof(res.eof !== false);
+        } else {
+          // Images / non-viewable: no paging.
+          setViewContent(res.content || '');
+          setViewNextOffset(0);
+          setViewEof(true);
+        }
         if (!res.ok && res.error?.message) setError(str(res.error.message));
       } catch (e: any) {
         setError(str(e?.error || e?.message) || 'Could not read file');
@@ -346,6 +364,27 @@ export default function ProjectFilesPanel({
     },
     [projectId, bridgeId, readFile],
   );
+
+  const loadMoreFile = useCallback(async () => {
+    if (!viewFile || viewEof || loadingMoreFile) return;
+    setLoadingMoreFile(true);
+    try {
+      const res: FsReadFileResult = await readFile({ projectId, bridgeId, path: viewFile.path, offset: viewNextOffset }).unwrap();
+      if (res.ok && res.viewable) {
+        setViewContent((prev) => prev + (res.content || ''));
+        setViewNextOffset(Number(res.offset || 0) + Number(res.bytes_returned || (res.content ? res.content.length : 0)));
+        setViewEof(res.eof !== false);
+      } else if (res.error?.message) {
+        setError(str(res.error.message));
+        setViewEof(true);
+      }
+    } catch (e: any) {
+      setError(str(e?.error || e?.message) || 'Could not load more of this file');
+      setViewEof(true);
+    } finally {
+      setLoadingMoreFile(false);
+    }
+  }, [projectId, bridgeId, readFile, viewFile, viewNextOffset, viewEof, loadingMoreFile]);
 
   // ---- Mutations ------------------------------------------------------------
 
@@ -488,6 +527,10 @@ export default function ProjectFilesPanel({
       ) : viewFile ? (
         <FileView
           file={viewFile}
+          content={viewContent}
+          hasMore={!viewEof}
+          loadingMore={loadingMoreFile}
+          onLoadMore={loadMoreFile}
           fetching={readState.isFetching}
           debugPrefix={debugPrefix}
           comments={commentsForPath(viewFile.path)}
@@ -699,6 +742,10 @@ function isMarkdownFile(pathOrName: string): boolean {
 
 function FileView({
   file,
+  content,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   fetching,
   debugPrefix,
   comments,
@@ -708,6 +755,10 @@ function FileView({
   onBack,
 }: {
   file: FsReadFileResult;
+  content: string; // stitched text content across paged reads
+  hasMore: boolean; // more of this file remains to load
+  loadingMore: boolean;
+  onLoadMore: () => void;
   fetching: boolean;
   debugPrefix: string;
   comments: FileLineComment[];
@@ -773,8 +824,16 @@ function FileView({
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto bg-[#090909]">
-        {fetching ? (
+      <div
+        className="min-h-0 flex-1 overflow-auto bg-[#090909]"
+        onScroll={(e) => {
+          if (!hasMore || loadingMore) return;
+          const el = e.currentTarget;
+          // Near-bottom (within ~600px) => fetch the next byte page.
+          if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) onLoadMore();
+        }}
+      >
+        {fetching && !content ? (
           <div className="p-4 text-center text-xs text-zinc-500">Loading…</div>
         ) : !file.viewable ? (
           <div data-debug-id={`${debugPrefix}-file-unviewable`} className="grid h-full place-items-center p-6 text-center text-xs text-zinc-500">
@@ -791,19 +850,34 @@ function FileView({
           </div>
         ) : isMarkdown && mdRendered ? (
           <div data-debug-id={`${debugPrefix}-file-markdown`} className="p-3">
-            <MarkdownBody source={file.content || ''} className="text-zinc-200" />
+            <MarkdownBody source={content} className="text-zinc-200" />
           </div>
         ) : (
-          <CodeLines
-            content={file.content || ''}
-            path={file.path}
-            wrap={wrap}
-            debugPrefix={debugPrefix}
-            comments={comments}
-            onAddComment={onAddComment}
-            onEditComment={onEditComment}
-            onDeleteComment={onDeleteComment}
-          />
+          <>
+            <CodeLines
+              content={content}
+              path={file.path}
+              wrap={wrap}
+              debugPrefix={debugPrefix}
+              comments={comments}
+              onAddComment={onAddComment}
+              onEditComment={onEditComment}
+              onDeleteComment={onDeleteComment}
+            />
+            {hasMore ? (
+              <div className="flex justify-center py-2">
+                <button
+                  data-debug-id={`${debugPrefix}-file-load-more-btn`}
+                  type="button"
+                  onClick={onLoadMore}
+                  disabled={loadingMore}
+                  className="rounded-lg border border-white/10 px-3 py-1.5 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+                >
+                  {loadingMore ? 'Loading…' : 'Load more of this file'}
+                </button>
+              </div>
+            ) : null}
+          </>
         )}
       </div>
 

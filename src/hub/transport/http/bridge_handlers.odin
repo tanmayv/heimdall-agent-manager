@@ -234,6 +234,11 @@ Project_Fs_Command :: struct {
 	// delete
 	recursive: bool,
 	send_recursive: bool,
+	// read-file byte-range pagination
+	offset: int,
+	send_offset: bool,
+	read_limit: int,
+	send_read_limit: bool,
 }
 
 project_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Fs_Command) -> (string, bool, domain.Domain_Error) {
@@ -278,6 +283,12 @@ project_fs_command_json :: proc(cmd: Project_Fs_Command, command_id, root_path: 
 	if cmd.send_recursive {
 		strings.write_string(&b, ",\"recursive\":"); strings.write_string(&b, "true" if cmd.recursive else "false")
 	}
+	if cmd.send_offset {
+		strings.write_string(&b, ",\"offset\":"); strings.write_int(&b, cmd.offset)
+	}
+	if cmd.send_read_limit {
+		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.read_limit)
+	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
@@ -298,7 +309,17 @@ list_project_dir_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 read_project_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{command_type = "fs_read_file", path = query_value(req.query, "path")})
+	// Byte-range pagination: ?offset= (default 0) & ?limit= (bytes; 0 = bridge
+	// default page). Lets the UI stream a large text file in chunks over the
+	// size-limited WS relay instead of one frame that times out.
+	offset := query_int(req.query, "offset", 0)
+	rlimit := query_int(req.query, "limit", 0)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_read_file",
+		path = query_value(req.query, "path"),
+		offset = offset, send_offset = offset > 0,
+		read_limit = rlimit, send_read_limit = rlimit > 0,
+	})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
