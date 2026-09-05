@@ -36,12 +36,26 @@ bridge_fs_init :: proc(configured_root: string) {
 	} else {
 		root = bridge_expand_home(root)
 	}
-	// Resolve symlinks + make absolute so containment compares real paths.
-	if resolved, err := os.get_absolute_path(root, context.allocator); err == nil {
+	// Resolve symlinks + make absolute so containment compares real paths. NOTE:
+	// os.get_absolute_path only makes the path absolute — it does NOT resolve
+	// symlinks. That matters because project-root overrides are canonicalized via
+	// bridge_fs_realpath_existing_prefix (which DOES follow symlinks), so on a host
+	// where the root traverses a symlink (e.g. macOS /tmp -> /private/tmp) the two
+	// would never prefix-match and every project-scoped fs op would fail with
+	// path_outside_root. Resolve the existing prefix here too so both sides compare
+	// the same real path.
+	real_prefix, tail := bridge_fs_realpath_existing_prefix(root)
+	if real_prefix != "" {
+		resolved := real_prefix
+		if tail != "" {
+			if joined, jerr := filepath.join([]string{real_prefix, tail}, context.allocator); jerr == nil do resolved = joined
+		}
+		bridge_fs_root = resolved
+	} else if resolved, err := os.get_absolute_path(root, context.allocator); err == nil {
+		// Root does not exist yet: fall back to absolute (non-symlink-resolved).
 		bridge_fs_root = resolved
 	} else {
-		// Root does not exist / cannot be resolved: fall back to the expanded form
-		// (containment still works lexically; ops on a missing root just fail).
+		// Cannot resolve at all: keep the expanded form (lexical containment only).
 		bridge_fs_root = strings.clone(root)
 	}
 	fmt.printfln("bridge fs sandbox root: %s", bridge_fs_root)
