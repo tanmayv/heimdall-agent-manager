@@ -276,10 +276,29 @@ export const agentsApi = heimdallApi.injectEndpoints({
     // with existing chain_id). Hydrates a fresh AgentInstance into the chain and
     // creates its 1:1 conversation; never attaches an unrelated live instance.
     createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }>({
-      queryFn: withSessionQuery(async ({ agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId }, { session }) => {
-        if (!session?.daemonUrl || !session?.clientToken || !agentId || !chainId) return { ok: false, message: 'Missing agentId/chainId' };
-        return daemonApi.createAgentInstanceInChain({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId });
-      }),
+      // Launch a new instance of a durable agent, bound to a chain. Uses the cookie
+      // path (POST /agent-instances) like launchAgentInstance, so it works in the
+      // trusted-proxy/cookie-auth shell. The previous token-based path required a
+      // session.clientToken that the cookie shell never has, so "Launch new" from
+      // the Add-Member dialog always failed with "Missing agentId/chainId" even
+      // with an agent selected. The hub create endpoint reads provider/tier (not
+      // provider_profile/model_tier), so map to those field names.
+      queryFn: async ({ agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId }) => {
+        if (!agentId || !chainId) return { data: { ok: false, message: 'Choose an agent identity to launch.' } };
+        try {
+          const payload: any = { agent_id: agentId, chain_id: chainId };
+          if (bridgeId) payload.bridge_id = bridgeId;
+          if (providerProfile) payload.provider = providerProfile;
+          if (modelTier) payload.tier = modelTier;
+          if (projectId) payload.project_id = projectId;
+          if (displayName) payload.display_name = displayName;
+          if (templateId) payload.template_id = templateId;
+          const data = await cookieMutation('/agent-instances', 'POST', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { chainId }) => [
         { type: 'Agents' as const, id: 'LIST' },
         { type: 'ChainTasks' as const, id: chainId },

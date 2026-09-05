@@ -476,7 +476,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       // H14: the launch mutation RESOLVES { ok:false } (it does not reject) when the
       // shell has no session token. Do NOT swallow that — surface it instead of a
       // silent no-op.
-      const newInstance = result?.agent_instance || result?.agentInstance || result?.agent;
+      // The cookie path (POST /agent-instances) returns the instance object
+      // FLAT (agent_instance_id at top level); the older token path nested it under
+      // agent_instance/agent. Accept both shapes.
+      const newInstance = result?.agent_instance || result?.agentInstance || result?.agent
+        || ((result?.agent_instance_id || result?.agentInstanceId) ? result : undefined);
       const newInstanceId = String(newInstance?.agent_instance_id || newInstance?.agentInstanceId || '');
       if (result?.ok === false || !newInstanceId) {
         setAddAgentError(String(result?.message || 'Could not launch a new instance in this app session. Use “Add existing instance” instead.'));
