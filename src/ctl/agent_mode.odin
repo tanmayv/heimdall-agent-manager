@@ -204,7 +204,9 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", a))}))
-		if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", r)), "]"}))
+		// --reviewer accepts a comma-separated list for multiple reviewers.
+		if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
+		if deps := option_value(args, "--depends-on", ""); deps != "" do append(&fields, ctl_v2_json_string_array("depends_on", deps))
 		ctl_agent_call(endpoint, token, "agent.task.create", json_object_from_slice(fields[:]))
 	case "comment":
 		tid := pos(tokens, 1)
@@ -239,6 +241,25 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		on := option_value(args, "--on", "")
 		if tid == "" || on == "" { print_agent_help([]string{"task"}); return }
 		ctl_agent_call(endpoint, token, "agent.task.depend", json_object(json_kv("task_id", tid), json_kv("depends_on_task_id", on)))
+	case "update":
+		// Edit an already-created task: title/description/priority/assignee/
+		// reviewers/dependencies. Relayed as a PATCH to the task; only the fields
+		// you pass are changed. --reviewer and --depends-on are comma-separated and
+		// REPLACE the whole list (pass one value to set a single reviewer/dep).
+		tid := pos(tokens, 1)
+		if tid == "" { print_agent_help([]string{"task"}); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("task_id", tid))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		if v := option_value(args, "--title", ""); v != "" do append(&fields, json_kv("title", v))
+		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
+		if v := option_value(args, "--priority", ""); v != "" do append(&fields, json_kv("priority", v))
+		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", a))}))
+		// Presence-checked (not value-checked) so `--reviewer ""` / `--depends-on ""`
+		// can explicitly CLEAR the list; omitting the flag leaves it unchanged.
+		if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
+		if has_flag(args, "--depends-on") do append(&fields, ctl_v2_json_string_array("depends_on", option_value(args, "--depends-on", "")))
+		ctl_agent_call(endpoint, token, "agent.task.update", json_object_from_slice(fields[:]))
 	case:
 		print_agent_help([]string{"task"})
 	}
@@ -279,6 +300,28 @@ ctl_v2_json_string_array :: proc(key, csv: string) -> string {
 	for p, i in parts {
 		if i > 0 do strings.write_byte(&b, ',')
 		strings.write_byte(&b, '"'); strings.write_string(&b, strings.trim_space(p)); strings.write_byte(&b, '"')
+	}
+	strings.write_byte(&b, ']')
+	return strings.to_string(b)
+}
+
+// ctl_v2_reviewer_refs builds a "reviewer_refs":[{type,agent_instance_id},...]
+// field from a comma-separated list of agent-instance ids, so a task can carry
+// MULTIPLE reviewers (the hub reviewer_refs is an array). Empty/blank ids are
+// skipped; an all-blank csv still emits an empty array so callers can CLEAR the
+// reviewer list explicitly.
+ctl_v2_reviewer_refs :: proc(csv: string) -> string {
+	parts := strings.split(csv, ",")
+	defer delete(parts)
+	b := strings.builder_make()
+	strings.write_string(&b, "\"reviewer_refs\":[")
+	first := true
+	for p in parts {
+		id := strings.trim_space(p)
+		if id == "" do continue
+		if !first do strings.write_byte(&b, ',')
+		first = false
+		strings.write_string(&b, json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", id)))
 	}
 	strings.write_byte(&b, ']')
 	return strings.to_string(b)
@@ -778,7 +821,12 @@ print_help_task :: proc() {
 	fmt.println("  show <task-id> [--chain <id>]           Show a task + comment_summary + votes (no bodies).")
 	fmt.println("  comments <task-id> [--last N] [--chain <id>]  Fetch comment bodies; --last N = newest N (max 100).")
 	fmt.println("  create --title <t>                      Create a task.")
-	fmt.println("      [--description <d>] [--assignee <instance-id>] [--reviewer <instance-id>] [--chain <id>]")
+	fmt.println("      [--description <d>] [--priority p0|p1|p2] [--assignee <instance-id>]")
+	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>] [--chain <id>]")
+	fmt.println("  update <task-id>                        Edit an existing task (coordinator only).")
+	fmt.println("      [--title <t>] [--description <d>] [--priority p0|p1|p2] [--assignee <instance-id>]")
+	fmt.println("      [--reviewer <id,id,...>] [--depends-on <id,id>]  --reviewer/--depends-on REPLACE the")
+	fmt.println("      whole list (pass \"\" to clear). Only the fields you pass change.")
 	fmt.println("  comment <task-id> --body <t>            Add a comment (the only way to comment).")
 	fmt.println("      [--notify <id,id>]")
 	fmt.println("  status <task-id> --status <s>           Change status; use in_validation to submit for")
@@ -787,10 +835,13 @@ print_help_task :: proc() {
 	fmt.println("      [--comment <t>]")
 	fmt.println("  nudge <task-id> [--message <t>]         Nudge the task's owner.")
 	fmt.println("  set-current <task-id>                   Mark this task as your current task.")
-	fmt.println("  depend <task-id> --on <task-id>         Add a dependency.")
+	fmt.println("  depend <task-id> --on <task-id>         Add a single dependency (use `update --depends-on`")
+	fmt.println("                                          to replace the whole dependency list).")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl task show inst_task_1")
+	fmt.println("  ham-ctl task update inst_task_1 --assignee inst_worker --reviewer inst_a,inst_b")
+	fmt.println("  ham-ctl task update inst_task_1 --priority p0 --description 'urgent: fix regression'")
 	fmt.println("  ham-ctl task comment inst_task_1 --body 'pushed fix' --notify inst_rev")
 	fmt.println("  ham-ctl task status inst_task_1 --status in_validation")
 	fmt.println("  ham-ctl task vote inst_task_1 --result lgtm --comment 'clean'")

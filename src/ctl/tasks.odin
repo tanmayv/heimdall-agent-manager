@@ -311,18 +311,18 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 	if action == "create" {
 		title := option_value(args, "--title", "")
 		if chain_id == "" || title == "" {
-			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--assignee <id>] [--reviewer <ref>] [--depends-on <id,id>]")
+			fmt.println("usage: ham-ctl tasks create --chain <id> --title <title> [--description <desc>] [--priority p0|p1|p2] [--assignee <id>] [--reviewer <id,id,...>] [--depends-on <id,id>]")
 			return
 		}
 		fields := make([dynamic]string)
 		append(&fields, json_kv("title", title))
 		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		if prio := option_value(args, "--priority", ""); prio != "" do append(&fields, json_kv("priority", prio))
 		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" {
 			append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
 		}
-		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" {
-			append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", reviewer)), "]"}))
-		}
+		// --reviewer accepts a comma-separated list for multiple reviewers.
+		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" do append(&fields, ctl_v2_reviewer_refs(reviewer))
 		if deps := option_value(args, "--depends-on", option_value(args, "--on", "")); deps != "" {
 			parts := strings.split(deps, ",")
 			defer delete(parts)
@@ -391,25 +391,16 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		fields := make([dynamic]string)
 		if title := option_value(args, "--title", ""); title != "" do append(&fields, json_kv("title", title))
 		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		if prio := option_value(args, "--priority", ""); prio != "" do append(&fields, json_kv("priority", prio))
 		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" {
 			append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
 		}
-		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" {
-			append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", reviewer)), "]"}))
-		}
-		if deps := option_value(args, "--depends-on", option_value(args, "--on", "")); deps != "" {
-			parts := strings.split(deps, ",")
-			defer delete(parts)
-			buf := strings.builder_make()
-			strings.write_string(&buf, "\"depends_on\":[")
-			for p, i in parts {
-				if i > 0 do strings.write_byte(&buf, ',')
-				strings.write_byte(&buf, '"')
-				strings.write_string(&buf, strings.trim_space(p))
-				strings.write_byte(&buf, '"')
-			}
-			strings.write_byte(&buf, ']')
-			append(&fields, strings.to_string(buf))
+		// --reviewer is comma-separated for MULTIPLE reviewers; presence-checked so
+		// `--reviewer ""` clears the list.
+		if has_flag(args, "--reviewer") do append(&fields, ctl_v2_reviewer_refs(option_value(args, "--reviewer", "")))
+		if has_flag(args, "--depends-on") || has_flag(args, "--on") {
+			deps := option_value(args, "--depends-on", option_value(args, "--on", ""))
+			append(&fields, ctl_v2_json_string_array("depends_on", deps))
 		}
 		ctl_tasks_request(transport, "PATCH", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s", safe_path_part(chain_id), safe_path_part(task_id)), json_object_from_slice(fields[:]))
 		return

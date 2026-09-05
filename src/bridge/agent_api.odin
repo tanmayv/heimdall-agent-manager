@@ -150,6 +150,8 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		// task_id without chain_id can't address the comments endpoint.
 	case "agent.task.create":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/create"}
+	case "agent.task.update":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/update"}
 	case "agent.task.depend":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/depend"}
 	case "agent.task.comment":
@@ -218,7 +220,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
 	     "agent.task_chain.reconcile",
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
-	     "agent.task.depend", "agent.task.comment", "agent.task.status",
+	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.status",
 	     "agent.task.set_current", "agent.task.vote", "agent.task.nudge",
 	     // chat + self/misc
 	     "agent.chat.send", "agent.chat.read",

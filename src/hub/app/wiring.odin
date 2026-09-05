@@ -258,6 +258,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/agents/live", rawptr(&graph.agent_action_handlers), http.agent_action_agents_live_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/context", rawptr(&graph.agent_action_handlers), http.agent_action_context_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/create", rawptr(&graph.agent_action_handlers), http.agent_action_task_create_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/update", rawptr(&graph.agent_action_handlers), http.agent_action_task_update_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/depend", rawptr(&graph.agent_action_handlers), http.agent_action_task_depend_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/comment", rawptr(&graph.agent_action_handlers), http.agent_action_task_comment_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/status", rawptr(&graph.agent_action_handlers), http.agent_action_task_status_handler)
