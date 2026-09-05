@@ -613,15 +613,20 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 	}
 	defer bridge_pty_host_spawn_request_delete(req)
 
-	// A relaunch of an already-registered instance re-spawns from the remembered
-	// spec (host.restart); a fresh instance uses host.spawn.
+	// The hub's launch_agent command always carries the authoritative
+	// provider/tier, and we just rebuilt argv/env from it. host.restart would
+	// re-spawn from the daemon's REMEMBERED spec (stale argv → stale model on a
+	// reconfigure, e.g. tier smart still launching the old sonnet binary). So if
+	// the instance is already registered, close it first, then spawn fresh with
+	// the new spec. This makes provider/tier changes actually take effect.
 	pid: i32
 	ok: bool
 	if bridge_pty_host_is_registered(socket, instance_id) {
-		pid, ok = bridge_pty_host_restart(socket, instance_id)
-	} else {
-		pid, ok = bridge_pty_host_spawn(socket, req)
+		if !bridge_pty_host_close(socket, instance_id) {
+			fmt.eprintln("bridge launch: failed to close registered instance before respawn", instance_id)
+		}
 	}
+	pid, ok = bridge_pty_host_spawn(socket, req)
 	if !ok {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, "ham-pty-host spawn failed"
