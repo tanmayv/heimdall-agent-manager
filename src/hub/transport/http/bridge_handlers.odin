@@ -25,6 +25,7 @@ Bridge_Handlers :: struct {
 	agents: ^agent_service.Agent_Service,
 	content: ^content_service.Content_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
+	projects: ^project_service.Project_Service,
 	event_bus: ^events.User_Event_Bus,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
 	actions: rawptr,
@@ -206,6 +207,126 @@ stat_bridge_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 mkdir_bridge_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := bridge_fs_relay(h, req, path_part(req.path, 4), "fs_make_dir", json_string(req.body, "path"))
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// --- Project-scoped filesystem browser (browse/read/CRUD) -----------------
+// Resolves (project_id -> bridge_id, root_path) via Project_Bridge_Path, then
+// relays a WS command carrying that project root so the bridge re-sandboxes every
+// path to the project (not the whole bridge fs_root). Same owner + online guards
+// as bridge_fs_relay. Request paths are RELATIVE to the project root. The bridge
+// result JSON is returned verbatim (already the flat {ok,...,error} envelope).
+
+Project_Fs_Command :: struct {
+	command_type: string,
+	path:         string, // primary path (relative to project root)
+	// list options
+	include_hidden: bool,
+	send_include_hidden: bool,
+	cursor: string,
+	limit:  int,
+	send_limit: bool,
+	// move
+	from: string,
+	to:   string,
+	send_from_to: bool,
+	// delete
+	recursive: bool,
+	send_recursive: bool,
+}
+
+project_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Fs_Command) -> (string, bool, domain.Domain_Error) {
+	auth_ctx, auth_ok, _ := require_auth(h.auth, req)
+	if !auth_ok do return "", false, domain.domain_error(.Unauthenticated, "authentication required")
+	project_id := domain.Project_ID(path_part(req.path, 4))
+	bridge_hint := query_value(req.query, "bridge_id")
+	target, target_ok, target_err := project_service.resolve_fs_target(h.projects, auth_ctx, project_id, bridge_hint)
+	if !target_ok do return "", false, target_err
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, target.bridge_id)
+	if !bridge_ok do return "", false, bridge_err
+	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	command_id := fmt.tprintf("cmd_pfs_%d", time.to_unix_nanoseconds(time.now()))
+	cmd_body := project_fs_command_json(cmd, command_id, target.root_path)
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	if !reply_ok do return "", false, reply_err
+	return reply, true, domain.Domain_Error{}
+}
+
+project_fs_command_json :: proc(cmd: Project_Fs_Command, command_id, root_path: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\""); write_handler_json_string(&b, cmd.command_type)
+	strings.write_string(&b, "\",\"command_id\":\""); write_handler_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"root\":\""); write_handler_json_string(&b, root_path)
+	strings.write_string(&b, "\"")
+	if cmd.send_from_to {
+		strings.write_string(&b, ",\"from\":\""); write_handler_json_string(&b, cmd.from)
+		strings.write_string(&b, "\",\"to\":\""); write_handler_json_string(&b, cmd.to); strings.write_string(&b, "\"")
+	} else {
+		strings.write_string(&b, ",\"path\":\""); write_handler_json_string(&b, cmd.path); strings.write_string(&b, "\"")
+	}
+	if cmd.send_include_hidden {
+		strings.write_string(&b, ",\"include_hidden\":"); strings.write_string(&b, "true" if cmd.include_hidden else "false")
+	}
+	if cmd.cursor != "" {
+		strings.write_string(&b, ",\"cursor\":\""); write_handler_json_string(&b, cmd.cursor); strings.write_string(&b, "\"")
+	}
+	if cmd.send_limit {
+		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.limit)
+	}
+	if cmd.send_recursive {
+		strings.write_string(&b, ",\"recursive\":"); strings.write_string(&b, "true" if cmd.recursive else "false")
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+list_project_dir_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	limit := query_int(req.query, "limit", 0)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_list_dir",
+		path = query_value(req.query, "path"),
+		include_hidden = query_bool(req.query, "include_hidden", false), send_include_hidden = true,
+		cursor = query_value(req.query, "cursor"),
+		limit = limit, send_limit = limit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+read_project_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{command_type = "fs_read_file", path = query_value(req.query, "path")})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+create_project_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{command_type = "fs_create_file", path = json_string(req.body, "path")})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+create_project_dir_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{command_type = "fs_make_dir", path = json_string(req.body, "path")})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+move_project_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{command_type = "fs_move", from = json_string(req.body, "from"), to = json_string(req.body, "to"), send_from_to = true})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+delete_project_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{command_type = "fs_delete", path = query_value(req.query, "path"), recursive = query_bool(req.query, "recursive", false), send_recursive = true})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
@@ -464,7 +585,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			_ = got
 			applied := current_seq == state_seq && current_runtime == runtime_status
 			_ = write_ws_text_frame(client, bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime))
-		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result":
+		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result":
 			command_id := json_string(text, "command_id")
 			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		case "pane_capture_result":

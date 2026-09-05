@@ -118,7 +118,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// owner and the grant holds the plaintext for the first poll.
 	device_auth_service.with_token_minter(&graph.device_auth, device_minter, rawptr(graph))
 	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store()}
-	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry}
+	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry}
 	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
@@ -219,6 +219,13 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "PUT", "/api/v1/projects/*/bridge-paths/*", rawptr(&graph.project_handlers), http.put_project_bridge_path_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/projects/*/bridge-paths/*", rawptr(&graph.project_handlers), http.delete_project_bridge_path_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/bridge-paths/*/validate", rawptr(&graph.project_handlers), http.validate_project_bridge_path_handler)
+	// Project-scoped filesystem browser (resolves project -> bridge+root, relays fs_* WS commands).
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/fs", rawptr(&graph.bridge_handlers), http.list_project_dir_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/fs/file", rawptr(&graph.bridge_handlers), http.read_project_file_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/file", rawptr(&graph.bridge_handlers), http.create_project_file_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/dir", rawptr(&graph.bridge_handlers), http.create_project_dir_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/move", rawptr(&graph.bridge_handlers), http.move_project_path_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/projects/*/fs", rawptr(&graph.bridge_handlers), http.delete_project_path_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.list_task_chains_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.create_task_chain_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)

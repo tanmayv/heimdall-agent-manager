@@ -254,6 +254,40 @@ resolve_effective_path :: proc(service: ^Project_Service, auth: contracts.Auth_C
 	return project.default_path, true, domain.Domain_Error{}
 }
 
+Fs_Target :: struct { bridge_id: string, root_path: string }
+
+// resolve_fs_target maps a project (owned by the caller) to the (bridge_id, root)
+// pair the FS browser should operate against. When bridge_hint is supplied it is
+// honored (must be a configured path for this project); otherwise the project's
+// single configured bridge path is used. Ambiguous (multiple paths, no hint) or
+// unconfigured projects are rejected so a browse never silently targets the wrong
+// machine. Ownership is enforced via get().
+resolve_fs_target :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_id: domain.Project_ID, bridge_hint: string = "") -> (Fs_Target, bool, domain.Domain_Error) {
+	project, ok, err := get(service, auth, project_id)
+	if !ok do return Fs_Target{}, false, err
+	paths, list_err := iface.project_list_bridge_paths(service.projects, project.project_id, project.owner_user_id)
+	if list_err.code != .None do return Fs_Target{}, false, list_err
+	if bridge_hint != "" {
+		for p in paths {
+			if p.bridge_id == bridge_hint {
+				if strings.trim_space(p.path) == "" do return Fs_Target{}, false, domain.domain_error(.Validation_Failed, "project has no path configured on this bridge")
+				return Fs_Target{bridge_id = p.bridge_id, root_path = p.path}, true, domain.Domain_Error{}
+			}
+		}
+		return Fs_Target{}, false, domain.domain_error(.Not_Found, "project is not configured on the requested bridge")
+	}
+	configured := 0
+	chosen := domain.Project_Bridge_Path{}
+	for p in paths {
+		if strings.trim_space(p.path) == "" do continue
+		configured += 1
+		chosen = p
+	}
+	if configured == 0 do return Fs_Target{}, false, domain.domain_error(.Validation_Failed, "project has no bridge path configured")
+	if configured > 1 do return Fs_Target{}, false, domain.domain_error(.Validation_Failed, "project is configured on multiple bridges; specify bridge_id")
+	return Fs_Target{bridge_id = chosen.bridge_id, root_path = chosen.path}, true, domain.Domain_Error{}
+}
+
 validate_bridge_path :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_id: domain.Project_ID, bridge_id: string) -> (Validation_Result, bool, domain.Domain_Error) {
 	project, ok, err := get(service, auth, project_id)
 	if !ok do return Validation_Result{}, false, err
