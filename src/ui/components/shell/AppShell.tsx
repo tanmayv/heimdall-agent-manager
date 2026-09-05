@@ -584,7 +584,7 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
                 <a
                   key={conversation.conversationId}
                   data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
-                  href={shellHash(`/conversations/${conversation.conversationId}`)}
+                  href={shellHash(`/conversations/${conversation.conversationId}${conversation.agentInstanceId ? `?agent_instance_id=${encodeURIComponent(conversation.agentInstanceId)}` : ''}`)}
                   className="flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] text-zinc-400 hover:bg-white/[0.06] hover:text-white"
                 >
                   <StatusDot
@@ -1095,7 +1095,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         />
       ) : null}
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, title: displayConversationTitle(c), agentName: c.agentName, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
     </div>
   );
 }

@@ -114,7 +114,7 @@ export default function ConversationsHomePage() {
             <a
               key={conversation.conversationId}
               data-debug-id={`conversation-inbox-row-${conversation.conversationId}`}
-              href={buildRouteHash(`/conversations/${encodeURIComponent(conversation.conversationId)}`, '')}
+              href={buildRouteHash(`/conversations/${encodeURIComponent(conversation.conversationId)}`, conversation.agentInstanceId ? `agent_instance_id=${encodeURIComponent(conversation.agentInstanceId)}` : '')}
               className="group flex min-h-[76px] w-full touch-manipulation items-center gap-3 px-3 py-3 text-left transition hover:bg-white/[0.06] active:bg-white/[0.09] sm:min-h-[84px] sm:px-4"
             >
               <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-sky-400/10 text-base font-black text-sky-200 ring-1 ring-sky-400/20 sm:h-14 sm:w-14">{title.slice(0, 1).toUpperCase() || 'C'}</div>

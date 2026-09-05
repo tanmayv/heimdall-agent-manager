@@ -10,6 +10,7 @@ import Icon, { type IconName } from '../Icon';
 
 export type PaletteConversation = {
   conversationId: string;
+  agentInstanceId?: string;
   title: string;
   agentName?: string;
   runtimeStatus?: string;
@@ -168,7 +169,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
         kind: 'conversation',
         label: c.title || c.agentName || c.conversationId,
         hint: c.agentName && c.agentName !== c.title ? c.agentName : undefined,
-        route: `/conversations/${c.conversationId}`,
+        route: `/conversations/${c.conversationId}${c.agentInstanceId ? `?agent_instance_id=${encodeURIComponent(c.agentInstanceId)}` : ''}`,
         group: group.projectName || 'Conversations',
         convo: c,
       }));
