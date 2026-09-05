@@ -8,7 +8,7 @@ import "core:strings"
 import "core:sys/posix"
 import "core:time"
 
-DEFAULT_TIMEOUT_MS :: 5000
+DEFAULT_TIMEOUT_MS :: 20000
 
 Response :: struct {
 	status: int,
