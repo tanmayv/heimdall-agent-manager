@@ -122,32 +122,15 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 
 	// ---- task -------------------------------------------------------------
 	case "agent.task.list":
-		if cid := bridge_local_extract_json_string(params, "chain_id", ""); strings.trim_space(cid) != "" {
-			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = strings.concatenate({"/api/v1/task-chains/", cid, "/tasks"})}
-		}
-		// no chain_id => caller's context snapshot lists the caller's tasks.
-		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/context"}
+		// chain_id is optional: the hub defaults to the caller instance's chain.
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/list"}
 	case "agent.task.show":
-		// slim task detail (task + comment_summary + votes; no comment bodies).
-		// Needs chain_id + task_id; if chain_id is absent, fall back to context.
-		cid := bridge_local_extract_json_string(params, "chain_id", "")
-		tid := bridge_agent_task_id(params)
-		if strings.trim_space(cid) != "" && tid != "" {
-			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = strings.concatenate({"/api/v1/task-chains/", cid, "/tasks/", tid})}
-		}
-		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/context"}
+		// slim task detail by task_id ALONE — the hub derives the chain from the
+		// task (task ids are globally unique). No chain_id required.
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/show"}
 	case "agent.task.comments":
-		// the newest N comments (bodies) for a task: GET .../comments?last=N.
-		cid := bridge_local_extract_json_string(params, "chain_id", "")
-		tid := bridge_agent_task_id(params)
-		if strings.trim_space(cid) != "" && tid != "" {
-			base := strings.concatenate({"/api/v1/task-chains/", cid, "/tasks/", tid, "/comments"})
-			if last := bridge_local_extract_json_string(params, "last", ""); strings.trim_space(last) != "" {
-				return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = strings.concatenate({base, "?last=", last})}
-			}
-			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = base}
-		}
-		// task_id without chain_id can't address the comments endpoint.
+		// newest N comments by task_id alone (?last passed as a param). No chain_id.
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/comments"}
 	case "agent.task.create":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/tasks/create"}
 	case "agent.task.update":

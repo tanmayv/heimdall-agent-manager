@@ -2,6 +2,7 @@ package http
 
 import "core:fmt"
 import "core:strings"
+import "core:strconv"
 import "core:unicode/utf8"
 import internal_b64 "core:encoding/base64"
 import contracts "odin_test:contracts"
@@ -268,6 +269,67 @@ agent_action_context_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, ",\"next_cursor\":\""); write_handler_json_string(&b, auth_ctx_server_time(req)); strings.write_string(&b, "\"")
 	strings.write_byte(&b, '}')
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// agent_action_task_show_handler returns slim task detail by task_id ALONE — the
+// chain is derived server-side from the task (get_task resolves + authorizes).
+// No client chain_id is required (task ids are globally unique). Reuses the
+// shared write_task_detail_json via a lightweight Taskchain_Handlers view.
+agent_action_task_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, _, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	task_id := domain.Task_ID(json_string(params, "task_id"))
+	if strings.trim_space(string(task_id)) == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
+	task, got, err := taskchain_service.get_task(h.taskchains, auth, task_id)
+	if !got do return respond_error(err, req.request_id)
+	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth, task.chain_id)
+	tch := Taskchain_Handlers{auth = h.auth, taskchains = h.taskchains, agents = h.agents, event_bus = h.event_bus}
+	b := strings.builder_make()
+	write_task_detail_json(&b, &tch, auth, task, deps)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// agent_action_task_comments_handler returns the newest N comments for a task by
+// task_id alone (chain derived server-side). ?last is passed as a param.
+agent_action_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, _, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	task_id := domain.Task_ID(json_string(params, "task_id"))
+	if strings.trim_space(string(task_id)) == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
+	last := 0
+	if v := strings.trim_space(json_string(params, "last")); v != "" { if n, parsed := strconv.parse_int(v); parsed { last = n } }
+	if last > TASK_COMMENTS_LAST_MAX do last = TASK_COMMENTS_LAST_MAX
+	comments, cerr := taskchain_service.list_recent_task_comments(h.taskchains, auth, task_id, last)
+	if cerr.code != .None do return respond_error(cerr, req.request_id)
+	b := strings.builder_make(); strings.write_byte(&b, '[')
+	for c, i in comments { if i > 0 do strings.write_byte(&b, ','); write_task_comment_json(&b, c) }
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+}
+
+// agent_action_task_list_handler lists tasks for a chain. chain_id is optional:
+// when omitted it defaults to the caller instance's own chain, so agents never
+// need to know/pass a chain id.
+agent_action_task_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := strings.trim_space(json_string(params, "chain_id"))
+	if chain_id == "" do chain_id = inst.chain_id
+	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "no chain for this instance; pass chain_id"), req.request_id)
+	tasks, err := taskchain_service.list_tasks(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
+	if err.code != .None do return respond_error(err, req.request_id)
+	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
+	tch := Taskchain_Handlers{auth = h.auth, taskchains = h.taskchains, agents = h.agents, event_bus = h.event_bus}
+	b := strings.builder_make(); strings.write_byte(&b, '[')
+	for task, i in tasks { if i > 0 do strings.write_byte(&b, ','); write_task_detail_json(&b, &tch, auth, task, deps) }
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }
 
 agent_action_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {

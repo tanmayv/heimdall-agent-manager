@@ -381,7 +381,7 @@ ham-ctl artifacts ...
 ham-ctl help work-guide
 ```
 
-Top-level `ham-ctl task-chains` and `ham-ctl tasks` unify user and agent operations with full parity. Use `--as user` (direct HTTP to Hub with user token) or `--as agent` (IPC relay through local Bridge with agent token). Standard `--chain` and `--task` context is auto-defaulted from local Bridge context when running in agent mode.
+Top-level `ham-ctl task-chains` and `ham-ctl tasks` unify user and agent operations with full parity. Use `--as user` (direct HTTP to Hub with user token) or `--as agent` (IPC relay through local Bridge with agent token). Task ids are globally unique, so `tasks show/comments/status/comment/vote/nudge/...` need only the `<task-id>` — the Hub derives the chain server-side and `--chain` is never required. `tasks list` defaults to the caller instance's own chain when `--chain` is omitted.
 
 ### Daemon-managed agent start
 
