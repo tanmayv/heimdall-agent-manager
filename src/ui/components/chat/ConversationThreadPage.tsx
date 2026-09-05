@@ -12,6 +12,7 @@ import {
 } from '../../api/endpoints/chats';
 import {
   useFetchAgentInstanceQuery,
+  useFetchAgentIdentityQuery,
   useReconfigureAgentInstanceMutation,
   useRestartAgentInstanceMutation,
   useStopAgentInstanceMutation,
@@ -26,7 +27,7 @@ import {
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
-import RuntimeChip, { runtimeStateFromStatus } from '../runtime/RuntimeChip';
+import { runtimeStateFromStatus } from '../runtime/RuntimeChip';
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
 import CurrentTaskStrip from './CurrentTaskStrip';
@@ -476,6 +477,12 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const instancePollInterval = runtimeStateFromStatus(pollHint) === 'starting' ? 2500 : 8000;
   const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: instancePollInterval, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
   const instance = instanceQuery.data?.instance || null;
+  // Agent identity (name + persona/instructions) — used for the empty-state
+  // welcome so a fresh conversation shows who you're talking to.
+  const agentIdentityQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
+  const agentIdentity = agentIdentityQuery.data?.agent || null;
+  const agentDisplayName = String(agentIdentity?.name || conversationAgentLabel(conversation) || agentId || '').trim();
+  const agentPersona = String(agentIdentity?.instructions || agentIdentity?.persona || agentIdentity?.template_persona || '').trim();
   useEffect(() => {
     const s = String(instance?.runtime_status || instance?.runtimeStatus || '');
     if (s) lastInstanceStatusRef.current = s;
@@ -538,19 +545,19 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
-  const [taskChainOpen, setTaskChainOpen] = useState(false);
-  // Which side panel is showing in the split view: the task chain or the project
-  // files browser. They are mutually-exclusive peers sharing the same 50/50 slot.
-  const [filesOpen, setFilesOpen] = useState(false);
+  // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
+  // panel itself has Tasks / Files tabs. 'closed' hides it entirely. Tasks and
+  // Files are the two tabs (not mutually-exclusive split peers anymore).
+  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files'>('closed');
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
-  const [composerActionsOpen, setComposerActionsOpen] = useState(false);
+
+  const statusMenuRef = useRef<HTMLDivElement | null>(null);
   const runtimeMenuRef = useRef<HTMLDivElement | null>(null);
   const runtimeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const headerActionsRef = useRef<HTMLDivElement | null>(null);
   const headerActionsButtonRef = useRef<HTMLButtonElement | null>(null);
-  const composerActionsRef = useRef<HTMLDivElement | null>(null);
-  const composerActionsButtonRef = useRef<HTMLButtonElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
@@ -579,14 +586,15 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   }, [caps, provider, providerOptions, instanceProvider, instanceTier]);
 
   const chatMessages = useMemo(
-    () => normalizeConversationMessages([...olderMessages, ...baseMessages, ...localMessages], agentId || agentInstanceId),
+    // System notices (e.g. "Agent has started and is ready.") are runtime chrome,
+    // not conversation content — hide them from the transcript entirely.
+    () => normalizeConversationMessages([...olderMessages, ...baseMessages, ...localMessages], agentId || agentInstanceId)
+      .filter((message) => message.messageType !== 'system'),
     [olderMessages, baseMessages, localMessages, agentId, agentInstanceId],
   );
   const needsStart = runtimeNeedsStart(runtimeStatus);
   const runtimeStopping = runtimeIsStopping(runtimeStatus);
   const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
-  const runtimeButtonLabel = runtimeActionBusy ? (stopState.isLoading ? 'Stopping…' : (needsStart ? 'Starting…' : 'Restarting…')) : (runtimeStopping ? 'Stopping…' : needsStart ? 'Start' : 'Stop');
-  const runtimeButtonBusy = runtimeActionBusy || runtimeStopping;
   const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
   const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
@@ -621,6 +629,23 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     setOlderCursor(String(messagesQuery.data?.nextCursor || ''));
     setOlderHasMore(Boolean(messagesQuery.data?.hasMore));
   }, [messagesQuery.data?.nextCursor, messagesQuery.data?.hasMore, olderMessages.length]);
+  useEffect(() => {
+    if (!statusMenuOpen) return;
+    const isInside = (target: EventTarget | null) => {
+      const node = target as Node | null;
+      return Boolean(node && statusMenuRef.current?.contains(node));
+    };
+    const onPointerDown = (event: MouseEvent | TouchEvent) => { if (!isInside(event.target)) setStatusMenuOpen(false); };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setStatusMenuOpen(false); };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [statusMenuOpen]);
   useEffect(() => {
     if (!runtimeMenuOpen) return;
     const isInsideRuntimeMenu = (target: EventTarget | null) => {
@@ -675,33 +700,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     };
   }, [headerActionsOpen]);
 
-  useEffect(() => {
-    if (!composerActionsOpen) return;
-    const isInsideComposerActions = (target: EventTarget | null) => {
-      const node = target as Node | null;
-      return Boolean(node && (composerActionsRef.current?.contains(node) || composerActionsButtonRef.current?.contains(node)));
-    };
-    const onPointerDown = (event: MouseEvent | TouchEvent) => {
-      if (!isInsideComposerActions(event.target)) setComposerActionsOpen(false);
-    };
-    const onFocusIn = (event: FocusEvent) => {
-      if (!isInsideComposerActions(event.target)) setComposerActionsOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setComposerActionsOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('touchstart', onPointerDown, { passive: true });
-    document.addEventListener('focusin', onFocusIn);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('touchstart', onPointerDown);
-      document.removeEventListener('focusin', onFocusIn);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [composerActionsOpen]);
-
   // Apply & relaunch only matters when the selection differs from what the
   // instance currently runs; otherwise it's a no-op (use Restart instead).
   const effectiveProvider = provider || instanceProvider;
@@ -718,19 +716,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       void convQuery.refetch();
     } catch (err: any) {
       setTitleError(errMsg(err, 'Rename failed'));
-    }
-  }
-
-  async function toggleRuntime() {
-    if (!agentId || !agentInstanceId || runtimeActionBusy) return;
-    setReconfigStatus(needsStart ? 'Starting…' : 'Stopping…');
-    try {
-      if (needsStart) await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
-      else await stopInstance({ agentId, instanceId: agentInstanceId }).unwrap();
-      setReconfigStatus(needsStart ? 'Start requested.' : 'Stop requested.');
-      void instanceQuery.refetch();
-    } catch (err: any) {
-      setReconfigStatus(errMsg(err, needsStart ? 'Start failed' : 'Stop failed'));
     }
   }
 
@@ -793,7 +778,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   }
 
   function openAttachmentPicker() {
-    setComposerActionsOpen(false);
     fileInputRef.current?.click();
   }
 
@@ -807,6 +791,11 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (sendDisabled) return;
+    // A staged provider/tier change from the model switcher applies on the next
+    // send: reconfigure + relaunch this instance before delivering the message.
+    if (selectionChangesConfig && !runtimeActionBusy) {
+      try { await applyReconfigure(); } catch (_err) { /* status surfaced via reconfigStatus */ }
+    }
     const body = draft.trim();
     const attachmentIds = uploadedAttachments.map(a => a.id);
     const sendBody = body || (attachmentIds.length ? 'Uploaded file' : '');
@@ -851,7 +840,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   }
 
   function requestPaneFromComposer() {
-    setComposerActionsOpen(false);
     if (!paneCaptureDisabled) void requestPane();
   }
 
@@ -867,23 +855,27 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     void messagesQuery.refetch();
   }
 
-  function toggleTaskChainFromHeader() {
-    setHeaderActionsOpen(false);
-    setTaskChainOpen((open) => {
-      const next = !open;
-      if (next) setFilesOpen(false); // task chain + files are mutually-exclusive peers
-      return next;
-    });
+  // Default the panel's active tab based on what this conversation has: prefer
+  // Tasks when linked to a chain, else Files when it has a project.
+  function defaultPanelTab(): 'tasks' | 'files' {
+    if (chainId) return 'tasks';
+    if (projectId) return 'files';
+    return 'tasks';
   }
 
-  function toggleFilesFromHeader() {
+  // Top-right toggle: open to the default tab, or close if already open.
+  function toggleRightPanel() {
     setHeaderActionsOpen(false);
-    setFilesOpen((open) => {
-      const next = !open;
-      if (next) setTaskChainOpen(false); // files + task chain are mutually-exclusive peers
-      return next;
-    });
+    setRightPanel((cur) => (cur === 'closed' ? defaultPanelTab() : 'closed'));
   }
+
+  // Open the panel focused on a specific tab (e.g. the composer project chip
+  // opens Files; a current-task link opens Tasks).
+  function openRightPanel(tab: 'tasks' | 'files') {
+    setHeaderActionsOpen(false);
+    setRightPanel(tab);
+  }
+  function closeRightPanel() { setRightPanel('closed'); }
 
   function renderConversationMessageBody(message: ChatMessage) {
     if (message.messageType === 'pane_capture') {
@@ -964,6 +956,21 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     );
   }
 
+  // Start/stop the agent from the runtime status popup.
+  async function toggleRuntime() {
+    if (!agentId || !agentInstanceId || runtimeActionBusy) return;
+    setStatusMenuOpen(false);
+    setReconfigStatus(needsStart ? 'Starting…' : 'Stopping…');
+    try {
+      if (needsStart) await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
+      else await stopInstance({ agentId, instanceId: agentInstanceId }).unwrap();
+      setReconfigStatus(needsStart ? 'Start requested.' : 'Stop requested.');
+      void instanceQuery.refetch();
+    } catch (err: any) {
+      setReconfigStatus(errMsg(err, needsStart ? 'Start failed' : 'Stop failed'));
+    }
+  }
+
   async function applyReconfigure() {
     if (!agentInstanceId) return;
     const nextProvider = provider || providerOptions[0] || '';
@@ -982,38 +989,53 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     }
   }
 
-  async function doRestart() {
-    if (!agentInstanceId) return;
-    setReconfigStatus('Restarting…');
-    try {
-      await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
-      setReconfigStatus('Restart requested.');
-      void messagesQuery.refetch();
-    } catch (err: any) {
-      setReconfigStatus(errMsg(err, 'Restart failed'));
-    }
-  }
-
+  const tierMeta: Record<string, { icon: 'rocket' | 'spark' | 'zap'; blurb: string }> = {
+    cheap: { icon: 'rocket', blurb: 'Fast, lower cost' },
+    normal: { icon: 'rocket', blurb: 'Balanced' },
+    smart: { icon: 'zap', blurb: 'Best reasoning' },
+  };
+  const pendingReconfig = selectionChangesConfig;
   const runtimeControls = (
-    <div data-debug-id="conversation-runtime-controls" className="space-y-3">
-      <div className="grid gap-2 sm:grid-cols-2">
-        <label className="text-[11px] text-zinc-500">Provider
-          <select data-debug-id="conversation-provider-select" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
-            {providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-        </label>
-        <label className="text-[11px] text-zinc-500">Tier
-          <select data-debug-id="conversation-tier-select" value={tier} onChange={(e) => setTier(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
-            {tierOptions.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </label>
+    <div data-debug-id="conversation-runtime-controls" className="text-left">
+      <input data-debug-id="conversation-provider-select" type="hidden" value={provider} readOnly />
+      <input data-debug-id="conversation-tier-select" type="hidden" value={tier} readOnly />
+      <div className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Provider</div>
+      {providerOptions.map((p) => {
+        const selected = (provider || instanceProvider) === p;
+        const current = instanceProvider === p;
+        return (
+          <button key={p} type="button" data-debug-id={`conversation-provider-option-${p}`} onClick={() => setProvider(p)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-white/[0.06]">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 text-zinc-300"><Icon name="spark" size={16} /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-semibold text-white">{p}</span>
+              <span className="block truncate text-xs text-zinc-500">{current ? 'current' : 'Provider'}</span>
+            </span>
+            {selected ? <Icon name="check" size={18} className="text-sky-400" /> : null}
+          </button>
+        );
+      })}
+      <div className="my-1.5 border-t border-white/10" />
+      <div className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Tier</div>
+      {tierOptions.map((t) => {
+        const selected = (tier || instanceTier) === t;
+        const current = instanceTier === t;
+        const meta = tierMeta[t] || { icon: 'rocket' as const, blurb: 'Model tier' };
+        return (
+          <button key={t} type="button" data-debug-id={`conversation-tier-option-${t}`} onClick={() => setTier(t)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-white/[0.06]">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 text-zinc-300"><Icon name={meta.icon} size={16} /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-semibold text-white">{t}</span>
+              <span className="block truncate text-xs text-zinc-500">{meta.blurb}{current ? ' — current' : ''}</span>
+            </span>
+            {selected ? <Icon name="check" size={18} className="text-sky-400" /> : null}
+          </button>
+        );
+      })}
+      <div className="mt-1.5 flex items-center gap-2 border-t border-white/10 px-2 pt-2 text-[12px] text-zinc-500">
+        <Icon name="alert" size={14} className={pendingReconfig ? 'text-amber-400' : 'text-zinc-600'} />
+        <span><span className={`font-semibold ${pendingReconfig ? 'text-amber-300' : 'text-zinc-400'}`}>Restarts the agent</span> — applies on next send.</span>
       </div>
-      <div className="flex flex-wrap gap-2">
-        <button type="button" data-debug-id="conversation-reconfigure-btn" onClick={() => { setRuntimeMenuOpen(false); void applyReconfigure(); }} disabled={!selectionChangesConfig || runtimeActionBusy} title={selectionChangesConfig ? 'Save the selected provider/tier and relaunch' : 'Selection matches the current config'} className="min-h-10 rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-xs text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Apply &amp; relaunch</button>
-        <button type="button" data-debug-id="conversation-restart-btn" onClick={() => { setRuntimeMenuOpen(false); void doRestart(); }} disabled={runtimeActionBusy} title="Relaunch the process with its current provider/tier" className="min-h-10 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40">Restart current config</button>
-      </div>
-      {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="text-[11px] text-zinc-400">{reconfigStatus}</div> : null}
-      <p data-debug-id="conversation-runtime-hint" className="text-[10px] leading-4 text-zinc-600"><span className="text-zinc-400">Apply &amp; relaunch</span> saves the selected provider/tier then restarts this exact instance. <span className="text-zinc-400">Restart current config</span> relaunches as-is.</p>
+      {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="px-2 pt-1 text-[11px] text-zinc-400">{reconfigStatus}</div> : null}
     </div>
   );
 
@@ -1028,9 +1050,57 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   }
 
 
+  // The right sidebar: a Tasks / Files tabbed panel. Tabs only appear when the
+  // conversation actually has that context (a chain for Tasks, a project for
+  // Files). `isMobile` renders it as a full-width overlay with its own header.
+  function renderRightPanel(isMobilePanel: boolean) {
+    const hasTasks = Boolean(chainId);
+    const hasFiles = Boolean(projectId);
+    const active: 'tasks' | 'files' = rightPanel === 'files' && hasFiles ? 'files' : (hasTasks ? 'tasks' : 'files');
+    const tabBase = 'flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold';
+    return (
+      <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c]">
+        <div data-debug-id="conversation-right-panel-tabs" className="flex shrink-0 items-center gap-1 border-b border-white/10 px-2 py-2">
+          {hasTasks ? (
+            <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => setRightPanel('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+              <Icon name="tasks" size={15} />
+              <span>Tasks</span>
+              {chainProgress.total > 0 ? <span className="rounded-full bg-black/30 px-1.5 py-0.5 text-[10px] font-bold text-sky-100">{chainProgress.done}/{chainProgress.total}</span> : null}
+            </button>
+          ) : null}
+          {hasFiles ? (
+            <button type="button" data-debug-id="conversation-right-panel-tab-files" onClick={() => setRightPanel('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+              <Icon name="folder" size={15} />
+              <span>Files</span>
+            </button>
+          ) : null}
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {active === 'files' && hasFiles ? (
+            <ProjectFilesPanel
+              projectId={projectId}
+              bridgeId={instanceBridgeId}
+              projectName={title}
+              conversationKey={conversationId}
+              onPublishComments={publishFileComments}
+              onClose={closeRightPanel}
+              isMobile={isMobilePanel}
+            />
+          ) : hasTasks ? (
+            <TaskChainOverview
+              chainId={chainId}
+              onClose={closeRightPanel}
+              isMobile={isMobilePanel}
+            />
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   function renderComposer() {
     return (
-      <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 overflow-x-hidden border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
+      <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3">
         {currentTask ? (
           <CurrentTaskStrip
             task={currentTask}
@@ -1050,7 +1120,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
               }
             }}
             onOpenTask={() => {
-              if (chainId) setTaskChainOpen(true);
+              if (chainId) openRightPanel('tasks');
             }}
           />
         ) : null}
@@ -1074,25 +1144,43 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
           </div>
         )}
-        <div className="flex items-end gap-1.5 sm:gap-2">
-          <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
-          <div ref={composerActionsRef} className="relative shrink-0 sm:hidden">
-            <button ref={composerActionsButtonRef} data-debug-id="conversation-composer-actions-menu-btn" type="button" aria-label="More composer actions" aria-haspopup="dialog" aria-expanded={composerActionsOpen ? 'true' : 'false'} onClick={() => setComposerActionsOpen((open) => !open)} className="grid h-[44px] w-[44px] place-items-center rounded-2xl border border-white/10 bg-black/30 text-2xl leading-none text-zinc-300 hover:bg-white/5 hover:text-white">⋯</button>
-            {composerActionsOpen ? (
-              // Mobile: render as a fixed bottom sheet (z-50) rather than an
-              // absolute bottom-full dropdown. The composer <form> uses
-              // overflow-x-hidden, which per CSS promotes overflow-y to auto and
-              // clips an upward-opening dropdown behind the chat transcript. A
-              // fixed sheet escapes that clipping and always sits above the chat.
-              <div data-debug-id="conversation-composer-actions-sheet" className="fixed inset-0 z-50 flex items-end bg-black/60 p-2 backdrop-blur-sm sm:hidden" role="dialog" aria-modal="true" aria-label="Composer actions" onPointerDown={(event) => { if (event.target === event.currentTarget) setComposerActionsOpen(false); }}>
-                <div data-debug-id="conversation-composer-actions-menu" role="menu" className="w-full overflow-hidden rounded-t-[1.75rem] border border-white/10 bg-[#101010] p-2 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] shadow-2xl shadow-black/70">
-                <button data-debug-id="conversation-composer-actions-upload" type="button" role="menuitem" onClick={openAttachmentPicker} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-sm text-zinc-100 hover:bg-white/10"><span className="text-lg">＋</span><span>Upload</span></button>
-                <button data-debug-id="conversation-composer-actions-pane" type="button" role="menuitem" disabled={paneCaptureDisabled} onClick={requestPaneFromComposer} className="flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-sm text-zinc-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"><span className="text-lg">▣</span><span>Pane capture</span></button>
-                </div>
-              </div>
+        <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
+        {/* Composer card: immutable context row (bridge · project + status) on top,
+            input in the middle, action toolbar (attach/terminal · model switcher ·
+            send) on the bottom. */}
+        <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-white/10 bg-[#161618] px-3 py-2.5 focus-within:border-sky-400/50 sm:px-4 sm:py-3">
+          <div data-debug-id="conversation-composer-context" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-zinc-500">
+            <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
+              <Icon name="lock" size={12} /><span className="font-semibold text-zinc-400">{bridgeLabel || 'no bridge'}</span>
+            </span>
+            {projectId ? (
+              <>
+                <span className="opacity-40">·</span>
+                <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title="Open project files" className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/5 hover:text-zinc-300">
+                  <Icon name="folder" size={13} /><span className="font-semibold text-zinc-400">{title}</span>
+                </button>
+              </>
             ) : null}
+            <div className="relative ml-auto" ref={statusMenuRef}>
+              <button type="button" data-debug-id="conversation-runtime-status-chip" aria-haspopup="menu" aria-expanded={statusMenuOpen ? 'true' : 'false'} onClick={() => setStatusMenuOpen((open) => !open)} title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10">
+                <span className={`h-1.5 w-1.5 rounded-full ${runtimeStateFromStatus(runtimeStatus) === 'live' ? 'bg-emerald-400' : runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'bg-amber-400' : 'bg-zinc-500'}`} />
+                {needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}
+              </button>
+              {statusMenuOpen ? (
+                <div data-debug-id="conversation-runtime-status-menu" role="menu" className="absolute bottom-full right-0 z-40 mb-2 w-[min(88vw,260px)] overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
+                  <div className="px-2 pb-1.5 pt-1 text-[11px] text-zinc-500">
+                    Runtime: <span className="font-semibold text-zinc-300">{needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}</span>
+                  </div>
+                  <button type="button" role="menuitem" data-debug-id="conversation-runtime-status-toggle-btn" disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} onClick={() => void toggleRuntime()} className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 ${needsStart ? 'text-emerald-200' : 'text-red-200'}`}>
+                    <Icon name={needsStart ? 'play' : 'stop'} size={15} />
+                    <span>{needsStart ? 'Start agent' : 'Stop agent'}</span>
+                  </button>
+                  {reconfigStatus ? <div className="px-3 pb-1 pt-1 text-[11px] text-zinc-500">{reconfigStatus}</div> : null}
+                </div>
+              ) : null}
+            </div>
           </div>
-          <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="hidden h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white sm:grid">＋</button>
+
           <textarea
             data-debug-id="conversation-composer-input"
             value={draft}
@@ -1101,21 +1189,60 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             onPaste={handleComposerPaste}
             rows={2}
             placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
-            className="min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-base text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4 sm:text-sm"
+            className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-white outline-none placeholder:text-zinc-600 sm:text-sm"
           />
-          <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={requestPaneFromComposer} className="hidden h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl border border-sky-400/30 bg-sky-400/10 text-lg font-bold text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40 sm:grid">▣</button>
-          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl bg-sky-400 text-lg font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? '⇧' : '↑'}</button>
+
+          <div className="mt-1 flex items-center gap-1.5">
+            <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white"><Icon name="plus" size={19} /></button>
+            <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={requestPaneFromComposer} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"><Icon name="terminal" size={18} /></button>
+
+            <div className="flex-1" />
+
+            {/* Model switcher: shows current provider · tier; opens the runtime
+                menu to change them (which restarts the agent). */}
+            <div className="relative" ref={runtimeMenuRef}>
+              <button ref={runtimeMenuButtonRef} type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" aria-haspopup={isMobile ? 'dialog' : 'menu'} aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-2.5 text-[13px] text-zinc-100 hover:bg-white/10">
+                <span className="font-semibold">{instanceProvider || 'model'}</span>
+                <span className="hidden text-zinc-400 sm:inline">· {instanceTier || '—'}</span>
+                <Icon name="chevron-down" size={14} />
+              </button>
+              {runtimeMenuOpen && !isMobile ? (
+                <div data-debug-id="conversation-runtime-menu" role="menu" className="absolute bottom-full right-0 z-40 mb-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 text-left shadow-2xl shadow-black/60">
+                  {runtimeControls}
+                </div>
+              ) : null}
+              {runtimeMenuOpen && isMobile ? (
+                <div data-debug-id="conversation-runtime-mobile-sheet" className="fixed inset-0 z-50 flex items-end bg-black/60 p-2 backdrop-blur-sm sm:hidden" role="dialog" aria-modal="true" aria-labelledby="conversation-runtime-sheet-title" onPointerDown={(event) => { if (event.target === event.currentTarget) setRuntimeMenuOpen(false); }}>
+                  <div data-debug-id="conversation-runtime-mobile-sheet-panel" className="max-h-[86vh] w-full overflow-y-auto rounded-t-[1.75rem] border border-white/10 bg-[#101010] p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] shadow-2xl shadow-black/70">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <h2 id="conversation-runtime-sheet-title" data-debug-id="conversation-runtime-mobile-sheet-title" className="text-sm font-semibold text-white">Runtime controls</h2>
+                      <button type="button" data-debug-id="conversation-runtime-mobile-sheet-close" onClick={() => setRuntimeMenuOpen(false)} aria-label="Close runtime controls" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
+                    </div>
+                    {runtimeControls}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"><Icon name="arrow-up" size={18} /></button>
+          </div>
         </div>
       </form>
     );
   }
 
   return (
-    <section data-debug-id="conversation-thread-page" className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden bg-[#090909] p-0 text-left">
+    <section data-debug-id="conversation-thread-page" className="flex h-full min-h-0 w-full max-w-full flex-col overflow-visible bg-[#090909] p-0 text-left">
+      {/* Minimal top bar: centered title with inline rename + info popover ·
+          right-sidebar toggle (right). The left nav sidebar has its own toggle.
+          Runtime/model controls + immutable bridge/project context live in the
+          composer. */}
       <header data-debug-id="conversation-thread-header" className="flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2 sm:gap-3 sm:px-4">
-        <div className="min-w-0 flex-1 self-stretch sm:self-auto">
+        <div className="h-9 w-9 shrink-0" aria-hidden="true" />
+
+        <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
           {renaming ? (
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <input
                 data-debug-id="conversation-thread-title-input"
                 value={titleDraft}
@@ -1127,211 +1254,101 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
                 className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-base font-semibold text-white outline-none focus:border-sky-400/60 sm:text-sm"
                 autoFocus
               />
-              <button type="button" data-debug-id="conversation-thread-title-save-btn" aria-label="Save conversation title" title="Save" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-sky-400 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">✓</button>
-              <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-sm text-zinc-300 hover:bg-white/10">×</button>
+              <button type="button" data-debug-id="conversation-thread-title-save-btn" aria-label="Save conversation title" title="Save" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:opacity-50"><Icon name="check" size={16} /></button>
+              <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
             </div>
           ) : (
-            <div className="flex min-w-0 items-center gap-2">
+            <>
               <h2 data-debug-id="conversation-thread-title" className="truncate text-base font-semibold text-white sm:text-lg">{title}</h2>
-            </div>
+              <button type="button" data-debug-id="conversation-thread-title-edit-btn" aria-label="Rename conversation" title="Rename" onClick={beginRenameFromHeader} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="pencil" size={14} /></button>
+              <div className="relative shrink-0" ref={headerActionsRef}>
+                <button ref={headerActionsButtonRef} type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="Conversation details" title="Details" aria-haspopup="menu" aria-expanded={headerActionsOpen ? 'true' : 'false'} onClick={() => setHeaderActionsOpen((open) => !open)} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="info" size={15} /></button>
+                {headerActionsOpen ? (
+                  <div data-debug-id="conversation-thread-overflow-menu" role="menu" className="absolute left-1/2 top-full z-40 mt-2 w-[min(88vw,300px)] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
+                    <button type="button" role="menuitem" data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><Icon name="refresh" size={15} /><span>Refresh messages</span></button>
+                    <div data-debug-id="conversation-thread-overflow-details" className="mt-1 border-t border-white/10 px-3 py-2 text-[11px] leading-5 text-zinc-500">
+                      <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
+                      <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
+                      <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
+                      <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
+                      <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
+                      {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </>
           )}
           {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-[11px] text-red-300">{titleError}</div> : null}
-          {/* Runtime chip: explicit "Running/Starting/Stopped · bridge · provider · tier".
-              Answers "is it running and on which device/model?" and opens the runtime
-              controls menu (change bridge/provider/model, start/stop). */}
-          <div data-debug-id="conversation-thread-compact-summary" className="mt-0.5 flex min-w-0 items-center gap-1.5 flex-wrap">
-            <RuntimeChip
-              debugId="conversation-thread-runtime-chip"
-              state={runtimeStateFromStatus(runtimeStatus)}
-              bridgeLabel={bridgeLabel}
-              provider={instanceProvider}
-              tier={instanceTier}
-              onClick={() => setRuntimeMenuOpen(true)}
-            />
-            {currentTask ? (
-              <span data-debug-id="conversation-thread-current-task-summary" className="hidden shrink-0 items-center gap-1 text-[11px] text-zinc-400 sm:inline-flex">
-                <span>·</span>
-                <span className="text-zinc-500">Task:</span>
-                <a
-                  data-debug-id="conversation-thread-current-task-link"
-                  href={chainId ? `#/chains/${encodeURIComponent(chainId)}` : undefined}
-                  onClick={(e) => {
-                    if (chainId) {
-                      e.preventDefault();
-                      setTaskChainOpen(true);
-                    }
-                  }}
-                  className="max-w-[200px] truncate text-sky-300 underline decoration-dotted underline-offset-2 hover:text-sky-200"
-                  title={String(currentTask.title || currentTask.taskId || '')}
-                >
-                  {String(currentTask.title || currentTask.taskId || '')}
-                </a>
-              </span>
-            ) : chainId ? (
-              <span data-debug-id="conversation-thread-chain-summary" className="hidden shrink-0 text-[11px] text-sky-300/70 sm:inline">· task chain linked</span>
-            ) : null}
-          </div>
         </div>
-        <div data-debug-id="conversation-thread-mobile-actions" className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          {/* Start/stop and the runtime gear are desktop-only. On mobile they crowd
-              the top bar and truncate the RuntimeChip (running provider+bridge), so
-              they move into the 3-dots overflow menu. The RuntimeChip itself still
-              opens the runtime controls sheet on tap. */}
-          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} aria-label={`${runtimeButtonLabel} runtime`} title={`${runtimeButtonLabel} runtime`} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} className={needsStart ? 'hidden h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-400 text-sm font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50 sm:grid' : 'hidden h-10 w-10 shrink-0 place-items-center rounded-xl border border-red-400/30 bg-red-400/10 text-sm font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50 sm:grid'}>{runtimeButtonBusy ? <span aria-hidden="true">…</span> : <Icon name={needsStart ? 'play' : 'stop'} size={15} />}</button>
-          <div className="relative" ref={runtimeMenuRef}>
-            <button ref={runtimeMenuButtonRef} type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Runtime controls" title="Runtime controls" aria-haspopup={isMobile ? 'dialog' : 'menu'} aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="hidden h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-base text-zinc-200 hover:bg-white/10 sm:grid"><Icon name="gear" size={17} /></button>
-            {runtimeMenuOpen && !isMobile ? (
-              <div data-debug-id="conversation-runtime-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 text-left shadow-2xl shadow-black/60">
-                {runtimeControls}
-              </div>
-            ) : null}
-            {runtimeMenuOpen && isMobile ? (
-              <div data-debug-id="conversation-runtime-mobile-sheet" className="fixed inset-0 z-50 flex items-end bg-black/60 p-2 backdrop-blur-sm sm:hidden" role="dialog" aria-modal="true" aria-labelledby="conversation-runtime-sheet-title" onPointerDown={(event) => { if (event.target === event.currentTarget) setRuntimeMenuOpen(false); }}>
-                <div data-debug-id="conversation-runtime-mobile-sheet-panel" className="max-h-[86vh] w-full overflow-y-auto rounded-t-[1.75rem] border border-white/10 bg-[#101010] p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] shadow-2xl shadow-black/70">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <h2 id="conversation-runtime-sheet-title" data-debug-id="conversation-runtime-mobile-sheet-title" className="text-sm font-semibold text-white">Runtime controls</h2>
-                    <button type="button" data-debug-id="conversation-runtime-mobile-sheet-close" onClick={() => setRuntimeMenuOpen(false)} aria-label="Close runtime controls" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10">×</button>
-                  </div>
-                  {runtimeControls}
-                </div>
-              </div>
-            ) : null}
-          </div>
-          {projectId ? (
-            <button type="button" data-debug-id="project-files-toggle-btn" aria-label={filesOpen ? 'Hide files' : 'Show files'} title={filesOpen ? 'Hide files' : 'Show files'} onClick={toggleFilesFromHeader} aria-pressed={filesOpen ? 'true' : 'false'} className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold sm:px-3 ${filesOpen ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-sky-400/30 bg-sky-400/10 text-sky-200 hover:bg-sky-400/20'}`}>
-              <Icon name="folder" size={16} />
-              <span className="hidden sm:inline">Files</span>
-            </button>
-          ) : null}
-          {chainId ? (
-            <button type="button" data-debug-id="taskchain-overview-toggle-btn" aria-label={taskChainOpen ? 'Hide task chain' : 'Show task chain'} title={taskChainOpen ? 'Hide task chain' : 'Show task chain'} onClick={toggleTaskChainFromHeader} aria-pressed={taskChainOpen ? 'true' : 'false'} className={`flex h-10 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold sm:px-3 ${taskChainOpen ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-sky-400/30 bg-sky-400/10 text-sky-200 hover:bg-sky-400/20'}`}>
-              <Icon name="tasks" size={16} />
-              <span className="hidden sm:inline">Task chain</span>
-              {chainProgress.total > 0 ? <span data-debug-id="taskchain-overview-toggle-progress" className="rounded-full bg-black/25 px-1.5 py-0.5 text-[10px] font-bold text-sky-100">{chainProgress.done}/{chainProgress.total}</span> : null}
-            </button>
-          ) : null}
-          <div className="relative" ref={headerActionsRef}>
-            <button ref={headerActionsButtonRef} type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="More conversation actions" title="More conversation actions" aria-haspopup="menu" aria-expanded={headerActionsOpen ? 'true' : 'false'} onClick={() => setHeaderActionsOpen((open) => !open)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-xl leading-none text-zinc-200 hover:bg-white/10">⋯</button>
-            {headerActionsOpen ? (
-              <div data-debug-id="conversation-thread-overflow-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(88vw,300px)] overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
-                {/* Mobile-only: start/stop + runtime controls live here to keep the top
-                    bar uncluttered so the RuntimeChip (provider+bridge) stays legible. */}
-                <button type="button" role="menuitem" data-debug-id="conversation-thread-overflow-runtime-toggle-btn" disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} onClick={() => { setHeaderActionsOpen(false); void toggleRuntime(); }} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 sm:hidden"><span className="w-5 text-center">{needsStart ? '▶' : '■'}</span><span>{runtimeButtonLabel} runtime</span></button>
-                <button type="button" role="menuitem" data-debug-id="conversation-thread-overflow-runtime-controls-btn" onClick={() => { setHeaderActionsOpen(false); setRuntimeMenuOpen(true); }} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10 sm:hidden"><span className="w-5 text-center">⚙</span><span>Runtime controls</span></button>
-                <div className="my-1 border-t border-white/10 sm:hidden" />
-                <button type="button" role="menuitem" data-debug-id="conversation-thread-title-edit-btn" onClick={beginRenameFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><span className="w-5 text-center">✎</span><span>Rename</span></button>
-                <button type="button" role="menuitem" data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><span className="w-5 text-center">↻</span><span>Refresh messages</span></button>
-                <div data-debug-id="conversation-thread-overflow-details" className="mt-1 border-t border-white/10 px-3 py-2 text-[11px] leading-5 text-zinc-500">
-                  <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
-                  <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
-                  <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
-                  <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
-                  <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
-                  {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
+
+        {(chainId || projectId) ? (
+          <button type="button" data-debug-id="conversation-right-panel-toggle-btn" aria-label={rightPanel !== 'closed' ? 'Close side panel' : 'Open side panel'} title={rightPanel !== 'closed' ? 'Close panel' : 'Open panel'} aria-pressed={rightPanel !== 'closed' ? 'true' : 'false'} onClick={toggleRightPanel} className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-xl border ${rightPanel !== 'closed' ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10'}`}>
+            <Icon name="panel-right" size={18} />
+            {rightPanel === 'closed' && chainId && chainProgress.total > 0 ? <span data-debug-id="conversation-right-panel-toggle-progress" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black">{chainProgress.done}/{chainProgress.total}</span> : null}
+          </button>
+        ) : <div className="h-9 w-9 shrink-0" aria-hidden="true" />}
       </header>
 
-      {(taskChainOpen && chainId) || (filesOpen && projectId) ? (
-        <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
-          {/* Mobile view (< 768px): active side panel 100% width (Requirement 10) */}
-          <div className="flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden sm:hidden">
-            {filesOpen && projectId ? (
-              <ProjectFilesPanel
-                projectId={projectId}
-                bridgeId={instanceBridgeId}
-                projectName={title}
-                conversationKey={conversationId}
-                onPublishComments={publishFileComments}
-                onClose={() => setFilesOpen(false)}
-                isMobile={true}
-              />
-            ) : (
-              <TaskChainOverview
-                chainId={chainId}
-                onClose={() => setTaskChainOpen(false)}
-                isMobile={true}
-              />
-            )}
-          </div>
-          {/* Desktop view (>= 768px): 50/50 split panel */}
-          <div className="hidden h-full min-h-0 w-full max-w-full flex-row overflow-x-hidden sm:flex">
-            <div className="flex h-full min-h-0 min-w-0 w-1/2 flex-col overflow-x-hidden border-r border-white/10">
-              <div data-debug-id="conversation-thread-transcript" className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden px-2 py-2 sm:px-4 sm:py-3">
-        <ChatMessageList
-          conversationKey={conversationId}
-          messages={chatMessages}
-          debugPrefix="conversation-thread"
-          hasMore={olderHasMore && Boolean(olderCursor)}
-          loadingOlder={olderMessagesState.isFetching}
-          onLoadOlder={loadOlderMessages}
-          formatTimestamp={formatMessageTimestamp}
-          getDeliveryStatus={deliveryStatusFor}
-          agentIsWorking={isWorking}
-          renderMessageBody={({ message }) => renderConversationMessageBody(message)}
-          wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-          scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
-          emptyState={messagesQuery.isFetching ? (
-            <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">Loading messages…</div>
-          ) : (
-            <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">No messages yet. Say something below.</div>
-          )}
-        />
-      </div>
-
-      {renderComposer()}
-            </div>
-            <div className="flex h-full min-h-0 min-w-0 w-1/2 flex-col overflow-x-hidden">
-              {filesOpen && projectId ? (
-                <ProjectFilesPanel
-                  projectId={projectId}
-                  bridgeId={instanceBridgeId}
-                  projectName={title}
-                  conversationKey={conversationId}
-                  onPublishComments={publishFileComments}
-                  onClose={() => setFilesOpen(false)}
-                  isMobile={false}
-                />
-              ) : (
-                <TaskChainOverview
-                  chainId={chainId}
-                  onClose={() => setTaskChainOpen(false)}
-                  isMobile={false}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-      ) : (
-        <>
+      {(() => {
+        const transcript = (
           <div data-debug-id="conversation-thread-transcript" className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden px-2 py-2 sm:px-4 sm:py-3">
-        <ChatMessageList
-          conversationKey={conversationId}
-          messages={chatMessages}
-          debugPrefix="conversation-thread"
-          hasMore={olderHasMore && Boolean(olderCursor)}
-          loadingOlder={olderMessagesState.isFetching}
-          onLoadOlder={loadOlderMessages}
-          formatTimestamp={formatMessageTimestamp}
-          getDeliveryStatus={deliveryStatusFor}
-          agentIsWorking={isWorking}
-          renderMessageBody={({ message }) => renderConversationMessageBody(message)}
-          wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-          scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
-          emptyState={messagesQuery.isFetching ? (
-            <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">Loading messages…</div>
-          ) : (
-            <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">No messages yet. Say something below.</div>
-          )}
-        />
-      </div>
+            <ChatMessageList
+              conversationKey={conversationId}
+              messages={chatMessages}
+              debugPrefix="conversation-thread"
+              hasMore={olderHasMore && Boolean(olderCursor)}
+              loadingOlder={olderMessagesState.isFetching}
+              onLoadOlder={loadOlderMessages}
+              formatTimestamp={formatMessageTimestamp}
+              getDeliveryStatus={deliveryStatusFor}
+              agentIsWorking={isWorking}
+              renderMessageBody={({ message }) => renderConversationMessageBody(message)}
+              wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
+              scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+              emptyState={messagesQuery.isFetching ? (
+                <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-zinc-500">Loading messages…</div>
+              ) : (
+                <div data-debug-id="conversation-thread-empty-state" className="flex h-full min-h-[220px] flex-col items-center justify-center gap-4 p-6 text-center">
+                  <div data-debug-id="conversation-thread-empty-avatar" className="grid h-16 w-16 place-items-center rounded-full bg-white/[0.06] text-2xl font-semibold text-zinc-300">
+                    {(agentDisplayName || 'A').trim().charAt(0).toUpperCase()}
+                  </div>
+                  <h3 data-debug-id="conversation-thread-empty-title" className="text-2xl font-semibold text-white">{agentDisplayName || 'New conversation'}</h3>
+                  {agentPersona ? (
+                    <p data-debug-id="conversation-thread-empty-persona" className="max-w-xl whitespace-pre-line text-[15px] leading-relaxed text-zinc-400">{agentPersona}</p>
+                  ) : (
+                    <p data-debug-id="conversation-thread-empty-persona" className="max-w-md text-[15px] text-zinc-500">Say something below to get started.</p>
+                  )}
+                </div>
+              )}
+            />
+          </div>
+        );
 
-      {renderComposer()}
-        </>
-      )}
+        const panelOpen = rightPanel !== 'closed' && (chainId || projectId);
+        if (!panelOpen) {
+          return (<>{transcript}{renderComposer()}</>);
+        }
+
+        return (
+          <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
+            {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it. */}
+            <div className="flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden sm:hidden">
+              {renderRightPanel(true)}
+            </div>
+            {/* Desktop (>= 768px): chat on the left, sidebar (~40%) on the right. */}
+            <div className="hidden h-full min-h-0 w-full max-w-full flex-row overflow-x-hidden sm:flex">
+              <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col border-r border-white/10">
+                {transcript}
+                {renderComposer()}
+              </div>
+              <div className="flex h-full min-h-0 w-1/2 min-w-[360px] flex-col overflow-x-hidden">
+                {renderRightPanel(false)}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </section>
   );
 }

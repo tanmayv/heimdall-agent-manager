@@ -56,9 +56,10 @@ Top-level groups:
   - `task nudge <task-id> [--message <t>]` — nudge the task's owner.
   - `task set-current <task-id>` — mark this as your current task.
   - `task depend <task-id> --on <task-id>` — add a dependency.
-- `chat` — read your inbox / send to the user or another agent.
+- `chat` — read your inbox / send to the user or another agent / rename this conversation.
   - `chat read [--limit N] [--since T] [--include-read] [--transcript]` — read messages.
   - `chat send --to <user|agent-instance-id> --body <t>` — send; `--to` is REQUIRED (`user`, or an agent-instance-id for agent-to-agent).
+  - `chat set-title <title>` — rename THIS conversation (the chat thread's title shown to the user). Distinct from `task-chain set-title`, which renames the chain.
 - `memory` — `memory propose --type <t> --title <t> [--body <t>] [--evidence <t>] [--template <id>] [--project <id>] [--bridge <id>] [--agent <id>]` — propose a durable memory.
 - `artifact` — `artifact list|create|show <id>|content <id>|download <id> --dir <dir>` — create/read/download artifacts.
 - `context` — one-shot snapshot of this instance (chain, current task, unread).
@@ -83,6 +84,17 @@ to the user.
   `chat send --to user`, they didn't get it.
 - Agent-to-agent: `./.heimdall/bin/ham-ctl chat send --to <agent-instance-id>
   --body "..."` (use exact instance ids, not display names).
+### Naming this conversation
+Give this conversation a short, descriptive title so the user can find it later.
+As soon as you understand what the conversation/chain is about (e.g. after the
+first user request), set it:
+`./.heimdall/bin/ham-ctl chat set-title "<concise task summary>"`.
+This renames the chat thread shown in the UI top bar. If you also coordinate a
+chain and want the chain's board title to match, additionally run
+`./.heimdall/bin/ham-ctl task-chain set-title "<title>"` — they are separate
+objects (a conversation title vs a chain title), so set whichever the user asked
+for; when in doubt, set both.
+
 - Route user-facing questions and decisions to the
   coordinator (inst_18d1d31cff18dc90); the coordinator is the user's point of contact.
 

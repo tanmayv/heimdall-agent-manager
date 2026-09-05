@@ -40,7 +40,14 @@ export type IconName =
   | 'zap'
   | 'check'
   | 'alert'
-  | 'info';
+  | 'info'
+  | 'more'
+  | 'panel-right'
+  | 'panel-left'
+  | 'terminal'
+  | 'lock'
+  | 'spark'
+  | 'rocket';
 
 const PATHS: Record<IconName, ReactElement> = {
   plus: <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />,
@@ -139,6 +146,44 @@ const PATHS: Record<IconName, ReactElement> = {
     <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
       <circle cx={12} cy={12} r={9} />
       <path d="M12 11v5M12 8h.01" />
+    </g>
+  ),
+  more: (
+    <g fill="currentColor">
+      <circle cx={5} cy={12} r={1.8} />
+      <circle cx={12} cy={12} r={1.8} />
+      <circle cx={19} cy={12} r={1.8} />
+    </g>
+  ),
+  'panel-right': (
+    <g fill="none" stroke="currentColor" strokeWidth={1.8}>
+      <rect x={3.5} y={4.5} width={17} height={15} rx={2.2} />
+      <path d="M14.5 4.5v15" strokeLinecap="round" />
+    </g>
+  ),
+  'panel-left': (
+    <g fill="none" stroke="currentColor" strokeWidth={1.8}>
+      <rect x={3.5} y={4.5} width={17} height={15} rx={2.2} />
+      <path d="M9.5 4.5v15" strokeLinecap="round" />
+    </g>
+  ),
+  terminal: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <rect x={3} y={4.5} width={18} height={15} rx={2} />
+      <path d="M7 9.5l3 2.5-3 2.5M12.5 15h4" />
+    </g>
+  ),
+  lock: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.9}>
+      <rect x={5} y={10.5} width={14} height={9} rx={2} />
+      <path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" strokeLinecap="round" />
+    </g>
+  ),
+  spark: <path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round" />,
+  rocket: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 15c-1 1-1.5 4-1.5 4s3-.5 4-1.5M14 4c3 0 6 3 6 6-2 5-7 8-9 9l-6-6c1-2 4-7 9-9z" />
+      <circle cx={14.5} cy={9.5} r={1.5} />
     </g>
   ),
 };

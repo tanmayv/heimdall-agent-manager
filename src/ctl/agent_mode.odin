@@ -278,6 +278,12 @@ ctl_v2_chat :: proc(endpoint, token: string, tokens, args: []string) {
 		if to == "" || body == "" { print_agent_help([]string{"chat"}); return }
 		// to == "user" or an agent-instance-id; the bridge routes accordingly.
 		ctl_agent_call(endpoint, token, "agent.chat.send", json_object(json_kv("to", to), json_kv("body", body)))
+	case "set-title":
+		// Rename the agent's OWN bound conversation (the chat thread shown in the
+		// UI top bar). Distinct from `task-chain set-title`, which renames the chain.
+		title := option_value(args, "--title", pos(tokens, 1))
+		if title == "" { print_agent_help([]string{"chat"}); return }
+		ctl_agent_call(endpoint, token, "agent.conversation.set_title", json_object(json_kv("title", title)))
 	case:
 		print_agent_help([]string{"chat"})
 	}
@@ -854,11 +860,13 @@ print_help_chat :: proc() {
 	fmt.println("  read [--limit N] [--since T] [--include-read] [--transcript]   Read messages.")
 	fmt.println("  send --to <user|agent-instance-id> --body <t> | --stdin        Send a message.")
 	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
+	fmt.println("  set-title <title>                                              Rename THIS conversation.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl chat read")
 	fmt.println("  ham-ctl chat send --to user --body 'Done — ready for review.'")
 	fmt.println("  ham-ctl chat send --to inst_reviewer --body 'Can you LGTM inst_task_1?'")
+	fmt.println("  ham-ctl chat set-title 'FS Demo: directory browser test'")
 }
 
 print_help_artifact :: proc() {
