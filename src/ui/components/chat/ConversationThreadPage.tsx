@@ -1150,18 +1150,18 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             send) on the bottom. */}
         <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-white/10 bg-[#161618] px-3 py-2.5 focus-within:border-sky-400/50 sm:px-4 sm:py-3">
           <div data-debug-id="conversation-composer-context" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-zinc-500">
-            <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
-              <Icon name="lock" size={12} /><span className="font-semibold text-zinc-400">{bridgeLabel || 'no bridge'}</span>
+            <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
+              <Icon name="lock" size={12} /><span className="min-w-0 truncate font-semibold text-zinc-400">{bridgeLabel || 'no bridge'}</span>
             </span>
             {projectId ? (
               <>
                 <span className="opacity-40">·</span>
-                <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title="Open project files" className="inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/5 hover:text-zinc-300">
-                  <Icon name="folder" size={13} /><span className="font-semibold text-zinc-400">{title}</span>
+                <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title={`Open project files — ${title}`} className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/5 hover:text-zinc-300">
+                  <Icon name="folder" size={13} /><span className="min-w-0 truncate font-semibold text-zinc-400">{title}</span>
                 </button>
               </>
             ) : null}
-            <div className="relative ml-auto" ref={statusMenuRef}>
+            <div className="relative ml-auto shrink-0" ref={statusMenuRef}>
               <button type="button" data-debug-id="conversation-runtime-status-chip" aria-haspopup="menu" aria-expanded={statusMenuOpen ? 'true' : 'false'} onClick={() => setStatusMenuOpen((open) => !open)} title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10">
                 <span className={`h-1.5 w-1.5 rounded-full ${runtimeStateFromStatus(runtimeStatus) === 'live' ? 'bg-emerald-400' : runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'bg-amber-400' : 'bg-zinc-500'}`} />
                 {needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}
@@ -1238,9 +1238,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           Runtime/model controls + immutable bridge/project context live in the
           composer. */}
       <header data-debug-id="conversation-thread-header" className="flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2 sm:gap-3 sm:px-4">
-        <div className="h-9 w-9 shrink-0" aria-hidden="true" />
+        <div className="hidden h-9 w-9 shrink-0 sm:block" aria-hidden="true" />
 
-        <div className="flex min-w-0 flex-1 items-center justify-center gap-1.5">
+        <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5 sm:justify-center">
           {renaming ? (
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <input
@@ -1261,33 +1261,34 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             <>
               <h2 data-debug-id="conversation-thread-title" className="truncate text-base font-semibold text-white sm:text-lg">{title}</h2>
               <button type="button" data-debug-id="conversation-thread-title-edit-btn" aria-label="Rename conversation" title="Rename" onClick={beginRenameFromHeader} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="pencil" size={14} /></button>
-              <div className="relative shrink-0" ref={headerActionsRef}>
-                <button ref={headerActionsButtonRef} type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="Conversation details" title="Details" aria-haspopup="menu" aria-expanded={headerActionsOpen ? 'true' : 'false'} onClick={() => setHeaderActionsOpen((open) => !open)} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="info" size={15} /></button>
-                {headerActionsOpen ? (
-                  <div data-debug-id="conversation-thread-overflow-menu" role="menu" className="absolute left-1/2 top-full z-40 mt-2 w-[min(88vw,300px)] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
-                    <button type="button" role="menuitem" data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><Icon name="refresh" size={15} /><span>Refresh messages</span></button>
-                    <div data-debug-id="conversation-thread-overflow-details" className="mt-1 border-t border-white/10 px-3 py-2 text-[11px] leading-5 text-zinc-500">
-                      <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
-                      <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
-                      <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
-                      <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
-                      <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
-                      {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
             </>
           )}
           {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-[11px] text-red-300">{titleError}</div> : null}
         </div>
 
+        <div className="relative shrink-0" ref={headerActionsRef}>
+          <button ref={headerActionsButtonRef} type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="Conversation details" title="Details" aria-haspopup="menu" aria-expanded={headerActionsOpen ? 'true' : 'false'} onClick={() => setHeaderActionsOpen((open) => !open)} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"><Icon name="info" size={16} /></button>
+          {headerActionsOpen ? (
+            <div data-debug-id="conversation-thread-overflow-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(88vw,300px)] overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
+              <button type="button" role="menuitem" data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><Icon name="refresh" size={15} /><span>Refresh messages</span></button>
+              <div data-debug-id="conversation-thread-overflow-details" className="mt-1 border-t border-white/10 px-3 py-2 text-[11px] leading-5 text-zinc-500">
+                <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
+                <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
+                <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
+                <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
+                <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
+                {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
         {(chainId || projectId) ? (
-          <button type="button" data-debug-id="conversation-right-panel-toggle-btn" aria-label={rightPanel !== 'closed' ? 'Close side panel' : 'Open side panel'} title={rightPanel !== 'closed' ? 'Close panel' : 'Open panel'} aria-pressed={rightPanel !== 'closed' ? 'true' : 'false'} onClick={toggleRightPanel} className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-xl border ${rightPanel !== 'closed' ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10'}`}>
+          <button type="button" data-debug-id="conversation-right-panel-toggle-btn" aria-label={rightPanel !== 'closed' ? 'Close side panel' : 'Open side panel'} title={rightPanel !== 'closed' ? 'Close panel' : 'Open panel'} aria-pressed={rightPanel !== 'closed' ? 'true' : 'false'} onClick={toggleRightPanel} className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-xl ${rightPanel !== 'closed' ? 'text-sky-300' : 'text-zinc-400 hover:bg-white/10 hover:text-zinc-200'}`}>
             <Icon name="panel-right" size={18} />
             {rightPanel === 'closed' && chainId && chainProgress.total > 0 ? <span data-debug-id="conversation-right-panel-toggle-progress" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black">{chainProgress.done}/{chainProgress.total}</span> : null}
           </button>
-        ) : <div className="h-9 w-9 shrink-0" aria-hidden="true" />}
+        ) : null}
       </header>
 
       {(() => {

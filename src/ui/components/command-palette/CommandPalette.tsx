@@ -8,6 +8,21 @@ import Icon, { type IconName } from '../Icon';
 // of superseded requests (handled by RTK Query: only the latest arg is kept).
 // Keyboard-first: up/down to move, Enter to activate, Esc to close.
 
+export type PaletteConversation = {
+  conversationId: string;
+  title: string;
+  agentName?: string;
+  runtimeStatus?: string;
+  activityStatus?: string;
+  unreadCount?: number;
+};
+
+export type PaletteConversationGroup = {
+  projectId: string;
+  projectName: string;
+  conversations: PaletteConversation[];
+};
+
 export type CommandPaletteProps = {
   open: boolean;
   onClose: () => void;
@@ -15,6 +30,9 @@ export type CommandPaletteProps = {
   onAction?: (actionId: string) => void;
   // Documented actions surfaced as quick verbs.
   actions?: PaletteAction[];
+  // Live conversations grouped by project — mirrors the sidebar rail so the
+  // palette doubles as the conversation switcher (replaces the drawer on mobile).
+  conversationGroups?: PaletteConversationGroup[];
 };
 
 export type PaletteAction = {
@@ -27,7 +45,17 @@ export type PaletteAction = {
 export type PaletteResult =
   | { kind: 'navigate'; label: string; hint?: string; icon?: IconName; route: string; group: 'Navigate' }
   | { kind: 'action'; label: string; hint?: string; icon?: IconName; actionId: string; group: 'Actions' }
+  | { kind: 'conversation'; label: string; hint?: string; route: string; group: string; convo: PaletteConversation }
   | { kind: 'entity'; label: string; hint?: string; hit: SearchHit; group: string; route?: string };
+
+// Dot color for a conversation's live runtime state.
+function convoDotClass(convo: PaletteConversation): string {
+  const s = String(convo.runtimeStatus || '').toLowerCase();
+  const busy = ['active', 'busy', 'working'].includes(String(convo.activityStatus || '').toLowerCase());
+  if (s === 'running' || s === 'ready' || s === 'live') return busy ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-400';
+  if (s === 'starting' || s === 'launching') return 'bg-amber-400';
+  return 'bg-zinc-600';
+}
 
 const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
   { label: 'New conversation', icon: 'plus', route: '/conversations/new' },
@@ -88,7 +116,7 @@ function hitIcon(type: string): IconName {
   }
 }
 
-export default function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS }: CommandPaletteProps) {
+export default function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [] }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -130,6 +158,22 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
       navItems.forEach((item) => out.push({ kind: 'navigate', label: item.label, icon: item.icon, route: item.route, group: 'Navigate' }));
     }
 
+    // Live conversations grouped by project — mirrors the sidebar rail. Each
+    // project becomes its own palette group; filtered by query when typing.
+    for (const group of conversationGroups) {
+      const items = q
+        ? group.conversations.filter((c) => matches(`${c.title} ${c.agentName || ''} ${group.projectName}`, q))
+        : group.conversations;
+      items.forEach((c) => out.push({
+        kind: 'conversation',
+        label: c.title || c.agentName || c.conversationId,
+        hint: c.agentName && c.agentName !== c.title ? c.agentName : undefined,
+        route: `/conversations/${c.conversationId}`,
+        group: group.projectName || 'Conversations',
+        convo: c,
+      }));
+    }
+
     // Entities from backend search (grouped by type).
     if (q && searchQuery.data) {
       for (const group of searchQuery.data.groups) {
@@ -145,7 +189,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
       actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, icon: a.icon, actionId: a.id, group: 'Actions' }));
     }
     return out;
-  }, [query, searchQuery.data, actions]);
+  }, [query, searchQuery.data, actions, conversationGroups]);
 
   // Reset active index when results change.
   useEffect(() => {
@@ -159,7 +203,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
   }, [activeIndex]);
 
   function activate(result: PaletteResult) {
-    if (result.kind === 'navigate' || result.kind === 'entity') {
+    if (result.kind === 'navigate' || result.kind === 'entity' || result.kind === 'conversation') {
       if (result.route) {
         onNavigate(result.route);
         onClose();
@@ -243,6 +287,8 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                   const active = idx === activeIndex;
                   const label = result.label;
                   const icon: IconName = result.kind === 'entity' ? hitIcon(result.hit.type || '') : ((result as any).icon || 'chevron-right');
+                  const isConvo = result.kind === 'conversation';
+                  const unread = isConvo ? Number(result.convo.unreadCount || 0) : 0;
                   return (
                     <button
                       key={`${groupLabel}-${idx}`}
@@ -253,8 +299,13 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                       onMouseEnter={() => setActiveIndex(idx)}
                       className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${active ? 'bg-white/[0.08] text-zinc-100' : 'text-zinc-300 hover:bg-white/[0.04]'}`}
                     >
-                      <span aria-hidden="true" className="grid w-5 place-items-center text-zinc-400 opacity-80"><Icon name={icon} size={16} /></span>
+                      {isConvo ? (
+                        <span aria-hidden="true" className="grid w-5 place-items-center"><span className={`h-2 w-2 rounded-full ${convoDotClass(result.convo)}`} /></span>
+                      ) : (
+                        <span aria-hidden="true" className="grid w-5 place-items-center text-zinc-400 opacity-80"><Icon name={icon} size={16} /></span>
+                      )}
                       <span className="min-w-0 flex-1 truncate">{label}</span>
+                      {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-sky-400 px-1.5 text-center text-[10px] font-bold leading-4 text-black">{unread > 99 ? '99+' : unread}</span> : null}
                       {result.hint ? <span className="ml-auto shrink-0 truncate pl-2 text-[11px] text-zinc-500">{result.hint}</span> : null}
                     </button>
                   );

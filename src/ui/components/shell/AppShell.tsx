@@ -6,7 +6,7 @@ import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import CommandPalette from '../command-palette/CommandPalette';
 import Icon, { type IconName } from '../Icon';
-import { useViewport, MobileTabBar, MobileTopBar } from './responsive';
+import { useViewport, MobileTabBar } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
 import { useUserWebSocket } from '../../api/useUserWebSocket';
@@ -379,16 +379,6 @@ function displayConversationMeta(conversation: ConversationSummary): string {
   if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
-
-function routeMobileTitle(path: string, conversations: ConversationSummary[]): string {
-  if (path.startsWith('/conversations/') && path !== '/conversations/new') {
-    const id = decodeSegment(path.slice('/conversations/'.length));
-    const conversation = conversations.find((item) => item.conversationId === id || item.agentInstanceId === id);
-    if (conversation) return displayConversationTitle(conversation);
-  }
-  return routeTitle(path);
-}
-
 
 function buildProjectConversationTree(conversations: ConversationSummary[], projects: ProjectSummary[]): ProjectGroup[] {
   const projectsById = new Map<string, ProjectSummary>();
@@ -994,7 +984,6 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, projects), [conversations, projects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
-  const mobileRouteTitle = useMemo(() => routeMobileTitle(path, conversations), [path, conversations]);
   const hideMobileShellChrome = isMobile && mobileChromeSuppressed;
   const sidebarError = String((conversationsQuery.error as any)?.error || (projectsQuery.error as any)?.error || '');
   const sidebarLoading = conversationsQuery.isLoading || projectsQuery.isLoading;
@@ -1015,11 +1004,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         className={`flex shrink-0 flex-col border-r border-white/10 bg-[#101010] transition-[width,transform] duration-200 ${collapsed ? 'w-16' : 'w-80'} ${isMobile ? 'fixed inset-y-0 left-0 z-50 w-80 transition-transform md:static md:z-auto' : 'md:static'} ${isMobile && !drawerOpen ? '-translate-x-full md:translate-x-0' : 'translate-x-0'}`}
         aria-label="Primary navigation"
       >
-        <div className={`flex items-center gap-3 border-b border-white/10 p-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
+        <div className={`flex items-center gap-3 p-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
           {!collapsed && (
             <a href={shellHash('/conversations')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-white/5">
               <span className="block truncate text-sm font-black tracking-tight text-white">Heimdall</span>
-              <span className="block truncate text-[11px] font-medium text-zinc-500">Hub UI v1</span>
             </a>
           )}
           <button
@@ -1078,9 +1066,6 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {isMobile && !hideMobileShellChrome ? (
-          <MobileTopBar title={mobileRouteTitle} onOpenDrawer={() => setDrawerOpen(true)} />
-        ) : null}
         <RouteOutlet path={path} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
       </div>
 
@@ -1096,7 +1081,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         />
       ) : null}
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, title: displayConversationTitle(c), agentName: c.agentName, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
     </div>
   );
 }
