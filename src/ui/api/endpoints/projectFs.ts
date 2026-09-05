@@ -109,13 +109,27 @@ function base(projectId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/fs`;
 }
 
+// Query fragment that pins the resolution to the conversation's bridge, so a
+// project configured on multiple bridges (or on a different/offline bridge) still
+// targets the bridge the agent actually runs on. Empty => hub falls back to the
+// single configured path.
+function bridgeParam(bridgeId?: string): string {
+  return bridgeId ? `bridge_id=${encodeURIComponent(bridgeId)}` : '';
+}
+
 export const projectFsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     // List a single directory (project-root-relative `path`, '' => project root).
     listProjectDir: build.query<FsListResult, ListArgs>({
-      queryFn: async ({ projectId, path = '', includeHidden = false, cursor = null, limit }) => {
+      queryFn: async ({ projectId, bridgeId = '', path = '', includeHidden = false, cursor = null, limit }) => {
         try {
           const qs = new URLSearchParams();
+          // Disambiguate which bridge's project path to use: a project may be
+          // configured on multiple bridges (or only on a DIFFERENT bridge than the
+          // one the conversation's agent runs on). Passing the conversation's
+          // bridge_id makes the hub resolve THIS bridge's path instead of falling
+          // back to "the single configured path" (which can be an offline bridge).
+          if (bridgeId) qs.set('bridge_id', bridgeId);
           if (path) qs.set('path', path);
           if (includeHidden) qs.set('include_hidden', 'true');
           if (cursor) qs.set('cursor', cursor);
@@ -134,9 +148,10 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Bounded read of a single file for the read-only viewer.
     readProjectFile: build.query<FsReadFileResult, ReadFileArgs>({
-      queryFn: async ({ projectId, path }) => {
+      queryFn: async ({ projectId, bridgeId = '', path }) => {
         try {
-          const data = await cookieJsonFetch(`${base(projectId)}/file?path=${encodeURIComponent(path)}`);
+          const bp = bridgeParam(bridgeId);
+          const data = await cookieJsonFetch(`${base(projectId)}/file?path=${encodeURIComponent(path)}${bp ? `&${bp}` : ''}`);
           return { data: data as FsReadFileResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -150,9 +165,10 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Create an empty file at `path`.
     createProjectFile: build.mutation<FsMutationResult, CreateArgs>({
-      queryFn: async ({ projectId, path }) => {
+      queryFn: async ({ projectId, bridgeId = '', path }) => {
         try {
-          const data = await cookieMutation(`${base(projectId)}/file`, 'POST', { path });
+          const bp = bridgeParam(bridgeId);
+          const data = await cookieMutation(`${base(projectId)}/file${bp ? `?${bp}` : ''}`, 'POST', { path });
           return { data: data as FsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -165,9 +181,10 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Create a directory at `path` (reuses the existing fs_make_dir command).
     createProjectDir: build.mutation<FsMutationResult, CreateArgs>({
-      queryFn: async ({ projectId, path }) => {
+      queryFn: async ({ projectId, bridgeId = '', path }) => {
         try {
-          const data = await cookieMutation(`${base(projectId)}/dir`, 'POST', { path });
+          const bp = bridgeParam(bridgeId);
+          const data = await cookieMutation(`${base(projectId)}/dir${bp ? `?${bp}` : ''}`, 'POST', { path });
           return { data: data as FsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -180,9 +197,10 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Rename/move `from` -> `to`. Invalidates both source and dest parents.
     moveProjectPath: build.mutation<FsMutationResult, MoveArgs>({
-      queryFn: async ({ projectId, from, to }) => {
+      queryFn: async ({ projectId, bridgeId = '', from, to }) => {
         try {
-          const data = await cookieMutation(`${base(projectId)}/move`, 'POST', { from, to });
+          const bp = bridgeParam(bridgeId);
+          const data = await cookieMutation(`${base(projectId)}/move${bp ? `?${bp}` : ''}`, 'POST', { from, to });
           return { data: data as FsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -196,10 +214,11 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Delete `path` (optionally recursive for non-empty dirs).
     deleteProjectPath: build.mutation<FsMutationResult, DeleteArgs>({
-      queryFn: async ({ projectId, path, recursive = false }) => {
+      queryFn: async ({ projectId, bridgeId = '', path, recursive = false }) => {
         try {
           const qs = new URLSearchParams({ path });
           if (recursive) qs.set('recursive', 'true');
+          if (bridgeId) qs.set('bridge_id', bridgeId);
           const data = await cookieMutation(`${base(projectId)}?${qs.toString()}`, 'DELETE');
           return { data: data as FsMutationResult };
         } catch (error: any) {

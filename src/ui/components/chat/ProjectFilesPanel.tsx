@@ -463,6 +463,11 @@ export default function ProjectFilesPanel({
           <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto">
             {loading ? (
               <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-zinc-500">Loading…</div>
+            ) : error && sortedEntries.length === 0 ? (
+              // Don't show the misleading "empty folder" placeholder when the load
+              // actually FAILED (e.g. project not configured on this bridge, or the
+              // bridge is offline). The error banner below carries the reason.
+              <div data-debug-id={`${debugPrefix}-load-error`} className="p-6 text-center text-xs text-zinc-500">Couldn’t load files — see the message below.</div>
             ) : sortedEntries.length === 0 ? (
               <div data-debug-id={`${debugPrefix}-empty`} className="p-6 text-center text-xs text-zinc-600">This folder is empty.</div>
             ) : (
