@@ -40,15 +40,13 @@ PTY_HOST_DEFAULT_COLS :: 120
 // ---- runtime flag -------------------------------------------------------
 
 // bridge_pty_host_runtime_enabled reports whether the bridge should drive agents
-// through ham-pty-host instead of tmux. Sourced from config (pty_host_runtime) OR
-// the HEIMDALL_BRIDGE_PTY_HOST env override (so it can be flipped for an A/B run
-// without editing config.toml). Default: false (tmux path) until DEL-1.
+// DEL-1: ham-pty-host is now the ONLY agent-launch runtime — the tmux/ham-wrapper
+// agent-launch path has been removed. This always returns true; the config flag
+// and env override are retained as no-op compatibility shims (a "0"/"false" no
+// longer re-enables the deleted tmux path). Kept as a proc so the remaining
+// per-command call sites and tests compile unchanged.
 bridge_pty_host_runtime_enabled :: proc() -> bool {
-	if v := os.get_env_alloc("HEIMDALL_BRIDGE_PTY_HOST", context.allocator); strings.trim_space(v) != "" {
-		defer delete(v)
-		return bridge_pty_host_truthy(v)
-	}
-	return bridge_config.pty_host_runtime
+	return true
 }
 
 bridge_pty_host_truthy :: proc(v: string) -> bool {

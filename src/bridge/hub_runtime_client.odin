@@ -312,15 +312,9 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if type == "notify_agent_message" {
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
-		// BR-3: in the wrapper-free path deliver the notice directly to the agent via
-		// the daemon (host.input+Enter) instead of pushing to a ham-wrapper.
-		ok: bool
-		if bridge_pty_host_runtime_enabled() {
-			sender := extract_json_string(text, "sender_agent_instance_id", extract_json_string(text, "sender", "user"))
-			ok = bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
-		} else {
-			ok = bridge_wrapper_push(instance_id, text)
-		}
+		// Deliver the notice directly to the agent via the daemon (host.input+Enter).
+		sender := extract_json_string(text, "sender_agent_instance_id", extract_json_string(text, "sender", "user"))
+		ok := bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
@@ -333,25 +327,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded", ""))
 			return
 		}
-		// BR-3: wrapper-free path delivers the task-nudge notice straight to the agent.
-		if bridge_pty_host_runtime_enabled() {
-			target_role := extract_json_string(text, "target_role", "participant")
-			ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role)
-			if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
-			if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
-			return
-		}
-		ok := bridge_wrapper_push_task_nudge(instance_id, text)
-		if !ok {
-			// Wrapper not connected: wake the local agent (coalesced) so it picks up
-			// the task/comment on boot, matching the status-change notify behavior.
-			// This is what makes a comment actually reach an idle/stopped assignee.
-			if bridge_task_status_notify_wake_local(instance_id) {
-				ok = true
-			} else {
-				fmt.println("bridge notify_task_nudge pending/no-wrapper-subscription", instance_id, command_id)
-			}
-		}
+		// Deliver the task-nudge notice straight to the agent via the daemon.
+		target_role := extract_json_string(text, "target_role", "participant")
+		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role)
+		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
@@ -361,24 +340,17 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		// agent so it picks up the nudge on boot. Never a new notifier.
 		command_id := extract_json_string(text, "command_id", "")
 		instance_id := extract_json_string(text, "agent_instance_id", "")
-		if bridge_pty_host_runtime_enabled() {
-			message := extract_json_string(text, "message", "Please set a short, human-meaningful title for this conversation and its task chain.")
-			notice := strings.concatenate({"Nudge: ", message})
-			defer delete(notice)
-			if socket, sok := bridge_pty_host_ensure_daemon(); sok {
-				ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
-				if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
-				return
-			}
+		message := extract_json_string(text, "message", "Please set a short, human-meaningful title for this conversation and its task chain.")
+		notice := strings.concatenate({"Nudge: ", message})
+		defer delete(notice)
+		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
+			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
+			if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+			return
 		}
-		ok := bridge_wrapper_push_title_nudge(instance_id, text)
-		if !ok {
-			if bridge_task_status_notify_wake_local(instance_id) {
-				ok = true
-			} else {
-				fmt.println("bridge notify_title_nudge pending/no-wrapper-subscription", instance_id, command_id)
-			}
-		}
+		// Daemon unavailable: wake the local agent so it picks up the nudge on boot.
+		ok := bridge_task_status_notify_wake_local(instance_id)
+		if !ok do fmt.println("bridge notify_title_nudge pending/no-daemon", instance_id, command_id)
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
@@ -436,31 +408,13 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		delivered := 0
 		failed := 0
 		if len(targets) > 0 {
-			message := strings.concatenate({"Task ", task_id, " is now ", new_status})
-			defer delete(message)
-			payload_b := strings.builder_make()
-			defer strings.builder_destroy(&payload_b)
-			strings.write_string(&payload_b, "{\"type\":\"notify_task_nudge\",\"command_id\":\"")
-			bridge_runtime_write_json_string(&payload_b, command_id)
-			strings.write_string(&payload_b, "\",\"mutation_id\":\"")
-			bridge_runtime_write_json_string(&payload_b, mutation_id)
-			strings.write_string(&payload_b, "\",\"task_id\":\"")
-			bridge_runtime_write_json_string(&payload_b, task_id)
-			strings.write_string(&payload_b, "\",\"new_status\":\"")
-			bridge_runtime_write_json_string(&payload_b, new_status)
-			strings.write_string(&payload_b, "\",\"message\":\"")
-			bridge_runtime_write_json_string(&payload_b, message)
-			strings.write_string(&payload_b, "\"}")
-			
-			payload_str := strings.to_string(payload_b)
-			
 			for inst in targets {
 				// Cross-bridge cascade: a status change on another bridge (e.g. an
 				// upstream task completing) can promote a downstream task whose target
-				// lives here. Push to the live wrapper if connected; otherwise wake the
-				// local agent (coalesced) so it can pick up the work on boot. Targets
-				// that are not local to this bridge are ignored (another bridge owns them).
-				if bridge_wrapper_push_task_nudge(inst, payload_str) {
+				// lives here. Deliver straight to the local agent via the daemon;
+				// otherwise wake the local agent (coalesced) so it can pick up the work
+				// on boot. Targets not local to this bridge are ignored.
+				if bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant") {
 					delivered += 1
 					continue
 				}
@@ -473,6 +427,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				}
 			}
 		}
+		_ = mutation_id
 		
 		if command_id != "" {
 			if delivered > 0 || len(targets) == 0 {
@@ -504,29 +459,15 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 	}
 	instance_id := extract_json_string(text, "agent_instance_id", "")
 	pending := Bridge_Pane_Capture_Pending{command_id=strings.clone(command_id),pane_capture_request_id=strings.clone(extract_json_string(text,"pane_capture_request_id","")),conversation_id=strings.clone(extract_json_string(text,"conversation_id","")),message_id=strings.clone(extract_json_string(text,"message_id","")),agent_instance_id=strings.clone(instance_id),width=bridge_runtime_provider_test_int(text,"width",80,40,200),line_limit=bridge_runtime_provider_test_int(text,"line_limit",120,20,300),deadline_unix_ms=bridge_runtime_now_ms()+i64(bridge_runtime_provider_test_int(text,"settle_ms",3000,500,10000)+30000)}
-	// BR-4: in the wrapper-free path serve the capture by proxying host.capture
-	// synchronously (no wrapper push, no tmux capture). The daemon returns the
-	// rendered VT screen, which we join into the same pane-text result shape the UI
-	// expects.
-	if bridge_pty_host_runtime_enabled() {
-		accepted := bridge_command_result_json(command_id, "accepted", "")
-		bridge_runtime_cache_command(command_id, accepted)
-		_ = ws.send_text(conn, accepted)
-		result := bridge_pty_host_capture_result(pending)
-		_ = ws.send_text(conn, result)
-		return
-	}
-	bridge_pane_capture_register_pending(pending)
+	// Serve the capture by proxying host.capture synchronously against the daemon,
+	// which returns the rendered VT screen joined into the pane-text result shape
+	// the UI expects.
+	_ = instance_id
 	accepted := bridge_command_result_json(command_id, "accepted", "")
 	bridge_runtime_cache_command(command_id, accepted)
 	_ = ws.send_text(conn, accepted)
-	push := bridge_pane_capture_push_json(pending, bridge_runtime_provider_test_int(text,"settle_ms",3000,500,10000))
-	if !bridge_wrapper_push_line(instance_id, push) {
-		bridge_pane_capture_remove_pending(command_id, pending.pane_capture_request_id)
-		result := bridge_pane_capture_result_json(pending,false,"wrapper_unavailable","The agent wrapper is not connected.","",0,false)
-		bridge_runtime_cache_command(command_id, bridge_command_result_payload_json(command_id,"failed","{\"error_code\":\"wrapper_unavailable\"}"))
-		_ = ws.send_text(conn, result)
-	}
+	result := bridge_pty_host_capture_result(pending)
+	_ = ws.send_text(conn, result)
 }
 
 bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
@@ -605,35 +546,24 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id"
 	// A genuine (re)launch supersedes any prior stop intent for this instance id.
 	bridge_runtime_clear_stop_intent(instance_id)
-	if existing, ok := bridge_runtime_get_launch(instance_id); ok {
-		_ = tmux.kill_window(existing.tmux_session, existing.tmux_window)
-	}
-	// The bridge runtime registry is in-memory and can be empty after bridge restart.
-	// Kill any exact stale tmux windows before creating the new ham-wrapper pane.
-	stale_session := bridge_runtime_tmux_session()
-	stale_window := bridge_runtime_tmux_window(instance_id)
-	for tmux.kill_window(stale_session, stale_window) {}
 	// Agents always run in their own managed run dir (never the project path).
 	// The project path/description is provided to the agent via AGENTS.md instead,
 	// so the agent decides when/how to work against the project checkout.
 	run_dir := bridge_runtime_default_run_dir(instance_id)
-	// The bridge creates the EMPTY run dir (tmux `cd`s into it to launch the
-	// wrapper) but writes NO bootstrap files there — the wrapper is the sole writer
-	// of run_dir contents (WRP-1). This keeps the e2e test honest.
+	// The bridge is the sole writer of run_dir contents: bootstrap materialization
+	// below clean-slates and writes the assembled file set directly.
 	_ = os.make_directory_all(run_dir)
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable"
 	bridge_runtime_set_status(instance_id, "starting", "active")
 	// H7 restart-reap: invalidate ANY prior local tokens for this instance BEFORE
-	// issuing fresh ones. A superseded old ham-wrapper will then fail its next
-	// wrapper.liveness.ping (its token is no longer valid) and self-terminate,
-	// regardless of tmux window/host/bridge. The freshly issued wrapper+agent
-	// tokens below are non-deterministic (hlat_<nanos>_<seq>), so the new runtime
-	// is cryptographically distinct from the old one.
+	// issuing fresh ones. A superseded old runtime then fails its next liveness
+	// ping (its token is no longer valid). The freshly issued agent token below is
+	// non-deterministic (hlat_<nanos>_<seq>), so the new runtime is
+	// cryptographically distinct from the old one.
 	invalidated := bridge_agent_token_invalidate_instance(instance_id)
 	if invalidated > 0 do fmt.println("bridge launch: invalidated prior local tokens for instance", instance_id, "count", invalidated)
 	instance_token := strings.concatenate({"hit_", instance_id})
-	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
 	provider, tier := bridge_runtime_provider_tier(command_json)
 	// Conditional, per-hash bootstrap (BRG-1..BRG-4): build the per-instance
@@ -644,45 +574,17 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	// A staged failure surfaces the stage + HTTP status instead of a generic string.
 	descriptor := bridge_bootstrap_descriptor_from_launch(command_json)
 	if strings.trim_space(descriptor.provider) == "" do descriptor.provider = provider
-	pty_host := bridge_pty_host_runtime_enabled()
-	// Bootstrap materialization differs by runtime:
-	//  - pty-host (wrapper-free): the BRIDGE clean-slates run_dir and WRITES the
-	//    assembled file set directly (bridge_bootstrap_launch_materialize_run_dir).
-	//  - tmux/ham-wrapper: the bridge PUBLISHES the file set for the wrapper to pull
-	//    via bootstrap.list/.file (bridge_bootstrap_launch_materialize).
-	boot_res: Bridge_Bootstrap_Result
-	if pty_host {
-		boot_res = bridge_bootstrap_launch_materialize_run_dir(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
-	} else {
-		boot_res = bridge_bootstrap_launch_materialize(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
-	}
+	// DEL-1: pty-host is the only agent-launch runtime. The bridge clean-slates the
+	// run_dir and WRITES the assembled file set directly (wrapper-free), then spawns
+	// the agent under the ham-pty-host daemon.
+	boot_res := bridge_bootstrap_launch_materialize_run_dir(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
 	if !boot_res.ok {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		detail := fmt.tprintf("bootstrap failed at stage=%s http_status=%d: %s", boot_res.stage, boot_res.http_status, boot_res.detail)
 		fmt.println("bridge launch_agent bootstrap failed", "instance=", instance_id, "stage=", boot_res.stage, "http_status=", boot_res.http_status, "detail=", boot_res.detail)
 		return false, detail
 	}
-	// BR-2 A/B switch: when the pty-host runtime flag is on, drive the agent
-	// through ham-pty-host instead of tmux. This is the wrapper-free path — the
-	// bridge already materialized the run_dir above and spawns the agent directly
-	// under the daemon PTY, with no ham-wrapper in between.
-	if pty_host {
-		return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, tier, agent_issue.plaintext_token, descriptor.display_name)
-	}
-	session := bridge_runtime_tmux_session()
-	window := bridge_runtime_tmux_window(instance_id)
-	wrapper_args, wrapper_args_ok := bridge_runtime_ham_wrapper_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, provider, tier)
-	if !wrapper_args_ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
-		return false, "provider has no runnable command"
-	}
-	launch, launch_ok := tmux.ensure_agent_window(session, window, run_dir, wrapper_args)
-	if !launch_ok || strings.trim_space(launch.pane_id) == "" {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
-		return false, "ham-wrapper tmux launch failed"
-	}
-	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), pane_id = strings.clone(launch.pane_id), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
-	return true, ""
+	return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, tier, agent_issue.plaintext_token, descriptor.display_name)
 }
 
 // bridge_runtime_launch_agent_pty_host is the wrapper-free launch path (BR-2).
@@ -750,18 +652,15 @@ bridge_runtime_stop_agent :: proc(instance_id: string) -> bool {
 	// running/starting (see bridge_runtime_note_activity_signal).
 	bridge_runtime_mark_stop_intent(instance_id)
 	bridge_runtime_set_status(instance_id, "stopping", "idle")
-	// BR-2: in the wrapper-free path there is no ham-wrapper to self-reap, so the
-	// bridge closes the instance on the daemon directly (SIGTERM->SIGKILL +
-	// unregister). Token invalidation below is still done for defense-in-depth.
-	if bridge_pty_host_runtime_enabled() {
-		if socket, ok := bridge_pty_host_ensure_daemon(); ok {
-			if bridge_pty_host_close(socket, instance_id) do fmt.println("bridge stop: closed instance on ham-pty-host", instance_id)
-		}
+	// Wrapper-free: the bridge closes the instance on the ham-pty-host daemon
+	// directly (SIGTERM->SIGKILL + unregister). Token invalidation below is still
+	// done for defense-in-depth.
+	if socket, ok := bridge_pty_host_ensure_daemon(); ok {
+		if bridge_pty_host_close(socket, instance_id) do fmt.println("bridge stop: closed instance on ham-pty-host", instance_id)
 	}
-	// Invalidate every local token for this instance (persisted to disk). The
-	// wrapper self-reaps on its next liveness ping; the bridge does nothing else.
+	// Invalidate every local token for this instance (persisted to disk).
 	invalidated := bridge_agent_token_invalidate_instance(instance_id)
-	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated, "(wrapper will self-reap)")
+	if invalidated > 0 do fmt.println("bridge stop: invalidated local tokens for instance", instance_id, "count", invalidated)
 	// Drop any in-memory launch record so we don't hold stale pane/token data.
 	bridge_runtime_remove_launch(instance_id)
 	bridge_runtime_set_status(instance_id, "stopped", "idle")

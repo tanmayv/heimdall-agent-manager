@@ -24,28 +24,20 @@ pty_host_flag_truthy_parsing :: proc(t: ^testing.T) {
 }
 
 @(test)
-pty_host_flag_env_override_wins :: proc(t: ^testing.T) {
-	// Default (no env, config false) => tmux path.
+pty_host_always_enabled :: proc(t: ^testing.T) {
+	// DEL-1: ham-pty-host is the only agent-launch runtime; the tmux path was
+	// removed, so bridge_pty_host_runtime_enabled() is always true regardless of
+	// the (now no-op) config flag / env override.
 	old := os.get_env_alloc("HEIMDALL_BRIDGE_PTY_HOST", context.allocator)
 	defer {
 		if strings.trim_space(old) != "" { _ = os.set_env("HEIMDALL_BRIDGE_PTY_HOST", old) } else { _ = os.unset_env("HEIMDALL_BRIDGE_PTY_HOST") }
 	}
 	_ = os.unset_env("HEIMDALL_BRIDGE_PTY_HOST")
 	bridge_config.pty_host_runtime = false
-	testing.expect(t, !bridge_pty_host_runtime_enabled(), "off by default")
+	testing.expect(t, bridge_pty_host_runtime_enabled(), "always enabled even with config false + no env")
 
-	// Config on => enabled.
-	bridge_config.pty_host_runtime = true
-	testing.expect(t, bridge_pty_host_runtime_enabled(), "config flag enables")
-
-	// Env override to 0 beats config true.
 	_ = os.set_env("HEIMDALL_BRIDGE_PTY_HOST", "0")
-	testing.expect(t, !bridge_pty_host_runtime_enabled(), "env 0 overrides config true")
-
-	// Env override to 1 with config false.
-	bridge_config.pty_host_runtime = false
-	_ = os.set_env("HEIMDALL_BRIDGE_PTY_HOST", "1")
-	testing.expect(t, bridge_pty_host_runtime_enabled(), "env 1 overrides config false")
+	testing.expect(t, bridge_pty_host_runtime_enabled(), "env 0 no longer re-enables the removed tmux path")
 
 	bridge_config.pty_host_runtime = false
 }
