@@ -44,7 +44,6 @@ bridge_bootstrap_fetch_and_materialize :: proc(hub_url, bridge_token, instance_i
 	if !ok || resp.status != 200 do return false
 	_ = os.make_directory_all(run_dir)
 	content := extract_json_string(resp.body, "content", strings.concatenate({"# Agent bootstrap\n\nInstance: ", instance_id, "\n"}))
-	content = strings.concatenate({content, bridge_bootstrap_ctl_guidance()})
 	agents_md_name := bridge_bootstrap_agents_md_name(provider)
 	bridge_bootstrap_cleanup_stale_agents_md(run_dir, agents_md_name)
 	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/", agents_md_name}), content) != nil do return false
@@ -83,7 +82,7 @@ bridge_bootstrap_write_skills :: proc(run_dir, provider, body: string) -> []stri
 bridge_bootstrap_materialize_local_provider_test :: proc(run_dir, bridge_endpoint, agent_token, instance_id, provider: string) -> bool {
 	if strings.trim_space(run_dir) == "" || strings.trim_space(bridge_endpoint) == "" || strings.trim_space(agent_token) == "" || strings.trim_space(instance_id) == "" do return false
 	_ = os.make_directory_all(run_dir)
-	content := strings.concatenate({"# Provider test bootstrap\n\nInstance: ", instance_id, "\nProvider: ", provider, "\n\nThis is a temporary Heimdall provider smoke-test run. Report readiness with `./.heimdall/bin/ham-ctl agent start-success` after the provider is usable.\n", bridge_bootstrap_ctl_guidance()})
+	content := strings.concatenate({"# Provider test bootstrap\n\nInstance: ", instance_id, "\nProvider: ", provider, "\n\nThis is a temporary Heimdall provider smoke-test run. Report readiness with `./.heimdall/bin/ham-ctl start-success` after the provider is usable.\n"})
 	agents_md_name := bridge_bootstrap_agents_md_name(provider)
 	bridge_bootstrap_cleanup_stale_agents_md(run_dir, agents_md_name)
 	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/", agents_md_name}), content) != nil do return false
@@ -188,10 +187,6 @@ bridge_bootstrap_json_string :: proc(b: ^strings.Builder, value: string) {
 		case: strings.write_rune(b, ch)
 		}
 	}
-}
-
-bridge_bootstrap_ctl_guidance :: proc() -> string {
-	return "\n\n## Heimdall CLI\n\nUse the managed CLI at `./.heimdall/bin/ham-ctl` for Heimdall actions from this run directory. Examples:\n\n```bash\n./.heimdall/bin/ham-ctl agent start-success\n./.heimdall/bin/ham-ctl agent chat read\n./.heimdall/bin/ham-ctl agent chat send --body \"...\"\n```\n\nThe bridge also exports `HEIMDALL_AGENT_TOKEN` and `HEIMDALL_AGENT_INSTANCE_ID` in your process environment.\n"
 }
 
 // bridge_bootstrap_render_ham_ctl_shim renders the ham-ctl shim script content in
@@ -591,7 +586,6 @@ bridge_bootstrap_assemble_agents_md_legacy :: proc(manifest_json: string, d: Bri
 			delete(body)
 		}
 	}
-	strings.write_string(&b, bridge_bootstrap_ctl_guidance())
 	return strings.to_string(b), true
 }
 
@@ -665,7 +659,6 @@ bridge_bootstrap_render_template :: proc(tpl_obj, manifest_json: string, d: Brid
 	b := strings.builder_make()
 	strings.write_string(&b, substituted)
 	delete(substituted)
-	strings.write_string(&b, bridge_bootstrap_ctl_guidance())
 	return strings.to_string(b), true
 }
 
@@ -1011,7 +1004,6 @@ bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, i
 			delete(h)
 		}
 	}
-	strings.write_string(&agents_md_b, bridge_bootstrap_ctl_guidance())
 
 	// WRP-1: PUBLISH a bootstrap file set for the wrapper's bootstrap.list/.file
 	// RPCs rather than writing run_dir here. The wrapper is the sole run_dir writer;
