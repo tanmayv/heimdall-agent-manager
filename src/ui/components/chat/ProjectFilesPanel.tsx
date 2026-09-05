@@ -51,8 +51,12 @@ function formatCommentsMarkdown(comments: FileLineComment[]): string {
   for (const [path, list] of byPath) {
     parts.push(`**${path}**`);
     for (const c of [...list].sort((a, b) => a.line - b.line || a.createdAt - b.createdAt)) {
-      const code = c.lineText.trim();
-      parts.push(`- L${c.line}: \`${code}\``);
+      if (c.line > 0) {
+        parts.push(`- L${c.line}: \`${c.lineText.trim()}\``);
+      } else {
+        // Line 0 = file/folder-level comment (no specific line).
+        parts.push(`- (${c.lineText.trim() || 'general'})`);
+      }
       for (const bodyLine of c.body.split('\n')) parts.push(`  > ${bodyLine}`);
     }
     parts.push('');
@@ -200,6 +204,11 @@ export default function ProjectFilesPanel({
   const deleteComment = useCallback((id: string) => {
     setComments((prev) => prev.filter((c) => c.id !== id));
   }, []);
+
+  // Path-level (file/folder) comment composer: the target path (or null when
+  // closed) and its draft. line 0 marks a path-scoped comment.
+  const [pathCommentFor, setPathCommentFor] = useState<{ path: string; label: string } | null>(null);
+  const [pathCommentDraft, setPathCommentDraft] = useState('');
 
   const commentsForPath = useCallback(
     (path: string) => comments.filter((c) => c.path === path),
@@ -446,9 +455,7 @@ export default function ProjectFilesPanel({
 
   // ---- Render ---------------------------------------------------------------
 
-  const wrapperCls = isMobile
-    ? 'flex h-full min-h-0 w-full flex-col bg-[#0b0d11]'
-    : 'flex h-full min-h-0 w-full flex-col bg-[#0b0d11]';
+  const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-[#0b0d11]';
 
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
@@ -537,12 +544,29 @@ export default function ProjectFilesPanel({
           onAddComment={(line, lineText, body) => addComment(viewFile.path, line, lineText, body)}
           onEditComment={editComment}
           onDeleteComment={deleteComment}
+          onCommentFile={() => { setPathCommentDraft(''); setPathCommentFor({ path: viewFile.path, label: `file: ${baseName(viewFile.path)}` }); }}
           onBack={() => setViewFile(null)}
         />
       ) : (
         <>
           {/* Breadcrumb */}
           <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex flex-wrap items-center gap-0.5 border-b border-white/[0.06] px-3 py-2 text-[12px] text-zinc-400">
+            {(() => {
+              const folderCount = comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length;
+              return (
+                <button
+                  data-debug-id={`${debugPrefix}-folder-comment-btn`}
+                  type="button"
+                  onClick={() => { setPathCommentDraft(''); setPathCommentFor({ path: cwd || '/', label: `folder: ${cwd || 'project root'}` }); }}
+                  title="Comment on this folder"
+                  aria-label="Comment on this folder"
+                  className={`mr-1 relative grid h-6 w-6 shrink-0 place-items-center rounded border ${folderCount > 0 ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-400 hover:bg-white/10'}`}
+                >
+                  <Icon name="chat" size={12} />
+                  {folderCount > 0 ? <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-sky-500 px-0.5 text-[8px] font-bold text-white">{folderCount}</span> : null}
+                </button>
+              );
+            })()}
             {crumbs.map((c, i) => (
               <span key={c.path || 'root'} className="flex items-center gap-0.5">
                 {i > 0 ? <Icon name="chevron-right" size={12} className="text-zinc-600" /> : null}
@@ -704,6 +728,44 @@ export default function ProjectFilesPanel({
         </>
       )}
 
+      {/* Path-level (file/folder) comment composer overlay. */}
+      {pathCommentFor ? (
+        <div className="absolute inset-x-0 bottom-0 z-10 border-t border-sky-400/20 bg-[#0b0d11] p-3 shadow-[0_-8px_24px_rgba(0,0,0,0.5)]">
+          <div data-debug-id={`${debugPrefix}-path-composer`} className="mx-auto max-w-2xl">
+            <div className="mb-1 text-[11px] text-zinc-400">Comment on {pathCommentFor.label}</div>
+            <textarea
+              data-debug-id={`${debugPrefix}-path-composer-input`}
+              autoFocus
+              value={pathCommentDraft}
+              onChange={(e) => setPathCommentDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); setPathCommentFor(null); }
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && pathCommentDraft.trim()) {
+                  e.preventDefault();
+                  addComment(pathCommentFor.path, 0, pathCommentFor.label, pathCommentDraft);
+                  setPathCommentFor(null);
+                }
+              }}
+              rows={3}
+              placeholder={`Comment on ${pathCommentFor.label}… (Cmd/Ctrl+Enter to save)`}
+              className="w-full resize-y rounded border border-white/10 bg-black/30 p-2 text-[12px] text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+            />
+            <div className="mt-1.5 flex justify-end gap-1.5">
+              <button data-debug-id={`${debugPrefix}-path-composer-cancel`} type="button" onClick={() => setPathCommentFor(null)} className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Cancel</button>
+              <button
+                data-debug-id={`${debugPrefix}-path-composer-save`}
+                type="button"
+                disabled={!pathCommentDraft.trim()}
+                onClick={() => { addComment(pathCommentFor.path, 0, pathCommentFor.label, pathCommentDraft); setPathCommentFor(null); }}
+                className="rounded-lg bg-sky-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                Comment
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {error ? (
         <div data-debug-id={`${debugPrefix}-error`} className="border-t border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-[11px] text-red-300">
           {error}
@@ -752,6 +814,7 @@ function FileView({
   onAddComment,
   onEditComment,
   onDeleteComment,
+  onCommentFile,
   onBack,
 }: {
   file: FsReadFileResult;
@@ -765,9 +828,11 @@ function FileView({
   onAddComment: (line: number, lineText: string, body: string) => void;
   onEditComment: (id: string, body: string) => void;
   onDeleteComment: (id: string) => void;
+  onCommentFile: () => void;
   onBack: () => void;
 }) {
   const name = baseName(file.path);
+  const fileLevelCount = comments.filter((c) => c.line === 0).length;
   const isImage = file.viewable && file.encoding === 'base64';
   const dataUri = isImage ? `data:${file.mime || 'application/octet-stream'};base64,${file.content || ''}` : '';
   const isText = file.viewable && !isImage;
@@ -798,6 +863,18 @@ function FileView({
               .join(' · ')}
           </div>
         </div>
+        {/* File-level comment */}
+        <button
+          data-debug-id={`${debugPrefix}-file-comment-btn`}
+          type="button"
+          onClick={onCommentFile}
+          title="Comment on this file"
+          aria-label="Comment on this file"
+          className={`relative shrink-0 grid h-8 w-8 place-items-center rounded-lg border ${fileLevelCount > 0 ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-300 hover:bg-white/10'}`}
+        >
+          <Icon name="chat" size={14} />
+          {fileLevelCount > 0 ? <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-sky-500 px-1 text-[9px] font-bold text-white">{fileLevelCount}</span> : null}
+        </button>
         {/* View controls */}
         {isMarkdown ? (
           <button
@@ -833,6 +910,14 @@ function FileView({
           if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) onLoadMore();
         }}
       >
+        {/* File-level comments (line 0), shown above the content. */}
+        {comments.filter((c) => c.line === 0).length > 0 ? (
+          <div data-debug-id={`${debugPrefix}-file-comments`} className="border-b border-white/[0.06] bg-white/[0.02] p-2">
+            {comments.filter((c) => c.line === 0).map((c) => (
+              <LineComment key={c.id} comment={c} debugPrefix={debugPrefix} gutterWidthCh={0} onEdit={onEditComment} onDelete={onDeleteComment} />
+            ))}
+          </div>
+        ) : null}
         {fetching && !content ? (
           <div className="p-4 text-center text-xs text-zinc-500">Loading…</div>
         ) : !file.viewable ? (
