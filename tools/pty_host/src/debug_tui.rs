@@ -21,7 +21,7 @@
 //! requested via Capture on a timer), NOT the raw Output byte stream. That is
 //! deliberate: it means the debug view repaints correctly on attach and is
 //! immune to the alt-screen "no redraw until the app repaints" limitation that
-//! the raw-passthrough `attach` client has (see SPIKE.md).
+//! the raw-passthrough `attach` client has.
 //!
 //! There is **no browser, no websocket, no Heimdall UI** — the sidebar lives
 //! entirely inside this binary.

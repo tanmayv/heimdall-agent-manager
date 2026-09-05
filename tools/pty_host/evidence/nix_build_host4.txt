@@ -1,3 +1,0 @@
-this derivation will be built:
-  /nix/store/x1w9zxnlqncj9idw4x6fw0zrx1gyid21-ham-pty-host-0.1.0.drv
-building '/nix/store/x1w9zxnlqncj9idw4x6fw0zrx1gyid21-ham-pty-host-0.1.0.drv'...

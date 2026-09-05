@@ -44,8 +44,6 @@ The daemon owns durable state, runtime routing, and notification fanout. Wrapper
   - Main runtime config for daemon, wrapper, providers, model tiers, startup/activity detection, guide agent, managed run dirs, and ctl defaults.
 - `README.md`
   - High-level project overview.
-- `docs/teams-v1/`
-  - Current chain/team/VCS/bootstrap lifecycle design docs.
 - `AGENTS.md`
   - This architecture/bootstrap guide.
 

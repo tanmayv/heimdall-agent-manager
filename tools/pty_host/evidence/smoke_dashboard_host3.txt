@@ -1,9 +1,0 @@
-# HOST-3 dashboard smoke (clean worktree, real PTY 40x120)
-# Fri Sep  4 12:45:51 UTC 2026
-
-## Rendered dashboard contains (via pty harness):
-ham-pty-host dashboard / agents sidebar (agent-one, agent-two) / LIST focus / SendKeys NamedKey Resize Capture widgets / pane placeholder
-
-## Responsiveness: attaching the dashboard in a 40x120 terminal resized the agent PTY:
-  before: a  24x80
-  after : a  36x86   (right-pane geometry -> agent PTY reflows)
