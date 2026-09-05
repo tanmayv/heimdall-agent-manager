@@ -349,10 +349,14 @@ export default function ProjectFilesPanel({
   const [viewNextOffset, setViewNextOffset] = useState(0);
   const [viewEof, setViewEof] = useState(true);
   const [loadingMoreFile, setLoadingMoreFile] = useState(false);
+  // Path of the file whose contents are currently being fetched — drives the
+  // inline spinner next to that file's name in the list.
+  const [openingPath, setOpeningPath] = useState('');
 
   const openFile = useCallback(
     async (path: string) => {
       setError('');
+      setOpeningPath(path);
       try {
         const res: FsReadFileResult = await readFile({ projectId, bridgeId, path, offset: 0 }).unwrap();
         setViewFile(res);
@@ -369,6 +373,8 @@ export default function ProjectFilesPanel({
         if (!res.ok && res.error?.message) setError(str(res.error.message));
       } catch (e: any) {
         setError(str(e?.error || e?.message) || 'Could not read file');
+      } finally {
+        setOpeningPath((cur) => (cur === path ? '' : cur));
       }
     },
     [projectId, bridgeId, readFile],
@@ -661,15 +667,22 @@ export default function ProjectFilesPanel({
               <div data-debug-id={`${debugPrefix}-empty`} className="p-6 text-center text-xs text-zinc-600">This folder is empty.</div>
             ) : (
               <ul>
-                {sortedEntries.map((e) => (
+                {sortedEntries.map((e) => {
+                  const isOpening = !e.is_dir && openingPath === joinPath(cwd, e.name);
+                  return (
                   <li key={`${e.is_dir ? 'd' : 'f'}:${e.name}`} className="group flex items-center gap-2 border-b border-white/[0.04] px-3 py-1.5 hover:bg-white/[0.05]">
                     <button
                       data-debug-id={`${debugPrefix}-entry-${e.name}`}
                       type="button"
+                      disabled={isOpening}
                       onClick={() => (e.is_dir ? openDir(joinPath(cwd, e.name)) : void openFile(joinPath(cwd, e.name)))}
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     >
-                      <Icon name={e.is_dir ? 'folder' : 'file'} size={15} className={`shrink-0 ${e.is_dir ? 'text-sky-300/70' : 'text-zinc-500'}`} />
+                      {isOpening ? (
+                        <Icon name="refresh" size={15} className="shrink-0 animate-spin text-sky-300" title="Loading file…" />
+                      ) : (
+                        <Icon name={e.is_dir ? 'folder' : 'file'} size={15} className={`shrink-0 ${e.is_dir ? 'text-sky-300/70' : 'text-zinc-500'}`} />
+                      )}
                       <span className={`min-w-0 flex-1 truncate text-[13px] ${e.hidden ? 'text-zinc-500' : 'text-zinc-200'}`}>{e.name}</span>
                       {e.has_git ? <span className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">git</span> : null}
                       {!e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-zinc-600">{formatBytes(e.size)}</span> : null}
@@ -701,7 +714,8 @@ export default function ProjectFilesPanel({
                       </button>
                     </div>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
 
