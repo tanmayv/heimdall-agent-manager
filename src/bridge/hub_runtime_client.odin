@@ -644,7 +644,18 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	// A staged failure surfaces the stage + HTTP status instead of a generic string.
 	descriptor := bridge_bootstrap_descriptor_from_launch(command_json)
 	if strings.trim_space(descriptor.provider) == "" do descriptor.provider = provider
-	boot_res := bridge_bootstrap_launch_materialize(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
+	pty_host := bridge_pty_host_runtime_enabled()
+	// Bootstrap materialization differs by runtime:
+	//  - pty-host (wrapper-free): the BRIDGE clean-slates run_dir and WRITES the
+	//    assembled file set directly (bridge_bootstrap_launch_materialize_run_dir).
+	//  - tmux/ham-wrapper: the bridge PUBLISHES the file set for the wrapper to pull
+	//    via bootstrap.list/.file (bridge_bootstrap_launch_materialize).
+	boot_res: Bridge_Bootstrap_Result
+	if pty_host {
+		boot_res = bridge_bootstrap_launch_materialize_run_dir(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
+	} else {
+		boot_res = bridge_bootstrap_launch_materialize(bridge_config.daemon_url, bridge_config.bridge_token, run_dir, endpoint, agent_issue.plaintext_token, descriptor, &bootstrap_global_cache)
+	}
 	if !boot_res.ok {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		detail := fmt.tprintf("bootstrap failed at stage=%s http_status=%d: %s", boot_res.stage, boot_res.http_status, boot_res.detail)
@@ -653,9 +664,9 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	}
 	// BR-2 A/B switch: when the pty-host runtime flag is on, drive the agent
 	// through ham-pty-host instead of tmux. This is the wrapper-free path — the
-	// bridge itself materializes the run_dir (BR-1) and spawns the agent directly
+	// bridge already materialized the run_dir above and spawns the agent directly
 	// under the daemon PTY, with no ham-wrapper in between.
-	if bridge_pty_host_runtime_enabled() {
+	if pty_host {
 		return bridge_runtime_launch_agent_pty_host(command_id, instance_id, run_dir, endpoint, provider, tier, agent_issue.plaintext_token, descriptor.display_name)
 	}
 	session := bridge_runtime_tmux_session()
@@ -681,13 +692,11 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 // registered) the agent under the daemon PTY. Retry/backoff on spawn preserves
 // AC-5 launch resilience.
 bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, endpoint, provider, tier, agent_token, display_name: string) -> (bool, string) {
-	// BR-1: clean-slate + materialize the run_dir, and build the agent env.
-	prespawn, prespawn_ok := bridge_prespawn_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, endpoint, agent_token, provider)
-	if !prespawn_ok {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
-		return false, "pty-host bootstrap materialization failed"
-	}
-	defer bridge_prespawn_result_delete(prespawn)
+	// Bootstrap files were already clean-slated + written to run_dir by
+	// bridge_bootstrap_launch_materialize_run_dir in the caller (the bridge is the
+	// sole materializer in the pty-host runtime). Here we only build the agent env.
+	env := bridge_prespawn_env(run_dir, endpoint, agent_token, instance_id)
+	defer { for e in env do delete(e); delete(env) }
 
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok {
@@ -695,7 +704,7 @@ bridge_runtime_launch_agent_pty_host :: proc(command_id, instance_id, run_dir, e
 		return false, "ham-pty-host daemon unavailable"
 	}
 
-	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, tier, agent_token, prespawn.env, display_name)
+	req, req_ok := bridge_pty_host_build_spawn(instance_id, run_dir, provider, tier, agent_token, env, display_name)
 	if !req_ok {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		return false, "provider has no runnable command"

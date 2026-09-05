@@ -833,6 +833,46 @@ bridge_bootstrap_publish_file_set :: proc(manifest_json: string, d: Bridge_Boots
 	return Bridge_Bootstrap_Result{ok = true, stage = "published"}
 }
 
+// bridge_bootstrap_materialize_run_dir is the wrapper-free (pty-host) writer: it
+// CLEAN-SLATES run_dir (deletes the whole tree, recreates empty) then WRITES the
+// fully-assembled file set (AGENTS.md/CLAUDE.md, skills, ham-ctl shim,
+// heimdall-bootstrap-manifest.json) directly to disk. The bridge is the sole
+// materializer here — no ham-wrapper, no bootstrap.list/.file RPC. Returns a
+// staged result so the caller can report WHERE it failed.
+bridge_bootstrap_materialize_run_dir :: proc(manifest_json: string, d: Bridge_Bootstrap_Descriptor, run_dir, bridge_endpoint, agent_token, provider: string, cache: ^Bootstrap_Cache) -> Bridge_Bootstrap_Result {
+	clean := strings.trim_right(run_dir, "/")
+	if strings.trim_space(clean) == "" do return Bridge_Bootstrap_Result{ok = false, stage = "write_run_dir", detail = "empty run_dir"}
+
+	files, build_res := bridge_bootstrap_build_file_set(manifest_json, d, bridge_endpoint, agent_token, provider, cache)
+	if !build_res.ok do return build_res
+	defer bridge_bootstrap_free_file_set(files)
+
+	// Clean slate on every (re)launch: delete the entire run_dir tree then recreate.
+	bridge_prespawn_clean_slate(clean)
+
+	for f in files {
+		rel := strings.trim_left(f.relative_path, "/")
+		if strings.trim_space(rel) == "" do continue
+		full := strings.concatenate({clean, "/", rel})
+		defer delete(full)
+		// Ensure parent dirs (skills live under nested dirs; ctl shim under .heimdall/bin).
+		if slash := strings.last_index_byte(full, '/'); slash > 0 {
+			parent := full[:slash]
+			_ = os.make_directory_all(parent)
+		}
+		if os.write_entire_file(full, transmute([]byte)f.content) != nil {
+			return Bridge_Bootstrap_Result{ok = false, stage = "write_run_dir", detail = strings.concatenate({"failed to write ", rel})}
+		}
+		// Executable bit for the ham-ctl shim (mode 0755): owner rwx.
+		if f.mode == 0o755 {
+			cpath := strings.clone_to_cstring(full)
+			_ = posix.chmod(cpath, posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
+			delete(cpath)
+		}
+	}
+	return Bridge_Bootstrap_Result{ok = true, stage = "materialized"}
+}
+
 bridge_bootstrap_dir_exists :: proc(path: string) -> bool {
 	return os.is_dir(path)
 }
@@ -863,6 +903,36 @@ bridge_bootstrap_launch_materialize :: proc(hub_url, bridge_token, run_dir, brid
 	if !res.ok do return res
 	defer delete(manifest_json)
 	return bridge_bootstrap_publish_file_set(manifest_json, d, bridge_endpoint, agent_token, provider, cache)
+}
+
+// bridge_bootstrap_launch_materialize_run_dir is the wrapper-free (pty-host)
+// top-level bootstrap entry: same conditional manifest + per-hash blob fetch as
+// launch_materialize, but the bridge itself CLEAN-SLATES run_dir and WRITES the
+// assembled file set to disk (no wrapper, no bootstrap.list/.file RPC). Falls back
+// to the legacy manifest/content materializers for a minimal descriptor.
+bridge_bootstrap_launch_materialize_run_dir :: proc(hub_url, bridge_token, run_dir, bridge_endpoint, agent_token: string, d: Bridge_Bootstrap_Descriptor, cache: ^Bootstrap_Cache) -> Bridge_Bootstrap_Result {
+	if strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" || strings.trim_space(d.instance_id) == "" {
+		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "missing hub_url/bridge_token/instance_id"}
+	}
+	if strings.trim_space(d.agent_id) == "" {
+		// Minimal descriptor: clean-slate + legacy manifest/content materializers,
+		// which DO write run_dir.
+		bridge_prespawn_clean_slate(strings.trim_right(run_dir, "/"))
+		if bridge_bootstrap_fetch_manifest_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider, cache) {
+			return Bridge_Bootstrap_Result{ok = true, stage = "fallback_manifest"}
+		}
+		if bridge_bootstrap_fetch_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider) {
+			return Bridge_Bootstrap_Result{ok = true, stage = "fallback_legacy"}
+		}
+		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch payload missing agent_id (enriched descriptor required)"}
+	}
+	provider := d.provider
+	manifest_json, res := bridge_bootstrap_conditional_manifest(hub_url, bridge_token, provider, d, cache)
+	if !res.ok do return res
+	defer delete(manifest_json)
+	// Also publish for any bootstrap.list/.file readers (harmless under pty-host),
+	// then write the run_dir directly.
+	return bridge_bootstrap_materialize_run_dir(manifest_json, d, run_dir, bridge_endpoint, agent_token, provider, cache)
 }
 
 bridge_bootstrap_fetch_manifest_and_materialize :: proc(hub_url, bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider: string, cache: ^Bootstrap_Cache) -> bool {
