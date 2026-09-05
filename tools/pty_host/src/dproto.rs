@@ -102,6 +102,13 @@ pub enum CtlMsg {
     Capture { instance: String },
     Detach { instance: String },
     Ping,
+    /// Subscribe this connection to host-level async events (HostHeartbeat plus
+    /// the per-instance lifecycle signals ChildExited / ScreenChanged /
+    /// StartupReady / StartupBlocked) WITHOUT attaching to any instance's raw
+    /// Output. The bridge's single long-lived event connection sends this once so
+    /// it receives liveness/lifecycle for ALL agents; one-shot control
+    /// connections do NOT send it and thus keep clean request/reply streams.
+    WatchEvents,
     /// Stop every agent and terminate the daemon process (HOST-1 `stop`).
     Shutdown,
 }
@@ -164,6 +171,7 @@ const T_CAPTURE: u8 = 0x34;
 const T_DETACH: u8 = 0x35;
 const T_PING: u8 = 0x36;
 const T_SHUTDOWN: u8 = 0x37;
+const T_WATCH_EVENTS: u8 = 0x38;
 
 const T_SPAWNED: u8 = 0xA0;
 const T_CLOSED: u8 = 0xA1;
@@ -355,6 +363,7 @@ impl CtlMsg {
                 put_str(&mut p, instance);
             }
             CtlMsg::Ping => p.push(T_PING),
+            CtlMsg::WatchEvents => p.push(T_WATCH_EVENTS),
             CtlMsg::Shutdown => p.push(T_SHUTDOWN),
         }
         frame(&p)
@@ -433,6 +442,7 @@ impl CtlMsg {
                 instance: get_str(rest, &mut off)?,
             },
             T_PING => CtlMsg::Ping,
+            T_WATCH_EVENTS => CtlMsg::WatchEvents,
             T_SHUTDOWN => CtlMsg::Shutdown,
             _ => return Err(bad("unknown ctl tag")),
         })
@@ -757,6 +767,7 @@ mod tests {
         round_msg(CtlMsg::Restart { instance: "a".into() });
         round_msg(CtlMsg::List);
         round_msg(CtlMsg::Ping);
+        round_msg(CtlMsg::WatchEvents);
         round_msg(CtlMsg::Shutdown);
     }
 

@@ -50,6 +50,7 @@ PTY_HOST_T_STARTUP_BLOCKED :: 0xAA
 PTY_HOST_T_SCREEN_CHANGED :: 0xAB
 PTY_HOST_T_SHUTTING_DOWN :: 0xAC
 PTY_HOST_T_HOST_HEARTBEAT :: 0xAD
+PTY_HOST_T_WATCH_EVENTS :: 0x38
 
 PTY_HOST_MAX_FRAME_BYTES :: 64 * 1024 * 1024
 
@@ -279,6 +280,7 @@ pty_host_encode_restart :: proc(instance: string) -> []byte { return pty_host_en
 pty_host_encode_attach :: proc(instance: string) -> []byte { return pty_host_encode_instance_only(PTY_HOST_T_ATTACH, instance) }
 pty_host_encode_capture :: proc(instance: string) -> []byte { return pty_host_encode_instance_only(PTY_HOST_T_CAPTURE, instance) }
 pty_host_encode_detach :: proc(instance: string) -> []byte { return pty_host_encode_instance_only(PTY_HOST_T_DETACH, instance) }
+pty_host_encode_watch_events :: proc() -> []byte { p := [?]byte{PTY_HOST_T_WATCH_EVENTS}; return pty_host_frame(p[:]) }
 
 pty_host_encode_list :: proc() -> []byte {
 	p := [?]byte{PTY_HOST_T_LIST}

@@ -642,12 +642,25 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 	now := platform.clock_now(service.clock)
 	for i in 0..<len(instances) {
 		inst := instances[i]
-		if runtime_expected_active(inst.runtime_status) && !string_slice_contains(active_instance_ids, inst.agent_instance_id) {
+		reported_active := string_slice_contains(active_instance_ids, inst.agent_instance_id)
+		if runtime_expected_active(inst.runtime_status) && !reported_active {
 			inst.runtime_status = "unreachable"
 			inst.updated_at = now
 			apply_runtime_startup_projection(&inst, now)
 			_, saved, _ := iface.agent_save_instance(service.agents, inst)
 			if saved do changed += 1
+		} else if reported_active {
+			// The heartbeat's active_instance_ids IS the liveness proof for a running
+			// instance: refresh last_seen_at so the stale reaper (reap_stale_instances,
+			// which checks last_seen_at age) does not falsely mark a steady-state
+			// running agent "unreachable" between status-change pushes. Without this,
+			// a running-but-idle agent's last_seen_at only advanced on a status change,
+			// so after BRIDGE_INSTANCE_STALE_MS it was reaped despite every heartbeat
+			// reporting it active.
+			if inst.last_seen_at != now {
+				inst.last_seen_at = now
+				_, _, _ = iface.agent_save_instance(service.agents, inst)
+			}
 		}
 	}
 	return changed

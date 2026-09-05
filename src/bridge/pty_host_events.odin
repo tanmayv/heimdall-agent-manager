@@ -19,6 +19,7 @@ package main
 // not read as false-active. This keeps the daemon dumb (raw hash) and the policy
 // in the bridge, exactly as the design requires.
 
+import "core:strings"
 import "core:sync"
 import "core:sys/posix"
 import "core:thread"
@@ -34,20 +35,67 @@ PTY_HOST_BURST_GAP_MS :: 400
 pty_host_events_started: bool
 pty_host_events_lock: sync.Mutex
 
-// bridge_pty_host_events_ensure starts the single event-subscription worker once
-// (idempotent). Called after the first successful spawn so there is a daemon to
-// attach to. Safe to call repeatedly.
+// Activity-classification work queue (BR-3): ScreenChanged handling is blocking
+// (~800ms of burst captures), so it MUST NOT run in the read loop. The read loop
+// enqueues (instance, socket) here and a dedicated worker drains it. The queue is
+// COALESCED per instance — a pending instance is not duplicated — so a burst of
+// ScreenChanged for one agent collapses to a single reclassification, bounding the
+// backlog regardless of how chatty an agent is.
+pty_host_activity_queue: [dynamic]string
+pty_host_activity_socket: string
+pty_host_activity_lock: sync.Mutex
+
+// bridge_pty_host_events_ensure starts the single event-subscription worker AND
+// the activity-classification worker once (idempotent). Called after the first
+// successful spawn so there is a daemon to attach to. Safe to call repeatedly.
 //
 // Per-child liveness is delivered by the daemon's pushed Host_Heartbeat digest on
-// this same event connection (see bridge_pty_host_dispatch_event), so there is no
-// bridge-side polling worker: the party that owns the PTYs pushes liveness, the
-// bridge only touches last_seen on receipt.
+// the event connection (see bridge_pty_host_dispatch_event); the read loop stays
+// tight (offloading blocking activity work below) so heartbeats/exits are always
+// drained promptly.
 bridge_pty_host_events_ensure :: proc() {
 	sync.mutex_lock(&pty_host_events_lock)
 	defer sync.mutex_unlock(&pty_host_events_lock)
 	if pty_host_events_started do return
 	pty_host_events_started = true
+	pty_host_activity_queue = make([dynamic]string)
 	thread.run(bridge_pty_host_events_worker)
+	thread.run(bridge_pty_host_activity_worker)
+}
+
+// bridge_pty_host_enqueue_screen_changed queues an instance for activity
+// reclassification, coalescing duplicates so the queue never grows unbounded under
+// a chatty agent. Called from the read loop; returns immediately.
+bridge_pty_host_enqueue_screen_changed :: proc(socket, instance: string) {
+	if strings.trim_space(instance) == "" do return
+	sync.mutex_lock(&pty_host_activity_lock)
+	defer sync.mutex_unlock(&pty_host_activity_lock)
+	if pty_host_activity_socket == "" do pty_host_activity_socket = strings.clone(socket)
+	for id in pty_host_activity_queue do if id == instance do return
+	append(&pty_host_activity_queue, strings.clone(instance))
+}
+
+// bridge_pty_host_activity_worker drains the activity queue, running the blocking
+// burst-capture classification OFF the read loop so it never stalls heartbeat/exit
+// delivery. It sleeps briefly when the queue is empty.
+bridge_pty_host_activity_worker :: proc() {
+	for {
+		instance := ""
+		socket := ""
+		sync.mutex_lock(&pty_host_activity_lock)
+		if len(pty_host_activity_queue) > 0 {
+			instance = pty_host_activity_queue[0]
+			ordered_remove(&pty_host_activity_queue, 0)
+			socket = pty_host_activity_socket
+		}
+		sync.mutex_unlock(&pty_host_activity_lock)
+		if instance == "" {
+			time.sleep(100 * time.Millisecond)
+			continue
+		}
+		bridge_pty_host_handle_screen_changed(socket, instance)
+		delete(instance)
+	}
 }
 
 // bridge_pty_host_events_worker is the long-lived reader. It (re)dials the daemon,
@@ -71,11 +119,17 @@ bridge_pty_host_events_run_once :: proc(socket: string) -> bool {
 	if !ok do return false
 	defer posix.close(fd)
 
-	// Attach to all instances the bridge currently has launched so their events
-	// stream on this connection.
-	if reply, lok := bridge_pty_host_list(socket); lok {
-		for a in reply.agents do bridge_pty_host_attach_on(fd, a.instance_id)
-		pty_host_reply_delete(reply)
+	// Subscribe to host-level events (WatchEvents) instead of Attaching. The daemon
+	// then delivers all bridge-relevant frames — HostHeartbeat, ChildExited,
+	// ScreenChanged, StartupReady/Blocked — for ALL agents on this one connection,
+	// WITHOUT the raw per-instance PTY Output flood that Attach would add. That
+	// Output flood previously stalled this single-threaded read loop and delayed
+	// heartbeat/exit processing, falsely reaping idle agents. Output stays
+	// Attach-gated for the UI live-pane path only.
+	{
+		frame := pty_host_encode_watch_events()
+		defer delete(frame)
+		if !pty_host_send_all(fd, frame) do return true
 	}
 
 	for {
@@ -87,13 +141,6 @@ bridge_pty_host_events_run_once :: proc(socket: string) -> bool {
 		bridge_pty_host_dispatch_event(socket, reply)
 		pty_host_reply_delete(reply)
 	}
-}
-
-// bridge_pty_host_attach_on sends an Attach for instance on an existing fd.
-bridge_pty_host_attach_on :: proc(fd: posix.FD, instance: string) {
-	frame := pty_host_encode_attach(instance)
-	defer delete(frame)
-	_ = pty_host_send_all(fd, frame)
 }
 
 // bridge_pty_host_dispatch_event routes one decoded event to the status/activity
@@ -108,7 +155,13 @@ bridge_pty_host_dispatch_event :: proc(socket: string, reply: Pty_Host_Reply) {
 	case .Startup_Blocked:
 		bridge_pty_host_apply_startup_blocked(reply.instance, reply.reason_code, reply.message)
 	case .Screen_Changed:
-		bridge_pty_host_handle_screen_changed(socket, reply.instance)
+		// Do NOT run the burst-capture classification inline: it blocks ~800ms+
+		// (3 captures * 400ms gaps) and would stall the single-threaded read loop,
+		// starving Host_Heartbeat / Child_Exited frames that pile up unread behind
+		// it — which caused idle agents to be falsely reaped while a busy agent's
+		// ScreenChanged stream monopolized the loop. Hand off to the activity worker
+		// (coalesced per instance) and keep reading.
+		bridge_pty_host_enqueue_screen_changed(socket, reply.instance)
 	case .Host_Heartbeat:
 		// Per-child liveness digest pushed by the daemon on a fixed cadence:
 		// refresh last_seen for every child the daemon reports alive. A dead child

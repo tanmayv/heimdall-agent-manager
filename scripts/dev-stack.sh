@@ -41,8 +41,11 @@ build() {
   nix build "$ROOT#ham-bridge" -o result-bridge
   nix build "$ROOT#ham-ctl" -o result-ctl
   nix build "$ROOT#ham-wrapper" -o result-wrapper
+  # BR-2: the dev bridge drives agents through ham-pty-host (same runtime as
+  # production), so build it too and point the bridge at it in start().
+  nix build "$ROOT#ham-pty-host" -o result-ptyhost
   echo "[dev-stack] built:"
-  for r in result-hub result-devproxy result-bridge result-ctl result-wrapper; do
+  for r in result-hub result-devproxy result-bridge result-ctl result-wrapper result-ptyhost; do
     printf '  %-18s -> %s\n' "$r" "$(readlink "$r")"
   done
 }
@@ -195,6 +198,8 @@ start() {
   [ -s "$BRIDGE_TOKEN_FILE" ] && bridge_token_args=(--bridge-token-file "$BRIDGE_TOKEN_FILE")
   HEIMDALL_HAM_WRAPPER_BIN="$ROOT/result-wrapper/bin/ham-wrapper" \
   HEIMDALL_HAM_CTL_BIN="$ROOT/result-ctl/bin/ham-ctl" \
+  HEIMDALL_BRIDGE_PTY_HOST=1 \
+  HEIMDALL_HAM_PTY_HOST_BIN="$ROOT/result-ptyhost/bin/ham-pty-host" \
   nohup ./result-bridge/bin/ham-bridge \
     --config "$BRIDGE_CONFIG" \
     --bind-host 127.0.0.1 --port "$BRIDGE_PORT" \

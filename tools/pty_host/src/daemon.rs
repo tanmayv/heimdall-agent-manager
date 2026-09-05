@@ -134,16 +134,25 @@ type Subscribers = Arc<Mutex<HashMap<u64, Subscriber>>>;
 /// A registered connection's event sink, before/independent of any Attach.
 type Sinks = Arc<Mutex<HashMap<u64, Sender<CtlReply>>>>;
 
+/// Connections that sent WatchEvents: they receive host-level async events
+/// (HostHeartbeat + lifecycle: ChildExited/ScreenChanged/StartupReady/
+/// StartupBlocked) for ALL agents without attaching to any instance's Output.
+type Watchers = Arc<Mutex<HashMap<u64, Sender<CtlReply>>>>;
+
 /// The per-machine multi-agent daemon.
 #[derive(Clone)]
 pub struct Daemon {
     agents: Registry,
-    /// Clients that have Attached and are receiving instance-scoped events.
+    /// Clients that have Attached and are receiving instance-scoped Output.
     subs: Subscribers,
     /// All connected clients' sinks (HOST-5): a sink here is NOT subscribed to
-    /// any events until the client Attaches; control-only clients live here
-    /// only, so they never receive async event frames.
+    /// any events until the client Attaches or WatchEvents; control-only clients
+    /// live here only, so they never receive async event frames.
     sinks: Sinks,
+    /// Connections subscribed to host-level events via WatchEvents. Lifecycle +
+    /// heartbeat frames go here (not to all sinks), so one-shot control
+    /// connections keep clean request/reply streams (HOST-5).
+    watchers: Watchers,
 }
 
 impl Default for Daemon {
@@ -158,6 +167,7 @@ impl Daemon {
             agents: Arc::new(Mutex::new(HashMap::new())),
             subs: Arc::new(Mutex::new(HashMap::new())),
             sinks: Arc::new(Mutex::new(HashMap::new())),
+            watchers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -234,10 +244,14 @@ impl Daemon {
             })
         };
 
-        // Exit watcher: when the child dies, broadcast ChildExited to every
-        // connected client (dashboards want all exits, not just attachers).
+        // Exit watcher: when the child dies, broadcast ChildExited to every event
+        // WATCHER (connections that sent WatchEvents), not all sinks: ChildExited
+        // is a bridge-level lifecycle signal the event subscriber must always get
+        // even though it never Attaches, but one-shot control connections must NOT
+        // see it interleaved with their reply (HOST-5). Watchers get it without any
+        // per-instance Output flood.
         let exit_watch = {
-            let subs = Arc::clone(&self.subs);
+            let watchers = Arc::clone(&self.watchers);
             let alive = Arc::clone(&alive);
             let stop = Arc::clone(&stop);
             let host = Arc::clone(&host);
@@ -255,8 +269,8 @@ impl Daemon {
                     return;
                 }
                 let code = host.lock().unwrap().exit_code().unwrap_or(-1);
-                broadcast_all(
-                    &subs,
+                broadcast_all_sinks(
+                    &watchers,
                     &CtlReply::ChildExited {
                         instance: instance.clone(),
                         code,
@@ -276,13 +290,13 @@ impl Daemon {
             // Always run the loop (even when disabled/absent) so we still emit
             // the ScreenChanged activity signal; the Detector short-circuits
             // startup to Ready immediately when disabled.
-            let subs = Arc::clone(&self.subs);
+            let watchers = Arc::clone(&self.watchers);
             let alive = Arc::clone(&alive);
             let stop = Arc::clone(&stop);
             let host = Arc::clone(&host);
             let instance = instance.clone();
             Some(std::thread::spawn(move || {
-                run_detector(cfg, host, subs, instance, alive, stop);
+                run_detector(cfg, host, watchers, instance, alive, stop);
             }))
         };
 
@@ -416,10 +430,23 @@ impl Daemon {
         self.sinks.lock().unwrap().insert(id, tx);
     }
 
-    /// Drop a client entirely: its sink and any active subscription.
+    /// Subscribe connection `id` to host-level events (WatchEvents). Puts its sink
+    /// into `watchers` so it receives HostHeartbeat + lifecycle frames for all
+    /// agents without attaching to any instance's Output.
+    fn watch_events(&self, id: u64) {
+        let tx = match self.sinks.lock().unwrap().get(&id).cloned() {
+            Some(tx) => tx,
+            None => return,
+        };
+        self.watchers.lock().unwrap().insert(id, tx);
+    }
+
+    /// Drop a client entirely: its sink, any active subscription, and its event
+    /// watch.
     fn unsubscribe(&self, id: u64) {
         self.subs.lock().unwrap().remove(&id);
         self.sinks.lock().unwrap().remove(&id);
+        self.watchers.lock().unwrap().remove(&id);
     }
 
     /// Attach client `id` to `instance`'s output stream. Creates the client's
@@ -480,7 +507,12 @@ impl Daemon {
             ts_unix_ms: now_millis(),
             agents,
         };
-        broadcast_all(&self.subs, &reply);
+        // Deliver to event WATCHERS (connections that sent WatchEvents), not all
+        // sinks: the heartbeat is a host-level liveness digest the bridge's event
+        // subscriber must always get without attaching, but one-shot control
+        // connections must keep clean request/reply streams (HOST-5). The bridge's
+        // long-lived event connection sends WatchEvents once and thus receives it.
+        broadcast_all_sinks(&self.watchers, &reply);
     }
 
     /// Stop all agents + drop all subscribers. Idempotent.
@@ -515,11 +547,14 @@ fn pump_output(
     }
 }
 
-/// Broadcast a reply to every connected client (regardless of attachment).
-fn broadcast_all(subs: &Subscribers, reply: &CtlReply) {
-    let map = subs.lock().unwrap();
-    for sub in map.values() {
-        let _ = sub.tx.send(reply.clone());
+/// Broadcast to EVERY connected client (all registered sinks), regardless of
+/// whether they have Attached to an instance. Used for host-level frames like
+/// HostHeartbeat that are not scoped to a particular agent, so a control/event
+/// client that never Attached still receives them.
+fn broadcast_all_sinks(sinks: &Sinks, reply: &CtlReply) {
+    let map = sinks.lock().unwrap();
+    for tx in map.values() {
+        let _ = tx.send(reply.clone());
     }
 }
 
@@ -535,7 +570,7 @@ fn broadcast_all(subs: &Subscribers, reply: &CtlReply) {
 fn run_detector(
     cfg: StartupDetectionConfig,
     host: Arc<Mutex<PtyHost>>,
-    subs: Subscribers,
+    watchers: Watchers,
     instance: String,
     alive: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
@@ -565,8 +600,8 @@ fn run_detector(
         let h = screen_hash(&text);
         if last_hash != Some(h) {
             last_hash = Some(h);
-            broadcast_all(
-                &subs,
+            broadcast_all_sinks(
+                &watchers,
                 &CtlReply::ScreenChanged {
                     instance: instance.clone(),
                     hash: h,
@@ -600,7 +635,7 @@ fn run_detector(
                                     safe_diagnostic,
                                 },
                             };
-                            broadcast_all(&subs, &reply);
+                            broadcast_all_sinks(&watchers, &reply);
                         }
                     }
                 }
@@ -853,6 +888,7 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &Sender<CtlReply>) {
             }
         },
         CtlMsg::Detach { instance } => daemon.detach(id, &instance),
+        CtlMsg::WatchEvents => daemon.watch_events(id),
         CtlMsg::Ping => {
             let _ = tx.send(CtlReply::Pong);
         }
@@ -1632,7 +1668,8 @@ mod tests {
             }),
         )
         .unwrap();
-        // HOST-5: events flow only to attached clients — opt in.
+        // Lifecycle/activity events flow to WatchEvents subscribers now.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::WatchEvents).unwrap();
         dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "b".into() }).unwrap();
 
         let ev = await_reply(
@@ -1751,7 +1788,8 @@ mod tests {
             }),
         )
         .unwrap();
-        // HOST-5: events flow only to attached clients — opt in.
+        // Lifecycle/activity events flow to WatchEvents subscribers now.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::WatchEvents).unwrap();
         dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "r".into() }).unwrap();
 
         let ev = await_reply(
@@ -1795,7 +1833,8 @@ mod tests {
         )
         .unwrap();
         assert!(await_reply(&mut c, |r| matches!(r, CtlReply::Spawned { .. }), Duration::from_secs(3)).is_some());
-        // HOST-5: events flow only to attached clients — opt in.
+        // Lifecycle/activity events flow to WatchEvents subscribers now.
+        dproto::write_ctl_msg(&mut c, &CtlMsg::WatchEvents).unwrap();
         dproto::write_ctl_msg(&mut c, &CtlMsg::Attach { instance: "ch".into() }).unwrap();
 
         // Collect ScreenChanged hashes while driving new content on a retry loop.
