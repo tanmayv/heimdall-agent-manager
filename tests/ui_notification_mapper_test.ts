@@ -23,6 +23,40 @@ const { notificationForWsEvent } = await import('../src/ui/api/notificationMappe
   assert.match(plan!.body, /Deployment finished/);
 }
 
+// (a2) hub metadata-only new-message shape: top-level direction + body_preview
+// and NO nested `message` object => still notifies using the preview text.
+{
+  const plan = notificationForWsEvent({
+    type: 'chat_event',
+    event: 'chat_updated',
+    direction: 'agent_to_user',
+    agent_instance_id: 'inst_abc',
+    conversation_id: 'conv_1',
+    message_id: 'msg_1',
+    message_type: 'text',
+    body_preview: 'Second preview test message that is short enough.',
+    fetch_required: true,
+  });
+  assert.ok(plan, 'agent_to_user preview event should notify');
+  assert.equal(plan!.category, 'chat');
+  assert.equal(plan!.route, '/conversations/conv_1');
+  assert.equal(plan!.title, 'New message');
+  assert.match(plan!.body, /Second preview test message/);
+}
+
+// (a3) bodyless + preview-less chat_event (pure invalidation hint) => skip.
+{
+  const plan = notificationForWsEvent({
+    type: 'chat_event',
+    event: 'chat_updated',
+    direction: 'agent_to_user',
+    conversation_id: 'conv_1',
+    message_id: 'msg_1',
+    fetch_required: true,
+  });
+  assert.equal(plan, null, 'bodyless preview-less chat_event must not notify');
+}
+
 // (b) nudge => title reflects nudge, still routes to conversation.
 {
   const plan = notificationForWsEvent({

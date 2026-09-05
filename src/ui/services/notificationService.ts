@@ -97,42 +97,30 @@ function routeToHref(route: string): string {
 // window so the click still lands on the correct conversation (REQ-N4).
 function focusAndRoute(route: string) {
   if (typeof window === 'undefined' || !route) return;
-  let focused = false;
+
+  // The notification was raised BY this window, so this window still exists.
+  // Navigate it in place FIRST and ask the OS to bring it forward. We must not
+  // gate on window.focus() succeeding: from a backgrounded tab focus() is often
+  // silently blocked, and gating on document.hasFocus() there would wrongly
+  // fall through to window.open() and spawn a duplicate tab (REQ-N4). In-place
+  // hash navigation always lands on the correct conversation in the SAME tab.
   try {
-    window.focus();
-    // document.hasFocus() confirms the refocus actually took effect.
-    focused = typeof document === 'undefined' || typeof document.hasFocus !== 'function' || document.hasFocus();
+    window.location.hash = buildRouteHash(route, '');
+    try { window.focus(); } catch (_err) { /* focus may be blocked; navigation already applied */ }
+    return;
   } catch (_err) {
-    focused = false;
+    /* fall through to new-window fallback only if in-place nav actually threw */
   }
 
-  if (focused) {
-    // Existing window is in front: navigate it in-place via the hash route.
-    try {
-      window.location.hash = buildRouteHash(route, '');
-      return;
-    } catch (_err) {
-      /* fall through to new-window fallback */
-    }
-  }
-
-  // Could not focus/navigate the existing window — open the deep-link in a new
-  // window/tab. Reuse a named target so repeated clicks reuse the same window.
+  // In-place navigation threw (very unusual) — open the deep-link in a named
+  // window so repeated clicks reuse the same one instead of stacking tabs.
   try {
     const opened = window.open(routeToHref(route), 'heimdall');
     if (opened) {
       try { opened.focus(); } catch (_err) { /* ignore */ }
-      return;
     }
   } catch (_err) {
     /* ignore */
-  }
-
-  // Last resort: best-effort in-place hash navigation.
-  try {
-    window.location.hash = buildRouteHash(route, '');
-  } catch (_err) {
-    /* ignore navigation failures */
   }
 }
 

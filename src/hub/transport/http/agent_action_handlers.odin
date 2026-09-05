@@ -2,6 +2,7 @@ package http
 
 import "core:fmt"
 import "core:strings"
+import "core:unicode/utf8"
 import internal_b64 "core:encoding/base64"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -28,9 +29,64 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 	params := json_object_raw(req.body, "params")
 	msg, saved, err := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids")})
 	if !saved do return respond_error(err, req.request_id)
+	// Notify the human's UI so it can toast + raise an OS notification. This is a
+	// metadata event with a SHORT body preview (<=140 chars) — the full body is
+	// still fetched durably via REST (fetch_required). System messages
+	// (e.g. start-success banners) are not user-actionable, so skip their preview.
+	if h.event_bus != nil && msg.message_type != "system" {
+		events.publish_raw_to_user(h.event_bus, string(inst.owner_user_id), agent_to_user_chat_event_json(inst, msg))
+	}
 	b := strings.builder_make()
 	write_message_json(&b, msg, h.content)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+// agent_to_user_chat_event_json builds the user-WS chat_event for a fresh
+// agent->user message. Carries a truncated body_preview for the toast/OS
+// notification while keeping the full body behind a durable REST fetch.
+agent_to_user_chat_event_json :: proc(inst: domain.Agent_Instance, m: domain.Chat_Message) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"chat_event\",\"event\":\"chat_updated\",\"direction\":\"agent_to_user\",\"conversation_id\":\"")
+	write_handler_json_string(&b, m.conversation_id)
+	strings.write_string(&b, "\",\"agent_instance_id\":\"")
+	write_handler_json_string(&b, inst.agent_instance_id)
+	strings.write_string(&b, "\",\"message_id\":\"")
+	write_handler_json_string(&b, m.message_id)
+	strings.write_string(&b, "\",\"message_type\":\"")
+	write_handler_json_string(&b, m.message_type)
+	strings.write_string(&b, "\",\"body_preview\":\"")
+	write_handler_json_string(&b, chat_event_preview(m.body, 140))
+	strings.write_string(&b, "\",\"fetch_required\":true,\"fetch_kind\":\"chat_message\",\"fetch_id\":\"")
+	write_handler_json_string(&b, m.message_id)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+// chat_event_preview collapses whitespace and truncates to max_len runes,
+// appending an ellipsis when clipped. Rune-safe so we never split a UTF-8
+// codepoint mid-preview.
+chat_event_preview :: proc(body: string, max_len: int) -> string {
+	trimmed := strings.trim_space(body)
+	if trimmed == "" do return ""
+	// Collapse internal whitespace runs to single spaces.
+	fields := strings.fields(trimmed)
+	defer delete(fields)
+	collapsed := strings.join(fields, " ")
+	runes := utf8.rune_count_in_string(collapsed)
+	if runes <= max_len {
+		return collapsed
+	}
+	defer delete(collapsed)
+	// Take the first (max_len-1) runes then add an ellipsis.
+	count := 0
+	end := len(collapsed)
+	for i := 0; i < len(collapsed); {
+		if count >= max_len - 1 { end = i; break }
+		_, w := utf8.decode_rune_in_string(collapsed[i:])
+		i += w
+		count += 1
+	}
+	return strings.concatenate({collapsed[:end], "…"})
 }
 
 agent_action_chat_send_to_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {

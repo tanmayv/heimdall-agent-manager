@@ -52,17 +52,19 @@ function planForChatEvent(payload: any, ctx: NotificationMapperCtx): Notificatio
   const direction = str(payload?.direction);
   const message = payload?.message;
 
-  // No inline message => this is an invalidation/receipt hint, not new content.
-  if (!message) return null;
   // Explicit status-only receipts never notify (REQ-N2 exclusions).
   if (CHAT_STATUS_ONLY_DIRECTIONS.has(direction)) return null;
 
   // Only messages FROM an agent TO the user are user-actionable. Messages the
   // user themselves sent (user_to_agent) and agent<->agent chatter are skipped.
+  // The hub's new-message event carries a top-level `direction` (agent_to_user)
+  // plus a `body_preview`; older/inline shapes carry a nested `message` object.
   const messageDirection = str(message?.direction || direction);
   if (messageDirection && messageDirection !== 'agent_to_user') return null;
 
-  const body = str(message?.body).trim();
+  // Body: prefer the inline message body, else the hub-supplied short preview.
+  // A bodyless event with no preview is just an invalidation/receipt hint.
+  const body = (str(message?.body) || str(payload?.body_preview)).trim();
   if (!body) return null;
 
   const agentInstanceId = str(payload?.agent_instance_id || message?.agent_instance_id);
@@ -71,7 +73,7 @@ function planForChatEvent(payload: any, ctx: NotificationMapperCtx): Notificatio
 
   // Distinguish a nudge/mention from a plain chat message using message_type or
   // metadata flags emitted by the hub; both still route to the conversation.
-  const messageType = str(message?.message_type || message?.messageType);
+  const messageType = str(message?.message_type || message?.messageType || payload?.message_type);
   const metadata = (message?.metadata && typeof message.metadata === 'object') ? message.metadata : {};
   const isNudge = messageType === 'nudge' || Boolean(metadata?.nudge) || Boolean(metadata?.is_nudge);
   const isMention = messageType === 'mention' || Boolean(metadata?.mention);

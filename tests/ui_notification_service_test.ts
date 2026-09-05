@@ -157,17 +157,37 @@ const OrigNote = (window as any).Notification;
 state.focus = false;
 state.hash = '';
 showNativeNotification({ title: 'a', body: 'b', tag: 't2', route: '/conversations/conv_2', category: 'chat' });
-// focus() sets state.focus=true, hasFocus() then true => in-place nav.
 lastInstance.onclick();
-assert.match(state.hash, /#\/conversations\/conv_2/, 'click focuses + routes in existing window');
+assert.match(state.hash, /#\/conversations\/conv_2/, 'click routes in existing window');
 
-// Case 2: focus fails (window.focus does not set focus) => new-window fallback.
-(window as any).focus = () => { /* cannot refocus */ };
+// Case 2: focus is BLOCKED (backgrounded tab) => still navigate the SAME tab
+// in place; must NOT open a new window/tab (the originating tab still exists).
+(window as any).focus = () => { /* browser blocks refocus from background */ };
 state.focus = false;
+state.hash = '';
 (globalThis as any).__lastOpen = undefined;
 showNativeNotification({ title: 'a', body: 'b', tag: 't3', route: '/conversations/conv_3', category: 'chat' });
 lastInstance.onclick();
-assert.ok(String((globalThis as any).__lastOpen || '').includes('#/conversations/conv_3'), 'click opens deep-link in new window when refocus fails');
+assert.match(state.hash, /#\/conversations\/conv_3/, 'blocked focus still routes in the same tab');
+assert.equal((globalThis as any).__lastOpen, undefined, 'must not open a duplicate tab when focus is merely blocked');
+
+// Case 3: in-place hash navigation THROWS => fall back to a named new window.
+const origLocation = Object.getOwnPropertyDescriptor(window, 'location');
+Object.defineProperty(window, 'location', {
+  configurable: true,
+  get() {
+    return {
+      origin: state.origin, pathname: state.pathname, search: state.search,
+      get hash() { return state.hash; },
+      set hash(_v: string) { throw new Error('nav blocked'); },
+    };
+  },
+});
+(globalThis as any).__lastOpen = undefined;
+showNativeNotification({ title: 'a', body: 'b', tag: 't4', route: '/conversations/conv_4', category: 'chat' });
+lastInstance.onclick();
+assert.ok(String((globalThis as any).__lastOpen || '').includes('#/conversations/conv_4'), 'opens deep-link in new window only when in-place nav throws');
+if (origLocation) Object.defineProperty(window, 'location', origLocation);
 
 // --- requestNotificationPermission uses the browser API ------------------
 FakeNotification.requestImpl = async () => 'granted';
