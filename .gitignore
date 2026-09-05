@@ -22,3 +22,9 @@ screenshots/
 hub.db
 hub.db-shm
 hub.db-wal
+
+# accidental root-level compiled binaries
+/hub
+/bridge
+/ctl
+/wrapper
