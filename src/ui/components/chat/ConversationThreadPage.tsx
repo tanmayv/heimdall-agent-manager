@@ -18,6 +18,7 @@ import {
   useStopAgentInstanceMutation,
 } from '../../api/endpoints/agents';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
+import { useFetchProjectQuery } from '../../api/endpoints/projects';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import {
   normalizeBridgeCapabilities,
@@ -507,6 +508,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   // Project the conversation/instance is scoped to — powers the Files (project
   // directory browser) tab. Prefer the live instance, fall back to conversation.
   const projectId = String(instance?.project_id || instance?.projectId || conversation?.project_id || conversation?.projectId || '');
+  // Project display name for the composer chip (falls back to the id).
+  const projectQuery = useFetchProjectQuery({ projectId }, { skip: !projectId });
+  const projectName = String(projectQuery.data?.project?.name || projectQuery.data?.project?.display_name || projectId || '').trim();
   const conversationRuntimeStatus = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
   const activityStatus = String(instance?.activity_status || instance?.activityStatus || '').toLowerCase();
@@ -1080,7 +1084,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             <ProjectFilesPanel
               projectId={projectId}
               bridgeId={instanceBridgeId}
-              projectName={title}
+              projectName={projectName}
               conversationKey={conversationId}
               onPublishComments={publishFileComments}
               onClose={closeRightPanel}
@@ -1156,8 +1160,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             {projectId ? (
               <>
                 <span className="opacity-40">·</span>
-                <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title={`Open project files — ${title}`} className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/5 hover:text-zinc-300">
-                  <Icon name="folder" size={13} /><span className="min-w-0 truncate font-semibold text-zinc-400">{title}</span>
+                <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title={`Open project files — ${projectName}`} className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/5 hover:text-zinc-300">
+                  <Icon name="folder" size={13} /><span className="min-w-0 truncate font-semibold text-zinc-400">{projectName}</span>
                 </button>
               </>
             ) : null}
