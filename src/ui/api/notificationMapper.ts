@@ -20,7 +20,7 @@ export type NotificationPlan = {
   // rather than stack (REQ-N6). The browser dedupes by (tag, origin).
   tag: string;
   // In-app hash route to navigate to on click (REQ-N4), e.g.
-  // '/conversations/<conversationId>' or '/chains/<chainId>'.
+  // '/conversations/<agentInstanceId>' or '/chains/<chainId>'.
   route: string;
   // Curated bucket, used by per-category settings + tests.
   category: NotificationCategory;

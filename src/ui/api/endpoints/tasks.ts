@@ -145,8 +145,82 @@ function normalizeTaskChainDetail(data: any) {
   };
 }
 
+// TC-API list shapes: a chain row + a project group. The grouped endpoint returns
+// an array of groups (each with up to 5 chains); the per-project endpoint returns
+// one group with real cursor pagination. Both share the same chain-row shape.
+export type ChainListItem = {
+  chainId: string;
+  title: string;
+  status: string;
+  updatedAt: string;
+  coordinatorAgentInstanceId: string;
+  projectId: string;
+  projectName: string;
+};
+export type ChainProjectGroup = {
+  projectId: string;
+  projectName: string;
+  chains: ChainListItem[];
+  chainTotal: number;
+  hasMore: boolean;
+  nextCursor: string;
+};
+function normalizeChainListItem(c: any): ChainListItem {
+  return {
+    chainId: String(c?.chain_id ?? c?.chainId ?? ''),
+    title: String(c?.title ?? ''),
+    status: String(c?.status ?? ''),
+    updatedAt: String(c?.updated_at ?? c?.updatedAt ?? ''),
+    coordinatorAgentInstanceId: String(c?.coordinator_agent_instance_id ?? c?.coordinatorAgentInstanceId ?? ''),
+    projectId: String(c?.project_id ?? c?.projectId ?? ''),
+    projectName: String(c?.project_name ?? c?.projectName ?? ''),
+  };
+}
+function normalizeChainProjectGroup(g: any): ChainProjectGroup {
+  const chains = Array.isArray(g?.chains) ? g.chains.map(normalizeChainListItem) : [];
+  return {
+    projectId: String(g?.project_id ?? g?.projectId ?? ''),
+    projectName: String(g?.project_name ?? g?.projectName ?? ''),
+    chains,
+    chainTotal: Number(g?.chain_total ?? g?.chainTotal ?? chains.length),
+    hasMore: Boolean(g?.has_more ?? g?.hasMore ?? false),
+    nextCursor: String(g?.next_cursor ?? g?.nextCursor ?? ''),
+  };
+}
+
 export const tasksApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
+    // TC-PAGE: default project-grouped task-chains list (no params) -> array of
+    // groups, each previewing up to 5 chains with has_more/next_cursor for paging.
+    fetchTaskChainGroups: build.query<{ groups: ChainProjectGroup[] }, void>({
+      queryFn: async () => {
+        try {
+          const raw = await cookieJsonFetch('/task-chains');
+          const arr = Array.isArray(raw) ? raw : (raw?.groups || []);
+          return { data: { groups: arr.map(normalizeChainProjectGroup) } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: [{ type: 'Chain' as const, id: 'GROUPED_LIST' }],
+    }),
+    // TC-PAGE: single-project page with cursor pagination (Load more + project
+    // filter). cursor is the composite (updated_at|chain_id) from TC-API.
+    fetchTaskChainProjectPage: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string }>({
+      queryFn: async ({ projectId, limit = 20, cursor = '' }) => {
+        try {
+          const params = new URLSearchParams();
+          params.set('project_id', projectId);
+          params.set('limit', String(limit));
+          if (cursor) params.set('cursor', cursor);
+          const raw = await cookieJsonFetch(`/task-chains?${params.toString()}`);
+          return { data: normalizeChainProjectGroup(raw) };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId }) => [{ type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` }],
+    }),
     fetchTaskChainDetail: build.query<any, { chainId: string }>({
       queryFn: async ({ chainId }) => {
         if (!chainId) return { data: { chain: null } };
@@ -703,6 +777,9 @@ export const {
   useFetchTaskLogQuery,
   useLazyFetchTaskLogPageQuery,
 
+  useFetchTaskChainGroupsQuery,
+  useFetchTaskChainProjectPageQuery,
+  useLazyFetchTaskChainProjectPageQuery,
   useFetchTaskChainDetailQuery,
   useFetchChainTaskDetailQuery,
   useFetchChainTaskCommentsQuery,

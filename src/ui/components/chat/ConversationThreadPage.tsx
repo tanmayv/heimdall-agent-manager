@@ -1033,11 +1033,21 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     </div>
   );
 
+  // While the instance-id route is being resolved to its conversation (the
+  // by-instance fetch), show a resolving state rather than the not-found card.
+  if (!conversation && convQuery.isFetching) {
+    return (
+      <section data-debug-id="conversation-thread-page" className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left">
+        <div data-debug-id="conversation-thread-resolving" className="grid min-h-[220px] place-items-center text-sm text-zinc-500">Loading conversation…</div>
+      </section>
+    );
+  }
+
   if (!conversation && !convQuery.isFetching) {
     return (
       <section data-debug-id="conversation-thread-page" className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left">
         <h2 className="text-xl font-semibold text-white">Conversation not found</h2>
-        <p className="mt-2 text-sm text-zinc-400">No conversation with id <span className="font-mono">{conversationId}</span> for this user.</p>
+        <p className="mt-2 text-sm text-zinc-400">No conversation for instance <span className="font-mono">{routeInstanceId}</span> for this user.</p>
         <a data-debug-id="conversation-thread-back-btn" href="#/conversations/new" className="mt-4 inline-flex rounded-2xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300">Start a new conversation</a>
       </section>
     );

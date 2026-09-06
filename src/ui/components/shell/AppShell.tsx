@@ -104,6 +104,7 @@ const NAV_ROUTES: ShellRoute[] = [
   { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts grouped by project', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
   { path: '/agents', label: 'Agents', icon: 'tasks', description: 'Agent identities and sessions', group: 'primary' },
+  { path: '/chains', label: 'Task Chains', icon: 'tasks', description: 'Multi-agent task chains grouped by project', group: 'primary' },
   { path: '/library', label: 'Library', icon: 'device', description: 'Artifacts and files', group: 'primary' },
   { path: '/settings/bridges', label: 'Settings', icon: 'gear', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
 ];
