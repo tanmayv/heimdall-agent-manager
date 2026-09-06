@@ -83,13 +83,23 @@ await flush();
 assert.equal(created.length, 1, 'backgrounded curated event fires exactly one notification');
 assert.equal(created[0].options.tag, 'heimdall:chat:conv_1');
 
-// Focused tab => no native notification (in-app toast path handles it).
+// Focused tab, NOT viewing this conversation => still notify (new behavior:
+// notify while focused unless the user is on the target conversation).
 created.length = 0;
 view.visibility = 'visible';
 view.focus = true;
+view.hash = '';
 handleUserWsEvent(store.dispatch, chatEvent, {});
 await flush();
-assert.equal(created.length, 0, 'focused tab fires no native notification');
+assert.equal(created.length, 1, 'focused but not viewing this conversation still notifies');
+
+// Focused tab, viewing THIS conversation => suppressed (in-app view shows it).
+created.length = 0;
+view.hash = '#/conversations/conv_1';
+handleUserWsEvent(store.dispatch, chatEvent, {});
+await flush();
+assert.equal(created.length, 0, 'focused + viewing this conversation fires no native notification');
+view.hash = '';
 
 // Backgrounded excluded event => no notification.
 created.length = 0;

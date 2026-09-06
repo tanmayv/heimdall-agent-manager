@@ -67,9 +67,11 @@ send_to_user :: proc(service: ^Push_Service, owner_user_id: domain.User_ID, payl
 
 	subs, err := iface.push_subscription_list_by_owner(service.subscriptions, owner_user_id)
 	if err.code != .None {
+		fmt.eprintfln("ham-push DEBUG send_to_user: list subs FAILED owner=%s err=%v", string(owner_user_id), err.code)
 		return 0
 	}
 	defer delete(subs)
+	fmt.eprintfln("ham-push DEBUG send_to_user: owner=%s subscriptions=%d", string(owner_user_id), len(subs))
 	if len(subs) == 0 {
 		return 0
 	}
@@ -77,13 +79,33 @@ send_to_user :: proc(service: ^Push_Service, owner_user_id: domain.User_ID, payl
 	// Decode the VAPID private scalar + public key once for the whole batch.
 	priv_bytes, priv_ok := base64url_decode(service.vapid.private_key)
 	if !priv_ok {
+		fmt.eprintln("ham-push DEBUG send_to_user: VAPID private-key base64url decode FAILED")
 		return 0
 	}
 	defer delete(priv_bytes)
 	vapid_priv: ecdsa.Private_Key
 	defer ecdsa.private_key_clear(&vapid_priv)
 	if !ecdsa.private_key_set_bytes(&vapid_priv, .SECP256R1, priv_bytes) {
+		fmt.eprintln("ham-push DEBUG send_to_user: ecdsa private_key_set_bytes FAILED")
 		return 0
+	}
+
+	// DEBUG: derive the public key from the loaded private scalar and compare to
+	// the configured VAPID public key. A keypair mismatch is a prime cause of
+	// Apple's 403 BadJwtToken (Apple verifies the JWT signature against `k=`).
+	{
+		dbg_pub: ecdsa.Public_Key
+		ecdsa.public_key_set_priv(&dbg_pub, &vapid_priv)
+		dbg_bytes: [65]byte
+		ecdsa.public_key_bytes(&dbg_pub, dbg_bytes[:])
+		dbg_pub_b64 := base64url_encode(dbg_bytes[:])
+		defer delete(dbg_pub_b64)
+		fmt.eprintfln(
+			"ham-push DEBUG send_to_user: derived_pub=%s configured_pub=%s keypair_match=%v",
+			dbg_pub_b64,
+			service.vapid.public_key,
+			dbg_pub_b64 == service.vapid.public_key,
+		)
 	}
 
 	now_unix := time.time_to_unix(time.now())
@@ -107,32 +129,41 @@ send_to_subscription :: proc(
 	payload_json: string,
 	now_unix: i64,
 ) -> bool {
+	// VAPID JWT audience is the endpoint origin — log it first so we can see the
+	// push service (e.g. web.push.apple.com vs fcm.googleapis.com) even if a later
+	// step fails.
+	audience, aud_ok := vapid_endpoint_audience(sub.endpoint)
+	if !aud_ok {
+		fmt.eprintfln("ham-push DEBUG send: endpoint audience parse FAILED sub=%s", string(sub.id))
+		return false
+	}
+	defer delete(audience)
+	fmt.eprintfln("ham-push DEBUG send: sub=%s aud=%s", string(sub.id), audience)
+
 	ua_public, ua_ok := base64url_decode(sub.p256dh)
 	if !ua_ok {
+		fmt.eprintfln("ham-push DEBUG send: p256dh decode FAILED aud=%s", audience)
 		return false
 	}
 	defer delete(ua_public)
 	auth_secret, auth_ok := base64url_decode(sub.auth)
 	if !auth_ok {
+		fmt.eprintfln("ham-push DEBUG send: auth decode FAILED aud=%s", audience)
 		return false
 	}
 	defer delete(auth_secret)
 
 	enc, enc_ok := webpush_encrypt(transmute([]byte)payload_json, ua_public, auth_secret)
 	if !enc_ok {
+		fmt.eprintfln("ham-push DEBUG send: webpush_encrypt FAILED aud=%s", audience)
 		return false
 	}
 	defer delete(enc.body)
 
-	// VAPID JWT audience is the endpoint origin.
-	audience, aud_ok := vapid_endpoint_audience(sub.endpoint)
-	if !aud_ok {
-		return false
-	}
-	defer delete(audience)
 	claims := vapid_claims_for(audience, service.vapid.subject, now_unix)
 	jwt, jwt_ok := vapid_sign_jwt(vapid_priv, claims)
 	if !jwt_ok {
+		fmt.eprintfln("ham-push DEBUG send: vapid_sign_jwt FAILED aud=%s", audience)
 		return false
 	}
 	defer delete(jwt)
@@ -162,8 +193,17 @@ send_to_subscription :: proc(
 		http_client.DEFAULT_TIMEOUT_MS,
 	)
 	if !ok {
+		fmt.eprintfln("ham-push DEBUG send: transport FAILED (dial/tls/timeout) aud=%s", audience)
 		return false
 	}
+
+	// Log the push-service response so a silent Apple/APNs rejection (4xx with a
+	// reason body) is visible to ops. Body is truncated; it carries no secret.
+	body_preview := resp.body
+	if len(body_preview) > 300 {
+		body_preview = body_preview[:300]
+	}
+	fmt.eprintfln("ham-push DEBUG send: aud=%s status=%d body=%q", audience, resp.status, body_preview)
 
 	// Prune subscriptions the push service reports as permanently gone.
 	if resp.status == 404 || resp.status == 410 {

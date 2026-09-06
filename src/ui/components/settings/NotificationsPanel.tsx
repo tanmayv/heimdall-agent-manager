@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   categoryEnabled,
@@ -15,7 +15,14 @@ import {
   requestNotificationPermission,
   showNativeNotification,
 } from '../../services/notificationService';
-import { disablePushSubscription, enablePushSubscription } from '../../services/pushSubscriptionService';
+import {
+  disablePushSubscription,
+  enablePushSubscription,
+  getActiveSubscriptionKey,
+  getServerVapidPublicKey,
+  isPushSupported,
+  resubscribeWithCurrentKey,
+} from '../../services/pushSubscriptionService';
 import { showToast } from '../../store/toastSlice';
 
 const CATEGORY_LABELS: Array<{ key: NotificationCategory; label: string; description: string }> = [
@@ -92,11 +99,91 @@ export function testNotificationFeedback(opts: {
   return 'Showing an in-app test notification.';
 }
 
+// Web Push diagnostics: the three comparison states between the browser's active
+// subscription key and the server's current VAPID key.
+type PushKeyStatus = 'MATCH' | 'MISMATCH' | 'NO SUBSCRIPTION';
+
+// Pure: derive the status badge from the two keys. MATCH only when both are
+// present and equal; MISMATCH when both present and differ; NO SUBSCRIPTION when
+// the browser has no active subscription key. Exported for unit testing.
+export function pushKeyStatus(frontendKey: string, serverKey: string): PushKeyStatus {
+  if (!frontendKey) return 'NO SUBSCRIPTION';
+  if (serverKey && frontendKey === serverKey) return 'MATCH';
+  return 'MISMATCH';
+}
+
+// Pure: friendly label for a push endpoint host so the user can tell WHICH push
+// service (Apple vs FCM) the subscription is bound to. Exported for testing.
+export function pushEndpointHostLabel(host: string): string {
+  if (host.includes('push.apple.com')) return 'Apple';
+  if (host.includes('fcm.googleapis.com') || host.includes('android')) return 'FCM';
+  return host;
+}
+
+// Pure: truncate a long key to first12…last6, keeping short keys intact. The
+// full value is shown in the title attribute at the call site. Exported for
+// testing.
+export function truncateKey(key: string): string {
+  if (!key) return '—';
+  if (key.length <= 20) return key;
+  return `${key.slice(0, 12)}…${key.slice(-6)}`;
+}
+
+type PushDiagnostics = {
+  serverKey: string;
+  frontendKey: string;
+  endpointHost: string;
+  status: PushKeyStatus;
+};
+
 export default function NotificationsPanel() {
   const dispatch = useDispatch();
   const state = useSelector(selectNotificationsState);
   const supported = isNotificationSupported();
   const electron = isElectronRuntime();
+
+  // Web Push diagnostics: which VAPID key the browser's live subscription is
+  // bound to vs the server's current key. `null` = not loaded yet.
+  const pushDiagAvailable = isPushSupported() && !electron;
+  const [pushDiag, setPushDiag] = useState<PushDiagnostics | null>(null);
+  const [resubscribing, setResubscribing] = useState(false);
+
+  const loadPushDiagnostics = useCallback(async () => {
+    if (!pushDiagAvailable) {
+      setPushDiag(null);
+      return;
+    }
+    const [serverKey, sub] = await Promise.all([getServerVapidPublicKey(), getActiveSubscriptionKey()]);
+    const frontendKey = sub?.applicationServerKey ?? '';
+    const host = sub ? (() => { try { return new URL(sub.endpoint).host; } catch { return ''; } })() : '';
+    setPushDiag({
+      serverKey,
+      frontendKey,
+      endpointHost: pushEndpointHostLabel(host),
+      status: pushKeyStatus(frontendKey, serverKey),
+    });
+  }, [pushDiagAvailable]);
+
+  useEffect(() => {
+    void loadPushDiagnostics();
+  }, [loadPushDiagnostics]);
+
+  // Force unsubscribe → fresh subscribe against the server's CURRENT VAPID key,
+  // then reload the diagnostics and always surface a toast.
+  async function onResubscribe() {
+    setResubscribing(true);
+    let ok = false;
+    try {
+      ok = await resubscribeWithCurrentKey();
+    } catch (_err) {
+      ok = false;
+    }
+    await loadPushDiagnostics();
+    setResubscribing(false);
+    dispatch(showToast(ok
+      ? { kind: 'success', title: 'Re-subscribed', message: 'Push subscription refreshed against the current server key.' }
+      : { kind: 'error', title: 'Re-subscribe failed', message: 'Could not create a fresh push subscription — check that notifications are granted and the server has a VAPID key.' }));
+  }
 
   // Keep the stored permission in sync with the live browser state on mount and
   // when the tab regains visibility (the user may have changed it in browser
@@ -239,6 +326,88 @@ export default function NotificationsPanel() {
             Send test notification
           </button>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+        <div className="mb-3">
+          <div className="font-semibold text-zinc-100">Web Push diagnostics</div>
+          <p className="mt-1 text-sm text-zinc-400">
+            Compare the VAPID public key your browser&apos;s active push subscription is bound to against the server&apos;s
+            current key. A mismatch (e.g. after a server key rotation) causes the push service to reject deliveries.
+          </p>
+        </div>
+
+        {!pushDiagAvailable ? (
+          <p className="text-sm text-zinc-400" data-debug-id="settings-push-unavailable">
+            Web Push isn&apos;t available in this context.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm text-zinc-400">Status</span>
+              <span
+                data-debug-id="settings-push-match-badge"
+                className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                  pushDiag?.status === 'MATCH'
+                    ? 'bg-emerald-400/15 text-emerald-300'
+                    : pushDiag?.status === 'MISMATCH'
+                      ? 'bg-red-400/15 text-red-300'
+                      : 'bg-zinc-400/15 text-zinc-300'
+                }`}
+              >
+                {pushDiag?.status ?? '…'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm text-zinc-400">Server key</span>
+              <span
+                data-debug-id="settings-push-server-key"
+                title={pushDiag?.serverKey || ''}
+                className="font-mono text-xs text-zinc-200"
+              >
+                {truncateKey(pushDiag?.serverKey ?? '')}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm text-zinc-400">Frontend key</span>
+              <span
+                data-debug-id="settings-push-frontend-key"
+                title={pushDiag?.frontendKey || ''}
+                className="font-mono text-xs text-zinc-200"
+              >
+                {truncateKey(pushDiag?.frontendKey ?? '')}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm text-zinc-400">Endpoint host</span>
+              <span
+                data-debug-id="settings-push-endpoint-host"
+                className="font-mono text-xs text-zinc-200"
+              >
+                {pushDiag?.endpointHost || '—'}
+              </span>
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                data-debug-id="settings-push-resubscribe-btn"
+                onClick={() => void onResubscribe()}
+                disabled={resubscribing}
+                className={`shrink-0 rounded-xl px-4 py-2 text-sm font-semibold ${
+                  resubscribing
+                    ? 'cursor-not-allowed bg-white/10 text-zinc-400'
+                    : 'bg-sky-400 text-black hover:bg-sky-300'
+                }`}
+              >
+                {resubscribing ? 'Re-subscribing…' : 'Re-subscribe with current key'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -24,12 +24,21 @@ export type NotificationPlan = {
   route: string;
   // Curated bucket, used by per-category settings + tests.
   category: NotificationCategory;
+  // Identifiers for the thread this event targets (conversation_id and/or
+  // agent_instance_id, plus chain_id for chain-routed events). The service uses
+  // these to suppress a notification only when the user is CURRENTLY VIEWING this
+  // exact thread while the window is focused; a message for any other thread (or
+  // when the window is unfocused) still notifies. A conversation is reachable by
+  // either its conversation_id or agent_instance_id, so both are listed.
+  conversationKeys?: string[];
 };
 
 export type NotificationMapperCtx = {
-  // The conversation currently visible/open in the UI. Even when unfocused we
-  // still notify, but callers may choose to suppress for the visible thread;
-  // v1 keeps it simple and always notifies when unfocused.
+  // Optional override for the conversation currently visible/open in the UI. The
+  // service normally derives this from the live route hash; this field lets a
+  // caller (or a test) inject it explicitly. When the window is focused and the
+  // event targets this conversation, the notification is suppressed (the user is
+  // already looking at it); when unfocused, we always notify.
   visibleConversationId?: string;
 };
 
@@ -97,6 +106,7 @@ function planForChatEvent(payload: any, ctx: NotificationMapperCtx): Notificatio
     tag,
     route,
     category: 'chat',
+    conversationKeys: [conversationId, agentInstanceId, chainId].filter(Boolean),
   };
 }
 
@@ -128,6 +138,7 @@ function planForChatApproval(payload: any): NotificationPlan | null {
     tag,
     route,
     category: 'attention',
+    conversationKeys: [conversationId, agentInstanceId, chainId].filter(Boolean),
   };
 }
 
@@ -140,6 +151,7 @@ function planForMergeDecision(payload: any): NotificationPlan | null {
     tag: `heimdall:attention:merge:${chainId}`,
     route: `/chains/${chainId}`,
     category: 'attention',
+    conversationKeys: [chainId].filter(Boolean),
   };
 }
 

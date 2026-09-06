@@ -51,6 +51,52 @@ export function base64UrlToUint8Array(base64Url: string): Uint8Array<ArrayBuffer
   return output;
 }
 
+// Encode bytes as UNPADDED base64url — the exact inverse of
+// base64UrlToUint8Array. Builds a binary string, btoa-encodes it, maps the
+// standard alphabet to the URL-safe one and strips '=' padding. Used by the
+// diagnostics card to render the applicationServerKey the browser's active push
+// subscription is actually bound to (so we can compare it to the server's key).
+export function uint8ArrayToBase64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+// Read the VAPID public key that the browser's ACTIVE push subscription is bound
+// to, alongside its endpoint. Returns null when push is unsupported or there is
+// no live subscription. Never throws — diagnostics must degrade cleanly.
+export async function getActiveSubscriptionKey(): Promise<{ endpoint: string; applicationServerKey: string } | null> {
+  try {
+    if (!isPushSupported()) return null;
+    const reg = await activeRegistration();
+    const subscription = reg?.pushManager ? await reg.pushManager.getSubscription() : null;
+    if (!subscription) return null;
+    const buf: ArrayBuffer | null = subscription.options?.applicationServerKey ?? null;
+    const applicationServerKey = buf ? uint8ArrayToBase64Url(new Uint8Array(buf)) : '';
+    return { endpoint: subscription.endpoint, applicationServerKey };
+  } catch (_err) {
+    return null;
+  }
+}
+
+// Public wrapper over the private fetchVapidPublicKey() so the diagnostics card
+// can show the server's CURRENT VAPID public key. Empty string when push is
+// disabled server-side or on any error.
+export async function getServerVapidPublicKey(): Promise<string> {
+  return fetchVapidPublicKey();
+}
+
+// Force a clean unsubscribe → fresh subscribe against the CURRENT server key.
+// Used by the diagnostics 'Re-subscribe with current key' button to recover from
+// a subscription bound to a stale/rotated VAPID key. Returns true when the fresh
+// subscription was created and POSTed to the Hub. Never throws.
+export async function resubscribeWithCurrentKey(): Promise<boolean> {
+  await disablePushSubscription();
+  return await enablePushSubscription();
+}
+
 // Fetch the Hub's VAPID public key (base64url uncompressed P-256 point). Returns
 // an empty string if push sending is disabled server-side (key unset) or on any
 // error, so callers can cleanly skip subscribing.

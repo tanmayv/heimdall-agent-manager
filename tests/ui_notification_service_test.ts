@@ -111,13 +111,44 @@ const chatPayload = {
   message: { direction: 'agent_to_user', body: 'hello there' },
 };
 
-// REQ-N2: focused tab => NO native notification.
+// Focused tab, NOT viewing any conversation => still notify (new behavior:
+// notify while focused unless the event targets the conversation on screen).
 created.length = 0;
 state.visibility = 'visible';
 state.focus = true;
+state.hash = '';
 let plan = fireNotificationForWsEvent(() => enabledState(), chatPayload);
-assert.equal(plan, null, 'focused tab must not notify');
-assert.equal(created.length, 0, 'no Notification created while focused');
+assert.ok(plan, 'focused but not viewing this conversation should notify');
+await flush();
+assert.equal(created.length, 1, 'one Notification when focused on a non-conversation view');
+
+// Focused tab, viewing a DIFFERENT conversation => notify.
+created.length = 0;
+state.hash = '#/conversations/conv_other';
+plan = fireNotificationForWsEvent(() => enabledState(), chatPayload);
+assert.ok(plan, 'focused on another conversation should notify');
+await flush();
+assert.equal(created.length, 1, 'one Notification when viewing a different conversation');
+
+// Focused tab, viewing THIS conversation => suppress (user already sees it).
+created.length = 0;
+state.hash = '#/conversations/conv_1';
+plan = fireNotificationForWsEvent(() => enabledState(), chatPayload);
+assert.equal(plan, null, 'focused + viewing this conversation must not notify');
+assert.equal(created.length, 0, 'no Notification when already viewing the conversation');
+
+// Focused tab, open conversation matched by agent_instance_id query => suppress.
+created.length = 0;
+state.hash = '#/conversations/conv_x?agent_instance_id=agent_1';
+const chatByAgent = {
+  type: 'chat_event', direction: 'agent_to_user',
+  conversation_id: 'conv_1', agent_instance_id: 'agent_1',
+  message: { direction: 'agent_to_user', body: 'hi' },
+};
+plan = fireNotificationForWsEvent(() => enabledState(), chatByAgent);
+assert.equal(plan, null, 'suppressed when the open conversation matches by agent_instance_id');
+assert.equal(created.length, 0, 'no Notification for the open thread matched via agent id');
+state.hash = '';
 
 // REQ-N1: unfocused tab + enabled => exactly one native notification.
 created.length = 0;

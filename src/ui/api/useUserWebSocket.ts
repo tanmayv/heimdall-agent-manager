@@ -73,12 +73,12 @@ async function userWsUrl(): Promise<string> {
   return `${scheme}//${window.location.host}/api/v1/user-ws`;
 }
 
+// Focus context read at WS-event time. Only focusedChainId is consumed (targets
+// an extra chain-view refresh for the chain the user is viewing); the shell
+// populates it from the live route. Foreground notification suppression derives
+// the open conversation from the route hash directly (see notificationService).
 export type UserWsContext = {
-  selectedAgentId?: string;
-  visibleChatAgentId?: string;
   focusedChainId?: string;
-  focusedCoordinatorAgentInstanceId?: string;
-  guidePanelOpen?: boolean;
 };
 
 // React hook form: pass a ref-like object whose `.current` is the live ctx.

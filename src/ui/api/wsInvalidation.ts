@@ -14,12 +14,15 @@ import { auditEndedReceived, auditStartedReceived, memoryEventReceived } from '.
 import { taskEventReceived } from '../store/taskSlice';
 import { fireNotificationForWsEvent } from '../services/notificationService';
 
+// Focus context read at WS-event time (populated by the shell from the live
+// route). Only focusedChainId is consumed — it lets a resource/chat/agent event
+// for the chain the user is currently viewing trigger an extra chain-view
+// refresh. Other former fields (selectedAgentId, visibleChatAgentId,
+// focusedCoordinatorAgentInstanceId, guidePanelOpen) were never populated and had
+// no live consumer, so they were removed; foreground notification suppression now
+// derives the open conversation from the route hash inside notificationService.
 type WsCtx = {
-  selectedAgentId?: string;
-  visibleChatAgentId?: string;
   focusedChainId?: string;
-  focusedCoordinatorAgentInstanceId?: string;
-  guidePanelOpen?: boolean;
 };
 
 function normalizeTask(task: any) {
@@ -253,8 +256,6 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   const conversationId = String(payload.conversation_id || payload.conversationId || '');
   const eventChainId = String(payload.chain_id || '');
   const focusedChainId = String(ctx.focusedChainId || '');
-  const focusedCoordinatorAgentInstanceId = String(ctx.focusedCoordinatorAgentInstanceId || '');
-  const focusedCoordinatorEvent = Boolean(focusedChainId && focusedCoordinatorAgentInstanceId && focusedCoordinatorAgentInstanceId === agentId);
   const hasInlineMessage = Boolean(payload.message);
   const message = hasInlineMessage ? normalizeChatMessage(payload.message) : null;
   const direction = String(payload.direction || '');
@@ -314,7 +315,7 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
     }
     return;
   }
-  if (focusedCoordinatorEvent || eventChainId) {
+  if (eventChainId) {
     dispatch(wsChainViewRefreshRequested(`chat_event:${focusedChainId || eventChainId}:${payload.message_id || ''}`));
   }
 
@@ -446,7 +447,7 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
   try {
     dispatch((_dispatch: any, getState: any) => {
       try {
-        fireNotificationForWsEvent(getState, payload, { visibleConversationId: ctx.visibleChatAgentId });
+        fireNotificationForWsEvent(getState, payload);
       } catch (_err) {
         /* notifications must never break cache invalidation */
       }

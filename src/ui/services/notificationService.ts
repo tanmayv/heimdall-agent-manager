@@ -6,9 +6,11 @@
 //
 // Wiring: fireNotificationForWsEvent is called from the single handleUserWsEvent
 // funnel (wsInvalidation.ts) for every user-WS event. It early-returns unless
-// notifications are enabled + permission granted + the tab is open-but-unfocused.
+// notifications are enabled + permission granted, and then applies the focus
+// policy: when the window is NOT focused it always notifies; when it IS focused
+// it notifies only for a thread other than the one currently open on screen.
 
-import { buildRouteHash } from '../utils/appLocation';
+import { buildRouteHash, getRoutePathname, getRouteSearch } from '../utils/appLocation';
 import { notificationForWsEvent, type NotificationMapperCtx, type NotificationPlan } from '../api/notificationMapper';
 import {
   categoryEnabled,
@@ -104,8 +106,9 @@ export function isElectronRuntime(): boolean {
   }
 }
 
-// True when the tab is OPEN but NOT focused. If the tab is focused, the in-app
-// toast path already surfaces the event, so we must not also raise an OS popup.
+// True when the tab is OPEN but NOT focused (hidden behind another tab, or the
+// browser window is behind another app). When focused we may still notify — but
+// only for a conversation other than the one on screen (see isViewingPlanThread).
 export function isTabBackgrounded(): boolean {
   try {
     if (typeof document === 'undefined') return false;
@@ -250,6 +253,51 @@ export async function showNativeNotification(plan: NotificationPlan): Promise<bo
   }
 }
 
+// The conversation/thread the user is actively viewing, derived from the live
+// hash route ('/conversations/<id>' plus an optional '?agent_instance_id') and,
+// when supplied, an explicit ctx override. Empty when no conversation is open
+// (e.g. a board, settings, or the new-conversation composer) — in which case we
+// never suppress. A conversation is reachable by either its conversation_id or
+// its agent_instance_id, so both are collected.
+function openConversationKeys(ctx: NotificationMapperCtx): string[] {
+  const keys: string[] = [];
+  try {
+    if (ctx && ctx.visibleConversationId) keys.push(String(ctx.visibleConversationId));
+    const path = getRoutePathname();
+    if (path.startsWith('/conversations/') && path !== '/conversations/new') {
+      keys.push(decodeURIComponent(path.slice('/conversations/'.length)));
+    }
+    const search = getRouteSearch();
+    const m = /[?&]agent_instance_id=([^&]+)/.exec(search || '');
+    if (m && m[1]) keys.push(decodeURIComponent(m[1]));
+  } catch (_err) {
+    /* treat as "no conversation open" -> never suppress */
+  }
+  return keys.filter(Boolean);
+}
+
+// Extract the trailing id from a '/conversations/<id>' or '/chains/<id>' route,
+// used as a fallback identity when a plan carries no explicit conversationKeys.
+function routeThreadId(route: string): string {
+  try {
+    const parts = String(route || '').split('?')[0].split('/').filter(Boolean);
+    return parts.length >= 2 ? decodeURIComponent(parts[1]) : '';
+  } catch (_err) {
+    return '';
+  }
+}
+
+// True when the event targets the exact conversation currently on screen, so a
+// focused user is already looking at it and an OS popup would be redundant.
+function isViewingPlanThread(plan: NotificationPlan, ctx: NotificationMapperCtx): boolean {
+  const open = openConversationKeys(ctx);
+  if (open.length === 0) return false;
+  const target = (plan.conversationKeys && plan.conversationKeys.length)
+    ? plan.conversationKeys
+    : [routeThreadId(plan.route)];
+  return target.some((k) => Boolean(k) && open.includes(k));
+}
+
 // Entry point wired into handleUserWsEvent. `getState` is the redux store's
 // getState (dependency-injected to avoid a circular store import). Returns the
 // plan that fired (for tests/telemetry) or null when skipped.
@@ -261,8 +309,6 @@ export function fireNotificationForWsEvent(
   // Electron owns native notifications in its main process — no-op here.
   if (isElectronRuntime()) return null;
   if (!isNotificationSupported()) return null;
-  // Only when the tab is open-but-unfocused (REQ-N1/REQ-N2).
-  if (!isTabBackgrounded()) return null;
 
   let settings;
   try {
@@ -276,6 +322,12 @@ export function fireNotificationForWsEvent(
   if (!plan) return null;
   // Per-category opt-out.
   if (!categoryEnabled(settings, plan.category)) return null;
+
+  // Focus/visibility policy:
+  // - Window NOT focused (behind another app) or tab hidden: ALWAYS notify.
+  // - Window focused: notify UNLESS the event targets the conversation the user
+  //   is currently viewing — they can already see it (REQ-N2).
+  if (!isTabBackgrounded() && isViewingPlanThread(plan, ctx)) return null;
 
   // Fire-and-forget: showing is async (service-worker path), but the WS funnel is
   // synchronous and only uses the returned plan for tests/telemetry.

@@ -21,6 +21,10 @@ const { notificationForWsEvent } = await import('../src/ui/api/notificationMappe
   assert.equal(plan!.tag, 'heimdall:chat:conv_1', 'coalesces per conversation');
   assert.equal(plan!.title, 'New message');
   assert.match(plan!.body, /Deployment finished/);
+  assert.deepEqual(
+    plan!.conversationKeys, ['conv_1', 'inst_abc'],
+    'conversationKeys carry conversation_id + agent_instance_id for open-thread suppression',
+  );
 }
 
 // (a2) hub metadata-only new-message shape: top-level direction + body_preview

@@ -933,8 +933,16 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
   // UI-14: the shell owns exactly one user WebSocket connection (cookie-auth
   // `/api/v1/user-ws`). Its events flow through the single `handleUserWsEvent`
-  // invalidation path. ctxRef supplies focus state read at event time.
-  const wsCtxRef = useRef({});
+  // invalidation path. ctxRef supplies focus state read at event time — kept in
+  // sync with the live route below so an event for the chain the user is viewing
+  // triggers an extra chain-view refresh. (AppShell re-renders on hashchange.)
+  const wsCtxRef = useRef<{ focusedChainId?: string }>({});
+  {
+    const routePath = getRoutePathname();
+    wsCtxRef.current.focusedChainId = routePath.startsWith('/chains/')
+      ? decodeSegment(routePath.split('/')[2] || '')
+      : '';
+  }
   const { status: wsStatus, connected: wsConnected } = useUserWebSocket(wsCtxRef);
 
   // UI-13: viewport-aware shell. On mobile the sidebar is an off-canvas drawer
