@@ -1,5 +1,6 @@
 package app
 
+import "core:fmt"
 import "core:sync"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
@@ -12,6 +13,7 @@ import device_auth_service "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
+import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
@@ -34,6 +36,7 @@ App_Graph :: struct {
 	sqlite_search: sqlite.Search_Repo_SQLite,
 	sqlite_actions: sqlite.Action_Repo_SQLite,
 	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
+	sqlite_push: sqlite.Push_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
 	uow_factory: iface.Unit_Of_Work_Factory,
@@ -44,6 +47,7 @@ App_Graph :: struct {
 	content: content_service.Content_Service,
 	taskchains: taskchain_service.Taskchain_Service,
 	search: search_service.Search_Service,
+	push: push_service.Push_Service,
 	auth: auth_service.Auth_Service,
 	device_auth_store: device_auth_service.Grant_Store,
 	device_auth: device_auth_service.Device_Auth_Service,
@@ -55,6 +59,7 @@ App_Graph :: struct {
 	content_handlers: http.Content_Handlers,
 	taskchain_handlers: http.Taskchain_Handlers,
 	search_handlers: http.Search_Handlers,
+	push_handlers: http.Push_Handlers,
 	agent_action_handlers: http.Agent_Action_Handlers,
 	action_handlers: http.Action_Handlers,
 	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
@@ -84,6 +89,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.search = sqlite.new_search_repository(&graph.sqlite_search, &graph.db)
 	graph.repos.actions = sqlite.new_action_repository(&graph.sqlite_actions, &graph.db)
 	graph.repos.scheduled_prompts = graph.repos.actions
+	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
@@ -94,6 +100,11 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content.title_nudge_cooldown_seconds = config.title_nudge_cooldown_seconds
 	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.search = search_service.new_search_service(&graph.repos.search)
+	graph.push = push_service.new_push_service(&graph.repos.push_subscriptions, &graph.clock, &graph.ids, push_service.Vapid_Config{
+		public_key = config.vapid_public_key,
+		private_key = config.vapid_private_key,
+		subject = config.vapid_subject,
+	})
 	graph.auth = auth_service.new_auth_service_with_tokens(auth_service.Trusted_Proxy_Config{
 		username_header = config.username_header,
 		display_name_header = config.display_name_header,
@@ -124,8 +135,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
+	graph.push_handlers = http.Push_Handlers{auth = &graph.auth, push = &graph.push, vapid_public_key = config.vapid_public_key}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
-	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, event_bus = &graph.event_bus}
+	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
 	graph.action_bridge_versions = make(map[string]int)
 	graph.action_handlers = http.Action_Handlers{
 		auth = &graph.auth,
@@ -143,6 +155,13 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.bridge_handlers.scheduled_prompts = rawptr(&graph.action_handlers)
 	graph.router = http.new_router()
 	register_routes(graph)
+	// Log the Web Push send status ONCE at startup. Never log the private key.
+	// When unconfigured, subscription endpoints still work; only sending is off.
+	if vapid_is_configured(config) {
+		fmt.println("ham-hub web push enabled (VAPID public key configured)")
+	} else {
+		fmt.println("ham-hub web push send disabled (no VAPID keypair configured); subscription endpoints remain active")
+	}
 	return true, ""
 }
 
@@ -168,6 +187,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/me/tokens", rawptr(&graph.user_handlers), http.issue_my_token_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/me/tokens/*/revoke", rawptr(&graph.user_handlers), http.revoke_my_token_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/me/ws-ticket", rawptr(&graph.user_handlers), http.issue_user_ws_ticket_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/push/vapid-public-key", rawptr(&graph.push_handlers), http.vapid_public_key_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/me/push-subscriptions", rawptr(&graph.push_handlers), http.create_push_subscription_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/me/push-subscriptions", rawptr(&graph.push_handlers), http.delete_push_subscription_handler)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/user-ws", rawptr(&graph.user_handlers), http.user_ws_upgrade_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/search", rawptr(&graph.search_handlers), http.search_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/memories", rawptr(&graph.content_handlers), http.list_memories_handler)

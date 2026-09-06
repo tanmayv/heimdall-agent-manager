@@ -132,7 +132,13 @@ request_tls_with_headers :: proc(method, host: string, port: u16, path, body: st
 
 build_http_request :: proc(method, host: string, port: u16, path, body: string, extra_headers: []Header) -> string {
 	req_b := strings.builder_make()
-	strings.write_string(&req_b, fmt.tprintf("%s %s HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\n", method, path, host, port))
+	strings.write_string(&req_b, fmt.tprintf("%s %s HTTP/1.1\r\nHost: %s:%d\r\n", method, path, host, port))
+	// Default to JSON unless the caller supplies its own Content-Type (e.g. Web
+	// Push sends a binary aes128gcm body). This keeps existing JSON callers
+	// unchanged while allowing binary/other content types.
+	if !has_header(extra_headers, "Content-Type") {
+		strings.write_string(&req_b, "Content-Type: application/json\r\n")
+	}
 	for h in extra_headers {
 		if strings.trim_space(h.name) == "" do continue
 		strings.write_string(&req_b, h.name)
@@ -142,6 +148,15 @@ build_http_request :: proc(method, host: string, port: u16, path, body: string, 
 	}
 	strings.write_string(&req_b, fmt.tprintf("Content-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body))
 	return strings.to_string(req_b)
+}
+
+// has_header reports whether extra_headers contains a header with the given
+// name (case-insensitive).
+has_header :: proc(extra_headers: []Header, name: string) -> bool {
+	for h in extra_headers {
+		if strings.equal_fold(strings.trim_space(h.name), name) do return true
+	}
+	return false
 }
 
 parse_response_bytes :: proc(data: []byte) -> (Response, bool) {

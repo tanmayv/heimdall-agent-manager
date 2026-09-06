@@ -487,8 +487,14 @@ $ODIN test src/bridge -collection:odin_test=src -out:/tmp/bridge_test
 # Wrapper @(test) suite (includes BT-4 placement + prune)
 $ODIN test src/wrapper -collection:odin_test=src -out:/tmp/wrapper_test
 
+# Web Push (@(test) suite: crypto RFC 8291 Appendix A vector, VAPID JWT,
+# subscription service + payload/send logic)
+$ODIN test src/hub/service/push -collection:odin_test=src -out:/tmp/push_test
+
 # Via flake (if nix on PATH):
 nix build .#ham-bootstrap-golden-test && ./result/bin/ham-bootstrap-golden-test
+nix build .#ham-push-crypto-test && ./result/bin/ham-push-crypto-test
+nix build .#ham-push-repo-test && ./result/bin/ham-push-repo-test
 
 # Regenerate goldens intentionally (do only for deliberate output changes):
 HEIMDALL_GOLDEN_UPDATE=1 /tmp/gt

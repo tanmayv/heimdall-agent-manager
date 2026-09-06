@@ -29,6 +29,25 @@ Hub_Config :: struct {
 	// conversation (REQ-4,5,6). Default 3600 (1h). <=0 falls back to the engine
 	// default DEFAULT_TITLE_NUDGE_COOLDOWN_SECONDS.
 	title_nudge_cooldown_seconds: int,
+	// VAPID keypair for Web Push (WP-STORE-2). Both keys are unpadded base64url;
+	// the public key is the uncompressed P-256 point served to clients, the
+	// private key is the 32-byte scalar used to sign VAPID JWTs. The private key
+	// is a SECRET and MUST NEVER be logged. When either is empty, push sending is
+	// disabled (the endpoints still work) — see vapid_is_configured.
+	vapid_public_key: string,
+	vapid_private_key: string,
+	// VAPID JWT `sub` claim — a contact URI (mailto:/https:) per RFC 8292.
+	vapid_subject: string,
+	// Public origin (scheme://host[:port]) of the deployed PWA, used to build the
+	// absolute `href` in Web Push payloads that the service worker opens on click
+	// (WP-SEND). The Hub serves only /api/v1; the SW/manifest are same-origin here.
+	public_app_origin: string,
+}
+
+// vapid_is_configured reports whether a usable VAPID keypair is present. Push
+// send is gated on this; when false, subscription endpoints still function.
+vapid_is_configured :: proc(config: Hub_Config) -> bool {
+	return config.vapid_public_key != "" && config.vapid_private_key != ""
 }
 
 default_config :: proc() -> Hub_Config {
@@ -53,5 +72,7 @@ default_config :: proc() -> Hub_Config {
 		device_auth_rate_window = 60,
 		reaper_interval_seconds = 20,
 		title_nudge_cooldown_seconds = 3600,
+		vapid_subject = "mailto:12tanmayvijay@gmail.com",
+		public_app_origin = "https://heimdal.mundus.in",
 	}
 }

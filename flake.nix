@@ -174,6 +174,11 @@
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
           ham-task-store-repository-test = mkOdinPackageWithRuntime pkgs odin "ham-task-store-repository-test" "tests/task_store_repository_test" [ pkgs.sqlite ];
+          # Web Push (WP-TEST-SERVER): the crypto vector test reproduces the RFC
+          # 8291 Appendix A example; the repo test exercises the push_subscriptions
+          # sqlite repo (needs sqlite for the migration run).
+          ham-push-crypto-test = mkOdinPackage pkgs odin "ham-push-crypto-test" "tests/push_crypto_test";
+          ham-push-repo-test = mkOdinPackageWithRuntime pkgs odin "ham-push-repo-test" "tests/push_repo_test" [ pkgs.sqlite ];
           ham-bootstrap-golden-test = mkOdinPackage pkgs odin "ham-bootstrap-golden-test" "tests/hub_bootstrap_golden_test";
           ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
           ham-pty-host = mkPtyHost pkgs;

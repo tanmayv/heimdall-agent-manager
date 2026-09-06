@@ -13,6 +13,7 @@ import bridge_service "odin_test:hub/service/bridge"
 import content_service "odin_test:hub/service/content"
 import taskchain_service "odin_test:hub/service/taskchain"
 import events "odin_test:hub/service/events"
+import push_service "odin_test:hub/service/push"
 
 Agent_Action_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
@@ -21,6 +22,10 @@ Agent_Action_Handlers :: struct {
 	content: ^content_service.Content_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
 	event_bus: ^events.User_Event_Bus,
+	// Web Push (WP-SEND): background delivery of OS notifications when the user's
+	// PWA is closed/backgrounded. public_app_origin builds the absolute click href.
+	push: ^push_service.Push_Service,
+	public_app_origin: string,
 }
 
 agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -36,6 +41,17 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 	// (e.g. start-success banners) are not user-actionable, so skip their preview.
 	if h.event_bus != nil && msg.message_type != "system" {
 		events.publish_raw_to_user(h.event_bus, string(inst.owner_user_id), agent_to_user_chat_event_json(inst, msg))
+	}
+	// Web Push (WP-SEND-2): also deliver an OS notification for backgrounded/
+	// closed PWAs. Mirrors the client notify policy (chat only, never system):
+	// same choke-point + preview as the WS chat_event above. Non-blocking so it
+	// never stalls the response; a no-op when push is unconfigured.
+	if h.push != nil && msg.message_type != "system" {
+		content := push_service.build_chat_notification(msg.conversation_id, inst.agent_instance_id, msg.message_type, msg.body)
+		defer push_service.free_notification_content(content)
+		payload := push_service.build_push_payload_json(content, h.public_app_origin)
+		defer delete(payload)
+		push_service.send_to_user_async(h.push, inst.owner_user_id, payload)
 	}
 	b := strings.builder_make()
 	write_message_json(&b, msg, h.content)
@@ -361,7 +377,7 @@ agent_action_task_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
 	tch := Taskchain_Handlers{auth = h.auth, taskchains = h.taskchains, agents = h.agents, event_bus = h.event_bus}
 	b := strings.builder_make(); strings.write_byte(&b, '[')
-	for task, i in tasks { if i > 0 do strings.write_byte(&b, ','); write_task_detail_json(&b, &tch, auth, task, deps) }
+	for task, i in tasks { if i > 0 do strings.write_byte(&b, ','); write_task_detail_json(&b, &tch, auth, task, deps, false) }
 	strings.write_byte(&b, ']')
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }

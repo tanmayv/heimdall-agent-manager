@@ -10,4 +10,5 @@ Repositories :: struct {
 	search: Search_Repository,
 	actions: Action_Repository,
 	scheduled_prompts: Scheduled_Prompt_Repository,
+	push_subscriptions: Push_Repository,
 }

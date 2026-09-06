@@ -188,6 +188,10 @@ parse_duration_seconds :: proc(value: string) -> (int, bool) {
 }
 
 parse_args :: proc(config: ^app.Hub_Config) {
+	// VAPID config resolves as: built-in default -> environment -> flags. Applying
+	// env first (below) and flags second (in the loop) keeps precedence uniform
+	// across all VAPID fields, including vapid_subject which carries a default.
+	apply_vapid_env(config)
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
 		if arg == "--listen" && i + 1 < len(os.args) {
@@ -221,8 +225,45 @@ parse_args :: proc(config: ^app.Hub_Config) {
 		} else if arg == "--title-nudge-cooldown-seconds" && i + 1 < len(os.args) {
 			if parsed, ok := strconv.parse_int(os.args[i + 1]); ok do config.title_nudge_cooldown_seconds = int(parsed)
 			i += 1
+		} else if arg == "--vapid-public-key" && i + 1 < len(os.args) {
+			config.vapid_public_key = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--vapid-private-key" && i + 1 < len(os.args) {
+			config.vapid_private_key = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--vapid-private-key-file" && i + 1 < len(os.args) {
+			config.vapid_private_key = read_key_file(os.args[i + 1]); i += 1
+		} else if arg == "--vapid-subject" && i + 1 < len(os.args) {
+			config.vapid_subject = strings.clone(os.args[i + 1]); i += 1
 		}
 	}
+}
+
+// apply_vapid_env seeds VAPID config from the environment:
+// HEIMDALL_VAPID_PUBLIC_KEY, HEIMDALL_VAPID_PRIVATE_KEY (inline) or
+// HEIMDALL_VAPID_PRIVATE_KEY_FILE (path), and HEIMDALL_VAPID_SUBJECT. Command
+// line flags are applied afterwards and override these. The private key is a
+// secret and is never printed.
+apply_vapid_env :: proc(config: ^app.Hub_Config) {
+	if v := os.get_env_alloc("HEIMDALL_VAPID_PUBLIC_KEY", context.allocator); v != "" do config.vapid_public_key = v
+	if v := os.get_env_alloc("HEIMDALL_VAPID_PRIVATE_KEY", context.allocator); v != "" {
+		config.vapid_private_key = v
+	} else if path := os.get_env_alloc("HEIMDALL_VAPID_PRIVATE_KEY_FILE", context.allocator); path != "" {
+		config.vapid_private_key = read_key_file(path)
+	}
+	if v := os.get_env_alloc("HEIMDALL_VAPID_SUBJECT", context.allocator); v != "" do config.vapid_subject = v
+}
+
+// read_key_file loads a VAPID private key from a file, trimming trailing
+// whitespace/newlines. Returns "" (push stays disabled) if the file is missing
+// or unreadable, warning to stderr so a misconfigured key path is visible to
+// ops (e.g. the NixOS deploy that provides the key via file). The contents are
+// secret and are never logged.
+read_key_file :: proc(path: string) -> string {
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil {
+		fmt.eprintln("ham-hub: WARNING could not read VAPID private key file:", path, "- web push send will be disabled")
+		return ""
+	}
+	return strings.clone(strings.trim_space(string(data)))
 }
 
 split_host_port :: proc(value: string) -> (string, int, bool) {

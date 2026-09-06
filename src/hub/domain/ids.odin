@@ -18,3 +18,4 @@ id_is_empty :: proc(id: string) -> bool {
 }
 Action_ID :: distinct string
 Scheduled_Prompt_ID :: Action_ID
+Push_Subscription_ID :: distinct string
