@@ -30,8 +30,8 @@ require("path === '/conversations'" in SHELL and "<ConversationsHomePage />" in 
         "/conversations must render the inbox page")
 require("isConversationThreadRoute" in SHELL and "<ConversationThreadPage" in SHELL,
         "conversation detail route must still open the existing thread view")
-require("href={buildRouteHash(`/conversations/${encodeURIComponent(conversation.conversationId)}`, '')}" in HOME,
-        "conversation inbox rows must link to the existing conversation route")
+require("href={buildRouteHash(`/conversations/${encodeURIComponent(conversation.agentInstanceId)}`, '')}" in HOME,
+        "conversation inbox rows must link to the instance-id conversation route")
 
 # Mobile-first UI and row content: touch-friendly list rows with clear title,
 # last message prefix, timestamp, unread badge, and pagination.

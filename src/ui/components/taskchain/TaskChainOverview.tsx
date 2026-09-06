@@ -2451,23 +2451,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 function shellHash(path: string): string { return `#${path.startsWith('/') ? path : `/${path}`}`; }
 
 // H10: InstanceIdLink renders an agent instance id as a clickable control that
-// opens that agent's chat. It resolves instance_id -> conversation_id via the
-// agents API (GET /agent-instances/{id}) and links to shellHash(/conversations/
-// <conversationId>). Graceful fallbacks: while resolving it links to the agent
-// instance's chain-agnostic detail is unknown, so it links to /conversations only
-// once resolved; if no conversation can be resolved it falls back to the agents
-// list route and shows a tooltip — never a dead link and never a crash. user_id
-// refs are NOT agent instances and must be rendered with plain text by callers.
+// opens that agent's chat. Conversation routing is instance-id-only
+// (#/conversations/{agentInstanceId}), so the link needs no instance->conversation
+// resolution — the thread page resolves the conversation from the instance id.
+// When the caller already knows the display name (e.g. chain members carry it from
+// the hub) NO fetch happens at all; otherwise the (cached) instance/identity
+// queries are used only to label the link. user_id refs are NOT agent instances
+// and must be rendered with plain text by callers.
 export function InstanceIdLink({ instanceId, displayName }: { instanceId: string; displayName?: string }) {
   const trimmed = String(instanceId || '').trim();
-  // When the caller already knows the display name (e.g. chain members now carry
-  // it from the hub), skip BOTH the instance and identity fetches entirely — we
-  // only still need the conversation id for the link, which we resolve lazily via
-  // the (cached) instance query only when no display name was supplied.
   const known = Boolean(String(displayName || '').trim());
-  const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed });
+  // Only fetch when we need a label; the href never depends on the fetch.
+  const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed || known });
   const inst = data?.instance || null;
-  const conversationId = String(inst?.conversation_id || inst?.conversationId || '');
   const agentId = String(inst?.agent_id || inst?.agentId || '');
   const instName = String(displayName || '').trim() || inst?.display_name || inst?.displayName || '';
 
@@ -2475,13 +2471,9 @@ export function InstanceIdLink({ instanceId, displayName }: { instanceId: string
   const agentName = instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   if (!trimmed) return null;
-  
-  const href = conversationId
-    ? shellHash(`/conversations/${conversationId}?agent_instance_id=${trimmed}`)
-    : shellHash(`/agents`);
-  const title = conversationId
-    ? `Open chat with ${trimmed}`
-    : `No conversation resolved for ${trimmed} — open agents`;
+
+  const href = shellHash(`/conversations/${encodeURIComponent(trimmed)}`);
+  const title = `Open chat with ${trimmed}`;
   return (
     <a
       data-debug-id={`taskchain-instance-link-${trimmed}`}

@@ -20,7 +20,7 @@ export type NotificationPlan = {
   // rather than stack (REQ-N6). The browser dedupes by (tag, origin).
   tag: string;
   // In-app hash route to navigate to on click (REQ-N4), e.g.
-  // '/conversations/<conversationId>' or '/chains/<chainId>'.
+  // '/conversations/<agentInstanceId>' or '/chains/<chainId>'.
   route: string;
   // Curated bucket, used by per-category settings + tests.
   category: NotificationCategory;
@@ -87,10 +87,10 @@ function planForChatEvent(payload: any, ctx: NotificationMapperCtx): Notificatio
   const isNudge = messageType === 'nudge' || Boolean(metadata?.nudge) || Boolean(metadata?.is_nudge);
   const isMention = messageType === 'mention' || Boolean(metadata?.mention);
 
-  // Route: prefer the conversation deep-link (the shell resolves
-  // /conversations/<conversationId>). Fall back to the agent instance id, which
-  // the conversation route also accepts, then the chain view.
-  const routeId = conversationId || agentInstanceId;
+  // Route: instance-id-only conversation deep-link — the shell resolves
+  // /conversations/<agentInstanceId> to its conversation. Fall back to the chain
+  // view when no instance is known. conversation_id is never put in a route.
+  const routeId = agentInstanceId;
   const route = routeId ? `/conversations/${routeId}` : (chainId ? `/chains/${chainId}` : '/conversations');
 
   // Coalesce per conversation (or chain) so a burst collapses to one bubble.
@@ -125,7 +125,8 @@ function planForChatApproval(payload: any): NotificationPlan | null {
   const kind = str(approval?.kind);
   const promptBody = str(approval?.body || approval?.title || approval?.prompt).trim();
 
-  const routeId = conversationId || agentInstanceId;
+  // Instance-id-only route (see planForChat); never route by conversation_id.
+  const routeId = agentInstanceId;
   const route = routeId ? `/conversations/${routeId}` : (chainId ? `/chains/${chainId}` : '/conversations');
   const tag = `heimdall:attention:approval:${chainId || agentInstanceId || conversationId || 'unknown'}`;
 

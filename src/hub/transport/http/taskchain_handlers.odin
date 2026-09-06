@@ -1,11 +1,14 @@
 package http
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
+import content_service "odin_test:hub/service/content"
+import project_service "odin_test:hub/service/project"
 import taskchain_service "odin_test:hub/service/taskchain"
 import events "odin_test:hub/service/events"
 
@@ -13,6 +16,13 @@ Taskchain_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
 	agents: ^agent_service.Agent_Service,
+	// content + projects power the project-grouped task-chains list (TC-API): a
+	// chain has no project_id column, so its project is resolved via the
+	// coordinator instance's conversation (content) and named via the project
+	// service. Both may be nil in reduced test wirings; resolution degrades to the
+	// "Unassigned" bucket when so.
+	content: ^content_service.Content_Service,
+	projects: ^project_service.Project_Service,
 	event_bus: ^events.User_Event_Bus,
 }
 
@@ -97,12 +107,327 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		strings.write_byte(&cb, ']')
 		return respond_list(strings.to_string(cb), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 	}
+	// Default (no ?coordinated_by): the project-grouped task-chains list (TC-API).
+	// Enrich every visible chain with its project (resolved via the coordinator
+	// instance's conversation), then either page ONE project or group them ALL.
 	chains, err := taskchain_service.list_chains(h.taskchains, auth_ctx)
 	if err.code != .None do return respond_error(err, req.request_id)
+	items := enrich_chain_list_items(h, auth_ctx, chains)
+	defer delete(items)
+
+	// ?project_id=<id> (value may be empty for the Unassigned bucket) selects the
+	// single-project, cursor-paginated view. Its absence returns the grouped view.
+	if has_query_key(req.query, "project_id") {
+		limit := query_int(req.query, "limit", TASK_CHAINS_PAGE_DEFAULT)
+		if limit <= 0 do limit = TASK_CHAINS_PAGE_DEFAULT
+		if limit > TASK_CHAINS_PAGE_MAX do limit = TASK_CHAINS_PAGE_MAX
+		page := paginate_project_chains(items[:], query_value(req.query, "project_id"), limit, query_value(req.query, "cursor"))
+		defer delete(page.chains)
+		defer if page.next_cursor != "" do delete(page.next_cursor) // chain_cursor_encode alloc
+		b := strings.builder_make()
+		write_chain_project_page_json(&b, page)
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+	}
+
+	groups := group_chains_by_project(items[:], TASK_CHAINS_GROUP_PREVIEW_CAP)
+	defer free_chain_project_groups(groups)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
-	for chain, i in chains { if i > 0 do strings.write_byte(&b, ','); write_chain_json(&b, chain) }
+	for g, i in groups { if i > 0 do strings.write_byte(&b, ','); write_chain_project_group_json(&b, g) }
 	strings.write_byte(&b, ']')
-	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
+// TASK_CHAINS_GROUP_PREVIEW_CAP is how many chains the grouped view previews per
+// project; TASK_CHAINS_PAGE_DEFAULT/MAX bound the per-project ?limit.
+TASK_CHAINS_GROUP_PREVIEW_CAP :: 5
+TASK_CHAINS_PAGE_DEFAULT :: 20
+TASK_CHAINS_PAGE_MAX :: 100
+
+// has_query_key reports whether the query string carries `key` at all, even with
+// an empty value — this distinguishes ?project_id= (the Unassigned bucket) from
+// an absent project_id (the grouped view). Mirrors has_coordinated_by.
+has_query_key :: proc(query, key: string) -> bool {
+	parts := strings.split(query, "&"); defer delete(parts)
+	for p in parts {
+		if p == key do return true
+		if eq := strings.index_byte(p, '='); eq >= 0 && p[:eq] == key do return true
+	}
+	return false
+}
+
+// Chain_List_Item is the flattened, project-enriched chain used by the grouped
+// and per-project task-chains views. Its string fields are views into the
+// caller-owned chain slice (valid for the request); the JSON serializer copies
+// them out. Field set matches the TC-API wire contract exactly.
+Chain_List_Item :: struct {
+	chain_id:                      string,
+	title:                         string,
+	status:                        string,
+	updated_at:                    string,
+	coordinator_agent_instance_id: string,
+	project_id:                    string,
+	project_name:                  string,
+}
+
+// enrich_chain_list_items resolves each chain's project once, memoizing the
+// coordinator-instance -> project_id and project_id -> project_name lookups so a
+// project shared by many chains costs a single conversation/project fetch. The
+// returned dynamic array is caller-owned (delete it); its strings are not.
+enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, chains: []domain.Task_Chain) -> [dynamic]Chain_List_Item {
+	items := make([dynamic]Chain_List_Item)
+	project_by_instance := make(map[string]string); defer delete(project_by_instance)
+	name_by_project := make(map[string]string); defer delete(name_by_project)
+	for c in chains {
+		project_id := resolve_chain_project_id(h, auth, c.coordinator_agent_instance_id, &project_by_instance)
+		append(&items, Chain_List_Item{
+			chain_id = string(c.chain_id),
+			title = c.title,
+			status = chain_status_http(c.status),
+			updated_at = c.updated_at,
+			coordinator_agent_instance_id = c.coordinator_agent_instance_id,
+			project_id = project_id,
+			project_name = resolve_project_name(h, auth, project_id, &name_by_project),
+		})
+	}
+	return items
+}
+
+// resolve_chain_project_id maps a coordinator instance to its project via the
+// instance's conversation (the single source; chains carry no project_id column).
+// Returns "" when there is no coordinator, no content service, or no conversation
+// — those chains fall into the "Unassigned" bucket.
+// NOTE: get_conversation_by_instance currently linear-scans up to 512 of the
+// owner's conversations; a coordinator whose conversation sorts past that window
+// would misfile its chain as "Unassigned". Latent until an owner has that many
+// conversations — worth a bounded/indexed by-instance lookup eventually.
+resolve_chain_project_id :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, coordinator_instance_id: string, cache: ^map[string]string) -> string {
+	if strings.trim_space(coordinator_instance_id) == "" do return ""
+	if cached, ok := cache[coordinator_instance_id]; ok do return cached
+	if h.content == nil do return ""
+	conv, ok, err := content_service.get_conversation_by_instance(h.content, auth, coordinator_instance_id)
+	// Only memoize a definite answer (resolved, or a genuine not-found). A real
+	// backend error is left uncached so it isn't sticky across the request and the
+	// chain simply degrades to Unassigned for this pass.
+	if err.code != .None && err.code != .Not_Found do return ""
+	project_id := string(conv.project_id) if ok else ""
+	cache[coordinator_instance_id] = project_id
+	return project_id
+}
+
+// resolve_project_name looks up a project's display name, memoized by project id.
+// Empty project id (Unassigned) and unresolved/deleted projects return "".
+resolve_project_name :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, project_id: string, cache: ^map[string]string) -> string {
+	if project_id == "" do return ""
+	if cached, ok := cache[project_id]; ok do return cached
+	if h.projects == nil do return ""
+	p, ok, err := project_service.get(h.projects, auth, domain.Project_ID(project_id))
+	// As above: cache a real answer, but not a transient backend error.
+	if err.code != .None && err.code != .Not_Found do return ""
+	name := p.name if ok else ""
+	cache[project_id] = name
+	return name
+}
+
+// chain_list_item_less orders items newest-first by updated_at, breaking ties on
+// chain_id (descending) so pagination and grouping are deterministic.
+chain_list_item_less :: proc(a, b: Chain_List_Item) -> bool {
+	if a.updated_at != b.updated_at do return a.updated_at > b.updated_at
+	return a.chain_id > b.chain_id
+}
+
+// chain_cursor_encode / _decode form a COMPOSITE (updated_at, chain_id)
+// pagination cursor. updated_at alone is ambiguous when chains share a timestamp:
+// a purely-updated_at cursor with a `>=`/`<` filter drops (or repeats) a tied row
+// that straddles a page boundary. Carrying chain_id (the sort's tie-breaker) lets
+// resumption land strictly AFTER (updated_at, chain_id) in the newest-first order,
+// so every chain is returned exactly once. Separator mirrors the chat-conversation
+// repo's `order|id` cursor convention. Caller owns the returned string.
+chain_cursor_encode :: proc(it: Chain_List_Item) -> string {
+	return strings.concatenate({it.updated_at, "|", it.chain_id})
+}
+chain_cursor_decode :: proc(cursor: string) -> (updated_at: string, chain_id: string) {
+	if sep := strings.index_byte(cursor, '|'); sep >= 0 do return cursor[:sep], cursor[sep + 1:]
+	return cursor, ""
+}
+// chain_after_cursor reports whether `it` sorts strictly after the cursor in the
+// newest-first (updated_at desc, then chain_id desc) order used throughout. An
+// empty cursor means "from the start" (include everything).
+chain_after_cursor :: proc(it: Chain_List_Item, cur_updated_at, cur_chain_id: string) -> bool {
+	if cur_updated_at == "" do return true
+	if it.updated_at != cur_updated_at do return it.updated_at < cur_updated_at
+	return it.chain_id < cur_chain_id
+}
+
+// project_display_name labels the Unassigned bucket; a resolved-but-unnamed
+// project (e.g. deleted) keeps its empty name.
+project_display_name :: proc(project_id, name: string) -> string {
+	if project_id == "" do return "Unassigned"
+	return name
+}
+
+// Chain_Project_Group is one project's entry in the grouped view: a bounded
+// preview of its most-recent chains plus the total/has_more/next_cursor needed to
+// page the rest via the per-project view.
+Chain_Project_Group :: struct {
+	project_id:   string,
+	project_name: string,
+	chains:       []Chain_List_Item,
+	chain_total:  int,
+	has_more:     bool,
+	next_cursor:  string,
+}
+
+// group_chains_by_project groups enriched chains by project, sorts each group's
+// chains newest-first, previews up to `preview_cap` per project, and orders the
+// groups by their most-recent chain activity. Caller owns the result — free it
+// with free_chain_project_groups.
+group_chains_by_project :: proc(items: []Chain_List_Item, preview_cap: int) -> []Chain_Project_Group {
+	// Collect chains per project, preserving one bucket per distinct project id.
+	index_by_project := make(map[string]int); defer delete(index_by_project)
+	buckets := make([dynamic][dynamic]Chain_List_Item)
+	defer { for &bkt in buckets do delete(bkt); delete(buckets) }
+	order := make([dynamic]string); defer delete(order) // project ids, first-seen order
+	for it in items {
+		idx, seen := index_by_project[it.project_id]
+		if !seen {
+			idx = len(buckets)
+			index_by_project[it.project_id] = idx
+			append(&buckets, make([dynamic]Chain_List_Item))
+			append(&order, it.project_id)
+		}
+		append(&buckets[idx], it)
+	}
+
+	groups := make([dynamic]Chain_Project_Group)
+	for project_id, i in order {
+		bucket := buckets[i]
+		slice.sort_by(bucket[:], chain_list_item_less)
+		total := len(bucket)
+		preview_n := total
+		if preview_cap >= 0 && preview_n > preview_cap do preview_n = preview_cap
+		preview := make([]Chain_List_Item, preview_n)
+		for j in 0..<preview_n do preview[j] = bucket[j]
+		has_more := total > preview_n
+		next_cursor := ""
+		// Composite cursor so the client can page the rest of THIS project via the
+		// per-project view without losing a chain tied on updated_at at the handoff.
+		if has_more && preview_n > 0 do next_cursor = chain_cursor_encode(preview[preview_n - 1])
+		append(&groups, Chain_Project_Group{
+			project_id = project_id,
+			project_name = project_display_name(project_id, bucket[0].project_name if total > 0 else ""),
+			chains = preview,
+			chain_total = total,
+			has_more = has_more,
+			next_cursor = next_cursor,
+		})
+	}
+	// Order projects by most-recent chain activity (each group's first chain is its
+	// newest after the per-group sort); tie-break on project id for determinism.
+	slice.sort_by(groups[:], proc(a, b: Chain_Project_Group) -> bool {
+		a_at := a.chains[0].updated_at if len(a.chains) > 0 else ""
+		b_at := b.chains[0].updated_at if len(b.chains) > 0 else ""
+		if a_at != b_at do return a_at > b_at
+		return a.project_id < b.project_id
+	})
+	return groups[:]
+}
+
+free_chain_project_groups :: proc(groups: []Chain_Project_Group) {
+	for g in groups {
+		delete(g.chains)
+		if g.next_cursor != "" do delete(g.next_cursor) // chain_cursor_encode alloc
+	}
+	delete(groups)
+}
+
+// Chain_Project_Page is the single-project, cursor-paginated view. chain_total is
+// the project's full match count (independent of limit/cursor) — the same figure
+// the grouped view carries — so the client's count pill is exact, not per-page.
+Chain_Project_Page :: struct {
+	project_id:   string,
+	project_name: string,
+	chains:       []Chain_List_Item,
+	chain_total:  int,
+	has_more:     bool,
+	next_cursor:  string,
+}
+
+// paginate_project_chains returns one page of a single project's chains,
+// newest-first. `cursor` is a composite (updated_at, chain_id) watermark (see
+// chain_cursor_encode): only chains that sort strictly after it are returned, so
+// chains sharing an updated_at across a page boundary are never skipped. The
+// returned chains slice and next_cursor are caller-owned (delete them).
+paginate_project_chains :: proc(items: []Chain_List_Item, project_id: string, limit: int, cursor: string) -> Chain_Project_Page {
+	cur_at, cur_id := chain_cursor_decode(cursor)
+	matched := make([dynamic]Chain_List_Item); defer delete(matched)
+	project_name := ""
+	project_total := 0
+	for it in items {
+		if it.project_id != project_id do continue
+		project_name = it.project_name
+		project_total += 1 // full project match count, before the cursor filter
+		if !chain_after_cursor(it, cur_at, cur_id) do continue
+		append(&matched, it)
+	}
+	slice.sort_by(matched[:], chain_list_item_less)
+
+	eff_limit := limit
+	if eff_limit <= 0 do eff_limit = TASK_CHAINS_PAGE_DEFAULT
+	page_n := len(matched)
+	if page_n > eff_limit do page_n = eff_limit
+	page := make([]Chain_List_Item, page_n)
+	for j in 0..<page_n do page[j] = matched[j]
+	has_more := len(matched) > page_n
+	next_cursor := ""
+	if has_more && page_n > 0 do next_cursor = chain_cursor_encode(page[page_n - 1])
+	return Chain_Project_Page{
+		project_id = project_id,
+		project_name = project_display_name(project_id, project_name),
+		chains = page,
+		chain_total = project_total,
+		has_more = has_more,
+		next_cursor = next_cursor,
+	}
+}
+
+// write_chain_list_item_json emits ONE chain in the TC-API wire shape. Field set
+// (chain_id,title,status,updated_at,coordinator_agent_instance_id,project_id,
+// project_name) is contractual — keep it in sync with the client.
+write_chain_list_item_json :: proc(b: ^strings.Builder, it: Chain_List_Item) {
+	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, it.chain_id)
+	strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, it.title)
+	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, it.status)
+	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, it.updated_at)
+	strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, it.coordinator_agent_instance_id)
+	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, it.project_id)
+	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, it.project_name)
+	strings.write_string(b, "\"}")
+}
+
+write_chain_list_items_json :: proc(b: ^strings.Builder, items: []Chain_List_Item) {
+	strings.write_byte(b, '[')
+	for it, i in items { if i > 0 do strings.write_byte(b, ','); write_chain_list_item_json(b, it) }
+	strings.write_byte(b, ']')
+}
+
+write_chain_project_group_json :: proc(b: ^strings.Builder, g: Chain_Project_Group) {
+	strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, g.project_id)
+	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, g.project_name)
+	strings.write_string(b, "\",\"chains\":"); write_chain_list_items_json(b, g.chains)
+	strings.write_string(b, ",\"chain_total\":"); strings.write_int(b, g.chain_total)
+	strings.write_string(b, ",\"has_more\":"); strings.write_string(b, "true" if g.has_more else "false")
+	strings.write_string(b, ",\"next_cursor\":\""); write_handler_json_string(b, g.next_cursor)
+	strings.write_string(b, "\"}")
+}
+
+write_chain_project_page_json :: proc(b: ^strings.Builder, p: Chain_Project_Page) {
+	strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, p.project_id)
+	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, p.project_name)
+	strings.write_string(b, "\",\"chains\":"); write_chain_list_items_json(b, p.chains)
+	strings.write_string(b, ",\"chain_total\":"); strings.write_int(b, p.chain_total)
+	strings.write_string(b, ",\"has_more\":"); strings.write_string(b, "true" if p.has_more else "false")
+	strings.write_string(b, ",\"next_cursor\":\""); write_handler_json_string(b, p.next_cursor)
+	strings.write_string(b, "\"}")
 }
 
 create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
