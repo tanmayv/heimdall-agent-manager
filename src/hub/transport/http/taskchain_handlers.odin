@@ -340,11 +340,14 @@ free_chain_project_groups :: proc(groups: []Chain_Project_Group) {
 	delete(groups)
 }
 
-// Chain_Project_Page is the single-project, cursor-paginated view.
+// Chain_Project_Page is the single-project, cursor-paginated view. chain_total is
+// the project's full match count (independent of limit/cursor) — the same figure
+// the grouped view carries — so the client's count pill is exact, not per-page.
 Chain_Project_Page :: struct {
 	project_id:   string,
 	project_name: string,
 	chains:       []Chain_List_Item,
+	chain_total:  int,
 	has_more:     bool,
 	next_cursor:  string,
 }
@@ -358,9 +361,11 @@ paginate_project_chains :: proc(items: []Chain_List_Item, project_id: string, li
 	cur_at, cur_id := chain_cursor_decode(cursor)
 	matched := make([dynamic]Chain_List_Item); defer delete(matched)
 	project_name := ""
+	project_total := 0
 	for it in items {
 		if it.project_id != project_id do continue
 		project_name = it.project_name
+		project_total += 1 // full project match count, before the cursor filter
 		if !chain_after_cursor(it, cur_at, cur_id) do continue
 		append(&matched, it)
 	}
@@ -379,6 +384,7 @@ paginate_project_chains :: proc(items: []Chain_List_Item, project_id: string, li
 		project_id = project_id,
 		project_name = project_display_name(project_id, project_name),
 		chains = page,
+		chain_total = project_total,
 		has_more = has_more,
 		next_cursor = next_cursor,
 	}
@@ -418,6 +424,7 @@ write_chain_project_page_json :: proc(b: ^strings.Builder, p: Chain_Project_Page
 	strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, p.project_id)
 	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, p.project_name)
 	strings.write_string(b, "\",\"chains\":"); write_chain_list_items_json(b, p.chains)
+	strings.write_string(b, ",\"chain_total\":"); strings.write_int(b, p.chain_total)
 	strings.write_string(b, ",\"has_more\":"); strings.write_string(b, "true" if p.has_more else "false")
 	strings.write_string(b, ",\"next_cursor\":\""); write_handler_json_string(b, p.next_cursor)
 	strings.write_string(b, "\"}")

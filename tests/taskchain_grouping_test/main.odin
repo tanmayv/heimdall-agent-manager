@@ -92,6 +92,8 @@ main :: proc() {
 		pages += 1
 		check(pages <= 10, "P2: pagination did not terminate")
 		check(page.project_id == "p1" && page.project_name == "Alpha", "P1: page must carry project id+name")
+		// chain_total is the full project match count, independent of limit/cursor.
+		check(page.chain_total == 6, fmt.tprintf("P1: page chain_total must be 6 on every page, got %d", page.chain_total))
 		check(len(page.chains) <= 2, fmt.tprintf("P1: page must respect limit 2, got %d", len(page.chains)))
 		for c in page.chains do append(&seen, c.chain_id)
 		// Each page item sorts strictly after the previous (composite) cursor.
@@ -113,6 +115,7 @@ main :: proc() {
 	defer delete(un_page.chains)
 	check(un_page.project_name == "Unassigned", "P3: empty project_id page must be labeled Unassigned")
 	check(len(un_page.chains) == 1 && un_page.chains[0].chain_id == "u7" && !un_page.has_more, "P3: Unassigned page must hold u7 only")
+	check(un_page.chain_total == 1, fmt.tprintf("P3: Unassigned chain_total must be 1, got %d", un_page.chain_total))
 
 	// --- P4: TIED updated_at straddling the page boundary must not drop a chain ---
 	// Reviewer's repro: one project, (T2,'tb'),(T2,'ta'),(T1,'tc'), limit=1. A
@@ -133,6 +136,7 @@ main :: proc() {
 		// freed here; it's a short-lived per-page string in this test.
 		tied_pages += 1
 		check(tied_pages <= 10, "P4: tied pagination did not terminate")
+		check(page.chain_total == 3, fmt.tprintf("P4: chain_total must be 3 on every page, got %d", page.chain_total))
 		for c in page.chains do append(&tied_seen, c.chain_id)
 		if !page.has_more do break
 		tied_cursor = page.next_cursor
