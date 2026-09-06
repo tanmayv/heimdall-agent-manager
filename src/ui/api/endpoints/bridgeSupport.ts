@@ -213,17 +213,6 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
     }),
-    testBridgeProvider: build.mutation<any, { bridgeId: string; name: string; tier?: string }>({
-      queryFn: async ({ bridgeId, name, tier }) => {
-        try {
-          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(name)}/test`, 'POST', { tier });
-          return { data };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
-    }),
     refreshBridgeCapabilities: build.mutation<any, { bridgeId: string }>({
       queryFn: async ({ bridgeId }) => {
         try {
@@ -263,7 +252,6 @@ export const {
   useUpsertBridgeProviderMutation,
   useDeleteBridgeProviderMutation,
   useSetBridgeProviderDefaultsMutation,
-  useTestBridgeProviderMutation,
   useRefreshBridgeCapabilitiesMutation,
   usePutProjectBridgePathMutation,
   useDeleteProjectBridgePathMutation,

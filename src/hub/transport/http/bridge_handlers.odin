@@ -368,13 +368,6 @@ delete_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
-test_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "test_provider", path_part(req.path, 6), req.body)
-	if !ok do return bridge_provider_error_response(err, req.request_id)
-	return respond_success(result, req.request_id, auth_ctx_server_time(req))
-}
-
 set_bridge_provider_defaults_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "set_provider_defaults", "", req.body)
@@ -408,15 +401,6 @@ bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, comm
 	command_id := fmt.tprintf("cmd_provider_%d", time.to_unix_nanoseconds(time.now()))
 	cmd_body := bridge_provider_command_json(command_type, command_id, provider_name, body)
 	timeout_ms := 10000
-	if command_type == "test_provider" {
-		hard_deadline_ms := json_int(cmd_body, "hard_deadline_ms", 90000)
-		// Provider tests can fan out across all configured tiers (cheap/normal/smart)
-		// on the Bridge. The command body only includes `tier` for a single-tier
-		// request, so budget for three sequential tier smoke tests when absent.
-		tier_count := 3
-		if json_string(cmd_body, "tier") != "" do tier_count = 1
-		timeout_ms = hard_deadline_ms * tier_count + 120000
-	}
 	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, timeout_ms)
 	if !reply_ok do return "", false, reply_err
 	reply_type := json_string(reply, "type")
@@ -435,13 +419,6 @@ bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, comm
 		return "", false, domain.domain_error(.Validation_Failed, message)
 	}
 	return result, true, domain.Domain_Error{}
-}
-
-bridge_provider_test_bound_int :: proc(body, key: string, fallback, min, max: int) -> int {
-	value := json_int(body, key, fallback)
-	if value < min do return min
-	if value > max do return max
-	return value
 }
 
 bridge_provider_command_json :: proc(command_type, command_id, provider_name, body: string) -> string {
@@ -463,20 +440,6 @@ bridge_provider_command_json :: proc(command_type, command_id, provider_name, bo
 		strings.write_string(&b, "{\"provider\":\""); write_handler_json_string(&b, json_string(body, "provider"))
 		strings.write_string(&b, "\",\"tier\":\""); write_handler_json_string(&b, json_string(body, "tier"))
 		strings.write_string(&b, "\"}")
-	case "test_provider":
-		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name); strings.write_string(&b, "\"")
-		tier := json_string(body, "tier")
-		if tier != "" { strings.write_string(&b, ",\"tier\":\""); write_handler_json_string(&b, tier); strings.write_string(&b, "\"") }
-		strings.write_string(&b, ",\"capture_frames\":"); strings.write_string(&b, "true" if strings.contains(body, "\"capture_frames\":true") else "false")
-		launch_deadline_ms := bridge_provider_test_bound_int(body, "launch_deadline_ms", 20000, 1000, 300000)
-		start_success_deadline_ms := bridge_provider_test_bound_int(body, "start_success_deadline_ms", 60000, 1000, 300000)
-		hard_deadline_ms := bridge_provider_test_bound_int(body, "hard_deadline_ms", 90000, start_success_deadline_ms, 300000)
-		frame_interval_ms := bridge_provider_test_bound_int(body, "frame_interval_ms", 500, 200, 5000)
-		strings.write_string(&b, ",\"launch_deadline_ms\":"); strings.write_string(&b, fmt.tprintf("%d", launch_deadline_ms))
-		strings.write_string(&b, ",\"start_success_deadline_ms\":"); strings.write_string(&b, fmt.tprintf("%d", start_success_deadline_ms))
-		strings.write_string(&b, ",\"hard_deadline_ms\":"); strings.write_string(&b, fmt.tprintf("%d", hard_deadline_ms))
-		strings.write_string(&b, ",\"frame_interval_ms\":"); strings.write_string(&b, fmt.tprintf("%d", frame_interval_ms))
-		strings.write_string(&b, "}")
 	case:
 		strings.write_string(&b, "{}")
 	}
@@ -619,9 +582,6 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			}
 		case "capability_report":
 			_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
-		case "provider_test_status", "provider_test_frame":
-			owner_user_id := bridge_service.bridge_owner_user_id(h.bridges, bridge_id)
-			events.publish_raw_to_user(h.event_bus, owner_user_id, text)
 		}
 
 	}

@@ -23,7 +23,7 @@ inputs.heimdall.url = "github:tanmayv/heimdall-agent-manager";
 
   programs.heimdall = {
     enable       = true;
-    packageNames = [ "daemon" "wrapper" "ctl" ];  # adds ham-daemon, ham-wrapper, ham-ctl to PATH
+    packageNames = [ "hub" "bridge" "ctl" ];  # adds ham-hub, ham-bridge, ham-ctl to PATH
   };
 }
 ```
@@ -78,26 +78,7 @@ with the repository on this system.
 ```nix
 programs.heimdall = {
   enable       = true;
-  packageNames = [ "daemon" "wrapper" "ctl" "ui" ];
-
-  # ── [daemon] ────────────────────────────────────────────────────────────
-  daemon = {
-    bindHost = "127.0.0.1";
-    port     = 49322;
-    dataDir  = "~/.local/share/heimdall";
-
-    # Optional nudge settings (all null = omitted from config.toml):
-    # nudge.enabled                      = false;
-    # nudge.intervalSeconds              = 60;
-    # nudge.readyAfterSeconds            = 300;
-    # nudge.reviewAfterSeconds           = 300;
-    # nudge.needImprovementsAfterSeconds = 300;
-    # nudge.workingStaleAfterSeconds     = 900;
-    # nudge.cooldownSeconds              = 300;
-    # nudge.restartGraceSeconds          = 60;
-    # nudge.sendEscapePrefix             = false;
-    # startupStaleAfterSeconds           = 120;
-  };
+  packageNames = [ "hub" "bridge" "ctl" "ui" ];
 
   # ── [guide_agent] ──────────────────────────────────────────────────────
   guideAgent = {
@@ -243,37 +224,20 @@ programs.heimdall = {
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `enable` | bool | — | Enable the module |
-| `packageNames` | list of enum | `["daemon" "wrapper" "ctl"]` | Packages to install / add to `$PATH` |
+| `packageNames` | list of enum | `["hub" "bridge" "wrapper" "ctl" "pty-host"]` | Packages to install / add to `$PATH` |
 | `extraPackages` | list of package | `[]` | Additional arbitrary packages |
 
 **Package name → binary mapping**
 
 | Name | Binaries added to `$PATH` |
 |---|---|
-| `daemon` | `ham-daemon`, `bc-odin-daemon` |
+| `hub` | `ham-hub` |
+| `bridge` | `ham-bridge` |
 | `wrapper` | `ham-wrapper`, `bc-agent-wrapper` |
 | `ctl` | `ham-ctl`, `bc-odinctl` |
+| `pty-host` | `ham-pty-host` |
 | `test-agent` | `ham-test-agent` |
 | `ui` | `heimdall` (Electron app) |
-
-### `programs.heimdall.daemon`
-
-| Option | Type | Default |
-|---|---|---|
-| `enable` | bool | `true` |
-| `service.enable` | bool | `true` |
-| `service.startOnBoot` | bool | `false` |
-| `bindHost` | str | `"127.0.0.1"` |
-| `port` | port | `49322` |
-| `dataDir` | str | `"~/.local/share/heimdall"` |
-| `startupStaleAfterSeconds` | int \| null | `null` |
-| `nudge.enabled` | bool \| null | `null` |
-| `nudge.intervalSeconds` | int \| null | `null` |
-| `nudge.{ready,review,needImprovements,workingStale}AfterSeconds` | int \| null | `null` |
-| `nudge.{cooldown,restartGrace}Seconds` | int \| null | `null` |
-| `nudge.sendEscapePrefix` | bool \| null | `null` |
-
-`null` values are omitted from the generated TOML (daemon built-in defaults apply).
 
 ### `programs.heimdall.guideAgent`
 

@@ -315,7 +315,6 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/providers", rawptr(&graph.bridge_handlers), http.list_bridge_providers_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/bridges/*/providers/*", rawptr(&graph.bridge_handlers), http.put_bridge_provider_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bridges/*/providers/*", rawptr(&graph.bridge_handlers), http.delete_bridge_provider_handler)
-	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/providers/*/test", rawptr(&graph.bridge_handlers), http.test_bridge_provider_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/provider-defaults", rawptr(&graph.bridge_handlers), http.set_bridge_provider_defaults_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/providers/refresh", rawptr(&graph.bridge_handlers), http.refresh_bridge_providers_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*", rawptr(&graph.bridge_handlers), http.bridge_detail_handler)

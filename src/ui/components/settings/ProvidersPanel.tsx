@@ -7,7 +7,6 @@ import {
   useListBridgesQuery,
   useRefreshBridgeCapabilitiesMutation,
   useSetBridgeProviderDefaultsMutation,
-  useTestBridgeProviderMutation,
   useUpsertBridgeProviderMutation,
 } from '../../api/endpoints/bridgeSupport';
 
@@ -84,16 +83,13 @@ export function ProvidersPanel() {
   const providersQuery = useListBridgeProvidersQuery({ bridgeId: selectedId }, { skip: !selectedId || offline });
   const [upsertProvider] = useUpsertBridgeProviderMutation();
   const [deleteProvider] = useDeleteBridgeProviderMutation();
-  const [testProvider] = useTestBridgeProviderMutation();
   const [setDefaults] = useSetBridgeProviderDefaultsMutation();
   const [refreshCaps] = useRefreshBridgeCapabilitiesMutation();
   const providers = providersQuery.data?.providers || [];
   const capabilities = useMemo(() => normalizeBridgeCapabilities(selectedBridge), [selectedBridge]);
   const [actionError, setActionError] = useState('');
-  const [testBusy, setTestBusy] = useState('');
   const [defaultBusy, setDefaultBusy] = useState('');
   const [defaultOverride, setDefaultOverride] = useState<{ provider: string; tier: string } | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, any>>({});
 
   useEffect(() => {
     if (!selectedBridgeId && bridges.length > 0) setSelectedBridgeId(bridgeId(bridges[0]));
@@ -128,40 +124,6 @@ export function ProvidersPanel() {
       setActionError(String(err?.message || 'Default save failed'));
     } finally {
       setDefaultBusy('');
-    }
-  }
-
-  async function runTest(profile: any) {
-    if (!selectedId || offline) return;
-    const name = String(profile.name || '');
-    const tiers = configuredTiers(profile);
-    setTestBusy(name);
-    setActionError('');
-    try {
-      if (tiers.length <= 1) {
-        const result = await testProvider({ bridgeId: selectedId, name, tier: tiers[0] }).unwrap();
-        setTestResults((prev) => ({ ...prev, [name]: result }));
-        return;
-      }
-      const tierResults: any[] = [];
-      setTestResults((prev) => ({ ...prev, [name]: { status: 'in_progress', message: `testing ${tiers[0]}`, tiers: [] } }));
-      for (const tier of tiers) {
-        setTestResults((prev) => ({ ...prev, [name]: { status: 'in_progress', message: `testing ${tier}`, tiers: tierResults.slice() } }));
-        try {
-          const result = await testProvider({ bridgeId: selectedId, name, tier }).unwrap();
-          tierResults.push({ ...result, tier: result?.tier || tier });
-        } catch (err: any) {
-          tierResults.push({ tier, status: 'failed', message: String(err?.message || 'Test failed') });
-        }
-        const allPassedSoFar = tierResults.every((row) => row?.status === 'passed' || row?.status === 'ok');
-        setTestResults((prev) => ({ ...prev, [name]: { status: allPassedSoFar ? 'in_progress' : 'failed', message: `completed ${tier}`, tiers: tierResults.slice() } }));
-      }
-      const allPassed = tierResults.every((row) => row?.status === 'passed' || row?.status === 'ok');
-      setTestResults((prev) => ({ ...prev, [name]: { status: allPassed ? 'passed' : 'failed', message: allPassed ? 'tested every configured tier' : 'one or more configured tiers failed', tiers: tierResults } }));
-    } catch (err: any) {
-      setTestResults((prev) => ({ ...prev, [name]: { status: 'failed', message: String(err?.message || 'Test failed') } }));
-    } finally {
-      setTestBusy('');
     }
   }
 
@@ -221,7 +183,6 @@ export function ProvidersPanel() {
       <div className="space-y-3">
         {providers.map((profile: any) => {
           const name = String(profile.name || '');
-          const result = testResults[name] || profile.last_test;
           const defaults = currentDefaults;
           const tiers = configuredTiers(profile);
           return (
@@ -232,12 +193,10 @@ export function ProvidersPanel() {
                   <div className="mt-2 break-all font-mono text-xs text-zinc-400">{(profile.command || []).join(' ') || 'no command configured'}</div>
                   <div className="mt-1 break-words text-xs text-zinc-500">model flag: <span className="text-zinc-300">{profile.models?.flag || '—'}</span> · cheap <span className="text-zinc-300">{profile.models?.cheap || '—'}</span> · normal <span className="text-zinc-300">{profile.models?.normal || '—'}</span> · smart <span className="text-zinc-300">{profile.models?.smart || '—'}</span></div>
                   {profile.enabled && tiers.length ? <div className="mt-3 flex flex-wrap gap-3 rounded-xl bg-black/20 px-3 py-2 text-xs text-zinc-300"><label data-debug-id={`providers-default-btn-${name}`} className="flex items-center gap-2"><input type="radio" name="bridge-default-provider" checked={defaults.provider === name} disabled={Boolean(defaultBusy)} onChange={() => void saveDefaults(name, defaults.tier && tiers.includes(defaults.tier) ? defaults.tier : tiers[0])} /> Default provider</label><span className="text-zinc-500">Default tier:</span>{tiers.map((tier) => <label key={tier} className="flex items-center gap-1"><input type="radio" name="bridge-default-tier" checked={defaults.provider === name && defaults.tier === tier} disabled={Boolean(defaultBusy)} onChange={() => void saveDefaults(name, tier)} /> {tier}{defaultBusy === `${name}:${tier}` ? <span className="text-sky-300">…</span> : null}</label>)}</div> : null}
-                  <div data-debug-id={`providers-test-result-${name}`} className="mt-2 text-xs text-zinc-500">test: <span className={result?.status === 'ok' || result?.status === 'passed' ? 'text-emerald-300' : result?.status === 'failed' || result?.status === 'timeout' ? 'text-red-300' : 'text-zinc-300'}>{result?.status || 'not run'}</span>{result?.message ? ` · ${result.message}` : ''}{result?.tested_at ? ` · ${result.tested_at}` : ''}{Array.isArray(result?.tiers) && result.tiers.length ? <span className="mt-1 block">{result.tiers.map((tierResult: any) => `${tierResult.tier || 'tier'}:${tierResult.status || 'unknown'}`).join(' · ')}</span> : null}</div>
                 </div>
                 <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
                   <button data-debug-id={`providers-enabled-toggle-${name}`} type="button" onClick={() => void toggleEnabled(profile)} disabled={offline} className="min-h-[44px] rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-300 hover:bg-white/10 disabled:opacity-50">{profile.enabled ? 'Disable' : 'Enable'}</button>
                   <a data-debug-id={`providers-edit-btn-${name}`} href={shellHash(`/settings/providers/${encodeURIComponent(name)}/edit?bridge=${encodeURIComponent(selectedId)}`)} aria-disabled={offline} className={`inline-flex min-h-[44px] items-center justify-center rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-300 hover:bg-white/10 ${offline ? 'pointer-events-none opacity-50' : ''}`}>Edit</a>
-                  <button data-debug-id={`providers-test-btn-${name}`} type="button" onClick={() => void runTest(profile)} disabled={offline || testBusy === name} className="min-h-[44px] rounded-lg border border-sky-400/30 px-3 py-2 text-xs text-sky-100 hover:bg-sky-400/10 disabled:opacity-50">{testBusy === name ? 'Testing…' : `Test ${configuredTiers(profile).length || 'all'} tier${configuredTiers(profile).length === 1 ? '' : 's'}`}</button>
                   <button data-debug-id={`providers-delete-btn-${name}`} type="button" onClick={() => void removeProvider(profile)} disabled={offline || profile.source !== 'store'} className="min-h-[44px] rounded-lg border border-rose-400/20 px-3 py-2 text-xs text-rose-200 hover:bg-rose-400/10 disabled:opacity-40">Delete</button>
                 </div>
               </div>

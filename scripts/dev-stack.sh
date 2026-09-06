@@ -40,12 +40,11 @@ build() {
   nix build "$ROOT#ham-dev-proxy" -o result-devproxy
   nix build "$ROOT#ham-bridge" -o result-bridge
   nix build "$ROOT#ham-ctl" -o result-ctl
-  nix build "$ROOT#ham-wrapper" -o result-wrapper
   # BR-2: the dev bridge drives agents through ham-pty-host (same runtime as
   # production), so build it too and point the bridge at it in start().
   nix build "$ROOT#ham-pty-host" -o result-ptyhost
   echo "[dev-stack] built:"
-  for r in result-hub result-devproxy result-bridge result-ctl result-wrapper result-ptyhost; do
+  for r in result-hub result-devproxy result-bridge result-ctl result-ptyhost; do
     printf '  %-18s -> %s\n' "$r" "$(readlink "$r")"
   done
 }
@@ -59,14 +58,13 @@ BRIDGE_TOKEN_FILE="$RUN_DIR/bridge/bridge-token"
 # startup_failed even though it is actually running.
 _fix_bridge_config() {
   [ -f "$BRIDGE_CONFIG" ] || { echo "[dev-stack] WARN: $BRIDGE_CONFIG missing; skipping config fix"; return; }
-  local ctl_bin wrap_bin
+  local ctl_bin
   ctl_bin="$ROOT/result-ctl/bin/ham-ctl"
-  wrap_bin="$ROOT/result-wrapper/bin/ham-wrapper"
-  BRIDGE_CONFIG="$BRIDGE_CONFIG" CTL_BIN="$ctl_bin" WRAP_BIN="$wrap_bin" \
+  BRIDGE_CONFIG="$BRIDGE_CONFIG" CTL_BIN="$ctl_bin" \
   HUB_URL="http://$HUB_ADDR" python3 - <<'PY'
 import os, re
 cfg = os.environ["BRIDGE_CONFIG"]
-ctl, wrap, hub = os.environ["CTL_BIN"], os.environ["WRAP_BIN"], os.environ["HUB_URL"]
+ctl, hub = os.environ["CTL_BIN"], os.environ["HUB_URL"]
 t = open(cfg).read()
 
 def set_key(text, key, value):
@@ -78,7 +76,6 @@ def set_key(text, key, value):
 
 # Point tool binaries at the current build.
 t = set_key(t, "ham_ctl_bin", ctl)
-t = set_key(t, "wrapper_bin", wrap)
 # Point the bridge/ctl at this local hub.
 t = re.sub(r'(\[ctl\]\s*\n\s*\ndaemon_url = ")[^"]*(")', lambda m: f'{m.group(1)}{hub}{m.group(2)}', t, count=1)
 t = set_key(t, "bridge_token", open(os.environ.get("HAM_BRIDGE_TOKEN_FILE","/dev/null")).read().strip()) if os.environ.get("HAM_BRIDGE_TOKEN_FILE") and os.path.exists(os.environ.get("HAM_BRIDGE_TOKEN_FILE","")) else t
@@ -97,7 +94,6 @@ for l in lines:
         out.append(l)
 open(cfg, 'w').write('\n'.join(out))
 print(f"[dev-stack] bridge config: ham_ctl_bin -> {ctl}")
-print(f"[dev-stack] bridge config: wrapper_bin -> {wrap}")
 print("[dev-stack] bridge config: stripped [[peer]] blocks")
 PY
 }
@@ -196,7 +192,6 @@ start() {
   echo "[dev-stack] starting bridge on port $BRIDGE_PORT -> hub"
   local bridge_token_args=()
   [ -s "$BRIDGE_TOKEN_FILE" ] && bridge_token_args=(--bridge-token-file "$BRIDGE_TOKEN_FILE")
-  HEIMDALL_HAM_WRAPPER_BIN="$ROOT/result-wrapper/bin/ham-wrapper" \
   HEIMDALL_HAM_CTL_BIN="$ROOT/result-ctl/bin/ham-ctl" \
   HEIMDALL_BRIDGE_PTY_HOST=1 \
   HEIMDALL_HAM_PTY_HOST_BIN="$ROOT/result-ptyhost/bin/ham-pty-host" \

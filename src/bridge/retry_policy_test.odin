@@ -114,8 +114,6 @@ test_bridge_launch_dedupe_idempotency :: proc(t: ^testing.T) {
 	launch1 := Bridge_Runtime_Launch{
 		agent_instance_id = strings.clone(inst_id),
 		command_id        = strings.clone("cmd_a"),
-		tmux_session      = "s1",
-		tmux_window       = "w1",
 		pane_id           = "%1",
 	}
 	bridge_runtime_record_launch(launch1)
@@ -128,8 +126,6 @@ test_bridge_launch_dedupe_idempotency :: proc(t: ^testing.T) {
 	launch2 := Bridge_Runtime_Launch{
 		agent_instance_id = strings.clone(inst_id),
 		command_id        = strings.clone("cmd_b"),
-		tmux_session      = "s1",
-		tmux_window       = "w1",
 		pane_id           = "%2",
 	}
 	bridge_runtime_record_launch(launch2)

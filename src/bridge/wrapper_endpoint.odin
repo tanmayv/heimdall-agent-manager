@@ -393,10 +393,6 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		// Absolute transition: a valid instance token can mark the agent running from
 		// any prior bridge-local state (starting, failed, unreachable, stopped, etc.).
 		bridge_runtime_mark_start_success(rec.agent_instance_id)
-		if bridge_provider_test_mark_start_success(rec.agent_instance_id) do return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
-		if strings.has_prefix(rec.agent_instance_id, "inst_ptest_") {
-			return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
-		}
 		// start-success is an idempotent liveness signal whose durable effect the
 		// bridge has ALREADY applied locally (mark_start_success above); the WS
 		// status push reconciles the hub independently. So a transient relay failure

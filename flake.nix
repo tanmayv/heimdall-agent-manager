@@ -33,7 +33,6 @@
           # imports it). Committed + regenerated-clean so local `odin build` also works.
           ${if name == "ham-bootstrap-golden-test" then "odin run tools/gen_static_skills -collection:odin_test=src -- src/prompts/skills src/hub/service/agent/static_skills_gen.odin" else ""}
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
-          ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
           ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
           runHook postBuild
         '';
@@ -61,7 +60,6 @@
           # `nix run .#hub` works from any CWD.
           ${if name == "ham-hub" then "mkdir -p $out/share/ham-hub && cp -r src/hub/repository/sqlite/migrations $out/share/ham-hub/migrations" else ""}
           ${if name == "ham-bridge" then "ln -s ${pkgs.openssl}/bin/openssl $out/bin/openssl" else ""}
-          ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
           ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
           runHook postBuild
         '';
@@ -164,13 +162,8 @@
         in
         {
           ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
-          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl pkgs.tmux ];
+          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl ];
           ham-dev-proxy = mkOdinPackage pkgs odin "ham-dev-proxy" "src/dev_proxy";
-          # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
-          # workspaces). It must carry those on PATH because the bridge launches
-          # the wrapper detached with only the bridge's PATH, which does not
-          # include tmux. Without this the wrapper fails with tmux_launch_failed.
-          ham-wrapper = mkOdinPackageWithRuntime pkgs odin "ham-wrapper" "src/wrapper" [ pkgs.tmux pkgs.git pkgs.jujutsu ];
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
           ham-task-store-repository-test = mkOdinPackageWithRuntime pkgs odin "ham-task-store-repository-test" "tests/task_store_repository_test" [ pkgs.sqlite ];
@@ -184,7 +177,6 @@
           ham-pty-host = mkPtyHost pkgs;
           heimdall = mkOdinUiPackage pkgs;
           heimdall-node-modules = mkNodeModules pkgs;
-          bc-agent-wrapper = self.packages.${system}.ham-wrapper;
           bc-test-agent = self.packages.${system}.ham-test-agent;
           default = self.packages.${system}.ham-hub;
         });
@@ -213,7 +205,6 @@
             set -euo pipefail
             export HEIMDALL_HAM_PTY_HOST_BIN="${self.packages.${system}.ham-pty-host}/bin/ham-pty-host"
             export HEIMDALL_BRIDGE_PTY_HOST="true"
-            export HEIMDALL_HAM_WRAPPER_BIN="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
             export HEIMDALL_HAM_CTL_BIN="${self.packages.${system}.ham-ctl}/bin/ham-ctl"
             exec "${self.packages.${system}.ham-bridge}/bin/ham-bridge" "$@"
           '')}/bin/ham-bridge";
@@ -225,10 +216,6 @@
         dev-proxy = {
           type = "app";
           program = "${self.packages.${system}.ham-dev-proxy}/bin/ham-dev-proxy";
-        };
-        wrapper = {
-          type = "app";
-          program = "${self.packages.${system}.ham-wrapper}/bin/ham-wrapper";
         };
         ctl = {
           type = "app";

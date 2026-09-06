@@ -7,7 +7,6 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import cfg_lib "odin_test:lib/config"
-import tmux "odin_test:lib/tmux"
 import ws "odin_test:lib/ws"
 
 // BRIDGE_WRAPPER_STALE_MS is how long an ACTIVE instance may go without any
@@ -58,24 +57,8 @@ Bridge_Runtime_Launch :: struct {
 	agent_instance_id: string,
 	command_id: string,
 	run_dir: string,
-	tmux_session: string,
-	tmux_window: string,
 	pane_id: string,
-	wrapper_token: string,
 	agent_token: string,
-}
-
-Bridge_Provider_Test :: struct {
-	test_id: string,
-	provider: string,
-	tier: string,
-	agent_instance_id: string,
-	status: string,
-	message: string,
-	pane_id: string,
-	tmux_session: string,
-	tmux_window: string,
-	frame_seq: int,
 }
 
 Bridge_Pane_Capture_Pending :: struct {
@@ -98,7 +81,6 @@ bridge_runtime_mutex: sync.Mutex
 bridge_runtime_instances: [dynamic]Bridge_Runtime_Instance
 bridge_runtime_results: [dynamic]Bridge_Runtime_Command_Result
 bridge_runtime_launches: [dynamic]Bridge_Runtime_Launch
-bridge_provider_tests: [dynamic]Bridge_Provider_Test
 bridge_pane_capture_pending: [dynamic]Bridge_Pane_Capture_Pending
 bridge_pane_capture_outgoing: [dynamic]Bridge_Pane_Capture_Outgoing
 // Queue of instance ids whose status changed on a BACKGROUND thread (e.g. the
@@ -117,7 +99,6 @@ bridge_hub_runtime_init :: proc() {
 	bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
 	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result)
 	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
-	bridge_provider_tests = make([dynamic]Bridge_Provider_Test)
 	bridge_pane_capture_pending = make([dynamic]Bridge_Pane_Capture_Pending)
 	bridge_pane_capture_outgoing = make([dynamic]Bridge_Pane_Capture_Outgoing)
 	bridge_runtime_status_outgoing = make([dynamic]string)
@@ -520,14 +501,6 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 		_ = ws.send_text(conn, strings.concatenate({"{\"type\":\"capability_report\",\"protocol_version\":1,\"capabilities\":", bridge_provider_capabilities_json(), "}"}))
 		_ = ws.send_text(conn, final)
 		return true
-	case "test_provider":
-		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
-		result := bridge_runtime_run_provider_test(conn, command_id, text)
-		final := bridge_command_result_payload_json(command_id, "succeeded", result)
-		bridge_runtime_cache_command(command_id, final)
-		_ = ws.send_text(conn, final)
-		return true
 	case "refresh_capabilities":
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
@@ -672,212 +645,6 @@ bridge_runtime_stop_agent :: proc(instance_id: string) -> bool {
 	return true
 }
 
-bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, command_json: string) -> string {
-	payload := bridge_provider_payload_object(command_json)
-	provider := bridge_provider_json_extract_string(payload, "name", "")
-	requested_tier := bridge_provider_json_extract_string(payload, "tier", "")
-	if strings.trim_space(requested_tier) != "" do return bridge_runtime_run_provider_test_single(conn, command_id, command_json)
-	profile, profile_ok := bridge_provider_by_name_or_default(provider)
-	if !profile_ok || !profile.enabled || len(profile.command) == 0 {
-		msg := "provider has no runnable command"
-		return bridge_provider_test_result_json("", provider, "failed", msg, "")
-	}
-	tiers := bridge_provider_configured_test_tiers(profile)
-	if len(tiers) == 0 {
-		msg := "provider has no configured model tiers"
-		return bridge_provider_test_result_json("", provider, "failed", msg, "")
-	}
-	base_test_id := bridge_provider_json_extract_string(payload, "test_id", "")
-	if base_test_id == "" do base_test_id = fmt.tprintf("ptest_%d", time.to_unix_nanoseconds(time.now()))
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"test_id\":\""); bridge_runtime_write_json_string(&b, base_test_id)
-	strings.write_string(&b, "\",\"name\":\""); bridge_runtime_write_json_string(&b, provider)
-	strings.write_string(&b, "\",\"provider\":\""); bridge_runtime_write_json_string(&b, provider)
-	strings.write_string(&b, "\",\"status\":\"")
-	all_passed := true
-	results := make([dynamic]string)
-	for tier, idx in tiers {
-		tier_command := bridge_provider_test_command_with_tier(command_json, base_test_id, tier, idx)
-		result := bridge_runtime_run_provider_test_single(conn, command_id, tier_command)
-		append(&results, result)
-		status := bridge_provider_json_extract_string(result, "status", "failed")
-		if status != "passed" && status != "ok" do all_passed = false
-	}
-	strings.write_string(&b, "passed" if all_passed else "failed")
-	strings.write_string(&b, "\",\"tested_at\":\""); strings.write_string(&b, fmt.tprintf("%d", time.to_unix_nanoseconds(time.now())))
-	strings.write_string(&b, "\",\"message\":\""); bridge_runtime_write_json_string(&b, "tested every configured tier" if all_passed else "one or more configured tiers failed")
-	strings.write_string(&b, "\",\"tiers\":[")
-	for result, idx in results {
-		if idx > 0 do strings.write_byte(&b, ',')
-		strings.write_string(&b, result)
-	}
-	strings.write_string(&b, "]}")
-	return strings.to_string(b)
-}
-
-bridge_provider_configured_test_tiers :: proc(profile: Bridge_Provider_Profile) -> []string {
-	out := make([dynamic]string)
-	if strings.trim_space(profile.models.cheap) != "" do append(&out, "cheap")
-	if strings.trim_space(profile.models.normal) != "" do append(&out, "normal")
-	if strings.trim_space(profile.models.smart) != "" do append(&out, "smart")
-	return out[:]
-}
-
-bridge_provider_test_command_with_tier :: proc(command_json, base_test_id, tier: string, index: int) -> string {
-	payload := bridge_provider_payload_object(command_json)
-	provider := bridge_provider_json_extract_string(payload, "name", "")
-	capture_frames := strings.contains(payload, "\"capture_frames\":true")
-	launch_deadline_ms := bridge_runtime_provider_test_int(payload, "launch_deadline_ms", 20000, 1000, 300000)
-	start_success_deadline_ms := bridge_runtime_provider_test_int(payload, "start_success_deadline_ms", 60000, 1000, 300000)
-	hard_deadline_ms := bridge_runtime_provider_test_int(payload, "hard_deadline_ms", 90000, start_success_deadline_ms, 300000)
-	frame_interval_ms := bridge_runtime_provider_test_int(payload, "frame_interval_ms", 500, 200, 5000)
-	test_id := strings.concatenate({base_test_id, "_", tier})
-	instance_id := strings.concatenate({"inst_", test_id})
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"test_provider\",\"protocol_version\":1,\"command_id\":\""); bridge_runtime_write_json_string(&b, strings.concatenate({base_test_id, "_", fmt.tprintf("%d", index)}))
-	strings.write_string(&b, "\",\"payload\":{\"name\":\""); bridge_runtime_write_json_string(&b, provider)
-	strings.write_string(&b, "\",\"tier\":\""); bridge_runtime_write_json_string(&b, tier)
-	strings.write_string(&b, "\",\"test_id\":\""); bridge_runtime_write_json_string(&b, test_id)
-	strings.write_string(&b, "\",\"test_instance_id\":\""); bridge_runtime_write_json_string(&b, instance_id)
-	strings.write_string(&b, "\",\"capture_frames\":"); strings.write_string(&b, "true" if capture_frames else "false")
-	strings.write_string(&b, ",\"launch_deadline_ms\":"); strings.write_string(&b, fmt.tprintf("%d", launch_deadline_ms))
-	strings.write_string(&b, ",\"start_success_deadline_ms\":"); strings.write_string(&b, fmt.tprintf("%d", start_success_deadline_ms))
-	strings.write_string(&b, ",\"hard_deadline_ms\":"); strings.write_string(&b, fmt.tprintf("%d", hard_deadline_ms))
-	strings.write_string(&b, ",\"frame_interval_ms\":"); strings.write_string(&b, fmt.tprintf("%d", frame_interval_ms))
-	strings.write_string(&b, "}}")
-	return strings.to_string(b)
-}
-
-bridge_runtime_run_provider_test_single :: proc(conn: ^ws.Connection, command_id, command_json: string) -> string {
-	payload := bridge_provider_payload_object(command_json)
-	provider := bridge_provider_json_extract_string(payload, "name", "")
-	tier := bridge_provider_json_extract_string(payload, "tier", "")
-	test_id := bridge_provider_json_extract_string(payload, "test_id", "")
-	if test_id == "" do test_id = fmt.tprintf("ptest_%d", time.to_unix_nanoseconds(time.now()))
-	instance_id := bridge_provider_json_extract_string(payload, "test_instance_id", "")
-	if instance_id == "" do instance_id = strings.concatenate({"inst_", test_id})
-	capture_frames := strings.contains(payload, "\"capture_frames\":true")
-	launch_deadline_ms := bridge_runtime_provider_test_int(payload, "launch_deadline_ms", 20000, 1000, 300000)
-	start_deadline_ms := bridge_runtime_provider_test_int(payload, "start_success_deadline_ms", 60000, 1000, 300000)
-	hard_deadline_ms := bridge_runtime_provider_test_int(payload, "hard_deadline_ms", 90000, start_deadline_ms, 300000)
-	frame_interval_ms := bridge_runtime_provider_test_int(payload, "frame_interval_ms", 500, 200, 5000)
-	if profile, profile_ok := bridge_provider_by_name_or_default(provider); !profile_ok || !profile.enabled || len(profile.command) == 0 {
-		msg := "provider has no runnable command"
-		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
-		return bridge_provider_test_result_json_with_tier(test_id, provider, tier, "failed", msg, "")
-	}
-	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
-	if !endpoint_ok {
-		msg := "local endpoint unavailable"
-		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
-		return bridge_provider_test_result_json_with_tier(test_id, provider, tier, "failed", msg, "")
-	}
-	_ = bridge_provider_test_cancel_provider(provider)
-	run_dir := bridge_runtime_default_run_dir(instance_id)
-	_ = os.make_directory_all(run_dir)
-	instance_token := strings.concatenate({"hit_", instance_id})
-	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
-	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
-	if !bridge_bootstrap_materialize_local_provider_test(run_dir, endpoint, agent_issue.plaintext_token, instance_id, provider) {
-		msg := "provider test bootstrap materialization failed"
-		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
-		bridge_runtime_set_status(instance_id, "stopped", "idle")
-		return bridge_provider_test_result_json_with_tier(test_id, provider, tier, "failed", msg, "")
-	}
-	session := "heimdall-bridge-test"
-	window := strings.concatenate({"ptest-", bridge_runtime_safe_part(test_id)})
-	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "launching", "launching", "launching provider test", ""))
-	test_start_ns := time.to_unix_nanoseconds(time.now())
-	hard_deadline_abs_ns := test_start_ns + i64(time.Duration(hard_deadline_ms) * time.Millisecond)
-	launch_deadline_ns := test_start_ns + i64(time.Duration(launch_deadline_ms) * time.Millisecond)
-	if launch_deadline_ns > hard_deadline_abs_ns do launch_deadline_ns = hard_deadline_abs_ns
-	wrapper_args, wrapper_args_ok := bridge_runtime_ham_wrapper_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, provider, tier)
-	if !wrapper_args_ok {
-		msg := "provider has no runnable command"
-		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
-		bridge_runtime_set_status(instance_id, "stopped", "idle")
-		return bridge_provider_test_result_json_with_tier(test_id, provider, tier, "failed", msg, "")
-	}
-	launch, launch_ok := tmux.ensure_agent_window(session, window, run_dir, wrapper_args)
-	if !launch_ok || strings.trim_space(launch.pane_id) == "" {
-		msg := "ham-wrapper tmux launch failed"
-		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
-		_ = tmux.kill_window(session, window)
-		bridge_runtime_set_status(instance_id, "stopped", "idle")
-		return bridge_provider_test_result_json_with_tier(test_id, provider, tier, "failed", msg, "")
-	}
-	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), pane_id = strings.clone(launch.pane_id), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
-	startup_seen := false
-	startup_failed := false
-	startup_message := ""
-	pane_id := ""
-	last_launch_status_ns := test_start_ns
-	for time.to_unix_nanoseconds(time.now()) < launch_deadline_ns {
-		now_launch := time.to_unix_nanoseconds(time.now())
-		if launch, launch_ok := bridge_runtime_get_launch(instance_id); launch_ok && strings.trim_space(launch.pane_id) != "" do pane_id = launch.pane_id
-		if inst, inst_ok := bridge_runtime_instance_snapshot(instance_id); inst_ok {
-			if inst.runtime_status == "failed" || inst.runtime_status == "stopped" { startup_failed = true; startup_message = strings.concatenate({"provider process ", inst.runtime_status}); break }
-			if pane_id != "" { startup_seen = true; break }
-		}
-		if now_launch - last_launch_status_ns >= i64(15 * time.Second) {
-			_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "launching", "launching", "launching provider test", ""))
-			last_launch_status_ns = now_launch
-		}
-		time.sleep(100 * time.Millisecond)
-	}
-	if startup_failed || !startup_seen || pane_id == "" {
-		msg := startup_message
-		if msg == "" do msg = "provider launch deadline exceeded"
-		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
-		_ = tmux.kill_window(session, window)
-		bridge_runtime_remove_launch(instance_id)
-		bridge_runtime_set_status(instance_id, "stopped", "idle")
-		return bridge_provider_test_result_json_with_tier(test_id, provider, tier, "failed", msg, "")
-	}
-	bridge_provider_test_record(Bridge_Provider_Test{test_id = strings.clone(test_id), provider = strings.clone(provider), tier = strings.clone(tier), agent_instance_id = strings.clone(instance_id), status = "in_progress", message = "awaiting start-success", pane_id = strings.clone(pane_id), tmux_session = strings.clone(session), tmux_window = strings.clone(window)})
-	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "in_progress", "awaiting_start_success", "awaiting start-success", ""))
-	start_ns := time.to_unix_nanoseconds(time.now())
-	deadline_ns := start_ns + i64(time.Duration(start_deadline_ms) * time.Millisecond)
-	if deadline_ns > hard_deadline_abs_ns do deadline_ns = hard_deadline_abs_ns
-	hard_deadline_ns := hard_deadline_abs_ns
-	last_frame_ns := i64(0)
-	last_status_ns := start_ns
-	last_frame := ""
-	status := "timeout"
-	message := "provider did not report start-success before deadline"
-	for time.to_unix_nanoseconds(time.now()) < hard_deadline_ns {
-		now := time.to_unix_nanoseconds(time.now())
-		if test, ok := bridge_provider_test_get(test_id); ok {
-			if test.status == "passed" { status = "passed"; message = test.message; break }
-			if test.status == "failed" { status = "failed"; message = test.message; break }
-		}
-		if inst, inst_ok := bridge_runtime_instance_snapshot(instance_id); inst_ok {
-			if inst.runtime_status == "failed" || inst.runtime_status == "stopped" { status = "failed"; message = strings.concatenate({"provider process ", inst.runtime_status}); break }
-		}
-		if now >= deadline_ns { status = "timeout"; break }
-		if now - last_status_ns >= i64(15 * time.Second) {
-			_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "in_progress", "awaiting_start_success", "awaiting start-success", ""))
-			last_status_ns = now
-		}
-		if capture_frames && now - last_frame_ns >= i64(time.Duration(frame_interval_ms) * time.Millisecond) {
-			if frame, frame_ok := tmux.capture_pane_text(pane_id, 80); frame_ok && frame != last_frame {
-				last_frame = frame
-				last_frame_ns = now
-				_ = ws.send_text(conn, bridge_provider_test_frame_json(test_id, frame))
-			}
-		}
-		time.sleep(100 * time.Millisecond)
-	}
-	diagnostics, _ := tmux.capture_pane_text(pane_id, 30)
-	if status == "passed" do message = "agent booted and reported start-success"
-	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, status, "done", message, diagnostics))
-	_ = tmux.kill_window(session, window)
-	bridge_runtime_remove_launch(instance_id)
-	bridge_runtime_set_status(instance_id, "stopped", "idle")
-	bridge_provider_test_remove(test_id)
-	return bridge_provider_test_result_json_with_tier(test_id, provider, tier, status, message, diagnostics)
-}
-
 bridge_runtime_ensure_local_endpoint :: proc() -> (string, bool) {
 	if bridge_config.local_endpoint_port == 0 do bridge_config.local_endpoint_port = 49324
 	local_config := bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir, bridge_config.local_endpoint_port)
@@ -923,23 +690,6 @@ bridge_runtime_agent_command :: proc(command_json, agent_token, agent_instance_i
 	return "sleep 3600"
 }
 
-bridge_runtime_ham_wrapper_argv :: proc(endpoint, wrapper_token, agent_token, instance_id, run_dir, provider, tier: string) -> ([]string, bool) {
-	profile, profile_ok := bridge_provider_by_name_or_default(provider)
-	if !profile_ok || !profile.enabled || len(profile.command) == 0 do return nil, false
-	agent_argv := bridge_runtime_agent_argv_for_profile(profile, tier, agent_token, instance_id)
-	out := make([dynamic]string)
-	append(&out, bridge_runtime_ham_wrapper_bin(), "bridge-runtime", "--bridge-endpoint", endpoint, "--agent-token", wrapper_token, "--child-agent-token", agent_token, "--agent-instance-id", instance_id, "--run-dir", run_dir)
-	if provider != "" do append(&out, "--provider", provider)
-	if tier != "" do append(&out, "--tier", tier)
-	// AE-1: serialize the resolved provider startup_detection to a compact JSON
-	// blob so the wrapper can auto-dismiss folder-trust / bypass-mode prompts. The
-	// same JSON shape the wrapper parses back in wrapper_bridge_runtime_config_from_args.
-	append(&out, "--startup-detection", bridge_runtime_startup_detection_arg(profile.startup_detection))
-	append(&out, "--")
-	append(&out, ..agent_argv)
-	return out[:], true
-}
-
 // bridge_runtime_startup_detection_arg renders a Startup_Detection_Config as the
 // compact JSON blob passed via --startup-detection. Reuses the same writer that
 // serializes provider startup_detection for the provider store JSON so the shape
@@ -948,12 +698,6 @@ bridge_runtime_startup_detection_arg :: proc(sd: cfg_lib.Startup_Detection_Confi
 	b := strings.builder_make()
 	bridge_provider_write_startup_json(&b, sd)
 	return strings.to_string(b)
-}
-
-bridge_runtime_ham_wrapper_bin :: proc() -> string {
-	if v := os.get_env_alloc("HEIMDALL_HAM_WRAPPER_BIN", context.allocator); strings.trim_space(v) != "" do return v
-	if found := bridge_runtime_find_on_path("ham-wrapper"); found != "" do return found
-	return "ham-wrapper"
 }
 
 bridge_runtime_find_on_path :: proc(name: string) -> string {
@@ -982,21 +726,6 @@ bridge_runtime_default_run_dir :: proc(instance_id: string) -> string {
 	if base == "" do base = "/tmp/heimdall-bridge-local"
 	return strings.concatenate({base, "/instances/", bridge_runtime_safe_part(instance_id)})
 }
-
-// bridge_runtime_tmux_session scopes the tmux server per bridge so multiple
-// bridges on one host do not share a single tmux daemon. A shared session caused
-// two problems: (1) all bridges' agent windows piled into one server, and (2)
-// the tmux daemon inherited a bridge's listening sockets, so killing that bridge
-// left the daemon holding its ports -> restart failed with Address_In_Use. The
-// local_endpoint_port is a reliable per-host discriminator (two bridges cannot
-// bind the same port), so we key the session on it.
-bridge_runtime_tmux_session :: proc() -> string {
-	if bridge_config.local_endpoint_port != 0 {
-		return fmt.tprintf("heimdall-bridge-%d", bridge_config.local_endpoint_port)
-	}
-	return "heimdall-bridge"
-}
-bridge_runtime_tmux_window :: proc(instance_id: string) -> string { return strings.concatenate({"agent-", bridge_runtime_safe_part(instance_id)}) }
 
 bridge_runtime_safe_part :: proc(value: string) -> string {
 	b := strings.builder_make()
@@ -1043,68 +772,6 @@ bridge_runtime_update_launch_pane :: proc(instance_id, pane_id: string) {
 			break
 		}
 	}
-	for i in 0..<len(bridge_provider_tests) {
-		if bridge_provider_tests[i].agent_instance_id == instance_id {
-			bridge_provider_tests[i].pane_id = strings.clone(pane_id)
-		}
-	}
-}
-
-bridge_provider_test_record :: proc(test: Bridge_Provider_Test) {
-	sync.mutex_lock(&bridge_runtime_mutex)
-	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for i in 0..<len(bridge_provider_tests) {
-		if bridge_provider_tests[i].test_id == test.test_id { bridge_provider_tests[i] = test; return }
-	}
-	append(&bridge_provider_tests, test)
-}
-
-bridge_provider_test_get :: proc(test_id: string) -> (Bridge_Provider_Test, bool) {
-	sync.mutex_lock(&bridge_runtime_mutex)
-	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for test in bridge_provider_tests { if test.test_id == test_id do return test, true }
-	return {}, false
-}
-
-bridge_provider_test_remove :: proc(test_id: string) {
-	sync.mutex_lock(&bridge_runtime_mutex)
-	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for i in 0..<len(bridge_provider_tests) { if bridge_provider_tests[i].test_id == test_id { unordered_remove(&bridge_provider_tests, i); return } }
-}
-
-bridge_provider_test_mark_start_success :: proc(instance_id: string) -> bool {
-	sync.mutex_lock(&bridge_runtime_mutex)
-	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for i in 0..<len(bridge_provider_tests) {
-		if bridge_provider_tests[i].agent_instance_id == instance_id {
-			bridge_provider_tests[i].status = "passed"
-			bridge_provider_tests[i].message = "agent reported start-success"
-			return true
-		}
-	}
-	return false
-}
-
-bridge_provider_test_cancel_provider :: proc(provider: string) -> bool {
-	sync.mutex_lock(&bridge_runtime_mutex)
-	to_kill_session := ""
-	to_kill_window := ""
-	to_remove_test := ""
-	to_remove_instance := ""
-	for i in 0..<len(bridge_provider_tests) {
-		if bridge_provider_tests[i].provider == provider {
-			to_kill_session = bridge_provider_tests[i].tmux_session
-			to_kill_window = bridge_provider_tests[i].tmux_window
-			to_remove_test = bridge_provider_tests[i].test_id
-			to_remove_instance = bridge_provider_tests[i].agent_instance_id
-			break
-		}
-	}
-	sync.mutex_unlock(&bridge_runtime_mutex)
-	if to_kill_session != "" && to_kill_window != "" do _ = tmux.kill_window(to_kill_session, to_kill_window)
-	if to_remove_instance != "" do bridge_runtime_remove_launch(to_remove_instance)
-	if to_remove_test != "" do bridge_provider_test_remove(to_remove_test)
-	return to_remove_test != ""
 }
 
 bridge_runtime_now_ms :: proc() -> i64 {
@@ -1249,13 +916,14 @@ bridge_runtime_set_status_with_source_locked :: proc(instance_id, runtime_status
 				inst.runtime_status = runtime_status
 				if accept_activity do inst.activity_status = activity_status
 			}
-			// A runtime-status transition must reach the hub immediately, not on the
-			// next 45s heartbeat. The command handlers (launch/stop) already push on
-			// their own conn; this covers transitions applied on BACKGROUND threads
-			// (notably ChildExited -> "stopped" from the pty-host events worker), which
-			// hold no conn. Enqueue for the hub loop to drain. (Idempotent: the loop
-			// coalesces duplicates by re-reading current status at send time.)
-			if runtime_changed do bridge_runtime_enqueue_status_push_locked(instance_id)
+			// A runtime-status OR activity-status transition must reach the hub
+			// immediately, not on the next 45s heartbeat. Runtime covers launch/stop/
+			// exit; activity covers the working<->idle indicator (classified from the
+			// pty-host ScreenChanged burst on a background worker that holds no conn) —
+			// without this the working indicator lagged up to ~45s to appear/clear.
+			// Enqueue for the hub loop to drain (~25ms). Idempotent: the drain
+			// coalesces duplicates by re-reading current status at send time.
+			if runtime_changed || activity_changed do bridge_runtime_enqueue_status_push_locked(instance_id)
 			if accept_activity {
 				inst.activity_source = strings.clone(activity_source)
 				inst.activity_updated_unix_ms = now
@@ -1640,55 +1308,6 @@ bridge_providers_report_json :: proc(command_id, payload_json: string) -> string
 	return strings.to_string(b)
 }
 
-bridge_provider_test_status_json :: proc(test_id, status, phase, message, diagnostics: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"provider_test_status\",\"protocol_version\":1,\"payload\":{\"test_id\":\"")
-	bridge_runtime_write_json_string(&b, test_id)
-	strings.write_string(&b, "\",\"status\":\""); bridge_runtime_write_json_string(&b, status)
-	strings.write_string(&b, "\",\"phase\":\""); bridge_runtime_write_json_string(&b, phase)
-	strings.write_string(&b, "\",\"message\":\""); bridge_runtime_write_json_string(&b, message)
-	if diagnostics != "" { strings.write_string(&b, "\",\"diagnostics\":\""); bridge_runtime_write_json_string(&b, bridge_provider_test_sanitize_diagnostics(diagnostics)) }
-	strings.write_string(&b, "\",\"at\":\""); strings.write_string(&b, fmt.tprintf("%d", time.to_unix_nanoseconds(time.now())))
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
-}
-
-bridge_provider_test_frame_json :: proc(test_id, content: string) -> string {
-	b := strings.builder_make()
-	seq := 0
-	if test, ok := bridge_provider_test_get(test_id); ok {
-		seq = test.frame_seq + 1
-		test.frame_seq = seq
-		bridge_provider_test_record(test)
-	}
-	strings.write_string(&b, "{\"type\":\"provider_test_frame\",\"protocol_version\":1,\"payload\":{\"test_id\":\"")
-	bridge_runtime_write_json_string(&b, test_id)
-	strings.write_string(&b, "\",\"seq\":"); strings.write_string(&b, fmt.tprintf("%d", seq))
-	strings.write_string(&b, ",\"at\":\""); strings.write_string(&b, fmt.tprintf("%d", time.to_unix_nanoseconds(time.now())))
-	strings.write_string(&b, "\",\"rows\":80,\"cols\":0,\"format\":\"text\",\"content\":\"")
-	bridge_runtime_write_json_string(&b, bridge_provider_test_truncate(content, 12000))
-	strings.write_string(&b, "\"}}")
-	return strings.to_string(b)
-}
-
-bridge_provider_test_result_json :: proc(test_id, provider, status, message, diagnostics: string) -> string {
-	return bridge_provider_test_result_json_with_tier(test_id, provider, "", status, message, diagnostics)
-}
-
-bridge_provider_test_result_json_with_tier :: proc(test_id, provider, tier, status, message, diagnostics: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"test_id\":\""); bridge_runtime_write_json_string(&b, test_id)
-	strings.write_string(&b, "\",\"name\":\""); bridge_runtime_write_json_string(&b, provider)
-	strings.write_string(&b, "\",\"provider\":\""); bridge_runtime_write_json_string(&b, provider)
-	if tier != "" { strings.write_string(&b, "\",\"tier\":\""); bridge_runtime_write_json_string(&b, tier) }
-	strings.write_string(&b, "\",\"status\":\""); bridge_runtime_write_json_string(&b, status)
-	strings.write_string(&b, "\",\"tested_at\":\""); strings.write_string(&b, fmt.tprintf("%d", time.to_unix_nanoseconds(time.now())))
-	strings.write_string(&b, "\",\"message\":\""); bridge_runtime_write_json_string(&b, message)
-	if diagnostics != "" { strings.write_string(&b, "\",\"diagnostics\":\""); bridge_runtime_write_json_string(&b, bridge_provider_test_sanitize_diagnostics(diagnostics)) }
-	strings.write_string(&b, "\"}")
-	return strings.to_string(b)
-}
-
 bridge_provider_payload_object :: proc(text: string) -> string {
 	if payload, ok := bridge_provider_json_extract_object(text, "payload"); ok do return payload
 	return "{}"
@@ -1705,17 +1324,6 @@ bridge_runtime_provider_test_int :: proc(json, key: string, fallback, min, max: 
 	if value < min do return min
 	if value > max do return max
 	return value
-}
-
-bridge_provider_test_truncate :: proc(value: string, max_len: int) -> string {
-	if max_len <= 0 || len(value) <= max_len do return value
-	return value[len(value) - max_len:]
-}
-
-bridge_provider_test_sanitize_diagnostics :: proc(value: string) -> string {
-	out := bridge_provider_test_truncate(value, 4000)
-	out, _ = strings.replace_all(out, bridge_config.bridge_token, "[redacted]")
-	return out
 }
 
 bridge_hub_hello_json :: proc() -> string {
