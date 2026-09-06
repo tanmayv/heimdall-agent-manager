@@ -39,6 +39,7 @@ Bridge_Config :: struct {
 	nudge_cooldown_seconds: int,
 	nudge_restart_grace_seconds: int,
 	fs_root: string,
+	fs_read_page_bytes: i64,
 	// BR-2: when true the bridge drives agents through ham-pty-host instead of
 	// tmux. Default false (tmux path) until DEL-1 flips it. Also overridable at
 	// runtime via HEIMDALL_BRIDGE_PTY_HOST for A/B testing.
@@ -129,7 +130,7 @@ main :: proc() {
 	}
 
 	bridge_config = bridge_config_from_args(os.args)
-	bridge_fs_init(bridge_config.fs_root)
+	bridge_fs_init(bridge_config.fs_root, bridge_config.fs_read_page_bytes)
 	bridge_provider_store_init()
 	bootstrap_cache_init(&bootstrap_global_cache, bridge_config.data_dir, bridge_config.bootstrap_cache_max_bytes)
 	if has_flag(os.args, "--bootstrap-fetch") {
@@ -293,6 +294,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	cfg := Bridge_Config{
 		bind_host = "127.0.0.1",
 		port = 49323,
+		fs_read_page_bytes = BRIDGE_FS_READ_PAGE_BYTES,
 		daemon_url = "http://127.0.0.1:49322",
 		daemon_id = "local-daemon",
 		bridge_token = "",
@@ -337,6 +339,9 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 			cfg.nudge_restart_grace_seconds = loaded.config.daemon.nudge_restart_grace_seconds
 		}
 		cfg.fs_root = loaded.config.bridge.fs_root
+		if loaded.config.bridge.fs_read_page_bytes > 0 {
+			cfg.fs_read_page_bytes = i64(loaded.config.bridge.fs_read_page_bytes)
+		}
 		cfg.pty_host_runtime = loaded.config.bridge.pty_host_runtime
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
@@ -359,6 +364,9 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	}
 	if chunk_s := option_value(args, "--chunk-bytes", ""); chunk_s != "" {
 		if chunk_i, ok := strconv.parse_int(chunk_s); ok do cfg.chunk_bytes = int(chunk_i)
+	}
+	if fs_page_s := option_value(args, "--fs-read-page-bytes", ""); fs_page_s != "" {
+		if fs_page_i, ok := strconv.parse_int(fs_page_s); ok && fs_page_i > 0 do cfg.fs_read_page_bytes = i64(fs_page_i)
 	}
 	if cache_bytes_s := option_value(args, "--bootstrap-cache-max-bytes", ""); cache_bytes_s != "" {
 		if cache_bytes_i, ok := strconv.parse_int(cache_bytes_s); ok do cfg.bootstrap_cache_max_bytes = int(cache_bytes_i)

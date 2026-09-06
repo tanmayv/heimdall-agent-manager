@@ -68,6 +68,9 @@ Bridge_Config :: struct {
 	// operations are confined to this root (default: $HOME). Parsed from
 	// [bridge].fs_root; ~-expanded + symlink-resolved at startup.
 	fs_root: string,
+	// Default byte chunk size for paginated fs_read_file reads (default: 16_000).
+	// Configurable per bridge via [bridge].fs_read_page_bytes or --fs-read-page-bytes.
+	fs_read_page_bytes: int,
 	// BR-2: drive agents through ham-pty-host instead of tmux. Parsed from
 	// [bridge].pty_host_runtime; default false. Also overridable at runtime via
 	// the HEIMDALL_BRIDGE_PTY_HOST env var.
@@ -540,6 +543,8 @@ parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
 		if n, ok := strconv.parse_int(value); ok { cfg.nudge_restart_grace_seconds = int(n); cfg.nudge_configured = true }
 	case "fs_root":
 		cfg.fs_root = parse_string(value)
+	case "fs_read_page_bytes":
+		if n, ok := strconv.parse_int(value); ok do cfg.fs_read_page_bytes = int(n)
 	case "pty_host_runtime":
 		cfg.pty_host_runtime = parse_bool(value)
 	case:
@@ -884,6 +889,7 @@ default_config :: proc() -> Config {
 	cfg.daemon.bridge_token = ""
 	cfg.daemon.federation_poll_interval_seconds = 10
 	cfg.daemon.federation_advertised_agent_instance_ids = nil
+	cfg.bridge.fs_read_page_bytes = 16_000
 	cfg.bridge.peers = make([dynamic]Peer_Config)
 
 	cfg.guide_agent.enabled = false

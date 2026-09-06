@@ -220,6 +220,26 @@ fs_read_returns_utf8_text :: proc(t: ^testing.T) {
 }
 
 @(test)
+fs_read_honors_configured_chunk_size :: proc(t: ^testing.T) {
+	root := fs_test_make_root(t, "read_chunk")
+	defer fs_test_cleanup(root)
+	// Seed a 30-byte file
+	content := "012345678901234567890123456789"
+	fs_test_seed_file(t, root, "numbers.txt", content)
+
+	// Temporarily override chunk size to 10
+	orig_chunk_size := bridge_fs_read_page_bytes
+	bridge_fs_read_page_bytes = 10
+	defer { bridge_fs_read_page_bytes = orig_chunk_size }
+
+	res := bridge_fs_read_file("numbers.txt", root)
+	testing.expect(t, res.ok && res.viewable, "viewable")
+	testing.expect_value(t, res.bytes_returned, i64(10))
+	testing.expect_value(t, res.content, "0123456789")
+	testing.expect(t, !res.eof, "not eof yet")
+}
+
+@(test)
 fs_create_rejects_path_outside_root :: proc(t: ^testing.T) {
 	root := fs_test_make_root(t, "contain_create")
 	defer fs_test_cleanup(root)

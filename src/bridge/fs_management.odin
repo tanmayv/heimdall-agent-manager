@@ -24,9 +24,17 @@ import ws "odin_test:lib/ws"
 // bridge_fs_init. Empty means FS management is effectively disabled (deny all).
 bridge_fs_root: string
 
+// Configured chunk size for paginated fs_read_file reads. Default 16_000.
+bridge_fs_read_page_bytes: i64 = BRIDGE_FS_READ_PAGE_BYTES
+
 // bridge_fs_init resolves the configured fs_root (or $HOME when unset) to a real
 // absolute path and stores it. Call once at startup.
-bridge_fs_init :: proc(configured_root: string) {
+bridge_fs_init :: proc(configured_root: string, read_page_bytes: i64 = BRIDGE_FS_READ_PAGE_BYTES) {
+	if read_page_bytes > 0 {
+		bridge_fs_read_page_bytes = read_page_bytes
+	} else {
+		bridge_fs_read_page_bytes = BRIDGE_FS_READ_PAGE_BYTES
+	}
 	home := os.get_env_alloc("HOME", context.allocator)
 	root := strings.trim_space(configured_root)
 	// Default to $HOME when unset. Also expand a bare "~" or "~/..." to $HOME
@@ -58,7 +66,7 @@ bridge_fs_init :: proc(configured_root: string) {
 		// Cannot resolve at all: keep the expanded form (lexical containment only).
 		bridge_fs_root = strings.clone(root)
 	}
-	fmt.printfln("bridge fs sandbox root: %s", bridge_fs_root)
+	fmt.printfln("bridge fs sandbox root: %s (chunk_size: %d bytes)", bridge_fs_root, bridge_fs_read_page_bytes)
 }
 
 Bridge_Fs_Entry :: struct {
@@ -498,7 +506,7 @@ bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "", offset
 	if start < 0 do start = 0
 	if start > total do start = total
 	page := limit
-	if page <= 0 do page = BRIDGE_FS_READ_PAGE_BYTES
+	if page <= 0 do page = bridge_fs_read_page_bytes
 	end := start + page
 	if end > total do end = total
 	// Trim `end` back off the middle of a multi-byte UTF-8 sequence (a continuation

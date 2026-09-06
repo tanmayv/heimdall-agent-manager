@@ -71,6 +71,8 @@ model_tier = "smart"
 # directory picker for per-bridge project paths). All browse/stat/mkdir operations
 # are confined to this root. Defaults to $HOME. ~-expanded + symlink-resolved.
 # fs_root = "~"
+# Per-request chunk size in bytes for paginated file reads in the UI (default: 16000).
+# fs_read_page_bytes = 16000
 # Agents stuck in "starting" past this many seconds are marked startup_failed.
 # startup_stale_after_seconds = 120
 # Artifact uploads are limited to 10 MiB by default.
