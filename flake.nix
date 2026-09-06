@@ -172,6 +172,10 @@
           # sqlite repo (needs sqlite for the migration run).
           ham-push-crypto-test = mkOdinPackage pkgs odin "ham-push-crypto-test" "tests/push_crypto_test";
           ham-push-repo-test = mkOdinPackageWithRuntime pkgs odin "ham-push-repo-test" "tests/push_repo_test" [ pkgs.sqlite ];
+          # TC-API: unit-tests the project-grouped / per-project task-chains list
+          # helpers (grouping, 5-preview cap, updated_at cursor pagination,
+          # Unassigned bucket, wire serializer). Pure transport helpers — no sqlite.
+          ham-taskchain-grouping-test = mkOdinPackage pkgs odin "ham-taskchain-grouping-test" "tests/taskchain_grouping_test";
           ham-bootstrap-golden-test = mkOdinPackage pkgs odin "ham-bootstrap-golden-test" "tests/hub_bootstrap_golden_test";
           ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
           ham-pty-host = mkPtyHost pkgs;
