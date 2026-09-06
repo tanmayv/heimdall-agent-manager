@@ -180,7 +180,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
         kind: 'conversation',
         label: c.title || c.agentName || c.conversationId,
         hint: c.agentName && c.agentName !== c.title ? c.agentName : undefined,
-        route: `/conversations/${c.conversationId}${c.agentInstanceId ? `?agent_instance_id=${encodeURIComponent(c.agentInstanceId)}` : ''}`,
+        route: `/conversations/${encodeURIComponent(c.agentInstanceId)}`,
         group: group.projectName || 'Conversations',
         convo: c,
       }));
@@ -297,9 +297,8 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                   const unread = isConvo ? Number(result.convo.unreadCount || 0) : 0;
                   const isSelectedConvo = isConvo && Boolean(
                     currentPath &&
-                    (currentPath === `/conversations/${result.convo.conversationId}` ||
-                     currentPath.startsWith(`/conversations/${result.convo.conversationId}/`) ||
-                     currentPath.startsWith(`/conversations/${result.convo.conversationId}?`))
+                    (currentPath === `/conversations/${result.convo.agentInstanceId}` ||
+                     currentPath.startsWith(`/conversations/${result.convo.agentInstanceId}/`))
                   );
                   const highlight = active || isSelectedConvo;
                   return (

@@ -125,7 +125,9 @@ ORDER BY score DESC, updated_at DESC, id ASC LIMIT ?;`
 SEARCH_SQL_AGENT_INSTANCES :: `SELECT resource_type, id, label, sublabel, route, score FROM (
   SELECT 'agent_instance' AS resource_type, agent_instance_id AS id, agent_id AS label,
          runtime_status || ' · ' || provider || '/' || tier AS sublabel,
-         CASE WHEN conversation_id != '' THEN '/conversations/' || conversation_id ELSE '/agents/' || agent_id END AS route,
+         -- Conversation routing is instance-id-only (#/conversations/{instance});
+         -- link to the instance itself, not its conversation_id.
+         CASE WHEN agent_instance_id != '' THEN '/conversations/' || agent_instance_id ELSE '/agents/' || agent_id END AS route,
          updated_at, owner_user_id, bridge_id || ' ' || chain_id || ' ' || project_id || ' ' || conversation_id AS aux,
          CASE
            WHEN lower(agent_id) = lower(?) THEN 100
@@ -140,11 +142,14 @@ SEARCH_SQL_AGENT_INSTANCES :: `SELECT resource_type, id, label, sublabel, route,
 ORDER BY score DESC, updated_at DESC, id ASC LIMIT ?;`
 
 SEARCH_SQL_CONVERSATIONS :: `SELECT resource_type, id, label, sublabel, route, score FROM (
-  SELECT 'conversation' AS resource_type, conversation_id AS id,
+  -- id + route are the agent_instance_id (conversation routing is instance-id-only,
+  -- #/conversations/{instance}); conversation_id stays in aux so a search by it
+  -- still surfaces the row.
+  SELECT 'conversation' AS resource_type, agent_instance_id AS id,
          CASE WHEN title != '' THEN title ELSE agent_id END AS label,
          agent_id || ' · chain ' || chain_id AS sublabel,
-         '/conversations/' || conversation_id AS route, updated_at, owner_user_id,
-         agent_id || ' ' || agent_instance_id || ' ' || chain_id || ' ' || project_id AS aux,
+         '/conversations/' || agent_instance_id AS route, updated_at, owner_user_id,
+         agent_id || ' ' || agent_instance_id || ' ' || chain_id || ' ' || project_id || ' ' || conversation_id AS aux,
          CASE
            WHEN lower(CASE WHEN title != '' THEN title ELSE agent_id END) = lower(?) THEN 100
            WHEN lower(conversation_id) = lower(?) THEN 98

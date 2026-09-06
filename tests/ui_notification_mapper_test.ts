@@ -17,7 +17,7 @@ const { notificationForWsEvent } = await import('../src/ui/api/notificationMappe
   });
   assert.ok(plan, 'agent_to_user chat message should notify');
   assert.equal(plan!.category, 'chat');
-  assert.equal(plan!.route, '/conversations/conv_1', 'routes to conversation deep-link');
+  assert.equal(plan!.route, '/conversations/inst_abc', 'routes to instance-id conversation deep-link');
   assert.equal(plan!.tag, 'heimdall:chat:conv_1', 'coalesces per conversation');
   assert.equal(plan!.title, 'New message');
   assert.match(plan!.body, /Deployment finished/);
@@ -43,7 +43,7 @@ const { notificationForWsEvent } = await import('../src/ui/api/notificationMappe
   });
   assert.ok(plan, 'agent_to_user preview event should notify');
   assert.equal(plan!.category, 'chat');
-  assert.equal(plan!.route, '/conversations/conv_1');
+  assert.equal(plan!.route, '/conversations/inst_abc');
   assert.equal(plan!.title, 'New message');
   assert.match(plan!.body, /Second preview test message/);
 }
@@ -72,7 +72,7 @@ const { notificationForWsEvent } = await import('../src/ui/api/notificationMappe
   });
   assert.ok(plan, 'nudge should notify');
   assert.equal(plan!.title, 'Nudge');
-  assert.equal(plan!.route, '/conversations/conv_1');
+  assert.equal(plan!.route, '/conversations/inst_abc');
 }
 
 // (b2) mention via metadata flag.
@@ -87,7 +87,7 @@ const { notificationForWsEvent } = await import('../src/ui/api/notificationMappe
   assert.equal(plan!.title, 'You were mentioned');
 }
 
-// (b3) fall back to agent_instance_id for the route when no conversation id.
+// (b3) route is the instance-id conversation deep-link (routing is instance-id-only).
 {
   const plan = notificationForWsEvent({
     type: 'chat_event',

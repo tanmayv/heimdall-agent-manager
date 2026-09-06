@@ -357,12 +357,14 @@ export default function ConversationLaunchComposer() {
       }).unwrap();
       const created = launched.conversation || {};
       const boundInstance = launched.instance || {};
-      const conversationId = String(created.conversation_id || boundInstance.conversation_id || '');
+      // Conversation routing is instance-id-only, so navigate by the created
+      // instance id (the thread page resolves the conversation from it).
+      const agentInstanceId = String(boundInstance.agent_instance_id || boundInstance.agentInstanceId || created.agent_instance_id || created.agentInstanceId || '');
       // Starting creates + binds the AgentInstance/ChatConversation/TaskChain.
       // There's no reason to show an intermediate "session bound" screen — go
       // straight into the conversation thread.
-      if (conversationId) {
-        window.location.hash = buildRouteHash(`/conversations/${conversationId}`, '');
+      if (agentInstanceId) {
+        window.location.hash = buildRouteHash(`/conversations/${encodeURIComponent(agentInstanceId)}`, '');
         return;
       }
       // Fallback: if the id is missing for any reason, land on the inbox rather

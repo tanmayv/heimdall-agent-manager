@@ -179,9 +179,9 @@ function decodeSegment(value: string): string {
 function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = []): BreadcrumbCrumb[] {
   if (path === '/conversations/new') return [{ label: 'Conversations', href: '/conversations' }, { label: 'New Conversation' }];
   if (path.startsWith('/conversations/')) {
-    const id = decodeSegment(path.slice('/conversations/'.length));
-    const convo = conversations.find((item) => item.conversationId === id || item.agentInstanceId === id);
-    return [{ label: 'Conversations', href: '/conversations' }, { label: convo?.agentId || 'Conversation' }, { label: convo?.agentInstanceId || id }];
+    const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
+    const convo = conversations.find((item) => item.agentInstanceId === agentInstanceId);
+    return [{ label: 'Conversations', href: '/conversations' }, { label: convo?.agentId || 'Conversation' }, { label: convo?.agentInstanceId || agentInstanceId }];
   }
   if (path === '/agents/new') return [{ label: 'Agents', href: '/agents' }, { label: 'New Agent' }];
   if (path.startsWith('/agents/')) return [{ label: 'Agents', href: '/agents' }, { label: decodeSegment(path.slice('/agents/'.length)) }];
@@ -583,15 +583,14 @@ function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: Pr
               {projectGroup.conversations.map((conversation) => {
                 const isSelected = Boolean(
                   currentPath &&
-                  (currentPath === `/conversations/${conversation.conversationId}` ||
-                   currentPath.startsWith(`/conversations/${conversation.conversationId}/`) ||
-                   currentPath.startsWith(`/conversations/${conversation.conversationId}?`))
+                  (currentPath === `/conversations/${conversation.agentInstanceId}` ||
+                   currentPath.startsWith(`/conversations/${conversation.agentInstanceId}/`))
                 );
                 return (
                   <a
                     key={conversation.conversationId}
                     data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
-                    href={shellHash(`/conversations/${conversation.conversationId}${conversation.agentInstanceId ? `?agent_instance_id=${encodeURIComponent(conversation.agentInstanceId)}` : ''}`)}
+                    href={shellHash(`/conversations/${encodeURIComponent(conversation.agentInstanceId)}`)}
                     className={`flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] transition ${isSelected ? 'bg-white/[0.06] text-white' : 'text-zinc-400 hover:bg-white/[0.06] hover:text-white'}`}
                   >
                     <StatusDot
@@ -819,15 +818,15 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
   }, [path]);
 
   if (isConversationThreadRoute) {
-    const conversationId = decodeSegment(path.slice('/conversations/'.length));
+    const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
     return (
       <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-16 md:pb-0' : ''}`}>
-        {/* key by conversationId so switching conversations REMOUNTS the page:
+        {/* key by agentInstanceId so switching conversations REMOUNTS the page:
             all per-conversation local state (older/local messages, draft, scroll
             position, menus) resets synchronously instead of the previous
             conversation's content painting for a frame and then swapping +
             re-scrolling. The RTK Query cache still makes revisits fast. */}
-        <ConversationThreadPage key={conversationId} conversationId={conversationId} />
+        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} />
       </main>
     );
   }

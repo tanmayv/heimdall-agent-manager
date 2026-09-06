@@ -36,10 +36,9 @@ import { switchableTasksFor, taskRoleLabel, type TaskLike } from './chainTaskInf
 import { useViewport } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
-import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
-// e2e conversation thread for /conversations/{conversationId}. Cookie-auth,
+// e2e conversation thread for /conversations/{agentInstanceId}. Cookie-auth,
 // hub-native. Fetches messages via /api/v1/chats/{id}/messages, sends via POST,
 // marks read, and (per the launch composer) exposes provider/tier selection for
 // the bound instance — plus a Bridge indicator — so a live conversation can be
@@ -389,25 +388,22 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
     .map(({ chatMessage }) => chatMessage);
 }
 
-export default function ConversationThreadPage({ conversationId }: { conversationId: string }) {
+export default function ConversationThreadPage({ agentInstanceId: routeInstanceId }: { agentInstanceId: string }) {
+  // The route is instance-id-only (#/conversations/{agentInstanceId}); an instance
+  // maps 1:1 to a conversation, which we resolve via the O(1) by-instance endpoint.
   // New messages, read receipts and delivery status arrive live over the user WS
   // (`chat_event` -> wsInvalidation patches the `Chat`/`ConversationSummaries`
   // caches and invalidates the `Chat` tag for this conversation). Polling is only
   // a slow fallback for missed events, so we poll at 10s and pause when the tab is
   // unfocused so we don't hammer the hub in the background. (skipPollingIfUnfocused.)
-  // The URL carries the agent_instance_id (synced below), so the conversation
-  // fetch can use the O(1) by-instance endpoint instead of scanning the whole
-  // /chats list on every 10s poll. Falls back to the list when absent.
-  const urlAgentInstanceId = useMemo(() => {
-    try {
-      const s = new URLSearchParams(getRouteSearch());
-      return String(s.get('agent_instance_id') || s.get('instance') || '').trim();
-    } catch { return ''; }
-  }, [conversationId]);
   // No refetchOnMountOrArgChange: serve cached conversation instantly on switch
   // (keepUnusedDataFor keeps it warm); WS chat_event invalidation + the 10s poll
   // keep it fresh. This avoids a full /chats/by-instance fetch on every switch.
-  const convQuery = useFetchConversationQuery({ conversationId, agentInstanceId: urlAgentInstanceId }, { skip: !conversationId, pollingInterval: 10000, skipPollingIfUnfocused: true });
+  const convQuery = useFetchConversationQuery({ conversationId: '', agentInstanceId: routeInstanceId }, { skip: !routeInstanceId, pollingInterval: 10000, skipPollingIfUnfocused: true });
+  const conversation = convQuery.data?.conversation || null;
+  // Message fetch/send/markRead stay keyed by conversation_id (server contract);
+  // only the URL is instance-id. Resolve it from the fetched conversation.
+  const conversationId = String(conversation?.conversation_id || conversation?.conversationId || '');
   // Do NOT force a refetch on every conversation switch: with keepUnusedDataFor
   // (30s) a recently-viewed thread renders instantly from cache, and the user WS
   // `chat_event` already invalidates this conversation's `Chat` tag when anything
@@ -425,9 +421,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [createArtifact] = useCreateArtifactMutation();
   const [setInstanceCurrentTask, setInstanceCurrentTaskState] = useSetInstanceCurrentTaskMutation();
 
-  const conversation = convQuery.data?.conversation || null;
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
-  const agentInstanceId = String(conversation?.agent_instance_id || conversation?.agentInstanceId || '');
+  const agentInstanceId = String(conversation?.agent_instance_id || conversation?.agentInstanceId || routeInstanceId);
   const conversationRuntimeStatusForPoll = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
   const chainId = String(conversation?.chain_id || conversation?.chainId || '');
   const title = conversationDisplayTitle(conversation, agentId, agentInstanceId, conversationId);
@@ -494,20 +489,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     const s = String(instance?.runtime_status || instance?.runtimeStatus || '');
     if (s) lastInstanceStatusRef.current = s;
   }, [instance?.runtime_status, instance?.runtimeStatus]);
-  // Sync the agent_instance_id into the URL search params for easy sharing.
-  useEffect(() => {
-    if (!agentInstanceId) return;
-    try {
-      const search = new URLSearchParams(getRouteSearch());
-      if (search.get('agent_instance_id') !== agentInstanceId && search.get('instance') !== agentInstanceId) {
-        search.set('agent_instance_id', agentInstanceId);
-        const newHash = buildRouteHash(getRoutePathname(), search.toString());
-        window.history.replaceState(window.history.state || {}, '', newHash);
-      }
-    } catch {
-      // ignore
-    }
-  }, [agentInstanceId]);
   const instanceProvider = String(instance?.provider || '');
   const instanceTier = String(instance?.tier || '');
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');

@@ -137,9 +137,10 @@ plan = fireNotificationForWsEvent(() => enabledState(), chatPayload);
 assert.equal(plan, null, 'focused + viewing this conversation must not notify');
 assert.equal(created.length, 0, 'no Notification when already viewing the conversation');
 
-// Focused tab, open conversation matched by agent_instance_id query => suppress.
+// Focused tab, open conversation matched by the instance-id route segment =>
+// suppress (routing is instance-id-only: #/conversations/{agentInstanceId}).
 created.length = 0;
-state.hash = '#/conversations/conv_x?agent_instance_id=agent_1';
+state.hash = '#/conversations/agent_1';
 const chatByAgent = {
   type: 'chat_event', direction: 'agent_to_user',
   conversation_id: 'conv_1', agent_instance_id: 'agent_1',

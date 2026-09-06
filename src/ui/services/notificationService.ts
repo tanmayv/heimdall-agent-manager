@@ -10,7 +10,7 @@
 // policy: when the window is NOT focused it always notifies; when it IS focused
 // it notifies only for a thread other than the one currently open on screen.
 
-import { buildRouteHash, getRoutePathname, getRouteSearch } from '../utils/appLocation';
+import { buildRouteHash, getRoutePathname } from '../utils/appLocation';
 import { notificationForWsEvent, type NotificationMapperCtx, type NotificationPlan } from '../api/notificationMapper';
 import {
   categoryEnabled,
@@ -254,11 +254,11 @@ export async function showNativeNotification(plan: NotificationPlan): Promise<bo
 }
 
 // The conversation/thread the user is actively viewing, derived from the live
-// hash route ('/conversations/<id>' plus an optional '?agent_instance_id') and,
-// when supplied, an explicit ctx override. Empty when no conversation is open
-// (e.g. a board, settings, or the new-conversation composer) — in which case we
-// never suppress. A conversation is reachable by either its conversation_id or
-// its agent_instance_id, so both are collected.
+// hash route ('/conversations/<agentInstanceId>') and, when supplied, an explicit
+// ctx override. Empty when no conversation is open (e.g. a board, settings, or the
+// new-conversation composer) — in which case we never suppress. A conversation is
+// reachable by its agent_instance_id (the route segment) or its conversation_id
+// (the ctx override), so both are collected.
 function openConversationKeys(ctx: NotificationMapperCtx): string[] {
   const keys: string[] = [];
   try {
@@ -267,9 +267,6 @@ function openConversationKeys(ctx: NotificationMapperCtx): string[] {
     if (path.startsWith('/conversations/') && path !== '/conversations/new') {
       keys.push(decodeURIComponent(path.slice('/conversations/'.length)));
     }
-    const search = getRouteSearch();
-    const m = /[?&]agent_instance_id=([^&]+)/.exec(search || '');
-    if (m && m[1]) keys.push(decodeURIComponent(m[1]));
   } catch (_err) {
     /* treat as "no conversation open" -> never suppress */
   }
