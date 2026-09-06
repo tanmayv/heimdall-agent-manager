@@ -155,12 +155,13 @@ Bridge_Fs_Mkdir_Result :: struct {
 BRIDGE_FS_MAX_ENTRIES :: 2000
 BRIDGE_FS_DEFAULT_LIMIT :: 200
 BRIDGE_FS_MAX_VIEW_BYTES :: 1_000_000 // 1 MB read-file total-size view cap
-// Default per-request byte window for paginated text reads. Kept comfortably
-// below the WS relay's practical single-frame budget (empirically frames around
-// ~64KB+ stall/time out on the hub relay, while ~48KB and below are instant), so
-// the JSON-escaped result frame always fits. The UI pages by requesting
-// offset += bytes_returned until eof.
-BRIDGE_FS_READ_PAGE_BYTES :: 32_000
+// Default per-request byte window for paginated text reads. Kept well below the
+// WS relay's practical single-frame budget (empirically frames around ~64KB+
+// stall/time out on the hub relay, while ~48KB and below are instant), so the
+// JSON-escaped result frame always fits with wide margin. Smaller pages also
+// give snappier first-paint + smoother scroll-to-load. The UI pages by
+// requesting offset += bytes_returned until eof.
+BRIDGE_FS_READ_PAGE_BYTES :: 16_000
 
 // --- helpers -------------------------------------------------------------
 
