@@ -175,10 +175,10 @@ Chain_List_Item :: struct {
 // returned dynamic array is caller-owned (delete it); its strings are not.
 enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, chains: []domain.Task_Chain) -> [dynamic]Chain_List_Item {
 	items := make([dynamic]Chain_List_Item)
-	project_by_instance := make(map[string]string); defer delete(project_by_instance)
+	project_by_instance := conversation_project_index(h, auth); defer delete(project_by_instance)
 	name_by_project := make(map[string]string); defer delete(name_by_project)
 	for c in chains {
-		project_id := resolve_chain_project_id(h, auth, c.coordinator_agent_instance_id, &project_by_instance)
+		project_id := project_by_instance[c.coordinator_agent_instance_id] or_else ""
 		append(&items, Chain_List_Item{
 			chain_id = string(c.chain_id),
 			title = c.title,
@@ -192,26 +192,33 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 	return items
 }
 
-// resolve_chain_project_id maps a coordinator instance to its project via the
-// instance's conversation (the single source; chains carry no project_id column).
-// Returns "" when there is no coordinator, no content service, or no conversation
-// — those chains fall into the "Unassigned" bucket.
-// NOTE: get_conversation_by_instance currently linear-scans up to 512 of the
-// owner's conversations; a coordinator whose conversation sorts past that window
-// would misfile its chain as "Unassigned". Latent until an owner has that many
-// conversations — worth a bounded/indexed by-instance lookup eventually.
-resolve_chain_project_id :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, coordinator_instance_id: string, cache: ^map[string]string) -> string {
-	if strings.trim_space(coordinator_instance_id) == "" do return ""
-	if cached, ok := cache[coordinator_instance_id]; ok do return cached
-	if h.content == nil do return ""
-	conv, ok, err := content_service.get_conversation_by_instance(h.content, auth, coordinator_instance_id)
-	// Only memoize a definite answer (resolved, or a genuine not-found). A real
-	// backend error is left uncached so it isn't sticky across the request and the
-	// chain simply degrades to Unassigned for this pass.
-	if err.code != .None && err.code != .Not_Found do return ""
-	project_id := string(conv.project_id) if ok else ""
-	cache[coordinator_instance_id] = project_id
-	return project_id
+// conversation_project_index maps coordinator instance -> project id for the whole
+// request in ONE conversation listing.
+//
+// This used to be a per-chain lookup (get_conversation_by_instance), memoized by
+// coordinator instance. The memo never hit: coordinator instances are unique per
+// chain, so an owner with N chains paid N listings — and each listing runs eight
+// correlated subqueries per conversation over chat_messages, which has no index on
+// conversation_id. Measured on production data (87 chains, 165 conversations, 3491
+// messages) that was ~1.4s per listing x 78 coordinators = ~106s, past nginx's 60s
+// proxy_read_timeout, so the endpoint 504'd. One listing is one lookup.
+//
+// Chains with no coordinator, no content service, or no conversation resolve to ""
+// and fall into the "Unassigned" bucket.
+// NOTE: the listing is bounded (the repository clamps to 200), so an owner with more
+// conversations than that would misfile the overflow as "Unassigned" — the same
+// bound the old per-chain path had. A by-instance index is the real fix.
+conversation_project_index :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context) -> map[string]string {
+	index := make(map[string]string)
+	if h.content == nil do return index
+	rows, err := content_service.list_conversations(h.content, auth, 200, "")
+	if err.code != .None do return index
+	defer delete(rows)
+	for c in rows {
+		if c.agent_instance_id == "" do continue
+		index[c.agent_instance_id] = string(c.project_id)
+	}
+	return index
 }
 
 // resolve_project_name looks up a project's display name, memoized by project id.
