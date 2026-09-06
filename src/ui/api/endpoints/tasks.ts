@@ -156,6 +156,7 @@ export type ChainListItem = {
   coordinatorAgentInstanceId: string;
   projectId: string;
   projectName: string;
+  taskCount: number;
 };
 export type ChainProjectGroup = {
   projectId: string;
@@ -174,6 +175,7 @@ function normalizeChainListItem(c: any): ChainListItem {
     coordinatorAgentInstanceId: String(c?.coordinator_agent_instance_id ?? c?.coordinatorAgentInstanceId ?? ''),
     projectId: String(c?.project_id ?? c?.projectId ?? ''),
     projectName: String(c?.project_name ?? c?.projectName ?? ''),
+    taskCount: Number(c?.task_count ?? c?.taskCount ?? 0),
   };
 }
 function normalizeChainProjectGroup(g: any): ChainProjectGroup {
@@ -192,10 +194,12 @@ export const tasksApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     // TC-PAGE: default project-grouped task-chains list (no params) -> array of
     // groups, each previewing up to 5 chains with has_more/next_cursor for paging.
-    fetchTaskChainGroups: build.query<{ groups: ChainProjectGroup[] }, void>({
-      queryFn: async () => {
+    fetchTaskChainGroups: build.query<{ groups: ChainProjectGroup[] }, void | { hasTasks?: boolean }>({
+      queryFn: async (arg) => {
         try {
-          const raw = await cookieJsonFetch('/task-chains');
+          // ?has_tasks=1 drops chains with no tasks server-side, so chain_total and
+          // the paging cursors stay consistent with what is displayed.
+          const raw = await cookieJsonFetch(`/task-chains${arg && arg.hasTasks ? '?has_tasks=1' : ''}`);
           const arr = Array.isArray(raw) ? raw : (raw?.groups || []);
           return { data: { groups: arr.map(normalizeChainProjectGroup) } };
         } catch (error: any) {
@@ -206,13 +210,14 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // TC-PAGE: single-project page with cursor pagination (Load more + project
     // filter). cursor is the composite (updated_at|chain_id) from TC-API.
-    fetchTaskChainProjectPage: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string }>({
-      queryFn: async ({ projectId, limit = 20, cursor = '' }) => {
+    fetchTaskChainProjectPage: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean }>({
+      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false }) => {
         try {
           const params = new URLSearchParams();
           params.set('project_id', projectId);
           params.set('limit', String(limit));
           if (cursor) params.set('cursor', cursor);
+          if (hasTasks) params.set('has_tasks', '1');
           const raw = await cookieJsonFetch(`/task-chains?${params.toString()}`);
           return { data: normalizeChainProjectGroup(raw) };
         } catch (error: any) {

@@ -276,6 +276,15 @@ list_tasks :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, ch
 	return iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 }
 
+// task_counts_by_chain returns chain_id -> task count for the authenticated owner
+// in one query. The task-chains list uses it to show per-chain totals and to drop
+// empty chains without reading every chain's tasks. Caller owns the map.
+task_counts_by_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -> (map[string]int, domain.Domain_Error) {
+	owner, ok, err := ownership.owner_from_auth(auth)
+	if !ok do return make(map[string]int), err
+	return iface.taskchain_task_counts_by_chain(service.repo, owner)
+}
+
 create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Create_Chain_Input) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return domain.Task_Chain{}, false, err

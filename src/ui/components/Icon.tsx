@@ -47,7 +47,8 @@ export type IconName =
   | 'terminal'
   | 'lock'
   | 'spark'
-  | 'rocket';
+  | 'rocket'
+  | 'bot';
 
 const PATHS: Record<IconName, ReactElement> = {
   plus: <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />,
@@ -180,6 +181,16 @@ const PATHS: Record<IconName, ReactElement> = {
     </g>
   ),
   spark: <path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round" />,
+  // Agents get their own glyph: they used to share 'tasks' with Task Chains, which
+  // made the two sidebar/palette entries indistinguishable.
+  bot: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+      <rect x={4} y={8} width={16} height={11} rx={3} />
+      <path d="M12 5V8M8.5 4.5h7" />
+      <circle cx={9.5} cy={13} r={1.1} fill="currentColor" stroke="none" />
+      <circle cx={14.5} cy={13} r={1.1} fill="currentColor" stroke="none" />
+    </g>
+  ),
   rocket: (
     <g fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
       <path d="M5 15c-1 1-1.5 4-1.5 4s3-.5 4-1.5M14 4c3 0 6 3 6 6-2 5-7 8-9 9l-6-6c1-2 4-7 9-9z" />

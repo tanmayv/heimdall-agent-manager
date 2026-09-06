@@ -59,6 +59,13 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
         {chain.status || 'unknown'}
       </span>
       <span className="min-w-0 flex-1 truncate text-sm text-zinc-100">{chain.title || chain.chainId}</span>
+      <span
+        data-debug-id={`task-chains-row-task-count-${chain.chainId}`}
+        className="shrink-0 rounded-md border border-white/10 bg-black/40 px-1.5 py-0.5 text-[11px] text-zinc-400"
+        title={`${chain.taskCount} ${chain.taskCount === 1 ? 'task' : 'tasks'}`}
+      >
+        {chain.taskCount}
+      </span>
       {chain.updatedAt ? (
         <span className="shrink-0 text-[11px] text-zinc-500">{formatUpdatedAt(chain.updatedAt)}</span>
       ) : null}
@@ -96,6 +103,7 @@ function ChainGroupCard({
   initialHasMore,
   initialNextCursor,
   totalCount,
+  onlyWithTasks,
   collapsed,
   onToggle,
 }: {
@@ -105,6 +113,7 @@ function ChainGroupCard({
   initialHasMore: boolean;
   initialNextCursor: string;
   totalCount: number;
+  onlyWithTasks: boolean;
   collapsed: boolean;
   onToggle: () => void;
 }) {
@@ -125,7 +134,7 @@ function ChainGroupCard({
 
   const onLoadMore = async () => {
     try {
-      const res = await loadMorePage({ projectId, limit: PAGE_SIZE, cursor }).unwrap();
+      const res = await loadMorePage({ projectId, limit: PAGE_SIZE, cursor, hasTasks: onlyWithTasks }).unwrap();
       setExtra((prev) => [...prev, ...(res.chains || [])]);
       setCursor(res.nextCursor || '');
       setHasMore(Boolean(res.hasMore));
@@ -193,6 +202,9 @@ function ChainGroupCard({
 export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initialChainId, isMobile }) => {
   const [selectedChainId, setSelectedChainId] = useState<string>(initialChainId || '');
   const [filterProjectId, setFilterProjectId] = useState<string>('');
+  // Roughly half of real chains carry no tasks yet and have nothing to show, so
+  // the list hides them by default; the toggle brings them back.
+  const [onlyWithTasks, setOnlyWithTasks] = useState<boolean>(true);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -202,9 +214,9 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   // KEEP the chain-detail branch (deep link / row click into a specific chain).
   const showList = !selectedChainId;
 
-  const groupsQuery = useFetchTaskChainGroupsQuery(undefined, { skip: !showList || Boolean(filterProjectId) });
+  const groupsQuery = useFetchTaskChainGroupsQuery({ hasTasks: onlyWithTasks }, { skip: !showList || Boolean(filterProjectId) });
   const projectPageQuery = useFetchTaskChainProjectPageQuery(
-    { projectId: filterProjectId, limit: PAGE_SIZE },
+    { projectId: filterProjectId, limit: PAGE_SIZE, hasTasks: onlyWithTasks },
     { skip: !showList || !filterProjectId },
   );
   const projectsQuery = useListProjectsQuery();
@@ -268,6 +280,21 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
             </option>
           ))}
         </select>
+
+        <label
+          htmlFor="task-chains-has-tasks-filter"
+          className="ml-1 inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-zinc-300"
+        >
+          <input
+            id="task-chains-has-tasks-filter"
+            data-debug-id="task-chains-has-tasks-filter"
+            type="checkbox"
+            checked={onlyWithTasks}
+            onChange={(e) => setOnlyWithTasks(e.target.checked)}
+            className="h-4 w-4 accent-sky-400"
+          />
+          Only chains with tasks
+        </label>
       </div>
 
       {isLoading && (
@@ -312,6 +339,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
                 initialHasMore={group.hasMore}
                 initialNextCursor={group.nextCursor}
                 totalCount={group.chainTotal || group.chains.length}
+                onlyWithTasks={onlyWithTasks}
                 collapsed={Boolean(collapsed[key])}
                 onToggle={() => toggleCollapse(group.projectId)}
               />

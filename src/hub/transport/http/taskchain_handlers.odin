@@ -112,7 +112,9 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// instance's conversation), then either page ONE project or group them ALL.
 	chains, err := taskchain_service.list_chains(h.taskchains, auth_ctx)
 	if err.code != .None do return respond_error(err, req.request_id)
-	items := enrich_chain_list_items(h, auth_ctx, chains)
+	// ?has_tasks=1 (or true/yes) hides chains that carry no tasks yet — on real data
+	// that is roughly half of them, and an empty chain has nothing to show.
+	items := enrich_chain_list_items(h, auth_ctx, chains, query_bool(req.query, "has_tasks", false))
 	defer delete(items)
 
 	// ?project_id=<id> (value may be empty for the Unassigned bucket) selects the
@@ -167,17 +169,26 @@ Chain_List_Item :: struct {
 	coordinator_agent_instance_id: string,
 	project_id:                    string,
 	project_name:                  string,
+	task_count:                    int,
 }
 
 // enrich_chain_list_items resolves each chain's project once, memoizing the
 // coordinator-instance -> project_id and project_id -> project_name lookups so a
 // project shared by many chains costs a single conversation/project fetch. The
 // returned dynamic array is caller-owned (delete it); its strings are not.
-enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, chains: []domain.Task_Chain) -> [dynamic]Chain_List_Item {
+enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, chains: []domain.Task_Chain, only_with_tasks: bool) -> [dynamic]Chain_List_Item {
 	items := make([dynamic]Chain_List_Item)
 	project_by_instance := conversation_project_index(h, auth); defer delete(project_by_instance)
 	name_by_project := make(map[string]string); defer delete(name_by_project)
+	// One grouped rollup for every chain, not one query per chain.
+	task_counts, counts_err := taskchain_service.task_counts_by_chain(h.taskchains, auth)
+	defer delete(task_counts)
+	// A failed rollup must not silently empty the list: fall back to showing every
+	// chain with an unknown (0) count rather than filtering them all away.
+	counts_ok := counts_err.code == .None
 	for c in chains {
+		count := task_counts[string(c.chain_id)] or_else 0
+		if only_with_tasks && counts_ok && count == 0 do continue
 		project_id := project_by_instance[c.coordinator_agent_instance_id] or_else ""
 		append(&items, Chain_List_Item{
 			chain_id = string(c.chain_id),
@@ -187,6 +198,7 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 			coordinator_agent_instance_id = c.coordinator_agent_instance_id,
 			project_id = project_id,
 			project_name = resolve_project_name(h, auth, project_id, &name_by_project),
+			task_count = count,
 		})
 	}
 	return items
@@ -399,7 +411,7 @@ paginate_project_chains :: proc(items: []Chain_List_Item, project_id: string, li
 
 // write_chain_list_item_json emits ONE chain in the TC-API wire shape. Field set
 // (chain_id,title,status,updated_at,coordinator_agent_instance_id,project_id,
-// project_name) is contractual — keep it in sync with the client.
+// project_name,task_count) is contractual — keep it in sync with the client.
 write_chain_list_item_json :: proc(b: ^strings.Builder, it: Chain_List_Item) {
 	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, it.chain_id)
 	strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, it.title)
@@ -408,7 +420,8 @@ write_chain_list_item_json :: proc(b: ^strings.Builder, it: Chain_List_Item) {
 	strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, it.coordinator_agent_instance_id)
 	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, it.project_id)
 	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, it.project_name)
-	strings.write_string(b, "\"}")
+	strings.write_string(b, "\",\"task_count\":"); strings.write_int(b, it.task_count)
+	strings.write_byte(b, '}')
 }
 
 write_chain_list_items_json :: proc(b: ^strings.Builder, items: []Chain_List_Item) {

@@ -65,7 +65,8 @@ const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
   { label: 'Conversations', icon: 'chat', route: '/conversations' },
   { label: 'Actions', icon: 'clock', route: '/actions' },
   { label: 'Projects', icon: 'grid', route: '/projects' },
-  { label: 'Agents', icon: 'tasks', route: '/agents' },
+  { label: 'Agents', icon: 'bot', route: '/agents' },
+  { label: 'Task Chains', icon: 'tasks', route: '/chains' },
   { label: 'Library', icon: 'device', route: '/library' },
   { label: 'Settings', icon: 'gear', route: '/settings' },
 ];
@@ -109,7 +110,7 @@ function hitIcon(type: string): IconName {
   switch (String(type || '').toLowerCase()) {
     case 'conversation': return 'chat';
     case 'agent':
-    case 'agent_instance': return 'tasks';
+    case 'agent_instance': return 'bot';
     case 'task-chain':
     case 'chain': return 'tasks';
     case 'task': return 'tasks';

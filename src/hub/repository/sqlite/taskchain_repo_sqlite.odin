@@ -18,6 +18,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		save_task = task_save_sqlite,
 		get_task = task_get_sqlite,
 		list_tasks_by_chain = task_list_by_chain_sqlite,
+		task_counts_by_chain = task_counts_by_chain_sqlite,
 		save_comment = task_comment_save_sqlite,
 		list_comments_by_task = task_comment_list_by_task_sqlite,
 		comment_summary_by_task = task_comment_summary_sqlite,
@@ -123,6 +124,23 @@ task_comment_list_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, o
 	out := make([dynamic]domain.Task_Comment)
 	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, task_comment_from_stmt(stmt))
 	return out[:], domain.Domain_Error{}
+}
+
+// task_counts_by_chain_sqlite rolls up every chain's task count for one owner in a
+// single grouped query, backed by idx_tasks_chain_owner (migration 025). Chains
+// with no tasks are simply absent from the map; callers read a missing key as 0.
+task_counts_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> (map[string]int, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	out := make(map[string]int)
+	stmt: sqlite3_stmt = nil
+	q := "SELECT chain_id, COUNT(*) FROM tasks WHERE owner_user_id = ? GROUP BY chain_id;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return out, domain.domain_error(.Internal_Error, "failed to prepare task count rollup")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(owner_user_id))
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		out[strings.clone(column_text(stmt, 0))] = int_v(column_text(stmt, 1))
+	}
+	return out, domain.Domain_Error{}
 }
 
 // task_comment_summary_sqlite computes the compact rollup cheaply: COUNT(*) plus
