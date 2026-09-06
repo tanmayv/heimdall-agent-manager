@@ -161,7 +161,7 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, "\",\"members\":[")
 	for m, i in members {
 		if i > 0 do strings.write_byte(&b, ',')
-		write_member_json(&b, m)
+		write_member_json(&b, h, auth_ctx, m)
 	}
 	strings.write_string(&b, "],\"tasks\":[")
 	for task, i in tasks {
@@ -473,7 +473,7 @@ list_chain_members_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	members, err := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
-	for m, i in members { if i > 0 do strings.write_byte(&b, ','); write_member_json(&b, m) }
+	for m, i in members { if i > 0 do strings.write_byte(&b, ','); write_member_json(&b, h, auth_ctx, m) }
 	strings.write_byte(&b, ']')
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }
@@ -486,7 +486,7 @@ add_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	member, added, err := taskchain_service.add_chain_member(h.taskchains, auth_ctx, chain_id, json_string(req.body, "agent_instance_id"), json_string(req.body, "role"))
 	if !added do return respond_error(err, req.request_id)
 	publish_chain_changed(h, string(member.owner_user_id), string(member.chain_id), "updated")
-	b := strings.builder_make(); write_member_json(&b, member)
+	b := strings.builder_make(); write_member_json(&b, h, auth_ctx, member)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
@@ -557,11 +557,33 @@ write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth
 	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
 }
 
-write_member_json :: proc(b: ^strings.Builder, m: domain.Task_Chain_Member) {
+write_member_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth: contracts.Auth_Context, m: domain.Task_Chain_Member) {
+	// Enrich each member with the instance's display_name + live runtime/activity
+	// status so the client renders member labels + status dots WITHOUT a per-member
+	// /agent-instances and /agents fetch. Falls back to the agent name when the
+	// instance has no display_name.
+	display_name := ""
+	runtime_status := ""
+	activity_status := ""
+	if h != nil && h.agents != nil && strings.trim_space(m.agent_instance_id) != "" {
+		if inst, inst_ok, _ := agent_service.get_instance(h.agents, auth, m.agent_instance_id); inst_ok {
+			display_name = inst.display_name
+			runtime_status = inst.runtime_status
+			activity_status = inst.activity_status
+		}
+		if strings.trim_space(display_name) == "" && strings.trim_space(m.agent_id) != "" {
+			if agent, agent_ok, _ := agent_service.get_agent(h.agents, auth, m.agent_id); agent_ok {
+				display_name = agent.name
+			}
+		}
+	}
 	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(m.chain_id))
 	strings.write_string(b, "\",\"agent_instance_id\":\""); write_handler_json_string(b, m.agent_instance_id)
 	strings.write_string(b, "\",\"agent_id\":\""); write_handler_json_string(b, m.agent_id)
 	strings.write_string(b, "\",\"role\":\""); write_handler_json_string(b, m.role)
+	strings.write_string(b, "\",\"display_name\":\""); write_handler_json_string(b, display_name)
+	strings.write_string(b, "\",\"runtime_status\":\""); write_handler_json_string(b, runtime_status)
+	strings.write_string(b, "\",\"activity_status\":\""); write_handler_json_string(b, activity_status)
 	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, m.created_at)
 	strings.write_string(b, "\"}")
 }

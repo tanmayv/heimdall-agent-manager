@@ -104,6 +104,9 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
         }
       },
       providesTags: [{ type: 'Bridges' as const, id: 'LIST' }],
+      // Bridges change rarely; keep cached across conversation switches (was the
+      // 30s global default). Bridge mutations invalidate the LIST tag.
+      keepUnusedDataFor: 600,
     }),
     fetchBridgeDetail: build.query<any, { bridgeId: string; expand?: string }>({
       queryFn: withSessionQuery(async ({ bridgeId, expand }, { session }) => {

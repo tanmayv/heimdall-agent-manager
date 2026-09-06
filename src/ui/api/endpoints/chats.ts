@@ -259,6 +259,9 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         }
       },
       providesTags: (_r, _e, { conversationId }) => [{ type: 'ConversationSummaries' as const, id: conversationId }],
+      // Cache conversation metadata across switches so the header/runtime chip
+      // render instantly on remount; refetchOnMountOrArgChange still refreshes it.
+      keepUnusedDataFor: 300,
     }),
     fetchConversationMessages: build.query<any, { conversationId: string; limit?: number; cursor?: string }>({
       queryFn: async ({ conversationId, limit = 30, cursor = '' }) => {
@@ -287,6 +290,10 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         }
       },
       providesTags: (_r, _e, { conversationId }) => [{ type: 'Chat' as const, id: conversationId }],
+      // Keep recently-viewed threads cached longer than the 30s global default so
+      // switching back to a conversation renders instantly (the page remounts per
+      // conversationId). WS/`Chat` tag invalidation still refreshes on new messages.
+      keepUnusedDataFor: 300,
     }),
     updateConversationTitle: build.mutation<any, { conversationId: string; title: string }>({
       queryFn: async ({ conversationId, title }) => {

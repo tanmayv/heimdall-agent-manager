@@ -811,9 +811,15 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
   }, [path]);
 
   if (isConversationThreadRoute) {
+    const conversationId = decodeSegment(path.slice('/conversations/'.length));
     return (
       <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-16 md:pb-0' : ''}`}>
-        <ConversationThreadPage conversationId={decodeSegment(path.slice('/conversations/'.length))} />
+        {/* key by conversationId so switching conversations REMOUNTS the page:
+            all per-conversation local state (older/local messages, draft, scroll
+            position, menus) resets synchronously instead of the previous
+            conversation's content painting for a frame and then swapping +
+            re-scrolling. The RTK Query cache still makes revisits fast. */}
+        <ConversationThreadPage key={conversationId} conversationId={conversationId} />
       </main>
     );
   }

@@ -404,7 +404,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       return String(s.get('agent_instance_id') || s.get('instance') || '').trim();
     } catch { return ''; }
   }, [conversationId]);
-  const convQuery = useFetchConversationQuery({ conversationId, agentInstanceId: urlAgentInstanceId }, { skip: !conversationId, pollingInterval: 10000, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
+  // No refetchOnMountOrArgChange: serve cached conversation instantly on switch
+  // (keepUnusedDataFor keeps it warm); WS chat_event invalidation + the 10s poll
+  // keep it fresh. This avoids a full /chats/by-instance fetch on every switch.
+  const convQuery = useFetchConversationQuery({ conversationId, agentInstanceId: urlAgentInstanceId }, { skip: !conversationId, pollingInterval: 10000, skipPollingIfUnfocused: true });
   // Do NOT force a refetch on every conversation switch: with keepUnusedDataFor
   // (30s) a recently-viewed thread renders instantly from cache, and the user WS
   // `chat_event` already invalidates this conversation's `Chat` tag when anything
@@ -476,7 +479,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const lastInstanceStatusRef = useRef('');
   const pollHint = lastInstanceStatusRef.current || conversationRuntimeStatusForPoll;
   const instancePollInterval = runtimeStateFromStatus(pollHint) === 'starting' ? 2500 : 8000;
-  const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: instancePollInterval, skipPollingIfUnfocused: true, refetchOnMountOrArgChange: true });
+  // No refetchOnMountOrArgChange: serve the cached instance runtime instantly on
+  // switch. WS resource_changed(agent_instance) patches runtime/activity live,
+  // reconfigure invalidates AgentInstances, and the poll below is the backstop.
+  const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: instancePollInterval, skipPollingIfUnfocused: true });
   const instance = instanceQuery.data?.instance || null;
   // Agent identity (name + persona/instructions) — used for the empty-state
   // welcome so a fresh conversation shows who you're talking to.
@@ -534,7 +540,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   }, [currentTask, agentInstanceId, chainDetailQuery.data?.chain]);
 
 
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
+  // Bridges are near-static (label + provider/tier caps); no refetch on every
+  // conversation switch. The Bridges LIST tag invalidates on bridge mutations,
+  // and the slow poll is a backstop.
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
   const bridges = bridgesQuery.data?.bridges || [];
   const instanceBridge = useMemo(() => bridges.find((b: any) => bridgeId(b) === instanceBridgeId), [bridges, instanceBridgeId]);
 

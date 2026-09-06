@@ -75,6 +75,10 @@ export const agentsApi = heimdallApi.injectEndpoints({
         }
       },
       providesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: agentId }],
+      // Agent identities (name/persona) change rarely; keep cached across chain +
+      // conversation switches (was the 30s global default). Identity mutations
+      // invalidate the Agents id tag.
+      keepUnusedDataFor: 600,
     }),
     updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
       queryFn: async ({ agentId, name, defaultProvider, defaultTier, instructions }) => {
@@ -357,6 +361,10 @@ export const agentsApi = heimdallApi.injectEndpoints({
         }
       },
       providesTags: (_result, _error, { instanceId }) => [{ type: 'AgentInstances' as const, id: instanceId }],
+      // Keep the instance runtime cached across conversation switches (was the 30s
+      // global default). WS resource_changed(agent_instance) patches it live and
+      // reconfigure invalidates it, so cached-on-switch stays correct.
+      keepUnusedDataFor: 300,
     }),
     launchAgentInstance: build.mutation<any, { agentId: string; bridgeId?: string; provider?: string; tier?: string; projectId?: string }>({
       queryFn: async ({ agentId, bridgeId, provider, tier, projectId }) => {
@@ -518,6 +526,15 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
     const rows = draft?.agents || (draft.agents = []);
     known = rows.some((r: any) => r.id === agentId);
     if (known) applyAgentRuntimeEvent(rows, runtimePatch);
+  }));
+  // Also patch the per-instance runtime cache (fetchAgentInstance) used by the
+  // conversation page's runtime chip / model switcher / current-task strip, so a
+  // WS status change updates it live without a refetch-on-switch.
+  dispatch(agentsApi.util.updateQueryData('fetchAgentInstance', { instanceId: agentId }, (draft: any) => {
+    if (!draft?.instance) return;
+    if (runtimePatch.runtime_status != null) draft.instance.runtime_status = runtimePatch.runtime_status;
+    if (runtimePatch.startup_status != null) draft.instance.startup_status = runtimePatch.startup_status;
+    if (runtimePatch.activity_status != null) draft.instance.activity_status = runtimePatch.activity_status;
   }));
   if (known) {
     dispatch(agentsApi.util.updateQueryData('fetchAgent', { agentInstanceId: agentId }, (draft: any) => {

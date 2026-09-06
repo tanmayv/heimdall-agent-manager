@@ -132,6 +132,11 @@ function normalizeTaskChainDetail(data: any) {
       agentInstanceId: m.agent_instance_id,
       agentId: m.agent_id,
       role: m.role,
+      // Hub now embeds the member's display name + live runtime/activity so the
+      // UI renders labels + status dots without a per-member instance fetch.
+      displayName: m.display_name || '',
+      runtimeStatus: m.runtime_status || '',
+      activityStatus: m.activity_status || '',
       createdAt: m.created_at,
     })),
     tasks: (data.tasks || []).map(normalizeTask),

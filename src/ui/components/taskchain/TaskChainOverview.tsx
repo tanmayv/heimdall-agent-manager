@@ -72,9 +72,13 @@ export function AgentInstanceOption({
   const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed || Boolean(defaultAgentName) });
   const inst = data?.instance || null;
   const agentId = String(inst?.agent_id || inst?.agentId || '');
+  const instName = inst?.display_name || inst?.displayName || '';
 
-  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(defaultAgentName) });
-  const agentName = defaultAgentName || inst?.display_name || inst?.displayName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
+  // The instance already carries display_name; only fall back to a per-agent
+  // identity fetch when it is genuinely missing (avoids a redundant /agents/<id>
+  // call per member in the common case).
+  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(defaultAgentName) || Boolean(instName) });
+  const agentName = defaultAgentName || instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   const label = agentName !== trimmed
     ? `${agentName} (${trimmed})${suffix}${runtimeStatus ? ` · ${runtimeStatus}` : ''}`
@@ -102,9 +106,10 @@ export function MemberInstanceOption({
   const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed });
   const inst = data?.instance || null;
   const agentId = String(inst?.agent_id || inst?.agentId || '');
+  const instName = inst?.display_name || inst?.displayName || '';
 
-  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
-  const agentName = inst?.display_name || inst?.displayName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
+  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(instName) });
+  const agentName = instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   const label = agentName !== trimmed
     ? `${role}: ${agentName} (${trimmed})`
@@ -1280,9 +1285,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               data-debug-id={`taskchain-overview-member-${m.agentInstanceId || m.agent_instance_id}`}
               className="flex items-center gap-1 rounded bg-zinc-800 px-2 py-0.5"
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+              <span className={`h-1.5 w-1.5 rounded-full ${(() => { const s = String(m.runtimeStatus || '').toLowerCase(); if (s === 'running' || s === 'ready' || s === 'live') return 'bg-emerald-400'; if (s === 'starting' || s === 'launching') return 'bg-amber-400'; if (s === '') return 'bg-emerald-400'; return 'bg-zinc-500'; })()}`}></span>
               <span className="font-mono text-zinc-300">
-                {m.role}: <InstanceIdLink instanceId={m.agentInstanceId || m.agent_instance_id} />
+                {m.role}: <InstanceIdLink instanceId={m.agentInstanceId || m.agent_instance_id} displayName={m.displayName} />
               </span>
               <button
                 type="button"
@@ -2453,16 +2458,21 @@ function shellHash(path: string): string { return `#${path.startsWith('/') ? pat
 // once resolved; if no conversation can be resolved it falls back to the agents
 // list route and shows a tooltip — never a dead link and never a crash. user_id
 // refs are NOT agent instances and must be rendered with plain text by callers.
-export function InstanceIdLink({ instanceId }: { instanceId: string }) {
+export function InstanceIdLink({ instanceId, displayName }: { instanceId: string; displayName?: string }) {
   const trimmed = String(instanceId || '').trim();
-  // Only agent instance ids are clickable; guard against empty values.
+  // When the caller already knows the display name (e.g. chain members now carry
+  // it from the hub), skip BOTH the instance and identity fetches entirely — we
+  // only still need the conversation id for the link, which we resolve lazily via
+  // the (cached) instance query only when no display name was supplied.
+  const known = Boolean(String(displayName || '').trim());
   const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed });
   const inst = data?.instance || null;
   const conversationId = String(inst?.conversation_id || inst?.conversationId || '');
   const agentId = String(inst?.agent_id || inst?.agentId || '');
+  const instName = String(displayName || '').trim() || inst?.display_name || inst?.displayName || '';
 
-  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
-  const agentName = inst?.display_name || inst?.displayName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
+  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || known || Boolean(instName) });
+  const agentName = instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   if (!trimmed) return null;
   
