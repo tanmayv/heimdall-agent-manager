@@ -154,6 +154,9 @@ write_http_response :: proc(client: net.TCP_Socket, resp: Response) {
 	content_type := resp.content_type
 	if content_type == "" do content_type = "application/json"
 	b := strings.builder_make()
+	// The builder holds the response headers *and* a copy of the whole body, so leaving
+	// it undestroyed leaked roughly one response-size per request.
+	defer strings.builder_destroy(&b)
 	strings.write_string(&b, fmt.tprintf("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n", resp.status, status_text(resp.status), content_type, len(body)))
 	strings.write_string(&b, "Access-Control-Allow-Origin: *\r\n")
 	strings.write_string(&b, "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n")
