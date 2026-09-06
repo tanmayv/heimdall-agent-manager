@@ -44,6 +44,16 @@ const { planForPushPayload } = await import('../src/ui/api/pushNotificationMappe
   assert.equal(plan.category, 'attention', 'unknown category => attention');
 }
 
+// --- category match is exact + case-sensitive -----------------------------
+// Only the literal 'chat' is the chat bucket; anything else (including a
+// different case) is treated as 'attention' so per-category behaviour stays
+// predictable and can't be spoofed by a mis-cased wire value.
+{
+  assert.equal(planForPushPayload({ category: 'Chat' }).category, 'attention', "'Chat' is not 'chat'");
+  assert.equal(planForPushPayload({ category: 'CHAT' }).category, 'attention', "'CHAT' is not 'chat'");
+  assert.equal(planForPushPayload({ category: 'attention' }).category, 'attention');
+}
+
 // --- TOTAL: null payload => visible Heimdall fallback ---------------------
 {
   const plan = planForPushPayload(null);
@@ -63,6 +73,17 @@ const { planForPushPayload } = await import('../src/ui/api/pushNotificationMappe
   assert.equal(plan.route, '/conversations');
 }
 
+// --- TOTAL: non-null, non-object payloads still yield the fallback ---------
+// event.data.json() could yield a JSON primitive/array (not the expected
+// object). The mapper's `typeof === 'object'` guard must treat these like an
+// empty payload so the SW can still show a visible notification.
+for (const bad of ['a raw string', 42, true, ['not', 'an', 'object']] as unknown[]) {
+  const plan = planForPushPayload(bad as never);
+  assert.equal(plan.title, 'Heimdall', `non-object payload (${typeof bad}) => fallback title`);
+  assert.equal(plan.body, 'You have a new notification.');
+  assert.equal(plan.category, 'attention');
+}
+
 // --- partial payload: missing fields fall back individually ---------------
 {
   const plan = planForPushPayload({ title: 'Only a title' });
@@ -79,6 +100,38 @@ const { planForPushPayload } = await import('../src/ui/api/pushNotificationMappe
   assert.equal(plan.title, 'a b', 'whitespace collapsed in title');
   assert.ok(plan.body.length <= 140, 'body truncated to <=140 chars');
   assert.ok(plan.body.endsWith('…'), 'truncated body ends with ellipsis');
+}
+
+// --- title is whitespace-collapsed and truncated too ----------------------
+// The title runs through the same normalize/truncate path as the body, so a
+// long title is clamped to <=140 chars with a trailing ellipsis.
+{
+  const plan = planForPushPayload({ title: `New\tmessage ${'y'.repeat(300)}` });
+  assert.ok(plan.title.length <= 140, 'title truncated to <=140 chars');
+  assert.ok(plan.title.endsWith('…'), 'truncated title ends with ellipsis');
+  assert.ok(plan.title.startsWith('New message '), 'title whitespace collapsed');
+}
+
+// --- whitespace-only fields collapse to empty => fallback -----------------
+// truncate() collapses runs of whitespace and trims, so an all-whitespace
+// title/body becomes '' and the `|| FALLBACK` guard shows the Heimdall default
+// (never a blank, silent-looking notification that iOS would penalise).
+{
+  const plan = planForPushPayload({ title: '   \n\t  ', body: '\n\n   ' });
+  assert.equal(plan.title, 'Heimdall', 'whitespace-only title => fallback');
+  assert.equal(plan.body, 'You have a new notification.', 'whitespace-only body => fallback');
+}
+
+// --- truncation boundary: exactly max stays intact, one over is clipped ---
+{
+  const exact = 'z'.repeat(140);
+  const over = 'z'.repeat(141);
+  const atLimit = planForPushPayload({ title: 'ok', body: exact });
+  assert.equal(atLimit.body, exact, 'body at the 140-char limit is not truncated');
+  assert.ok(!atLimit.body.endsWith('…'), 'at-limit body has no ellipsis');
+  const clipped = planForPushPayload({ title: 'ok', body: over }).body;
+  assert.equal(clipped.length, 140, 'over-limit body clipped to exactly 140 chars');
+  assert.ok(clipped.endsWith('…'), 'over-limit body ends with ellipsis');
 }
 
 console.log('ui_push_notification_mapper_test: ok');
