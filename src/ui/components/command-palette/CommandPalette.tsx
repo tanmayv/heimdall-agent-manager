@@ -34,6 +34,8 @@ export type CommandPaletteProps = {
   // Live conversations grouped by project — mirrors the sidebar rail so the
   // palette doubles as the conversation switcher (replaces the drawer on mobile).
   conversationGroups?: PaletteConversationGroup[];
+  // Current active route path for persistent selected highlight.
+  currentPath?: string;
 };
 
 export type PaletteAction = {
@@ -118,7 +120,7 @@ function hitIcon(type: string): IconName {
   }
 }
 
-export default function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [] }: CommandPaletteProps) {
+export default function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [], currentPath = '' }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -293,6 +295,13 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                   const icon: IconName = result.kind === 'entity' ? hitIcon(result.hit.type || '') : ((result as any).icon || 'chevron-right');
                   const isConvo = result.kind === 'conversation';
                   const unread = isConvo ? Number(result.convo.unreadCount || 0) : 0;
+                  const isSelectedConvo = isConvo && Boolean(
+                    currentPath &&
+                    (currentPath === `/conversations/${result.convo.conversationId}` ||
+                     currentPath.startsWith(`/conversations/${result.convo.conversationId}/`) ||
+                     currentPath.startsWith(`/conversations/${result.convo.conversationId}?`))
+                  );
+                  const highlight = active || isSelectedConvo;
                   return (
                     <button
                       key={`${groupLabel}-${idx}`}
@@ -301,7 +310,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                       data-palette-index={idx}
                       onClick={() => activate(result)}
                       onMouseEnter={() => setActiveIndex(idx)}
-                      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${active ? 'bg-white/[0.08] text-zinc-100' : 'text-zinc-300 hover:bg-white/[0.04]'}`}
+                      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${highlight ? 'bg-white/[0.08] text-zinc-100' : 'text-zinc-300 hover:bg-white/[0.04]'}`}
                     >
                       {isConvo ? (
                         <span aria-hidden="true" className="grid w-5 place-items-center"><span className={`h-2 w-2 rounded-full ${convoDotClass(result.convo)}`} /></span>

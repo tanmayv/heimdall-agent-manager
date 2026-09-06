@@ -535,7 +535,7 @@ function StatusDot({
   );
 }
 
-function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
+function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: ProjectGroup; currentPath?: string }) {
   const projectId = projectGroup.project.projectId;
   const storageKey = `heimdall:project-collapsed:${projectId}`;
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -580,25 +580,33 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
             <div data-debug-id={`sidebar-project-empty-${projectId}`} className="px-2 py-1.5 pl-8 text-[11.5px] text-zinc-600">No conversations yet.</div>
           ) : (
             <div className="space-y-0.5">
-              {projectGroup.conversations.map((conversation) => (
-                <a
-                  key={conversation.conversationId}
-                  data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
-                  href={shellHash(`/conversations/${conversation.conversationId}${conversation.agentInstanceId ? `?agent_instance_id=${encodeURIComponent(conversation.agentInstanceId)}` : ''}`)}
-                  className="flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] text-zinc-400 hover:bg-white/[0.06] hover:text-white"
-                >
-                  <StatusDot
-                    bridgeId={conversation.bridgeId}
-                    runtimeStatus={conversation.runtimeStatus}
-                    activityStatus={conversation.activityStatus}
-                    debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
-                    label={conversation.agentName}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{conversation.agentName}</span>
-                  {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
-                  <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
-                </a>
-              ))}
+              {projectGroup.conversations.map((conversation) => {
+                const isSelected = Boolean(
+                  currentPath &&
+                  (currentPath === `/conversations/${conversation.conversationId}` ||
+                   currentPath.startsWith(`/conversations/${conversation.conversationId}/`) ||
+                   currentPath.startsWith(`/conversations/${conversation.conversationId}?`))
+                );
+                return (
+                  <a
+                    key={conversation.conversationId}
+                    data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
+                    href={shellHash(`/conversations/${conversation.conversationId}${conversation.agentInstanceId ? `?agent_instance_id=${encodeURIComponent(conversation.agentInstanceId)}` : ''}`)}
+                    className={`flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] transition ${isSelected ? 'bg-white/[0.06] text-white' : 'text-zinc-400 hover:bg-white/[0.06] hover:text-white'}`}
+                  >
+                    <StatusDot
+                      bridgeId={conversation.bridgeId}
+                      runtimeStatus={conversation.runtimeStatus}
+                      activityStatus={conversation.activityStatus}
+                      debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
+                      label={conversation.agentName}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{conversation.agentName}</span>
+                    {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
+                    <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
+                  </a>
+                );
+              })}
             </div>
           )}
         </div>
@@ -607,7 +615,7 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
   );
 }
 
-function ProjectConversationTree({ groups, loading = false, error = '' }: { groups: ProjectGroup[]; loading?: boolean; error?: string }) {
+function ProjectConversationTree({ groups, loading = false, error = '', currentPath = '' }: { groups: ProjectGroup[]; loading?: boolean; error?: string; currentPath?: string }) {
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
   const bridges = (bridgesQuery.data?.bridges || []).filter((bridge: any) => !bridgeIsRevoked(bridge));
 
@@ -626,7 +634,7 @@ function ProjectConversationTree({ groups, loading = false, error = '' }: { grou
       ) : null}
       <div className="space-y-0.5">
         {groups.map((projectGroup) => (
-          <ProjectGroupItem key={projectGroup.project.projectId} projectGroup={projectGroup} />
+          <ProjectGroupItem key={projectGroup.project.projectId} projectGroup={projectGroup} currentPath={currentPath} />
         ))}
       </div>
     </section>
@@ -1058,7 +1066,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
-          {!collapsed && <ProjectConversationTree groups={conversationTree} loading={sidebarLoading} error={sidebarError} />}
+          {!collapsed && <ProjectConversationTree groups={conversationTree} loading={sidebarLoading} error={sidebarError} currentPath={path} />}
         </div>
 
         <div className="border-t border-white/10 p-3">
@@ -1101,7 +1109,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         />
       ) : null}
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
     </div>
   );
 }
