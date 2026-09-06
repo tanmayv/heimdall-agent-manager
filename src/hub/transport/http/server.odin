@@ -69,6 +69,9 @@ handle_client :: proc(client: net.TCP_Socket, source: net.Endpoint, router: ^Rou
 read_http_request :: proc(client: net.TCP_Socket) -> (string, bool) {
 	buf: [8192]byte
 	data := make([dynamic]byte, 0, 8192)
+	// `data` is never handed to the caller (a clone is returned instead), and none of the
+	// three return paths below freed it: every request leaked its full 8192-byte capacity.
+	defer delete(data)
 	for {
 		n, recv_err := net.recv_tcp(client, buf[:])
 		if recv_err != nil || n <= 0 do return "", false
