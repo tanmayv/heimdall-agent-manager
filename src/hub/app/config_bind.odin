@@ -73,6 +73,6 @@ default_config :: proc() -> Hub_Config {
 		reaper_interval_seconds = 20,
 		title_nudge_cooldown_seconds = 3600,
 		vapid_subject = "mailto:12tanmayvijay@gmail.com",
-		public_app_origin = "https://heimdal.mundus.in",
+		public_app_origin = "https://heimdall.mundus.in",
 	}
 }

@@ -58,13 +58,13 @@ build_push_payload_json_shape_with_origin :: proc(t: ^testing.T) {
 		route = "/conversations/conv_1",
 		category = .Chat,
 	}
-	got := build_push_payload_json(c, "https://heimdal.mundus.in")
+	got := build_push_payload_json(c, "https://heimdall.mundus.in")
 	defer delete(got)
 	// Field presence + the absolute href = origin + "/#" + route.
 	testing.expect(t, strings.contains(got, "\"title\":\"New message\""))
 	testing.expect(t, strings.contains(got, "\"category\":\"chat\""))
 	testing.expect(t, strings.contains(got, "\"route\":\"/conversations/conv_1\""))
-	testing.expect(t, strings.contains(got, "\"href\":\"https://heimdal.mundus.in/#/conversations/conv_1\""))
+	testing.expect(t, strings.contains(got, "\"href\":\"https://heimdall.mundus.in/#/conversations/conv_1\""))
 }
 
 @(test)

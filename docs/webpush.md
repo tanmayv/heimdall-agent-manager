@@ -97,7 +97,7 @@ the Hub as a deployment secret via `--vapid-private-key-file` /
 owned by the deploy/coordinator; workers only implement the flag/env reading.
 The Hub serves only `/api/v1`; the service worker + web app manifest are served
 same-origin by the reverse proxy/static host in production
-(`https://heimdal.mundus.in`).
+(`https://heimdall.mundus.in`).
 
 ## On-device iOS verification
 

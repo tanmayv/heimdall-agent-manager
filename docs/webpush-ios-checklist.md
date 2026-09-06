@@ -14,7 +14,7 @@ For VAPID key generation and running the Hub, see [`webpush.md`](./webpush.md).
 - Apple only supports Web Push for a PWA **installed to the Home Screen** — not
   in a Safari tab. It requires **iOS/iPadOS 16.4 or later**.
 - Push only works over a **secure context** (HTTPS). Production is
-  `https://heimdal.mundus.in`; that's what you must install from.
+  `https://heimdall.mundus.in`; that's what you must install from.
 - Subscriptions do **not** survive uninstalling/reinstalling the PWA. If you
   remove and re-add it to the Home Screen, re-enable notifications so the app
   re-subscribes.
@@ -27,7 +27,7 @@ For VAPID key generation and running the Hub, see [`webpush.md`](./webpush.md).
 
 - [ ] iPhone/iPad on **iOS/iPadOS 16.4+** (Settings → General → About → Software
       Version).
-- [ ] You can sign in to Heimdall at `https://heimdal.mundus.in` in Safari.
+- [ ] You can sign in to Heimdall at `https://heimdall.mundus.in` in Safari.
 - [ ] A way to trigger an **agent → user chat message** to your account (e.g. an
       agent instance you can prompt, or ask the coordinator to send you one).
       Only **chat** and **attention** events push; routine resource changes do
@@ -36,7 +36,7 @@ For VAPID key generation and running the Hub, see [`webpush.md`](./webpush.md).
 ## Part A — Install the PWA to the Home Screen
 
 1. [ ] Open **Safari** (not Chrome/Firefox — on iOS only Safari can install a
-       push-capable PWA) and go to `https://heimdal.mundus.in`.
+       push-capable PWA) and go to `https://heimdall.mundus.in`.
 2. [ ] Sign in and confirm the app loads.
 3. [ ] Tap the **Share** icon → **Add to Home Screen** → **Add**.
 4. [ ] Close Safari. Launch **Heimdall from its Home Screen icon**. It should open
