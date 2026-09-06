@@ -69,7 +69,8 @@ main :: proc() {
 	// Preview is newest-first: a6,a5,a4,a3,a2; next_cursor is the last previewed.
 	check(p1.chains[0].chain_id == "a6", fmt.tprintf("G1: p1 newest must be a6, got %q", p1.chains[0].chain_id))
 	check(p1.chains[4].chain_id == "a2", fmt.tprintf("G1: p1 5th must be a2, got %q", p1.chains[4].chain_id))
-	check(p1.next_cursor == "2026-09-06T10:00:02Z", fmt.tprintf("G1: p1 next_cursor must be a2's updated_at, got %q", p1.next_cursor))
+	// next_cursor is the COMPOSITE (updated_at|chain_id) of the last previewed chain.
+	check(p1.next_cursor == "2026-09-06T10:00:02Z|a2", fmt.tprintf("G1: p1 next_cursor must be a2's composite cursor, got %q", p1.next_cursor))
 	check(p1.project_name == "Alpha", fmt.tprintf("G1: p1 name must be Alpha, got %q", p1.project_name))
 
 	p2, _ := find_group(groups, "p2")
@@ -93,8 +94,11 @@ main :: proc() {
 		check(page.project_id == "p1" && page.project_name == "Alpha", "P1: page must carry project id+name")
 		check(len(page.chains) <= 2, fmt.tprintf("P1: page must respect limit 2, got %d", len(page.chains)))
 		for c in page.chains do append(&seen, c.chain_id)
-		// Each page is newest-first and strictly older than the previous cursor.
-		if cursor != "" { for c in page.chains do check(c.updated_at < cursor, "P2: page item must be strictly older than the cursor") }
+		// Each page item sorts strictly after the previous (composite) cursor.
+		if cursor != "" {
+			cur_at, _ := http.chain_cursor_decode(cursor)
+			for c in page.chains do check(c.updated_at <= cur_at, "P2: page item must be at/older than the cursor timestamp")
+		}
 		if !page.has_more { check(page.next_cursor == "", "P2: final page must have empty next_cursor"); break }
 		check(page.next_cursor != "", "P2: non-final page must expose a next_cursor")
 		cursor = page.next_cursor
@@ -109,6 +113,33 @@ main :: proc() {
 	defer delete(un_page.chains)
 	check(un_page.project_name == "Unassigned", "P3: empty project_id page must be labeled Unassigned")
 	check(len(un_page.chains) == 1 && un_page.chains[0].chain_id == "u7" && !un_page.has_more, "P3: Unassigned page must hold u7 only")
+
+	// --- P4: TIED updated_at straddling the page boundary must not drop a chain ---
+	// Reviewer's repro: one project, (T2,'tb'),(T2,'ta'),(T1,'tc'), limit=1. A
+	// pure-updated_at cursor would skip the second T2 row forever; the composite
+	// (updated_at,chain_id) cursor returns all three exactly once, newest-first.
+	tied := []http.Chain_List_Item{
+		mk("tb", "2026-09-06T11:00:02Z", "pt", "Tied"),
+		mk("tc", "2026-09-06T11:00:01Z", "pt", "Tied"),
+		mk("ta", "2026-09-06T11:00:02Z", "pt", "Tied"),
+	}
+	tied_seen := make([dynamic]string); defer delete(tied_seen)
+	tied_cursor := ""
+	tied_pages := 0
+	for {
+		page := http.paginate_project_chains(tied, "pt", 1, tied_cursor)
+		defer delete(page.chains)
+		// NB: next_cursor is reused as the next iteration's cursor, so it must not be
+		// freed here; it's a short-lived per-page string in this test.
+		tied_pages += 1
+		check(tied_pages <= 10, "P4: tied pagination did not terminate")
+		for c in page.chains do append(&tied_seen, c.chain_id)
+		if !page.has_more do break
+		tied_cursor = page.next_cursor
+	}
+	check(len(tied_seen) == 3, fmt.tprintf("P4: must see all 3 tied chains, got %d", len(tied_seen)))
+	tied_want := []string{"tb", "ta", "tc"} // T2/tb, T2/ta (chain_id desc tie-break), then T1/tc
+	for w, i in tied_want do check(tied_seen[i] == w, fmt.tprintf("P4: tied chain %d must be %q, got %q", i, w, tied_seen[i]))
 
 	// --- S1: serializer emits exactly the contractual field set ---
 	b := strings.builder_make(); defer strings.builder_destroy(&b)

@@ -123,6 +123,7 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		if limit > TASK_CHAINS_PAGE_MAX do limit = TASK_CHAINS_PAGE_MAX
 		page := paginate_project_chains(items[:], query_value(req.query, "project_id"), limit, query_value(req.query, "cursor"))
 		defer delete(page.chains)
+		defer if page.next_cursor != "" do delete(page.next_cursor) // chain_cursor_encode alloc
 		b := strings.builder_make()
 		write_chain_project_page_json(&b, page)
 		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
@@ -195,15 +196,20 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 // instance's conversation (the single source; chains carry no project_id column).
 // Returns "" when there is no coordinator, no content service, or no conversation
 // — those chains fall into the "Unassigned" bucket.
+// NOTE: get_conversation_by_instance currently linear-scans up to 512 of the
+// owner's conversations; a coordinator whose conversation sorts past that window
+// would misfile its chain as "Unassigned". Latent until an owner has that many
+// conversations — worth a bounded/indexed by-instance lookup eventually.
 resolve_chain_project_id :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, coordinator_instance_id: string, cache: ^map[string]string) -> string {
 	if strings.trim_space(coordinator_instance_id) == "" do return ""
 	if cached, ok := cache[coordinator_instance_id]; ok do return cached
-	project_id := ""
-	if h.content != nil {
-		if conv, ok, _ := content_service.get_conversation_by_instance(h.content, auth, coordinator_instance_id); ok {
-			project_id = string(conv.project_id)
-		}
-	}
+	if h.content == nil do return ""
+	conv, ok, err := content_service.get_conversation_by_instance(h.content, auth, coordinator_instance_id)
+	// Only memoize a definite answer (resolved, or a genuine not-found). A real
+	// backend error is left uncached so it isn't sticky across the request and the
+	// chain simply degrades to Unassigned for this pass.
+	if err.code != .None && err.code != .Not_Found do return ""
+	project_id := string(conv.project_id) if ok else ""
 	cache[coordinator_instance_id] = project_id
 	return project_id
 }
@@ -213,12 +219,11 @@ resolve_chain_project_id :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Co
 resolve_project_name :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, project_id: string, cache: ^map[string]string) -> string {
 	if project_id == "" do return ""
 	if cached, ok := cache[project_id]; ok do return cached
-	name := ""
-	if h.projects != nil {
-		if p, ok, _ := project_service.get(h.projects, auth, domain.Project_ID(project_id)); ok {
-			name = p.name
-		}
-	}
+	if h.projects == nil do return ""
+	p, ok, err := project_service.get(h.projects, auth, domain.Project_ID(project_id))
+	// As above: cache a real answer, but not a transient backend error.
+	if err.code != .None && err.code != .Not_Found do return ""
+	name := p.name if ok else ""
 	cache[project_id] = name
 	return name
 }
@@ -228,6 +233,29 @@ resolve_project_name :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Contex
 chain_list_item_less :: proc(a, b: Chain_List_Item) -> bool {
 	if a.updated_at != b.updated_at do return a.updated_at > b.updated_at
 	return a.chain_id > b.chain_id
+}
+
+// chain_cursor_encode / _decode form a COMPOSITE (updated_at, chain_id)
+// pagination cursor. updated_at alone is ambiguous when chains share a timestamp:
+// a purely-updated_at cursor with a `>=`/`<` filter drops (or repeats) a tied row
+// that straddles a page boundary. Carrying chain_id (the sort's tie-breaker) lets
+// resumption land strictly AFTER (updated_at, chain_id) in the newest-first order,
+// so every chain is returned exactly once. Separator mirrors the chat-conversation
+// repo's `order|id` cursor convention. Caller owns the returned string.
+chain_cursor_encode :: proc(it: Chain_List_Item) -> string {
+	return strings.concatenate({it.updated_at, "|", it.chain_id})
+}
+chain_cursor_decode :: proc(cursor: string) -> (updated_at: string, chain_id: string) {
+	if sep := strings.index_byte(cursor, '|'); sep >= 0 do return cursor[:sep], cursor[sep + 1:]
+	return cursor, ""
+}
+// chain_after_cursor reports whether `it` sorts strictly after the cursor in the
+// newest-first (updated_at desc, then chain_id desc) order used throughout. An
+// empty cursor means "from the start" (include everything).
+chain_after_cursor :: proc(it: Chain_List_Item, cur_updated_at, cur_chain_id: string) -> bool {
+	if cur_updated_at == "" do return true
+	if it.updated_at != cur_updated_at do return it.updated_at < cur_updated_at
+	return it.chain_id < cur_chain_id
 }
 
 // project_display_name labels the Unassigned bucket; a resolved-but-unnamed
@@ -281,7 +309,9 @@ group_chains_by_project :: proc(items: []Chain_List_Item, preview_cap: int) -> [
 		for j in 0..<preview_n do preview[j] = bucket[j]
 		has_more := total > preview_n
 		next_cursor := ""
-		if has_more && preview_n > 0 do next_cursor = preview[preview_n - 1].updated_at
+		// Composite cursor so the client can page the rest of THIS project via the
+		// per-project view without losing a chain tied on updated_at at the handoff.
+		if has_more && preview_n > 0 do next_cursor = chain_cursor_encode(preview[preview_n - 1])
 		append(&groups, Chain_Project_Group{
 			project_id = project_id,
 			project_name = project_display_name(project_id, bucket[0].project_name if total > 0 else ""),
@@ -303,7 +333,10 @@ group_chains_by_project :: proc(items: []Chain_List_Item, preview_cap: int) -> [
 }
 
 free_chain_project_groups :: proc(groups: []Chain_Project_Group) {
-	for g in groups do delete(g.chains)
+	for g in groups {
+		delete(g.chains)
+		if g.next_cursor != "" do delete(g.next_cursor) // chain_cursor_encode alloc
+	}
 	delete(groups)
 }
 
@@ -317,16 +350,18 @@ Chain_Project_Page :: struct {
 }
 
 // paginate_project_chains returns one page of a single project's chains,
-// newest-first. `cursor` is an updated_at watermark: only chains strictly older
-// than it are returned (mirrors the chat/project repos' `< cursor` pattern). The
-// returned chains slice is caller-owned (delete it).
+// newest-first. `cursor` is a composite (updated_at, chain_id) watermark (see
+// chain_cursor_encode): only chains that sort strictly after it are returned, so
+// chains sharing an updated_at across a page boundary are never skipped. The
+// returned chains slice and next_cursor are caller-owned (delete them).
 paginate_project_chains :: proc(items: []Chain_List_Item, project_id: string, limit: int, cursor: string) -> Chain_Project_Page {
+	cur_at, cur_id := chain_cursor_decode(cursor)
 	matched := make([dynamic]Chain_List_Item); defer delete(matched)
 	project_name := ""
 	for it in items {
 		if it.project_id != project_id do continue
 		project_name = it.project_name
-		if cursor != "" && it.updated_at >= cursor do continue
+		if !chain_after_cursor(it, cur_at, cur_id) do continue
 		append(&matched, it)
 	}
 	slice.sort_by(matched[:], chain_list_item_less)
@@ -339,7 +374,7 @@ paginate_project_chains :: proc(items: []Chain_List_Item, project_id: string, li
 	for j in 0..<page_n do page[j] = matched[j]
 	has_more := len(matched) > page_n
 	next_cursor := ""
-	if has_more && page_n > 0 do next_cursor = page[page_n - 1].updated_at
+	if has_more && page_n > 0 do next_cursor = chain_cursor_encode(page[page_n - 1])
 	return Chain_Project_Page{
 		project_id = project_id,
 		project_name = project_display_name(project_id, project_name),
@@ -373,7 +408,7 @@ write_chain_project_group_json :: proc(b: ^strings.Builder, g: Chain_Project_Gro
 	strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, g.project_id)
 	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, g.project_name)
 	strings.write_string(b, "\",\"chains\":"); write_chain_list_items_json(b, g.chains)
-	strings.write_string(b, ",\"chain_total\":"); strings.write_string(b, fmt.tprintf("%d", g.chain_total))
+	strings.write_string(b, ",\"chain_total\":"); strings.write_int(b, g.chain_total)
 	strings.write_string(b, ",\"has_more\":"); strings.write_string(b, "true" if g.has_more else "false")
 	strings.write_string(b, ",\"next_cursor\":\""); write_handler_json_string(b, g.next_cursor)
 	strings.write_string(b, "\"}")
