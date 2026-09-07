@@ -12,6 +12,7 @@ import { wsChainViewRefreshRequested } from '../store/chainViewSlice';
 import { wsRefreshRequested } from '../store/homeSlice';
 import { auditEndedReceived, auditStartedReceived, memoryEventReceived } from '../store/memorySlice';
 import { taskEventReceived } from '../store/taskSlice';
+import { agentActionReceived } from '../store/agentActivitySlice';
 import { fireNotificationForWsEvent } from '../services/notificationService';
 
 // Focus context read at WS-event time (populated by the shell from the live
@@ -343,6 +344,24 @@ function handleMemoryEvent(dispatch: any, payload: any) {
   patchMemoryCachesFromWs(dispatch, payload);
 }
 
+// Ephemeral agent-activity bubble event (P1 wire contract:
+// { type:'agent_action', instance_id, action, summary, ts }). Routed ONLY to the
+// transient agentActivity slice — it MUST NOT touch any RTK Query cache (no
+// invalidateTags/updateQueryData) and never triggers a refetch. Fire-and-forget
+// presence signal; buffered per-instance so it can replay when the user opens
+// that conversation (see AgentActivityBubbles, P3).
+function handleAgentActionEvent(dispatch: any, payload: any) {
+  const instanceId = String(payload?.instance_id || '');
+  const summary = String(payload?.summary || '');
+  if (!instanceId || !summary) return;
+  dispatch(agentActionReceived({
+    instanceId,
+    action: String(payload?.action || ''),
+    summary,
+    ts: Number(payload?.ts) || Date.now(),
+  }));
+}
+
 function handleMergeDecisionPending(dispatch: any, payload: any, ctx: WsCtx) {
   const chainId = String(payload.chain_id || '');
   if (chainId && ctx.focusedChainId === chainId) {
@@ -469,6 +488,9 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
       return;
     case 'memory_event':
       handleMemoryEvent(dispatch, payload);
+      return;
+    case 'agent_action':
+      handleAgentActionEvent(dispatch, payload);
       return;
     case 'audit_start':
       dispatch(auditStartedReceived(payload));
