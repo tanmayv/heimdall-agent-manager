@@ -27,6 +27,8 @@ import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
 import UserTokensPanel from '../settings/UserTokensPanel';
 import MemoryPanel from '../settings/MemoryPanel';
+import MemoryPage from '../memory/MemoryPage';
+import MemoryDetailPage from '../memory/MemoryDetailPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
 import LibraryPage from '../LibraryPage';
 import ArtifactViewer from '../ArtifactViewer';
@@ -104,6 +106,7 @@ const NAV_ROUTES: ShellRoute[] = [
   { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts grouped by project', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
   { path: '/agents', label: 'Agents', icon: 'bot', description: 'Agent identities and sessions', group: 'primary' },
+  { path: '/memory', label: 'Memory', icon: 'spark', description: 'Durable facts, habits & skills for your agents', group: 'primary' },
   { path: '/chains', label: 'Task Chains', icon: 'tasks', description: 'Multi-agent task chains grouped by project', group: 'primary' },
   { path: '/library', label: 'Library', icon: 'device', description: 'Artifacts and files', group: 'primary' },
   { path: '/settings/bridges', label: 'Settings', icon: 'gear', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
@@ -119,6 +122,7 @@ function isRouteActive(currentPath: string, itemPath: string): boolean {
   if (itemPath === '/conversations') return currentPath === '/conversations' || currentPath.startsWith('/conversations/');
   if (itemPath === '/actions') return currentPath === '/actions' || currentPath.startsWith('/actions/');
   if (itemPath === '/settings/bridges') return currentPath.startsWith('/settings');
+  if (itemPath === '/memory') return currentPath === '/memory' || currentPath.startsWith('/memory/');
   return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
 }
 
@@ -135,6 +139,8 @@ function routeTitle(path: string): string {
   if (path.startsWith('/agents/')) return 'Agent detail';
   if (path.startsWith('/library/artifacts/')) return 'Artifact viewer';
   if (path.startsWith('/library')) return 'Library';
+  if (path.startsWith('/memory/')) return 'Memory detail';
+  if (path.startsWith('/memory')) return 'Memory';
   if (path.startsWith('/settings/bridges')) return 'Bridge settings';
   if (path.startsWith('/settings/user-tokens')) return 'User token settings';
   if (path.startsWith('/settings/projects')) return 'Project settings';
@@ -158,6 +164,8 @@ function routeDescription(path: string): string {
   if (path.startsWith('/agents/')) return 'Agent overview, sessions, Bridges, and memory tabs will attach to this route.';
   if (path.startsWith('/library/artifacts/')) return 'Fullscreen artifact viewer route owned by the Library surface.';
   if (path.startsWith('/library')) return 'Filterable artifact list/grid route.';
+  if (path.startsWith('/memory/')) return 'Full memory record with body, scope, and edit/delete actions.';
+  if (path.startsWith('/memory')) return 'Durable facts, habits and skills targeted to agents, projects, bridges, and templates. Empty scope applies to all.';
   if (path.startsWith('/settings')) return 'Settings surface for Bridges, Providers, User tokens, Projects, Memory, and Defaults.';
   return 'Chat-first home with the routed main region ready for conversation surfaces.';
 }
@@ -202,6 +210,8 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return [{ label: 'Actions', href: '/actions' }, { label: 'Edit Action' }];
   if (path.startsWith('/actions')) return [{ label: 'Actions' }];
   if (path.startsWith('/library')) return [{ label: 'Library' }];
+  if (path.startsWith('/memory/')) return [{ label: 'Memory', href: '/memory' }, { label: 'Detail' }];
+  if (path.startsWith('/memory')) return [{ label: 'Memory' }];
   if (path.startsWith('/agents')) return [{ label: 'Agents' }];
   return [{ label: 'Conversations' }];
 }
@@ -805,7 +815,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
   const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
   const isKnownRoute = useMemo(() => {
     return [
-      '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/settings',
+      '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/user-tokens') ||
@@ -878,6 +888,10 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <NewAgentPage />
         ) : path.startsWith('/agents/') ? (
           <AgentDetailPanel agentId={decodeURIComponent(path.slice('/agents/'.length))} />
+        ) : path === '/memory' ? (
+          <MemoryPage />
+        ) : path.startsWith('/memory/') ? (
+          <MemoryDetailPage memoryId={decodeURIComponent(path.slice('/memory/'.length))} />
         ) : path === '/library' ? (
           <LibraryPage session={{ clientToken: 'v1', daemonUrl: '' }} />
         ) : path.startsWith('/library/artifacts/') ? (

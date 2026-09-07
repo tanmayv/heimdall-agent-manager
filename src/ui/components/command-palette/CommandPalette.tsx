@@ -66,6 +66,7 @@ const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
   { label: 'Actions', icon: 'clock', route: '/actions' },
   { label: 'Projects', icon: 'grid', route: '/projects' },
   { label: 'Agents', icon: 'bot', route: '/agents' },
+  { label: 'Memory', icon: 'spark', route: '/memory' },
   { label: 'Task Chains', icon: 'tasks', route: '/chains' },
   { label: 'Library', icon: 'device', route: '/library' },
   { label: 'Settings', icon: 'gear', route: '/settings' },
