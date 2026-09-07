@@ -142,6 +142,26 @@ export default function ProjectsPanel() {
     }
   }
 
+  async function handleSetBridgePath(bridgeId: string, defaultPathValue: string) {
+    if (!selectedProjectId) return;
+    const pathValue = (defaultPathValue || "").trim();
+    if (!pathValue) return;
+    setBridgeActionError((prev) => ({ ...prev, [bridgeId]: "" }));
+    setBridgeActionBusy((prev) => ({ ...prev, [bridgeId]: "set" }));
+    try {
+      await setProjectBridgePath({
+        projectId: selectedProjectId,
+        bridgeId,
+        path: pathValue,
+      }).unwrap();
+    } catch (err: any) {
+      const msg = err?.error || err?.message || String(err || "Set failed");
+      setBridgeActionError((prev) => ({ ...prev, [bridgeId]: msg }));
+    } finally {
+      setBridgeActionBusy((prev) => ({ ...prev, [bridgeId]: "" }));
+    }
+  }
+
   async function handleValidateBridgePath(bridgeId: string) {
     if (!selectedProjectId) return;
     setBridgeActionError((prev) => ({ ...prev, [bridgeId]: "" }));
@@ -471,38 +491,51 @@ export default function ProjectsPanel() {
                             />
 
                             <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                data-debug-id={`settings-project-bridge-path-save-btn-${bridgeId}`}
-                                type="button"
-                                onClick={() => void handleSaveBridgePath(bridgeId, selectedProject.default_path, existingOverride?.path)}
-                                disabled={Boolean(busyState)}
-                                className="rounded-lg bg-sky-400/10 border border-sky-400/30 px-2.5 py-1 text-xs text-sky-200 hover:bg-sky-400/20 disabled:opacity-50 font-medium"
-                              >
-                                {busyState === "save" ? "Saving…" : "Save"}
-                              </button>
-
-                              <button
-                                data-debug-id={`settings-project-bridge-path-validate-btn-${bridgeId}`}
-                                type="button"
-                                onClick={() => void handleValidateBridgePath(bridgeId)}
-                                disabled={!isOnline || Boolean(busyState)}
-                                title={!isOnline ? "Bridge is offline" : "Validate path on bridge"}
-                                className="rounded-lg bg-white/10 border border-white/10 px-2.5 py-1 text-xs text-zinc-200 hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
-                              >
-                                {busyState === "validate" ? "Validating…" : "Validate"}
-                              </button>
-
                               {existingOverride ? (
+                                <>
+                                  <button
+                                    data-debug-id={`settings-project-bridge-path-save-btn-${bridgeId}`}
+                                    type="button"
+                                    onClick={() => void handleSaveBridgePath(bridgeId, selectedProject.default_path, existingOverride?.path)}
+                                    disabled={Boolean(busyState)}
+                                    className="rounded-lg bg-sky-400/10 border border-sky-400/30 px-2.5 py-1 text-xs text-sky-200 hover:bg-sky-400/20 disabled:opacity-50 font-medium"
+                                  >
+                                    {busyState === "save" ? "Saving…" : "Save"}
+                                  </button>
+
+                                  <button
+                                    data-debug-id={`settings-project-bridge-path-validate-btn-${bridgeId}`}
+                                    type="button"
+                                    onClick={() => void handleValidateBridgePath(bridgeId)}
+                                    disabled={!isOnline || Boolean(busyState)}
+                                    title={!isOnline ? "Bridge is offline" : "Validate path on bridge"}
+                                    className="rounded-lg bg-white/10 border border-white/10 px-2.5 py-1 text-xs text-zinc-200 hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+                                  >
+                                    {busyState === "validate" ? "Validating…" : "Validate"}
+                                  </button>
+
+                                  <button
+                                    data-debug-id={`settings-project-bridge-path-remove-btn-${bridgeId}`}
+                                    type="button"
+                                    onClick={() => void handleRemoveBridgePath(bridgeId)}
+                                    disabled={Boolean(busyState)}
+                                    className="rounded-lg border border-red-400/20 bg-red-400/5 px-2.5 py-1 text-xs text-red-300 hover:bg-red-400/10 disabled:opacity-50 font-medium"
+                                  >
+                                    {busyState === "remove" ? "Removing…" : "Remove"}
+                                  </button>
+                                </>
+                              ) : (
                                 <button
-                                  data-debug-id={`settings-project-bridge-path-remove-btn-${bridgeId}`}
+                                  data-debug-id={`settings-project-bridge-path-set-btn-${bridgeId}`}
                                   type="button"
-                                  onClick={() => void handleRemoveBridgePath(bridgeId)}
-                                  disabled={Boolean(busyState)}
-                                  className="rounded-lg border border-red-400/20 bg-red-400/5 px-2.5 py-1 text-xs text-red-300 hover:bg-red-400/10 disabled:opacity-50 font-medium"
+                                  onClick={() => void handleSetBridgePath(bridgeId, selectedProject.default_path)}
+                                  disabled={Boolean(busyState) || !selectedProject.default_path}
+                                  title="Set an override seeded with the project's default path"
+                                  className="rounded-lg bg-sky-400/10 border border-sky-400/30 px-2.5 py-1 text-xs text-sky-200 hover:bg-sky-400/20 disabled:opacity-50 font-medium"
                                 >
-                                  {busyState === "remove" ? "Removing…" : "Remove"}
+                                  {busyState === "set" ? "Setting…" : "Set"}
                                 </button>
-                              ) : null}
+                              )}
                             </div>
                           </div>
 

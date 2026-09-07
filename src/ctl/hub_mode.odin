@@ -309,9 +309,20 @@ ctl_hub_memories :: proc(base, token, action: string, args: []string) {
 	if action == "create" || action == "propose" {
 		body := option_value(args, "--body", "")
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
-		if body == "" { fmt.println("usage: ham-ctl hub memories create --body <text> [--type <type>] [--title <title>] [--agent-id <id>]"); return }
+		if body == "" { fmt.println("usage: ham-ctl hub memories create --body <text> [--type <type>] [--title <title>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]"); return }
 		fields := make([dynamic]string)
-		append(&fields, json_kv("body", body)); append(&fields, json_kv("type", option_value(args, "--type", "fact"))); append(&fields, json_kv("title", option_value(args, "--title", ""))); append(&fields, json_kv("agent_id", option_value(args, "--agent-id", option_value(args, "--agent", "")))); append(&fields, json_kv("evidence", option_value(args, "--evidence", "")))
+		append(&fields, json_kv("body", body)); append(&fields, json_kv("type", option_value(args, "--type", "fact"))); append(&fields, json_kv("title", option_value(args, "--title", ""))); append(&fields, json_kv("evidence", option_value(args, "--evidence", "")))
+		// Targeting lists match the T1 contract (agent_ids/project_ids/bridge_ids/
+		// template_ids). Each dimension is repeatable AND/OR comma-separated; an
+		// omitted dimension is sent as an empty array (applies to all).
+		agent_ids := collect_multi_values(args, "--agent-id", "--agent-ids", "--agent", "--agents"); defer delete(agent_ids)
+		project_ids := collect_multi_values(args, "--project-id", "--project-ids", "--project", "--projects"); defer delete(project_ids)
+		bridge_ids := collect_multi_values(args, "--bridge-id", "--bridge-ids", "--bridge", "--bridges"); defer delete(bridge_ids)
+		template_ids := collect_multi_values(args, "--template-id", "--template-ids", "--template", "--templates"); defer delete(template_ids)
+		append(&fields, json_string_array_field("agent_ids", agent_ids[:]))
+		append(&fields, json_string_array_field("project_ids", project_ids[:]))
+		append(&fields, json_string_array_field("bridge_ids", bridge_ids[:]))
+		append(&fields, json_string_array_field("template_ids", template_ids[:]))
 		ctl_hub_request(base, token, "POST", "/api/v1/memories", json_object_from_slice(fields[:]))
 		return
 	}

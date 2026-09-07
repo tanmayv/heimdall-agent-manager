@@ -20,7 +20,8 @@ export type ConversationMemoryTabProps = {
 // Updates through the same RTK Query + WS invalidation path as the page.
 export default function ConversationMemoryTab({ agentId, durableAgentId, projectId, session, debugPrefix, records: preloadedRecords, fetching: preloadedFetching, error: preloadedError }: ConversationMemoryTabProps) {
   const memoryQuery = useListApplicableMemoryQuery(
-    { targetAgentId: durableAgentId, targetProjectId: projectId || '' },
+    // Targeting is list-based now; filter by this agent (+ project when set).
+    { agentIds: durableAgentId ? [durableAgentId] : [], projectIds: projectId ? [projectId] : [] },
     { skip: !durableAgentId || !session?.clientToken || Array.isArray(preloadedRecords) },
   );
   const [decideProposal] = useDecideMemoryProposalMutation();

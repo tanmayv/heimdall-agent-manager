@@ -404,11 +404,11 @@ write_bootstrap_memories :: proc(b: ^strings.Builder, service: ^Agent_Service, o
 		if !bootstrap_memory_applies(m, service, owner, inst) do continue
 		if written > 0 do strings.write_byte(b, ',')
 		strings.write_string(b, "{\"memory_id\":\""); write_service_json_string(b, m.memory_id)
-		strings.write_string(b, "\",\"agent_id\":\""); write_service_json_string(b, m.agent_id)
-		strings.write_string(b, "\",\"project_id\":\""); write_service_json_string(b, string(m.project_id))
-		strings.write_string(b, "\",\"template_id\":\""); write_service_json_string(b, m.template_id)
-		strings.write_string(b, "\",\"bridge_id\":\""); write_service_json_string(b, m.bridge_id)
-		strings.write_string(b, "\",\"type\":\""); write_service_json_string(b, domain.memory_type_string(m.type))
+		strings.write_string(b, "\",\"agent_ids\":"); write_service_memory_id_array(b, m.agent_ids)
+		strings.write_string(b, ",\"project_ids\":"); write_service_memory_project_array(b, m.project_ids)
+		strings.write_string(b, ",\"template_ids\":"); write_service_memory_id_array(b, m.template_ids)
+		strings.write_string(b, ",\"bridge_ids\":"); write_service_memory_id_array(b, m.bridge_ids)
+		strings.write_string(b, ",\"type\":\""); write_service_json_string(b, domain.memory_type_string(m.type))
 		strings.write_string(b, "\",\"status\":\""); write_service_json_string(b, m.status)
 		strings.write_string(b, "\",\"title\":\""); write_service_json_string(b, m.title)
 		strings.write_string(b, "\",\"body\":\""); write_service_json_string(b, m.body)
@@ -416,6 +416,25 @@ write_bootstrap_memories :: proc(b: ^strings.Builder, service: ^Agent_Service, o
 		strings.write_string(b, "\"}")
 		written += 1
 	}
+}
+
+// write_service_memory_id_array / write_service_memory_project_array emit a
+// memory targeting list as a JSON string array (empty list = applies to all).
+write_service_memory_id_array :: proc(b: ^strings.Builder, values: []string) {
+	strings.write_byte(b, '[')
+	for v, i in values {
+		if i > 0 do strings.write_byte(b, ',')
+		strings.write_byte(b, '"'); write_service_json_string(b, v); strings.write_byte(b, '"')
+	}
+	strings.write_byte(b, ']')
+}
+write_service_memory_project_array :: proc(b: ^strings.Builder, values: []domain.Project_ID) {
+	strings.write_byte(b, '[')
+	for v, i in values {
+		if i > 0 do strings.write_byte(b, ',')
+		strings.write_byte(b, '"'); write_service_json_string(b, string(v)); strings.write_byte(b, '"')
+	}
+	strings.write_byte(b, ']')
 }
 
 write_bootstrap_memory_markdown :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) {
@@ -447,17 +466,37 @@ write_bootstrap_markdown_json_string :: proc(b: ^strings.Builder, value: string)
 	write_service_json_string(b, text)
 }
 
+// bootstrap_memory_applies decides whether an active memory targets a specific
+// instance. Each targeting dimension is a LIST: an empty list matches all; a
+// non-empty list matches only when the instance's value is a member. The
+// dimensions are ANDed, so every non-empty list must match.
 bootstrap_memory_applies :: proc(m: domain.Memory, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) -> bool {
 	if m.status != "active" do return false
-	if strings.trim_space(m.agent_id) != "" && m.agent_id != inst.agent_id do return false
-	if string(m.project_id) != "" && m.project_id != inst.project_id do return false
-	if strings.trim_space(m.template_id) != "" {
+	if !memory_list_matches(m.agent_ids, inst.agent_id) do return false
+	if !memory_project_list_matches(m.project_ids, inst.project_id) do return false
+	if len(m.template_ids) > 0 {
 		if service == nil || service.agents == nil || strings.trim_space(inst.agent_id) == "" do return false
 		agent, ok, _ := iface.agent_get(service.agents, inst.agent_id)
-		if !ok || agent.owner_user_id != owner || agent.template_id != m.template_id do return false
+		if !ok || agent.owner_user_id != owner || !memory_list_contains(m.template_ids, agent.template_id) do return false
 	}
-	if strings.trim_space(m.bridge_id) != "" && m.bridge_id != inst.bridge_id do return false
+	if !memory_list_matches(m.bridge_ids, inst.bridge_id) do return false
 	return true
+}
+
+// memory_list_matches reports whether a targeting list applies to value: an
+// empty list applies to all; otherwise value must be a member.
+memory_list_matches :: proc(list: []string, value: string) -> bool {
+	if len(list) == 0 do return true
+	return memory_list_contains(list, value)
+}
+memory_list_contains :: proc(list: []string, value: string) -> bool {
+	for v in list do if v == value do return true
+	return false
+}
+memory_project_list_matches :: proc(list: []domain.Project_ID, value: domain.Project_ID) -> bool {
+	if len(list) == 0 do return true
+	for v in list do if v == value do return true
+	return false
 }
 
 write_bootstrap_task_context :: proc(b: ^strings.Builder, service: ^Agent_Service, inst: domain.Agent_Instance, chain: domain.Task_Chain, chain_ok: bool) {
@@ -1759,13 +1798,14 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 // the manifest is not per-instance and no bridge is bound at render time.
 bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, owner: domain.User_ID, project_id: domain.Project_ID) -> bool {
 	if m.status != "active" do return false
-	if strings.trim_space(m.agent_id) != "" && m.agent_id != agent.agent_id do return false
-	if string(m.project_id) != "" && m.project_id != project_id do return false
-	if strings.trim_space(m.template_id) != "" {
-		if agent.owner_user_id != owner || agent.template_id != m.template_id do return false
+	if !memory_list_matches(m.agent_ids, agent.agent_id) do return false
+	if !memory_project_list_matches(m.project_ids, project_id) do return false
+	if len(m.template_ids) > 0 {
+		if agent.owner_user_id != owner || !memory_list_contains(m.template_ids, agent.template_id) do return false
 	}
-	// Bridge-scoped memories cannot be resolved for an agent-keyed manifest.
-	if strings.trim_space(m.bridge_id) != "" do return false
+	// Bridge-scoped memories cannot be resolved for an agent-keyed manifest:
+	// no bridge is bound at render time, so any bridge targeting excludes them.
+	if len(m.bridge_ids) > 0 do return false
 	return true
 }
 

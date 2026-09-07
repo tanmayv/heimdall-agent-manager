@@ -30,6 +30,20 @@ type FormMode = 'new' | 'edit' | 'archive' | 'rollback';
 const MEMORY_TYPE_OPTIONS = ['fact', 'habit', 'episode', 'expertise', 'skill'];
 const MEMORY_STATUS_OPTIONS = ['pending', 'active', 'archived', 'rejected'];
 
+// COMPILE SHIM (memory list-scope migration): this form still edits a SINGLE id
+// per dimension (multi-select redesign pending). Map its single target*Id fields
+// to the API's list fields (0/1-element arrays). Remove when the multi-select UI
+// lands.
+function formTargetingLists(form: { targetAgentId?: string; targetProjectId?: string; targetTemplateId?: string; targetBridgeId?: string }) {
+  const one = (v?: string) => (v && v.trim() ? [v.trim()] : []);
+  return {
+    agentIds: one(form.targetAgentId),
+    projectIds: one(form.targetProjectId),
+    templateIds: one(form.targetTemplateId),
+    bridgeIds: one(form.targetBridgeId),
+  };
+}
+
 function formatUnix(ms: number) {
   if (!ms) return '—';
   try {
@@ -181,10 +195,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
       if (formMode === 'new') {
         const result = await proposeMemoryChange({
           proposalAction: 'new',
-          targetAgentId: form.targetAgentId,
-          targetProjectId: form.targetProjectId,
-          targetTemplateId: form.targetTemplateId,
-          targetBridgeId: form.targetBridgeId,
+          ...formTargetingLists(form),
           type: form.type,
           title: form.title,
           body: form.body,
@@ -203,10 +214,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             proposalAction: 'edit',
             memoryId: selectedRecord.memoryId,
             expectedVersion: selectedRecord.version,
-            targetAgentId: form.targetAgentId,
-            targetProjectId: form.targetProjectId,
-            targetTemplateId: form.targetTemplateId,
-            targetBridgeId: form.targetBridgeId,
+            ...formTargetingLists(form),
             type: form.type,
             title: form.title,
             body: form.body,

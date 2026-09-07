@@ -235,7 +235,7 @@ SEARCH_SQL_MEMORIES :: `SELECT resource_type, id, label, sublabel, route, score 
          CASE WHEN title != '' THEN title ELSE type END AS label,
          type || ' · ' || status AS sublabel,
          '/settings/memory?memory_id=' || memory_id AS route, updated_at, owner_user_id,
-         agent_id || ' ' || type || ' ' || status AS aux,
+         agent_ids || ' ' || type || ' ' || status AS aux,
          CASE
            WHEN lower(CASE WHEN title != '' THEN title ELSE type END) = lower(?) THEN 100
            WHEN lower(memory_id) = lower(?) THEN 98

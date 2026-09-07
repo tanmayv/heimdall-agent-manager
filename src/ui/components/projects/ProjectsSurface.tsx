@@ -157,7 +157,7 @@ function ProjectList() {
 function ProjectDetail({ projectId }: { projectId: string }) {
   const detailQuery = useFetchProjectQuery({ projectId }, { skip: !projectId });
   const agentsQuery = useListAgentsQuery({ projectId });
-  const memoryQuery = useListMemoriesQuery({ project_id: projectId });
+  const memoryQuery = useListMemoriesQuery({ projectIds: projectId ? [projectId] : [] });
   const bridgesQuery = useListBridgesQuery();
 
   const project: Project | null = detailQuery.data?.project || null;

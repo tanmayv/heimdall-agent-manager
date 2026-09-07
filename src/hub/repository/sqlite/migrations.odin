@@ -707,7 +707,33 @@ CREATE INDEX IF NOT EXISTS idx_task_comments_task_owner
   ON task_comments(task_id, owner_user_id, created_at DESC, comment_id DESC);
 `
 
-migration_order :: [25]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql"}
+// MIGRATION_026_MEMORY_SCOPE_LISTS converts memory targeting from single scalar
+// scope columns (agent_id/project_id/template_id/bridge_id) to JSON-array list
+// columns (agent_ids/project_ids/template_ids/bridge_ids). An empty list ('[]')
+// means "applies to all" for that dimension; a non-empty list means the value
+// must be a member. It backfills each list from the prior scalar (empty scalar
+// -> '[]', non-empty -> a single-element array) and then drops the scalars. The
+// earlier seed migrations (004/013/016) still insert the scalar columns, which
+// this migration folds into the lists — the list columns do not exist until this
+// point, so the append-only ledger requires the backfill here rather than
+// rewriting those historical seeds. Scope ids are safe identifier tokens
+// (agt_/proj_/tmpl_/brg_), so simple JSON string quoting is sufficient.
+MIGRATION_026_MEMORY_SCOPE_LISTS :: `ALTER TABLE memories ADD COLUMN agent_ids TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE memories ADD COLUMN project_ids TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE memories ADD COLUMN template_ids TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE memories ADD COLUMN bridge_ids TEXT NOT NULL DEFAULT '[]';
+UPDATE memories SET
+  agent_ids = CASE WHEN agent_id = '' THEN '[]' ELSE '["' || agent_id || '"]' END,
+  project_ids = CASE WHEN project_id = '' THEN '[]' ELSE '["' || project_id || '"]' END,
+  template_ids = CASE WHEN template_id = '' THEN '[]' ELSE '["' || template_id || '"]' END,
+  bridge_ids = CASE WHEN bridge_id = '' THEN '[]' ELSE '["' || bridge_id || '"]' END;
+ALTER TABLE memories DROP COLUMN agent_id;
+ALTER TABLE memories DROP COLUMN project_id;
+ALTER TABLE memories DROP COLUMN template_id;
+ALTER TABLE memories DROP COLUMN bridge_id;
+`
+
+migration_order :: [26]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -750,6 +776,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "026_memory_scope_lists.sql" && table_column_exists(conn, "memories", "agent_ids") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -765,6 +795,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_task_comments_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_comments schema upgrade failed")
 	if !upgrade_task_chains_v2_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_chains_v2 schema upgrade failed")
 	if !upgrade_memory_target_scope_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory target scope schema upgrade failed")
+	if !upgrade_memory_scope_lists_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory scope lists schema upgrade failed")
 	if !upgrade_chat_message_types_schema(conn) do return false, domain.domain_error(.Internal_Error, "chat message type schema upgrade failed")
 	if !upgrade_current_task_and_priority_schema(conn) do return false, domain.domain_error(.Internal_Error, "current task + priority schema upgrade failed")
 	if !upgrade_title_tracking_schema(conn) do return false, domain.domain_error(.Internal_Error, "title tracking schema upgrade failed")
@@ -806,6 +837,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "023_actions.sql" do return strings.clone(MIGRATION_023_ACTIONS)
 	if name == "024_push_subscriptions.sql" do return strings.clone(MIGRATION_024_PUSH_SUBSCRIPTIONS)
 	if name == "025_lookup_indexes.sql" do return strings.clone(MIGRATION_025_LOOKUP_INDEXES)
+	if name == "026_memory_scope_lists.sql" do return strings.clone(MIGRATION_026_MEMORY_SCOPE_LISTS)
 	return ""
 }
 
@@ -869,9 +901,32 @@ upgrade_task_chains_v2_schema :: proc(conn: ^Conn) -> bool {
 }
 
 upgrade_memory_target_scope_schema :: proc(conn: ^Conn) -> bool {
+	// Once migration 025 has converted the memories table to JSON-array list
+	// columns (and dropped the scalar scope columns), the legacy scalar backfill
+	// must be a no-op — otherwise it would re-create the dropped columns.
+	if table_column_exists(conn, "memories", "agent_ids") do return true
 	if !table_column_exists(conn, "memories", "project_id") && !exec(conn, "ALTER TABLE memories ADD COLUMN project_id TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "memories", "template_id") && !exec(conn, "ALTER TABLE memories ADD COLUMN template_id TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "memories", "bridge_id") && !exec(conn, "ALTER TABLE memories ADD COLUMN bridge_id TEXT NOT NULL DEFAULT '';") do return false
+	return true
+}
+
+// upgrade_memory_scope_lists_schema is the idempotent end-of-run guard for
+// migration 026. When an existing DB still has the scalar scope columns, it adds
+// the list columns, backfills each from its scalar (empty -> '[]', else a
+// single-element array), and drops the scalars. It is a no-op once agent_ids
+// exists. Kept in sync with MIGRATION_026_MEMORY_SCOPE_LISTS.
+upgrade_memory_scope_lists_schema :: proc(conn: ^Conn) -> bool {
+	if table_column_exists(conn, "memories", "agent_ids") do return true
+	if !exec(conn, "ALTER TABLE memories ADD COLUMN agent_ids TEXT NOT NULL DEFAULT '[]';") do return false
+	if !exec(conn, "ALTER TABLE memories ADD COLUMN project_ids TEXT NOT NULL DEFAULT '[]';") do return false
+	if !exec(conn, "ALTER TABLE memories ADD COLUMN template_ids TEXT NOT NULL DEFAULT '[]';") do return false
+	if !exec(conn, "ALTER TABLE memories ADD COLUMN bridge_ids TEXT NOT NULL DEFAULT '[]';") do return false
+	if !exec(conn, "UPDATE memories SET agent_ids = CASE WHEN agent_id = '' THEN '[]' ELSE '[\"' || agent_id || '\"]' END, project_ids = CASE WHEN project_id = '' THEN '[]' ELSE '[\"' || project_id || '\"]' END, template_ids = CASE WHEN template_id = '' THEN '[]' ELSE '[\"' || template_id || '\"]' END, bridge_ids = CASE WHEN bridge_id = '' THEN '[]' ELSE '[\"' || bridge_id || '\"]' END;") do return false
+	if table_column_exists(conn, "memories", "agent_id") && !exec(conn, "ALTER TABLE memories DROP COLUMN agent_id;") do return false
+	if table_column_exists(conn, "memories", "project_id") && !exec(conn, "ALTER TABLE memories DROP COLUMN project_id;") do return false
+	if table_column_exists(conn, "memories", "template_id") && !exec(conn, "ALTER TABLE memories DROP COLUMN template_id;") do return false
+	if table_column_exists(conn, "memories", "bridge_id") && !exec(conn, "ALTER TABLE memories DROP COLUMN bridge_id;") do return false
 	return true
 }
 

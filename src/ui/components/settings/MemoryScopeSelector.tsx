@@ -24,6 +24,40 @@ export type MemoryScopeSelectorProps = {
   debugPrefix?: string;
 };
 
+// COMPILE SHIM (memory list-scope migration): the memory API now targets LISTS
+// (agentIds/projectIds/bridgeIds/templateIds), but this selector is still a
+// single-value UI (the multi-select redesign is a later task). These helpers
+// bridge the two: a single scalar scope maps to a 0/1-element list, and a list
+// collapses to its first element for display/edit. Remove when the multi-select
+// UI lands.
+export type MemoryScopeLists = {
+  agentIds?: string[];
+  projectIds?: string[];
+  bridgeIds?: string[];
+  templateIds?: string[];
+};
+
+export function scopeToLists(scope: MemoryScopeValue): MemoryScopeLists {
+  const one = (v?: string) => (v && v.trim() ? [v.trim()] : []);
+  return {
+    agentIds: one(scope.agent_id),
+    projectIds: one(scope.project_id),
+    bridgeIds: one(scope.bridge_id),
+    templateIds: one(scope.template_id),
+  };
+}
+
+export function listsToScope(record: any, type?: string): MemoryScopeValue {
+  const first = (arr?: string[]) => (Array.isArray(arr) && arr.length ? arr[0] : undefined);
+  return {
+    agent_id: first(record?.agentIds) ?? record?.targetAgentId ?? undefined,
+    project_id: first(record?.projectIds) ?? record?.targetProjectId ?? undefined,
+    bridge_id: first(record?.bridgeIds) ?? record?.targetBridgeId ?? undefined,
+    template_id: first(record?.templateIds) ?? record?.targetTemplateId ?? undefined,
+    type: type || record?.type || "fact",
+  };
+}
+
 export const MEMORY_TYPES = [
   { value: "fact", label: "Fact" },
   { value: "habit", label: "Habit" },

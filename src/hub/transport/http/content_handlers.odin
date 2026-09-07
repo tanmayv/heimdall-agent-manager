@@ -22,14 +22,15 @@ list_memories_handler :: proc(ctx:rawptr, req:Request)->Response{
 	cursor:=query_value(req.query,"cursor")
 	status:=query_value(req.query,"status")
 	type_str:=query_value(req.query,"type")
-	agent_id:=query_value(req.query,"agent_id")
-	if agent_id=="" do agent_id=query_value(req.query,"target_agent_id")
-	project_id:=query_value(req.query,"project_id")
-	if project_id=="" do project_id=query_value(req.query,"target_project_id")
-	bridge_id:=query_value(req.query,"bridge_id")
-	if bridge_id=="" do bridge_id=query_value(req.query,"target_bridge_id")
-	template_id:=query_value(req.query,"template_id")
-	if template_id=="" do template_id=query_value(req.query,"target_template_id")
+	// Targeting filters accept the plural list names (agent_ids/project_ids/
+	// bridge_ids/template_ids) as a CSV or repeated query param, falling back to
+	// the singular name. Memory_Filter narrows by a single value per dimension, so
+	// the first token is used; a memory matches when its list is empty (global) OR
+	// contains the value.
+	agent_id:=memory_filter_query(req.query,"agent_ids","agent_id")
+	project_id:=memory_filter_query(req.query,"project_ids","project_id")
+	bridge_id:=memory_filter_query(req.query,"bridge_ids","bridge_id")
+	template_id:=memory_filter_query(req.query,"template_ids","template_id")
 	filter:=content_service.Memory_Filter{status=status,type=type_str,agent_id=agent_id,project_id=domain.Project_ID(project_id),bridge_id=bridge_id,template_id=template_id}
 	rows,err:=content_service.list_memories(h.content,auth,filter,limit,cursor)
 	if err.code!=.None do return respond_error(err,req.request_id)
@@ -232,12 +233,30 @@ delete_template_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content
 restart_stopped_conversation_instance :: proc(h:^Content_Handlers, auth:contracts.Auth_Context, cid:string)->(bool,domain.Domain_Error){ c,got,err:=content_service.get_conversation(h.content,auth,cid); if !got do return false,err; if c.agent_instance_id=="" || h.agents==nil do return true,{}; inst,inst_ok,inst_err:=agent_service.get_instance(h.agents,auth,c.agent_instance_id); if !inst_ok do return false,inst_err; if inst.runtime_status=="stopped" || inst.runtime_status=="failed" || inst.runtime_status=="unreachable" { _,restarted,restart_err:=agent_service.restart_instance(h.agents,auth,c.agent_instance_id); if !restarted do return false,restart_err }; return true,{} }
 
 default_str :: proc(v,d:string)->string{ if v=="" do return d; return v }
+// memory_input reads the memory targeting lists as JSON string arrays:
+// agent_ids/project_ids/template_ids/bridge_ids. An omitted or empty array means
+// "applies to all" for that dimension.
 memory_input :: proc(body:string)->content_service.Memory_Input{
-	agent_id := json_string(body,"agent_id"); if agent_id == "" do agent_id = json_string(body,"target_agent_id")
-	project_id := json_string(body,"project_id"); if project_id == "" do project_id = json_string(body,"target_project_id")
-	template_id := json_string(body,"template_id"); if template_id == "" do template_id = json_string(body,"target_template_id")
-	bridge_id := json_string(body,"bridge_id"); if bridge_id == "" do bridge_id = json_string(body,"target_bridge_id")
-	return content_service.Memory_Input{agent_id=agent_id,project_id=domain.Project_ID(project_id),template_id=template_id,bridge_id=bridge_id,type=domain.memory_type_from_string(json_string(body,"type")),title=json_string(body,"title"),body=json_string(body,"body"),evidence=json_string(body,"evidence"),status=json_string(body,"status")}
+	return content_service.Memory_Input{agent_ids=json_string_array(body,"agent_ids"),project_ids=json_project_id_array(body,"project_ids"),template_ids=json_string_array(body,"template_ids"),bridge_ids=json_string_array(body,"bridge_ids"),type=domain.memory_type_from_string(json_string(body,"type")),title=json_string(body,"title"),body=json_string(body,"body"),evidence=json_string(body,"evidence"),status=json_string(body,"status")}
+}
+// json_project_id_array reads a JSON string array and maps it to Project_IDs.
+json_project_id_array :: proc(body, key: string) -> []domain.Project_ID {
+	ids := json_string_array(body, key)
+	out := make([]domain.Project_ID, len(ids))
+	for id, i in ids do out[i] = domain.Project_ID(id)
+	return out
+}
+// json_array_present reports whether key appears as a JSON array in body,
+// returning its string elements. Used for PATCH semantics where presence of the
+// key (even as an empty array) means "replace this dimension".
+json_array_present :: proc(body, key: string) -> ([]string, bool) {
+	needle := strings.concatenate({"\"", key, "\""}); defer delete(needle)
+	idx := strings.index(body, needle); if idx < 0 do return nil, false
+	rest := body[idx + len(needle):]
+	colon := strings.index_byte(rest, ':'); if colon < 0 do return nil, false
+	rest = strings.trim_space(rest[colon + 1:])
+	if len(rest) == 0 || rest[0] != '[' do return nil, false
+	return json_string_array(body, key), true
 }
 json_property :: proc(body, key: string) -> (value: string, present: bool) {
 	i := 0
@@ -304,28 +323,22 @@ memory_update_input :: proc(body: string) -> (content_service.Memory_Update_Inpu
 	if val, ok := json_property(body, "evidence"); ok { input.evidence = val; input.has_evidence = true; has_any = true }
 	if val, ok := json_property(body, "type"); ok { input.type = domain.memory_type_from_string(val); input.has_type = true; has_any = true }
 
-	if val, ok := json_property(body, "agent_id"); ok {
-		input.agent_id = val; input.has_agent_id = true; has_any = true
-	} else if val, ok := json_property(body, "target_agent_id"); ok {
-		input.agent_id = val; input.has_agent_id = true; has_any = true
+	// Targeting is replaced by dimension: the presence of an agent_ids /
+	// project_ids / template_ids / bridge_ids array (even empty) means "set this
+	// dimension to exactly these ids" (empty array = applies to all).
+	if vals, ok := json_array_present(body, "agent_ids"); ok {
+		input.agent_ids = vals; input.has_agent_ids = true; has_any = true
 	}
-
-	if val, ok := json_property(body, "project_id"); ok {
-		input.project_id = domain.Project_ID(val); input.has_project_id = true; has_any = true
-	} else if val, ok := json_property(body, "target_project_id"); ok {
-		input.project_id = domain.Project_ID(val); input.has_project_id = true; has_any = true
+	if vals, ok := json_array_present(body, "project_ids"); ok {
+		out := make([]domain.Project_ID, len(vals))
+		for id, i in vals do out[i] = domain.Project_ID(id)
+		input.project_ids = out; input.has_project_ids = true; has_any = true
 	}
-
-	if val, ok := json_property(body, "bridge_id"); ok {
-		input.bridge_id = val; input.has_bridge_id = true; has_any = true
-	} else if val, ok := json_property(body, "target_bridge_id"); ok {
-		input.bridge_id = val; input.has_bridge_id = true; has_any = true
+	if vals, ok := json_array_present(body, "bridge_ids"); ok {
+		input.bridge_ids = vals; input.has_bridge_ids = true; has_any = true
 	}
-
-	if val, ok := json_property(body, "template_id"); ok {
-		input.template_id = val; input.has_template_id = true; has_any = true
-	} else if val, ok := json_property(body, "target_template_id"); ok {
-		input.template_id = val; input.has_template_id = true; has_any = true
+	if vals, ok := json_array_present(body, "template_ids"); ok {
+		input.template_ids = vals; input.has_template_ids = true; has_any = true
 	}
 
 	return input, has_any
@@ -446,7 +459,12 @@ multipart_set_artifact_field :: proc(input:^content_service.Artifact_Input,name,
 }
 template_input :: proc(body:string)->content_service.Template_Input{ return content_service.Template_Input{name=json_string(body,"name"),description=json_string(body,"description"),persona=json_string(body,"persona"),instructions=json_string(body,"instructions")} }
 
-write_memory_json :: proc(b:^strings.Builder,m:domain.Memory,preview:bool){ typ:=domain.memory_type_string(m.type); strings.write_string(b,"{\"memory_id\":\""); write_handler_json_string(b,m.memory_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,m.agent_id); strings.write_string(b,"\",\"target_agent_id\":\""); write_handler_json_string(b,m.agent_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(m.project_id)); strings.write_string(b,"\",\"target_project_id\":\""); write_handler_json_string(b,string(m.project_id)); strings.write_string(b,"\",\"template_id\":\""); write_handler_json_string(b,m.template_id); strings.write_string(b,"\",\"target_template_id\":\""); write_handler_json_string(b,m.template_id); strings.write_string(b,"\",\"bridge_id\":\""); write_handler_json_string(b,m.bridge_id); strings.write_string(b,"\",\"target_bridge_id\":\""); write_handler_json_string(b,m.bridge_id); strings.write_string(b,"\",\"type\":\""); write_handler_json_string(b,typ); strings.write_string(b,"\",\"status\":\""); write_handler_json_string(b,m.status); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,m.title); if preview { strings.write_string(b,"\",\"body_preview\":\""); write_handler_json_string(b,m.body); strings.write_string(b,"\",\"evidence\":\""); write_handler_json_string(b,m.evidence) } else { strings.write_string(b,"\",\"body\":\""); write_handler_json_string(b,m.body); strings.write_string(b,"\",\"evidence\":\""); write_handler_json_string(b,m.evidence) }; strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,m.updated_at); strings.write_string(b,"\"}") }
+// write_memory_json emits a memory as JSON. Targeting is exposed as string
+// arrays agent_ids/project_ids/template_ids/bridge_ids (empty array = applies to
+// all). The legacy scalar agent_id/... and target_* keys are intentionally gone.
+write_memory_json :: proc(b:^strings.Builder,m:domain.Memory,preview:bool){ typ:=domain.memory_type_string(m.type); strings.write_string(b,"{\"memory_id\":\""); write_handler_json_string(b,m.memory_id); strings.write_string(b,"\",\"agent_ids\":"); write_memory_id_array(b,m.agent_ids); strings.write_string(b,",\"project_ids\":"); write_memory_project_array(b,m.project_ids); strings.write_string(b,",\"template_ids\":"); write_memory_id_array(b,m.template_ids); strings.write_string(b,",\"bridge_ids\":"); write_memory_id_array(b,m.bridge_ids); strings.write_string(b,",\"type\":\""); write_handler_json_string(b,typ); strings.write_string(b,"\",\"status\":\""); write_handler_json_string(b,m.status); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,m.title); if preview { strings.write_string(b,"\",\"body_preview\":\""); write_handler_json_string(b,m.body); strings.write_string(b,"\",\"evidence\":\""); write_handler_json_string(b,m.evidence) } else { strings.write_string(b,"\",\"body\":\""); write_handler_json_string(b,m.body); strings.write_string(b,"\",\"evidence\":\""); write_handler_json_string(b,m.evidence) }; strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,m.updated_at); strings.write_string(b,"\"}") }
+write_memory_id_array :: proc(b:^strings.Builder, values:[]string){ strings.write_byte(b,'['); for v,i in values { if i>0 do strings.write_byte(b,','); strings.write_byte(b,'"'); write_handler_json_string(b,v); strings.write_byte(b,'"') }; strings.write_byte(b,']') }
+write_memory_project_array :: proc(b:^strings.Builder, values:[]domain.Project_ID){ strings.write_byte(b,'['); for v,i in values { if i>0 do strings.write_byte(b,','); strings.write_byte(b,'"'); write_handler_json_string(b,string(v)); strings.write_byte(b,'"') }; strings.write_byte(b,']') }
 write_chat_json :: proc(b:^strings.Builder,c:domain.Chat_Conversation){ strings.write_string(b,"{\"conversation_id\":\""); write_handler_json_string(b,c.conversation_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,c.agent_id); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,c.agent_instance_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(c.project_id)); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title); strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count)); strings.write_string(b,",\"last_message_preview\":\""); write_handler_json_string(b,c.last_message_preview); strings.write_string(b,"\",\"last_message_at\":\""); write_handler_json_string(b,c.last_message_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,c.updated_at); strings.write_string(b,"\"}") }
 write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversation,h:^Content_Handlers,auth:contracts.Auth_Context){
 	bridge_id:=""; runtime_status:=""; activity_status:=""; agent_name:=""; agent_slug:=""; agent_display_name:=""
@@ -530,6 +548,16 @@ rfc3339_leap_year :: proc(year:int)->bool{ if year%400==0 do return true; if yea
 rfc3339_month_days :: proc(year,month:int)->int{ switch month { case 1,3,5,7,8,10,12: return 31; case 4,6,9,11: return 30; case 2: return 29 if rfc3339_leap_year(year) else 28 }; return 30 }
 
 query_value :: proc(q,key:string)->string{ parts:=strings.split(q,"&"); defer delete(parts); for p in parts{ eq:=strings.index_byte(p,'='); if eq>=0 && p[:eq]==key do return query_component_decode(p[eq+1:]) }; return "" }
+// memory_filter_query resolves a single filter value for a targeting dimension.
+// It prefers the plural key (agent_ids/...) and falls back to the singular key,
+// accepting a CSV or repeated value and returning the first non-empty token.
+memory_filter_query :: proc(q, plural_key, singular_key: string) -> string {
+	raw := query_value(q, plural_key)
+	if raw == "" do raw = query_value(q, singular_key)
+	if raw == "" do return ""
+	if comma := strings.index_byte(raw, ','); comma >= 0 do return strings.trim_space(raw[:comma])
+	return strings.trim_space(raw)
+}
 query_component_decode :: proc(value:string)->string{
 	if strings.index_byte(value,'%')<0 && strings.index_byte(value,'+')<0 do return value
 	b:=strings.builder_make()

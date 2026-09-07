@@ -7,7 +7,7 @@ import {
   useRejectMemoryMutation,
   useArchiveMemoryMutation,
 } from "../../api/endpoints/memory";
-import { MemoryScopeSelector, MemoryScopeValue, MEMORY_TYPES } from "./MemoryScopeSelector";
+import { MemoryScopeSelector, MemoryScopeValue, MEMORY_TYPES, scopeToLists, listsToScope } from "./MemoryScopeSelector";
 
 export const MemoryPanel: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -19,10 +19,7 @@ export const MemoryPanel: React.FC = () => {
   const queryArg = {
     status: statusFilter !== "all" ? statusFilter : undefined,
     type: typeFilter || undefined,
-    agent_id: scopeFilter.agent_id,
-    project_id: scopeFilter.project_id,
-    bridge_id: scopeFilter.bridge_id,
-    template_id: scopeFilter.template_id,
+    ...scopeToLists(scopeFilter),
   };
 
   const { data: listData, isLoading, error: listError, refetch } = useListMemoriesQuery(queryArg);
@@ -54,10 +51,7 @@ export const MemoryPanel: React.FC = () => {
         body: createBody.trim(),
         evidence: createEvidence.trim() || undefined,
         type: createScope.type || "fact",
-        agent_id: createScope.agent_id,
-        project_id: createScope.project_id,
-        bridge_id: createScope.bridge_id,
-        template_id: createScope.template_id,
+        ...scopeToLists(createScope),
         status: "active",
       }).unwrap();
       setCreateTitle("");
@@ -285,13 +279,8 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
   const [title, setTitle] = useState(memory.title || "");
   const [body, setBody] = useState(memory.body || "");
   const [evidence, setEvidence] = useState(memory.evidence || "");
-  const [scope, setScope] = useState<MemoryScopeValue>({
-    agent_id: memory.targetAgentId,
-    project_id: memory.targetProjectId,
-    bridge_id: memory.targetBridgeId,
-    template_id: memory.targetTemplateId,
-    type: memory.type || "fact",
-  });
+  // Shim: collapse the record's targeting lists to the single-value selector.
+  const [scope, setScope] = useState<MemoryScopeValue>(listsToScope(memory, memory.type || "fact"));
   const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
 
   const [updateMemory, { isLoading: isUpdating }] = useUpdateMemoryMutation();
@@ -307,10 +296,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
         body,
         evidence: evidence || undefined,
         type: scope.type,
-        agent_id: scope.agent_id,
-        project_id: scope.project_id,
-        bridge_id: scope.bridge_id,
-        template_id: scope.template_id,
+        ...scopeToLists(scope),
       }).unwrap();
       setMsg({ text: "Edits saved." });
     } catch (err: any) {
@@ -327,10 +313,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
         body,
         evidence: evidence || undefined,
         type: scope.type,
-        agent_id: scope.agent_id,
-        project_id: scope.project_id,
-        bridge_id: scope.bridge_id,
-        template_id: scope.template_id,
+        ...scopeToLists(scope),
       }).unwrap();
       setMsg({ text: "Proposal approved!" });
     } catch (err: any) {
@@ -585,13 +568,8 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
   const [title, setTitle] = useState(memory.title || "");
   const [body, setBody] = useState(memory.body || "");
   const [evidence, setEvidence] = useState(memory.evidence || "");
-  const [scope, setScope] = useState<MemoryScopeValue>({
-    agent_id: memory.targetAgentId,
-    project_id: memory.targetProjectId,
-    bridge_id: memory.targetBridgeId,
-    template_id: memory.targetTemplateId,
-    type: memory.type || "fact",
-  });
+  // Shim: collapse the record's targeting lists to the single-value selector.
+  const [scope, setScope] = useState<MemoryScopeValue>(listsToScope(memory, memory.type || "fact"));
   const [err, setErr] = useState("");
 
   const [updateMemory, { isLoading }] = useUpdateMemoryMutation();
@@ -606,10 +584,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         body,
         evidence: evidence || undefined,
         type: scope.type,
-        agent_id: scope.agent_id,
-        project_id: scope.project_id,
-        bridge_id: scope.bridge_id,
-        template_id: scope.template_id,
+        ...scopeToLists(scope),
       }).unwrap();
       onClose();
     } catch (e: any) {

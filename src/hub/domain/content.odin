@@ -48,10 +48,15 @@ memory_type_string :: proc(t: Memory_Type) -> string {
 Memory :: struct {
 	memory_id: string,
 	owner_user_id: User_ID,
-	agent_id: string,
-	project_id: Project_ID,
-	template_id: string,
-	bridge_id: string,
+	// Targeting is a LIST per dimension. An empty list means "applies to all"
+	// for that dimension; a non-empty list means the instance/agent value must
+	// be a member. The dimensions are ANDed together (every non-empty list must
+	// match) so a memory can be scoped to, e.g., a set of agents on a set of
+	// projects. Persisted as JSON-array TEXT columns (see migration 025).
+	agent_ids: []string,
+	project_ids: []Project_ID,
+	template_ids: []string,
+	bridge_ids: []string,
 	type: Memory_Type,
 	status: string,
 	title: string,

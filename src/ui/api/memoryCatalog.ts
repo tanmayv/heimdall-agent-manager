@@ -1,26 +1,54 @@
+// memoryScopeList reads a targeting dimension as a string[] from either the wire
+// arrays (agent_ids/...) or already-camelCased arrays (agentIds/...). Empty or
+// missing => [] (applies to all).
+export function memoryScopeList(record: any, snake: string, camel: string): string[] {
+  const raw = record?.[snake] ?? record?.[camel];
+  if (Array.isArray(raw)) return raw.map((v: any) => String(v || '').trim()).filter(Boolean);
+  // Tolerate a stray scalar/CSV during transition, but the canonical shape is an array.
+  const single = String(raw || '').trim();
+  return single ? single.split(',').map((v) => v.trim()).filter(Boolean) : [];
+}
+
+function summarizeDimension(label: string, ids: string[]): string {
+  if (ids.length === 0) return '';
+  if (ids.length === 1) return `${label} ${ids[0]}`;
+  return `${label} ${ids[0]} +${ids.length - 1}`;
+}
+
 export function memoryTargetSummary(record: any) {
   if (record.target) return String(record.target);
-  const targetAgentId = String(record.target_agent_id || record.targetAgentId || '').trim();
-  const targetProjectId = String(record.target_project_id || record.targetProjectId || record.project_id || record.projectId || '').trim();
-  const targetTemplateId = String(record.target_template_id || record.targetTemplateId || record.template_id || record.templateId || '').trim();
-  const targetBridgeId = String(record.target_bridge_id || record.targetBridgeId || record.bridge_id || record.bridgeId || '').trim();
-  const parts = [] as string[];
-  if (targetAgentId) parts.push(`agent ${targetAgentId}`);
-  if (targetProjectId) parts.push(`project ${targetProjectId}`);
-  if (targetTemplateId) parts.push(`template ${targetTemplateId}`);
-  if (targetBridgeId) parts.push(`bridge ${targetBridgeId}`);
+  const agentIds = memoryScopeList(record, 'agent_ids', 'agentIds');
+  const projectIds = memoryScopeList(record, 'project_ids', 'projectIds');
+  const templateIds = memoryScopeList(record, 'template_ids', 'templateIds');
+  const bridgeIds = memoryScopeList(record, 'bridge_ids', 'bridgeIds');
+  const parts = [
+    summarizeDimension('agent', agentIds),
+    summarizeDimension('project', projectIds),
+    summarizeDimension('template', templateIds),
+    summarizeDimension('bridge', bridgeIds),
+  ].filter(Boolean);
   return parts.length ? parts.join(' · ') : 'global';
 }
 
 export function normalizeMemory(record: any) {
+  const agentIds = memoryScopeList(record, 'agent_ids', 'agentIds');
+  const projectIds = memoryScopeList(record, 'project_ids', 'projectIds');
+  const templateIds = memoryScopeList(record, 'template_ids', 'templateIds');
+  const bridgeIds = memoryScopeList(record, 'bridge_ids', 'bridgeIds');
   return {
     id: record.memory_id || record.memoryId || '',
     memoryId: record.memory_id || record.memoryId || '',
     proposalId: record.proposal_id || record.proposalId || '',
-    targetAgentId: record.target_agent_id || record.targetAgentId || record.agent_id || record.agentId || '',
-    targetProjectId: record.target_project_id || record.targetProjectId || record.project_id || record.projectId || '',
-    targetTemplateId: record.target_template_id || record.targetTemplateId || record.template_id || record.templateId || '',
-    targetBridgeId: record.target_bridge_id || record.targetBridgeId || record.bridge_id || record.bridgeId || '',
+    agentIds,
+    projectIds,
+    templateIds,
+    bridgeIds,
+    // Convenience first-element accessors: the memory UI is single-value today
+    // (multi-select redesign pending). Components read these until then.
+    targetAgentId: agentIds[0] || '',
+    targetProjectId: projectIds[0] || '',
+    targetTemplateId: templateIds[0] || '',
+    targetBridgeId: bridgeIds[0] || '',
     target: memoryTargetSummary(record),
     type: record.type || record.memory_type || 'fact',
     title: record.title || '',
@@ -37,14 +65,22 @@ export function normalizeMemory(record: any) {
 }
 
 export function normalizeHistory(event: any) {
+  const agentIds = memoryScopeList(event, 'agent_ids', 'agentIds');
+  const projectIds = memoryScopeList(event, 'project_ids', 'projectIds');
+  const templateIds = memoryScopeList(event, 'template_ids', 'templateIds');
+  const bridgeIds = memoryScopeList(event, 'bridge_ids', 'bridgeIds');
   return {
     eventId: event.event_id || event.eventId || '',
     memoryId: event.memory_id || event.memoryId || '',
     proposalId: event.proposal_id || event.proposalId || '',
-    targetAgentId: event.target_agent_id || event.targetAgentId || event.agent_id || event.agentId || '',
-    targetProjectId: event.target_project_id || event.targetProjectId || event.project_id || event.projectId || '',
-    targetTemplateId: event.target_template_id || event.targetTemplateId || event.template_id || event.templateId || '',
-    targetBridgeId: event.target_bridge_id || event.targetBridgeId || event.bridge_id || event.bridgeId || '',
+    agentIds,
+    projectIds,
+    templateIds,
+    bridgeIds,
+    targetAgentId: agentIds[0] || '',
+    targetProjectId: projectIds[0] || '',
+    targetTemplateId: templateIds[0] || '',
+    targetBridgeId: bridgeIds[0] || '',
     target: memoryTargetSummary(event),
     type: event.type || event.memory_type || 'fact',
     title: event.title || '',

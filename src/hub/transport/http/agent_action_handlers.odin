@@ -647,11 +647,16 @@ agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Respon
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
-	agent_id := json_string(params, "target_agent_id"); if agent_id == "" do agent_id = json_string(params, "agent_id"); if agent_id == "" do agent_id = inst.agent_id
-	project_id := json_string(params, "target_project_id"); if project_id == "" do project_id = json_string(params, "project_id")
-	template_id := json_string(params, "target_template_id"); if template_id == "" do template_id = json_string(params, "template_id")
-	bridge_id := json_string(params, "target_bridge_id"); if bridge_id == "" do bridge_id = json_string(params, "bridge_id")
-	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_id = agent_id, project_id = domain.Project_ID(project_id), template_id = template_id, bridge_id = bridge_id, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = "pending"})
+	// Targeting is read as JSON string arrays agent_ids/project_ids/template_ids/
+	// bridge_ids (empty/omitted = applies to all). When the proposer supplies no
+	// agent targeting at all, default to its own durable agent so self-proposed
+	// memories stay scoped to that agent (matching the prior scalar behavior).
+	agent_ids := json_string_array(params, "agent_ids")
+	if len(agent_ids) == 0 do agent_ids = []string{inst.agent_id}
+	project_ids := json_project_id_array(params, "project_ids")
+	template_ids := json_string_array(params, "template_ids")
+	bridge_ids := json_string_array(params, "bridge_ids")
+	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = "pending"})
 	if !saved do return respond_error(err, req.request_id)
 	b := strings.builder_make()
 	write_memory_json(&b, mem, false)

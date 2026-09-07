@@ -319,6 +319,38 @@ ctl_v2_json_string_array :: proc(key, csv: string) -> string {
 	return strings.to_string(b)
 }
 
+// collect_multi_values gathers the values for one or more flag spellings,
+// supporting BOTH repeated flags (`--agent a --agent b`) AND comma-separated
+// values (`--agent a,b`). Blank tokens are skipped. The returned slice is
+// caller-owned. Pure (no I/O) so the memory param-builder stays unit-testable.
+collect_multi_values :: proc(args: []string, names: ..string) -> [dynamic]string {
+	out := make([dynamic]string)
+	for i := 0; i + 1 < len(args); i += 1 {
+		matched := false
+		for name in names { if args[i] == name { matched = true; break } }
+		if !matched do continue
+		for part in strings.split(args[i + 1], ",") {
+			token := strings.trim_space(part)
+			if token != "" do append(&out, token)
+		}
+	}
+	return out
+}
+
+// json_string_array_field builds `"key":["a","b"]` from a list of already-split
+// values, JSON-escaping each. An empty list yields `"key":[]`. Pure helper used
+// by the memory propose param-builder so empty vs one vs many ids are explicit.
+json_string_array_field :: proc(key: string, values: []string) -> string {
+	b := strings.builder_make()
+	strings.write_byte(&b, '"'); json_write_string(&b, key); strings.write_string(&b, "\":[")
+	for v, i in values {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_byte(&b, '"'); json_write_string(&b, v); strings.write_byte(&b, '"')
+	}
+	strings.write_byte(&b, ']')
+	return strings.to_string(b)
+}
+
 // ctl_v2_reviewer_refs builds a "reviewer_refs":[{type,agent_instance_id},...]
 // field from a comma-separated list of agent-instance ids, so a task can carry
 // MULTIPLE reviewers (the hub reviewer_refs is an array). Empty/blank ids are
@@ -473,7 +505,7 @@ ctl_agentmode_memory :: proc(endpoint, token, action: string, args: []string) {
 	if action == "" || action == "propose" {
 		mem_type := option_value(args, "--type", "")
 		title := option_value(args, "--title", "")
-		if mem_type == "" || title == "" { fmt.println("usage: ham-ctl agent memory propose --type <type> --title <title> [--body <text>] [--evidence <text>] [--template-id <id>] [--project-id <id>] [--bridge-id <id>] [--agent-id <id>]"); return }
+		if mem_type == "" || title == "" { fmt.println("usage: ham-ctl agent memory propose --type <type> --title <title> [--body <text>] [--evidence <text>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]\n  Scope flags target LISTS (repeatable or comma-separated); an omitted dimension applies to all (agent defaults to the caller's own)."); return }
 		ctl_agent_call(endpoint, token, "agent.memory.propose", ctl_agentmode_memory_propose_params(args))
 		return
 	}
@@ -482,19 +514,28 @@ ctl_agentmode_memory :: proc(endpoint, token, action: string, args: []string) {
 
 // ctl_agentmode_memory_propose_params builds the agent.memory.propose params
 // JSON from CLI args. Pure (no I/O) so it is unit-testable. type/title/body are
-// always present; evidence and the H8 scope flags (template/project/bridge/agent)
-// are included ONLY when provided so the hub's defaults apply (agent -> caller's
-// own agent, the rest -> global). Each scope flag accepts a short alias.
+// always present; evidence and the LIST scope flags are included ONLY when at
+// least one id is provided, so the hub's defaults apply for an omitted dimension
+// (agent -> caller's own agent, the rest -> applies to all). Each dimension maps
+// to a JSON string array matching the T1 contract: agent_ids/project_ids/
+// bridge_ids/template_ids. Every dimension accepts repeated flags AND/OR
+// comma-separated values, plus singular and plural spellings.
 ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	fields := make([dynamic]string)
 	append(&fields, json_kv("type", option_value(args, "--type", "")))
 	append(&fields, json_kv("title", option_value(args, "--title", "")))
 	append(&fields, json_kv("body", option_value(args, "--body", "")))
 	if ev := option_value(args, "--evidence", ""); ev != "" do append(&fields, json_kv("evidence", ev))
-	if v := option_value(args, "--template-id", option_value(args, "--template", "")); v != "" do append(&fields, json_kv("template_id", v))
-	if v := option_value(args, "--project-id", option_value(args, "--project", "")); v != "" do append(&fields, json_kv("project_id", v))
-	if v := option_value(args, "--bridge-id", option_value(args, "--bridge", "")); v != "" do append(&fields, json_kv("bridge_id", v))
-	if v := option_value(args, "--agent-id", option_value(args, "--agent", "")); v != "" do append(&fields, json_kv("agent_id", v))
+
+	agent_ids := collect_multi_values(args, "--agent-id", "--agent-ids", "--agent", "--agents"); defer delete(agent_ids)
+	if len(agent_ids) > 0 do append(&fields, json_string_array_field("agent_ids", agent_ids[:]))
+	project_ids := collect_multi_values(args, "--project-id", "--project-ids", "--project", "--projects"); defer delete(project_ids)
+	if len(project_ids) > 0 do append(&fields, json_string_array_field("project_ids", project_ids[:]))
+	bridge_ids := collect_multi_values(args, "--bridge-id", "--bridge-ids", "--bridge", "--bridges"); defer delete(bridge_ids)
+	if len(bridge_ids) > 0 do append(&fields, json_string_array_field("bridge_ids", bridge_ids[:]))
+	template_ids := collect_multi_values(args, "--template-id", "--template-ids", "--template", "--templates"); defer delete(template_ids)
+	if len(template_ids) > 0 do append(&fields, json_string_array_field("template_ids", template_ids[:]))
+
 	return json_object_from_slice(fields[:])
 }
 
@@ -903,10 +944,13 @@ print_help_memory :: proc() {
 	fmt.println("")
 	fmt.println("VERBS")
 	fmt.println("  propose --type <t> --title <t> [--body <t>] [--evidence <t>]")
-	fmt.println("      [--template <id>] [--project <id>] [--bridge <id>] [--agent <id>]")
-	fmt.println("  Scope flags are optional: agent defaults to the caller's own; the rest to global.")
+	fmt.println("      [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]")
+	fmt.println("  Scope flags target LISTS: repeatable (--agent-ids a --agent-ids b) or comma-separated (--agent-ids a,b).")
+	fmt.println("  An omitted dimension applies to all; agent defaults to the caller's own agent. Non-empty = must match one.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
-	fmt.println("  ham-ctl memory propose --type fact --title 'Test command' --body 'nix develop --command odin check src/hub'")
-	fmt.println("  ham-ctl memory propose --type habit --title 'Reviewer checklist' --body '...' --template tmpl_reviewer")
+	fmt.println("  ham-ctl memory propose --type fact --title 'Test command' --body 'odin check src/hub'")
+	fmt.println("  ham-ctl memory propose --type habit --title 'Reviewer checklist' --body '...' --template-ids tmpl_reviewer")
+	fmt.println("  ham-ctl memory propose --type fact --title 'Two agents' --body '...' --agent-ids agt_a,agt_b")
+	fmt.println("  ham-ctl memory propose --type fact --title 'Repeated' --body '...' --project-ids proj_1 --project-ids proj_2")
 }

@@ -2,34 +2,30 @@ import { cookieJsonFetch, cookieMutation } from "../cookieFetch";
 import { heimdallApi } from "../heimdallApi";
 import { normalizeMemory } from "../memoryCatalog";
 
-export type ListMemoriesQueryArg = {
+// Memory targeting is a LIST per dimension (T1 contract): agent_ids/project_ids/
+// bridge_ids/template_ids as JSON string arrays where empty = applies to all.
+// The TS API exposes these as camelCase string[] (agentIds/projectIds/
+// bridgeIds/templateIds) and sends the snake_case arrays on the wire. The old
+// scalar/target_* single-value fields are gone (no back-compat).
+export type MemoryTargeting = {
+  agentIds?: string[];
+  projectIds?: string[];
+  bridgeIds?: string[];
+  templateIds?: string[];
+};
+
+export type ListMemoriesQueryArg = ({
   status?: string;
   type?: string;
-  agent_id?: string;
-  project_id?: string;
-  bridge_id?: string;
-  template_id?: string;
-  targetAgentId?: string;
-  targetProjectId?: string;
-  targetBridgeId?: string;
-  targetTemplateId?: string;
   limit?: number;
   cursor?: string;
-} | void;
+} & MemoryTargeting) | void;
 
 export type CreateMemoryInput = {
   title?: string;
   body?: string;
   evidence?: string;
   type?: string;
-  agent_id?: string;
-  project_id?: string;
-  bridge_id?: string;
-  template_id?: string;
-  targetAgentId?: string;
-  targetProjectId?: string;
-  targetBridgeId?: string;
-  targetTemplateId?: string;
   expectedVersion?: number;
   metadataJson?: string;
   sourceTaskId?: string;
@@ -37,7 +33,7 @@ export type CreateMemoryInput = {
   status?: string;
   proposalAction?: string;
   memoryId?: string;
-};
+} & MemoryTargeting;
 
 export type UpdateMemoryInput = {
   memoryId: string;
@@ -45,16 +41,8 @@ export type UpdateMemoryInput = {
   body?: string;
   evidence?: string;
   type?: string;
-  agent_id?: string;
-  project_id?: string;
-  bridge_id?: string;
-  template_id?: string;
-  targetAgentId?: string;
-  targetProjectId?: string;
-  targetBridgeId?: string;
-  targetTemplateId?: string;
   expectedVersion?: number;
-};
+} & MemoryTargeting;
 
 export type ApproveMemoryInput = {
   memoryId?: string;
@@ -65,15 +53,20 @@ export type ApproveMemoryInput = {
   body?: string;
   evidence?: string;
   type?: string;
-  agent_id?: string;
-  project_id?: string;
-  bridge_id?: string;
-  template_id?: string;
-  targetAgentId?: string;
-  targetProjectId?: string;
-  targetBridgeId?: string;
-  targetTemplateId?: string;
-};
+} & MemoryTargeting;
+
+// buildTargetingBody maps the camelCase targeting lists to the wire field names,
+// emitting an array (possibly empty) only for dimensions the caller provided.
+// Empty/blank ids are dropped. Omitting a dimension lets the hub default apply.
+function buildTargetingBody(input: MemoryTargeting): Record<string, string[]> {
+  const clean = (ids?: string[]) => (ids || []).map((id) => String(id || "").trim()).filter(Boolean);
+  const out: Record<string, string[]> = {};
+  if (input.agentIds !== undefined) out.agent_ids = clean(input.agentIds);
+  if (input.projectIds !== undefined) out.project_ids = clean(input.projectIds);
+  if (input.bridgeIds !== undefined) out.bridge_ids = clean(input.bridgeIds);
+  if (input.templateIds !== undefined) out.template_ids = clean(input.templateIds);
+  return out;
+}
 
 export type RejectMemoryInput = {
   memoryId: string;
@@ -94,14 +87,17 @@ export const memoryApi = heimdallApi.injectEndpoints({
           if (arg) {
             if (arg.status) params.set("status", arg.status);
             if (arg.type) params.set("type", arg.type);
-            const agentId = arg.agent_id || arg.targetAgentId;
-            if (agentId) params.set("agent_id", agentId);
-            const projectId = arg.project_id || arg.targetProjectId;
-            if (projectId) params.set("project_id", projectId);
-            const bridgeId = arg.bridge_id || arg.targetBridgeId;
-            if (bridgeId) params.set("bridge_id", bridgeId);
-            const templateId = arg.template_id || arg.targetTemplateId;
-            if (templateId) params.set("template_id", templateId);
+            // Targeting filters send the plural list params as CSV; the hub
+            // matches when a memory's list is empty (global) OR contains a value.
+            const csv = (ids?: string[]) => (ids || []).map((id) => String(id || "").trim()).filter(Boolean).join(",");
+            const agentIds = csv(arg.agentIds);
+            if (agentIds) params.set("agent_ids", agentIds);
+            const projectIds = csv(arg.projectIds);
+            if (projectIds) params.set("project_ids", projectIds);
+            const bridgeIds = csv(arg.bridgeIds);
+            if (bridgeIds) params.set("bridge_ids", bridgeIds);
+            const templateIds = csv(arg.templateIds);
+            if (templateIds) params.set("template_ids", templateIds);
             if (arg.limit) params.set("limit", String(arg.limit));
             if (arg.cursor) params.set("cursor", arg.cursor);
           }
@@ -145,11 +141,8 @@ export const memoryApi = heimdallApi.injectEndpoints({
     createMemory: build.mutation<any, CreateMemoryInput>({
       queryFn: async (payload) => {
         try {
-          const agent_id = payload.agent_id || payload.targetAgentId;
-          const project_id = payload.project_id || payload.targetProjectId;
-          const bridge_id = payload.bridge_id || payload.targetBridgeId;
-          const template_id = payload.template_id || payload.targetTemplateId;
-          const data = await cookieMutation("/memories", "POST", { ...payload, agent_id, project_id, bridge_id, template_id });
+          const { agentIds, projectIds, bridgeIds, templateIds, ...rest } = payload;
+          const data = await cookieMutation("/memories", "POST", { ...rest, ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }) });
           return { data };
         } catch (error: any) {
           return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
@@ -160,11 +153,8 @@ export const memoryApi = heimdallApi.injectEndpoints({
     updateMemory: build.mutation<any, UpdateMemoryInput>({
       queryFn: async ({ memoryId, ...payload }) => {
         try {
-          const agent_id = payload.agent_id || payload.targetAgentId;
-          const project_id = payload.project_id || payload.targetProjectId;
-          const bridge_id = payload.bridge_id || payload.targetBridgeId;
-          const template_id = payload.template_id || payload.targetTemplateId;
-          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}`, "PATCH", { ...payload, agent_id, project_id, bridge_id, template_id });
+          const { agentIds, projectIds, bridgeIds, templateIds, ...rest } = payload;
+          const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}`, "PATCH", { ...rest, ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }) });
           return { data };
         } catch (error: any) {
           return { error: { status: "CUSTOM_ERROR", error: String(error?.message || error) } as any };
@@ -183,12 +173,8 @@ export const memoryApi = heimdallApi.injectEndpoints({
             const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/reject`, "POST", { reason: arg.reason });
             return { data };
           }
-          const { memoryId: _m, proposalId: _p, decision: _d, ...edits } = arg;
-          const agent_id = edits.agent_id || edits.targetAgentId;
-          const project_id = edits.project_id || edits.targetProjectId;
-          const bridge_id = edits.bridge_id || edits.targetBridgeId;
-          const template_id = edits.template_id || edits.targetTemplateId;
-          const body = { ...edits, agent_id, project_id, bridge_id, template_id };
+          const { memoryId: _m, proposalId: _p, decision: _d, agentIds, projectIds, bridgeIds, templateIds, ...edits } = arg;
+          const body = { ...edits, ...buildTargetingBody({ agentIds, projectIds, bridgeIds, templateIds }) };
           const data = await cookieMutation(`/memories/${encodeURIComponent(memoryId)}/approve`, "POST", body);
           return { data };
         } catch (error: any) {
