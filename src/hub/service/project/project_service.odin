@@ -268,13 +268,20 @@ resolve_fs_target :: proc(service: ^Project_Service, auth: contracts.Auth_Contex
 	paths, list_err := iface.project_list_bridge_paths(service.projects, project.project_id, project.owner_user_id)
 	if list_err.code != .None do return Fs_Target{}, false, list_err
 	if bridge_hint != "" {
+		// Prefer an explicit per-bridge path override for this bridge.
 		for p in paths {
-			if p.bridge_id == bridge_hint {
-				if strings.trim_space(p.path) == "" do return Fs_Target{}, false, domain.domain_error(.Validation_Failed, "project has no path configured on this bridge")
+			if p.bridge_id == bridge_hint && strings.trim_space(p.path) != "" {
 				return Fs_Target{bridge_id = p.bridge_id, root_path = p.path}, true, domain.Domain_Error{}
 			}
 		}
-		return Fs_Target{}, false, domain.domain_error(.Not_Found, "project is not configured on the requested bridge")
+		// No override (or an empty one) for this bridge: fall back to the project's
+		// default_path so the file browser still works on a bridge that just uses the
+		// default checkout location. The bridge re-sandboxes to this root; if the dir
+		// doesn't exist there the listing simply reports path_not_found.
+		if strings.trim_space(project.default_path) != "" {
+			return Fs_Target{bridge_id = bridge_hint, root_path = project.default_path}, true, domain.Domain_Error{}
+		}
+		return Fs_Target{}, false, domain.domain_error(.Validation_Failed, "project has no path configured on this bridge and no default_path")
 	}
 	configured := 0
 	chosen := domain.Project_Bridge_Path{}

@@ -50,6 +50,10 @@ main :: proc() {
 	auth_a := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "alice"}
 	default_effective, default_ok, default_err := project_service.resolve_effective_path(&graph.projects, auth_a, domain.Project_ID(project_id), bridge_id)
 	check(default_ok && default_err.code == .None && default_effective == default_path, "effective path must default to Project.default_path")
+	// The FS browser resolver must ALSO fall back to default_path when the bridge has
+	// no per-bridge override (previously it errored, so the Files panel showed nothing).
+	fs_default, fs_default_ok, fs_default_err := project_service.resolve_fs_target(&graph.projects, auth_a, domain.Project_ID(project_id), bridge_id)
+	check(fs_default_ok && fs_default_err.code == .None && fs_default.root_path == default_path, "fs target must fall back to default_path when no per-bridge override")
 	bad_bridge := request(&graph, "PUT", bridge_path_url(project_id, bob_bridge_id, ""), "{\"path\":\"/bob/path\"}", alice[:])
 	check(bad_bridge.status == 404, "cannot set path override for another user's bridge")
 	offline_validate := request(&graph, "POST", bridge_path_url(project_id, offline_bridge_id, "/validate"), "", alice[:])
@@ -59,6 +63,8 @@ main :: proc() {
 	check(set_path.status == 200 && strings.contains(set_path.body, bridge_path) && strings.contains(set_path.body, "\"is_validated\":false"), "set bridge path override must persist unvalidated path")
 	override_effective, override_ok, override_err := project_service.resolve_effective_path(&graph.projects, auth_a, domain.Project_ID(project_id), bridge_id)
 	check(override_ok && override_err.code == .None && override_effective == bridge_path, "effective path must prefer bridge override")
+	fs_override, fs_override_ok, fs_override_err := project_service.resolve_fs_target(&graph.projects, auth_a, domain.Project_ID(project_id), bridge_id)
+	check(fs_override_ok && fs_override_err.code == .None && fs_override.root_path == bridge_path, "fs target must prefer bridge override when present")
 	validated := request(&graph, "POST", bridge_path_url(project_id, bridge_id, "/validate"), "", alice[:])
 	check(validated.status == 200 && strings.contains(validated.body, "\"is_validated\":true") && strings.contains(validated.body, "validate_project_path") && strings.contains(validated.body, "cmd_"), "validate endpoint must store Bridge command validation result")
 	revoked_bridge_id, revoked_bridge_token := enroll_bridge_offline(&graph, alice[:], "Revoked Bridge")
