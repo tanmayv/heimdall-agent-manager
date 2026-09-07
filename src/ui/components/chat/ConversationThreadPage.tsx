@@ -1,5 +1,6 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
 import ProjectFilesPanel from './ProjectFilesPanel';
+import InstanceRunDirPanel from './InstanceRunDirPanel';
 import { type ClipboardEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
@@ -542,7 +543,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
   // panel itself has Tasks / Files tabs. 'closed' hides it entirely. Tasks and
   // Files are the two tabs (not mutually-exclusive split peers anymore).
-  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files'>('closed');
+  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files' | 'rundir'>('closed');
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
@@ -851,9 +852,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   // Default the panel's active tab based on what this conversation has: prefer
   // Tasks when linked to a chain, else Files when it has a project.
-  function defaultPanelTab(): 'tasks' | 'files' {
+  function defaultPanelTab(): 'tasks' | 'files' | 'rundir' {
     if (chainId) return 'tasks';
     if (projectId) return 'files';
+    if (agentInstanceId) return 'rundir';
     return 'tasks';
   }
 
@@ -865,7 +867,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   // Open the panel focused on a specific tab (e.g. the composer project chip
   // opens Files; a current-task link opens Tasks).
-  function openRightPanel(tab: 'tasks' | 'files') {
+  function openRightPanel(tab: 'tasks' | 'files' | 'rundir') {
     setHeaderActionsOpen(false);
     setRightPanel(tab);
   }
@@ -1060,8 +1062,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   function renderRightPanel(isMobilePanel: boolean) {
     const hasTasks = Boolean(chainId);
     const hasFiles = Boolean(projectId);
-    const active: 'tasks' | 'files' = rightPanel === 'files' && hasFiles ? 'files' : (hasTasks ? 'tasks' : 'files');
-    const tabBase = 'flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold';
+    const hasRunDir = Boolean(agentInstanceId);
+    // The two file-explorer tabs are labeled with a folder icon + the resource
+    // name (project name for Files, instance display name for Run dir) and
+    // truncate when long. Tasks keeps its fixed label.
+    const instanceDisplayName = String(instance?.display_name || (instance as any)?.displayName || title || agentId || agentInstanceId || 'instance').trim();
+    const filesLabel = projectName || 'Files';
+    const active: 'tasks' | 'files' | 'rundir' =
+      rightPanel === 'files' && hasFiles ? 'files'
+      : rightPanel === 'rundir' && hasRunDir ? 'rundir'
+      : hasTasks ? 'tasks'
+      : hasFiles ? 'files'
+      : 'rundir';
+    const tabBase = 'flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-1.5 text-xs font-semibold';
     return (
       <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c]">
         <div data-debug-id="conversation-right-panel-tabs" className="flex shrink-0 items-center gap-1 border-b border-white/10 px-2 py-2">
@@ -1073,9 +1086,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             </button>
           ) : null}
           {hasFiles ? (
-            <button type="button" data-debug-id="conversation-right-panel-tab-files" onClick={() => setRightPanel('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
-              <Icon name="folder" size={15} />
-              <span>Files</span>
+            <button type="button" title={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => setRightPanel('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+              <Icon name="folder" size={15} className="shrink-0" />
+              <span className="truncate">{filesLabel}</span>
+            </button>
+          ) : null}
+          {hasRunDir ? (
+            <button type="button" title={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => setRightPanel('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+              <Icon name="folder" size={15} className="shrink-0" />
+              <span className="truncate">{instanceDisplayName}</span>
             </button>
           ) : null}
         </div>
@@ -1085,6 +1104,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               projectId={projectId}
               bridgeId={instanceBridgeId}
               projectName={projectName}
+              conversationKey={conversationId}
+              onPublishComments={publishFileComments}
+              onClose={closeRightPanel}
+              isMobile={isMobilePanel}
+            />
+          ) : active === 'rundir' && hasRunDir ? (
+            <InstanceRunDirPanel
+              agentInstanceId={agentInstanceId}
+              rootLabel={instanceDisplayName}
               conversationKey={conversationId}
               onPublishComments={publishFileComments}
               onClose={closeRightPanel}
@@ -1330,7 +1358,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           </div>
         );
 
-        const panelOpen = rightPanel !== 'closed' && (chainId || projectId);
+        const panelOpen = rightPanel !== 'closed' && (chainId || projectId || agentInstanceId);
         if (!panelOpen) {
           return (<>{transcript}{renderComposer()}</>);
         }
