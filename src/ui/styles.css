@@ -474,55 +474,75 @@ body {
 }
 
 /* Agent activity bubbles: the push-only row of ham-ctl action indicators above
-   the chat composer. Enter/exit are intentionally SUBTLE and low-contrast (a
-   gentle fade + a few px of slide/scale) so the row reads as ambient presence,
-   never as an attention-grabbing toast. */
-@keyframes agent-bubble-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+   the chat composer. The row lives in a reserved fixed-height gutter, on a single
+   clipped line. Animations are intentionally SUBTLE/low-contrast so the row reads
+   as ambient presence, never an attention-grabbing toast:
+     - a NEW bubble (row already has bubbles) slides in from the left and EXPANDS
+       (max-width 0 -> full), which pushes the existing bubbles over to make room;
+     - the FIRST bubble (empty row) shows a small 3-dot indicator, then MORPHS into
+       the action pill (text fades in while the pill expands);
+     - exit collapses (fade + max-width -> 0) so neighbours reclaim the space.
+   box-sizing:border-box (Tailwind default) makes max-width:0 fully collapse the
+   pill incl. padding, so the expand/collapse cleanly moves siblings. */
+@keyframes agent-bubble-pill-in {
+  from { opacity: 0; max-width: 0; transform: translateX(-6px); }
+  to { opacity: 1; max-width: 240px; transform: translateX(0); }
 }
 
-@keyframes agent-bubble-out {
-  from {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-  to {
-    opacity: 0;
-    transform: translateY(-2px) scale(0.98);
-  }
+@keyframes agent-bubble-morph {
+  /* Starts at the 3-dot indicator's end width (agent-bubble-dots-in) so the pill
+     expands smoothly out of the dots with no backward jump. */
+  from { opacity: 0.4; max-width: 40px; transform: scale(0.98); }
+  to { opacity: 1; max-width: 240px; transform: scale(1); }
 }
 
-.agent-bubble-enter {
-  animation: agent-bubble-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+@keyframes agent-bubble-dots-in {
+  from { opacity: 0; max-width: 0; }
+  to { opacity: 1; max-width: 40px; }
+}
+
+@keyframes agent-bubble-collapse-out {
+  from { opacity: 1; max-width: 240px; transform: translateX(0); }
+  to { opacity: 0; max-width: 0; transform: translateX(-4px); }
+}
+
+@keyframes agent-bubble-dot-bounce {
+  0%, 80%, 100% { opacity: 0.35; }
+  40% { opacity: 0.9; }
+}
+
+.agent-bubble-pill-in {
+  animation: agent-bubble-pill-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.agent-bubble-morph {
+  animation: agent-bubble-morph 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.agent-bubble-dots-in {
+  animation: agent-bubble-dots-in 160ms ease-out both;
 }
 
 .agent-bubble-exit {
-  animation: agent-bubble-out 220ms ease-in both;
+  animation: agent-bubble-collapse-out 220ms ease-in both;
 }
 
-/* Respect reduced-motion: fade only, no slide/scale. */
+.agent-bubble-dot {
+  animation: agent-bubble-dot-bounce 1s ease-in-out infinite;
+}
+
+/* Respect reduced-motion: plain fade only — no morph, slide, expand, or dot motion.
+   (The component also skips the 3-dot phase entirely under reduced-motion.) */
 @media (prefers-reduced-motion: reduce) {
-  @keyframes agent-bubble-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  @keyframes agent-bubble-out {
-    from { opacity: 1; }
-    to { opacity: 0; }
-  }
-  .agent-bubble-enter {
-    animation: agent-bubble-in 120ms linear both;
-  }
-  .agent-bubble-exit {
-    animation: agent-bubble-out 120ms linear both;
-  }
+  @keyframes agent-bubble-pill-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes agent-bubble-morph { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes agent-bubble-dots-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes agent-bubble-collapse-out { from { opacity: 1; } to { opacity: 0; } }
+  .agent-bubble-pill-in { animation: agent-bubble-pill-in 120ms linear both; }
+  .agent-bubble-morph { animation: agent-bubble-morph 120ms linear both; }
+  .agent-bubble-dots-in { animation: agent-bubble-dots-in 120ms linear both; }
+  .agent-bubble-exit { animation: agent-bubble-collapse-out 120ms linear both; }
+  .agent-bubble-dot { animation: none; opacity: 0.6; }
 }
 
 /* Vimee Editor Customization */

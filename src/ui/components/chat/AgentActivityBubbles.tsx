@@ -6,28 +6,46 @@ import {
   selectReplayableActions,
 } from '../../store/agentActivitySlice';
 
-// Push-only, ephemeral row of small "activity bubbles" rendered just above the
-// chat composer for the CURRENTLY-VIEWED instance only. Each bubble shows a short,
-// human-readable, id-free summary of a ham-ctl action the agent just performed
-// (composed hub-side in P1, buffered in the transient slice in P2).
+// Push-only, ephemeral row of small "activity bubbles" rendered in a reserved,
+// fixed-height gutter just above the chat composer, for the CURRENTLY-VIEWED
+// instance only. Each bubble shows a short, human-readable, id-free summary of a
+// ham-ctl action the agent just performed (composed hub-side in P1, buffered in
+// the transient slice in P2).
 //
-// Lifetime is owned HERE (not redux): each bubble is visible for BUBBLE_LIFETIME_MS
-// then fades out. On mount/open (Q2: open-conversation replay ONLY — no
-// tab-visibility) we replay the buffered actions from the last 5 minutes, staggered
-// at REPLAY_STAGGER_MS "as if they just arrived"; live events append as they land.
+// Animation model (polish): the gutter is ALWAYS reserved so the composer never
+// shifts; bubbles sit on ONE clipped line. The FIRST bubble (empty row) shows a
+// 3-dot indicator for DOTS_MS then morphs into the pill; SUBSEQUENT bubbles slide
+// in from the left and expand, pushing existing bubbles over to make room. Exit
+// collapses. Under prefers-reduced-motion we skip the dots and fall back to a plain
+// fade (see styles.css). Lifetime is owned HERE (not redux): each bubble lives
+// BUBBLE_LIFETIME_MS. On mount/open (Q2: open-conversation replay ONLY) we replay
+// buffered actions <5min old, staggered at REPLAY_STAGGER_MS, "as if just arrived".
 
-// Per-bubble visible lifetime (user spec: each bubble lives 4s).
 const BUBBLE_LIFETIME_MS = 4000;
-// Stagger between replayed bubbles on open.
 const REPLAY_STAGGER_MS = 400;
-// Matches the CSS .agent-bubble-exit animation duration (styles.css) — how long we
-// keep an exiting bubble mounted so the fade-out can play before removal.
-const EXIT_ANIM_MS = 240;
-// Guard: never surface a "live" buffer entry that is already older than one
-// lifetime (e.g. an event that arrived while the effect was catching up).
+// 3-dot indicator duration before the first bubble morphs into its pill.
+const DOTS_MS = 200;
+// Matches the CSS .agent-bubble-exit duration — how long an exiting bubble stays
+// mounted so the collapse/fade can play before removal.
+const EXIT_ANIM_MS = 220;
+// Guard: never surface a "live" buffer entry already older than one lifetime.
 const LIVE_FRESHNESS_MS = BUBBLE_LIFETIME_MS + 1000;
 
-type VisibleBubble = AgentActionItem & { exiting?: boolean };
+type BubblePhase = 'dots' | 'pill' | 'exiting';
+type VisibleBubble = AgentActionItem & {
+  phase: BubblePhase;
+  // True once a first-bubble 'dots' entry has morphed into its pill (drives the
+  // morph animation vs the plain slide-in used by subsequent bubbles).
+  morphed?: boolean;
+};
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
 
 export default function AgentActivityBubbles({ instanceId }: { instanceId: string }) {
   const buffer = useSelector((state: any) => selectAgentActivityBuffer(state, instanceId));
@@ -38,20 +56,42 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
   const seenIdsRef = useRef<Set<string>>(new Set());
   // All pending timers, cleared on unmount / instance switch.
   const timersRef = useRef<number[]>([]);
+  // How many bubbles currently occupy the row (incl. exiting). Lets us decide, at
+  // push time, whether an arriving bubble is the "first" (empty row → dots morph).
+  const liveCountRef = useRef(0);
 
-  // Show one bubble now and schedule its fade-out (exiting) + removal after 4s.
-  // Stable across renders (only touches refs/setState), so both effects share it.
-  const pushVisible = useCallback((item: AgentActionItem) => {
-    setVisible((prev) => (prev.some((b) => b.id === item.id) ? prev : [...prev, item]));
-    const hideTimer = window.setTimeout(() => {
-      setVisible((prev) => prev.map((b) => (b.id === item.id ? { ...b, exiting: true } : b)));
-      const removeTimer = window.setTimeout(() => {
-        setVisible((prev) => prev.filter((b) => b.id !== item.id));
-      }, EXIT_ANIM_MS);
-      timersRef.current.push(removeTimer);
-    }, BUBBLE_LIFETIME_MS);
-    timersRef.current.push(hideTimer);
+  const removeBubble = useCallback((id: string) => {
+    setVisible((prev) => prev.filter((b) => b.id !== id));
+    liveCountRef.current = Math.max(0, liveCountRef.current - 1);
   }, []);
+
+  // Show one bubble now and schedule its fade-out (exiting) + removal after its
+  // lifetime. Stable across renders (only touches refs/setState), so both the
+  // replay and live effects share it.
+  const pushVisible = useCallback((item: AgentActionItem) => {
+    // "First bubble" = the row is currently empty; play the 3-dot morph, unless
+    // the user prefers reduced motion (then no dots — a plain fade-in pill).
+    const isFirst = liveCountRef.current === 0 && !prefersReducedMotion();
+    liveCountRef.current += 1;
+    const phase: BubblePhase = isFirst ? 'dots' : 'pill';
+    // Prepend so the newest bubble slides in at the left and the rest slide over.
+    setVisible((prev) => (prev.some((b) => b.id === item.id) ? prev : [{ ...item, phase }, ...prev]));
+
+    let lifeDelay = 0;
+    if (isFirst) {
+      lifeDelay = DOTS_MS;
+      const morph = window.setTimeout(() => {
+        setVisible((prev) => prev.map((b) => (b.id === item.id ? { ...b, phase: 'pill', morphed: true } : b)));
+      }, DOTS_MS);
+      timersRef.current.push(morph);
+    }
+    const hide = window.setTimeout(() => {
+      setVisible((prev) => prev.map((b) => (b.id === item.id ? { ...b, phase: 'exiting' } : b)));
+      const remove = window.setTimeout(() => removeBubble(item.id), EXIT_ANIM_MS);
+      timersRef.current.push(remove);
+    }, lifeDelay + BUBBLE_LIFETIME_MS);
+    timersRef.current.push(hide);
+  }, [removeBubble]);
 
   // Fresh mount / instance switch: reset, then replay recent buffered actions
   // (<5min) staggered, "as if they just arrived". Marking them seen up front so
@@ -65,6 +105,7 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
 
     clearAllTimers();
     seenIdsRef.current = new Set();
+    liveCountRef.current = 0;
     setVisible([]);
 
     selectReplayableActions(buffer, Date.now()).forEach((item, index) => {
@@ -89,24 +130,42 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
     }
   }, [buffer, pushVisible]);
 
-  if (visible.length === 0) return null;
-
+  // Reserved fixed-height gutter: ALWAYS rendered (even when empty) so the
+  // composer never shifts as bubbles appear/disappear. Single line, clipped.
   return (
     <div
       data-debug-id="conversation-activity-bubbles"
-      className="pointer-events-none mb-1 flex flex-wrap items-center gap-1.5 px-1"
       aria-hidden="true"
+      className="pointer-events-none mb-1 flex h-6 items-center gap-1.5 overflow-hidden whitespace-nowrap px-1"
     >
-      {visible.map((bubble) => (
-        <span
-          key={bubble.id}
-          data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
-          title={bubble.summary}
-          className={`inline-flex max-w-[240px] items-center rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] leading-none text-zinc-400 ${bubble.exiting ? 'agent-bubble-exit' : 'agent-bubble-enter'}`}
-        >
-          <span className="truncate">{bubble.summary}</span>
-        </span>
-      ))}
+      {visible.map((bubble) => {
+        const animClass =
+          bubble.phase === 'exiting'
+            ? 'agent-bubble-exit'
+            : bubble.phase === 'dots'
+              ? 'agent-bubble-dots-in'
+              : bubble.morphed
+                ? 'agent-bubble-morph'
+                : 'agent-bubble-pill-in';
+        return (
+          <span
+            key={bubble.id}
+            data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
+            title={bubble.summary}
+            className={`inline-flex max-w-[240px] shrink-0 items-center overflow-hidden rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] leading-none text-zinc-400 ${animClass}`}
+          >
+            {bubble.phase === 'dots' ? (
+              <span data-debug-id="conversation-activity-bubble-dots" className="inline-flex items-center gap-0.5">
+                <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '0ms' }} />
+                <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '150ms' }} />
+                <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '300ms' }} />
+              </span>
+            ) : (
+              <span className="truncate">{bubble.summary}</span>
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }
