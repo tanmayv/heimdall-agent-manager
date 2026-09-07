@@ -36,6 +36,7 @@ export const HEIMDALL_TAG_TYPES = [
   'ProjectBridgePaths',
   // Project Directory Browser: project-scoped FS listings, keyed by (project, bridge, path).
   'ProjectFs',
+  'InstanceFs',
   // UI-14: cookie-auth sidebar data owned by the live shell.
   'SidebarConversations',
   'SidebarProjects',
