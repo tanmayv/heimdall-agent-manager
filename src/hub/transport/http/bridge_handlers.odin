@@ -352,6 +352,102 @@ delete_project_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+// --- Agent instance run-dir browser (READ-ONLY) ---------------------------
+// Resolves (instance_id -> owner-checked instance -> bridge_id) then relays a
+// read-only agent_run_dir_* command carrying the instance_id. The bridge computes
+// the run dir from the id (bridge_runtime_default_run_dir) and re-sandboxes every
+// path to it, so the hub never needs to know the run-dir layout. Two-layer owner
+// check: get_instance is same-owner scoped (Not_Found for others) and get_bridge
+// is owner-scoped. Request paths are RELATIVE to the run-dir root. No mutation
+// commands exist for this surface (read-only by construction). The bridge reuses
+// the fs_list_dir_result / fs_read_file_result envelopes, returned verbatim.
+
+Instance_Fs_Command :: struct {
+	command_type:        string,
+	path:                string, // relative to the instance run-dir root
+	include_hidden:      bool,
+	send_include_hidden: bool,
+	cursor:              string,
+	limit:               int,
+	send_limit:          bool,
+	// read-file byte-range pagination
+	offset:              int,
+	send_offset:         bool,
+	read_limit:          int,
+	send_read_limit:     bool,
+}
+
+instance_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Instance_Fs_Command) -> (string, bool, domain.Domain_Error) {
+	auth_ctx, auth_ok, _ := require_auth(h.auth, req)
+	if !auth_ok do return "", false, domain.domain_error(.Unauthenticated, "authentication required")
+	instance_id := path_part(req.path, 4)
+	inst, got, inst_err := agent_service.get_instance(h.agents, auth_ctx, instance_id)
+	if !got do return "", false, inst_err
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, inst.bridge_id)
+	if !bridge_ok do return "", false, bridge_err
+	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	command_id := fmt.tprintf("cmd_ifs_%d", time.to_unix_nanoseconds(time.now()))
+	cmd_body := instance_fs_command_json(cmd, command_id, inst.agent_instance_id)
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	if !reply_ok do return "", false, reply_err
+	return reply, true, domain.Domain_Error{}
+}
+
+instance_fs_command_json :: proc(cmd: Instance_Fs_Command, command_id, instance_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\""); write_handler_json_string(&b, cmd.command_type)
+	strings.write_string(&b, "\",\"command_id\":\""); write_handler_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"instance_id\":\""); write_handler_json_string(&b, instance_id)
+	strings.write_string(&b, "\",\"path\":\""); write_handler_json_string(&b, cmd.path); strings.write_string(&b, "\"")
+	if cmd.send_include_hidden {
+		strings.write_string(&b, ",\"include_hidden\":"); strings.write_string(&b, "true" if cmd.include_hidden else "false")
+	}
+	if cmd.cursor != "" {
+		strings.write_string(&b, ",\"cursor\":\""); write_handler_json_string(&b, cmd.cursor); strings.write_string(&b, "\"")
+	}
+	if cmd.send_limit {
+		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.limit)
+	}
+	if cmd.send_offset {
+		strings.write_string(&b, ",\"offset\":"); strings.write_int(&b, cmd.offset)
+	}
+	if cmd.send_read_limit {
+		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.read_limit)
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+list_instance_dir_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	limit := query_int(req.query, "limit", 0)
+	// include_hidden defaults TRUE for the run-dir browser (show .heimdall/, dotfiles).
+	result, ok, err := instance_fs_relay(h, req, Instance_Fs_Command{
+		command_type = "agent_run_dir_list",
+		path = query_value(req.query, "path"),
+		include_hidden = query_bool(req.query, "include_hidden", true), send_include_hidden = true,
+		cursor = query_value(req.query, "cursor"),
+		limit = limit, send_limit = limit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+read_instance_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	offset := query_int(req.query, "offset", 0)
+	rlimit := query_int(req.query, "limit", 0)
+	result, ok, err := instance_fs_relay(h, req, Instance_Fs_Command{
+		command_type = "agent_run_dir_read",
+		path = query_value(req.query, "path"),
+		offset = offset, send_offset = offset > 0,
+		read_limit = rlimit, send_read_limit = rlimit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
 put_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	name := path_part(req.path, 6)
