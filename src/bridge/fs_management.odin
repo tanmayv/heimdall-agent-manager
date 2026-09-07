@@ -349,6 +349,39 @@ bridge_fs_is_within_root :: proc(abs_path: string, sandbox_root: string = "") ->
 	return strings.has_prefix(abs_path, prefix)
 }
 
+// bridge_fs_resolve_command_root picks the sandbox root for a filesystem command.
+// Normally it defers to bridge_fs_effective_root (which requires the override to be
+// contained within the global bridge_fs_root). When `prevalidated` is true the
+// caller has already resolved + contained the root itself (e.g. an instance run
+// dir outside bridge_fs_root), so it is used verbatim — the per-request path is
+// still re-sandboxed to it by bridge_fs_resolve_within at the call site.
+bridge_fs_resolve_command_root :: proc(sandbox_root: string, prevalidated: bool) -> (root: string, ok: bool) {
+	if prevalidated {
+		root = strings.trim_space(sandbox_root)
+		return root, root != ""
+	}
+	return bridge_fs_effective_root(sandbox_root)
+}
+
+// bridge_fs_run_dir_root resolves an agent instance's run directory to a canonical
+// sandbox root and validates it is contained within the bridge's instances base
+// (<local_endpoint_run_dir>/instances). The run dir lives OUTSIDE the global
+// bridge_fs_root, so it is validated against the instances base instead. This is
+// defense-in-depth: bridge_runtime_default_run_dir already sanitizes the id via
+// bridge_runtime_safe_part, so a malformed id cannot escape the base.
+bridge_fs_run_dir_root :: proc(instance_id: string) -> (root: string, ok: bool) {
+	id := strings.trim_space(instance_id)
+	if id == "" do return "", false
+	run_dir := bridge_runtime_default_run_dir(id)
+	base_root := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
+	if base_root == "" do base_root = "/tmp/heimdall-bridge-local"
+	base := strings.concatenate({base_root, "/instances"}, context.allocator)
+	// Resolve symlink-free and require containment within the instances base.
+	canonical, within := bridge_fs_resolve_within(run_dir, base)
+	if !within do return "", false
+	return canonical, true
+}
+
 // bridge_fs_effective_root resolves an optional project-root override to a canonical
 // absolute path, requiring it to be contained within the global bridge_fs_root
 // (defense-in-depth: a hostile hub request cannot escape the bridge sandbox). An
@@ -366,8 +399,12 @@ bridge_fs_effective_root :: proc(root_override: string) -> (root: string, ok: bo
 // dirs-first/name-asc sorting, and opaque cursor pagination. `limit` <= 0 uses the
 // default; it is clamped to BRIDGE_FS_MAX_ENTRIES. `cursor` is an opaque base64
 // offset into the sorted list.
-bridge_fs_list_dir :: proc(requested: string, include_hidden: bool = true, cursor: string = "", limit: int = BRIDGE_FS_DEFAULT_LIMIT, sandbox_root: string = "") -> Bridge_Fs_List_Result {
-	root, root_ok := bridge_fs_effective_root(sandbox_root)
+//
+// `root_prevalidated` lets a caller pass a sandbox_root that the caller has ALREADY
+// resolved + contained (e.g. an agent instance run dir that lives OUTSIDE the
+// global bridge_fs_root); the requested path is still re-sandboxed to it below.
+bridge_fs_list_dir :: proc(requested: string, include_hidden: bool = true, cursor: string = "", limit: int = BRIDGE_FS_DEFAULT_LIMIT, sandbox_root: string = "", root_prevalidated := false) -> Bridge_Fs_List_Result {
+	root, root_ok := bridge_fs_resolve_command_root(sandbox_root, root_prevalidated)
 	if !root_ok {
 		return Bridge_Fs_List_Result{ok = false, root = bridge_fs_root, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
 	}
@@ -453,8 +490,8 @@ bridge_fs_list_dir :: proc(requested: string, include_hidden: bool = true, curso
 // and eof marks the final chunk. base64/images ignore offset/limit (returned
 // whole, still under the 1MB cap). The whole file (up to the cap) is still capped
 // by BRIDGE_FS_MAX_VIEW_BYTES on total size.
-bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "", offset: i64 = 0, limit: i64 = 0) -> Bridge_Fs_Read_File_Result {
-	root, root_ok := bridge_fs_effective_root(sandbox_root)
+bridge_fs_read_file :: proc(requested: string, sandbox_root: string = "", offset: i64 = 0, limit: i64 = 0, root_prevalidated := false) -> Bridge_Fs_Read_File_Result {
+	root, root_ok := bridge_fs_resolve_command_root(sandbox_root, root_prevalidated)
 	if !root_ok {
 		return Bridge_Fs_Read_File_Result{ok = false, path = requested, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
 	}
@@ -717,6 +754,47 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		offset := i64(extract_json_int(text, "offset", 0))
 		limit := i64(extract_json_int(text, "limit", 0))
 		result := bridge_fs_read_file(path, root, offset, limit)
+		out := bridge_fs_read_file_result_json(command_id, result)
+		bridge_runtime_cache_command(command_id, out)
+		_ = ws.send_text(conn, out)
+		return true
+	case "agent_run_dir_list":
+		// READ-ONLY listing of an agent instance's run dir (the context materialized
+		// for the agent). include_hidden defaults true so dotfiles/.heimdall are shown.
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		instance_id := extract_json_string(text, "instance_id", "")
+		path := extract_json_string(text, "path", "")
+		include_hidden := true
+		if strings.contains(text, "\"include_hidden\"") do include_hidden = bridge_fs_extract_json_bool(text, "include_hidden", true)
+		cursor := extract_json_string(text, "cursor", "")
+		limit := extract_json_int(text, "limit", BRIDGE_FS_DEFAULT_LIMIT)
+		root, root_ok := bridge_fs_run_dir_root(instance_id)
+		result: Bridge_Fs_List_Result
+		if !root_ok {
+			result = Bridge_Fs_List_Result{ok = false, error_code = "path_outside_root", message = "Run directory is outside the allowed root"}
+		} else {
+			result = bridge_fs_list_dir(path, include_hidden, cursor, limit, root, true)
+		}
+		out := bridge_fs_list_result_json(command_id, result)
+		bridge_runtime_cache_command(command_id, out)
+		_ = ws.send_text(conn, out)
+		return true
+	case "agent_run_dir_read":
+		// READ-ONLY bounded view of a single file inside an agent instance's run dir.
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		instance_id := extract_json_string(text, "instance_id", "")
+		path := extract_json_string(text, "path", "")
+		offset := i64(extract_json_int(text, "offset", 0))
+		limit := i64(extract_json_int(text, "limit", 0))
+		root, root_ok := bridge_fs_run_dir_root(instance_id)
+		result: Bridge_Fs_Read_File_Result
+		if !root_ok {
+			result = Bridge_Fs_Read_File_Result{ok = false, path = path, error_code = "path_outside_root", message = "Run directory is outside the allowed root"}
+		} else {
+			result = bridge_fs_read_file(path, root, offset, limit, true)
+		}
 		out := bridge_fs_read_file_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
 		_ = ws.send_text(conn, out)

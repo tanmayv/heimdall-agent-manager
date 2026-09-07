@@ -369,3 +369,80 @@ fs_project_root_override_rejects_root_outside_bridge :: proc(t: ^testing.T) {
 	testing.expect(t, !res.ok, "bad project root rejected")
 	testing.expect_value(t, res.error_code, "path_outside_root")
 }
+
+// --- agent instance run-dir (read-only) ----------------------------------
+// The run-dir explorer sandboxes to an instance's bridge-managed run directory,
+// which lives OUTSIDE the global bridge_fs_root. bridge_fs_run_dir_root resolves +
+// contains it to the instances base, and list/read are called with
+// root_prevalidated=true so the global-root check is skipped while the requested
+// path is still re-sandboxed to the run dir.
+
+@(test)
+fs_run_dir_root_resolves_within_instances_base :: proc(t: ^testing.T) {
+	base := fs_test_make_root(t, "rundir_base")
+	defer fs_test_cleanup(base)
+	bridge_config.local_endpoint_run_dir = base
+	// The instance dir need not exist yet (agent may not have launched).
+	root, ok := bridge_fs_run_dir_root("inst_abc123")
+	testing.expect(t, ok, "run-dir root resolves")
+	testing.expect(t, strings.has_suffix(root, "/instances/inst_abc123"), "root is <base>/instances/<id>")
+}
+
+@(test)
+fs_run_dir_root_sanitizes_instance_id :: proc(t: ^testing.T) {
+	base := fs_test_make_root(t, "rundir_sanitize")
+	defer fs_test_cleanup(base)
+	bridge_config.local_endpoint_run_dir = base
+	// Slashes are stripped by bridge_runtime_safe_part, so a traversal-looking id
+	// collapses to a single contained component (cannot escape the instances base).
+	dirty := "inst/../../etc"
+	root, ok := bridge_fs_run_dir_root(dirty)
+	testing.expect(t, ok, "sanitized run-dir root resolves")
+	expected_suffix := strings.concatenate({"/instances/", bridge_runtime_safe_part(dirty)})
+	testing.expect(t, strings.has_suffix(root, expected_suffix), "id sanitized to one contained component")
+	testing.expect(t, !strings.has_suffix(root, "/etc"), "no traversal to /etc")
+}
+
+@(test)
+fs_run_dir_root_rejects_empty_instance_id :: proc(t: ^testing.T) {
+	_, ok := bridge_fs_run_dir_root("")
+	testing.expect(t, !ok, "empty instance id rejected")
+}
+
+@(test)
+fs_run_dir_prevalidated_list_and_blocks_escape :: proc(t: ^testing.T) {
+	run_dir := fs_test_make_root(t, "rundir_list")
+	defer fs_test_cleanup(run_dir)
+	fs_test_seed_file(t, run_dir, "AGENTS.md", "hello")
+	fs_test_seed_file(t, run_dir, ".heimdall/bin/ham-ctl", "wrapper")
+
+	// Prevalidated root lists the run dir even though it is passed directly (the
+	// call path that a run dir OUTSIDE bridge_fs_root would take). Hidden shown.
+	res := bridge_fs_list_dir("", true, "", 200, run_dir, true)
+	testing.expect(t, res.ok, "prevalidated list ok")
+	testing.expect_value(t, len(res.entries), 2)
+
+	// Traversal above the run dir is still rejected.
+	escape := bridge_fs_list_dir("../..", true, "", 200, run_dir, true)
+	testing.expect(t, !escape.ok, "escape above run dir rejected")
+	testing.expect_value(t, escape.error_code, "path_outside_root")
+}
+
+@(test)
+fs_run_dir_prevalidated_read_and_blocks_escape :: proc(t: ^testing.T) {
+	run_dir := fs_test_make_root(t, "rundir_read")
+	defer fs_test_cleanup(run_dir)
+	fs_test_seed_file(t, run_dir, "CLAUDE.md", "# context")
+	// A sibling outside the run dir (under the shared temp base) to attempt escape.
+	fs_test_seed_file(t, run_dir, "../rundir_read_secret.txt", "secret")
+	defer fs_test_cleanup(strings.concatenate({run_dir, "/../rundir_read_secret.txt"}))
+
+	ok_read := bridge_fs_read_file("CLAUDE.md", run_dir, 0, 0, true)
+	testing.expect(t, ok_read.ok, "prevalidated read ok")
+	testing.expect(t, ok_read.viewable, "file viewable")
+	testing.expect_value(t, ok_read.content, "# context")
+
+	escape := bridge_fs_read_file("../rundir_read_secret.txt", run_dir, 0, 0, true)
+	testing.expect(t, !escape.ok, "read escape above run dir rejected")
+	testing.expect_value(t, escape.error_code, "path_outside_root")
+}
