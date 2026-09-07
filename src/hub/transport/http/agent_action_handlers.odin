@@ -1,6 +1,7 @@
 package http
 
 import "core:fmt"
+import "core:time"
 import "core:strings"
 import "core:strconv"
 import "core:unicode/utf8"
@@ -53,6 +54,8 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 		defer delete(payload)
 		push_service.send_to_user_async(h.push, inst.owner_user_id, payload)
 	}
+	// Ephemeral activity bubble (skip non-actionable system banners).
+	if msg.message_type != "system" do publish_agent_action(h, inst, "chat_send", "sent a message")
 	b := strings.builder_make()
 	write_message_json(&b, msg, h.content)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
@@ -108,13 +111,15 @@ chat_event_preview :: proc(body: string, max_len: int) -> string {
 
 agent_action_chat_send_to_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	target := json_string(params, "to_instance")
 	if target == "" do target = json_string(params, "target_agent_instance_id")
 	msg, saved, err := content_service.send_agent_to_agent(h.content, auth, target, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids")})
 	if !saved do return respond_error(err, req.request_id)
+	// Q3: id-free plain phrase (never resolve the target's name in the emit path).
+	publish_agent_action(h, inst, "chat_send_agent", "messaged another agent")
 	b := strings.builder_make()
 	write_message_json(&b, msg, h.content)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
@@ -129,6 +134,7 @@ agent_action_conversation_set_title_handler :: proc(ctx: rawptr, req: Request) -
 	params := json_object_raw(req.body, "params")
 	c, saved, err := content_service.set_own_conversation_title(h.content, auth, inst.agent_instance_id, json_string(params, "title"))
 	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "conversation_title", "renamed the conversation")
 	b := strings.builder_make()
 	write_chat_json(&b, c)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -146,6 +152,7 @@ agent_action_chain_set_title_handler :: proc(ctx: rawptr, req: Request) -> Respo
 	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
 	chain, saved, err := taskchain_service.set_own_chain_title(h.taskchains, auth, chain_id, json_string(params, "title"))
 	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "chain_title", "renamed the chain")
 	b := strings.builder_make()
 	write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -163,6 +170,7 @@ agent_action_chain_set_description_handler :: proc(ctx: rawptr, req: Request) ->
 	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
 	chain, saved, err := taskchain_service.set_own_chain_description(h.taskchains, auth, chain_id, json_string(params, "description"))
 	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "chain_desc", "updated chain description")
 	b := strings.builder_make()
 	write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -180,6 +188,7 @@ agent_action_chain_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "no chain for this instance; pass chain_id"), req.request_id)
 	chain, got, err := taskchain_service.get_chain(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
 	if !got do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "chain_show", "viewed the chain")
 	b := strings.builder_make()
 	write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -258,6 +267,12 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	fmt.sbprintf(&b, ",\"read\":{{\"marked\":%t,\"marked_count\":%d,\"through_message_id\":\"%s\",\"through_created_at\":\"%s\"}}}}",
 	    mark_read, marked_count, through_message_id, through_created_at)
 
+	// Human-readable activity bubble: 'read inbox (N new)' vs 'checked messages'.
+	if default_mark_read {
+		publish_agent_action(h, inst, "chat_read", fmt.tprintf("read inbox (%d new)", unread_count_before))
+	} else {
+		publish_agent_action(h, inst, "chat_fetch", "checked messages")
+	}
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
@@ -283,12 +298,52 @@ publish_current_task_changed :: proc(h: ^Agent_Action_Handlers, owner_user_id, a
 	events.publish_resource_changed(h.event_bus, owner_user_id, "agent_instance", agent_instance_id, "current_task_changed", strings.to_string(b))
 }
 
+// publish_agent_action emits a lean, ephemeral "agent_action" event to the acting
+// instance's OWNER connection so the dashboard can show a transient activity
+// bubble of what the agent is doing right now. Best-effort and non-blocking:
+// a no-op without an event bus (test wiring) or an owner. The caller composes a
+// short, human-readable, id-FREE summary; agent_action_event_json clips it
+// (rune-safe) and frames it. Never affects the HTTP response.
+publish_agent_action :: proc(h: ^Agent_Action_Handlers, inst: domain.Agent_Instance, action, summary: string) {
+	if h == nil || h.event_bus == nil do return
+	owner := string(inst.owner_user_id)
+	if owner == "" || inst.agent_instance_id == "" do return
+	event := agent_action_event_json(inst.agent_instance_id, action, summary)
+	defer delete(event)
+	events.publish_raw_to_user(h.event_bus, owner, event)
+}
+
+// Max runes for an activity-bubble summary (matches the client's ~40-60 char cap).
+AGENT_ACTION_SUMMARY_MAX :: 60
+
+// agent_action_event_json builds the ephemeral {"type":"agent_action",...} frame.
+// Split out from publish_agent_action so a unit test can assert the payload shape
+// and id-free summary without a live event bus. summary is clipped rune-safe to
+// AGENT_ACTION_SUMMARY_MAX runes (reusing chat_event_preview) so a long preview
+// can't bloat the frame. ts is hub unix-ms (the client uses it for the replay window).
+agent_action_event_json :: proc(agent_instance_id, action, summary: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"agent_action","instance_id":"`)
+	write_handler_json_string(&b, agent_instance_id)
+	strings.write_string(&b, `","action":"`)
+	write_handler_json_string(&b, action)
+	strings.write_string(&b, `","summary":"`)
+	clipped := chat_event_preview(summary, AGENT_ACTION_SUMMARY_MAX)
+	defer delete(clipped)
+	write_handler_json_string(&b, clipped)
+	strings.write_string(&b, `","ts":`)
+	strings.write_string(&b, fmt.tprintf("%d", time.to_unix_nanoseconds(time.now()) / 1_000_000))
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
 agent_action_agents_live_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	instances, err := agent_service.list_instances_filtered(h.agents, auth, agent_service.List_Instances_Filter{runtime_status = "live"})
 	if err.code != .None do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "agents_live", "listed live agents")
 	b := strings.builder_make()
 	strings.write_byte(&b, '[')
 	for inst, i in instances { if i > 0 do strings.write_byte(&b, ','); write_agent_instance_json(&b, inst) }
@@ -318,6 +373,7 @@ agent_action_context_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	write_agent_current_task_json(&b, h, auth, inst)
 	strings.write_string(&b, ",\"next_cursor\":\""); write_handler_json_string(&b, auth_ctx_server_time(req)); strings.write_string(&b, "\"")
 	strings.write_byte(&b, '}')
+	publish_agent_action(h, inst, "context", "refreshed context")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
@@ -327,7 +383,7 @@ agent_action_context_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // shared write_task_detail_json via a lightweight Taskchain_Handlers view.
 agent_action_task_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	task_id := domain.Task_ID(json_string(params, "task_id"))
@@ -335,6 +391,7 @@ agent_action_task_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	task, got, err := taskchain_service.get_task(h.taskchains, auth, task_id)
 	if !got do return respond_error(err, req.request_id)
 	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth, task.chain_id)
+	publish_agent_action(h, inst, "task_show", "opened a task")
 	tch := Taskchain_Handlers{auth = h.auth, taskchains = h.taskchains, agents = h.agents, event_bus = h.event_bus}
 	b := strings.builder_make()
 	write_task_detail_json(&b, &tch, auth, task, deps)
@@ -345,11 +402,12 @@ agent_action_task_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // task_id alone (chain derived server-side). ?last is passed as a param.
 agent_action_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	task_id := domain.Task_ID(json_string(params, "task_id"))
 	if strings.trim_space(string(task_id)) == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
+	publish_agent_action(h, inst, "task_comments", "read task comments")
 	last := 0
 	if v := strings.trim_space(json_string(params, "last")); v != "" { if n, parsed := strconv.parse_int(v); parsed { last = n } }
 	if last > TASK_COMMENTS_LAST_MAX do last = TASK_COMMENTS_LAST_MAX
@@ -375,6 +433,7 @@ agent_action_task_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	tasks, err := taskchain_service.list_tasks(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
 	if err.code != .None do return respond_error(err, req.request_id)
 	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
+	publish_agent_action(h, inst, "task_list", "viewed tasks")
 	tch := Taskchain_Handlers{auth = h.auth, taskchains = h.taskchains, agents = h.agents, event_bus = h.event_bus}
 	b := strings.builder_make(); strings.write_byte(&b, '[')
 	for task, i in tasks { if i > 0 do strings.write_byte(&b, ','); write_task_detail_json(&b, &tch, auth, task, deps, false) }
@@ -384,12 +443,13 @@ agent_action_task_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 agent_action_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	notify := json_array_of_strings_raw(params, "notify")
 	comment, notified, saved, err := taskchain_service.comment_task(h.taskchains, auth, taskchain_service.Task_Comment_Input{task_id = domain.Task_ID(json_string(params, "task_id")), body = json_string(params, "body"), notify = notify})
 	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "task_comment", fmt.tprintf("commented: %s", json_string(params, "body")))
 	b := strings.builder_make()
 	write_task_comment_response_json(&b, comment, notified)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
@@ -397,13 +457,14 @@ agent_action_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response
 
 agent_action_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	status, status_ok := task_status_from_http(json_string(params, "status"))
 	if !status_ok do return respond_error(domain.domain_error(.Validation_Failed, "task status is invalid"), req.request_id)
 	task, changed, err := taskchain_service.change_task_status(h.taskchains, auth, domain.Task_ID(json_string(params, "task_id")), status)
 	if !changed do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "task_status", fmt.tprintf("set status \u2192 %s", task_status_http(task.status)))
 	b := strings.builder_make()
 	write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -424,6 +485,7 @@ agent_action_task_set_current_handler :: proc(ctx: rawptr, req: Request) -> Resp
 	saved, set_ok, err := taskchain_service.set_instance_current_task(h.taskchains, auth, inst.agent_instance_id, task_id)
 	if !set_ok do return respond_error(err, req.request_id)
 	publish_current_task_changed(h, string(saved.owner_user_id), saved.agent_instance_id, saved.current_task_id, domain.current_task_role_string(saved.current_task_role))
+	publish_agent_action(h, inst, "task_set_current", "switched to a task")
 	b := strings.builder_make()
 	strings.write_string(&b, `{"agent_instance_id":"`)
 	write_handler_json_string(&b, saved.agent_instance_id)
@@ -437,13 +499,17 @@ agent_action_task_set_current_handler :: proc(ctx: rawptr, req: Request) -> Resp
 
 agent_action_task_nudge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	message := json_string(params, "message")
 	if message == "" do message = json_string(params, "body")
 	nudge, sent, err := taskchain_service.manual_nudge(h.taskchains, auth, domain.Task_ID(json_string(params, "task_id")), message)
 	if !sent do return respond_error(err, req.request_id)
+	// Q3: role is available without a DB lookup; fall back to a plain phrase.
+	nudge_role := taskchain_service.target_string(nudge.target)
+	nudge_summary := nudge_role != "" ? fmt.tprintf("nudged %s", nudge_role) : "nudged a teammate"
+	publish_agent_action(h, inst, "task_nudge", nudge_summary)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"task_id":"`)
 	write_handler_json_string(&b, string(nudge.task_id))
@@ -487,6 +553,7 @@ agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		reviewer_refs_json = json_array_optional(params, "reviewer_refs"),
 	})
 	if !created do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "task_create", fmt.tprintf("created task \"%s\"", task.title))
 	b := strings.builder_make()
 	write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
@@ -529,6 +596,7 @@ agent_action_task_update_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		has_depends_on = has_deps,
 	})
 	if !updated do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "task_update", "updated a task")
 	b := strings.builder_make()
 	write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -551,6 +619,7 @@ agent_action_task_depend_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	}
 	dep, added, err := taskchain_service.add_task_dependency(h.taskchains, auth, task_id, depends_on_task_id)
 	if !added do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "task_depend", "linked a task dependency")
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"task_id\":\""); write_handler_json_string(&b, string(dep.task_id)); strings.write_string(&b, "\",\"depends_on_task_id\":\""); write_handler_json_string(&b, string(dep.depends_on_task_id)); strings.write_string(&b, "\"}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
@@ -558,7 +627,7 @@ agent_action_task_depend_handler :: proc(ctx: rawptr, req: Request) -> Response 
 
 agent_action_task_vote_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	task_id := domain.Task_ID(json_string(params, "task_id"))
@@ -567,6 +636,8 @@ agent_action_task_vote_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	comment := json_string(params, "comment")
 	vote, recorded, err := taskchain_service.record_task_vote(h.taskchains, auth, taskchain_service.Vote_Input{task_id = task_id, vote = result, comment = comment})
 	if !recorded do return respond_error(err, req.request_id)
+	vote_label := result == "lgtm" ? "LGTM" : (result == "ngtm" ? "NGTM" : result)
+	publish_agent_action(h, inst, "task_vote", fmt.tprintf("voted %s", vote_label))
 	b := strings.builder_make()
 	write_task_vote_json(&b, vote)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -587,6 +658,7 @@ agent_action_artifact_create_handler :: proc(ctx: rawptr, req: Request) -> Respo
 	}
 	artifact, saved, err := content_service.create_artifact(h.content, auth, content_service.Artifact_Input{kind = json_string(params, "kind"), name = json_string(params, "name"), description = json_string(params, "description"), content_type = json_string(params, "content_type"), content = content, filename = json_string(params, "filename"), agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, chain_id = inst.chain_id, project_id = inst.project_id})
 	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "artifact_create", fmt.tprintf("created artifact \"%s\"", artifact.name))
 	b := strings.builder_make()
 	write_artifact_json(&b, artifact, false)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
@@ -594,10 +666,11 @@ agent_action_artifact_create_handler :: proc(ctx: rawptr, req: Request) -> Respo
 
 agent_action_artifact_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	rows, err := content_service.list_artifacts(h.content, auth)
 	if err.code != .None do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "artifact_list", "listed artifacts")
 	b := strings.builder_make()
 	strings.write_byte(&b, '[')
 	for artifact, i in rows { if i > 0 do strings.write_byte(&b, ','); write_artifact_json(&b, artifact, false) }
@@ -607,7 +680,7 @@ agent_action_artifact_list_handler :: proc(ctx: rawptr, req: Request) -> Respons
 
 agent_action_artifact_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	artifact_id := json_string(params, "artifact_id")
@@ -615,6 +688,7 @@ agent_action_artifact_show_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	if artifact_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "artifact_id is required"), req.request_id)
 	artifact, got, err := content_service.get_artifact(h.content, auth, artifact_id)
 	if !got do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "artifact_show", "opened an artifact")
 	with_content := strings.contains(params, "\"with_content\":true")
 	b := strings.builder_make()
 	write_artifact_json(&b, artifact, with_content)
@@ -623,7 +697,7 @@ agent_action_artifact_show_handler :: proc(ctx: rawptr, req: Request) -> Respons
 
 agent_action_artifact_content_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
-	auth, _, ok, resp := require_instance_action_auth(h, req)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
 	artifact_id := json_string(params, "artifact_id")
@@ -631,6 +705,7 @@ agent_action_artifact_content_handler :: proc(ctx: rawptr, req: Request) -> Resp
 	if artifact_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "artifact_id is required"), req.request_id)
 	artifact, got, err := content_service.get_artifact(h.content, auth, artifact_id)
 	if !got do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "artifact_content", "read an artifact")
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"artifact_id\":\""); write_handler_json_string(&b, artifact.artifact_id)
 	strings.write_string(&b, "\",\"name\":\""); write_handler_json_string(&b, artifact.name)
@@ -658,6 +733,7 @@ agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Respon
 	bridge_ids := json_string_array(params, "bridge_ids")
 	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = "pending"})
 	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "memory_propose", fmt.tprintf("proposed memory \"%s\"", mem.title))
 	b := strings.builder_make()
 	write_memory_json(&b, mem, false)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
