@@ -410,6 +410,35 @@ fs_run_dir_root_rejects_empty_instance_id :: proc(t: ^testing.T) {
 }
 
 @(test)
+fs_run_dir_root_canonicalizes_symlinked_base :: proc(t: ^testing.T) {
+	// Regression: on hosts where the instances base traverses a symlink (e.g.
+	// macOS /tmp -> /private/tmp), the raw (unresolved) base failed to prefix-match
+	// the symlink-resolved run dir, so every run-dir op returned path_outside_root.
+	// bridge_fs_run_dir_root must canonicalize the base before the containment check.
+	real_base := fs_test_make_root(t, "rundir_symlink_real")
+	defer fs_test_cleanup(real_base)
+	// A sibling symlink pointing at the real base; configure the LINK path as the
+	// run dir so resolution has to follow the symlink.
+	link_base := strings.concatenate({real_base, "_link"})
+	defer fs_test_cleanup(link_base)
+	if os.symlink(real_base, link_base) != nil {
+		testing.expect(t, false, "could not create symlink base (platform lacks symlink support)")
+		return
+	}
+	bridge_config.local_endpoint_run_dir = link_base
+
+	root, ok := bridge_fs_run_dir_root("inst_symlink1")
+	testing.expect(t, ok, "run-dir root resolves through a symlinked base")
+	testing.expect(t, strings.has_suffix(root, "/instances/inst_symlink1"), "root ends at <id>")
+
+	// End-to-end: a listing through the resolved run dir succeeds (no path_outside_root).
+	fs_test_seed_file(t, root, "AGENTS.md", "hi")
+	res := bridge_fs_list_dir("", true, "", 200, root, true)
+	testing.expect(t, res.ok, "list through symlinked run dir ok (no path_outside_root)")
+	testing.expect_value(t, len(res.entries), 1)
+}
+
+@(test)
 fs_run_dir_prevalidated_list_and_blocks_escape :: proc(t: ^testing.T) {
 	run_dir := fs_test_make_root(t, "rundir_list")
 	defer fs_test_cleanup(run_dir)

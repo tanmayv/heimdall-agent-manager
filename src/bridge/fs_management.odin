@@ -52,20 +52,7 @@ bridge_fs_init :: proc(configured_root: string, read_page_bytes: i64 = BRIDGE_FS
 	// would never prefix-match and every project-scoped fs op would fail with
 	// path_outside_root. Resolve the existing prefix here too so both sides compare
 	// the same real path.
-	real_prefix, tail := bridge_fs_realpath_existing_prefix(root)
-	if real_prefix != "" {
-		resolved := real_prefix
-		if tail != "" {
-			if joined, jerr := filepath.join([]string{real_prefix, tail}, context.allocator); jerr == nil do resolved = joined
-		}
-		bridge_fs_root = resolved
-	} else if resolved, err := os.get_absolute_path(root, context.allocator); err == nil {
-		// Root does not exist yet: fall back to absolute (non-symlink-resolved).
-		bridge_fs_root = resolved
-	} else {
-		// Cannot resolve at all: keep the expanded form (lexical containment only).
-		bridge_fs_root = strings.clone(root)
-	}
+	bridge_fs_root = bridge_fs_canonicalize_existing(root)
 	fmt.printfln("bridge fs sandbox root: %s (chunk_size: %d bytes)", bridge_fs_root, bridge_fs_read_page_bytes)
 }
 
@@ -340,6 +327,26 @@ bridge_fs_realpath_existing_prefix :: proc(path: string) -> (real_prefix: string
 	}
 }
 
+// bridge_fs_canonicalize_existing resolves symlinks on the existing prefix of
+// `path` and re-appends any not-yet-existing tail, yielding a canonical absolute
+// path suitable for containment comparisons. This matters on hosts where a root
+// traverses a symlink (e.g. macOS /tmp -> /private/tmp): a raw, unresolved root
+// would never prefix-match a symlink-resolved request. Falls back to
+// os.get_absolute_path (absolute, not symlink-resolved) when nothing on the path
+// exists yet, and finally to a clone of the input if even that fails. Always
+// returns a freshly allocated string.
+bridge_fs_canonicalize_existing :: proc(path: string) -> string {
+	real_prefix, tail := bridge_fs_realpath_existing_prefix(path)
+	if real_prefix != "" {
+		if tail != "" {
+			if joined, jerr := filepath.join([]string{real_prefix, tail}, context.allocator); jerr == nil do return joined
+		}
+		return real_prefix
+	}
+	if resolved, err := os.get_absolute_path(path, context.allocator); err == nil do return resolved
+	return strings.clone(path)
+}
+
 bridge_fs_is_within_root :: proc(abs_path: string, sandbox_root: string = "") -> bool {
 	root := sandbox_root if sandbox_root != "" else bridge_fs_root
 	if root == "" do return false
@@ -379,9 +386,15 @@ bridge_fs_run_dir_root :: proc(instance_id: string) -> (root: string, ok: bool) 
 	defer delete(run_dir, context.allocator)
 	base_root := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
 	if base_root == "" do base_root = "/tmp/heimdall-bridge-local"
-	base := strings.concatenate({base_root, "/instances"}, context.allocator)
+	base_raw := strings.concatenate({base_root, "/instances"}, context.allocator)
+	defer delete(base_raw, context.allocator)
+	// Canonicalize the instances base (symlink-resolve its existing prefix) BEFORE
+	// the containment check. bridge_fs_resolve_within symlink-resolves the requested
+	// run_dir, so on hosts where the base traverses a symlink (e.g. macOS
+	// /tmp -> /private/tmp) a raw base would never prefix-match and every run-dir op
+	// would fail with path_outside_root. Mirrors bridge_fs_init's global-root resolve.
+	base := bridge_fs_canonicalize_existing(base_raw)
 	defer delete(base, context.allocator)
-	// Resolve symlink-free and require containment within the instances base.
 	canonical, within := bridge_fs_resolve_within(run_dir, base)
 	if !within do return "", false
 	return canonical, true
