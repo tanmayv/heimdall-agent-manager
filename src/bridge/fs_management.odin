@@ -372,10 +372,15 @@ bridge_fs_resolve_command_root :: proc(sandbox_root: string, prevalidated: bool)
 bridge_fs_run_dir_root :: proc(instance_id: string) -> (root: string, ok: bool) {
 	id := strings.trim_space(instance_id)
 	if id == "" do return "", false
+	// run_dir + base are temporaries used only for the containment check below; the
+	// returned `canonical` is separately allocated, so free these to avoid a per-
+	// request leak.
 	run_dir := bridge_runtime_default_run_dir(id)
+	defer delete(run_dir, context.allocator)
 	base_root := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
 	if base_root == "" do base_root = "/tmp/heimdall-bridge-local"
 	base := strings.concatenate({base_root, "/instances"}, context.allocator)
+	defer delete(base, context.allocator)
 	// Resolve symlink-free and require containment within the instances base.
 	canonical, within := bridge_fs_resolve_within(run_dir, base)
 	if !within do return "", false
