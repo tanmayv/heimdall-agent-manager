@@ -19,11 +19,22 @@ nix build .#ham-ctl -o result-ctl
 nix build .#ham-pty-host -o result-ptyhost
 
 echo "[bundle] 2. Copying binaries..."
-cp "$(readlink -f result-hub/bin/ham-hub)" "$BUNDLE_DIR/bin/ham-hub"
-cp "$(readlink -f result-bridge/bin/ham-bridge)" "$BUNDLE_DIR/bin/ham-bridge"
+if [ -f "result-hub/bin/.ham-hub-wrapped" ]; then
+  cp "$(readlink -f result-hub/bin/.ham-hub-wrapped)" "$BUNDLE_DIR/bin/ham-hub"
+else
+  cp "$(readlink -f result-hub/bin/ham-hub)" "$BUNDLE_DIR/bin/ham-hub"
+fi
+
+if [ -f "result-bridge/bin/.ham-bridge-wrapped" ]; then
+  cp "$(readlink -f result-bridge/bin/.ham-bridge-wrapped)" "$BUNDLE_DIR/bin/ham-bridge"
+else
+  cp "$(readlink -f result-bridge/bin/ham-bridge)" "$BUNDLE_DIR/bin/ham-bridge"
+fi
+
 cp "$(readlink -f result-devproxy/bin/ham-dev-proxy)" "$BUNDLE_DIR/bin/ham-dev-proxy"
 cp "$(readlink -f result-ctl/bin/ham-ctl)" "$BUNDLE_DIR/bin/ham-ctl"
 cp "$(readlink -f result-ptyhost/bin/ham-pty-host)" "$BUNDLE_DIR/bin/ham-pty-host"
+chmod u+w "$BUNDLE_DIR/bin/"*
 chmod +x "$BUNDLE_DIR/bin/"*
 
 echo "[bundle] 3. Copying migrations & configs..."
@@ -175,17 +186,30 @@ systemctl --user enable --now heimdall.service
 READMEEOF
 
 echo "[bundle] 5. De-Nixifying ELF binaries via patchelf..."
+chmod u+w "$BUNDLE_DIR/bin/"*
 nix-shell -p patchelf --run "
 for bin in '$BUNDLE_DIR'/bin/*; do
   [ -f \"\$bin\" ] || continue
   # Extract any non-standard store dependencies
   for lib in \$(ldd \"\$bin\" 2>/dev/null | grep '/nix/store' | awk '{print \$3}'); do
     if [ -f \"\$lib\" ]; then
-      cp -n \"\$lib\" '$BUNDLE_DIR/lib/' || true
+      case \"\$lib\" in
+        *libc.so*|*libm.so*|*libpthread.so*|*libdl.so*|*ld-linux*)
+          ;;
+        *)
+          cp -n \"\$lib\" '$BUNDLE_DIR/lib/' || true
+          ;;
+      esac
     fi
   done
-  patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 \"\$bin\" 2>/dev/null || true
-  patchelf --set-rpath '\$ORIGIN/../lib:\$ORIGIN' \"\$bin\" 2>/dev/null || true
+  patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 \"\$bin\"
+  patchelf --set-rpath '\$ORIGIN/../lib:\$ORIGIN' \"\$bin\"
+done
+chmod -R u+w '$BUNDLE_DIR/lib/' 2>/dev/null || true
+for f in '$BUNDLE_DIR'/lib/libsqlite3.so.*; do
+  if [ -f \"\$f\" ] && [ ! -f '$BUNDLE_DIR'/lib/libsqlite3.so ]; then
+    ln -s \"\$(basename \"\$f\")\" '$BUNDLE_DIR'/lib/libsqlite3.so
+  fi
 done
 "
 
