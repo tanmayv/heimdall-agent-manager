@@ -10,6 +10,21 @@ import Icon from './Icon';
 
 function str(v: any): string { return String(v ?? '').trim(); }
 
+function normalizeGoogle3Path(raw: string): string {
+  const clean = String(raw ?? '').trim().replace(/^google3\/?/, '');
+  const segments = clean.split('/').filter(Boolean);
+  const resolved: string[] = [];
+  for (const seg of segments) {
+    if (seg === '.') continue;
+    if (seg === '..') {
+      resolved.pop();
+    } else {
+      resolved.push(seg);
+    }
+  }
+  return resolved.join('/');
+}
+
 export default function FigDirectoryPicker({
   bridgeId,
   workspace,
@@ -36,12 +51,22 @@ export default function FigDirectoryPicker({
   const [jumpInput, setJumpInput] = useState(initialPath);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
+  // Guard against concurrency race conditions and out-of-order responses
+  const reqSeqRef = useState(() => ({ current: 0 }))[0];
+  const activePathRef = useState(() => ({ current: initialPath }))[0];
+
   // Load a directory (resets pagination to page 1)
   async function load(path: string) {
-    const cleanPath = path.replace(/^google3\/?/, '').replace(/^\/+|\/+$/g, '');
+    const cleanPath = normalizeGoogle3Path(path);
+    const reqSeq = ++reqSeqRef.current;
+    activePathRef.current = cleanPath;
     setError('');
     setFilterText('');
     setJumpInput(cleanPath);
+    setCwd(cleanPath);
+    setEntries([]);
+    setNextCursor('');
+    setHasMore(false);
     try {
       const res = await listFigFs({
         bridgeId,
@@ -51,33 +76,41 @@ export default function FigDirectoryPicker({
         limit: 50,
       }).unwrap();
 
+      if (reqSeq !== reqSeqRef.current) return; // Discard obsolete response
+
       if (!res.ok) {
         setError(str(res.message) || res.error_code || 'Could not open directory');
         return;
       }
 
-      setCwd(cleanPath);
       setEntries(res.entries || []);
       setNextCursor(res.next_cursor || '');
       setHasMore(Boolean(res.has_more));
     } catch (e: any) {
-      setError(str(e?.error || e?.message) || 'Bridge unavailable');
+      if (reqSeq !== reqSeqRef.current) return;
+      setError(str(e?.data?.error?.message || e?.error || e?.message) || 'Bridge unavailable');
     }
   }
 
-  // Load more entries using cursor
+  // Load more entries using cursor (guards against directory switching during in-flight pagination)
   async function loadMore() {
     if (!hasMore || !nextCursor || isLoadingMore) return;
+    const targetPath = activePathRef.current;
+    const reqSeq = reqSeqRef.current;
     setIsLoadingMore(true);
     setError('');
     try {
       const res = await listFigFs({
         bridgeId,
         workspace,
-        path: cwd,
+        path: targetPath,
         cursor: nextCursor,
         limit: 50,
       }).unwrap();
+
+      if (reqSeq !== reqSeqRef.current || activePathRef.current !== targetPath) {
+        return; // Directory changed while paginating, discard stale page
+      }
 
       if (!res.ok) {
         setError(str(res.message) || res.error_code || 'Could not load more items');
@@ -88,7 +121,8 @@ export default function FigDirectoryPicker({
       setNextCursor(res.next_cursor || '');
       setHasMore(Boolean(res.has_more));
     } catch (e: any) {
-      setError(str(e?.error || e?.message) || 'Failed to load more');
+      if (reqSeq !== reqSeqRef.current || activePathRef.current !== targetPath) return;
+      setError(str(e?.data?.error?.message || e?.error || e?.message) || 'Failed to load more');
     } finally {
       setIsLoadingMore(false);
     }

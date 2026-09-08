@@ -60,7 +60,7 @@ npx vite build --outDir "$BUNDLE_DIR/ui"
 echo "[bundle] 4. Writing start.sh and stop.sh..."
 cat << 'STARTEOF' > "$BUNDLE_DIR/start.sh"
 #!/usr/bin/env bash
-# One-click startup script for Heimdall Cloudtop Single-Node
+# One-click startup script for Heimdall Cloudtop (Single-Node or Standalone Remote Bridge)
 set -euo pipefail
 
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,13 +89,121 @@ fi
 mkdir -p "$DATA_DIR" "$RUN_DIR" "$LOG_DIR"
 chmod 0700 "$DATA_DIR"
 
-echo "=== Heimdall Agent Manager (Cloudtop Single-Node) ==="
+# 1. Detect Standalone Remote Bridge Mode
+IS_STANDALONE=false
+STANDALONE_HUB_URL=""
 
-# 1. Check LOAS / gcert
+for arg in "$@"; do
+  case "$arg" in
+    --standalone)
+      IS_STANDALONE=true
+      ;;
+  esac
+done
+
+if [ -f "$DATA_DIR/standalone.env" ]; then
+  # shellcheck source=/dev/null
+  source "$DATA_DIR/standalone.env"
+  if [ "${HEIMDALL_STANDALONE:-false}" = "true" ]; then
+    IS_STANDALONE=true
+    STANDALONE_HUB_URL="${HEIMDALL_HUB_URL:-}"
+  fi
+fi
+
+# 2. Check LOAS / gcert
 if command -v gcertstatus >/dev/null 2>&1; then
   echo "[gcert] Checking LOAS certificate status..."
   gcertstatus 2>&1 | head -n 2 || true
 fi
+
+# =========================================================================
+# STANDALONE REMOTE BRIDGE MODE
+# =========================================================================
+if [ "$IS_STANDALONE" = true ]; then
+  echo "========================================================================"
+  echo "    Heimdall Remote Bridge (Cloudtop Standalone Mode)"
+  echo "========================================================================"
+  if [ -z "$STANDALONE_HUB_URL" ]; then
+    echo "[-] Error: Standalone mode enabled but HEIMDALL_HUB_URL is not set."
+    echo "    Re-run install.sh --standalone or set HEIMDALL_HUB_URL in $DATA_DIR/standalone.env"
+    exit 1
+  fi
+
+  BRIDGE_LOG="$LOG_DIR/bridge.log"
+  BRIDGE_PID_FILE="$RUN_DIR/bridge.pid"
+  BRIDGE_PORT="${HEIMDALL_BRIDGE_PORT:-49323}"
+  BRIDGE_ENDPOINT_PORT="${HEIMDALL_BRIDGE_ENDPOINT_PORT:-49324}"
+  BRIDGE_RUN_DIR="${HEIMDALL_BRIDGE_RUN_DIR:-/tmp/heimdall-bridge-local}"
+  BRIDGE_TOKEN_FILE="$DATA_DIR/bridge_token_cloudtop"
+
+  # Detect if default port 49323 is already in use
+  if python3 -c "import socket; s=socket.socket(); s.settimeout(0.1); exit(0 if s.connect_ex(('127.0.0.1', int('$BRIDGE_PORT'))) == 0 else 1)" 2>/dev/null; then
+    if [ "$BRIDGE_PORT" = "49323" ]; then
+      echo "[bridge] Port 49323 is occupied; using port 49325 for bridge"
+      BRIDGE_PORT=49325
+      BRIDGE_ENDPOINT_PORT=49326
+      BRIDGE_RUN_DIR="/tmp/heimdall-bridge-standalone"
+    fi
+  fi
+
+  if [ -f "$BRIDGE_PID_FILE" ] && kill -0 "$(cat "$BRIDGE_PID_FILE")" 2>/dev/null; then
+    echo "[bridge] Already running (PID $(cat "$BRIDGE_PID_FILE"))"
+  else
+    echo "[bridge] Starting ham-bridge connected to Central Hub at $STANDALONE_HUB_URL..."
+    export HEIMDALL_HAM_PTY_HOST_BIN="$BIN_DIR/ham-pty-host"
+    export HEIMDALL_HAM_CTL_BIN="$BIN_DIR/ham-ctl"
+    nohup "$BIN_DIR/ham-bridge"       --bind-host 127.0.0.1       --port "$BRIDGE_PORT"       --local-endpoint-port "$BRIDGE_ENDPOINT_PORT"       --hub "$STANDALONE_HUB_URL"       --local-run-dir "$BRIDGE_RUN_DIR"       --bridge-token-file "$BRIDGE_TOKEN_FILE" > "$BRIDGE_LOG" 2>&1 &
+    PID=$!
+    echo $PID > "$BRIDGE_PID_FILE"
+    disown $PID 2>/dev/null || true
+  fi
+
+  # Wait for Bridge port
+  deadline=$((SECONDS + 10))
+  while ! curl -s "http://127.0.0.1:$BRIDGE_PORT/api/v1/health" >/dev/null 2>&1; do
+    if [ $SECONDS -ge $deadline ]; then
+      echo "[-] Bridge failed to start or respond on port $BRIDGE_PORT. Check $BRIDGE_LOG"
+      exit 1
+    fi
+    sleep 0.2
+  done
+
+  HUB_UI_URL="$(echo "$STANDALONE_HUB_URL" | sed -e 's/:49322/:8989/')"
+  echo ""
+  echo "========================================================================"
+  echo "    Heimdall Standalone Remote Bridge is UP!"
+  echo "========================================================================"
+  echo "  Connected to Central Hub:"
+  echo "    $STANDALONE_HUB_URL"
+  echo ""
+  echo "  👉 Open Central Web UI to manage agents & tasks:"
+  echo "    $HUB_UI_URL"
+  echo ""
+  echo "  Bridge Status:   http://127.0.0.1:$BRIDGE_PORT"
+  echo "  Logs:            $BRIDGE_LOG"
+  echo "========================================================================"
+
+  if [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "-f" ]; then
+    trap 'echo "[supervisor] Shutting down Heimdall bridge..."; "$BIN_DIR/stop.sh" || true; exit 0' SIGTERM SIGINT SIGHUP
+    echo "[supervisor] Running in foreground under systemd. Monitoring bridge daemon..."
+    while true; do
+      sleep 2
+      if [ -f "$BRIDGE_PID_FILE" ] && ! kill -0 "$(cat "$BRIDGE_PID_FILE")" 2>/dev/null; then
+        echo "[-] Process ham-bridge died unexpectedly!"
+        exit 1
+      fi
+    done
+  fi
+
+  exit 0
+fi
+
+# =========================================================================
+# FULL SINGLE-NODE STACK (Hub, Bridge, Dev-Proxy, UI)
+# =========================================================================
+echo "========================================================================"
+echo "    Heimdall Agent Manager (Cloudtop Single-Node)"
+echo "========================================================================"
 
 # 2. Start Hub
 HUB_LOG="$LOG_DIR/hub.log"
@@ -134,7 +242,7 @@ BRIDGE_ENDPOINT_PORT="${HEIMDALL_BRIDGE_ENDPOINT_PORT:-49324}"
 BRIDGE_RUN_DIR="${HEIMDALL_BRIDGE_RUN_DIR:-/tmp/heimdall-bridge-local}"
 BRIDGE_TOKEN_FILE="$DATA_DIR/bridge_token_cloudtop"
 
-# Detect if default port 49323 is already in use (e.g. multi-agent supervisor connected to remote hub)
+# Detect if default port 49323 is already in use
 if python3 -c "import socket; s=socket.socket(); s.settimeout(0.1); exit(0 if s.connect_ex(('127.0.0.1', int('$BRIDGE_PORT'))) == 0 else 1)" 2>/dev/null; then
   if [ "$BRIDGE_PORT" = "49323" ]; then
     echo "[bridge] Port 49323 is occupied; using port 49325 for standalone bridge"
@@ -226,7 +334,7 @@ else
   fi
 fi
 
-# Wait for Dev-Proxy and Vite ports
+# Wait for Dev-Proxy port
 deadline=$((SECONDS + 10))
 while ! curl -s "http://127.0.0.1:8989/api/v1/health" >/dev/null 2>&1; do
   if [ $SECONDS -ge $deadline ]; then
@@ -236,42 +344,19 @@ while ! curl -s "http://127.0.0.1:8989/api/v1/health" >/dev/null 2>&1; do
   sleep 0.2
 done
 
-if [ -z "$STATIC_UI_DIR" ]; then
-  deadline=$((SECONDS + 10))
-  while ! curl -s "http://127.0.0.1:5173" >/dev/null 2>&1; do
-    if [ $SECONDS -ge $deadline ]; then
-      echo "[ui] Notice: Vite server is bundling in background. Check $VITE_LOG"
-      break
-    fi
-    sleep 0.2
-  done
-fi
-
 HOST_FQDN="$(hostname | sed 's/\.c\.googlers\.com$//').c.googlers.com"
-echo "=== Heimdall Single-Node Stack is UP ==="
-echo "Access points:"
-echo "  Cloudtop Gateway: http://127.0.0.1:8989 (or http://${HOST_FQDN}:8989)"
-echo "  Hub API:        http://127.0.0.1:49322"
-echo "  Bridge Status:  http://127.0.0.1:$BRIDGE_PORT"
-if [ -z "$STATIC_UI_DIR" ]; then
-  echo "  Vite UI Server: http://127.0.0.1:5173"
-else
-  echo "  Web UI:         Served directly via Cloudtop Gateway (Zero Node.js dependency)"
-fi
-
-if [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "-f" ]; then
-  trap 'echo "[supervisor] Shutting down Heimdall services..."; "$BIN_DIR/stop.sh" || true; exit 0' SIGTERM SIGINT SIGHUP
-  echo "[supervisor] Running in foreground under systemd. Monitoring daemons..."
-  while true; do
-    sleep 2
-    for pidf in "$HUB_PID_FILE" "$BRIDGE_PID_FILE" "$PROXY_PID_FILE"; do
-      if [ -f "$pidf" ] && ! kill -0 "$(cat "$pidf")" 2>/dev/null; then
-        echo "[-] Process $(basename "$pidf" .pid) died unexpectedly!"
-        exit 1
-      fi
-    done
-  done
-fi
+echo ""
+echo "========================================================================"
+echo "    Heimdall Single-Node Stack is UP!"
+echo "========================================================================"
+echo ""
+echo "  👉 Open Web UI:      http://${HOST_FQDN}:8989"
+echo "                       (or http://127.0.0.1:8989)"
+echo ""
+echo "  Hub API:             http://127.0.0.1:49322"
+echo "  Bridge Status:       http://127.0.0.1:$BRIDGE_PORT"
+echo "  Cloudtop Gateway:    http://${HOST_FQDN}:8989"
+echo "========================================================================"
 STARTEOF
 chmod +x "$BUNDLE_DIR/start.sh"
 
@@ -319,35 +404,159 @@ chmod +x "$BUNDLE_DIR/stop.sh"
 chmod +x "$BUNDLE_DIR/stop.sh"
 
 cat << 'READMEEOF' > "$BUNDLE_DIR/README.md"
-# Heimdall Agent Manager - Cloudtop Standalone Bundle
+# Heimdall Cloudtop - Installation & Operations Guide
 
-This bundle contains self-contained ELF binaries and pre-built static UI assets adapted to run on a Google Cloudtop workstation without requiring Nix, Node.js, or compilation.
+Heimdall is an enterprise-grade multi-agent orchestrator optimized for Google Cloudtop workstations. This distribution is 100% self-contained: it includes pre-compiled ELF binaries and pre-built static UI assets with **zero external dependencies** (no Nix, Node.js, npm, or Git required on the target Cloudtop).
 
-## Zero-Dependency Quick Start
-1. Run `./start.sh` to launch the stack on Cloudtop:
-   - Cloudtop Gateway: `http://127.0.0.1:8989` (or `http://<ldap>.c.googlers.com:8989`)
-   - Hub API: `http://127.0.0.1:49322`
-   - Static Web UI is served directly via `ham-dev-proxy` (no Node.js or Vite required).
-2. Run `./stop.sh` to shut down the stack.
+---
 
-## Systemd User Service with Linger
-To run automatically on login / boot with systemd:
+## 1. Quick Start: Interactive Setup (Recommended)
+
+Simply extract the bundle and run `./install.sh`:
+
 ```bash
-./scripts/install-systemd-service.sh
-systemctl --user enable --now heimdall.service
+# 1. Extract the bundle
+mkdir -p ~/.local/share/heimdall
+tar -xzf heimdall-cloudtop-bundle.tar.gz -C ~/.local/share/heimdall
+
+# 2. Run the installer
+cd ~/.local/share/heimdall
+./install.sh
 ```
 
-## MPM Package Deployment
-Alternatively, deploy or update via Google MPM:
+When run interactively in a terminal, `./install.sh` presents a menu:
+- **Option 1: Full Single-Node Stack** (Default) — Runs Central Hub, Web UI (port 8989), Dev-Proxy, and Local Bridge on this workstation.
+- **Option 2: Standalone Remote Bridge** — Prompts for Central Hub URL and Enrollment Token to run this Cloudtop as an execution worker bridge.
+- **Option 3: Uninstall Heimdall** — Safely stops running services, disables systemd units, and removes binaries (with optional data purge).
+
+---
+
+## 2. Quick Start: Mode 1 — Full Single-Node Stack (Scripted)
+
+### What Happens:
+- Installs binaries to `~/.local/share/heimdall/bin/`.
+- Symlinks `ham-ctl` to `~/.local/bin/ham-ctl`.
+- Configures and enables a `systemd --user` service with linger enabled (runs in background across reboots).
+- Starts:
+  * **ham-hub** (Central Hub API) on `127.0.0.1:49322`.
+  * **ham-bridge** (Agent execution bridge) on `127.0.0.1:49323`.
+  * **ham-dev-proxy** (Cloudtop Edge Gateway) on `0.0.0.0:8989`.
+  * **Pre-built Static Web UI** served directly on port 8989.
+
+### Access Points:
+- **Web UI:** `http://<your-hostname>.c.googlers.com:8989` (or `http://127.0.0.1:8989`)
+- **Hub API:** `http://127.0.0.1:49322`
+- **Bridge Status:** `http://127.0.0.1:49323`
+
+---
+
+## 2. Quick Start: Mode 2 — Standalone Remote Bridge (Bridge-Only)
+
+Use this mode if you already have a Central Heimdall Hub running (e.g. on your primary workstation or shared server), and you want this Cloudtop to act **only as an execution worker bridge** that connects back to the Central Hub.
+
+### Installation (Interactive)
+
 ```bash
-mpm install heimdall/cloudtop live ~/.local/share/heimdall
+cd ~/.local/share/heimdall
+./install.sh --standalone
+```
+The script will prompt you for:
+1. **Central Hub URL:** (e.g. `http://my-primary-workstation.c.googlers.com:49322`)
+2. **Hub Enrollment Token:** (Generate in the Central Hub UI: `Settings` -> `Bridges` -> `Add bridge` -> Copy Token)
+
+### Installation (Non-Interactive / Scripted)
+
+```bash
+./install.sh --standalone \
+  --hub "http://my-primary-workstation.c.googlers.com:49322" \
+  --token "<ENROLLMENT_TOKEN>"
+```
+
+### What Happens:
+- Installs only bridge binaries (`ham-bridge`, `ham-pty-host`, `ham-ctl`).
+- Authenticates and enrolls this workstation with the Central Hub via LOAS / Token.
+- Saves the bridge token to `~/.local/share/heimdall/bridge_token_cloudtop`.
+- Starts **only** `ham-bridge` connected back to the remote Central Hub.
+- **Does NOT** start a local Hub, Dev-Proxy, or Web UI.
+- All agents and tasks assigned to this Cloudtop are controlled directly from your Central Hub UI!
+
+---
+
+## 3. Operations & Service Management
+
+### Using systemd (Recommended)
+
+Heimdall installs a user systemd service (`heimdall.service`):
+
+```bash
+# Check service status
+systemctl --user status heimdall.service
+
+# View live service logs
+journalctl --user -u heimdall.service -f
+
+# Restart the service
+systemctl --user restart heimdall.service
+
+# Stop the service
+systemctl --user stop heimdall.service
+
+# Start the service
+systemctl --user start heimdall.service
+```
+
+### Using Management Scripts
+
+You can also control services directly:
+
+```bash
+# Start daemons (detects single-node vs standalone bridge automatically)
 ~/.local/share/heimdall/bin/start.sh
+
+# Stop all daemons
+~/.local/share/heimdall/bin/stop.sh
 ```
 
-## Backups & Snapshots
+---
+
+## 4. Switching Between Modes
+
+You can switch between Full Stack and Standalone Remote Bridge at any time:
+
+- **Switch to Standalone Bridge:**
+  ```bash
+  ./install.sh --standalone --hub <url> --token <token>
+  ```
+- **Switch back to Full Stack:**
+  ```bash
+  ./install.sh
+  ```
+
+---
+
+## 5. Uninstallation
+
+To completely stop running services and remove Heimdall from your system:
+
 ```bash
-./scripts/snapshot-hub.sh export
+cd ~/.local/share/heimdall
+./install.sh --uninstall
 ```
+
+### What the Uninstaller Does:
+1. Stops and disables the `heimdall.service` systemd unit.
+2. Terminates any running Heimdall daemons (`ham-hub`, `ham-bridge`, `ham-dev-proxy`, `ham-pty-host`, `vite`).
+3. Removes the systemd unit file (`~/.config/systemd/user/heimdall.service`).
+4. Removes the CLI symlink (`~/.local/bin/ham-ctl`).
+5. Removes installed binaries, runtime libraries, migrations, and scripts.
+6. **Retains** user database, tokens, and logs in `~/.local/share/heimdall`.
+
+### Complete Purge (Delete All Data)
+To also delete the database, encryption keys, and log files:
+```bash
+./install.sh --uninstall --purge
+```
+
 READMEEOF
 
 echo "[bundle] 5. De-Nixifying ELF binaries via patchelf..."
