@@ -10,3 +10,4 @@ export * from './settings';
 export * from './artifacts';
 export * from './sidebar';
 export * from './actions';
+export * from './bridgeFig';

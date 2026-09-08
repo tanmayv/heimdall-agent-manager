@@ -11,6 +11,13 @@ import {
   type ProjectBridgePath,
 } from "../../api/endpoints/projects";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
+import {
+  useListBridgeFigWorkspacesQuery,
+  useCreateBridgeFigWorkspaceMutation,
+  type FigWorkspace,
+} from "../../api/endpoints/bridgeFig";
+import FigDirectoryPicker from "../FigDirectoryPicker";
+import Icon from "../Icon";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -23,6 +30,7 @@ export default function ProjectsPanel() {
   const bridgesQuery = useListBridgesQuery();
 
   // Create form state
+  const [projectType, setProjectType] = useState<"local" | "fig">("local");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [repoUrl, setRepoUrl] = useState("");
@@ -30,6 +38,18 @@ export default function ProjectsPanel() {
   const [defaultPath, setDefaultPath] = useState("");
   const [createError, setCreateError] = useState("");
   const [creating, setCreating] = useState(false);
+
+  // CitC / Fig state for Create
+  const [selectedBridgeId, setSelectedBridgeId] = useState("");
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [relativePath, setRelativePath] = useState("");
+  const [showFigPicker, setShowFigPicker] = useState(false);
+  const [showNewWorkspaceModal, setShowNewWorkspaceModal] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [newWorkspaceError, setNewWorkspaceError] = useState("");
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+
+  const [createBridgeFigWorkspace] = useCreateBridgeFigWorkspaceMutation();
 
   // Selected project detail view state
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -44,6 +64,9 @@ export default function ProjectsPanel() {
   const [editRepoUrl, setEditRepoUrl] = useState("");
   const [editVcsKind, setEditVcsKind] = useState("git");
   const [editDefaultPath, setEditDefaultPath] = useState("");
+  const [editProjectType, setEditProjectType] = useState("local");
+  const [editWorkspaceName, setEditWorkspaceName] = useState("");
+  const [editRelativePath, setEditRelativePath] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [editSaveError, setEditSaveError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
@@ -58,14 +81,34 @@ export default function ProjectsPanel() {
   const bridgePaths: ProjectBridgePath[] = projectDetailQuery.data?.bridge_paths || selectedProject?.bridge_paths || [];
   const bridges: any[] = bridgesQuery.data?.bridges || [];
 
+  // Default selectedBridgeId to first online bridge (or first bridge)
+  useEffect(() => {
+    if (!selectedBridgeId && bridges.length > 0) {
+      const online = bridges.find((b) => {
+        const s = String(b?.status || b?.runtime_status || "").toLowerCase();
+        return s === "online" || s === "connected";
+      });
+      setSelectedBridgeId(String(online?.bridge_id || online?.bridgeId || online?.id || bridges[0]?.bridge_id || bridges[0]?.bridgeId || bridges[0]?.id || ""));
+    }
+  }, [bridges, selectedBridgeId]);
+
+  const figWorkspacesQuery = useListBridgeFigWorkspacesQuery(
+    { bridgeId: selectedBridgeId },
+    { skip: !selectedBridgeId || projectType !== "fig" }
+  );
+  const figWorkspaces: FigWorkspace[] = figWorkspacesQuery.data?.workspaces || [];
+
   // Update edit form state when selected project changes
   useEffect(() => {
     if (selectedProject) {
       setEditName(selectedProject.name || "");
       setEditDescription(selectedProject.description || "");
       setEditRepoUrl(selectedProject.repo_url || "");
-      setEditVcsKind(selectedProject.vcs_kind || "git");
+      setEditVcsKind(selectedProject.vcs_kind || (selectedProject.project_type === "fig" ? "piper" : "git"));
       setEditDefaultPath(selectedProject.default_path || "");
+      setEditProjectType(selectedProject.project_type || "local");
+      setEditWorkspaceName(selectedProject.workspace_name || "");
+      setEditRelativePath(selectedProject.relative_path || "");
       setEditSaveError("");
       setBridgePathInputs({});
       setBridgeActionError({});
@@ -73,9 +116,36 @@ export default function ProjectsPanel() {
     }
   }, [selectedProject]);
 
+  async function handleCreateWorkspace() {
+    const ws = newWorkspaceName.trim();
+    if (!ws || !selectedBridgeId) return;
+    setNewWorkspaceError("");
+    setCreatingWorkspace(true);
+    try {
+      const res = await createBridgeFigWorkspace({ bridgeId: selectedBridgeId, name: ws }).unwrap();
+      if (!res.ok) {
+        setNewWorkspaceError(res.message || res.error_code || "Failed to create CitC workspace");
+        return;
+      }
+      setWorkspaceName(ws);
+      if (!name.trim()) setName(ws);
+      setNewWorkspaceName("");
+      setShowNewWorkspaceModal(false);
+    } catch (err: any) {
+      setNewWorkspaceError(err?.data?.error?.message || err?.error || err?.message || "Workspace creation failed");
+    } finally {
+      setCreatingWorkspace(false);
+    }
+  }
+
   async function handleCreateProject(e?: React.FormEvent) {
     if (e) e.preventDefault();
-    if (!name.trim() || !defaultPath.trim()) return;
+    if (!name.trim()) return;
+    if (projectType === "local" && !defaultPath.trim()) return;
+    if (projectType === "fig" && !workspaceName.trim()) {
+      setCreateError("CitC workspace name is required");
+      return;
+    }
     setCreateError("");
     setCreating(true);
     try {
@@ -83,16 +153,23 @@ export default function ProjectsPanel() {
         name: name.trim(),
         description: description.trim() || undefined,
         repo_url: repoUrl.trim() || undefined,
-        vcs_kind: vcsKind,
-        default_path: defaultPath.trim(),
+        vcs_kind: projectType === "fig" ? "piper" : vcsKind,
+        default_path: projectType === "fig" ? (defaultPath.trim() || undefined) : defaultPath.trim(),
+        project_type: projectType,
+        workspace_name: projectType === "fig" ? workspaceName.trim() : undefined,
+        relative_path: projectType === "fig" ? relativePath.trim() || undefined : undefined,
       }).unwrap();
       setName("");
       setDescription("");
       setRepoUrl("");
       setVcsKind("git");
       setDefaultPath("");
+      setWorkspaceName("");
+      setRelativePath("");
+      setShowFigPicker(false);
+      setProjectType("local");
     } catch (err: any) {
-      const msg = err?.error || err?.message || String(err || "Unable to create project");
+      const msg = err?.data?.error?.message || err?.error || err?.message || String(err || "Unable to create project");
       setCreateError(msg);
     } finally {
       setCreating(false);
@@ -100,7 +177,12 @@ export default function ProjectsPanel() {
   }
 
   async function handleSaveProject() {
-    if (!selectedProjectId || !editName.trim() || !editDefaultPath.trim()) return;
+    if (!selectedProjectId || !editName.trim()) return;
+    if (editProjectType === "local" && !editDefaultPath.trim()) return;
+    if (editProjectType === "fig" && !editWorkspaceName.trim()) {
+      setEditSaveError("CitC workspace name is required");
+      return;
+    }
     setEditSaveError("");
     setEditSaving(true);
     try {
@@ -109,12 +191,15 @@ export default function ProjectsPanel() {
         name: editName.trim(),
         description: editDescription.trim() || undefined,
         repo_url: editRepoUrl.trim() || undefined,
-        vcs_kind: editVcsKind,
-        default_path: editDefaultPath.trim(),
+        vcs_kind: editProjectType === "fig" ? "piper" : editVcsKind,
+        default_path: editDefaultPath.trim() || undefined,
+        project_type: editProjectType,
+        workspace_name: editProjectType === "fig" ? editWorkspaceName.trim() : undefined,
+        relative_path: editProjectType === "fig" ? editRelativePath.trim() || undefined : undefined,
       }).unwrap();
       setIsEditing(false);
     } catch (err: any) {
-      const msg = err?.error || err?.message || String(err || "Unable to update project");
+      const msg = err?.data?.error?.message || err?.error || err?.message || String(err || "Unable to update project");
       setEditSaveError(msg);
     } finally {
       setEditSaving(false);
@@ -210,7 +295,37 @@ export default function ProjectsPanel() {
 
       {/* Project Creation Form */}
       <div data-debug-id="settings-project-create-form" className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 space-y-4">
-        <h3 className="text-sm font-semibold text-zinc-200 uppercase tracking-wide">Create New Project</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-zinc-200 uppercase tracking-wide">Create New Project</h3>
+          <div data-debug-id="settings-project-type-toggle" className="inline-flex rounded-xl bg-black/40 p-1 border border-white/10">
+            <button
+              data-debug-id="settings-project-type-local-btn"
+              type="button"
+              onClick={() => { setProjectType("local"); setVcsKind("git"); }}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                projectType === "local"
+                  ? "bg-sky-400 text-black shadow"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              Local Directory
+            </button>
+            <button
+              data-debug-id="settings-project-type-fig-btn"
+              type="button"
+              onClick={() => { setProjectType("fig"); setVcsKind("piper"); }}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition flex items-center gap-1.5 ${
+                projectType === "fig"
+                  ? "bg-amber-400 text-black shadow"
+                  : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              <Icon name="folder" size={13} />
+              <span>Fig (CitC)</span>
+            </button>
+          </div>
+        </div>
+
         <form onSubmit={handleCreateProject} className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
@@ -219,23 +334,123 @@ export default function ProjectsPanel() {
                 data-debug-id="settings-project-name-input"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Website Rewrite"
+                placeholder={projectType === "fig" ? "e.g. Fig Workspace Project" : "Website Rewrite"}
                 required
                 className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
               />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path *</label>
-              <input
-                data-debug-id="settings-project-default-path-input"
-                value={defaultPath}
-                onChange={(e) => setDefaultPath(e.target.value)}
-                placeholder="/home/user/projects/my-app"
-                required
-                className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
-              />
-            </div>
+            {projectType === "local" ? (
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path *</label>
+                <input
+                  data-debug-id="settings-project-default-path-input"
+                  value={defaultPath}
+                  onChange={(e) => setDefaultPath(e.target.value)}
+                  placeholder="/home/user/projects/my-app"
+                  required
+                  className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                />
+              </div>
+            ) : (
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-amber-300">CitC Workspace *</label>
+                  <button
+                    data-debug-id="settings-project-fig-new-workspace-btn"
+                    type="button"
+                    onClick={() => { setShowNewWorkspaceModal(true); setNewWorkspaceError(""); }}
+                    className="text-[11px] text-amber-400 hover:underline flex items-center gap-1 font-semibold"
+                  >
+                    <Icon name="plus" size={11} /> + New CitC Workspace
+                  </button>
+                </div>
+                <select
+                  data-debug-id="settings-project-fig-workspace-select"
+                  value={workspaceName}
+                  onChange={(e) => {
+                    const ws = e.target.value;
+                    setWorkspaceName(ws);
+                    if (!name.trim() && ws) setName(ws);
+                  }}
+                  className="w-full min-h-[44px] rounded-xl border border-amber-500/30 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400 font-mono"
+                >
+                  <option value="">-- Select CitC Workspace --</option>
+                  {figWorkspaces.map((ws) => (
+                    <option key={ws.name} value={ws.name}>
+                      {ws.name} {ws.has_google3 ? "✓ (google3)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
+
+          {projectType === "fig" ? (
+            <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">
+                    Relative google3 Path (optional)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      data-debug-id="settings-project-fig-relative-path-input"
+                      value={relativePath}
+                      onChange={(e) => setRelativePath(e.target.value)}
+                      placeholder="e.g. cloud/security or leave blank for google3 root"
+                      className="flex-1 min-h-[38px] rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 font-mono text-xs text-zinc-100 outline-none focus:border-amber-400"
+                    />
+                    <button
+                      data-debug-id="settings-project-fig-browse-btn"
+                      type="button"
+                      disabled={!workspaceName || !selectedBridgeId}
+                      onClick={() => setShowFigPicker((v) => !v)}
+                      className="min-h-[38px] shrink-0 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 disabled:opacity-40"
+                    >
+                      {showFigPicker ? "Hide Browser" : "Browse google3…"}
+                    </button>
+                  </div>
+                </div>
+                {bridges.length > 1 ? (
+                  <div className="w-full sm:w-48">
+                    <label className="block text-xs font-medium text-zinc-400 mb-1">Bridge Host</label>
+                    <select
+                      data-debug-id="settings-project-fig-bridge-select"
+                      value={selectedBridgeId}
+                      onChange={(e) => setSelectedBridgeId(e.target.value)}
+                      className="w-full min-h-[38px] rounded-xl border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"
+                    >
+                      {bridges.map((b) => (
+                        <option key={b.bridge_id || b.id} value={b.bridge_id || b.id}>
+                          {b.label || b.machine_hostname || b.bridge_id || b.id}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="text-[11px] text-zinc-400 font-mono pt-1 truncate">
+                Default path preview: <span className="text-amber-300">/google/src/cloud/…/{workspaceName || "<workspace>"}/google3{relativePath ? `/${relativePath}` : ""}</span>
+              </div>
+
+              {showFigPicker && workspaceName && selectedBridgeId ? (
+                <div className="pt-2">
+                  <FigDirectoryPicker
+                    debugId="settings-project-fig-picker"
+                    bridgeId={selectedBridgeId}
+                    workspace={workspaceName}
+                    initialPath={relativePath}
+                    onPick={(p) => {
+                      setRelativePath(p);
+                      setShowFigPicker(false);
+                    }}
+                    onClose={() => setShowFigPicker(false)}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
@@ -255,7 +470,7 @@ export default function ProjectsPanel() {
                 data-debug-id="settings-project-repo-input"
                 value={repoUrl}
                 onChange={(e) => setRepoUrl(e.target.value)}
-                placeholder="https://github.com/org/repo"
+                placeholder={projectType === "fig" ? "//depot/google3" : "https://github.com/org/repo"}
                 className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
               />
             </div>
@@ -270,6 +485,7 @@ export default function ProjectsPanel() {
                 <option value="none">none</option>
                 <option value="git">git</option>
                 <option value="jj">jj</option>
+                <option value="piper">piper</option>
               </select>
             </div>
           </div>
@@ -283,13 +499,62 @@ export default function ProjectsPanel() {
           <button
             data-debug-id="settings-project-create-btn"
             type="submit"
-            disabled={!name.trim() || !defaultPath.trim() || creating}
-            className="min-h-[44px] w-full rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black disabled:opacity-50 sm:w-auto hover:bg-sky-300"
+            disabled={!name.trim() || (projectType === "local" ? !defaultPath.trim() : !workspaceName.trim()) || creating}
+            className={`min-h-[44px] w-full rounded-xl px-4 py-2 text-sm font-semibold text-black disabled:opacity-50 sm:w-auto ${
+              projectType === "fig" ? "bg-amber-400 hover:bg-amber-300" : "bg-sky-400 hover:bg-sky-300"
+            }`}
           >
             {creating ? "Creating…" : "Create project"}
           </button>
         </form>
       </div>
+
+      {/* New CitC Workspace Modal */}
+      {showNewWorkspaceModal ? (
+        <div data-debug-id="settings-project-fig-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-amber-500/30 bg-[#12141a] p-5 shadow-2xl space-y-4">
+            <h3 className="text-base font-semibold text-white flex items-center gap-2">
+              <Icon name="folder" size={16} className="text-amber-400" />
+              <span>Create New CitC Workspace</span>
+            </h3>
+            <p className="text-xs text-zinc-400">
+              Runs <code className="font-mono text-amber-300">g4 citc -q --head &lt;name&gt;</code> on the bridge host to create a fresh CitC client.
+            </p>
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1">Workspace Name *</label>
+              <input
+                data-debug-id="settings-project-fig-modal-name-input"
+                value={newWorkspaceName}
+                onChange={(e) => setNewWorkspaceName(e.target.value)}
+                placeholder="e.g. feat-mobile-sync"
+                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-amber-400 font-mono"
+              />
+            </div>
+            {newWorkspaceError ? (
+              <p className="text-xs text-red-300">{newWorkspaceError}</p>
+            ) : null}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                data-debug-id="settings-project-fig-modal-cancel-btn"
+                type="button"
+                onClick={() => { setShowNewWorkspaceModal(false); setNewWorkspaceError(""); }}
+                className="rounded-xl border border-white/10 px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                data-debug-id="settings-project-fig-modal-submit-btn"
+                type="button"
+                disabled={!newWorkspaceName.trim() || creatingWorkspace}
+                onClick={handleCreateWorkspace}
+                className="rounded-xl bg-amber-400 px-4 py-2 text-xs font-bold text-black hover:bg-amber-300 disabled:opacity-50"
+              >
+                {creatingWorkspace ? "Creating…" : "Create Workspace"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Project Detail View or Project List */}
       {selectedProjectId ? (
@@ -350,6 +615,28 @@ export default function ProjectsPanel() {
                       </div>
                     </div>
 
+                    {editProjectType === "fig" ? (
+                      <div className="grid gap-3 sm:grid-cols-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
+                        <div>
+                          <label className="block text-xs font-medium text-amber-300 mb-1">CitC Workspace</label>
+                          <input
+                            value={editWorkspaceName}
+                            onChange={(e) => setEditWorkspaceName(e.target.value)}
+                            className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400 font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-amber-300 mb-1">Relative google3 Path</label>
+                          <input
+                            value={editRelativePath}
+                            onChange={(e) => setEditRelativePath(e.target.value)}
+                            placeholder="e.g. cloud/security"
+                            className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400 font-mono"
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+
                     <div>
                       <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
                       <input
@@ -378,6 +665,7 @@ export default function ProjectsPanel() {
                           <option value="none">none</option>
                           <option value="git">git</option>
                           <option value="jj">jj</option>
+                          <option value="piper">piper</option>
                         </select>
                       </div>
                     </div>
@@ -398,8 +686,10 @@ export default function ProjectsPanel() {
                         data-debug-id={`settings-project-save-btn-${selectedProjectId}`}
                         type="button"
                         onClick={() => void handleSaveProject()}
-                        disabled={editSaving || !editName.trim() || !editDefaultPath.trim()}
-                        className="rounded-xl bg-sky-400 px-4 py-1.5 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-50"
+                        disabled={editSaving || !editName.trim() || (editProjectType === "local" && !editDefaultPath.trim()) || (editProjectType === "fig" && !editWorkspaceName.trim())}
+                        className={`rounded-xl px-4 py-1.5 text-xs font-semibold text-black disabled:opacity-50 ${
+                          editProjectType === "fig" ? "bg-amber-400 hover:bg-amber-300" : "bg-sky-400 hover:bg-sky-300"
+                        }`}
                       >
                         {editSaving ? "Saving…" : "Save project"}
                       </button>
@@ -408,8 +698,20 @@ export default function ProjectsPanel() {
                 ) : (
                   <div className="space-y-2 text-sm">
                     <div className="grid gap-2 sm:grid-cols-2 text-xs text-zinc-400">
+                      <div>
+                        <strong className="text-zinc-300">Type:</strong>{" "}
+                        <span className={selectedProject.project_type === "fig" ? "text-amber-400 font-semibold" : "text-zinc-300"}>
+                          {selectedProject.project_type === "fig" ? "Fig (CitC)" : "Local"}
+                        </span>
+                      </div>
                       <div><strong className="text-zinc-300">Default Path:</strong> <span className="font-mono text-zinc-200">{selectedProject.default_path || "—"}</span></div>
-                      <div><strong className="text-zinc-300">VCS / Repo:</strong> {selectedProject.vcs_kind || "git"} · {selectedProject.repo_url || "no repo"}</div>
+                      {selectedProject.project_type === "fig" ? (
+                        <>
+                          <div><strong className="text-zinc-300">CitC Workspace:</strong> <span className="font-mono text-amber-300">{selectedProject.workspace_name || "—"}</span></div>
+                          <div><strong className="text-zinc-300">Relative google3 Path:</strong> <span className="font-mono text-amber-300">{selectedProject.relative_path || "root"}</span></div>
+                        </>
+                      ) : null}
+                      <div><strong className="text-zinc-300">VCS / Repo:</strong> {selectedProject.vcs_kind || (selectedProject.project_type === "fig" ? "piper" : "git")} · {selectedProject.repo_url || "no repo"}</div>
                     </div>
                     {selectedProject.description ? (
                       <p className="text-xs text-zinc-300 mt-1">{selectedProject.description}</p>
@@ -583,6 +885,16 @@ export default function ProjectsPanel() {
                     <div className="min-w-0 flex-1 space-y-1">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-zinc-100 truncate">{project.name}</span>
+                        {project.project_type === "fig" ? (
+                          <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-300 flex items-center gap-1">
+                            <Icon name="folder" size={10} className="text-amber-400" />
+                            CitC
+                          </span>
+                        ) : (
+                          <span className="rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
+                            Local
+                          </span>
+                        )}
                         {project.is_default_conversations ? (
                           <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[10px] font-medium text-sky-300">
                             Default
@@ -591,8 +903,17 @@ export default function ProjectsPanel() {
                       </div>
 
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400">
-                        <div><strong className="text-zinc-500">Path:</strong> <span className="font-mono text-zinc-300">{project.default_path}</span></div>
-                        <div><strong className="text-zinc-500">VCS:</strong> {project.vcs_kind || "git"}</div>
+                        {project.project_type === "fig" && project.workspace_name ? (
+                          <div>
+                            <strong className="text-zinc-500">CitC:</strong>{" "}
+                            <span className="font-mono text-amber-300">
+                              {project.workspace_name}{project.relative_path ? ` · google3/${project.relative_path}` : ""}
+                            </span>
+                          </div>
+                        ) : (
+                          <div><strong className="text-zinc-500">Path:</strong> <span className="font-mono text-zinc-300">{project.default_path}</span></div>
+                        )}
+                        <div><strong className="text-zinc-500">VCS:</strong> {project.vcs_kind || (project.project_type === "fig" ? "piper" : "git")}</div>
                         {project.repo_url ? (
                           <div className="truncate max-w-xs"><strong className="text-zinc-500">Repo:</strong> {project.repo_url}</div>
                         ) : null}

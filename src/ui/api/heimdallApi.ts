@@ -42,6 +42,7 @@ export const HEIMDALL_TAG_TYPES = [
   'SidebarProjects',
   'Actions',
   'Action',
+  'BridgeFigWorkspaces',
 ] as const;
 
 export type HeimdallTagType = (typeof HEIMDALL_TAG_TYPES)[number];

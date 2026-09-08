@@ -86,6 +86,7 @@ type ProjectSummary = {
   projectId: string;
   name: string;
   isDefaultConversations?: boolean;
+  projectType?: string;
 };
 
 type ProjectGroup = {
@@ -332,7 +333,8 @@ function normalizeProject(raw: any): ProjectSummary {
   const hasDefaultMarker = raw?.is_default_conversations === true || raw?.isDefaultConversations === true;
   const isSyntheticFallback = projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId;
   const isDefault = hasDefaultMarker || isSyntheticFallback;
-  return { projectId: projectId || (isDefault ? DEFAULT_CONVERSATIONS_PROJECT.projectId : name), name, isDefaultConversations: isDefault };
+  const projectType = String(raw?.project_type || raw?.projectType || '').trim() || (isDefault ? undefined : 'local');
+  return { projectId: projectId || (isDefault ? DEFAULT_CONVERSATIONS_PROJECT.projectId : name), name, isDefaultConversations: isDefault, projectType };
 }
 
 // UI-14: adapt cookie-auth RTK Query sidebar data into the local tree types so
@@ -363,7 +365,12 @@ function sidebarConversationToSummary(c: SidebarConversation, agentNamesById: Ma
 
 function sidebarProjectToSummary(p: SidebarProject): ProjectSummary {
   const projectId = p.projectId || (p.isDefaultConversations ? DEFAULT_CONVERSATIONS_PROJECT.projectId : p.name);
-  return { projectId, name: p.name, isDefaultConversations: p.isDefaultConversations || projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId };
+  return {
+    projectId,
+    name: p.name,
+    isDefaultConversations: p.isDefaultConversations || projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId,
+    projectType: p.projectType || p.project_type,
+  };
 }
 
 function looksLikeInternalId(value: string): boolean {
@@ -578,8 +585,13 @@ function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: Pr
           aria-controls={`sidebar-project-body-${projectId}`}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[13px] font-semibold text-zinc-200 hover:text-white"
         >
-          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-flex w-4 items-center justify-center text-zinc-400">
-            <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
+          <span
+            data-debug-id={`sidebar-project-chevron-${projectId}`}
+            className={`inline-flex w-4 items-center justify-center ${
+              projectGroup.project.projectType === 'fig' ? 'text-amber-400' : 'text-sky-400'
+            }`}
+          >
+            <Icon name={collapsed ? 'folder' : 'folder-open'} size={15} />
           </span>
           <span className="truncate">{projectGroup.project.name}</span>
         </button>

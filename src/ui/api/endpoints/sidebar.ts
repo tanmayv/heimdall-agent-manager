@@ -62,6 +62,8 @@ export type SidebarProject = {
   projectId: string;
   name: string;
   isDefaultConversations?: boolean;
+  project_type?: string;
+  projectType?: string;
 };
 
 function asNumber(value: any): number {
@@ -129,7 +131,14 @@ function normalizeSidebarProject(raw: any): SidebarProject {
   const name = String(raw?.name || raw?.title || 'Untitled project');
   const projectId = String(raw?.project_id || raw?.projectId || raw?.id || '');
   const isDefaultConversations = raw?.is_default_conversations === true || raw?.isDefaultConversations === true || projectId === 'default-conversations';
-  return { projectId: projectId || (isDefaultConversations ? 'default-conversations' : name), name, isDefaultConversations };
+  const project_type = String(raw?.project_type || raw?.projectType || '').trim() || (isDefaultConversations ? undefined : 'local');
+  return {
+    projectId: projectId || (isDefaultConversations ? 'default-conversations' : name),
+    name,
+    isDefaultConversations,
+    project_type,
+    projectType: project_type,
+  };
 }
 
 function extractListPayload(payload: any, collectionKeys: string[] = []): any[] {

@@ -14,8 +14,11 @@ export type Project = {
   name: string;
   description?: string;
   repo_url?: string;
-  vcs_kind?: 'none' | 'git' | 'jj' | string;
+  vcs_kind?: 'none' | 'git' | 'jj' | 'piper' | string;
   default_path: string;
+  project_type?: 'local' | 'fig' | string;
+  workspace_name?: string;
+  relative_path?: string;
   is_default_conversations?: boolean;
   created_at?: string;
   updated_at?: string;
@@ -58,7 +61,16 @@ export const projectsApi = heimdallApi.injectEndpoints({
       },
       providesTags: (_result, _error, { projectId }) => [{ type: 'Project' as const, id: projectId }],
     }),
-    createProject: build.mutation<any, { name: string; description?: string; repo_url?: string; vcs_kind?: string; default_path?: string }>({
+    createProject: build.mutation<any, {
+      name: string;
+      description?: string;
+      repo_url?: string;
+      vcs_kind?: string;
+      default_path?: string;
+      project_type?: string;
+      workspace_name?: string;
+      relative_path?: string;
+    }>({
       queryFn: async (payload) => {
         try {
           const data = await cookieMutation('/projects', 'POST', payload);
@@ -72,7 +84,17 @@ export const projectsApi = heimdallApi.injectEndpoints({
         { type: 'SidebarProjects' as const, id: 'ALL' },
       ],
     }),
-    updateProject: build.mutation<any, { projectId: string; name?: string; description?: string; repo_url?: string; vcs_kind?: string; default_path?: string }>({
+    updateProject: build.mutation<any, {
+      projectId: string;
+      name?: string;
+      description?: string;
+      repo_url?: string;
+      vcs_kind?: string;
+      default_path?: string;
+      project_type?: string;
+      workspace_name?: string;
+      relative_path?: string;
+    }>({
       queryFn: async ({ projectId, ...payload }) => {
         try {
           const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}`, 'PATCH', payload);

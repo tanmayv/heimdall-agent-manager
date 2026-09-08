@@ -25,9 +25,15 @@ import { useListAgentsQuery } from '../../api/endpoints/agents';
 import { useListMemoriesQuery } from '../../api/endpoints/memory';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../api/endpoints/bridgeFs';
+import {
+  useListBridgeFigWorkspacesQuery,
+  useCreateBridgeFigWorkspaceMutation,
+  type FigWorkspace,
+} from '../../api/endpoints/bridgeFig';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import Icon from '../Icon';
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
+import FigDirectoryPicker from '../FigDirectoryPicker';
 
 function str(v: any): string { return String(v ?? '').trim(); }
 function bridgeId(b: any): string { return str(b?.bridge_id || b?.bridgeId || b?.id); }
@@ -68,23 +74,90 @@ function ProjectList() {
   const [createProject, createState] = useCreateProjectMutation();
   const [query, setQuery] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [projectType, setProjectType] = useState<'local' | 'fig'>('local');
   const [name, setName] = useState('');
   const [defaultPath, setDefaultPath] = useState('');
   const [createError, setCreateError] = useState('');
+
+  // CitC / Fig state for Create
+  const [selectedBridgeId, setSelectedBridgeId] = useState('');
+  const [workspaceName, setWorkspaceName] = useState('');
+  const [relativePath, setRelativePath] = useState('');
+  const [showFigPicker, setShowFigPicker] = useState(false);
+  const [showNewWorkspaceModal, setShowNewWorkspaceModal] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState('');
+  const [newWorkspaceError, setNewWorkspaceError] = useState('');
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+
+  const bridgesQuery = useListBridgesQuery();
+  const bridges: any[] = (bridgesQuery.data?.bridges || []).filter(
+    (b: any) => str(b?.status || b?.state || 'online').toLowerCase() !== 'revoked'
+  );
+
+  useEffect(() => {
+    if (!selectedBridgeId && bridges.length > 0) {
+      const online = bridges.find(bridgeIsOnline);
+      setSelectedBridgeId(bridgeId(online || bridges[0]));
+    }
+  }, [bridges, selectedBridgeId]);
+
+  const figWorkspacesQuery = useListBridgeFigWorkspacesQuery(
+    { bridgeId: selectedBridgeId },
+    { skip: !selectedBridgeId || projectType !== 'fig' }
+  );
+  const figWorkspaces: FigWorkspace[] = figWorkspacesQuery.data?.workspaces || [];
+  const [createBridgeFigWorkspace] = useCreateBridgeFigWorkspaceMutation();
 
   const projects: Project[] = useMemo(() => (projectsQuery.data?.projects || projectsQuery.data || []) as Project[], [projectsQuery.data]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projects;
-    return projects.filter((p) => [p.name, p.project_id, p.default_path].filter(Boolean).join(' ').toLowerCase().includes(q));
+    return projects.filter((p) => [p.name, p.project_id, p.default_path, p.workspace_name, p.relative_path].filter(Boolean).join(' ').toLowerCase().includes(q));
   }, [projects, query]);
+
+  async function handleCreateWorkspace() {
+    const ws = newWorkspaceName.trim();
+    if (!ws || !selectedBridgeId) return;
+    setNewWorkspaceError('');
+    setCreatingWorkspace(true);
+    try {
+      const res = await createBridgeFigWorkspace({ bridgeId: selectedBridgeId, name: ws }).unwrap();
+      if (!res.ok) {
+        setNewWorkspaceError(res.message || res.error_code || 'Failed to create CitC workspace');
+        return;
+      }
+      setWorkspaceName(ws);
+      if (!name.trim()) setName(ws);
+      setNewWorkspaceName('');
+      setShowNewWorkspaceModal(false);
+    } catch (err: any) {
+      setNewWorkspaceError(err?.data?.error?.message || err?.error || err?.message || 'Workspace creation failed');
+    } finally {
+      setCreatingWorkspace(false);
+    }
+  }
 
   async function submitCreate() {
     setCreateError('');
     if (!name.trim()) { setCreateError('Name is required.'); return; }
+    if (projectType === 'local' && !defaultPath.trim()) { setCreateError('Default path is required.'); return; }
+    if (projectType === 'fig' && !workspaceName.trim()) { setCreateError('CitC workspace name is required.'); return; }
     try {
-      await createProject({ name: name.trim(), default_path: defaultPath.trim() }).unwrap();
-      setName(''); setDefaultPath(''); setShowCreate(false);
+      await createProject({
+        name: name.trim(),
+        default_path: projectType === 'fig' ? (defaultPath.trim() || undefined) : defaultPath.trim(),
+        project_type: projectType,
+        workspace_name: projectType === 'fig' ? workspaceName.trim() : undefined,
+        relative_path: projectType === 'fig' ? relativePath.trim() || undefined : undefined,
+        vcs_kind: projectType === 'fig' ? 'piper' : undefined,
+      }).unwrap();
+      setName('');
+      setDefaultPath('');
+      setWorkspaceName('');
+      setRelativePath('');
+      setShowFigPicker(false);
+      setProjectType('local');
+      setShowCreate(false);
     } catch (e: any) {
       setCreateError(str(e?.data?.error?.message || e?.error || e?.message) || 'Create failed');
     }
@@ -105,18 +178,219 @@ function ProjectList() {
 
       {showCreate ? (
         <div data-debug-id="projects-create-form" className="mb-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-              <input data-debug-id="projects-create-name-input" value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white" placeholder="e.g. heimdall agent manager" />
-            </label>
-            <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
-              <input data-debug-id="projects-create-path-input" value={defaultPath} onChange={(e) => setDefaultPath(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" placeholder="~/path/to/repo" />
-            </label>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">Project Type</span>
+            <div data-debug-id="projects-create-type-toggle" className="inline-flex rounded-xl bg-black/40 p-1 border border-white/10">
+              <button
+                data-debug-id="projects-create-type-local-btn"
+                type="button"
+                onClick={() => setProjectType('local')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  projectType === 'local'
+                    ? 'bg-sky-400 text-black shadow'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                Local Directory
+              </button>
+              <button
+                data-debug-id="projects-create-type-fig-btn"
+                type="button"
+                onClick={() => setProjectType('fig')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition flex items-center gap-1.5 ${
+                  projectType === 'fig'
+                    ? 'bg-amber-400 text-black shadow'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Icon name="folder" size={13} />
+                <span>Fig (CitC)</span>
+              </button>
+            </div>
           </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name *
+              <input
+                data-debug-id="projects-create-name-input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white outline-none focus:border-sky-400"
+                placeholder={projectType === 'fig' ? 'e.g. My CitC Project' : 'e.g. heimdall agent manager'}
+              />
+            </label>
+            {projectType === 'local' ? (
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path *
+                <input
+                  data-debug-id="projects-create-path-input"
+                  value={defaultPath}
+                  onChange={(e) => setDefaultPath(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-sky-400"
+                  placeholder="~/path/to/repo"
+                />
+              </label>
+            ) : (
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">CitC Workspace *</span>
+                  <button
+                    data-debug-id="projects-create-fig-new-workspace-btn"
+                    type="button"
+                    onClick={() => { setShowNewWorkspaceModal(true); setNewWorkspaceError(''); }}
+                    className="text-[11px] text-amber-400 hover:underline flex items-center gap-1 font-semibold"
+                  >
+                    <Icon name="plus" size={11} /> + New CitC Workspace
+                  </button>
+                </div>
+                <select
+                  data-debug-id="projects-create-fig-workspace-select"
+                  value={workspaceName}
+                  onChange={(e) => {
+                    const ws = e.target.value;
+                    setWorkspaceName(ws);
+                    if (!name.trim() && ws) setName(ws);
+                  }}
+                  className="w-full min-h-[44px] rounded-xl border border-amber-500/30 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400 font-mono"
+                >
+                  <option value="">-- Select CitC Workspace --</option>
+                  {figWorkspaces.map((ws) => (
+                    <option key={ws.name} value={ws.name}>
+                      {ws.name} {ws.has_google3 ? '✓ (google3)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {projectType === 'fig' ? (
+            <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-zinc-300 mb-1">
+                    Relative google3 Path (optional)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      data-debug-id="projects-create-fig-relative-path-input"
+                      value={relativePath}
+                      onChange={(e) => setRelativePath(e.target.value)}
+                      placeholder="e.g. cloud/security or leave blank for google3 root"
+                      className="flex-1 min-h-[38px] rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 font-mono text-xs text-zinc-100 outline-none focus:border-amber-400"
+                    />
+                    <button
+                      data-debug-id="projects-create-fig-browse-btn"
+                      type="button"
+                      disabled={!workspaceName || !selectedBridgeId}
+                      onClick={() => setShowFigPicker((v) => !v)}
+                      className="min-h-[38px] shrink-0 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 disabled:opacity-40"
+                    >
+                      {showFigPicker ? 'Hide Browser' : 'Browse google3…'}
+                    </button>
+                  </div>
+                </div>
+                {bridges.length > 1 ? (
+                  <div className="w-full sm:w-48">
+                    <label className="block text-xs font-medium text-zinc-400 mb-1">Bridge Host</label>
+                    <select
+                      data-debug-id="projects-create-fig-bridge-select"
+                      value={selectedBridgeId}
+                      onChange={(e) => setSelectedBridgeId(e.target.value)}
+                      className="w-full min-h-[38px] rounded-xl border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"
+                    >
+                      {bridges.map((b) => (
+                        <option key={bridgeId(b)} value={bridgeId(b)}>
+                          {bridgeLabel(b)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="text-[11px] text-zinc-400 font-mono pt-1 truncate">
+                Default path preview: <span className="text-amber-300">/google/src/cloud/…/{workspaceName || '<workspace>'}/google3{relativePath ? `/${relativePath}` : ''}</span>
+              </div>
+
+              {showFigPicker && workspaceName && selectedBridgeId ? (
+                <div className="pt-2">
+                  <FigDirectoryPicker
+                    debugId="projects-create-fig-picker"
+                    bridgeId={selectedBridgeId}
+                    workspace={workspaceName}
+                    initialPath={relativePath}
+                    onPick={(p) => {
+                      setRelativePath(p);
+                      setShowFigPicker(false);
+                    }}
+                    onClose={() => setShowFigPicker(false)}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           {createError ? <p data-debug-id="projects-create-error" className="mt-2 text-xs text-red-300">{createError}</p> : null}
           <div className="mt-3 flex gap-2">
-            <button data-debug-id="projects-create-submit-btn" type="button" disabled={createState.isLoading} onClick={submitCreate} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">{createState.isLoading ? 'Creating…' : 'Create'}</button>
+            <button
+              data-debug-id="projects-create-submit-btn"
+              type="button"
+              disabled={createState.isLoading || !name.trim() || (projectType === 'local' ? !defaultPath.trim() : !workspaceName.trim())}
+              onClick={submitCreate}
+              className={`rounded-xl px-4 py-2 text-sm font-bold text-black disabled:opacity-50 ${
+                projectType === 'fig' ? 'bg-amber-400 hover:bg-amber-300' : 'bg-sky-400 hover:bg-sky-300'
+              }`}
+            >
+              {createState.isLoading ? 'Creating…' : 'Create'}
+            </button>
             <button data-debug-id="projects-create-cancel-btn" type="button" onClick={() => setShowCreate(false)} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* New CitC Workspace Modal */}
+      {showNewWorkspaceModal ? (
+        <div data-debug-id="projects-create-fig-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-amber-500/30 bg-[#12141a] p-5 shadow-2xl space-y-4">
+            <h3 className="text-base font-semibold text-white flex items-center gap-2">
+              <Icon name="folder" size={16} className="text-amber-400" />
+              <span>Create New CitC Workspace</span>
+            </h3>
+            <p className="text-xs text-zinc-400">
+              Runs <code className="font-mono text-amber-300">g4 citc -q --head &lt;name&gt;</code> on the bridge host to create a fresh CitC client.
+            </p>
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1">Workspace Name *</label>
+              <input
+                data-debug-id="projects-create-fig-modal-name-input"
+                value={newWorkspaceName}
+                onChange={(e) => setNewWorkspaceName(e.target.value)}
+                placeholder="e.g. feat-mobile-sync"
+                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-amber-400 font-mono"
+              />
+            </div>
+            {newWorkspaceError ? (
+              <p className="text-xs text-red-300">{newWorkspaceError}</p>
+            ) : null}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                data-debug-id="projects-create-fig-modal-cancel-btn"
+                type="button"
+                onClick={() => { setShowNewWorkspaceModal(false); setNewWorkspaceError(''); }}
+                className="rounded-xl border border-white/10 px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                data-debug-id="projects-create-fig-modal-submit-btn"
+                type="button"
+                disabled={!newWorkspaceName.trim() || creatingWorkspace}
+                onClick={handleCreateWorkspace}
+                className="rounded-xl bg-amber-400 px-4 py-2 text-xs font-bold text-black hover:bg-amber-300 disabled:opacity-50"
+              >
+                {creatingWorkspace ? 'Creating…' : 'Create Workspace'}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -131,21 +405,41 @@ function ProjectList() {
           <div className="p-5 text-sm text-zinc-500">Loading projects…</div>
         ) : filtered.length === 0 ? (
           <div data-debug-id="projects-empty" className="p-6 text-sm text-zinc-500">No projects match.</div>
-        ) : filtered.map((p) => (
-          <a
-            key={p.project_id}
-            data-debug-id={`projects-row-${p.project_id}`}
-            href={buildRouteHash('/projects', `projectId=${encodeURIComponent(p.project_id)}`)}
-            className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.05]"
-          >
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-sky-400/80 to-violet-400/80 text-sm font-black text-black">{(p.name || '?').slice(0, 1).toUpperCase()}</span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-zinc-100">{p.name || p.project_id}</span>
-              {p.default_path ? <span className="block truncate font-mono text-[11px] text-zinc-500">{p.default_path}</span> : null}
-            </span>
-            <Icon name="chevron-right" size={16} className="shrink-0 text-zinc-600" />
-          </a>
-        ))}
+        ) : filtered.map((p) => {
+          const isFig = p.project_type === 'fig';
+          return (
+            <a
+              key={p.project_id}
+              data-debug-id={`projects-row-${p.project_id}`}
+              href={buildRouteHash('/projects', `projectId=${encodeURIComponent(p.project_id)}`)}
+              className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.05]"
+            >
+              <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl text-sm font-black text-black ${
+                isFig ? 'bg-gradient-to-br from-amber-400 to-orange-500' : 'bg-gradient-to-br from-sky-400/80 to-violet-400/80'
+              }`}>
+                {(p.name || '?').slice(0, 1).toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="truncate text-sm font-semibold text-zinc-100">{p.name || p.project_id}</span>
+                  {isFig ? (
+                    <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-bold text-amber-300">
+                      Fig (CitC)
+                    </span>
+                  ) : null}
+                </span>
+                {isFig && p.workspace_name ? (
+                  <span className="block truncate font-mono text-[11px] text-amber-300/80">
+                    {p.workspace_name}{p.relative_path ? ` · google3/${p.relative_path}` : ' · google3'}
+                  </span>
+                ) : p.default_path ? (
+                  <span className="block truncate font-mono text-[11px] text-zinc-500">{p.default_path}</span>
+                ) : null}
+              </span>
+              <Icon name="chevron-right" size={16} className="shrink-0 text-zinc-600" />
+            </a>
+          );
+        })}
       </div>
     </div>
   );
@@ -208,6 +502,9 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [defaultPath, setDefaultPath] = useState('');
+  const [workspaceName, setWorkspaceName] = useState('');
+  const [relativePath, setRelativePath] = useState('');
+  const [projectType, setProjectType] = useState('local');
   const [err, setErr] = useState('');
 
   // Seed the edit form from the loaded project whenever it (re)loads.
@@ -216,17 +513,30 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
     setName(str(project.name));
     setDescription(str(project.description));
     setDefaultPath(str(project.default_path));
-  }, [project?.project_id, project?.name, project?.description, project?.default_path]);
+    setWorkspaceName(str(project.workspace_name));
+    setRelativePath(str(project.relative_path));
+    setProjectType(str(project.project_type || 'local'));
+  }, [project?.project_id, project?.name, project?.description, project?.default_path, project?.workspace_name, project?.relative_path, project?.project_type]);
 
   async function save() {
     setErr('');
     try {
-      await updateProject({ projectId, name: name.trim(), description: description.trim(), default_path: defaultPath.trim() }).unwrap();
+      await updateProject({
+        projectId,
+        name: name.trim(),
+        description: description.trim(),
+        default_path: defaultPath.trim(),
+        project_type: projectType,
+        workspace_name: projectType === 'fig' ? workspaceName.trim() || undefined : undefined,
+        relative_path: projectType === 'fig' ? relativePath.trim() || undefined : undefined,
+      }).unwrap();
       setEditing(false);
     } catch (e: any) {
       setErr(str(e?.data?.error?.message || e?.error || e?.message) || 'Save failed');
     }
   }
+
+  const isFig = project?.project_type === 'fig';
 
   return (
     <Card title="About" debugId="project-detail-about"
@@ -235,6 +545,23 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
       ) : null}>
       {!editing ? (
         <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold border ${
+              isFig ? 'border-amber-400/30 bg-amber-400/10 text-amber-300' : 'border-zinc-700 bg-zinc-800 text-zinc-400'
+            }`}>
+              {isFig ? 'Fig (CitC)' : 'Local Directory'}
+            </span>
+            {isFig && project?.workspace_name ? (
+              <span className="font-mono text-xs text-amber-300 font-semibold">
+                ws: {project.workspace_name}
+              </span>
+            ) : null}
+          </div>
+          {isFig && project?.relative_path ? (
+            <p className="font-mono text-xs text-zinc-400">
+              google3 relative path: <span className="text-amber-300">{project.relative_path}</span>
+            </p>
+          ) : null}
           {project?.default_path ? <p data-debug-id="project-detail-path" className="font-mono text-xs text-zinc-500">{project.default_path}</p> : null}
           {str(project?.description) ? (
             <p data-debug-id="project-detail-description" className="max-w-2xl whitespace-pre-wrap text-sm leading-6 text-zinc-300">{project?.description}</p>
@@ -247,6 +574,16 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
           <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
             <input data-debug-id="project-detail-name-input" value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white" />
           </label>
+          {isFig ? (
+            <div className="grid gap-3 sm:grid-cols-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">CitC Workspace
+                <input value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-white" />
+              </label>
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">Relative google3 Path
+                <input value={relativePath} onChange={(e) => setRelativePath(e.target.value)} placeholder="e.g. cloud/security" className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-white" />
+              </label>
+            </div>
+          ) : null}
           <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
             <textarea data-debug-id="project-detail-description-input" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="What is this project about?" className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white placeholder:text-zinc-600" />
           </label>
@@ -255,7 +592,7 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
           </label>
           {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-red-300">{err}</p> : null}
           <div className="flex gap-2">
-            <button data-debug-id="project-detail-save-btn" type="button" disabled={updateState.isLoading} onClick={save} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">{updateState.isLoading ? 'Saving…' : 'Save'}</button>
+            <button data-debug-id="project-detail-save-btn" type="button" disabled={updateState.isLoading} onClick={save} className={`rounded-xl px-4 py-2 text-sm font-bold text-black disabled:opacity-50 ${isFig ? 'bg-amber-400 hover:bg-amber-300' : 'bg-sky-400 hover:bg-sky-300'}`}>{updateState.isLoading ? 'Saving…' : 'Save'}</button>
             <button data-debug-id="project-detail-cancel-btn" type="button" onClick={() => { setEditing(false); setErr(''); }} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
           </div>
         </div>
