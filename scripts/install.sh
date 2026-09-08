@@ -308,6 +308,70 @@ chmod +x "$BIN_DIR/start.sh" "$BIN_DIR/stop.sh" "$DATA_DIR/start.sh" "$DATA_DIR/
 echo "[install] Symlinking ham-ctl into $LOCAL_BIN/ham-ctl..."
 ln -sf "$BIN_DIR/ham-ctl" "$LOCAL_BIN/ham-ctl"
 
+# 4.5 Preconfigure Providers (Jetski) for both Full and Standalone modes
+BRIDGE_CONFIG_DIR="$DATA_DIR/bridge"
+PROVIDERS_FILE="$BRIDGE_CONFIG_DIR/providers.json"
+mkdir -p "$BRIDGE_CONFIG_DIR"
+chmod 0700 "$BRIDGE_CONFIG_DIR"
+
+if [ ! -f "$PROVIDERS_FILE" ] || ! grep -q '"jetski"' "$PROVIDERS_FILE" 2>/dev/null; then
+  echo "[install] Preconfiguring Jetski provider in $PROVIDERS_FILE..."
+  if [ -f "$BUNDLE_DIR/bridge/providers.json" ]; then
+    cp "$BUNDLE_DIR/bridge/providers.json" "$PROVIDERS_FILE"
+  else
+    cat << 'PROVIDERSEOF' > "$PROVIDERS_FILE"
+{
+  "default_provider": "jetski",
+  "default_tier": "normal",
+  "providers": [
+    {
+      "name": "jetski",
+      "enabled": true,
+      "command": [
+        "/google/bin/releases/jetski-devs/tools/cli"
+      ],
+      "prompt_flags": [
+        "--prompt-interactive"
+      ],
+      "yolo_flags": [
+        "--dangerously-skip-permissions"
+      ],
+      "starter_prompt": "First, run: {ctl_bin} --token {token} start-success.",
+      "prompt_delivery": "",
+      "skill_dir": ".agents/skills",
+      "bootstrap_file_name": "AGENTS.md",
+      "models": {
+        "flag": "--model",
+        "cheap": "Gemini 3.5 Flash",
+        "normal": "Gemini 3.7 Flash",
+        "smart": "Gemini 3.8 Flash"
+      },
+      "startup_detection": {
+        "enabled": false,
+        "startup_probe_seconds": 0,
+        "capture_interval_ms": 0,
+        "blocked_patterns": [],
+        "auto_enter_patterns": [],
+        "auto_enter_pre_keys": [],
+        "startup_unknown_is_blocked": false,
+        "sanitized_reason_mapping": []
+      },
+      "activity_detection": {
+        "enabled": true,
+        "sample_line_count": 20,
+        "ignore_bottom_lines": 0,
+        "check_interval_seconds": 15,
+        "min_gap_ms": 100,
+        "max_gap_ms": 500
+      }
+    }
+  ]
+}
+PROVIDERSEOF
+  fi
+  chmod 0600 "$PROVIDERS_FILE"
+fi
+
 HOST_FQDN="$(hostname | sed 's/\.c\.googlers\.com$//').c.googlers.com"
 
 # 5. Mode-specific configuration

@@ -263,27 +263,27 @@ function ProjectList() {
             ) : (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">CitC Workspace *</span>
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">CitC Workspace *</span>
                   <button
                     data-debug-id="projects-create-fig-new-workspace-btn"
                     type="button"
                     onClick={() => { setShowNewWorkspaceModal(true); setNewWorkspaceError(''); }}
-                    className="text-[11px] text-amber-400 hover:underline flex items-center gap-1 font-semibold"
+                    className="text-xs text-zinc-300 hover:text-white flex items-center gap-1 font-semibold transition"
                   >
                     <Icon name="plus" size={11} /> + New CitC Workspace
                   </button>
                 </div>
 
                 {/* Styled Workspace Selection Card */}
-                <div className="rounded-xl border border-amber-500/30 bg-black/30 p-3">
+                <div className="rounded-xl border border-white/10 bg-[#121214] p-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       {workspaceName ? (
                         <div>
                           <div className="flex items-center gap-2">
                             <Icon name="folder" size={14} className="text-amber-400 shrink-0" />
-                            <span className="font-mono text-xs font-bold text-amber-300 truncate">{workspaceName}</span>
-                            <span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 border border-amber-500/20">CitC</span>
+                            <span className="font-mono text-xs font-semibold text-zinc-200 truncate">{workspaceName}</span>
+                            <span className="rounded bg-white/[0.08] px-1.5 py-0.5 text-[10px] font-semibold text-zinc-300 border border-white/10">CitC</span>
                           </div>
                           <div className="mt-1 text-[11px] font-mono text-zinc-400 truncate">
                             /google/src/cloud/…/{workspaceName}/google3{relativePath ? `/${relativePath}` : ''}
@@ -301,7 +301,7 @@ function ProjectList() {
                       type="button"
                       disabled={!selectedBridgeId}
                       onClick={() => setShowFigPicker((v) => !v)}
-                      className="shrink-0 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/25 transition disabled:opacity-40"
+                      className="shrink-0 rounded-lg border border-white/10 bg-white/[0.05] hover:bg-white/[0.1] px-3 py-1.5 text-xs font-semibold text-zinc-300 transition disabled:opacity-40"
                     >
                       {showFigPicker ? 'Close Picker' : workspaceName ? 'Change Workspace / Browse…' : 'Browse CitC Workspaces…'}
                     </button>
@@ -377,7 +377,7 @@ function ProjectList() {
           ) : null}
 
           {projectType === 'fig' ? (
-            <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-3">
+            <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-3">
               {figWorkspacesError ? (
                 <div
                   data-debug-id="projects-create-fig-offline-warning"
@@ -398,7 +398,7 @@ function ProjectList() {
                     data-debug-id="projects-create-fig-retry-btn"
                     type="button"
                     onClick={() => figWorkspacesQuery.refetch()}
-                    className="shrink-0 px-2.5 py-1 text-[11px] rounded-lg border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 font-medium text-amber-200 transition"
+                    className="shrink-0 px-2.5 py-1 text-[11px] rounded-lg border border-white/10 bg-white/[0.05] hover:bg-white/[0.1] font-medium text-zinc-200 transition"
                   >
                     Retry
                   </button>
@@ -415,14 +415,14 @@ function ProjectList() {
                       value={relativePath}
                       onChange={(e) => setRelativePath(e.target.value)}
                       placeholder="e.g. cloud/security or leave blank for google3 root"
-                      className="flex-1 min-h-[38px] rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 font-mono text-xs text-zinc-100 outline-none focus:border-amber-400"
+                      className="flex-1 min-h-[38px] rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 font-mono text-xs text-zinc-100 outline-none focus:border-sky-500"
                     />
                     <button
                       data-debug-id="projects-create-fig-browse-btn"
                       type="button"
                       disabled={!workspaceName || !selectedBridgeId || Boolean(figWorkspacesError)}
                       onClick={() => setShowFigPicker((v) => !v)}
-                      className="min-h-[38px] shrink-0 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 disabled:opacity-40"
+                      className="min-h-[38px] shrink-0 rounded-xl border border-white/10 bg-white/[0.05] hover:bg-white/[0.1] px-3 py-1.5 text-xs font-semibold text-zinc-300 transition disabled:opacity-40"
                     >
                       {showFigPicker ? 'Hide Browser' : 'Browse google3…'}
                     </button>
@@ -503,13 +503,13 @@ function ProjectList() {
       {/* New CitC Workspace Modal */}
       {showNewWorkspaceModal ? (
         <div data-debug-id="projects-create-fig-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-amber-500/30 bg-[#12141a] p-5 shadow-2xl space-y-4">
+          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#121214] p-5 shadow-2xl space-y-4">
             <h3 className="text-base font-semibold text-white flex items-center gap-2">
               <Icon name="folder" size={16} className="text-amber-400" />
               <span>Create New CitC Workspace</span>
             </h3>
             <p className="text-xs text-zinc-400">
-              Runs <code className="font-mono text-amber-300">g4 citc -q --head &lt;name&gt;</code> on the bridge host to create a fresh CitC client.
+              Runs <code className="font-mono text-zinc-300">g4 citc -q --head &lt;name&gt;</code> on the bridge host to create a fresh CitC client.
             </p>
             <div>
               <label className="block text-xs font-medium text-zinc-300 mb-1">Workspace Name *</label>
@@ -518,18 +518,18 @@ function ProjectList() {
                 value={newWorkspaceName}
                 onChange={(e) => setNewWorkspaceName(e.target.value)}
                 placeholder="e.g. feat-mobile-sync"
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-amber-400 font-mono"
+                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-sky-500 font-mono"
               />
             </div>
             {newWorkspaceError ? (
-              <p className="text-xs text-red-300">{newWorkspaceError}</p>
+              <p className="text-xs text-red-400">{newWorkspaceError}</p>
             ) : null}
             <div className="flex justify-end gap-2 pt-2">
               <button
                 data-debug-id="projects-create-fig-modal-cancel-btn"
                 type="button"
                 onClick={() => { setShowNewWorkspaceModal(false); setNewWorkspaceError(''); }}
-                className="rounded-xl border border-white/10 px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-white/10"
+                className="rounded-xl bg-zinc-800 hover:bg-zinc-700 px-4 py-2 text-xs font-medium text-zinc-300 transition"
               >
                 Cancel
               </button>
@@ -538,7 +538,7 @@ function ProjectList() {
                 type="button"
                 disabled={!newWorkspaceName.trim() || creatingWorkspace}
                 onClick={handleCreateWorkspace}
-                className="rounded-xl bg-amber-400 px-4 py-2 text-xs font-bold text-black hover:bg-amber-300 disabled:opacity-50"
+                className="rounded-xl bg-sky-600 hover:bg-sky-500 px-4 py-2 text-xs font-bold text-white transition disabled:opacity-50"
               >
                 {creatingWorkspace ? 'Creating…' : 'Create Workspace'}
               </button>

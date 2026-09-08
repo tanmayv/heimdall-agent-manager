@@ -87,6 +87,7 @@ type ProjectSummary = {
   name: string;
   isDefaultConversations?: boolean;
   projectType?: string;
+  workspaceName?: string;
 };
 
 type ProjectGroup = {
@@ -334,7 +335,8 @@ function normalizeProject(raw: any): ProjectSummary {
   const isSyntheticFallback = projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId;
   const isDefault = hasDefaultMarker || isSyntheticFallback;
   const projectType = String(raw?.project_type || raw?.projectType || '').trim() || (isDefault ? undefined : 'local');
-  return { projectId: projectId || (isDefault ? DEFAULT_CONVERSATIONS_PROJECT.projectId : name), name, isDefaultConversations: isDefault, projectType };
+  const workspaceName = String(raw?.workspace_name || raw?.workspaceName || '').trim() || undefined;
+  return { projectId: projectId || (isDefault ? DEFAULT_CONVERSATIONS_PROJECT.projectId : name), name, isDefaultConversations: isDefault, projectType, workspaceName };
 }
 
 // UI-14: adapt cookie-auth RTK Query sidebar data into the local tree types so
@@ -370,6 +372,7 @@ function sidebarProjectToSummary(p: SidebarProject): ProjectSummary {
     name: p.name,
     isDefaultConversations: p.isDefaultConversations || projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId,
     projectType: p.projectType || p.project_type,
+    workspaceName: p.workspaceName || p.workspace_name,
   };
 }
 
@@ -594,6 +597,15 @@ function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: Pr
             <Icon name={collapsed ? 'folder' : 'folder-open'} size={15} />
           </span>
           <span className="truncate">{projectGroup.project.name}</span>
+          {projectGroup.project.projectType === 'fig' && projectGroup.project.workspaceName ? (
+            <span
+              data-debug-id={`sidebar-project-workspace-${projectId}`}
+              className="shrink-0 font-normal text-zinc-400 font-mono text-xs truncate"
+              title={`CitC Workspace: ${projectGroup.project.workspaceName}`}
+            >
+              · {projectGroup.project.workspaceName}
+            </span>
+          ) : null}
         </button>
         <UnreadBadge count={projectGroup.unreadCount} debugId={`sidebar-project-unread-${projectId}`} />
       </div>

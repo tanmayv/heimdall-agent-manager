@@ -9,7 +9,7 @@ cd "$ROOT"
 DIST_DIR="$ROOT/dist"
 BUNDLE_DIR="$DIST_DIR/heimdall-cloudtop"
 rm -rf "$BUNDLE_DIR"
-mkdir -p "$BUNDLE_DIR/bin" "$BUNDLE_DIR/lib" "$BUNDLE_DIR/share/migrations" "$BUNDLE_DIR/systemd" "$BUNDLE_DIR/scripts"
+mkdir -p "$BUNDLE_DIR/bin" "$BUNDLE_DIR/lib" "$BUNDLE_DIR/share/migrations" "$BUNDLE_DIR/systemd" "$BUNDLE_DIR/scripts" "$BUNDLE_DIR/bridge"
 
 echo "[bundle] 1. Building components via nix..."
 nix build .#ham-hub -o result-hub
@@ -52,6 +52,59 @@ if [ -d "packaging" ]; then
   cp -r packaging "$BUNDLE_DIR/"
 fi
 
+echo "[bundle] 3.1 Pre-seeding Jetski provider configuration..."
+mkdir -p "$BUNDLE_DIR/bridge"
+cat << 'PROVIDERSEOF' > "$BUNDLE_DIR/bridge/providers.json"
+{
+  "default_provider": "jetski",
+  "default_tier": "normal",
+  "providers": [
+    {
+      "name": "jetski",
+      "enabled": true,
+      "command": [
+        "/google/bin/releases/jetski-devs/tools/cli"
+      ],
+      "prompt_flags": [
+        "--prompt-interactive"
+      ],
+      "yolo_flags": [
+        "--dangerously-skip-permissions"
+      ],
+      "starter_prompt": "First, run: {ctl_bin} --token {token} start-success.",
+      "prompt_delivery": "",
+      "skill_dir": ".agents/skills",
+      "bootstrap_file_name": "AGENTS.md",
+      "models": {
+        "flag": "--model",
+        "cheap": "Gemini 3.5 Flash",
+        "normal": "Gemini 3.7 Flash",
+        "smart": "Gemini 3.8 Flash"
+      },
+      "startup_detection": {
+        "enabled": false,
+        "startup_probe_seconds": 0,
+        "capture_interval_ms": 0,
+        "blocked_patterns": [],
+        "auto_enter_patterns": [],
+        "auto_enter_pre_keys": [],
+        "startup_unknown_is_blocked": false,
+        "sanitized_reason_mapping": []
+      },
+      "activity_detection": {
+        "enabled": true,
+        "sample_line_count": 20,
+        "ignore_bottom_lines": 0,
+        "check_interval_seconds": 15,
+        "min_gap_ms": 100,
+        "max_gap_ms": 500
+      }
+    }
+  ]
+}
+PROVIDERSEOF
+chmod 0644 "$BUNDLE_DIR/bridge/providers.json"
+
 echo "[bundle] 3.5. Building production UI assets via vite..."
 mkdir -p "$BUNDLE_DIR/ui"
 npm run typecheck
@@ -88,6 +141,18 @@ fi
 
 mkdir -p "$DATA_DIR" "$RUN_DIR" "$LOG_DIR"
 chmod 0700 "$DATA_DIR"
+
+# 0.5 Ensure Jetski provider is preconfigured
+if [ ! -f "$DATA_DIR/bridge/providers.json" ] || ! grep -q '"jetski"' "$DATA_DIR/bridge/providers.json" 2>/dev/null; then
+  mkdir -p "$DATA_DIR/bridge"
+  chmod 0700 "$DATA_DIR/bridge"
+  if [ -f "$BUNDLE_DIR/bridge/providers.json" ]; then
+    cp "$BUNDLE_DIR/bridge/providers.json" "$DATA_DIR/bridge/providers.json"
+  elif [ -f "$BUNDLE_DIR/../bridge/providers.json" ]; then
+    cp "$BUNDLE_DIR/../bridge/providers.json" "$DATA_DIR/bridge/providers.json"
+  fi
+  chmod 0600 "$DATA_DIR/bridge/providers.json" 2>/dev/null || true
+fi
 
 # 1. Detect Standalone Remote Bridge Mode
 IS_STANDALONE=false

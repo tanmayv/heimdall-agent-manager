@@ -407,8 +407,18 @@ bridge_fs_run_dir_root :: proc(instance_id: string) -> (root: string, ok: bool) 
 bridge_fs_effective_root :: proc(root_override: string) -> (root: string, ok: bool) {
 	if strings.trim_space(root_override) == "" do return bridge_fs_root, bridge_fs_root != ""
 	canonical, within := bridge_fs_resolve_within(root_override) // checked against GLOBAL root
-	if !within do return "", false
-	return canonical, true
+	if within do return canonical, true
+
+	// Also allow CitC workspace directories under the user's CitC root or /google/src/cloud
+	citc_root := fig_citc_user_root()
+	if citc_root != "" {
+		c_can, c_within := bridge_fs_resolve_within(root_override, citc_root)
+		if c_within do return c_can, true
+	}
+	g_can, g_within := bridge_fs_resolve_within(root_override, "/google/src/cloud")
+	if g_within do return g_can, true
+
+	return "", false
 }
 
 // --- operations ----------------------------------------------------------

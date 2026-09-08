@@ -64,6 +64,8 @@ export type SidebarProject = {
   isDefaultConversations?: boolean;
   project_type?: string;
   projectType?: string;
+  workspace_name?: string;
+  workspaceName?: string;
 };
 
 function asNumber(value: any): number {
@@ -132,12 +134,15 @@ function normalizeSidebarProject(raw: any): SidebarProject {
   const projectId = String(raw?.project_id || raw?.projectId || raw?.id || '');
   const isDefaultConversations = raw?.is_default_conversations === true || raw?.isDefaultConversations === true || projectId === 'default-conversations';
   const project_type = String(raw?.project_type || raw?.projectType || '').trim() || (isDefaultConversations ? undefined : 'local');
+  const workspace_name = String(raw?.workspace_name || raw?.workspaceName || '').trim() || undefined;
   return {
     projectId: projectId || (isDefaultConversations ? 'default-conversations' : name),
     name,
     isDefaultConversations,
     project_type,
     projectType: project_type,
+    workspace_name,
+    workspaceName: workspace_name,
   };
 }
 

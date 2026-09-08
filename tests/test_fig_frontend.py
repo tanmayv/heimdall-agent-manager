@@ -52,10 +52,12 @@ def main() -> None:
 
     # 3. REQ-FIG-7B: Sidebar project_type propagation & accordion folder open/close icons
     require("project_type" in sidebar_api and "projectType" in sidebar_api, "sidebar.ts must pass project_type and projectType")
+    require("workspace_name" in sidebar_api and "workspaceName" in sidebar_api, "sidebar.ts must pass workspace_name and workspaceName")
     require("'folder-open'" in icon_tsx, "Icon.tsx must support folder-open icon")
     require("folder-open" in app_shell_tsx, "AppShell.tsx must use folder-open icon for expanded projects")
     require("folder" in app_shell_tsx, "AppShell.tsx must use folder icon for collapsed projects")
     require("text-amber-400" in app_shell_tsx, "AppShell.tsx must color Fig CitC project icons with amber-400")
+    require("sidebar-project-workspace-" in app_shell_tsx, "AppShell.tsx must render workspace name badge next to CitC project")
 
     # 4. REQ-FIG-7: FigDirectoryPicker UI (FigDirectoryPicker.tsx)
     require("export default function FigDirectoryPicker" in fig_picker_tsx, "FigDirectoryPicker.tsx must export FigDirectoryPicker")

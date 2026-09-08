@@ -116,30 +116,33 @@ export default function BridgeDirectoryPicker({
   }, [cwd, root]);
 
   return (
-    <div data-debug-id={debugId} className="w-full rounded-2xl border border-white/12 bg-[#0f1115] p-3 shadow-2xl">
-      <div className="mb-2 flex items-center justify-between gap-2">
+    <div data-debug-id={debugId} className="w-full rounded-xl border border-white/10 bg-[#121214] p-4 shadow-2xl">
+      <div className="mb-3 flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</div>
-          {root ? <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-600" title={`Allowed root: ${root}`}>root: {root}</div> : null}
+          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">
+            <Icon name="folder" size={14} className="text-sky-400" />
+            <span>Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</span>
+          </div>
+          {root ? <div className="mt-0.5 truncate font-mono text-xs text-zinc-500" title={`Allowed root: ${root}`}>root: {root}</div> : null}
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <button data-debug-id={`${debugId}-home-btn`} type="button" onClick={() => void load('')} title="Go to root" className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Root</button>
-          {onClose ? <button data-debug-id={`${debugId}-close-btn`} type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-zinc-500 hover:bg-white/10 hover:text-white"><Icon name="close" size={15} /></button> : null}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button data-debug-id={`${debugId}-home-btn`} type="button" onClick={() => void load('')} title="Go to root" className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10 transition">Root</button>
+          {onClose ? <button data-debug-id={`${debugId}-close-btn`} type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white transition"><Icon name="close" size={15} /></button> : null}
         </div>
       </div>
 
       {/* breadcrumb */}
-      <div data-debug-id={`${debugId}-breadcrumb`} className="mb-2 flex flex-wrap items-center gap-1 text-[12px] text-zinc-400">
+      <div data-debug-id={`${debugId}-breadcrumb`} className="mb-2.5 flex flex-wrap items-center gap-1 text-xs text-zinc-400">
         {crumbs.map((c, i) => (
           <span key={c.path} className="flex items-center gap-1">
             {i > 0 ? <Icon name="chevron-right" size={12} className="text-zinc-600" /> : null}
-            <button data-debug-id={`${debugId}-crumb-${i}`} type="button" onClick={() => void load(c.path)} className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-white/10 hover:text-white">{c.label}</button>
+            <button data-debug-id={`${debugId}-crumb-${i}`} type="button" onClick={() => void load(c.path)} className="max-w-[160px] truncate rounded px-1.5 py-0.5 font-mono text-xs font-medium text-zinc-200 hover:bg-white/10 hover:text-white transition">{c.label}</button>
           </span>
         ))}
       </div>
 
       {/* directory list */}
-      <div data-debug-id={`${debugId}-list`} className="max-h-[240px] overflow-y-auto rounded-xl border border-white/8 bg-black/20">
+      <div data-debug-id={`${debugId}-list`} className="max-h-[240px] overflow-y-auto rounded-xl border border-white/10 bg-black/20 p-1 space-y-0.5">
         {listState.isFetching ? (
           <div data-debug-id={`${debugId}-loading`} className="p-4 text-center text-xs text-zinc-500">Loading…</div>
         ) : visibleEntries.length === 0 ? (
@@ -150,33 +153,37 @@ export default function BridgeDirectoryPicker({
             data-debug-id={`${debugId}-entry-${e.name}`}
             type="button"
             onClick={() => void load(cwd ? joinPath(cwd, e.name) : e.name)}
-            className="flex w-full items-center gap-2 border-b border-white/[0.04] px-3 py-2 text-left text-[13px] text-zinc-200 last:border-b-0 hover:bg-white/[0.06]"
+            className="flex w-full items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-white/[0.04] transition cursor-pointer text-left group"
           >
-            <Icon name="folder" size={15} className="shrink-0 text-sky-300/70" />
-            <span className="min-w-0 flex-1 truncate">{e.name}</span>
-            {e.has_git ? <span className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">git</span> : null}
-            {e.hidden ? <span className="shrink-0 text-[10px] text-zinc-600">hidden</span> : null}
-            <Icon name="chevron-right" size={13} className="shrink-0 text-zinc-600" />
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Icon name="folder" size={15} className="shrink-0 text-sky-400 group-hover:scale-105 transition-transform" />
+              <span className="text-zinc-200 text-xs font-mono truncate group-hover:text-white transition-colors">{e.name}</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {e.has_git ? <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-mono font-medium text-emerald-400">git</span> : null}
+              {e.hidden ? <span className="text-[10px] font-mono text-zinc-500">hidden</span> : null}
+              <Icon name="chevron-right" size={14} className="shrink-0 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+            </div>
           </button>
         ))}
       </div>
 
       {/* controls row */}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button data-debug-id={`${debugId}-hidden-toggle`} type="button" onClick={() => setShowHidden((v) => !v)} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">{showHidden ? 'Hide hidden' : 'Show hidden'}</button>
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <button data-debug-id={`${debugId}-hidden-toggle`} type="button" onClick={() => setShowHidden((v) => !v)} className="rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-white/[0.1] transition">{showHidden ? 'Hide hidden' : 'Show hidden'}</button>
         {showNewFolder ? (
           <div className="flex items-center gap-1.5">
-            <input data-debug-id={`${debugId}-new-folder-input`} value={newFolder} onChange={(e) => setNewFolder(e.target.value)} placeholder="folder name" className="w-32 rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-[12px] text-white" />
-            <button data-debug-id={`${debugId}-new-folder-create-btn`} type="button" disabled={mkdirState.isLoading} onClick={createFolder} className="rounded-lg bg-sky-400 px-2 py-1 text-[11px] font-bold text-black hover:bg-sky-300 disabled:opacity-50">Create</button>
-            <button type="button" onClick={() => { setShowNewFolder(false); setNewFolder(''); }} className="rounded-lg px-1.5 py-1 text-[11px] text-zinc-500 hover:text-white">Cancel</button>
+            <input data-debug-id={`${debugId}-new-folder-input`} value={newFolder} onChange={(e) => setNewFolder(e.target.value)} placeholder="folder name" className="w-36 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 outline-none focus:border-sky-500 transition" />
+            <button data-debug-id={`${debugId}-new-folder-create-btn`} type="button" disabled={mkdirState.isLoading} onClick={createFolder} className="rounded-lg bg-sky-600 hover:bg-sky-500 px-3 py-1 text-xs font-semibold text-white transition disabled:opacity-50">Create</button>
+            <button type="button" onClick={() => { setShowNewFolder(false); setNewFolder(''); }} className="rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2.5 py-1 text-xs font-medium transition">Cancel</button>
           </div>
         ) : (
-          <button data-debug-id={`${debugId}-new-folder-btn`} type="button" onClick={() => setShowNewFolder(true)} className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10"><Icon name="plus" size={12} /> New folder</button>
+          <button data-debug-id={`${debugId}-new-folder-btn`} type="button" onClick={() => setShowNewFolder(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-white/[0.1] transition"><Icon name="plus" size={12} /> New folder</button>
         )}
       </div>
 
       {/* path input + actions */}
-      <div className="mt-2">
+      <div className="mt-2.5">
         <input
           data-debug-id={`${debugId}-path-input`}
           value={pathInput}
@@ -188,15 +195,15 @@ export default function BridgeDirectoryPicker({
             }
           }}
           placeholder="~/path/on/this/device"
-          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-[12px] text-white"
+          className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 outline-none focus:border-sky-500 transition"
         />
       </div>
 
-      {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-[11px] text-red-300">{error}</p> : null}
+      {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-xs text-red-400">{error}</p> : null}
 
-      <div className="mt-3 flex items-center justify-end gap-2">
-        <button data-debug-id={`${debugId}-create-typed-btn`} type="button" onClick={createTypedPath} className="rounded-xl border border-white/10 px-3 py-2 text-[12px] text-zinc-300 hover:bg-white/10">Create typed path</button>
-        <button data-debug-id={`${debugId}-pick-btn`} type="button" onClick={() => onPick(str(pathInput) || cwd)} className="rounded-xl bg-sky-400 px-4 py-2 text-[12px] font-bold text-black hover:bg-sky-300">Use this folder</button>
+      <div className="mt-3 flex items-center justify-end gap-2 pt-2 border-t border-white/10">
+        <button data-debug-id={`${debugId}-create-typed-btn`} type="button" onClick={createTypedPath} className="rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3.5 py-2 text-xs font-semibold transition">Create typed path</button>
+        <button data-debug-id={`${debugId}-pick-btn`} type="button" onClick={() => onPick(str(pathInput) || cwd)} className="rounded-lg bg-sky-600 hover:bg-sky-500 text-white px-4 py-2 text-xs font-semibold transition">Use this folder</button>
       </div>
     </div>
   );
