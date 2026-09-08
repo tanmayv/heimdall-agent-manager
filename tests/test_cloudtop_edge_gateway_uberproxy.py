@@ -13,6 +13,7 @@ Verifies:
 """
 from __future__ import annotations
 
+import base64
 import http.server
 import json
 import os
@@ -26,6 +27,24 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def make_uptick_bytes(email: str, tier: int = 30) -> bytes:
+    # Field 1: tier (varint, tag = 1<<3|0 = 8)
+    # Field 2: email (length delimited string, tag = 2<<3|2 = 18)
+    b = bytearray()
+    b.extend([0x08, tier])
+    email_bytes = email.encode("utf-8")
+    b.extend([0x12, len(email_bytes)])
+    b.extend(email_bytes)
+    return bytes(b)
+
+def make_uptick_header(email: str, signed: bool = False) -> str:
+    proto = make_uptick_bytes(email)
+    b64 = base64.b64encode(proto).decode("ascii")
+    if signed:
+        return f"{b64}.AFhcHLEwRAIgLNWLWIWppnTlc8lxuRIMJqQUsKH0rLivdJv15zzXji8CIHRmXlREUo2TzGKp2Ww-7mrkpLqc4DcqFGt155qVtTqC"
+    return b64
+
 
 def free_port() -> int:
     s = socket.socket()
@@ -222,6 +241,36 @@ def main() -> None:
                 assert data["user_id"] == "tanmayvijay"
             print("PASS 3c: ÜberProxy PEN URL Host (*.proxy.googlers.com) allowed and authenticated")
 
+            # TEST 3c2: ÜberProxy UpTick header (X-UberProxy-UpTick) with owner email
+            req_uptick = urllib.request.Request(
+                f"http://127.0.0.1:{gateway_port}/api/v1/me",
+                headers={
+                    "Host": "b2607f8b04800100000c005d2ac109a6e231d000000000000000001.proxy.googlers.com:8989",
+                    "X-UberProxy-UpTick": make_uptick_header("tanmayvijay@google.com"),
+                },
+            )
+            with urllib.request.urlopen(req_uptick, timeout=5) as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode())
+                assert data["user_id"] == "tanmayvijay"
+                assert data["email"] == "tanmayvijay@google.com"
+            print("PASS 3c2: X-UberProxy-UpTick header decoded and admitted")
+
+            # TEST 3c3: ÜberProxy Signed UpTick header (X-UberProxy-Signed-UpTick) with owner email
+            req_signed_uptick = urllib.request.Request(
+                f"http://127.0.0.1:{gateway_port}/api/v1/me",
+                headers={
+                    "Host": "b2607f8b04800100000c005d2ac109a6e231d000000000000000001.proxy.googlers.com:8989",
+                    "X-UberProxy-Signed-UpTick": make_uptick_header("tanmayvijay@google.com", signed=True),
+                },
+            )
+            with urllib.request.urlopen(req_signed_uptick, timeout=5) as resp:
+                assert resp.status == 200
+                data = json.loads(resp.read().decode())
+                assert data["user_id"] == "tanmayvijay"
+                assert data["email"] == "tanmayvijay@google.com"
+            print("PASS 3c3: X-UberProxy-Signed-UpTick header decoded and admitted")
+
             # TEST 3d: Fallback Priority 3 (X-Forwarded-User) when matching owner
             req_fwd = urllib.request.Request(
                 f"http://127.0.0.1:{gateway_port}/api/v1/me",
@@ -293,6 +342,8 @@ def main() -> None:
                 ("X-UberProxy-User", "alice"),
                 ("X-UberProxy-User-Email", "alice@google.com"),
                 ("X-Forwarded-User", "alice"),
+                ("X-UberProxy-UpTick", make_uptick_header("alice@google.com")),
+                ("X-UberProxy-Signed-UpTick", make_uptick_header("alice@google.com", signed=True)),
             ]:
                 req_bad = urllib.request.Request(
                     f"http://127.0.0.1:{gateway_port}/api/v1/me",

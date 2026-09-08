@@ -284,11 +284,17 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 		}
 	}
 
-	// Security: Bridge auto-pairing is a sensitive local-only unauthenticated operation and MUST NOT be reachable through dev-proxy
+	// Security: Bridge auto-pairing and enrollment are sensitive operations and MUST NOT be reachable through dev-proxy
 	if strings.has_prefix(path, "/api/v1/bridges/auto-pair") {
 		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 bridge auto-pair forbidden through dev-proxy", method, target, host_lower, caller_user, owner)
 		log_incoming_headers(headers)
 		write_response(client, 403, "Forbidden", "text/plain", "bridge auto-pair forbidden through dev-proxy")
+		return
+	}
+	if strings.has_prefix(path, "/api/v1/bridges/enroll") {
+		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 bridge enrollment/auto-pair forbidden through dev-proxy", method, target, host_lower, caller_user, owner)
+		log_incoming_headers(headers)
+		write_response(client, 403, "Forbidden", "text/plain", "bridge enrollment/auto-pair forbidden through dev-proxy")
 		return
 	}
 
