@@ -70,12 +70,17 @@ export default function BridgeDirectoryPicker({
     return dirs.sort((a, b) => a.name.localeCompare(b.name));
   }, [entries, showHidden]);
 
+  function joinPath(base: string, name: string): string {
+    if (!base || base === '/') return `/${name}`;
+    return `${base.replace(/\/+$/, '')}/${name}`;
+  }
+
   async function createFolder() {
     const name = newFolder.trim();
     if (!name) return;
     setError('');
     try {
-      const target = cwd ? `${cwd}/${name}` : name;
+      const target = cwd ? joinPath(cwd, name) : name;
       const res = await mkdir({ bridgeId, path: target }).unwrap();
       if (!res.ok) { setError(str(res.error?.message) || 'Could not create folder'); return; }
       setNewFolder(''); setShowNewFolder(false);
@@ -104,7 +109,7 @@ export default function BridgeDirectoryPicker({
     const out: { label: string; path: string }[] = [{ label: root.split('/').filter(Boolean).slice(-1)[0] || '/', path: root }];
     if (cwd !== root && cwd.startsWith(root)) {
       const rest = cwd.slice(root.length).split('/').filter(Boolean);
-      let acc = root;
+      let acc = root === '/' ? '' : root;
       for (const seg of rest) { acc = `${acc}/${seg}`; out.push({ label: seg, path: acc }); }
     }
     return out;
@@ -144,7 +149,7 @@ export default function BridgeDirectoryPicker({
             key={e.name}
             data-debug-id={`${debugId}-entry-${e.name}`}
             type="button"
-            onClick={() => void load(cwd ? `${cwd}/${e.name}` : e.name)}
+            onClick={() => void load(cwd ? joinPath(cwd, e.name) : e.name)}
             className="flex w-full items-center gap-2 border-b border-white/[0.04] px-3 py-2 text-left text-[13px] text-zinc-200 last:border-b-0 hover:bg-white/[0.06]"
           >
             <Icon name="folder" size={15} className="shrink-0 text-sky-300/70" />
@@ -172,7 +177,19 @@ export default function BridgeDirectoryPicker({
 
       {/* path input + actions */}
       <div className="mt-2">
-        <input data-debug-id={`${debugId}-path-input`} value={pathInput} onChange={(e) => setPathInput(e.target.value)} placeholder="~/path/on/this/device" className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-[12px] text-white" />
+        <input
+          data-debug-id={`${debugId}-path-input`}
+          value={pathInput}
+          onChange={(e) => setPathInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (pathInput.trim()) void load(pathInput.trim());
+            }
+          }}
+          placeholder="~/path/on/this/device"
+          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-[12px] text-white"
+        />
       </div>
 
       {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-[11px] text-red-300">{error}</p> : null}

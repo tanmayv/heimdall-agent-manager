@@ -84,6 +84,7 @@ function ProjectList() {
   const [workspaceName, setWorkspaceName] = useState('');
   const [relativePath, setRelativePath] = useState('');
   const [showFigPicker, setShowFigPicker] = useState(false);
+  const [showLocalPicker, setShowLocalPicker] = useState(false);
   const [showNewWorkspaceModal, setShowNewWorkspaceModal] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState('');
   const [newWorkspaceError, setNewWorkspaceError] = useState('');
@@ -172,6 +173,7 @@ function ProjectList() {
       setWorkspaceName('');
       setRelativePath('');
       setShowFigPicker(false);
+      setShowLocalPicker(false);
       setProjectType('local');
       setShowCreate(false);
     } catch (e: any) {
@@ -236,15 +238,28 @@ function ProjectList() {
               />
             </label>
             {projectType === 'local' ? (
-              <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path *
-                <input
-                  data-debug-id="projects-create-path-input"
-                  value={defaultPath}
-                  onChange={(e) => setDefaultPath(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-sky-400"
-                  placeholder="~/path/to/repo"
-                />
-              </label>
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500 mb-1">Default path *</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    data-debug-id="projects-create-path-input"
+                    value={defaultPath}
+                    onChange={(e) => setDefaultPath(e.target.value)}
+                    className="flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white outline-none focus:border-sky-400"
+                    placeholder="~/path/to/repo"
+                  />
+                  <button
+                    data-debug-id="projects-create-local-browse-btn"
+                    type="button"
+                    disabled={!selectedBridgeId}
+                    onClick={() => setShowLocalPicker((v) => !v)}
+                    className="min-h-[42px] shrink-0 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 disabled:opacity-40 flex items-center gap-1.5"
+                  >
+                    <Icon name="folder" size={14} />
+                    <span>{showLocalPicker ? 'Hide Browser' : 'Browse…'}</span>
+                  </button>
+                </div>
+              </div>
             ) : (
               <div>
                 <div className="flex items-center justify-between mb-1">
@@ -285,6 +300,43 @@ function ProjectList() {
               </div>
             )}
           </div>
+
+          {projectType === 'local' && showLocalPicker && selectedBridgeId ? (
+            <div className="mt-3 rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3 space-y-3">
+              {bridges.length > 1 ? (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-zinc-400">Bridge Host:</span>
+                  <select
+                    data-debug-id="projects-create-local-bridge-select"
+                    value={selectedBridgeId}
+                    onChange={(e) => setSelectedBridgeId(e.target.value)}
+                    className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"
+                  >
+                    {bridges.map((b) => (
+                      <option key={bridgeId(b)} value={bridgeId(b)}>
+                        {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+              <BridgeDirectoryPicker
+                debugId="projects-create-local-picker"
+                bridgeId={selectedBridgeId}
+                bridgeLabel={selectedBridge ? bridgeLabel(selectedBridge) : undefined}
+                initialPath={defaultPath}
+                onPick={(p) => {
+                  setDefaultPath(p);
+                  if (!name.trim()) {
+                    const base = p.split('/').filter(Boolean).pop();
+                    if (base) setName(base);
+                  }
+                  setShowLocalPicker(false);
+                }}
+                onClose={() => setShowLocalPicker(false)}
+              />
+            </div>
+          ) : null}
 
           {projectType === 'fig' ? (
             <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-3">
@@ -526,7 +578,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="lg:col-span-2">
-          <AboutPanel projectId={projectId} project={project} />
+          <AboutPanel projectId={projectId} project={project} bridges={bridges} />
         </div>
         <AgentsPanel agents={agents} loading={agentsQuery.isLoading} projectId={projectId} />
         <MemoryPanel memories={memories} loading={memoryQuery.isLoading} projectId={projectId} />
@@ -550,7 +602,7 @@ function Card({ title, count, children, debugId, action }: { title: string; coun
   );
 }
 
-function AboutPanel({ projectId, project }: { projectId: string; project: Project | null }) {
+function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; project: Project | null; bridges?: any[] }) {
   const [updateProject, updateState] = useUpdateProjectMutation();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
@@ -559,7 +611,16 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
   const [workspaceName, setWorkspaceName] = useState('');
   const [relativePath, setRelativePath] = useState('');
   const [projectType, setProjectType] = useState('local');
+  const [showLocalPicker, setShowLocalPicker] = useState(false);
+  const [selectedBridgeId, setSelectedBridgeId] = useState('');
   const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (!selectedBridgeId && bridges.length > 0) {
+      const online = bridges.find(bridgeIsOnline);
+      setSelectedBridgeId(bridgeId(online || bridges[0]));
+    }
+  }, [bridges, selectedBridgeId]);
 
   // Seed the edit form from the loaded project whenever it (re)loads.
   useEffect(() => {
@@ -570,6 +631,7 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
     setWorkspaceName(str(project.workspace_name));
     setRelativePath(str(project.relative_path));
     setProjectType(str(project.project_type || 'local'));
+    setShowLocalPicker(false);
   }, [project?.project_id, project?.name, project?.description, project?.default_path, project?.workspace_name, project?.relative_path, project?.project_type]);
 
   async function save() {
@@ -584,6 +646,7 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
         workspace_name: projectType === 'fig' ? workspaceName.trim() || undefined : undefined,
         relative_path: projectType === 'fig' ? relativePath.trim() || undefined : undefined,
       }).unwrap();
+      setShowLocalPicker(false);
       setEditing(false);
     } catch (e: any) {
       setErr(str(e?.data?.error?.message || e?.error || e?.message) || 'Save failed');
@@ -641,13 +704,42 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
           <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
             <textarea data-debug-id="project-detail-description-input" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="What is this project about?" className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white placeholder:text-zinc-600" />
           </label>
-          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
-            <input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={(e) => setDefaultPath(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" placeholder="~/path/to/repo" />
-          </label>
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500 mb-1">Default path</label>
+            <div className="flex items-center gap-2">
+              <input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={(e) => setDefaultPath(e.target.value)} className="flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" placeholder="~/path/to/repo" />
+              {!isFig ? (
+                <button
+                  data-debug-id="project-detail-edit-local-browse-btn"
+                  type="button"
+                  disabled={!selectedBridgeId}
+                  onClick={() => setShowLocalPicker((v) => !v)}
+                  className="min-h-[42px] shrink-0 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  <Icon name="folder" size={14} />
+                  <span>{showLocalPicker ? 'Hide Browser' : 'Browse…'}</span>
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {!isFig && showLocalPicker && selectedBridgeId ? (
+            <div className="mt-2">
+              <BridgeDirectoryPicker
+                debugId="project-detail-edit-local-picker"
+                bridgeId={selectedBridgeId}
+                initialPath={defaultPath}
+                onPick={(p) => {
+                  setDefaultPath(p);
+                  setShowLocalPicker(false);
+                }}
+                onClose={() => setShowLocalPicker(false)}
+              />
+            </div>
+          ) : null}
           {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-red-300">{err}</p> : null}
           <div className="flex gap-2">
             <button data-debug-id="project-detail-save-btn" type="button" disabled={updateState.isLoading} onClick={save} className={`rounded-xl px-4 py-2 text-sm font-bold text-black disabled:opacity-50 ${isFig ? 'bg-amber-400 hover:bg-amber-300' : 'bg-sky-400 hover:bg-sky-300'}`}>{updateState.isLoading ? 'Saving…' : 'Save'}</button>
-            <button data-debug-id="project-detail-cancel-btn" type="button" onClick={() => { setEditing(false); setErr(''); }} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
+            <button data-debug-id="project-detail-cancel-btn" type="button" onClick={() => { setEditing(false); setShowLocalPicker(false); setErr(''); }} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
           </div>
         </div>
       )}

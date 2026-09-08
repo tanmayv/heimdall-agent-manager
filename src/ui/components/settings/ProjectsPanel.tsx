@@ -16,6 +16,7 @@ import {
   useCreateBridgeFigWorkspaceMutation,
   type FigWorkspace,
 } from "../../api/endpoints/bridgeFig";
+import BridgeDirectoryPicker from "../BridgeDirectoryPicker";
 import FigDirectoryPicker from "../FigDirectoryPicker";
 import Icon from "../Icon";
 
@@ -39,11 +40,12 @@ export default function ProjectsPanel() {
   const [createError, setCreateError] = useState("");
   const [creating, setCreating] = useState(false);
 
-  // CitC / Fig state for Create
+  // CitC / Fig / Local directory state for Create
   const [selectedBridgeId, setSelectedBridgeId] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
   const [relativePath, setRelativePath] = useState("");
   const [showFigPicker, setShowFigPicker] = useState(false);
+  const [showLocalPicker, setShowLocalPicker] = useState(false);
   const [showNewWorkspaceModal, setShowNewWorkspaceModal] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [newWorkspaceError, setNewWorkspaceError] = useState("");
@@ -67,6 +69,7 @@ export default function ProjectsPanel() {
   const [editProjectType, setEditProjectType] = useState("local");
   const [editWorkspaceName, setEditWorkspaceName] = useState("");
   const [editRelativePath, setEditRelativePath] = useState("");
+  const [showEditLocalPicker, setShowEditLocalPicker] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editSaveError, setEditSaveError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
@@ -129,6 +132,7 @@ export default function ProjectsPanel() {
       setEditProjectType(selectedProject.project_type || "local");
       setEditWorkspaceName(selectedProject.workspace_name || "");
       setEditRelativePath(selectedProject.relative_path || "");
+      setShowEditLocalPicker(false);
       setEditSaveError("");
       setBridgePathInputs({});
       setBridgeActionError({});
@@ -187,6 +191,7 @@ export default function ProjectsPanel() {
       setWorkspaceName("");
       setRelativePath("");
       setShowFigPicker(false);
+      setShowLocalPicker(false);
       setProjectType("local");
     } catch (err: any) {
       const msg = err?.data?.error?.message || err?.error || err?.message || String(err || "Unable to create project");
@@ -217,6 +222,7 @@ export default function ProjectsPanel() {
         workspace_name: editProjectType === "fig" ? editWorkspaceName.trim() : undefined,
         relative_path: editProjectType === "fig" ? editRelativePath.trim() || undefined : undefined,
       }).unwrap();
+      setShowEditLocalPicker(false);
       setIsEditing(false);
     } catch (err: any) {
       const msg = err?.data?.error?.message || err?.error || err?.message || String(err || "Unable to update project");
@@ -362,14 +368,26 @@ export default function ProjectsPanel() {
             {projectType === "local" ? (
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path *</label>
-                <input
-                  data-debug-id="settings-project-default-path-input"
-                  value={defaultPath}
-                  onChange={(e) => setDefaultPath(e.target.value)}
-                  placeholder="/home/user/projects/my-app"
-                  required
-                  className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
-                />
+                <div className="flex items-center gap-2">
+                  <input
+                    data-debug-id="settings-project-default-path-input"
+                    value={defaultPath}
+                    onChange={(e) => setDefaultPath(e.target.value)}
+                    placeholder="/home/user/projects/my-app"
+                    required
+                    className="flex-1 min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400 font-mono"
+                  />
+                  <button
+                    data-debug-id="settings-project-local-browse-btn"
+                    type="button"
+                    disabled={!selectedBridgeId}
+                    onClick={() => setShowLocalPicker((v) => !v)}
+                    className="min-h-[44px] shrink-0 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 disabled:opacity-40 flex items-center gap-1.5"
+                  >
+                    <Icon name="folder" size={14} />
+                    <span>{showLocalPicker ? "Hide Browser" : "Browse…"}</span>
+                  </button>
+                </div>
               </div>
             ) : (
               <div>
@@ -411,6 +429,48 @@ export default function ProjectsPanel() {
               </div>
             )}
           </div>
+
+          {projectType === "local" && showLocalPicker && selectedBridgeId ? (
+            <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3 space-y-3">
+              {bridges.length > 1 ? (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-zinc-400">Bridge Host:</span>
+                  <select
+                    data-debug-id="settings-project-local-bridge-select"
+                    value={selectedBridgeId}
+                    onChange={(e) => setSelectedBridgeId(e.target.value)}
+                    className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"
+                  >
+                    {bridges.map((b) => {
+                      const id = String(b?.bridge_id || b?.bridgeId || b?.id || "");
+                      const label = String(b?.label || b?.machine_hostname || b?.hostname || id);
+                      const online = isBridgeOnline(b);
+                      return (
+                        <option key={id} value={id}>
+                          {label} ({online ? "● Online" : "○ Offline"})
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              ) : null}
+              <BridgeDirectoryPicker
+                debugId="settings-project-local-picker"
+                bridgeId={selectedBridgeId}
+                bridgeLabel={selectedBridge?.label}
+                initialPath={defaultPath}
+                onPick={(p) => {
+                  setDefaultPath(p);
+                  if (!name.trim()) {
+                    const base = p.split("/").filter(Boolean).pop();
+                    if (base) setName(base);
+                  }
+                  setShowLocalPicker(false);
+                }}
+                onClose={() => setShowLocalPicker(false)}
+              />
+            </div>
+          ) : null}
 
           {projectType === "fig" ? (
             <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-3">
@@ -629,7 +689,10 @@ export default function ProjectsPanel() {
               <button
                 data-debug-id={`settings-project-edit-btn-${selectedProjectId}`}
                 type="button"
-                onClick={() => setIsEditing((prev) => !prev)}
+                onClick={() => {
+                  setIsEditing((prev) => !prev);
+                  setShowEditLocalPicker(false);
+                }}
                 className="rounded-xl border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10"
               >
                 {isEditing ? "Cancel Edit" : "Edit Project"}
@@ -665,13 +728,44 @@ export default function ProjectsPanel() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path</label>
-                        <input
-                          value={editDefaultPath}
-                          onChange={(e) => setEditDefaultPath(e.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
-                        />
+                        <div className="flex items-center gap-2">
+                          <input
+                            data-debug-id={`settings-project-edit-default-path-input-${selectedProjectId}`}
+                            value={editDefaultPath}
+                            onChange={(e) => setEditDefaultPath(e.target.value)}
+                            className="flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400 font-mono"
+                          />
+                          {editProjectType === "local" ? (
+                            <button
+                              data-debug-id="settings-project-edit-local-browse-btn"
+                              type="button"
+                              disabled={!selectedBridgeId}
+                              onClick={() => setShowEditLocalPicker((v) => !v)}
+                              className="shrink-0 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 disabled:opacity-40 flex items-center gap-1.5"
+                            >
+                              <Icon name="folder" size={14} />
+                              <span>{showEditLocalPicker ? "Hide Browser" : "Browse…"}</span>
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
+
+                    {editProjectType === "local" && showEditLocalPicker && selectedBridgeId ? (
+                      <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3">
+                        <BridgeDirectoryPicker
+                          debugId="settings-project-edit-local-picker"
+                          bridgeId={selectedBridgeId}
+                          bridgeLabel={selectedBridge?.label}
+                          initialPath={editDefaultPath}
+                          onPick={(p) => {
+                            setEditDefaultPath(p);
+                            setShowEditLocalPicker(false);
+                          }}
+                          onClose={() => setShowEditLocalPicker(false)}
+                        />
+                      </div>
+                    ) : null}
 
                     {editProjectType === "fig" ? (
                       <div className="grid gap-3 sm:grid-cols-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
@@ -735,7 +829,7 @@ export default function ProjectsPanel() {
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
-                        onClick={() => setIsEditing(false)}
+                        onClick={() => { setIsEditing(false); setShowEditLocalPicker(false); }}
                         className="rounded-xl border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/10"
                       >
                         Cancel

@@ -395,6 +395,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	if fs_page_s := option_value(args, "--fs-read-page-bytes", ""); fs_page_s != "" {
 		if fs_page_i, ok := strconv.parse_int(fs_page_s); ok && fs_page_i > 0 do cfg.fs_read_page_bytes = i64(fs_page_i)
 	}
+	cfg.fs_root = option_value(args, "--fs-root", cfg.fs_root)
 	if cache_bytes_s := option_value(args, "--bootstrap-cache-max-bytes", ""); cache_bytes_s != "" {
 		if cache_bytes_i, ok := strconv.parse_int(cache_bytes_s); ok do cfg.bootstrap_cache_max_bytes = int(cache_bytes_i)
 	}
