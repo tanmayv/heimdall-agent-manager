@@ -118,6 +118,7 @@ def main() -> None:
 
     # The gold coordinator-name debug id is registered in the AGENTS.md registry.
     require(AGENTS_MD, "sidebar-session-coordinator-name-${conversationId}", "AGENTS.md debug-id registry entry")
+    require(AGENTS_MD, "sidebar-session-group-separator-${conversationId}", "AGENTS.md separator debug-id registry entry")
 
     print("PASS: agents/live tree endpoint + coordinator gold-own-name + all-projects rail wired; d6a6892 beside-label reverted")
 
