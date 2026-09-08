@@ -152,8 +152,12 @@ bridge_auto_pair_loopback :: proc(args: []string, hub_url: string) -> bool {
 	endpoint := strings.trim_right(strings.trim_space(hub_url), "/")
 	hostname := option_value(args, "--name", option_value(args, "--hostname", os.get_env("HOSTNAME", context.allocator)))
 	if hostname == "" do hostname = "cloudtop"
-	fmt.printfln("bridge enroll: attempting local loopback auto-pairing with hub at %s (hostname=%s)", endpoint, hostname)
-	body := fmt.tprintf("{\"hostname\":\"%s\",\"label\":\"%s\"}", hostname, hostname)
+	user := option_value(args, "--user", os.get_env("USER", context.allocator))
+	if user == "" do user = os.get_env("HAM_CLOUDTOP_OWNER", context.allocator)
+	if user == "" do user = os.get_env("LOGNAME", context.allocator)
+	if user == "" do user = "default"
+	fmt.printfln("bridge enroll: attempting local loopback auto-pairing with hub at %s (hostname=%s user=%s)", endpoint, hostname, user)
+	body := fmt.tprintf("{\"hostname\":\"%s\",\"label\":\"%s\",\"user\":\"%s\"}", hostname, hostname, user)
 	resp, ok := http.request_with_headers_timeout("POST", endpoint, "/api/v1/bridges/auto-pair", body, nil, http.DEFAULT_TIMEOUT_MS)
 	if !ok || resp.status != 200 {
 		fmt.eprintfln("bridge enroll: local loopback auto-pair failed (HTTP %d); fall back to --enrollment-token", resp.status if ok else 0)

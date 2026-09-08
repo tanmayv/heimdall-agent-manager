@@ -138,7 +138,7 @@ else
   # Auto-pair if token not yet present
   if [ ! -s "$BRIDGE_TOKEN_FILE" ]; then
     echo "[bridge] Auto-pairing bridge with local Hub..."
-    "$BIN_DIR/ham-bridge" enroll --hub http://127.0.0.1:49322 --name "$(hostname -s)" --bridge-token-file "$BRIDGE_TOKEN_FILE" || true
+    "$BIN_DIR/ham-bridge" enroll --hub http://127.0.0.1:49322 --name "$(hostname -s)" --user "${USER:-$(whoami)}" --bridge-token-file "$BRIDGE_TOKEN_FILE" || true
   fi
 
   echo "[bridge] Starting ham-bridge on 127.0.0.1:$BRIDGE_PORT..."
@@ -221,6 +221,20 @@ echo "  Cloudtop Gateway: http://127.0.0.1:8989 (or http://${HOST_FQDN}:8989)"
 echo "  Hub API:        http://127.0.0.1:49322"
 echo "  Bridge Status:  http://127.0.0.1:$BRIDGE_PORT"
 echo "  Vite UI Server: http://127.0.0.1:5173"
+
+if [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "-f" ]; then
+  trap 'echo "[supervisor] Shutting down Heimdall services..."; "$BIN_DIR/stop.sh" || true; exit 0' SIGTERM SIGINT SIGHUP
+  echo "[supervisor] Running in foreground under systemd. Monitoring daemons..."
+  while true; do
+    sleep 2
+    for pidf in "$HUB_PID_FILE" "$BRIDGE_PID_FILE" "$PROXY_PID_FILE"; do
+      if [ -f "$pidf" ] && ! kill -0 "$(cat "$pidf")" 2>/dev/null; then
+        echo "[-] Process $(basename "$pidf" .pid) died unexpectedly!"
+        exit 1
+      fi
+    done
+  done
+fi
 STARTEOF
 chmod +x "$BUNDLE_DIR/start.sh"
 
@@ -261,6 +275,7 @@ stop_proc "vite"
 stop_proc "dev-proxy"
 stop_proc "bridge"
 stop_proc "hub"
+pkill -f "ham-pty-host.*heimdall-bridge-standalone" 2>/dev/null || true
 echo "=== Heimdall Single-Node Stack Stopped ==="
 STOPEOF
 chmod +x "$BUNDLE_DIR/stop.sh"

@@ -291,10 +291,10 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 		write_response(client, 403, "Forbidden", "text/plain", "bridge auto-pair forbidden through dev-proxy")
 		return
 	}
-	if strings.has_prefix(path, "/api/v1/bridges/enroll") {
-		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 bridge enrollment/auto-pair forbidden through dev-proxy", method, target, host_lower, caller_user, owner)
+	if strings.has_prefix(path, "/api/v1/bridges/enroll") && !is_bridge_bearer {
+		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 bridge enrollment forbidden through dev-proxy (missing bearer token)", method, target, host_lower, caller_user, owner)
 		log_incoming_headers(headers)
-		write_response(client, 403, "Forbidden", "text/plain", "bridge enrollment/auto-pair forbidden through dev-proxy")
+		write_response(client, 403, "Forbidden", "text/plain", "bridge enrollment forbidden through dev-proxy")
 		return
 	}
 

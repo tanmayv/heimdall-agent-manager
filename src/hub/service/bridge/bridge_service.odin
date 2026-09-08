@@ -269,7 +269,15 @@ ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: st
 	if service == nil || service.repo == nil do return domain.Bridge{}, "", false, domain.domain_error(.Internal_Error, "bridge service not configured")
 	now := platform.clock_now(service.clock)
 	owner := strings.trim_space(owner_user_id)
-	if owner == "" do owner = "default"
+	if owner == "" || owner == "default" {
+		if env_user := os.get_env("USER", context.allocator); env_user != "" {
+			owner = env_user
+		} else if ct_owner := os.get_env("HAM_CLOUDTOP_OWNER", context.allocator); ct_owner != "" {
+			owner = ct_owner
+		} else {
+			owner = "default"
+		}
+	}
 
 	resolved_hostname := strings.trim_space(hostname)
 	if resolved_hostname == "" {

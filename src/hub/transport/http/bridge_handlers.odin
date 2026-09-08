@@ -4,6 +4,7 @@ import "core:crypto/legacy/sha1"
 import base64 "core:encoding/base64"
 import "core:fmt"
 import "core:net"
+import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:time"
@@ -132,7 +133,15 @@ auto_pair_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		return respond_error(domain.domain_error(.Forbidden, "auto-pairing is only permitted on loopback"), req.request_id)
 	}
 	user_name := json_string(req.body, "user")
-	if user_name == "" do user_name = "default"
+	if user_name == "" || user_name == "default" {
+		if u := os.get_env("USER", context.allocator); u != "" {
+			user_name = u
+		} else if u := os.get_env("HAM_CLOUDTOP_OWNER", context.allocator); u != "" {
+			user_name = u
+		} else {
+			user_name = "default"
+		}
+	}
 	token := json_string(req.body, "bridge_token")
 	hostname := json_string(req.body, "hostname")
 	if hostname == "" do hostname = json_string(req.body, "name")

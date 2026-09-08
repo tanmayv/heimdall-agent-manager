@@ -9,10 +9,12 @@ import contracts "odin_test:contracts"
 // extract_uberproxy_identity extracts the caller username and email from ÜberProxy headers.
 //
 // Security & Transport Boundary Note:
-// In Google Cloudtop single-node deployments, port 8989 ingress relies on the Cloudtop GCE Enforcer
-// firewall and corp network perimeter to drop untrusted direct intra-VPC external connections.
-// Traffic reaches the edge gateway either locally (loopback) or authenticated via ÜberProxy / PEN,
-// which strips unverified client-supplied headers and injects authoritative identity headers
+// In Google Cloudtop single-node deployments, port 8989 ingress strictly relies on the Cloudtop GCE Enforcer
+// firewall and corp network VPC perimeter to ensure ingress on port 8989 only originates from ÜberProxy
+// (or local loopback) and drops untrusted direct intra-VPC connections.
+// Because the ÜberProxy UpTick cryptographic signature is not verified in userland, network-level perimeter
+// enforcement by Cloudtop GCE Enforcer is required to prevent header spoofing from arbitrary network nodes.
+// ÜberProxy strips client-supplied headers and injects authoritative identity headers
 // (X-UberProxy-User, X-UberProxy-User-Email, X-UberProxy-UpTick, X-UberProxy-Signed-UpTick).
 //
 // Priority order:
@@ -109,6 +111,7 @@ decode_uptick_email :: proc(header_val: string, allocator := context.temp_alloca
 		tag: u64 = 0
 		shift: u32 = 0
 		for offset < len(decoded_bytes) {
+			if shift >= 64 do return "", false
 			byte_val := decoded_bytes[offset]
 			offset += 1
 			tag |= (u64(byte_val & 0x7F) << shift)
@@ -122,13 +125,14 @@ decode_uptick_email :: proc(header_val: string, allocator := context.temp_alloca
 			length: u64 = 0
 			shift = 0
 			for offset < len(decoded_bytes) {
+				if shift >= 64 do return "", false
 				byte_val := decoded_bytes[offset]
 				offset += 1
 				length |= (u64(byte_val & 0x7F) << shift)
 				shift += 7
 				if (byte_val & 0x80) == 0 do break
 			}
-			if offset + int(length) <= len(decoded_bytes) {
+			if u64(offset) + length <= u64(len(decoded_bytes)) {
 				email_slice := decoded_bytes[offset : offset + int(length)]
 				return string(email_slice), true
 			}
@@ -143,19 +147,23 @@ decode_uptick_email :: proc(header_val: string, allocator := context.temp_alloca
 				if (byte_val & 0x80) == 0 do break
 			}
 		case 1: // 64-bit
+			if offset + 8 > len(decoded_bytes) do return "", false
 			offset += 8
 		case 2: // length-delimited
 			length: u64 = 0
 			shift = 0
 			for offset < len(decoded_bytes) {
+				if shift >= 64 do return "", false
 				byte_val := decoded_bytes[offset]
 				offset += 1
 				length |= (u64(byte_val & 0x7F) << shift)
 				shift += 7
 				if (byte_val & 0x80) == 0 do break
 			}
+			if u64(offset) + length > u64(len(decoded_bytes)) do return "", false
 			offset += int(length)
 		case 5: // 32-bit
+			if offset + 4 > len(decoded_bytes) do return "", false
 			offset += 4
 		case:
 			return "", false
