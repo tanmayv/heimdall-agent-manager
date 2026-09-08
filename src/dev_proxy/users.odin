@@ -14,6 +14,7 @@ Dev_User :: struct {
 Dev_Proxy_Config :: struct {
 	listen: string,
 	hub_url: string,
+	vite_url: string,
 	username_header: string,
 	display_name_header: string,
 	email_header: string,
@@ -43,6 +44,7 @@ default_dev_proxy_config :: proc() -> Dev_Proxy_Config {
 	return Dev_Proxy_Config{
 		listen = "127.0.0.1:8080",
 		hub_url = "http://127.0.0.1:49322",
+		vite_url = "http://127.0.0.1:5173",
 		username_header = "X-authentik-username",
 		display_name_header = "X-authentik-name",
 		email_header = "X-authentik-email",

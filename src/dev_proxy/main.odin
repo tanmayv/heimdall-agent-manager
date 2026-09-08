@@ -9,6 +9,37 @@ import "core:thread"
 import "core:time"
 import contracts "odin_test:contracts"
 
+GATEWAY_HTML_PAGE :: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Heimdall Cloudtop Gateway</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 2.5rem; max-width: 720px; margin: 0 auto; color: #202124; line-height: 1.6; }
+    h1 { color: #1a73e8; margin-bottom: 0.5rem; }
+    .badge { display: inline-block; background: #e8f0fe; color: #1a73e8; padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }
+    .card { background: #f8f9fa; border: 1px solid #dadce0; border-radius: 8px; padding: 16px; margin: 20px 0; }
+    code { background: #e8eaed; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    ul { padding-left: 20px; }
+    li { margin: 8px 0; }
+    a { color: #1a73e8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Heimdall Cloudtop Gateway</h1>
+  <span class="badge">Port 8989 Active</span>
+  <div class="card">
+    <p><strong>Cloudtop Edge Gateway is active</strong> and verifying caller LOAS identity.</p>
+    <ul>
+      <li><strong>Hub API Status:</strong> <a href="/api/v1/health">/api/v1/health</a></li>
+      <li><strong>User Profile:</strong> <a href="/api/v1/me">/api/v1/me</a></li>
+      <li><strong>Vite UI Server:</strong> <code>127.0.0.1:5173</code> (run <code>npm run dev</code> to launch frontend UI)</li>
+    </ul>
+  </div>
+</body>
+</html>`
+
 main :: proc() {
 	dev_proxy_gcert_init()
 	config := default_dev_proxy_config()
@@ -60,12 +91,25 @@ parse_args :: proc(config: ^Dev_Proxy_Config) {
 			config.proxy_secret = strings.clone(strings.trim_space(string(data)))
 		}
 	}
+	if v := os.get_env_alloc("HAM_DEV_PROXY_LISTEN", context.allocator); v != "" {
+		config.listen = v
+	}
+	if v := os.get_env_alloc("HAM_VITE_URL", context.allocator); v != "" {
+		config.vite_url = v
+	}
+	if v := os.get_env_alloc("HEIMDALL_CLOUDTOP", context.allocator); v == "1" || v == "true" {
+		config.listen = "0.0.0.0:8989"
+	}
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
 		if arg == "--listen" && i + 1 < len(os.args) {
 			config.listen = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--hub-url" && i + 1 < len(os.args) {
 			config.hub_url = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--vite-url" && i + 1 < len(os.args) {
+			config.vite_url = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--cloudtop" {
+			config.listen = "0.0.0.0:8989"
 		} else if arg == "--default-user" && i + 1 < len(os.args) {
 			config.default_user = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--audit-mode" {
@@ -143,15 +187,36 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 	method, target := request_method_target(request)
 	path, query := split_target_query(target)
 
-	// CT-3: Host & CSRF validation
+	// CT-3 / CT-7: Host & CSRF validation
 	headers := parse_headers(request)
 	defer free_headers(headers)
+
+	// Extract caller identity from ÜberProxy headers if present
+	caller_user, caller_email, has_uberproxy := extract_uberproxy_identity(headers)
+	owner := get_cloudtop_owner(ctx.config)
+
 	host_hdr := header_value(headers, "Host")
+	host_only := host_hdr
 	if host_hdr != "" {
-		host_only, _, _ := split_host_port(host_hdr)
-		if host_only == "" do host_only = host_hdr
-		if !is_loopback_host(host_only) {
-			write_response(client, 403, "Forbidden", "text/plain", "invalid host header")
+		h_only, _, h_ok := split_host_port(host_hdr)
+		if h_ok do host_only = h_only
+	}
+	host_lower := strings.to_lower(host_only, context.temp_allocator)
+	if host_hdr != "" && !is_allowed_host(host_lower, has_uberproxy) {
+		write_response(client, 403, "Forbidden", "text/plain", "invalid host header")
+		return
+	}
+
+	// CT-7: Cloudtop Owner Verification Gate
+	if has_uberproxy {
+		if caller_user != owner {
+			write_response(client, 403, "Forbidden", "text/plain", "Access Denied: Caller identity does not match Cloudtop owner")
+			return
+		}
+	} else {
+		// Non-loopback connections without ÜberProxy headers are rejected
+		if !is_loopback_host(host_lower) {
+			write_response(client, 403, "Forbidden", "text/plain", "Access Denied: Caller identity does not match Cloudtop owner")
 			return
 		}
 	}
@@ -207,20 +272,35 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 		return
 	}
 
-	// Ingress security: LOAS/gcert credential check before forwarding to Hub
+	// Ingress security: LOAS/gcert credential check before forwarding
 	if valid, gcert_msg := dev_proxy_check_gcert(); !valid {
 		write_response(client, 401, "Unauthorized", "text/plain", gcert_msg)
 		return
 	}
 
-	forward_request(client, ctx.config, request, method, target)
+	// CT-7: Dynamic owner identity resolution for Hub
+	override_user := Dev_User{}
+	if has_uberproxy {
+		override_user = Dev_User{
+			username = caller_user,
+			display_name = caller_user,
+			email = caller_email,
+		}
+	}
+
+	// CT-7: Route API calls to Hub, and all UI/asset/static calls to Vite dev server (or gateway HTML fallback)
+	if strings.has_prefix(path, "/api/v1") {
+		forward_request(client, ctx.config, request, method, target, override_user)
+	} else {
+		forward_to_vite(client, ctx.config, request, method, target)
+	}
 }
 
-forward_request :: proc(client: net.TCP_Socket, config: ^Dev_Proxy_Config, request, method, target: string) {
+forward_request :: proc(client: net.TCP_Socket, config: ^Dev_Proxy_Config, request, method, target: string, override_user: Dev_User = Dev_User{}) {
 	incoming := parse_headers(request)
 	defer free_headers(incoming)
 	cookie := header_value(incoming, "Cookie")
-	rewritten, ok := rewrite_headers_for_hub(config, incoming, cookie)
+	rewritten, ok := rewrite_headers_for_hub(config, incoming, cookie, override_user)
 	if !ok {
 		write_response(client, 400, "Bad Request", "text/plain", "unknown dev user")
 		return
@@ -268,6 +348,56 @@ forward_request :: proc(client: net.TCP_Socket, config: ^Dev_Proxy_Config, reque
 	_, send_err := net.send_tcp(upstream, transmute([]byte)out_req)
 	if send_err != nil {
 		write_response(client, 502, "Bad Gateway", "text/plain", "hub send failed")
+		return
+	}
+	if is_ws {
+		proxy_tunnel_bidirectional(client, upstream)
+		return
+	}
+	proxy_copy_response(client, upstream)
+}
+
+forward_to_vite :: proc(client: net.TCP_Socket, config: ^Dev_Proxy_Config, request, method, target: string) {
+	vite_host, vite_port, vite_ok := parse_base_url(config.vite_url)
+	if !vite_ok {
+		write_response(client, 502, "Bad Gateway", "text/plain", "invalid vite_url")
+		return
+	}
+	upstream, dial_err := net.dial_tcp_from_hostname_with_port_override(vite_host, vite_port)
+	if dial_err != nil {
+		path, _ := split_target_query(target)
+		if path == "" || path == "/" || strings.has_suffix(path, ".html") {
+			write_response(client, 200, "OK", "text/html; charset=utf-8", GATEWAY_HTML_PAGE)
+		} else {
+			write_response(client, 502, "Bad Gateway", "text/plain", "Vite dev server unavailable on 127.0.0.1:5173")
+		}
+		return
+	}
+	defer net.close(upstream)
+
+	incoming := parse_headers(request)
+	defer free_headers(incoming)
+	is_ws := ascii_equal_fold(header_value(incoming, "Upgrade"), "websocket")
+	body := request_body(request)
+
+	out := strings.builder_make()
+	strings.write_string(&out, method); strings.write_string(&out, " "); strings.write_string(&out, target); strings.write_string(&out, " HTTP/1.1\r\n")
+	strings.write_string(&out, "Host: "); strings.write_string(&out, vite_host); strings.write_string(&out, ":"); strings.write_string(&out, fmt.tprintf("%d", vite_port)); strings.write_string(&out, "\r\n")
+	for h in incoming {
+		if ascii_equal_fold(h.name, "Host") || ascii_equal_fold(h.name, "Content-Length") || ascii_equal_fold(h.name, "Connection") do continue
+		if is_ws && ascii_equal_fold(h.name, "Upgrade") do continue
+		strings.write_string(&out, h.name); strings.write_string(&out, ": "); strings.write_string(&out, h.value); strings.write_string(&out, "\r\n")
+	}
+	if is_ws {
+		strings.write_string(&out, "Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+	} else {
+		strings.write_string(&out, fmt.tprintf("Content-Length: %d\r\nConnection: close\r\n\r\n", len(body)))
+		strings.write_string(&out, body)
+	}
+	out_req := strings.to_string(out)
+	_, send_err := net.send_tcp(upstream, transmute([]byte)out_req)
+	if send_err != nil {
+		write_response(client, 502, "Bad Gateway", "text/plain", "vite send failed")
 		return
 	}
 	if is_ws {

@@ -108,14 +108,14 @@ PROXY_PID_FILE="$RUN_DIR/dev-proxy.pid"
 if [ -f "$PROXY_PID_FILE" ] && kill -0 "$(cat "$PROXY_PID_FILE")" 2>/dev/null; then
   echo "[proxy] Already running (PID $(cat "$PROXY_PID_FILE"))"
 else
-  echo "[proxy] Starting ham-dev-proxy on 127.0.0.1:8080..."
-  "$BIN_DIR/ham-dev-proxy" --listen 127.0.0.1:8080 --hub-url http://127.0.0.1:49322 > "$PROXY_LOG" 2>&1 &
+  echo "[proxy] Starting ham-dev-proxy on 0.0.0.0:8989..."
+  "$BIN_DIR/ham-dev-proxy" --listen 0.0.0.0:8989 --hub-url http://127.0.0.1:49322 > "$PROXY_LOG" 2>&1 &
   echo $! > "$PROXY_PID_FILE"
 fi
 
 echo "=== Heimdall Single-Node Stack is UP ==="
 echo "Access points:"
-echo "  Dev Proxy / UI: http://127.0.0.1:8080"
+echo "  Cloudtop Gateway: http://127.0.0.1:8989 (or http://$(hostname).c.googlers.com:8989)"
 echo "  Hub API:        http://127.0.0.1:49322"
 echo "  Bridge Status:  http://127.0.0.1:49323"
 STARTEOF
@@ -167,8 +167,8 @@ cat << 'READMEEOF' > "$BUNDLE_DIR/README.md"
 This bundle contains self-contained ELF binaries adapted to run on a Google Cloudtop workstation without requiring Nix or compilation.
 
 ## Quick Start
-1. Run `./start.sh` to launch the stack on loopback:
-   - Web UI / Dev Proxy: `http://127.0.0.1:8080`
+1. Run `./start.sh` to launch the stack on Cloudtop:
+   - Cloudtop Gateway: `http://127.0.0.1:8989` (or `http://<ldap>.c.googlers.com:8989`)
    - Hub API: `http://127.0.0.1:49322`
 2. Run `./stop.sh` to shut down the stack.
 

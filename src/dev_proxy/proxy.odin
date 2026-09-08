@@ -3,9 +3,13 @@ package main
 import "core:strings"
 import contracts "odin_test:contracts"
 
-rewrite_headers_for_hub :: proc(config: ^Dev_Proxy_Config, incoming: []contracts.HTTP_Header, cookie_header: string) -> ([]contracts.HTTP_Header, bool) {
-	user, ok := select_dev_user(config, incoming, cookie_header)
-	if !ok do return nil, false
+rewrite_headers_for_hub :: proc(config: ^Dev_Proxy_Config, incoming: []contracts.HTTP_Header, cookie_header: string, override_user: Dev_User = Dev_User{}) -> ([]contracts.HTTP_Header, bool) {
+	user := override_user
+	if user.username == "" {
+		selected_user, ok := select_dev_user(config, incoming, cookie_header)
+		if !ok do return nil, false
+		user = selected_user
+	}
 	out := make([dynamic]contracts.HTTP_Header)
 	// Forward everything except spoofable trusted/dev selector headers unchanged, including Authorization: Bearer ...
 	for header in incoming {
@@ -33,6 +37,8 @@ is_client_control_header :: proc(name: string, config: ^Dev_Proxy_Config) -> boo
 	lower := strings.to_lower(name, context.temp_allocator)
 	if strings.has_prefix(lower, "x-authentik-") do return true
 	if strings.has_prefix(lower, "x-forwarded-") do return true
+	if strings.has_prefix(lower, "x-goog-") do return true
+	if lower == "x-remote-user" do return true
 	if lower == "forwarded" do return true
 	if lower == "x-real-ip" do return true
 	if lower == "x-dev-user" do return true
