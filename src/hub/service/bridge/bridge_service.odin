@@ -145,16 +145,18 @@ list_bridges :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context) -> 
 			}
 		}
 		if !has_local {
-			if local.owner_user_id != owner {
+			if (local.owner_user_id == "default" || local.owner_user_id == "") && owner != "" && owner != "default" {
 				local.owner_user_id = owner
 				local.updated_at = platform.clock_now(service.clock)
 				saved, save_ok, _ := iface.bridge_save_bridge(service.repo, local)
 				if save_ok do local = saved
 			}
-			out := make([dynamic]domain.Bridge)
-			append(&out, local)
-			for b in bridges do append(&out, b)
-			return out[:], domain.Domain_Error{}
+			if local.owner_user_id == owner || local.owner_user_id == "default" {
+				out := make([dynamic]domain.Bridge)
+				append(&out, local)
+				for b in bridges do append(&out, b)
+				return out[:], domain.Domain_Error{}
+			}
 		}
 	}
 	return bridges, domain.Domain_Error{}
@@ -164,11 +166,14 @@ get_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridg
 	bridge, ok, err := iface.bridge_get_bridge(service.repo, bridge_id)
 	if !ok do return domain.Bridge{}, false, err
 	if bridge.bridge_id == "brg_local" || bridge.owner_user_id == "default" {
-		if auth.user_id != "" && bridge.owner_user_id != domain.User_ID(auth.user_id) {
+		if (bridge.owner_user_id == "default" || bridge.owner_user_id == "") && auth.user_id != "" && auth.user_id != "default" {
 			bridge.owner_user_id = domain.User_ID(auth.user_id)
 			bridge.updated_at = platform.clock_now(service.clock)
 			saved, save_ok, _ := iface.bridge_save_bridge(service.repo, bridge)
 			if save_ok do bridge = saved
+		}
+		if auth.user_id != "" && bridge.owner_user_id != "default" && bridge.owner_user_id != domain.User_ID(auth.user_id) {
+			if owner_ok, owner_err := ownership.require_owner(auth, bridge.owner_user_id); !owner_ok do return domain.Bridge{}, false, owner_err
 		}
 		return bridge, true, domain.Domain_Error{}
 	}
