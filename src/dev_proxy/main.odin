@@ -518,6 +518,34 @@ get_static_mime_type :: proc(filename: string) -> string {
 	}
 }
 
+hex_digit_val :: proc(c: byte) -> int {
+	switch c {
+	case '0'..='9': return int(c - '0')
+	case 'a'..='f': return int(c - 'a' + 10)
+	case 'A'..='F': return int(c - 'A' + 10)
+	}
+	return -1
+}
+
+url_decode_path :: proc(s: string, allocator := context.temp_allocator) -> string {
+	b := strings.builder_make(allocator)
+	i := 0
+	for i < len(s) {
+		if s[i] == '%' && i + 2 < len(s) {
+			h1 := hex_digit_val(s[i + 1])
+			h2 := hex_digit_val(s[i + 2])
+			if h1 >= 0 && h2 >= 0 {
+				strings.write_byte(&b, byte((h1 << 4) | h2))
+				i += 3
+				continue
+			}
+		}
+		strings.write_byte(&b, s[i])
+		i += 1
+	}
+	return strings.to_string(b)
+}
+
 serve_static_ui :: proc(client: net.TCP_Socket, static_dir, raw_path, method: string) -> bool {
 	clean_dir := strings.trim_right(static_dir, "/")
 	if clean_dir == "" do return false
@@ -528,23 +556,36 @@ serve_static_ui :: proc(client: net.TCP_Socket, static_dir, raw_path, method: st
 		return true
 	}
 
-	rel := strings.trim_left(raw_path, "/")
+	decoded := url_decode_path(raw_path)
+	rel := strings.trim_left(decoded, "/")
+	if q := strings.index_byte(rel, '?'); q >= 0 do rel = rel[:q]
 	if rel == "" do rel = "index.html"
 
-	// Security: Prevent path traversal
-	if strings.contains(rel, "..") || strings.has_prefix(rel, "/") {
+	// Security: Prevent path traversal, null bytes, and absolute bypass
+	if strings.contains(rel, "\x00") || strings.contains(rel, "..") || strings.has_prefix(rel, "/") {
 		write_response(client, 403, "Forbidden", "text/plain", "access denied")
 		return true
 	}
 
-	target_path := fmt.tprintf("%s/%s", clean_dir, rel)
+	// Canonical path comparison: target must reside strictly within static_dir
+	clean_dir_norm, _ := filepath.clean(clean_dir, context.temp_allocator)
+	target_path, _ := filepath.join({clean_dir_norm, rel}, context.temp_allocator)
+	target_path_clean, _ := filepath.clean(target_path, context.temp_allocator)
+	clean_prefix := clean_dir_norm
+	if !strings.has_suffix(clean_prefix, "/") {
+		clean_prefix = fmt.tprintf("%s/", clean_dir_norm)
+	}
+	if target_path_clean != clean_dir_norm && !strings.has_prefix(target_path_clean, clean_prefix) {
+		write_response(client, 403, "Forbidden", "text/plain", "access denied")
+		return true
+	}
 
 	// Direct static file hit
-	if os.exists(target_path) && !os.is_dir(target_path) {
-		data, err := os.read_entire_file(target_path, context.allocator)
+	if os.exists(target_path_clean) && !os.is_dir(target_path_clean) {
+		data, err := os.read_entire_file(target_path_clean, context.allocator)
 		if err == nil {
 			defer delete(data)
-			mime := get_static_mime_type(target_path)
+			mime := get_static_mime_type(target_path_clean)
 			headers: [1]contracts.HTTP_Header
 			hdr_slice: []contracts.HTTP_Header = nil
 			if strings.has_prefix(rel, "assets/") {

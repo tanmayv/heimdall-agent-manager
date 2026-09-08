@@ -174,13 +174,14 @@ def main() -> None:
             print("[+] Dynamic test: Missing asset returns 404 Not Found")
 
             # Test F: Directory traversal rejection (403)
-            # Send raw HTTP request with /../ via socket
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect(('127.0.0.1', test_port))
-                s.sendall(b"GET /../etc/passwd HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-                raw_resp = s.recv(1024).decode("utf-8", errors="ignore")
-                require("403 Forbidden" in raw_resp, f"Directory traversal must be rejected with 403, got {raw_resp[:40]}")
-            print("[+] Dynamic test: Directory traversal request returned 403 Forbidden")
+            # Send raw HTTP request with /../ and %2e%2e via socket
+            for bad_path in [b"/../etc/passwd", b"/%2e%2e/etc/passwd", b"/assets/../../etc/shadow"]:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect(('127.0.0.1', test_port))
+                    s.sendall(b"GET " + bad_path + b" HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                    raw_resp = s.recv(1024).decode("utf-8", errors="ignore")
+                    require("403 Forbidden" in raw_resp, f"Directory traversal ({bad_path.decode()}) must be rejected with 403, got {raw_resp[:40]}")
+            print("[+] Dynamic test: Directory traversal requests (raw, %2e%2e, and relative) returned 403 Forbidden")
 
         finally:
             proc.terminate()
