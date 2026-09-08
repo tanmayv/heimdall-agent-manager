@@ -733,7 +733,34 @@ ALTER TABLE memories DROP COLUMN template_id;
 ALTER TABLE memories DROP COLUMN bridge_id;
 `
 
-migration_order :: [26]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql"}
+// MIGRATION_027_DEFAULT_COORDINATOR_AGENT seeds a durable 'coordinator' agent for
+// every existing user that lacks one and remaps agents off the removed built-in
+// 'System Reviewer' template onto the default 'tmpl_empty'. Idempotent via the
+// NOT EXISTS guard + deterministic agent_id and the template WHERE clause. Kept
+// byte-identical to 027_default_coordinator_agent.sql.
+MIGRATION_027_DEFAULT_COORDINATOR_AGENT :: `INSERT INTO agents (agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at)
+SELECT 'agt_coordinator_' || u.user_id,
+       u.user_id,
+       'coordinator',
+       'coordinator',
+       'tmpl_empty',
+       '',
+       '',
+       '',
+       'active',
+       u.created_at,
+       u.updated_at
+FROM users u
+WHERE NOT EXISTS (
+        SELECT 1 FROM agents a
+        WHERE a.owner_user_id = u.user_id
+          AND a.slug = 'coordinator'
+);
+
+UPDATE agents SET template_id = 'tmpl_empty' WHERE template_id = 'tmpl_system_reviewer';
+`
+
+migration_order :: [27]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -838,6 +865,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "024_push_subscriptions.sql" do return strings.clone(MIGRATION_024_PUSH_SUBSCRIPTIONS)
 	if name == "025_lookup_indexes.sql" do return strings.clone(MIGRATION_025_LOOKUP_INDEXES)
 	if name == "026_memory_scope_lists.sql" do return strings.clone(MIGRATION_026_MEMORY_SCOPE_LISTS)
+	if name == "027_default_coordinator_agent.sql" do return strings.clone(MIGRATION_027_DEFAULT_COORDINATOR_AGENT)
 	return ""
 }
 

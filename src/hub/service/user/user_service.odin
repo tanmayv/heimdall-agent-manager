@@ -6,13 +6,47 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 
 User_Service :: struct {
-	users: ^iface.User_Repository,
-	clock: ^platform.Clock,
-	ids:   ^platform.ID_Generator,
+	users:  ^iface.User_Repository,
+	// agents lets provisioning seed a durable 'coordinator' agent for new users so
+	// first-time users always have an agent to start. Optional (nil in tests that
+	// only exercise user CRUD); seeding is skipped when nil.
+	agents: ^iface.Agent_Repository,
+	clock:  ^platform.Clock,
+	ids:    ^platform.ID_Generator,
 }
 
-new_user_service :: proc(users: ^iface.User_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> User_Service {
-	return User_Service{users = users, clock = clock, ids = ids}
+new_user_service :: proc(users: ^iface.User_Repository, agents: ^iface.Agent_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> User_Service {
+	return User_Service{users = users, agents = agents, clock = clock, ids = ids}
+}
+
+// COORDINATOR_AGENT_SLUG is the slug of the durable agent seeded for every user
+// so first-time users always have an agent to start.
+COORDINATOR_AGENT_SLUG :: "coordinator"
+
+// ensure_coordinator_agent seeds a durable 'coordinator' agent for owner if none
+// exists yet. Idempotent (guarded by the existing-slug check) and best-effort:
+// provisioning a user must never fail because agent seeding did. No-op when the
+// agent repository is not wired.
+ensure_coordinator_agent :: proc(service: ^User_Service, owner: domain.User_ID) {
+	if service == nil || service.agents == nil || service.clock == nil || service.ids == nil do return
+	if string(owner) == "" do return
+	existing, list_err := iface.agent_list_by_owner(service.agents, owner, 200, "")
+	if list_err.code != .None do return
+	for a in existing {
+		if a.slug == COORDINATOR_AGENT_SLUG do return
+	}
+	now := platform.clock_now(service.clock)
+	agent := domain.Agent{
+		agent_id = platform.generate_id(service.ids, "agt_"),
+		owner_user_id = owner,
+		name = COORDINATOR_AGENT_SLUG,
+		slug = COORDINATOR_AGENT_SLUG,
+		template_id = domain.TEMPLATE_EMPTY_ID,
+		state = .Active,
+		created_at = now,
+		updated_at = now,
+	}
+	iface.agent_save(service.agents, agent)
 }
 
 get_user :: proc(service: ^User_Service, user_id: domain.User_ID) -> (domain.User, bool, domain.Domain_Error) {
@@ -80,7 +114,10 @@ create_user :: proc(service: ^User_Service, input: Create_User_Input) -> (domain
 		created_at = now,
 		updated_at = now,
 	}
-	return iface.user_save(service.users, created)
+	saved, ok, save_err := iface.user_save(service.users, created)
+	if !ok do return saved, ok, save_err
+	ensure_coordinator_agent(service, saved.user_id)
+	return saved, ok, save_err
 }
 
 ensure_user_from_auth :: proc(service: ^User_Service, user_id, display_name, email: string, auto_provision: bool) -> (domain.User, bool, domain.Domain_Error) {
@@ -117,7 +154,10 @@ ensure_user_from_auth :: proc(service: ^User_Service, user_id, display_name, ema
 		created_at = now,
 		updated_at = now,
 	}
-	return iface.user_save(service.users, created)
+	saved, saved_ok, save_err := iface.user_save(service.users, created)
+	if !saved_ok do return saved, saved_ok, save_err
+	ensure_coordinator_agent(service, saved.user_id)
+	return saved, saved_ok, save_err
 }
 
 normalize_user_id :: proc(value: string) -> string {

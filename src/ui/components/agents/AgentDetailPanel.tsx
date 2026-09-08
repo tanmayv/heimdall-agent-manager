@@ -3,6 +3,7 @@ import {
   useFetchAgentIdentityQuery,
   useLaunchAgentInstanceMutation,
   useListAgentInstancesQuery,
+  useListAgentTemplatesQuery,
   useRestartAgentInstanceMutation,
   useStopAgentInstanceMutation,
   useUpdateAgentIdentityMutation,
@@ -34,6 +35,7 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   // empty even though support is enabled. Poll + refetch on mount to stay live.
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
   const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
+  const templatesQuery = useListAgentTemplatesQuery();
   const [updateAgent, { isLoading: updatingAgent }] = useUpdateAgentIdentityMutation();
   const [patchSupport, { isLoading: patchingSupport }] = usePatchAgentBridgeSupportMutation();
   const [launchInstance, { isLoading: launching }] = useLaunchAgentInstanceMutation();
@@ -46,6 +48,7 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const supportByBridge = useMemo(() => new Map(supports.map((s: any) => [s.bridgeId, s])), [supports]);
   const instances = instancesQuery.data?.instances || [];
   const projects = projectsQuery.data || [];
+  const templates = useMemo(() => (templatesQuery.data?.templates || []).map(normalizeTemplateOption).filter((tmpl: { id: string }) => tmpl.id), [templatesQuery.data?.templates]);
   const enabledSupportRows = useMemo(() => enabledRows(bridges, supportByBridge), [bridges, supportByBridge]);
 
   const [defaultScope, setDefaultScope] = useState<ProviderScope>('bridge_default');
@@ -59,6 +62,26 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const [launchProject, setLaunchProject] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+
+  // Edit-agent form: identity fields (name/template/provider/tier/instructions).
+  // Pre-filled from the current agent on open; the agent_id is immutable so it is
+  // never editable here.
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editTemplate, setEditTemplate] = useState('');
+  const [editProvider, setEditProvider] = useState('');
+  const [editTier, setEditTier] = useState('');
+  const [editInstructions, setEditInstructions] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  const editProviderOptions = useMemo(() => {
+    const providers = new Set<string>();
+    for (const bridge of bridges) for (const cap of normalizeBridgeCapabilities(bridge)) if (cap.provider) providers.add(cap.provider);
+    if (editProvider) providers.add(editProvider); // keep the current value selectable even if no bridge advertises it
+    return Array.from(providers).sort();
+  }, [bridges, editProvider]);
+  const editTierOptions = useMemo(() => (editTier && !tierOrder.includes(editTier) ? [editTier, ...tierOrder] : tierOrder), [editTier]);
 
   useEffect(() => {
     if (!agent) return;
@@ -96,6 +119,42 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   const launchTierOptions = selectedLaunchRow ? launchTiersFor(selectedLaunchRow, agent, launchProvider) : [];
   const launchEffective = selectedLaunchRow ? effectiveProviderTier(agent, selectedLaunchRow.bridge, { enabled: true, providerScope: launchProvider ? 'same_provider' : 'bridge_default', provider: launchProvider, tier: launchTier }) : { provider: '', tier: '' };
   const launchWarning = launchRows.length === 0 ? 'No online Bridge with provider capabilities is available. Reconnect or configure a Bridge before launching.' : '';
+
+  function openEdit() {
+    if (!agent) return;
+    setEditName(String(agent.name || ''));
+    setEditTemplate(String(agent.template_id || agent.templateId || ''));
+    setEditProvider(String(agent.default_provider || agent.defaultProvider || ''));
+    setEditTier(String(agent.default_tier || agent.defaultTier || ''));
+    setEditInstructions(String(agent.instructions || ''));
+    setEditError('');
+    setEditOpen(true);
+  }
+
+  async function saveEdit() {
+    if (!agentId) return;
+    setEditError(''); setMessage('');
+    const name = editName.trim();
+    if (!name) { setEditError('Agent name is required.'); return; }
+    setEditBusy(true);
+    try {
+      await updateAgent({
+        agentId,
+        name,
+        templateId: editTemplate,
+        defaultProvider: editProvider,
+        defaultTier: editTier,
+        instructions: editInstructions,
+      }).unwrap();
+      setEditOpen(false);
+      setMessage('Saved agent details.');
+      await agentQuery.refetch();
+    } catch (err: any) {
+      setEditError(String(err?.message || 'Failed to save agent'));
+    } finally {
+      setEditBusy(false);
+    }
+  }
 
   async function saveDefaults() {
     if (!agentId) return;
@@ -192,11 +251,33 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
           <h2 data-debug-id="agent-detail-title" className="mt-2 text-2xl font-semibold text-white">{agent.name || agent.agent_id || agentId}</h2>
           <p className="mt-1 text-sm text-zinc-500">{agent.agent_id || agentId} · template {agent.template_id || '—'} · state {agent.state || 'active'}</p>
         </div>
-        <button data-debug-id="agent-detail-launch-instance-header-btn" type="button" onClick={() => setLaunchOpen(!launchOpen)} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Launch instance</button>
+        <div className="flex items-center gap-2">
+          <button data-debug-id="agents-detail-edit-btn" type="button" onClick={openEdit} className="rounded-xl border border-white/10 px-4 py-2 text-sm font-semibold text-zinc-100 hover:bg-white/10">Edit</button>
+          <button data-debug-id="agent-detail-launch-instance-header-btn" type="button" onClick={() => setLaunchOpen(!launchOpen)} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Launch instance</button>
+        </div>
       </div>
 
       {message ? <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-100">{message}</div> : null}
       {error ? <div data-debug-id="agent-detail-action-error" className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}
+
+      {editOpen ? (
+        <section data-debug-id="agents-detail-edit-section" className="rounded-2xl border border-sky-400/20 bg-white/[0.04] p-4">
+          <h3 className="font-semibold text-white">Edit agent</h3>
+          <p className="mt-1 text-xs text-zinc-500">Update this agent's identity. The agent id is permanent and cannot be changed.</p>
+          {editError ? <div data-debug-id="agents-detail-edit-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{editError}</div> : null}
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="block text-sm text-zinc-300">Name<input data-debug-id="agents-detail-edit-name" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Agent name" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
+            <label className="block text-sm text-zinc-300">Template / persona<select data-debug-id="agents-detail-edit-template" value={editTemplate} onChange={(e) => setEditTemplate(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Choose template</option>{templates.map((tmpl: { id: string; name: string }) => <option key={tmpl.id} value={tmpl.id}>{tmpl.name || tmpl.id}</option>)}</select></label>
+            <label className="block text-sm text-zinc-300">Default provider<select data-debug-id="agents-detail-edit-provider" value={editProvider} onChange={(e) => setEditProvider(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use Bridge default</option>{editProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
+            <label className="block text-sm text-zinc-300">Default tier<select data-debug-id="agents-detail-edit-tier" value={editTier} onChange={(e) => setEditTier(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use Bridge default tier</option>{editTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}</select></label>
+            <label className="block text-sm text-zinc-300 sm:col-span-2">Instructions<textarea data-debug-id="agents-detail-edit-instructions" value={editInstructions} onChange={(e) => setEditInstructions(e.target.value)} placeholder="Optional additions layered on the selected template." className="mt-1 h-28 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button data-debug-id="agents-detail-edit-cancel" type="button" onClick={() => setEditOpen(false)} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</button>
+            <button data-debug-id="agents-detail-edit-save" type="button" onClick={() => void saveEdit()} disabled={editBusy || !editName.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:opacity-50">{editBusy ? 'Saving…' : 'Save'}</button>
+          </div>
+        </section>
+      ) : null}
 
       <section className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
         <h3 className="font-semibold text-white">Default provider/tier</h3>
@@ -297,6 +378,13 @@ function CoordinatorChainsDropdown({ agentInstanceId, currentChainId }: { agentI
       ))}
     </select>
   );
+}
+
+function normalizeTemplateOption(template: any): { id: string; name: string } {
+  return {
+    id: String(template?.template_id || template?.templateId || template?.id || ''),
+    name: String(template?.name || template?.display_name || template?.displayName || template?.template_id || template?.id || ''),
+  };
 }
 
 function bridgeId(bridge: any): string { return String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || ''); }

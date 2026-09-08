@@ -144,6 +144,13 @@ Artifact :: struct {
 	updated_at: string,
 }
 
+// TEMPLATE_EMPTY_ID is the built-in default template id. It is a virtual (non-DB)
+// system template every user always has: a blank persona/instructions used as the
+// default template for new agents. It replaced the former "System Reviewer"
+// built-in. Defined in the domain layer so the content and agent services share a
+// single source of truth for the identifier.
+TEMPLATE_EMPTY_ID :: "tmpl_empty"
+
 Template :: struct {
 	template_id: string,
 	owner_user_id: User_ID,
