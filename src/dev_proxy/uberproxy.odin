@@ -132,13 +132,15 @@ decode_uptick_email :: proc(header_val: string, allocator := context.temp_alloca
 				shift += 7
 				if (byte_val & 0x80) == 0 do break
 			}
-			if u64(offset) + length <= u64(len(decoded_bytes)) {
+			bytes_len := u64(len(decoded_bytes))
+			if u64(offset) <= bytes_len && length <= bytes_len - u64(offset) {
 				email_slice := decoded_bytes[offset : offset + int(length)]
 				return string(email_slice), true
 			}
 			return "", false
 		}
 
+		bytes_len := u64(len(decoded_bytes))
 		switch wire_type {
 		case 0: // varint
 			for offset < len(decoded_bytes) {
@@ -147,7 +149,7 @@ decode_uptick_email :: proc(header_val: string, allocator := context.temp_alloca
 				if (byte_val & 0x80) == 0 do break
 			}
 		case 1: // 64-bit
-			if offset + 8 > len(decoded_bytes) do return "", false
+			if u64(offset) > bytes_len || bytes_len - u64(offset) < 8 do return "", false
 			offset += 8
 		case 2: // length-delimited
 			length: u64 = 0
@@ -160,10 +162,10 @@ decode_uptick_email :: proc(header_val: string, allocator := context.temp_alloca
 				shift += 7
 				if (byte_val & 0x80) == 0 do break
 			}
-			if u64(offset) + length > u64(len(decoded_bytes)) do return "", false
+			if u64(offset) > bytes_len || length > bytes_len - u64(offset) do return "", false
 			offset += int(length)
 		case 5: // 32-bit
-			if offset + 4 > len(decoded_bytes) do return "", false
+			if u64(offset) > bytes_len || bytes_len - u64(offset) < 4 do return "", false
 			offset += 4
 		case:
 			return "", false
