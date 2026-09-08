@@ -70,12 +70,19 @@ fi
 # 2. Start Hub
 HUB_LOG="$LOG_DIR/hub.log"
 HUB_PID_FILE="$RUN_DIR/hub.pid"
+HUB_SECRET_FLAG=""
+if [ -f "$DATA_DIR/proxy_secret" ]; then
+  HUB_SECRET_FLAG="--proxy-secret-file $DATA_DIR/proxy_secret"
+fi
+
 if [ -f "$HUB_PID_FILE" ] && kill -0 "$(cat "$HUB_PID_FILE")" 2>/dev/null; then
   echo "[hub] Already running (PID $(cat "$HUB_PID_FILE"))"
 else
   echo "[hub] Starting ham-hub on 127.0.0.1:49322..."
-  "$BIN_DIR/ham-hub" --listen 127.0.0.1:49322 --db "$DATA_DIR/hub.db" --migrations-dir "$MIGRATIONS_DIR" > "$HUB_LOG" 2>&1 &
-  echo $! > "$HUB_PID_FILE"
+  nohup "$BIN_DIR/ham-hub" --listen 127.0.0.1:49322 --db "$DATA_DIR/hub.db" --migrations-dir "$MIGRATIONS_DIR" $HUB_SECRET_FLAG > "$HUB_LOG" 2>&1 &
+  PID=$!
+  echo $PID > "$HUB_PID_FILE"
+  disown $PID 2>/dev/null || true
 fi
 
 # Wait for Hub port
@@ -92,32 +99,87 @@ echo "[hub] Ready at http://127.0.0.1:49322"
 # 3. Start Bridge
 BRIDGE_LOG="$LOG_DIR/bridge.log"
 BRIDGE_PID_FILE="$RUN_DIR/bridge.pid"
+BRIDGE_PORT="${HEIMDALL_BRIDGE_PORT:-49323}"
+BRIDGE_ENDPOINT_PORT="${HEIMDALL_BRIDGE_ENDPOINT_PORT:-49324}"
+BRIDGE_RUN_DIR="${HEIMDALL_BRIDGE_RUN_DIR:-/tmp/heimdall-bridge-local}"
+BRIDGE_TOKEN_FILE="$DATA_DIR/bridge_token_cloudtop"
+
+# Detect if default port 49323 is already in use (e.g. multi-agent supervisor connected to remote hub)
+if ss -tlpn 2>/dev/null | grep -q ":$BRIDGE_PORT\b"; then
+  if [ "$BRIDGE_PORT" = "49323" ]; then
+    echo "[bridge] Port 49323 is occupied; using port 49325 for standalone bridge"
+    BRIDGE_PORT=49325
+    BRIDGE_ENDPOINT_PORT=49326
+    BRIDGE_RUN_DIR="/tmp/heimdall-bridge-standalone"
+  fi
+fi
+
 if [ -f "$BRIDGE_PID_FILE" ] && kill -0 "$(cat "$BRIDGE_PID_FILE")" 2>/dev/null; then
   echo "[bridge] Already running (PID $(cat "$BRIDGE_PID_FILE"))"
 else
-  echo "[bridge] Starting ham-bridge on 127.0.0.1:49323..."
+  # Auto-pair if token not yet present
+  if [ ! -s "$BRIDGE_TOKEN_FILE" ]; then
+    echo "[bridge] Auto-pairing bridge with local Hub..."
+    "$BIN_DIR/ham-bridge" enroll --hub http://127.0.0.1:49322 --bridge-token-file "$BRIDGE_TOKEN_FILE" || true
+  fi
+
+  echo "[bridge] Starting ham-bridge on 127.0.0.1:$BRIDGE_PORT..."
   export HEIMDALL_HAM_PTY_HOST_BIN="$BIN_DIR/ham-pty-host"
   export HEIMDALL_HAM_CTL_BIN="$BIN_DIR/ham-ctl"
-  "$BIN_DIR/ham-bridge" --bind-host 127.0.0.1 --port 49323 --hub http://127.0.0.1:49322 --local-run-dir "/tmp/heimdall-bridge-local" > "$BRIDGE_LOG" 2>&1 &
-  echo $! > "$BRIDGE_PID_FILE"
+  nohup "$BIN_DIR/ham-bridge" --bind-host 127.0.0.1 --port "$BRIDGE_PORT" --local-endpoint-port "$BRIDGE_ENDPOINT_PORT" --hub http://127.0.0.1:49322 --local-run-dir "$BRIDGE_RUN_DIR" --bridge-token-file "$BRIDGE_TOKEN_FILE" > "$BRIDGE_LOG" 2>&1 &
+  PID=$!
+  echo $PID > "$BRIDGE_PID_FILE"
+  disown $PID 2>/dev/null || true
 fi
 
-# 4. Start Dev-Proxy
+# 4. Start Dev-Proxy (Port 8989 Cloudtop Gateway)
 PROXY_LOG="$LOG_DIR/dev-proxy.log"
 PROXY_PID_FILE="$RUN_DIR/dev-proxy.pid"
+PROXY_SECRET_FLAG=""
+if [ -f "$DATA_DIR/proxy_secret" ]; then
+  PROXY_SECRET_FLAG="--proxy-secret-file $DATA_DIR/proxy_secret"
+fi
+
 if [ -f "$PROXY_PID_FILE" ] && kill -0 "$(cat "$PROXY_PID_FILE")" 2>/dev/null; then
   echo "[proxy] Already running (PID $(cat "$PROXY_PID_FILE"))"
 else
   echo "[proxy] Starting ham-dev-proxy on 0.0.0.0:8989..."
-  "$BIN_DIR/ham-dev-proxy" --listen 0.0.0.0:8989 --hub-url http://127.0.0.1:49322 > "$PROXY_LOG" 2>&1 &
-  echo $! > "$PROXY_PID_FILE"
+  nohup "$BIN_DIR/ham-dev-proxy" --listen 0.0.0.0:8989 --hub-url http://127.0.0.1:49322 --vite-url http://127.0.0.1:5173 $PROXY_SECRET_FLAG > "$PROXY_LOG" 2>&1 &
+  PID=$!
+  echo $PID > "$PROXY_PID_FILE"
+  disown $PID 2>/dev/null || true
 fi
 
+# 5. Start Vite Dev Server (Frontend UI)
+VITE_LOG="$LOG_DIR/vite.log"
+VITE_PID_FILE="$RUN_DIR/vite.pid"
+if [ -f "$VITE_PID_FILE" ] && kill -0 "$(cat "$VITE_PID_FILE")" 2>/dev/null; then
+  echo "[ui] Vite server already running (PID $(cat "$VITE_PID_FILE"))"
+elif ss -tlpn 2>/dev/null | grep -q ":5173\b"; then
+  echo "[ui] Vite server already running on port 5173"
+else
+  UI_DIR="$BUNDLE_DIR/ui"
+  if [ ! -d "$UI_DIR" ]; then
+    if [ -f "$BUNDLE_DIR/../../package.json" ]; then
+      UI_DIR="$(cd "$BUNDLE_DIR/../.." && pwd)"
+    elif [ -f "$HOME/heimdall-cloudtop/package.json" ]; then
+      UI_DIR="$HOME/heimdall-cloudtop"
+    fi
+  fi
+  if [ -d "$UI_DIR" ] && [ -f "$UI_DIR/package.json" ]; then
+    echo "[ui] Starting Vite dev server in $UI_DIR on 127.0.0.1:5173..."
+    (cd "$UI_DIR" && HEIMDALL_DEV_PROXY_URL="http://127.0.0.1:8989" nohup npx vite --host 127.0.0.1 --port 5173 > "$VITE_LOG" 2>&1 & echo $! > "$VITE_PID_FILE")
+    disown $(cat "$VITE_PID_FILE") 2>/dev/null || true
+  fi
+fi
+
+HOST_FQDN="$(hostname | sed 's/\.c\.googlers\.com$//').c.googlers.com"
 echo "=== Heimdall Single-Node Stack is UP ==="
 echo "Access points:"
-echo "  Cloudtop Gateway: http://127.0.0.1:8989 (or http://$(hostname).c.googlers.com:8989)"
+echo "  Cloudtop Gateway: http://127.0.0.1:8989 (or http://${HOST_FQDN}:8989)"
 echo "  Hub API:        http://127.0.0.1:49322"
-echo "  Bridge Status:  http://127.0.0.1:49323"
+echo "  Bridge Status:  http://127.0.0.1:$BRIDGE_PORT"
+echo "  Vite UI Server: http://127.0.0.1:5173"
 STARTEOF
 chmod +x "$BUNDLE_DIR/start.sh"
 
@@ -154,11 +216,13 @@ stop_proc() {
 }
 
 echo "=== Stopping Heimdall Single-Node Stack ==="
+stop_proc "vite"
 stop_proc "dev-proxy"
 stop_proc "bridge"
 stop_proc "hub"
 echo "=== Heimdall Single-Node Stack Stopped ==="
 STOPEOF
+chmod +x "$BUNDLE_DIR/stop.sh"
 chmod +x "$BUNDLE_DIR/stop.sh"
 
 cat << 'READMEEOF' > "$BUNDLE_DIR/README.md"
