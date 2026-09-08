@@ -14,7 +14,7 @@ new_project_repository :: proc(impl: ^Project_Repo_SQLite, conn: ^Conn) -> iface
 
 project_get_sqlite :: proc(ctx: rawptr, project_id: domain.Project_ID) -> (domain.Project, bool, domain.Domain_Error) {
 	impl := (^Project_Repo_SQLite)(ctx); stmt: sqlite3_stmt = nil
-	q := "SELECT project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, created_at, updated_at FROM projects WHERE project_id = ?;"
+	q := "SELECT project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, project_type, workspace_name, relative_path, created_at, updated_at FROM projects WHERE project_id = ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return domain.Project{}, false, domain.domain_error(.Internal_Error, "failed to prepare project lookup")
 	defer sqlite3_finalize(stmt); bind_text(stmt, 1, string(project_id))
 	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Project{}, false, domain.domain_error(.Not_Found, "project not found")
@@ -24,8 +24,8 @@ project_get_sqlite :: proc(ctx: rawptr, project_id: domain.Project_ID) -> (domai
 project_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Project, domain.Domain_Error) {
 	impl := (^Project_Repo_SQLite)(ctx); stmt: sqlite3_stmt = nil
 	effective_limit := limit; if effective_limit <= 0 do effective_limit = 50
-	q := "SELECT project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, created_at, updated_at FROM projects WHERE owner_user_id = ? ORDER BY created_at DESC, project_id DESC LIMIT ?;"
-	if cursor != "" do q = "SELECT project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, created_at, updated_at FROM projects WHERE owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, project_id DESC LIMIT ?;"
+	q := "SELECT project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, project_type, workspace_name, relative_path, created_at, updated_at FROM projects WHERE owner_user_id = ? ORDER BY created_at DESC, project_id DESC LIMIT ?;"
+	if cursor != "" do q = "SELECT project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, project_type, workspace_name, relative_path, created_at, updated_at FROM projects WHERE owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, project_id DESC LIMIT ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare project list")
 	defer sqlite3_finalize(stmt); bind_text(stmt, 1, string(owner_user_id))
 	if cursor != "" {
@@ -41,10 +41,16 @@ project_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID,
 
 project_save_sqlite :: proc(ctx: rawptr, project: domain.Project) -> (domain.Project, bool, domain.Domain_Error) {
 	impl := (^Project_Repo_SQLite)(ctx); stmt: sqlite3_stmt = nil
-	q := "INSERT INTO projects (project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET name=excluded.name, slug=excluded.slug, description=excluded.description, repo_url=excluded.repo_url, vcs_kind=excluded.vcs_kind, default_path=excluded.default_path, updated_at=excluded.updated_at;"
+	q := "INSERT INTO projects (project_id, owner_user_id, name, slug, description, repo_url, vcs_kind, default_path, project_type, workspace_name, relative_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET name=excluded.name, slug=excluded.slug, description=excluded.description, repo_url=excluded.repo_url, vcs_kind=excluded.vcs_kind, default_path=excluded.default_path, project_type=excluded.project_type, workspace_name=excluded.workspace_name, relative_path=excluded.relative_path, updated_at=excluded.updated_at;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(q)), -1, &stmt, nil) != SQLITE_OK do return domain.Project{}, false, domain.domain_error(.Internal_Error, "failed to prepare project save")
 	defer sqlite3_finalize(stmt)
-	bind_text(stmt, 1, string(project.project_id)); bind_text(stmt, 2, string(project.owner_user_id)); bind_text(stmt, 3, project.name); bind_text(stmt, 4, project.slug); bind_text(stmt, 5, project.description); bind_text(stmt, 6, project.repo_url); bind_text(stmt, 7, project.vcs_kind); bind_text(stmt, 8, project.default_path); bind_text(stmt, 9, project.created_at); bind_text(stmt, 10, project.updated_at)
+	bind_text(stmt, 1, string(project.project_id)); bind_text(stmt, 2, string(project.owner_user_id)); bind_text(stmt, 3, project.name); bind_text(stmt, 4, project.slug); bind_text(stmt, 5, project.description); bind_text(stmt, 6, project.repo_url); bind_text(stmt, 7, project.vcs_kind); bind_text(stmt, 8, project.default_path)
+	ptype := project.project_type; if ptype == "" do ptype = "local"
+	bind_text(stmt, 9, ptype)
+	bind_text(stmt, 10, project.workspace_name)
+	bind_text(stmt, 11, project.relative_path)
+	bind_text(stmt, 12, project.created_at)
+	bind_text(stmt, 13, project.updated_at)
 	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Project{}, false, domain.domain_error(.Conflict, "project could not be saved")
 	// A project write can change the rendered project fragment (name/path/repo/vcs/
 	// description) of any agent bound to it; invalidate the manifest cache.
@@ -88,7 +94,25 @@ project_delete_bridge_path_sqlite :: proc(ctx: rawptr, project_id: domain.Projec
 	return true, domain.Domain_Error{}
 }
 
-project_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Project { return domain.Project{project_id = domain.Project_ID(column_text(stmt, 0)), owner_user_id = domain.User_ID(column_text(stmt, 1)), name = column_text(stmt, 2), slug = column_text(stmt, 3), description = column_text(stmt, 4), repo_url = column_text(stmt, 5), vcs_kind = column_text(stmt, 6), default_path = column_text(stmt, 7), created_at = column_text(stmt, 8), updated_at = column_text(stmt, 9)} }
+project_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Project {
+	ptype := column_text(stmt, 8)
+	if ptype == "" do ptype = "local"
+	return domain.Project{
+		project_id = domain.Project_ID(column_text(stmt, 0)),
+		owner_user_id = domain.User_ID(column_text(stmt, 1)),
+		name = column_text(stmt, 2),
+		slug = column_text(stmt, 3),
+		description = column_text(stmt, 4),
+		repo_url = column_text(stmt, 5),
+		vcs_kind = column_text(stmt, 6),
+		default_path = column_text(stmt, 7),
+		project_type = ptype,
+		workspace_name = column_text(stmt, 9),
+		relative_path = column_text(stmt, 10),
+		created_at = column_text(stmt, 11),
+		updated_at = column_text(stmt, 12),
+	}
+}
 path_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Project_Bridge_Path { return domain.Project_Bridge_Path{project_id = domain.Project_ID(column_text(stmt, 0)), bridge_id = column_text(stmt, 1), owner_user_id = domain.User_ID(column_text(stmt, 2)), path = column_text(stmt, 3), is_validated = column_text(stmt, 4) == "1", last_validated_at = column_text(stmt, 5), validation_error = column_text(stmt, 6), validation_details_json = column_text(stmt, 7), created_at = column_text(stmt, 8), updated_at = column_text(stmt, 9)} }
 bind_path :: proc(stmt: sqlite3_stmt, p: domain.Project_Bridge_Path) { bind_text(stmt, 1, string(p.project_id)); bind_text(stmt, 2, p.bridge_id); bind_text(stmt, 3, string(p.owner_user_id)); bind_text(stmt, 4, p.path); bind_text(stmt, 5, "1" if p.is_validated else "0"); bind_text(stmt, 6, p.last_validated_at); bind_text(stmt, 7, p.validation_error); bind_text(stmt, 8, p.validation_details_json); bind_text(stmt, 9, p.created_at); bind_text(stmt, 10, p.updated_at) }
 i32_to_string_sqlite :: proc(v: int) -> string { return fmt.tprintf("%d", v) }

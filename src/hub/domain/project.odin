@@ -8,9 +8,12 @@ Project :: struct {
 	description:   string,
 	repo_url:      string,
 	vcs_kind:      string,
-	default_path:  string,
-	created_at:    string,
-	updated_at:    string,
+	default_path:   string,
+	project_type:   string, // "local" | "fig" (default "local")
+	workspace_name: string,
+	relative_path:  string,
+	created_at:     string,
+	updated_at:     string,
 }
 
 Project_Bridge_Path :: struct {

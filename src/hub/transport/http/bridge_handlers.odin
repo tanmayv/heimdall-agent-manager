@@ -269,6 +269,89 @@ mkdir_bridge_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+// --- Fig / CitC filesystem directory management -------------------------
+
+Bridge_Fig_Command :: struct {
+	command_type: string,
+	workspace:    string,
+	path:         string,
+	cursor:       string,
+	limit:        int,
+	send_limit:   bool,
+}
+
+bridge_fig_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id: string, cmd: Bridge_Fig_Command) -> (string, bool, domain.Domain_Error) {
+	auth_ctx, auth_ok, _ := require_auth(h.auth, req)
+	if !auth_ok do return "", false, domain.domain_error(.Unauthenticated, "authentication required")
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
+	if !bridge_ok do return "", false, bridge_err
+	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	command_id := fmt.tprintf("cmd_fig_%d", time.to_unix_nanoseconds(time.now()))
+	cmd_body := bridge_fig_command_json(cmd, command_id)
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	if !reply_ok do return "", false, reply_err
+	return reply, true, domain.Domain_Error{}
+}
+
+bridge_fig_command_json :: proc(cmd: Bridge_Fig_Command, command_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\""); write_handler_json_string(&b, cmd.command_type)
+	strings.write_string(&b, "\",\"command_id\":\""); write_handler_json_string(&b, command_id)
+	strings.write_string(&b, "\"")
+	if cmd.workspace != "" {
+		strings.write_string(&b, ",\"workspace\":\""); write_handler_json_string(&b, cmd.workspace); strings.write_string(&b, "\"")
+	}
+	if cmd.path != "" {
+		strings.write_string(&b, ",\"path\":\""); write_handler_json_string(&b, cmd.path); strings.write_string(&b, "\"")
+	}
+	if cmd.cursor != "" {
+		strings.write_string(&b, ",\"cursor\":\""); write_handler_json_string(&b, cmd.cursor); strings.write_string(&b, "\"")
+	}
+	if cmd.send_limit {
+		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.limit)
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+list_bridge_fig_workspaces_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	bridge_id := path_part(req.path, 4)
+	result, ok, err := bridge_fig_relay(h, req, bridge_id, Bridge_Fig_Command{command_type = "fig_list_workspaces"})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+create_bridge_fig_workspace_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	bridge_id := path_part(req.path, 4)
+	ws_name := json_string(req.body, "workspace")
+	if ws_name == "" do ws_name = json_string(req.body, "name")
+	result, ok, err := bridge_fig_relay(h, req, bridge_id, Bridge_Fig_Command{command_type = "fig_create_workspace", workspace = ws_name})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+list_bridge_fig_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	bridge_id := path_part(req.path, 4)
+	workspace := query_value(req.query, "workspace")
+	path := query_value(req.query, "path")
+	cursor := query_value(req.query, "cursor")
+	limit := query_int(req.query, "limit", 50)
+	result, ok, err := bridge_fig_relay(h, req, bridge_id, Bridge_Fig_Command{
+		command_type = "fig_list_dir",
+		workspace = workspace,
+		path = path,
+		cursor = cursor,
+		limit = limit,
+		send_limit = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
 // --- Project-scoped filesystem browser (browse/read/CRUD) -----------------
 // Resolves (project_id -> bridge_id, root_path) via Project_Bridge_Path, then
 // relays a WS command carrying that project root so the bridge re-sandboxes every
@@ -723,7 +806,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			_ = got
 			applied := current_seq == state_seq && current_runtime == runtime_status
 			_ = write_ws_text_frame(client, bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime))
-		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result":
+		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result", "fig_list_workspaces_result", "fig_create_workspace_result", "fig_list_dir_result":
 			command_id := json_string(text, "command_id")
 			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		case "pane_capture_result":

@@ -1,5 +1,6 @@
 package project
 
+import "core:fmt"
 import "core:net"
 import "core:strings"
 import contracts "odin_test:contracts"
@@ -146,10 +147,16 @@ Project_Service :: struct {
 
 Create_Project_Input :: struct {
 	name, slug, description, repo_url, vcs_kind, default_path: string,
+	project_type: string,
+	workspace_name: string,
+	relative_path: string,
 	owner_user_id: string, // ignored; authoritative owner comes from AuthContext
 }
 Update_Project_Input :: struct {
 	name, slug, description, repo_url, vcs_kind, default_path: string,
+	project_type: string,
+	workspace_name: string,
+	relative_path: string,
 	owner_user_id: string, // if present and different, rejected as immutable
 }
 Bridge_Path_Input :: struct { path: string }
@@ -183,10 +190,57 @@ create :: proc(service: ^Project_Service, auth: contracts.Auth_Context, input: C
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return domain.Project{}, false, err
 	if input.name == "" do return domain.Project{}, false, domain.domain_error(.Validation_Failed, "project name is required")
-	if input.default_path == "" do return domain.Project{}, false, domain.domain_error(.Validation_Failed, "default_path is required")
+	project_type := input.project_type
+	if project_type == "" do project_type = "local"
+	if project_type != "local" && project_type != "fig" {
+		return domain.Project{}, false, domain.domain_error(.Validation_Failed, "project_type must be 'local' or 'fig'")
+	}
+	default_path := input.default_path
+	vcs_kind := input.vcs_kind
+	repo_url := input.repo_url
+	workspace_name := input.workspace_name
+	relative_path := input.relative_path
+	if project_type == "fig" {
+		if workspace_name == "" {
+			return domain.Project{}, false, domain.domain_error(.Validation_Failed, "workspace_name is required for fig projects")
+		}
+		if default_path == "" {
+			if relative_path != "" {
+				trimmed_rel := strings.trim_left(relative_path, "/")
+				default_path = fmt.tprintf("/google/src/cloud/%s/%s/google3/%s", string(owner), workspace_name, trimmed_rel)
+			} else {
+				default_path = fmt.tprintf("/google/src/cloud/%s/%s/google3", string(owner), workspace_name)
+			}
+		}
+		if vcs_kind == "" do vcs_kind = "piper"
+		if repo_url == "" {
+			trimmed_rel := strings.trim_left(relative_path, "/")
+			if trimmed_rel != "" {
+				repo_url = fmt.tprintf("//depot/google3/%s", trimmed_rel)
+			} else {
+				repo_url = "//depot/google3"
+			}
+		}
+	} else {
+		if default_path == "" do return domain.Project{}, false, domain.domain_error(.Validation_Failed, "default_path is required")
+	}
 	now := platform.clock_now(service.clock)
 	slug := input.slug; if slug == "" do slug = input.name
-	project := domain.Project{project_id = domain.Project_ID(platform.generate_id(service.ids, "proj_")), owner_user_id = owner, name = input.name, slug = slug, description = input.description, repo_url = input.repo_url, vcs_kind = input.vcs_kind, default_path = input.default_path, created_at = now, updated_at = now}
+	project := domain.Project{
+		project_id = domain.Project_ID(platform.generate_id(service.ids, "proj_")),
+		owner_user_id = owner,
+		name = input.name,
+		slug = slug,
+		description = input.description,
+		repo_url = repo_url,
+		vcs_kind = vcs_kind,
+		default_path = default_path,
+		project_type = project_type,
+		workspace_name = workspace_name,
+		relative_path = relative_path,
+		created_at = now,
+		updated_at = now,
+	}
 	return iface.project_save(service.projects, project)
 }
 
@@ -213,6 +267,9 @@ update :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_
 	if input.repo_url != "" do project.repo_url = input.repo_url
 	if input.vcs_kind != "" do project.vcs_kind = input.vcs_kind
 	if input.default_path != "" do project.default_path = input.default_path
+	if input.project_type != "" do project.project_type = input.project_type
+	if input.workspace_name != "" do project.workspace_name = input.workspace_name
+	if input.relative_path != "" do project.relative_path = input.relative_path
 	project.updated_at = platform.clock_now(service.clock)
 	return iface.project_update(service.projects, project)
 }

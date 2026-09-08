@@ -426,6 +426,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 	if bridge_fs_handle_command(conn, type, text) do return
+	if bridge_fig_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
 }
 

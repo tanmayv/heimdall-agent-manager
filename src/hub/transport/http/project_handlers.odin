@@ -63,13 +63,65 @@ validate_project_bridge_path_handler :: proc(ctx: rawptr, req: Request) -> Respo
 	b := strings.builder_make(); write_path_json(&b, result.path); return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
-project_input :: proc(body: string) -> project_service.Create_Project_Input { return project_service.Create_Project_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), description = json_string(body, "description"), repo_url = json_string(body, "repo_url"), vcs_kind = json_string(body, "vcs_kind"), default_path = json_string(body, "default_path"), owner_user_id = json_string(body, "owner_user_id")} }
-update_input :: proc(body: string) -> project_service.Update_Project_Input { return project_service.Update_Project_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), description = json_string(body, "description"), repo_url = json_string(body, "repo_url"), vcs_kind = json_string(body, "vcs_kind"), default_path = json_string(body, "default_path"), owner_user_id = json_string(body, "owner_user_id")} }
+project_input :: proc(body: string) -> project_service.Create_Project_Input {
+	return project_service.Create_Project_Input{
+		name = json_string(body, "name"),
+		slug = json_string(body, "slug"),
+		description = json_string(body, "description"),
+		repo_url = json_string(body, "repo_url"),
+		vcs_kind = json_string(body, "vcs_kind"),
+		default_path = json_string(body, "default_path"),
+		project_type = json_string(body, "project_type"),
+		workspace_name = json_string(body, "workspace_name"),
+		relative_path = json_string(body, "relative_path"),
+		owner_user_id = json_string(body, "owner_user_id"),
+	}
+}
 
-write_project_json :: proc(b: ^strings.Builder, p: domain.Project) { strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, string(p.project_id)); strings.write_string(b, "\",\"name\":\""); write_handler_json_string(b, p.name); strings.write_string(b, "\",\"slug\":\""); write_handler_json_string(b, p.slug); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, p.description); strings.write_string(b, "\",\"repo_url\":\""); write_handler_json_string(b, p.repo_url); strings.write_string(b, "\",\"vcs_kind\":\""); write_handler_json_string(b, p.vcs_kind); strings.write_string(b, "\",\"default_path\":\""); write_handler_json_string(b, p.default_path); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, p.updated_at); strings.write_string(b, "\"}") }
+update_input :: proc(body: string) -> project_service.Update_Project_Input {
+	return project_service.Update_Project_Input{
+		name = json_string(body, "name"),
+		slug = json_string(body, "slug"),
+		description = json_string(body, "description"),
+		repo_url = json_string(body, "repo_url"),
+		vcs_kind = json_string(body, "vcs_kind"),
+		default_path = json_string(body, "default_path"),
+		project_type = json_string(body, "project_type"),
+		workspace_name = json_string(body, "workspace_name"),
+		relative_path = json_string(body, "relative_path"),
+		owner_user_id = json_string(body, "owner_user_id"),
+	}
+}
+
+write_project_json :: proc(b: ^strings.Builder, p: domain.Project) {
+	strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, string(p.project_id))
+	strings.write_string(b, "\",\"name\":\""); write_handler_json_string(b, p.name)
+	strings.write_string(b, "\",\"slug\":\""); write_handler_json_string(b, p.slug)
+	strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, p.description)
+	strings.write_string(b, "\",\"repo_url\":\""); write_handler_json_string(b, p.repo_url)
+	strings.write_string(b, "\",\"vcs_kind\":\""); write_handler_json_string(b, p.vcs_kind)
+	strings.write_string(b, "\",\"default_path\":\""); write_handler_json_string(b, p.default_path)
+	strings.write_string(b, "\",\"project_type\":\""); write_handler_json_string(b, p.project_type if p.project_type != "" else "local")
+	strings.write_string(b, "\",\"workspace_name\":\""); write_handler_json_string(b, p.workspace_name)
+	strings.write_string(b, "\",\"relative_path\":\""); write_handler_json_string(b, p.relative_path)
+	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, p.updated_at)
+	strings.write_string(b, "\"}")
+}
+
 write_project_detail_json :: proc(b: ^strings.Builder, p: domain.Project, paths: []domain.Project_Bridge_Path) {
-	strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, string(p.project_id)); strings.write_string(b, "\",\"name\":\""); write_handler_json_string(b, p.name); strings.write_string(b, "\",\"slug\":\""); write_handler_json_string(b, p.slug); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, p.description); strings.write_string(b, "\",\"repo_url\":\""); write_handler_json_string(b, p.repo_url); strings.write_string(b, "\",\"vcs_kind\":\""); write_handler_json_string(b, p.vcs_kind); strings.write_string(b, "\",\"default_path\":\""); write_handler_json_string(b, p.default_path); strings.write_string(b, "\",\"bridge_paths\":[")
+	strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, string(p.project_id))
+	strings.write_string(b, "\",\"name\":\""); write_handler_json_string(b, p.name)
+	strings.write_string(b, "\",\"slug\":\""); write_handler_json_string(b, p.slug)
+	strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, p.description)
+	strings.write_string(b, "\",\"repo_url\":\""); write_handler_json_string(b, p.repo_url)
+	strings.write_string(b, "\",\"vcs_kind\":\""); write_handler_json_string(b, p.vcs_kind)
+	strings.write_string(b, "\",\"default_path\":\""); write_handler_json_string(b, p.default_path)
+	strings.write_string(b, "\",\"project_type\":\""); write_handler_json_string(b, p.project_type if p.project_type != "" else "local")
+	strings.write_string(b, "\",\"workspace_name\":\""); write_handler_json_string(b, p.workspace_name)
+	strings.write_string(b, "\",\"relative_path\":\""); write_handler_json_string(b, p.relative_path)
+	strings.write_string(b, "\",\"bridge_paths\":[")
 	for path, i in paths { if i > 0 do strings.write_byte(b, ','); write_path_json(b, path) }
-	strings.write_string(b, "],\"updated_at\":\""); write_handler_json_string(b, p.updated_at); strings.write_string(b, "\"}")
+	strings.write_string(b, "],\"updated_at\":\""); write_handler_json_string(b, p.updated_at)
+	strings.write_string(b, "\"}")
 }
 write_path_json :: proc(b: ^strings.Builder, p: domain.Project_Bridge_Path) { strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, string(p.project_id)); strings.write_string(b, "\",\"bridge_id\":\""); write_handler_json_string(b, p.bridge_id); strings.write_string(b, "\",\"path\":\""); write_handler_json_string(b, p.path); strings.write_string(b, "\",\"is_validated\":"); strings.write_string(b, "true" if p.is_validated else "false"); strings.write_string(b, ",\"last_validated_at\":\""); write_handler_json_string(b, p.last_validated_at); strings.write_string(b, "\",\"validation_error\":\""); write_handler_json_string(b, p.validation_error); strings.write_string(b, "\",\"validation_details\":"); strings.write_string(b, p.validation_details_json if p.validation_details_json != "" else "{}"); strings.write_string(b, "}") }

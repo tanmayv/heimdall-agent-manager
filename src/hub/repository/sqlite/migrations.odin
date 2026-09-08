@@ -733,7 +733,13 @@ ALTER TABLE memories DROP COLUMN template_id;
 ALTER TABLE memories DROP COLUMN bridge_id;
 `
 
-migration_order :: [26]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql"}
+MIGRATION_027_FIG_PROJECTS :: `ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'local';
+ALTER TABLE projects ADD COLUMN workspace_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN relative_path TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_projects_owner_type ON projects(owner_user_id, project_type);
+`
+
+migration_order :: [27]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_fig_projects.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -780,6 +786,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "027_fig_projects.sql" && table_column_exists(conn, "projects", "project_type") && table_column_exists(conn, "projects", "workspace_name") && table_column_exists(conn, "projects", "relative_path") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -803,6 +813,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_scheduled_prompts_schema(conn) do return false, domain.domain_error(.Internal_Error, "scheduled prompts schema upgrade failed")
 	if !upgrade_actions_schema(conn) do return false, domain.domain_error(.Internal_Error, "actions schema upgrade failed")
 	if !upgrade_push_subscriptions_schema(conn) do return false, domain.domain_error(.Internal_Error, "push subscriptions schema upgrade failed")
+	if !upgrade_fig_projects_schema(conn) do return false, domain.domain_error(.Internal_Error, "fig projects schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -838,6 +849,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "024_push_subscriptions.sql" do return strings.clone(MIGRATION_024_PUSH_SUBSCRIPTIONS)
 	if name == "025_lookup_indexes.sql" do return strings.clone(MIGRATION_025_LOOKUP_INDEXES)
 	if name == "026_memory_scope_lists.sql" do return strings.clone(MIGRATION_026_MEMORY_SCOPE_LISTS)
+	if name == "027_fig_projects.sql" do return strings.clone(MIGRATION_027_FIG_PROJECTS)
 	return ""
 }
 
@@ -1041,5 +1053,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscr
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_owner ON push_subscriptions(owner_user_id);
 CREATE TRIGGER IF NOT EXISTS push_subscriptions_owner_immutable BEFORE UPDATE OF owner_user_id ON push_subscriptions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`)
 }
+
+upgrade_fig_projects_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "projects", "project_type") && !exec(conn, "ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'local';") do return false
+	if !table_column_exists(conn, "projects", "workspace_name") && !exec(conn, "ALTER TABLE projects ADD COLUMN workspace_name TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "projects", "relative_path") && !exec(conn, "ALTER TABLE projects ADD COLUMN relative_path TEXT NOT NULL DEFAULT '';") do return false
+	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_projects_owner_type ON projects(owner_user_id, project_type);") do return false
+	return true
+}
+
 
 
