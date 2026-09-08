@@ -35,6 +35,9 @@ export type FigFsEntry = {
   name: string;
   is_dir: boolean;
   path: string;
+  hidden?: boolean;
+  size?: number;
+  modified_at?: string;
 };
 
 export type ListBridgeFigFsResult = {

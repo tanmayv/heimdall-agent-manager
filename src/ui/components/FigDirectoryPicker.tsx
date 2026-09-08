@@ -32,6 +32,25 @@ function normalizeGoogle3Path(raw: string): string {
   return resolved.join('/');
 }
 
+function formatRelativeAge(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const t = d.getTime();
+  if (isNaN(t)) return '';
+  const diffSec = Math.floor((Date.now() - t) / 1000);
+  if (diffSec < 0 || diffSec < 30) return 'just now';
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  if (diffDays < 30) return `${diffDays}d ago`;
+  const diffMo = Math.floor(diffDays / 30);
+  if (diffMo < 12) return `${diffMo}mo ago`;
+  return `${Math.floor(diffDays / 365)}y ago`;
+}
+
 export default function FigDirectoryPicker({
   bridgeId,
   workspace: initialWorkspace = '',
@@ -230,7 +249,9 @@ export default function FigDirectoryPicker({
 
   function handleJumpSubmit(e?: React.FormEvent) {
     if (e) e.preventDefault();
-    const target = jumpInput.trim().replace(/^google3\/?/, '').replace(/^\/+|\/+$/g, '');
+    const query = dirFilterText.trim();
+    if (!query) return;
+    const target = query.replace(/^google3\/?/, '').replace(/^\/+|\/+$/g, '');
     void load(target);
   }
 
@@ -246,7 +267,7 @@ export default function FigDirectoryPicker({
           {/* Header */}
           <div className="mb-3 flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
                 <Icon name="folder" size={14} className="text-amber-400" />
                 <span>CitC Workspaces · Select Workspace</span>
               </div>
@@ -396,7 +417,7 @@ export default function FigDirectoryPicker({
           {/* Header */}
           <div className="mb-3 flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
                 <Icon name="folder" size={14} className="text-amber-400" />
                 <span>CitC Browse · {activeWorkspace}</span>
               </div>
@@ -473,33 +494,21 @@ export default function FigDirectoryPicker({
             ))}
           </div>
 
-          {/* Direct Jump & Filter Bar */}
-          <div className="mb-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <form onSubmit={handleJumpSubmit} className="flex items-center gap-1.5">
-              <input
-                data-debug-id={`${debugId}-jump-input`}
-                value={jumpInput}
-                onChange={(e) => setJumpInput(e.target.value)}
-                placeholder="jump to path (e.g. cloud/security)"
-                className="w-full rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 outline-none transition"
-              />
-              <button
-                data-debug-id={`${debugId}-jump-btn`}
-                type="submit"
-                className="shrink-0 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/20 transition"
-              >
-                Go
-              </button>
-            </form>
-            <div className="relative">
-              <input
-                data-debug-id={`${debugId}-filter-input`}
-                value={dirFilterText}
-                onChange={(e) => setDirFilterText(e.target.value)}
-                placeholder="Filter current view…"
-                className="w-full rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 outline-none transition"
-              />
-            </div>
+          {/* Single clean search / filter input */}
+          <div className="mb-2.5">
+            <input
+              data-debug-id={`${debugId}-filter-input`}
+              value={dirFilterText}
+              onChange={(e) => setDirFilterText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleJumpSubmit();
+                }
+              }}
+              placeholder="Search or jump to path (e.g. cloud/security)…"
+              className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 outline-none transition font-mono"
+            />
           </div>
 
           {/* Directory Entry List */}
@@ -526,18 +535,25 @@ export default function FigDirectoryPicker({
                     }}
                     disabled={!e.is_dir}
                     className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition border-b border-white/[0.04] last:border-b-0 ${
-                      e.is_dir ? 'hover:bg-white/[0.04] cursor-pointer' : 'cursor-default opacity-60'
+                      e.is_dir ? 'hover:bg-white/[0.04] cursor-pointer group' : 'cursor-default opacity-60'
                     }`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <Icon
                         name={e.is_dir ? 'folder' : 'file'}
                         size={15}
-                        className={`shrink-0 ${e.is_dir ? 'text-amber-400' : 'text-zinc-600'}`}
+                        className={`shrink-0 ${e.is_dir ? 'text-amber-400 group-hover:scale-105 transition-transform' : 'text-zinc-600'}`}
                       />
-                      <span className="min-w-0 truncate font-mono text-xs text-zinc-200">{e.name}</span>
+                      <span className="min-w-0 truncate font-mono text-xs text-zinc-200 group-hover:text-white transition-colors">{e.name}</span>
                     </div>
-                    {e.is_dir && <Icon name="chevron-right" size={14} className="shrink-0 text-zinc-600" />}
+                    <div className="flex items-center gap-3 shrink-0">
+                      {e.modified_at ? (
+                        <span className="text-zinc-500 text-xs font-mono">
+                          {formatRelativeAge(e.modified_at)}
+                        </span>
+                      ) : null}
+                      {e.is_dir && <Icon name="chevron-right" size={14} className="shrink-0 text-zinc-600 group-hover:text-zinc-400 transition-colors" />}
+                    </div>
                   </button>
                 ))}
 
