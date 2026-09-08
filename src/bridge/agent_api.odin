@@ -300,25 +300,7 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 			strings.write_string(&b, "\",\"local_endpoint_port\":")
 			strings.write_string(&b, bridge_agent_itoa(int(bridge_config.local_endpoint_port)))
 			strings.write_string(&b, "}")
-			// configured peers
-			for i in 0..<len(bridge_peer_states) {
-				p := &bridge_peer_states[i]
-				if !first do strings.write_byte(&b, ',')
-				first = false
-				strings.write_string(&b, "{\"origin\":\"configured\",\"name\":\"")
-				bridge_local_write_json_string(&b, p.name)
-				strings.write_string(&b, "\",\"daemon_id\":\"")
-				bridge_local_write_json_string(&b, string(p.daemon_id))
-				strings.write_string(&b, "\",\"endpoint\":\"")
-				bridge_local_write_json_string(&b, p.endpoint)
-				strings.write_string(&b, "\",\"reachability\":\"")
-				strings.write_string(&b, "linked" if p.status == .Linked else "unreachable")
-				strings.write_string(&b, "\",\"active_sessions\":")
-				strings.write_string(&b, bridge_agent_itoa(p.active_sessions))
-				strings.write_string(&b, ",\"last_error\":\"")
-				bridge_local_write_json_string(&b, p.last_error)
-				strings.write_string(&b, "\"}")
-			}
+			// configured peers are pruned in single-node Cloudtop model
 		}
 
 		strings.write_string(&b, "]}")

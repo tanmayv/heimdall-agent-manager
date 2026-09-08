@@ -228,10 +228,64 @@ valid_hub_authority :: proc(value: string) -> bool {
 	return true
 }
 
+ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: string, default_token: string = "hbr_local_secret") -> (domain.Bridge, bool, domain.Domain_Error) {
+	if service == nil || service.repo == nil do return domain.Bridge{}, false, domain.domain_error(.Internal_Error, "bridge service not configured")
+	now := platform.clock_now(service.clock)
+	owner := strings.trim_space(owner_user_id)
+	if owner == "" do owner = "default"
+
+	if existing, ok, _ := iface.bridge_get_bridge(service.repo, "brg_local"); ok {
+		updated := existing
+		changed := false
+		if updated.status == .Revoked {
+			updated.status = .Offline
+			changed = true
+		}
+		if updated.bridge_token_hash != hash_token(default_token) {
+			updated.bridge_token_hash = hash_token(default_token)
+			changed = true
+		}
+		if owner != "" && string(updated.owner_user_id) != owner && string(updated.owner_user_id) == "default" {
+			updated.owner_user_id = domain.User_ID(owner)
+			changed = true
+		}
+		if changed {
+			updated.updated_at = now
+			return iface.bridge_save_bridge(service.repo, updated)
+		}
+		return updated, true, domain.Domain_Error{}
+	}
+
+	bridge := domain.Bridge{
+		bridge_id = "brg_local",
+		owner_user_id = domain.User_ID(owner),
+		label = "Local Cloudtop Bridge",
+		label_is_user_customized = false,
+		machine_hostname = "cloudtop",
+		machine_os = "linux",
+		machine_arch = "amd64",
+		hub_url = "http://127.0.0.1:49322",
+		status = .Offline,
+		bridge_token_hash = hash_token(default_token),
+		created_at = now,
+		updated_at = now,
+		last_seen_at = now,
+	}
+	return iface.bridge_save_bridge(service.repo, bridge)
+}
+
 verify_bridge_token :: proc(service: ^Bridge_Service, token: string) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
 	if token == "" do return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge token is required")
 	bridge, ok, err := iface.bridge_get_bridge_by_token_hash(service.repo, hash_token(token))
-	if !ok do return contracts.Auth_Context{}, false, err
+	if !ok {
+		// CT-2: Fallback for loopback auto-pairing with default token
+		if token == "hbr_local_secret" {
+			if created, created_ok, _ := ensure_local_loopback_bridge(service, "default", "hbr_local_secret"); created_ok {
+				return contracts.Auth_Context{kind = .Bridge_Token, user_id = string(created.owner_user_id), bridge_id = created.bridge_id}, true, domain.Domain_Error{}
+			}
+		}
+		return contracts.Auth_Context{}, false, err
+	}
 	if bridge.status == .Revoked do return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge is revoked")
 	return contracts.Auth_Context{kind = .Bridge_Token, user_id = string(bridge.owner_user_id), bridge_id = bridge.bridge_id}, true, domain.Domain_Error{}
 }

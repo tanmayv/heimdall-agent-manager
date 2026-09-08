@@ -93,6 +93,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
+	// CT-2: Pre-seed the loopback local bridge for zero-ceremony single-node Cloudtop operation
+	_, _, _ = bridge_service.ensure_local_loopback_bridge(&graph.bridges, "default", "hbr_local_secret")
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
 	graph.projects = project_service.new_project_service_with_command_sink(&graph.repos.projects, &graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
@@ -305,7 +307,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.list_bridge_enrollments_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bridge-enrollments/*", rawptr(&graph.bridge_handlers), http.revoke_bridge_enrollment_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/enroll", rawptr(&graph.bridge_handlers), http.enroll_bridge_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/auto-pair", rawptr(&graph.bridge_handlers), http.auto_pair_bridge_handler)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/bridge-ws", rawptr(&graph.bridge_handlers), http.bridge_ws_upgrade_handler)
+	http.router_add_upgrade(&graph.router, "GET", "/api/v1/bridges/runtime/ws", rawptr(&graph.bridge_handlers), http.bridge_ws_upgrade_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/agent-instances/*/bootstrap", rawptr(&graph.bridge_handlers), http.bridge_instance_bootstrap_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/agents/*/bootstrap-manifest", rawptr(&graph.bridge_handlers), http.bridge_agent_manifest_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/blobs/*", rawptr(&graph.bridge_handlers), http.bridge_blob_handler)

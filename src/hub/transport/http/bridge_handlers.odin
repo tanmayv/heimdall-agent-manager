@@ -100,6 +100,32 @@ enroll_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
+auto_pair_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	ip := req.remote_addr
+	if colon := strings.last_index_byte(ip, ':'); colon >= 0 {
+		ip = ip[:colon]
+	}
+	ip = strings.trim_space(ip)
+	if ip != "127.0.0.1" && ip != "::1" && ip != "localhost" && ip != "" {
+		return respond_error(domain.domain_error(.Forbidden, "auto-pairing is only permitted on loopback"), req.request_id)
+	}
+	user_name := json_string(req.body, "user")
+	if user_name == "" do user_name = "default"
+	token := json_string(req.body, "bridge_token")
+	if token == "" do token = "hbr_local_secret"
+	bridge, ok, err := bridge_service.ensure_local_loopback_bridge(h.bridges, user_name, token)
+	if !ok do return respond_error(err, req.request_id)
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"bridge_id\":\"")
+	write_handler_json_string(&b, bridge.bridge_id)
+	strings.write_string(&b, "\",\"bridge_token\":\"")
+	write_handler_json_string(&b, token)
+	strings.write_string(&b, "\",\"hub_url\":\"http://127.0.0.1:49322\"}")
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 list_bridges_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	// Accept user tokens AND bridge-relayed instance tokens so a coordinator agent
