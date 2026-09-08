@@ -95,6 +95,14 @@ def run_proxy_test(listen_host: str, expect_mgmt_disabled: bool) -> None:
         assert headers.get("x-authentik-username") == "tanmay", "Dev User should be injected"
         assert headers.get("x-dev-user") is None, "X-Dev-User should be stripped"
 
+        # Test sensitive bridge route boundary (auto-pair and enroll forbidden through proxy)
+        try:
+            resp = urllib.request.urlopen(f"http://{connect_host}:{proxy_port}/api/v1/bridges/auto-pair", timeout=5)
+            auto_pair_status = resp.status
+        except urllib.error.HTTPError as e:
+            auto_pair_status = e.code
+        assert auto_pair_status == 403, f"Expected 403 for /api/v1/bridges/auto-pair through proxy, got {auto_pair_status}"
+
         # Test management boundary
         try:
             resp = urllib.request.urlopen(f"http://{connect_host}:{proxy_port}/_dev/", timeout=5)

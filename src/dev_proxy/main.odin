@@ -144,6 +144,12 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 		}
 	}
 
+	// Security: Bridge enrollment and auto-pairing are sensitive local-only operations and MUST NOT be reachable through dev-proxy
+	if strings.has_prefix(path, "/api/v1/bridges/auto-pair") || strings.has_prefix(path, "/api/v1/bridges/enroll") {
+		write_response(client, 403, "Forbidden", "text/plain", "bridge enrollment/auto-pair forbidden through dev-proxy")
+		return
+	}
+
 	if strings.has_prefix(path, "/_dev/") {
 		// DP-7: hard loopback boundary for the entire management surface.
 		if !ctx.config.management_enabled {

@@ -1,6 +1,7 @@
 package bridge
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -228,11 +229,59 @@ valid_hub_authority :: proc(value: string) -> bool {
 	return true
 }
 
-ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: string, default_token: string = "hbr_local_secret") -> (domain.Bridge, bool, domain.Domain_Error) {
-	if service == nil || service.repo == nil do return domain.Bridge{}, false, domain.domain_error(.Internal_Error, "bridge service not configured")
+get_default_bridge_token_path :: proc() -> string {
+	if env_path := os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator); env_path != "" {
+		return env_path
+	}
+	home := os.get_env("HOME", context.allocator)
+	if home == "" do home = "/tmp"
+	return fmt.tprintf("%s/.local/share/heimdall/bridge_token", home)
+}
+
+read_loopback_token_file :: proc(path: string) -> (string, bool) {
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil do return "", false
+	tok := strings.trim_space(string(data))
+	if tok == "" do return "", false
+	return tok, true
+}
+
+write_loopback_token_file :: proc(path, token: string) -> bool {
+	if strings.trim_space(path) == "" || strings.trim_space(token) == "" do return false
+	if slash := strings.last_index_byte(path, '/'); slash > 0 {
+		_ = os.make_directory_all(path[:slash])
+	}
+	content := strings.concatenate({strings.trim_space(token), "\n"})
+	defer delete(content)
+	err := os.write_entire_file(path, content, os.Permissions{.Read_User, .Write_User})
+	if err != nil do return false
+	_ = os.chmod(path, os.Permissions{.Read_User, .Write_User})
+	return true
+}
+
+ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: string, explicit_token: string = "") -> (domain.Bridge, string, bool, domain.Domain_Error) {
+	if service == nil || service.repo == nil do return domain.Bridge{}, "", false, domain.domain_error(.Internal_Error, "bridge service not configured")
 	now := platform.clock_now(service.clock)
 	owner := strings.trim_space(owner_user_id)
 	if owner == "" do owner = "default"
+
+	token_path := get_default_bridge_token_path()
+	active_token := strings.trim_space(explicit_token)
+
+	if active_token == "" {
+		if file_token, ok := read_loopback_token_file(token_path); ok {
+			active_token = file_token
+		} else {
+			if service.ids != nil {
+				active_token = platform.generate_id(service.ids, "hbr_")
+			} else {
+				active_token = fmt.tprintf("hbr_%s", now)
+			}
+			write_loopback_token_file(token_path, active_token)
+		}
+	} else {
+		write_loopback_token_file(token_path, active_token)
+	}
 
 	if existing, ok, _ := iface.bridge_get_bridge(service.repo, "brg_local"); ok {
 		updated := existing
@@ -241,8 +290,8 @@ ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: st
 			updated.status = .Offline
 			changed = true
 		}
-		if updated.bridge_token_hash != hash_token(default_token) {
-			updated.bridge_token_hash = hash_token(default_token)
+		if updated.bridge_token_hash != hash_token(active_token) {
+			updated.bridge_token_hash = hash_token(active_token)
 			changed = true
 		}
 		if owner != "" && string(updated.owner_user_id) != owner && string(updated.owner_user_id) == "default" {
@@ -251,9 +300,10 @@ ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: st
 		}
 		if changed {
 			updated.updated_at = now
-			return iface.bridge_save_bridge(service.repo, updated)
+			saved, save_ok, save_err := iface.bridge_save_bridge(service.repo, updated)
+			return saved, active_token, save_ok, save_err
 		}
-		return updated, true, domain.Domain_Error{}
+		return updated, active_token, true, domain.Domain_Error{}
 	}
 
 	bridge := domain.Bridge{
@@ -266,24 +316,19 @@ ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: st
 		machine_arch = "amd64",
 		hub_url = "http://127.0.0.1:49322",
 		status = .Offline,
-		bridge_token_hash = hash_token(default_token),
+		bridge_token_hash = hash_token(active_token),
 		created_at = now,
 		updated_at = now,
 		last_seen_at = now,
 	}
-	return iface.bridge_save_bridge(service.repo, bridge)
+	saved, save_ok, save_err := iface.bridge_save_bridge(service.repo, bridge)
+	return saved, active_token, save_ok, save_err
 }
 
 verify_bridge_token :: proc(service: ^Bridge_Service, token: string) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
 	if token == "" do return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge token is required")
 	bridge, ok, err := iface.bridge_get_bridge_by_token_hash(service.repo, hash_token(token))
 	if !ok {
-		// CT-2: Fallback for loopback auto-pairing with default token
-		if token == "hbr_local_secret" {
-			if created, created_ok, _ := ensure_local_loopback_bridge(service, "default", "hbr_local_secret"); created_ok {
-				return contracts.Auth_Context{kind = .Bridge_Token, user_id = string(created.owner_user_id), bridge_id = created.bridge_id}, true, domain.Domain_Error{}
-			}
-		}
 		return contracts.Auth_Context{}, false, err
 	}
 	if bridge.status == .Revoked do return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge is revoked")

@@ -145,11 +145,22 @@ bridge_auto_pair_loopback :: proc(args: []string, hub_url: string) -> bool {
 		fmt.eprintfln("bridge enroll: local loopback auto-pair failed (HTTP %d); fall back to --enrollment-token", resp.status if ok else 0)
 		return false
 	}
-	bridge_token := extract_json_string(resp.body, "bridge_token", "hbr_local_secret")
+	bridge_token := extract_json_string(resp.body, "bridge_token", "")
 	bridge_id := extract_json_string(resp.body, "bridge_id", "brg_local")
 	persisted_hub_url := extract_json_string(resp.body, "hub_url", endpoint)
 
 	token_file := option_value(args, "--bridge-token-file", os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator))
+	if strings.trim_space(token_file) == "" {
+		token_file = cfg_lib.expand_home("~/.local/share/heimdall/bridge_token")
+	}
+	if bridge_token == "" {
+		if tok, ok := bridge_read_token_file(token_file); ok {
+			bridge_token = tok
+		} else {
+			fmt.eprintln("bridge enroll: auto-pair response did not contain a bridge token and local token file is empty")
+			return false
+		}
+	}
 	config_path := cfg_lib.config_path_from_args(args)
 	if strings.trim_space(token_file) != "" {
 		if !bridge_write_token_file(token_file, bridge_token) do return false
@@ -288,7 +299,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		fs_read_page_bytes = BRIDGE_FS_READ_PAGE_BYTES,
 		daemon_url = "http://127.0.0.1:49322",
 		daemon_id = "brg_local",
-		bridge_token = "hbr_local_secret",
+		bridge_token = "",
 		data_dir = "~/.local/share/heimdall",
 		peers = make([dynamic]cfg_lib.Peer_Config),
 		peer_auth_token = "",
@@ -383,10 +394,16 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	// regardless of the process working directory.
 	cfg.data_dir = cfg_lib.expand_home(cfg.data_dir)
 
-	// CT-2: Loopback auto-pairing default.
+	// CT-2: Loopback auto-pairing default: load runtime token from token file.
 	if strings.trim_space(cfg.bridge_token) == "" && bridge_is_loopback_url(cfg.daemon_url) {
-		cfg.daemon_id = "brg_local"
-		cfg.bridge_token = "hbr_local_secret"
+		token_file := option_value(args, "--bridge-token-file", os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator))
+		if strings.trim_space(token_file) == "" {
+			token_file = cfg_lib.expand_home("~/.local/share/heimdall/bridge_token")
+		}
+		if token_from_file, ok := bridge_read_token_file(token_file); ok {
+			cfg.bridge_token = token_from_file
+			cfg.daemon_id = "brg_local"
+		}
 	}
 
 	// CT-4: Code-level audit mode flag / env check

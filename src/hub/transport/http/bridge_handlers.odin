@@ -100,28 +100,48 @@ enroll_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
-auto_pair_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Bridge_Handlers)(ctx)
-	ip := req.remote_addr
-	if colon := strings.last_index_byte(ip, ':'); colon >= 0 {
-		ip = ip[:colon]
+is_loopback_ip :: proc(raw_ip: string) -> bool {
+	ip := strings.trim_space(raw_ip)
+	if ip == "" do return false
+	if strings.has_prefix(ip, "[") {
+		if end := strings.index_byte(ip, ']'); end >= 0 {
+			ip = ip[1:end]
+		}
+	} else if colon := strings.last_index_byte(ip, ':'); colon >= 0 {
+		if dot := strings.index_byte(ip[:colon], '.'); dot >= 0 {
+			ip = ip[:colon]
+		}
 	}
 	ip = strings.trim_space(ip)
-	if ip != "127.0.0.1" && ip != "::1" && ip != "localhost" && ip != "" {
+	if ip == "127.0.0.1" || ip == "::1" || ip == "localhost" || ip == "::ffff:127.0.0.1" do return true
+	if strings.has_prefix(ip, "127.") do return true
+	return false
+}
+
+auto_pair_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	// Security: auto-pairing MUST ONLY be initiated from loopback and NEVER forwarded through proxies
+	if header_value(req.headers, "X-Forwarded-For") != "" ||
+	   header_value(req.headers, "X-Forwarded-Host") != "" ||
+	   header_value(req.headers, "X-Forwarded-Proto") != "" ||
+	   header_value(req.headers, "X-Real-IP") != "" ||
+	   header_value(req.headers, "Forwarded") != "" {
+		return respond_error(domain.domain_error(.Forbidden, "auto-pairing is forbidden via proxy headers"), req.request_id)
+	}
+	if !is_loopback_ip(req.remote_addr) {
 		return respond_error(domain.domain_error(.Forbidden, "auto-pairing is only permitted on loopback"), req.request_id)
 	}
 	user_name := json_string(req.body, "user")
 	if user_name == "" do user_name = "default"
 	token := json_string(req.body, "bridge_token")
-	if token == "" do token = "hbr_local_secret"
-	bridge, ok, err := bridge_service.ensure_local_loopback_bridge(h.bridges, user_name, token)
+	bridge, resolved_token, ok, err := bridge_service.ensure_local_loopback_bridge(h.bridges, user_name, token)
 	if !ok do return respond_error(err, req.request_id)
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"bridge_id\":\"")
 	write_handler_json_string(&b, bridge.bridge_id)
 	strings.write_string(&b, "\",\"bridge_token\":\"")
-	write_handler_json_string(&b, token)
+	write_handler_json_string(&b, resolved_token)
 	strings.write_string(&b, "\",\"hub_url\":\"http://127.0.0.1:49322\"}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }

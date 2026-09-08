@@ -94,7 +94,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
 	// CT-2: Pre-seed the loopback local bridge for zero-ceremony single-node Cloudtop operation
-	_, _, _ = bridge_service.ensure_local_loopback_bridge(&graph.bridges, "default", "hbr_local_secret")
+	_, _, _, _ = bridge_service.ensure_local_loopback_bridge(&graph.bridges, "default")
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
 	graph.agents.audit_mode = config.audit_mode
