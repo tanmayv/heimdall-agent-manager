@@ -56,6 +56,9 @@ def main() -> None:
         'member_project_ids',  # placement by DISTINCT member project ids (live+dead)
         'if !has_live do continue',  # inclusion gated on a RUNNING agent anywhere
         '"Unassigned"',  # trailing bucket for project-less live agents
+        '\"created_at\":',  # created_at surfaced per agent/member
+        'group_created_at',  # per-project MIN(member created_at) group order key
+        'agents_live_created_at_less',  # oldest-first ordering primitive
     ]:
         require(TASKCHAIN, snippet, "hub live tree")
     require(TASKCHAIN, "Agents_Live_Agent :: struct", "live agent struct")
@@ -81,23 +84,33 @@ def main() -> None:
         "raw?.is_coordinator",
         "raw?.project_id",  # normalizer reads project_id -> projectId
         "projectId: string;",
+        "raw?.created_at",  # normalizer reads created_at -> createdAt
+        "createdAt: string;",
     ]:
         require(AGENTS_LIVE_TS, snippet, "agentsLive endpoint")
 
     # --- UI sidebar wiring (AppShell) -------------------------------------------
     for snippet in [
         "useGetAgentsLiveQuery",
-        "coordinatorInstanceIds",
         "agent.isCoordinator",
-        "function buildProjectConversationTree(conversations: ConversationSummary[], liveProjects: LiveProject[], coordinatorInstanceIds: Set<string>)",
-        "coordinatorInstanceIds.has(conversation.agentInstanceId)",
+        "function buildProjectConversationTree(conversations: ConversationSummary[], liveProjects: LiveProject[])",
         "isCoordinator?: boolean;",
         # Own-name gold in the rail.
         "conversation.isCoordinator ? 'text-amber-300' : ''",
+        # API-order chain grouping (no client re-sort) + per-group separator flag.
+        "project.chains.forEach",
+        "chain.liveAgents.forEach",
+        "startsNewGroup?: boolean;",
+        "firstInGroup && rows.length > 0",
+        # Subtle separator rendered between chain-groups (not around the edges).
+        "sidebar-session-group-separator-",
+        "conversation.startsNewGroup ?",
     ]:
         require(APP_SHELL, snippet, "shell live rail")
     # ALL projects render: the empty-group filter must be gone.
     forbid(APP_SHELL, "group.conversations.length > 0", "empty-project filter")
+    # Group order/placement is API-driven; no client-side name re-sort remains.
+    forbid(APP_SHELL, "a.project.name.localeCompare(b.project.name)", "client project name re-sort")
 
     # --- UI command palette ------------------------------------------------------
     require(PALETTE, "isCoordinator?: boolean;", "palette isCoordinator field")

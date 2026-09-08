@@ -950,6 +950,7 @@ Agents_Live_Agent :: struct {
 	runtime_status:    string,
 	activity_status:   string,
 	project_id:        string,
+	created_at:        string,
 }
 
 Agents_Live_Member :: struct {
@@ -960,6 +961,7 @@ Agents_Live_Member :: struct {
 	is_live:           bool,
 	runtime_status:    string,
 	project_id:        string,
+	created_at:        string,
 }
 
 Agents_Live_Chain :: struct {
@@ -968,6 +970,10 @@ Agents_Live_Chain :: struct {
 	coordinator_agent_instance_id: string,
 	live_agents:                   []Agents_Live_Agent,
 	members:                       []Agents_Live_Member,
+	// group_created_at is the per-project ordering key: MIN(created_at) across this
+	// chain's members that belong to THIS project (live AND dead). Not serialized;
+	// used only to order chain groups within a project. Empty sorts last.
+	group_created_at:              string,
 }
 
 Agents_Live_Project :: struct {
@@ -976,19 +982,26 @@ Agents_Live_Project :: struct {
 	chains:     []Agents_Live_Chain,
 }
 
-// Deterministic orderings so the sidebar never jumps: chains by title then id,
-// agents/members by display_name then instance id.
+// Deterministic orderings (user-finalized): chain GROUPS within a project by the
+// group's earliest member creation time (empty created_at sorts LAST), tie-break
+// chain_id; agents/members oldest-first by created_at, tie-break instance id.
+agents_live_created_at_less :: proc(a_created, a_id, b_created, b_id: string) -> bool {
+	if a_created != b_created {
+		// Empty created_at (unknown) sorts after any known timestamp.
+		if a_created == "" do return false
+		if b_created == "" do return true
+		return a_created < b_created
+	}
+	return a_id < b_id
+}
 agents_live_chain_less :: proc(a, b: Agents_Live_Chain) -> bool {
-	if a.title != b.title do return a.title < b.title
-	return a.chain_id < b.chain_id
+	return agents_live_created_at_less(a.group_created_at, a.chain_id, b.group_created_at, b.chain_id)
 }
 agents_live_agent_less :: proc(a, b: Agents_Live_Agent) -> bool {
-	if a.display_name != b.display_name do return a.display_name < b.display_name
-	return a.agent_instance_id < b.agent_instance_id
+	return agents_live_created_at_less(a.created_at, a.agent_instance_id, b.created_at, b.agent_instance_id)
 }
 agents_live_member_less :: proc(a, b: Agents_Live_Member) -> bool {
-	if a.display_name != b.display_name do return a.display_name < b.display_name
-	return a.agent_instance_id < b.agent_instance_id
+	return agents_live_created_at_less(a.created_at, a.agent_instance_id, b.created_at, b.agent_instance_id)
 }
 
 // build_agents_live_tree assembles the projects->live-chains->agents tree from
@@ -1038,6 +1051,7 @@ build_agents_live_tree :: proc(projects: []domain.Project, chains: []domain.Task
 			live := has_inst && agent_service.runtime_expected_active(inst.runtime_status)
 			is_coord := m.agent_instance_id == coordinator_id
 			pid := string(inst.project_id) if has_inst else ""
+			created_at := inst.created_at if has_inst else ""
 			append(&roster_src, Agents_Live_Member{
 				agent_instance_id = m.agent_instance_id,
 				display_name = inst.display_name if has_inst else "",
@@ -1046,6 +1060,7 @@ build_agents_live_tree :: proc(projects: []domain.Project, chains: []domain.Task
 				is_live = live,
 				runtime_status = inst.runtime_status if has_inst else "",
 				project_id = pid,
+				created_at = created_at,
 			})
 			member_project_ids[pid] = true
 			if live {
@@ -1058,6 +1073,7 @@ build_agents_live_tree :: proc(projects: []domain.Project, chains: []domain.Task
 					runtime_status = inst.runtime_status,
 					activity_status = inst.activity_status,
 					project_id = pid,
+					created_at = created_at,
 				})
 			}
 		}
@@ -1079,6 +1095,13 @@ build_agents_live_tree :: proc(projects: []domain.Project, chains: []domain.Task
 			slice.sort_by(live_agents, agents_live_agent_less)
 			members_copy := make([]Agents_Live_Member, len(roster_src))
 			for m, i in roster_src do members_copy[i] = m
+			// Group ordering key: earliest created_at among THIS project's members
+			// (live or dead). Empty timestamps are ignored unless none are known.
+			group_created_at := ""
+			for m in roster_src {
+				if m.project_id != pid || m.created_at == "" do continue
+				if group_created_at == "" || m.created_at < group_created_at do group_created_at = m.created_at
+			}
 			if pid not_in chains_by_project do chains_by_project[pid] = make([dynamic]Agents_Live_Chain)
 			append(&chains_by_project[pid], Agents_Live_Chain{
 				chain_id = string(chain.chain_id),
@@ -1086,6 +1109,7 @@ build_agents_live_tree :: proc(projects: []domain.Project, chains: []domain.Task
 				coordinator_agent_instance_id = coordinator_id,
 				live_agents = live_agents,
 				members = members_copy,
+				group_created_at = group_created_at,
 			})
 		}
 	}
@@ -1161,6 +1185,7 @@ write_agents_live_json :: proc(b: ^strings.Builder, tree: []Agents_Live_Project)
 				strings.write_string(b, ",\"runtime_status\":\""); write_handler_json_string(b, a.runtime_status)
 				strings.write_string(b, "\",\"activity_status\":\""); write_handler_json_string(b, a.activity_status)
 				strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, a.project_id)
+				strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, a.created_at)
 				strings.write_string(b, "\"}")
 			}
 			strings.write_string(b, "],\"members\":[")
@@ -1173,6 +1198,7 @@ write_agents_live_json :: proc(b: ^strings.Builder, tree: []Agents_Live_Project)
 				strings.write_string(b, ",\"is_live\":"); strings.write_string(b, "true" if m.is_live else "false")
 				strings.write_string(b, ",\"runtime_status\":\""); write_handler_json_string(b, m.runtime_status)
 				strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, m.project_id)
+				strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, m.created_at)
 				strings.write_string(b, "\"}")
 			}
 			strings.write_string(b, "]}")

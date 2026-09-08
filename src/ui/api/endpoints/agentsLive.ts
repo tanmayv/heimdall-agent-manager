@@ -17,6 +17,8 @@ export type LiveAgent = {
   // Project this running agent belongs to (matches the chain entry's project for
   // live agents; cross-project chains list an agent under its own project).
   projectId: string;
+  // Instance creation time (RFC3339). The API orders agents oldest-first by this.
+  createdAt: string;
 };
 
 export type LiveMember = {
@@ -29,6 +31,8 @@ export type LiveMember = {
   // Project this member's instance belongs to ('' when unresolved). members[] is
   // the full chain roster, so cross-project members each carry their own id.
   projectId: string;
+  // Instance creation time (RFC3339); '' when the instance can't be resolved.
+  createdAt: string;
 };
 
 export type LiveChain = {
@@ -53,6 +57,7 @@ function normalizeLiveAgent(raw: any): LiveAgent {
     runtimeStatus: String(raw?.runtime_status || raw?.runtimeStatus || ''),
     activityStatus: String(raw?.activity_status || raw?.activityStatus || ''),
     projectId: String(raw?.project_id || raw?.projectId || ''),
+    createdAt: String(raw?.created_at || raw?.createdAt || ''),
   };
 }
 
@@ -65,6 +70,7 @@ function normalizeLiveMember(raw: any): LiveMember {
     isLive: Boolean(raw?.is_live ?? raw?.isLive),
     runtimeStatus: String(raw?.runtime_status || raw?.runtimeStatus || ''),
     projectId: String(raw?.project_id || raw?.projectId || ''),
+    createdAt: String(raw?.created_at || raw?.createdAt || ''),
   };
 }
 

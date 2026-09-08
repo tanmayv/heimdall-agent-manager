@@ -52,13 +52,13 @@ live_test_fixture :: proc() -> (projects: []domain.Project, chains: []domain.Tas
 	members_by_chain["chain_u"] = mu
 
 	instances_by_id = make(map[string]domain.Agent_Instance)
-	instances_by_id["inst_coord"] = domain.Agent_Instance{agent_instance_id = "inst_coord", display_name = "Coordinator", project_id = "proj_a", runtime_status = "running", activity_status = "busy"}
-	instances_by_id["inst_worker"] = domain.Agent_Instance{agent_instance_id = "inst_worker", display_name = "Worker", project_id = "proj_b", runtime_status = "idle", activity_status = "idle"}
-	instances_by_id["inst_rev"] = domain.Agent_Instance{agent_instance_id = "inst_rev", display_name = "Reviewer", project_id = "proj_a", runtime_status = "stopped"}
-	instances_by_id["inst_dead"] = domain.Agent_Instance{agent_instance_id = "inst_dead", display_name = "Dead", project_id = "proj_b", runtime_status = "stopped"}
-	instances_by_id["inst_p1"] = domain.Agent_Instance{agent_instance_id = "inst_p1", display_name = "P1 Runner", project_id = "proj_a", runtime_status = "running", activity_status = "busy"}
-	instances_by_id["inst_p2dead"] = domain.Agent_Instance{agent_instance_id = "inst_p2dead", display_name = "P2 Dead", project_id = "proj_b", runtime_status = "stopped"}
-	instances_by_id["inst_ucoord"] = domain.Agent_Instance{agent_instance_id = "inst_ucoord", display_name = "UCoord", project_id = "", runtime_status = "running"}
+	instances_by_id["inst_coord"] = domain.Agent_Instance{agent_instance_id = "inst_coord", display_name = "Coordinator", project_id = "proj_a", runtime_status = "running", activity_status = "busy", created_at = "2026-01-01T00:00:00Z"}
+	instances_by_id["inst_worker"] = domain.Agent_Instance{agent_instance_id = "inst_worker", display_name = "Worker", project_id = "proj_b", runtime_status = "idle", activity_status = "idle", created_at = "2026-01-02T00:00:00Z"}
+	instances_by_id["inst_rev"] = domain.Agent_Instance{agent_instance_id = "inst_rev", display_name = "Reviewer", project_id = "proj_a", runtime_status = "stopped", created_at = "2026-01-03T00:00:00Z"}
+	instances_by_id["inst_dead"] = domain.Agent_Instance{agent_instance_id = "inst_dead", display_name = "Dead", project_id = "proj_b", runtime_status = "stopped", created_at = "2026-01-04T00:00:00Z"}
+	instances_by_id["inst_p1"] = domain.Agent_Instance{agent_instance_id = "inst_p1", display_name = "P1 Runner", project_id = "proj_a", runtime_status = "running", activity_status = "busy", created_at = "2026-01-05T00:00:00Z"}
+	instances_by_id["inst_p2dead"] = domain.Agent_Instance{agent_instance_id = "inst_p2dead", display_name = "P2 Dead", project_id = "proj_b", runtime_status = "stopped", created_at = "2026-01-06T00:00:00Z"}
+	instances_by_id["inst_ucoord"] = domain.Agent_Instance{agent_instance_id = "inst_ucoord", display_name = "UCoord", project_id = "", runtime_status = "running", created_at = "2026-01-07T00:00:00Z"}
 	return
 }
 
@@ -211,6 +211,85 @@ agents_live_json_contract :: proc(t: ^testing.T) {
 	// project_id present in BOTH live_agents and members entries.
 	testing.expect(t, strings.contains(out, "\"activity_status\":\"busy\",\"project_id\":\"proj_a\""), "live_agent project_id emitted")
 	testing.expect(t, strings.contains(out, "\"runtime_status\":\"stopped\",\"project_id\":\"proj_a\""), "member project_id emitted")
+	// created_at surfaced on both live_agents and members entries.
+	testing.expect(t, strings.contains(out, "\"project_id\":\"proj_a\",\"created_at\":\"2026-01-01T00:00:00Z\""), "created_at emitted per entry")
 	// Alphabetical: Alpha's project object precedes Beta's.
 	testing.expect(t, strings.index(out, "\"name\":\"Alpha\"") < strings.index(out, "\"name\":\"Beta\""), "projects alphabetical")
+}
+
+// order_fixture builds a single project "Ordering" (proj_o) with three chains so
+// group + agent ordering can be asserted independently of the cross-project
+// fixture:
+//   chain_early: DEAD member (created 2026-01-01) + a running member (2026-01-20)
+//                => group_created_at = 2026-01-01 (earliest incl. DEAD).
+//   chain_multi: two running agents (2026-01-05, 2026-01-25)
+//                => group_created_at = 2026-01-05.
+//   chain_late:  one running agent (2026-01-10) => group_created_at = 2026-01-10.
+// Expected group order within proj_o: chain_early, chain_multi, chain_late.
+order_fixture :: proc() -> (projects: []domain.Project, chains: []domain.Task_Chain, members_by_chain: map[string][]domain.Task_Chain_Member, instances_by_id: map[string]domain.Agent_Instance) {
+	projects = make([]domain.Project, 1)
+	projects[0] = domain.Project{project_id = "proj_o", name = "Ordering"}
+
+	chains = make([]domain.Task_Chain, 3)
+	chains[0] = domain.Task_Chain{chain_id = "chain_late", title = "Late", coordinator_agent_instance_id = "inst_late"}
+	chains[1] = domain.Task_Chain{chain_id = "chain_multi", title = "Multi", coordinator_agent_instance_id = "inst_m_old"}
+	chains[2] = domain.Task_Chain{chain_id = "chain_early", title = "Early", coordinator_agent_instance_id = "inst_e_dead"}
+
+	members_by_chain = make(map[string][]domain.Task_Chain_Member)
+	ml := make([]domain.Task_Chain_Member, 1)
+	ml[0] = domain.Task_Chain_Member{chain_id = "chain_late", agent_instance_id = "inst_late", role = "coordinator"}
+	members_by_chain["chain_late"] = ml
+	mm := make([]domain.Task_Chain_Member, 2)
+	mm[0] = domain.Task_Chain_Member{chain_id = "chain_multi", agent_instance_id = "inst_m_old", role = "coordinator"}
+	mm[1] = domain.Task_Chain_Member{chain_id = "chain_multi", agent_instance_id = "inst_m_new", role = "member"}
+	members_by_chain["chain_multi"] = mm
+	me := make([]domain.Task_Chain_Member, 2)
+	me[0] = domain.Task_Chain_Member{chain_id = "chain_early", agent_instance_id = "inst_e_dead", role = "coordinator"}
+	me[1] = domain.Task_Chain_Member{chain_id = "chain_early", agent_instance_id = "inst_e_run", role = "member"}
+	members_by_chain["chain_early"] = me
+
+	instances_by_id = make(map[string]domain.Agent_Instance)
+	instances_by_id["inst_late"] = domain.Agent_Instance{agent_instance_id = "inst_late", display_name = "Late Runner", project_id = "proj_o", runtime_status = "running", created_at = "2026-01-10T00:00:00Z"}
+	instances_by_id["inst_m_old"] = domain.Agent_Instance{agent_instance_id = "inst_m_old", display_name = "Multi Old", project_id = "proj_o", runtime_status = "running", created_at = "2026-01-05T00:00:00Z"}
+	instances_by_id["inst_m_new"] = domain.Agent_Instance{agent_instance_id = "inst_m_new", display_name = "Multi New", project_id = "proj_o", runtime_status = "running", created_at = "2026-01-25T00:00:00Z"}
+	instances_by_id["inst_e_dead"] = domain.Agent_Instance{agent_instance_id = "inst_e_dead", display_name = "Early Dead", project_id = "proj_o", runtime_status = "stopped", created_at = "2026-01-01T00:00:00Z"}
+	instances_by_id["inst_e_run"] = domain.Agent_Instance{agent_instance_id = "inst_e_run", display_name = "Early Runner", project_id = "proj_o", runtime_status = "running", created_at = "2026-01-20T00:00:00Z"}
+	return
+}
+
+@(test)
+agents_live_group_order_by_min_member_created_at :: proc(t: ^testing.T) {
+	projects, chains, members_by_chain, instances_by_id := order_fixture()
+	defer live_test_fixture_free(projects, chains, members_by_chain, instances_by_id)
+	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
+	defer free_agents_live_tree(tree)
+
+	p, ok := find_project(tree, "proj_o")
+	testing.expect(t, ok, "proj_o present")
+	testing.expect_value(t, len(p.chains), 3)
+	// Group order by per-project MIN(member created_at), earliest first — and
+	// chain_early wins on its DEAD member's 2026-01-01 timestamp.
+	testing.expect_value(t, p.chains[0].chain_id, "chain_early")
+	testing.expect_value(t, p.chains[1].chain_id, "chain_multi")
+	testing.expect_value(t, p.chains[2].chain_id, "chain_late")
+}
+
+@(test)
+agents_live_agents_within_group_oldest_first :: proc(t: ^testing.T) {
+	projects, chains, members_by_chain, instances_by_id := order_fixture()
+	defer live_test_fixture_free(projects, chains, members_by_chain, instances_by_id)
+	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
+	defer free_agents_live_tree(tree)
+
+	p, _ := find_project(tree, "proj_o")
+	multi, ok := find_chain(p, "chain_multi")
+	testing.expect(t, ok, "chain_multi present")
+	testing.expect_value(t, len(multi.live_agents), 2)
+	// Oldest-first by created_at: Multi Old (2026-01-05) before Multi New (2026-01-25).
+	testing.expect_value(t, multi.live_agents[0].agent_instance_id, "inst_m_old")
+	testing.expect_value(t, multi.live_agents[0].created_at, "2026-01-05T00:00:00Z")
+	testing.expect_value(t, multi.live_agents[1].agent_instance_id, "inst_m_new")
+	// members[] also ordered oldest-first by created_at.
+	testing.expect_value(t, multi.members[0].agent_instance_id, "inst_m_old")
+	testing.expect_value(t, multi.members[1].agent_instance_id, "inst_m_new")
 }
