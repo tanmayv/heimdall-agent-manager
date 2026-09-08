@@ -178,6 +178,18 @@ is_origin_or_referer_allowed :: proc(origin_or_ref: string) -> bool {
 	return false
 }
 
+log_incoming_headers :: proc(headers: []contracts.HTTP_Header) {
+	fmt.eprintln("[dev-proxy] Incoming headers on denial:")
+	for h in headers {
+		if ascii_equal_fold(h.name, "Authorization") {
+			preview := h.value[:min(12, len(h.value))]
+			fmt.eprintfln("[dev-proxy]   %s: %s... (masked, len=%d)", h.name, preview, len(h.value))
+		} else {
+			fmt.eprintfln("[dev-proxy]   %s: %s", h.name, h.value)
+		}
+	}
+}
+
 handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 	defer free(ctx)
 	client := ctx.client
@@ -213,40 +225,55 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 	}
 	host_lower := strings.to_lower(host_only, context.temp_allocator)
 	if host_hdr != "" && !is_allowed_host(host_lower) {
+		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 invalid host header", method, target, host_lower, caller_user, owner)
+		log_incoming_headers(headers)
 		write_response(client, 403, "Forbidden", "text/plain", "invalid host header")
 		return
 	}
 
-	// CT-7 / CT-8: Cloudtop Owner & Bridge Bearer Verification Gate
+	// CT-7 / CT-8 / CT-9: Cloudtop Owner & Bridge Bearer Verification Gate
 	if is_bridge_bearer {
 		// Authenticated via Hub-issued bridge token (hbr_... / hbe_...)
+		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 200 bridge token admitted", method, target, host_lower, "bridge", owner)
 	} else if has_uberproxy {
 		if caller_user != owner {
+			fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 Access Denied: Caller identity does not match Cloudtop owner", method, target, host_lower, caller_user, owner)
+			log_incoming_headers(headers)
 			write_response(client, 403, "Forbidden", "text/plain", "Access Denied: Caller identity does not match Cloudtop owner")
 			return
 		}
+		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 200 owner admitted via ÜberProxy", method, target, host_lower, caller_user, owner)
 	} else {
 		// Non-loopback connections without ÜberProxy headers or bridge tokens are rejected
 		if !is_loopback_host(host_lower) {
+			fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 Access Denied: Caller identity does not match Cloudtop owner (non-loopback)", method, target, host_lower, caller_user, owner)
+			log_incoming_headers(headers)
 			write_response(client, 403, "Forbidden", "text/plain", "Access Denied: Caller identity does not match Cloudtop owner")
 			return
 		}
+		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 200 local caller admitted", method, target, host_lower, "loopback", owner)
 	}
 
 	// For mutating requests to /_dev/* check Sec-Fetch-Site and Origin/Referer to prevent CSRF
 	if strings.has_prefix(path, "/_dev/") && method != "GET" && method != "HEAD" && method != "OPTIONS" {
 		sec_fetch := header_value(headers, "Sec-Fetch-Site")
 		if sec_fetch != "" && sec_fetch != "same-origin" && sec_fetch != "same-site" && sec_fetch != "none" {
+			fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 cross-origin dev request rejected (Sec-Fetch-Site)", method, target, host_lower, caller_user, owner)
+			log_incoming_headers(headers)
 			write_response(client, 403, "Forbidden", "text/plain", "cross-origin dev request rejected")
 			return
 		}
 		origin := header_value(headers, "Origin")
 		if origin != "" && !is_origin_or_referer_allowed(origin) {
+			fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 cross-origin dev request rejected (Origin)", method, target, host_lower, caller_user, owner)
+			log_incoming_headers(headers)
 			write_response(client, 403, "Forbidden", "text/plain", "cross-origin dev request rejected")
 			return
 		}
 		referer := header_value(headers, "Referer")
 		if referer != "" && !is_origin_or_referer_allowed(referer) {
+			fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 cross-origin dev request rejected (Referer)", method, target, host_lower, caller_user, owner)
+			log_incoming_headers(headers)
 			write_response(client, 403, "Forbidden", "text/plain", "cross-origin dev request rejected")
 			return
 		}
@@ -254,6 +281,8 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 
 	// Security: Bridge auto-pairing is a sensitive local-only unauthenticated operation and MUST NOT be reachable through dev-proxy
 	if strings.has_prefix(path, "/api/v1/bridges/auto-pair") {
+		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 bridge auto-pair forbidden through dev-proxy", method, target, host_lower, caller_user, owner)
+		log_incoming_headers(headers)
 		write_response(client, 403, "Forbidden", "text/plain", "bridge auto-pair forbidden through dev-proxy")
 		return
 	}
@@ -286,6 +315,8 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 
 	// Ingress security: LOAS/gcert credential check before forwarding
 	if valid, gcert_msg := dev_proxy_check_gcert(); !valid {
+		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 401 %s", method, target, host_lower, caller_user, owner, gcert_msg)
+		log_incoming_headers(headers)
 		write_response(client, 401, "Unauthorized", "text/plain", gcert_msg)
 		return
 	}

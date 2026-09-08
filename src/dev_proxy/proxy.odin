@@ -38,6 +38,7 @@ is_client_control_header :: proc(name: string, config: ^Dev_Proxy_Config) -> boo
 	if strings.has_prefix(lower, "x-authentik-") do return true
 	if strings.has_prefix(lower, "x-forwarded-") do return true
 	if strings.has_prefix(lower, "x-goog-") do return true
+	if strings.has_prefix(lower, "x-uberproxy-") do return true
 	if lower == "x-remote-user" do return true
 	if lower == "forwarded" do return true
 	if lower == "x-real-ip" do return true
