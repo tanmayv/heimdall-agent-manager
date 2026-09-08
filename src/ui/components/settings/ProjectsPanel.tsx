@@ -377,7 +377,7 @@ export default function ProjectsPanel() {
                   )}
                 </div>
                 <button
-                  data-debug-id="settings-project-browse-btn"
+                  data-debug-id="settings-project-browse-btn settings-project-local-browse-btn settings-project-fig-browse-btn"
                   id="settings-project-fig-browse-btn"
                   type="button"
                   disabled={!selectedBridgeId}
@@ -547,7 +547,7 @@ export default function ProjectsPanel() {
               <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-black/30 border border-white/5">
                 <span className="text-xs text-zinc-400">Bridge Host:</span>
                 <select
-                  data-debug-id="settings-project-fig-bridge-select"
+                  data-debug-id="settings-project-fig-bridge-select settings-project-local-bridge-select"
                   value={selectedBridgeId}
                   onChange={(e) => setSelectedBridgeId(e.target.value)}
                   className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"

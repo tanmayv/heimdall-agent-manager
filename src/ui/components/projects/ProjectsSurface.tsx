@@ -245,7 +245,7 @@ function ProjectList() {
                   )}
                 </div>
                 <button
-                  data-debug-id="projects-create-browse-btn"
+                  data-debug-id="projects-create-browse-btn projects-create-local-browse-btn projects-create-fig-browse-btn"
                   id="projects-create-fig-browse-btn"
                   type="button"
                   disabled={!selectedBridgeId}
@@ -386,7 +386,7 @@ function ProjectList() {
               <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-black/30 border border-white/5">
                 <span className="text-xs text-zinc-400">Bridge Host:</span>
                 <select
-                  data-debug-id="projects-create-fig-bridge-select"
+                  data-debug-id="projects-create-fig-bridge-select projects-create-local-bridge-select"
                   value={selectedBridgeId}
                   onChange={(e) => setSelectedBridgeId(e.target.value)}
                   className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"

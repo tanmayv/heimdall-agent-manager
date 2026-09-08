@@ -247,7 +247,7 @@ if [ "$MODE" = "standalone" ]; then
     if [ -t 0 ]; then
       echo ""
       echo "Standalone Remote Bridge mode connects this Cloudtop to a Central Heimdall Hub."
-      read -rp "Enter Central Hub URL (e.g. http://my-host.c.googlers.com:49322): " HUB_URL
+      read -rp "Enter Central Hub URL (e.g. http://my-host.c.googlers.com:8989): " HUB_URL
     else
       echo "[-] Error: --hub <url> is required in non-interactive standalone mode."
       exit 1
@@ -268,6 +268,18 @@ if [ "$MODE" = "standalone" ]; then
   # Clean whitespace and trailing slashes
   HUB_URL="$(echo "$HUB_URL" | sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//" -e "s:/*$::")"
   ENROLLMENT_TOKEN="$(echo "$ENROLLMENT_TOKEN" | sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//")"
+
+  # Auto-correct port 49322 to gateway port 8989
+  if [[ "$HUB_URL" =~ :49322$ ]]; then
+    echo "[install] Notice: Port 49322 is internal loopback; rewriting Hub URL to gateway port 8989."
+    HUB_URL="${HUB_URL%:49322}:8989"
+  fi
+
+  # Auto-append :8989 if HUB_URL matches *.c.googlers.com without a port
+  if [[ "$HUB_URL" =~ \.c\.googlers\.com$ ]] && [[ ! "$HUB_URL" =~ :[0-9]+$ ]]; then
+    echo "[install] Notice: Appending default Cloudtop gateway port :8989 to Hub URL."
+    HUB_URL="${HUB_URL}:8989"
+  fi
 
   if [ -z "$HUB_URL" ] || [ -z "$ENROLLMENT_TOKEN" ]; then
     echo "[-] Error: Hub URL and enrollment token must not be empty."

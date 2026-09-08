@@ -575,14 +575,14 @@ cd ~/.local/share/heimdall
 ./install.sh --standalone
 ```
 The script will prompt you for:
-1. **Central Hub URL:** (e.g. `http://my-primary-workstation.c.googlers.com:49322`)
+1. **Central Hub URL:** (e.g. `http://my-primary-workstation.c.googlers.com:8989`)
 2. **Hub Enrollment Token:** (Generate in the Central Hub UI: `Settings` -> `Bridges` -> `Add bridge` -> Copy Token)
 
 ### Installation (Non-Interactive / Scripted)
 
 ```bash
 ./install.sh --standalone \
-  --hub "http://my-primary-workstation.c.googlers.com:49322" \
+  --hub "http://my-primary-workstation.c.googlers.com:8989" \
   --token "<ENROLLMENT_TOKEN>"
 ```
 
