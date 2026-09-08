@@ -405,6 +405,28 @@ else
     "$BIN_DIR/start.sh"
   fi
 
+  # Health verification: wait up to 15s for port 8989 to respond
+  echo "[install] Verifying Edge Gateway on port 8989..."
+  deadline=$((SECONDS + 15))
+  gw_ok=false
+  while [ $SECONDS -lt $deadline ]; do
+    if curl -s "http://127.0.0.1:8989/api/v1/health" >/dev/null 2>&1 || curl -s -I "http://127.0.0.1:8989/" >/dev/null 2>&1; then
+      gw_ok=true
+      break
+    fi
+    sleep 0.5
+  done
+
+  if [ "$gw_ok" = false ]; then
+    echo "[-] Warning: Edge gateway not yet responding on port 8989."
+    if command -v systemctl >/dev/null 2>&1 && [ -f "$HOME/.config/systemd/user/heimdall.service" ]; then
+      systemctl --user status heimdall.service --no-pager || true
+    fi
+    echo "[-] Check logs: $LOG_DIR/proxy.log, $LOG_DIR/hub.log, $LOG_DIR/bridge.log"
+  else
+    echo "[install] Edge Gateway verified active on port 8989."
+  fi
+
   echo ""
   echo "========================================================================"
   echo "    Heimdall Cloudtop Stack Successfully Installed & Running!"

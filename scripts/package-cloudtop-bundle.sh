@@ -357,6 +357,20 @@ echo "  Hub API:             http://127.0.0.1:49322"
 echo "  Bridge Status:       http://127.0.0.1:$BRIDGE_PORT"
 echo "  Cloudtop Gateway:    http://${HOST_FQDN}:8989"
 echo "========================================================================"
+
+if [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "-f" ]; then
+  trap 'echo "[supervisor] Shutting down Heimdall services..."; "$BIN_DIR/stop.sh" || true; exit 0' SIGTERM SIGINT SIGHUP
+  echo "[supervisor] Running in foreground under systemd. Monitoring daemons..."
+  while true; do
+    sleep 2
+    for pidf in "$HUB_PID_FILE" "$BRIDGE_PID_FILE" "$PROXY_PID_FILE"; do
+      if [ -f "$pidf" ] && ! kill -0 "$(cat "$pidf")" 2>/dev/null; then
+        echo "[-] Process $(basename "$pidf" .pid) died unexpectedly!"
+        exit 1
+      fi
+    done
+  done
+fi
 STARTEOF
 chmod +x "$BUNDLE_DIR/start.sh"
 
@@ -424,7 +438,7 @@ cd ~/.local/share/heimdall
 ./install.sh
 ```
 
-When run interactively in a terminal, `./install.sh` presents a menu:
+When run interactively in your terminal, `./install.sh` presents a menu:
 - **Option 1: Full Single-Node Stack** (Default) — Runs Central Hub, Web UI (port 8989), Dev-Proxy, and Local Bridge on this workstation.
 - **Option 2: Standalone Remote Bridge** — Prompts for Central Hub URL and Enrollment Token to run this Cloudtop as an execution worker bridge.
 - **Option 3: Uninstall Heimdall** — Safely stops running services, disables systemd units, and removes binaries (with optional data purge).
@@ -432,6 +446,15 @@ When run interactively in a terminal, `./install.sh` presents a menu:
 ---
 
 ## 2. Quick Start: Mode 1 — Full Single-Node Stack (Scripted)
+
+Use this mode if this Cloudtop is your **primary workstation** where you want to run the Heimdall Hub, the Web UI, and a local execution bridge.
+
+### Installation
+
+```bash
+./install.sh --full
+# Or simply: ./install.sh (non-interactively defaults to full stack)
+```
 
 ### What Happens:
 - Installs binaries to `~/.local/share/heimdall/bin/`.
@@ -450,7 +473,7 @@ When run interactively in a terminal, `./install.sh` presents a menu:
 
 ---
 
-## 2. Quick Start: Mode 2 — Standalone Remote Bridge (Bridge-Only)
+## 3. Quick Start: Mode 2 — Standalone Remote Bridge (Bridge-Only)
 
 Use this mode if you already have a Central Heimdall Hub running (e.g. on your primary workstation or shared server), and you want this Cloudtop to act **only as an execution worker bridge** that connects back to the Central Hub.
 
@@ -482,7 +505,7 @@ The script will prompt you for:
 
 ---
 
-## 3. Operations & Service Management
+## 4. Operations & Service Management
 
 ### Using systemd (Recommended)
 
@@ -519,7 +542,7 @@ You can also control services directly:
 
 ---
 
-## 4. Switching Between Modes
+## 5. Switching Between Modes
 
 You can switch between Full Stack and Standalone Remote Bridge at any time:
 
@@ -529,12 +552,12 @@ You can switch between Full Stack and Standalone Remote Bridge at any time:
   ```
 - **Switch back to Full Stack:**
   ```bash
-  ./install.sh
+  ./install.sh --full
   ```
 
 ---
 
-## 5. Uninstallation
+## 6. Uninstallation
 
 To completely stop running services and remove Heimdall from your system:
 
