@@ -195,6 +195,16 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 	caller_user, caller_email, has_uberproxy := extract_uberproxy_identity(headers)
 	owner := get_cloudtop_owner(ctx.config)
 
+	// Check for bridge bearer token (hbr_... runtime WS or hbe_... enrollment)
+	auth_hdr := header_value(headers, "Authorization")
+	is_bridge_bearer := false
+	if strings.has_prefix(auth_hdr, "Bearer ") {
+		token := strings.trim_space(auth_hdr[len("Bearer "):])
+		if strings.has_prefix(token, "hbr_") || strings.has_prefix(token, "hbe_") {
+			is_bridge_bearer = true
+		}
+	}
+
 	host_hdr := header_value(headers, "Host")
 	host_only := host_hdr
 	if host_hdr != "" {
@@ -202,19 +212,21 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 		if h_ok do host_only = h_only
 	}
 	host_lower := strings.to_lower(host_only, context.temp_allocator)
-	if host_hdr != "" && !is_allowed_host(host_lower, has_uberproxy) {
+	if host_hdr != "" && !is_allowed_host(host_lower) {
 		write_response(client, 403, "Forbidden", "text/plain", "invalid host header")
 		return
 	}
 
-	// CT-7: Cloudtop Owner Verification Gate
-	if has_uberproxy {
+	// CT-7 / CT-8: Cloudtop Owner & Bridge Bearer Verification Gate
+	if is_bridge_bearer {
+		// Authenticated via Hub-issued bridge token (hbr_... / hbe_...)
+	} else if has_uberproxy {
 		if caller_user != owner {
 			write_response(client, 403, "Forbidden", "text/plain", "Access Denied: Caller identity does not match Cloudtop owner")
 			return
 		}
 	} else {
-		// Non-loopback connections without ÜberProxy headers are rejected
+		// Non-loopback connections without ÜberProxy headers or bridge tokens are rejected
 		if !is_loopback_host(host_lower) {
 			write_response(client, 403, "Forbidden", "text/plain", "Access Denied: Caller identity does not match Cloudtop owner")
 			return
@@ -240,9 +252,9 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 		}
 	}
 
-	// Security: Bridge enrollment and auto-pairing are sensitive local-only operations and MUST NOT be reachable through dev-proxy
-	if strings.has_prefix(path, "/api/v1/bridges/auto-pair") || strings.has_prefix(path, "/api/v1/bridges/enroll") {
-		write_response(client, 403, "Forbidden", "text/plain", "bridge enrollment/auto-pair forbidden through dev-proxy")
+	// Security: Bridge auto-pairing is a sensitive local-only unauthenticated operation and MUST NOT be reachable through dev-proxy
+	if strings.has_prefix(path, "/api/v1/bridges/auto-pair") {
+		write_response(client, 403, "Forbidden", "text/plain", "bridge auto-pair forbidden through dev-proxy")
 		return
 	}
 

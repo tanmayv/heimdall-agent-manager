@@ -177,19 +177,56 @@ def main() -> None:
                 assert data["user_id"] == "tanmayvijay"
             print("PASS 2: Accounts prefix format (accounts.google.com:...) parsed correctly")
 
-            # TEST 3: Alternative ÜberProxy header (X-Forwarded-User)
-            req = urllib.request.Request(
+            # TEST 3: Spoofable fallback headers (X-Forwarded-User / X-Remote-User) alone MUST BE REJECTED
+            # Only X-Goog-Authenticated-User-Email is accepted as authoritative Google identity
+            req_fwd = urllib.request.Request(
                 f"http://127.0.0.1:{gateway_port}/api/v1/me",
                 headers={
                     "Host": "tanmayvijay.c.googlers.com:8989",
                     "X-Forwarded-User": "tanmayvijay",
                 },
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                assert resp.status == 200
-                data = json.loads(resp.read().decode())
-                assert data["user_id"] == "tanmayvijay"
-            print("PASS 3: Alternative header X-Forwarded-User accepted")
+            try:
+                urllib.request.urlopen(req_fwd, timeout=5)
+                assert False, "expected 403 Forbidden for X-Forwarded-User without X-Goog-Authenticated-User-Email"
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
+                body = e.read().decode()
+                assert "Access Denied: Caller identity does not match Cloudtop owner" in body
+            print("PASS 3a: X-Forwarded-User alone is rejected (strict X-Goog-Authenticated-User-Email enforcement)")
+
+            req_remote = urllib.request.Request(
+                f"http://127.0.0.1:{gateway_port}/api/v1/me",
+                headers={
+                    "Host": "tanmayvijay.c.googlers.com:8989",
+                    "X-Remote-User": "tanmayvijay",
+                },
+            )
+            try:
+                urllib.request.urlopen(req_remote, timeout=5)
+                assert False, "expected 403 Forbidden for X-Remote-User without X-Goog-Authenticated-User-Email"
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
+                body = e.read().decode()
+                assert "Access Denied: Caller identity does not match Cloudtop owner" in body
+            print("PASS 3b: X-Remote-User alone is rejected (strict X-Goog-Authenticated-User-Email enforcement)")
+
+            # TEST 3c: Untrusted Host header strictly rejected even with valid ÜberProxy auth
+            req_evil_host = urllib.request.Request(
+                f"http://127.0.0.1:{gateway_port}/api/v1/me",
+                headers={
+                    "Host": "evil-attacker.com:8989",
+                    "X-Goog-Authenticated-User-Email": "tanmayvijay@google.com",
+                },
+            )
+            try:
+                urllib.request.urlopen(req_evil_host, timeout=5)
+                assert False, "expected 403 Forbidden for untrusted Host header evil-attacker.com"
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
+                body = e.read().decode()
+                assert "invalid host header" in body
+            print("PASS 3c: Untrusted Host header rejected even with valid ÜberProxy authentication")
 
             # TEST 4: Non-owner caller identity rejected with 403 Forbidden
             # Must return exact string "Access Denied: Caller identity does not match Cloudtop owner"
