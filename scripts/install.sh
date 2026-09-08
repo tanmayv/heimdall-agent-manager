@@ -285,13 +285,15 @@ chmod 0700 "$DATA_DIR"
 
 # 2. Copy binaries and runtime libraries
 echo "[install] Copying binaries..."
-cp -a --remove-destination "$BUNDLE_DIR/bin/"* "$BIN_DIR/"
+rm -f "$BIN_DIR/"* 2>/dev/null || true
+cp -R -p "$BUNDLE_DIR/bin/"* "$BIN_DIR/"
 chmod u+w "$BIN_DIR/"* 2>/dev/null || true
 chmod +x "$BIN_DIR/"*
 
 if [ -d "$BUNDLE_DIR/lib" ]; then
   echo "[install] Copying runtime libraries..."
-  cp -a --remove-destination "$BUNDLE_DIR/lib/"* "$LIB_DIR/" 2>/dev/null || true
+  rm -f "$LIB_DIR/"* 2>/dev/null || true
+  cp -R -p "$BUNDLE_DIR/lib/"* "$LIB_DIR/" 2>/dev/null || true
   chmod -R u+w "$LIB_DIR/" 2>/dev/null || true
 fi
 
@@ -374,14 +376,14 @@ else
   # Copy migrations
   if [ -d "$BUNDLE_DIR/share/migrations" ]; then
     echo "[install] Copying database migrations..."
-    cp -a "$BUNDLE_DIR/share/migrations/"* "$SHARE_DIR/"
+    cp -R -p "$BUNDLE_DIR/share/migrations/"* "$SHARE_DIR/"
   fi
 
   # Copy pre-built static UI
   if [ -d "$BUNDLE_DIR/ui" ] && [ -f "$BUNDLE_DIR/ui/index.html" ]; then
     echo "[install] Copying pre-built static UI..."
     mkdir -p "$DATA_DIR/ui"
-    cp -a "$BUNDLE_DIR/ui/"* "$DATA_DIR/ui/"
+    cp -R -p "$BUNDLE_DIR/ui/"* "$DATA_DIR/ui/"
   fi
 
   # Configure systemd user unit
