@@ -515,6 +515,10 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 }
 
 bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, string) {
+	if bridge_config.audit_mode {
+		fmt.println("bridge launch_agent REJECTED: audit mode active")
+		return false, "audit mode active: agent spawning and PTY allocation disabled"
+	}
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id"
 	// A genuine (re)launch supersedes any prior stop intent for this instance id.

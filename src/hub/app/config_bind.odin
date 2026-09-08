@@ -42,6 +42,9 @@ Hub_Config :: struct {
 	// absolute `href` in Web Push payloads that the service worker opens on click
 	// (WP-SEND). The Hub serves only /api/v1; the SW/manifest are same-origin here.
 	public_app_origin: string,
+	// CT-4: Code-level audit mode. When enabled, non-owner requests are strictly
+	// forbidden from mutating state, spawning agents, or requesting PTY operations.
+	audit_mode: bool,
 }
 
 // vapid_is_configured reports whether a usable VAPID keypair is present. Push
@@ -74,5 +77,6 @@ default_config :: proc() -> Hub_Config {
 		title_nudge_cooldown_seconds = 3600,
 		vapid_subject = "mailto:12tanmayvijay@gmail.com",
 		public_app_origin = "https://heimdall.mundus.in",
+		audit_mode = false,
 	}
 }

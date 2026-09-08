@@ -36,6 +36,9 @@ main :: proc() {
 }
 
 parse_args :: proc(config: ^Dev_Proxy_Config) {
+	if v := os.get_env_alloc("HAM_DEV_PROXY_DEFAULT_USER", context.allocator); v != "" {
+		config.default_user = v
+	}
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
 		if arg == "--listen" && i + 1 < len(os.args) {
@@ -87,6 +90,19 @@ Dev_Proxy_Client_Context :: struct {
 	client: net.TCP_Socket,
 }
 
+is_origin_or_referer_allowed :: proc(origin_or_ref: string) -> bool {
+	trimmed := strings.trim_space(origin_or_ref)
+	if trimmed == "" do return true
+	allowed_prefixes := [?]string{"http://127.0.0.1", "http://localhost", "http://[::1]", "https://127.0.0.1", "https://localhost", "https://[::1]"}
+	for p in allowed_prefixes {
+		if strings.has_prefix(trimmed, p) {
+			rest := trimmed[len(p):]
+			if len(rest) == 0 || rest[0] == ':' || rest[0] == '/' do return true
+		}
+	}
+	return false
+}
+
 handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 	defer free(ctx)
 	client := ctx.client
@@ -95,6 +111,39 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 	if !ok do return
 	method, target := request_method_target(request)
 	path, query := split_target_query(target)
+
+	// CT-3: Host & CSRF validation
+	headers := parse_headers(request)
+	defer free_headers(headers)
+	host_hdr := header_value(headers, "Host")
+	if host_hdr != "" {
+		host_only, _, _ := split_host_port(host_hdr)
+		if host_only == "" do host_only = host_hdr
+		if !is_loopback_host(host_only) {
+			write_response(client, 403, "Forbidden", "text/plain", "invalid host header")
+			return
+		}
+	}
+
+	// For mutating requests to /_dev/* check Sec-Fetch-Site and Origin/Referer to prevent CSRF
+	if strings.has_prefix(path, "/_dev/") && method != "GET" && method != "HEAD" && method != "OPTIONS" {
+		sec_fetch := header_value(headers, "Sec-Fetch-Site")
+		if sec_fetch != "" && sec_fetch != "same-origin" && sec_fetch != "same-site" && sec_fetch != "none" {
+			write_response(client, 403, "Forbidden", "text/plain", "cross-origin dev request rejected")
+			return
+		}
+		origin := header_value(headers, "Origin")
+		if origin != "" && !is_origin_or_referer_allowed(origin) {
+			write_response(client, 403, "Forbidden", "text/plain", "cross-origin dev request rejected")
+			return
+		}
+		referer := header_value(headers, "Referer")
+		if referer != "" && !is_origin_or_referer_allowed(referer) {
+			write_response(client, 403, "Forbidden", "text/plain", "cross-origin dev request rejected")
+			return
+		}
+	}
+
 	if strings.has_prefix(path, "/_dev/") {
 		// DP-7: hard loopback boundary for the entire management surface.
 		if !ctx.config.management_enabled {

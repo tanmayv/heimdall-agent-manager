@@ -41,6 +41,8 @@ Bridge_Config :: struct {
 	// tmux. Default false (tmux path) until DEL-1 flips it. Also overridable at
 	// runtime via HEIMDALL_BRIDGE_PTY_HOST for A/B testing.
 	pty_host_runtime: bool,
+	// CT-4: Code-level audit mode. Rejects agent launches and PTY allocation.
+	audit_mode: bool,
 }
 
 Bridge_Peer_Link_State :: struct {
@@ -385,6 +387,11 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	if strings.trim_space(cfg.bridge_token) == "" && bridge_is_loopback_url(cfg.daemon_url) {
 		cfg.daemon_id = "brg_local"
 		cfg.bridge_token = "hbr_local_secret"
+	}
+
+	// CT-4: Code-level audit mode flag / env check
+	if has_flag(args, "--audit-mode") || os.get_env("HEIMDALL_AUDIT_MODE", context.allocator) == "1" || os.get_env("HEIMDALL_AUDIT_MODE", context.allocator) == "true" {
+		cfg.audit_mode = true
 	}
 
 	return cfg

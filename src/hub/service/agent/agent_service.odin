@@ -23,6 +23,7 @@ Agent_Service :: struct {
 	bridge_command_sink: project_service.Bridge_Command_Sink,
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
+	audit_mode: bool,
 }
 
 Create_Agent_Input :: struct {
@@ -194,6 +195,9 @@ default_support_for_agent_bridge :: proc(agent: domain.Agent, bridge_id: string)
 create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
 	if !owner_ok do return domain.Agent_Instance{}, false, owner_err
+	if service.audit_mode && auth.user_id != "tanmayvijay" && auth.user_id != "tanmay" && auth.user_id != "default" {
+		return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "audit mode active: agent spawning disabled for non-owner")
+	}
 	agent, agent_ok, agent_err := get_agent(service, auth, input.agent_id)
 	if !agent_ok do return domain.Agent_Instance{}, false, agent_err
 	bridge_id := strings.trim_space(input.bridge_id)
@@ -625,6 +629,9 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 }
 
 relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, tier: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	if service.audit_mode && auth.user_id != "tanmayvijay" && auth.user_id != "tanmay" && auth.user_id != "default" {
+		return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "audit mode active: agent relaunching disabled for non-owner")
+	}
 	_, auth_ok, auth_err := validate_pinned_provider_tier(service, auth, inst, provider, tier)
 	if !auth_ok do return domain.Agent_Instance{}, false, auth_err
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)

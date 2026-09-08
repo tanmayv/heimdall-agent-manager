@@ -188,6 +188,9 @@ parse_duration_seconds :: proc(value: string) -> (int, bool) {
 }
 
 parse_args :: proc(config: ^app.Hub_Config) {
+	if os.get_env_alloc("HEIMDALL_AUDIT_MODE", context.allocator) == "1" || os.get_env_alloc("HEIMDALL_AUDIT_MODE", context.allocator) == "true" {
+		config.audit_mode = true
+	}
 	// VAPID config resolves as: built-in default -> environment -> flags. Applying
 	// env first (below) and flags second (in the loop) keeps precedence uniform
 	// across all VAPID fields, including vapid_subject which carries a default.
@@ -233,6 +236,8 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			config.vapid_private_key = read_key_file(os.args[i + 1]); i += 1
 		} else if arg == "--vapid-subject" && i + 1 < len(os.args) {
 			config.vapid_subject = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--audit-mode" {
+			config.audit_mode = true
 		}
 	}
 }

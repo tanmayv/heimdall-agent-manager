@@ -24,12 +24,13 @@ Dev_Proxy_Config :: struct {
 }
 
 default_dev_proxy_config :: proc() -> Dev_Proxy_Config {
-	users := make([]Dev_User, 2)
+	users := make([]Dev_User, 3)
 	users[0] = Dev_User{username = "tanmay", display_name = "Tanmay Vijay", email = "tanmay@example.com"}
-	users[1] = Dev_User{username = "reviewer", display_name = "Reviewer User", email = "reviewer@example.com"}
+	users[1] = Dev_User{username = "tanmayvijay", display_name = "Tanmay Vijayvargiya", email = "tanmayvijay@google.com"}
+	users[2] = Dev_User{username = "reviewer", display_name = "Reviewer User", email = "reviewer@example.com"}
 	return Dev_Proxy_Config{
 		listen = "127.0.0.1:8080",
-		hub_url = "http://127.0.0.1:8081",
+		hub_url = "http://127.0.0.1:49322",
 		username_header = "X-authentik-username",
 		display_name_header = "X-authentik-name",
 		email_header = "X-authentik-email",
