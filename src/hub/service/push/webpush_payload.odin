@@ -42,9 +42,11 @@ PUSH_PREVIEW_MAX :: 140
 
 // build_chat_notification builds the chat-message notification content,
 // mirroring planForChatEvent in notificationMapper.ts: title reflects
-// nudge/mention/plain, the body is a truncated preview, and the coalescing tag
-// + deep-link route key on the conversation. conversation_id falls back to the
-// agent instance id (the conversation route accepts either).
+// nudge/mention/plain, the body is a truncated preview. The deep-link route keys
+// on the AGENT INSTANCE id because conversation routing is instance-id-only
+// (#/conversations/{agent_instance_id}); the conversation_id is NOT a valid route
+// target. The coalescing tag still keys on conversation_id (fallback instance id)
+// for dedup only — that is independent of routing.
 build_chat_notification :: proc(
 	conversation_id: string,
 	agent_instance_id: string,
@@ -54,8 +56,10 @@ build_chat_notification :: proc(
 	// route/tag are ALWAYS heap-allocated (even the fallbacks) so callers can
 	// unconditionally free them via free_notification_content without risking a
 	// delete() on a static string literal.
-	route_id := conversation_id != "" ? conversation_id : agent_instance_id
-	route := route_id != "" ? strings.concatenate({"/conversations/", route_id}) : strings.clone("/conversations")
+	// Conversation routing is instance-id-only, so the route MUST use the agent
+	// instance id; when it is empty we fall back to the plain '/conversations'
+	// landing route rather than embedding a non-routable conversation_id.
+	route := agent_instance_id != "" ? strings.concatenate({"/conversations/", agent_instance_id}) : strings.clone("/conversations")
 
 	tag_id := conversation_id != "" ? conversation_id : agent_instance_id
 	if tag_id == "" do tag_id = "unknown"
