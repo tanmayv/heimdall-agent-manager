@@ -52,9 +52,14 @@ def main() -> None:
         '\\"live_agents\\":',
         '\\"is_coordinator\\":',
         '\\"is_live\\":',
-        '"Unassigned"',  # trailing bucket for project-less live chains
+        '\\"project_id\\":',  # per agent/member project id (cross-project, Option A)
+        'member_project_ids',  # placement by DISTINCT member project ids (live+dead)
+        'if !has_live do continue',  # inclusion gated on a RUNNING agent anywhere
+        '"Unassigned"',  # trailing bucket for project-less live agents
     ]:
         require(TASKCHAIN, snippet, "hub live tree")
+    require(TASKCHAIN, "Agents_Live_Agent :: struct", "live agent struct")
+    require(TASKCHAIN, "Agents_Live_Member :: struct", "live member struct")
 
     # --- d6a6892 per-conversation coordinator plumbing fully reverted -----------
     forbid(CONTENT, "chat_coordinator", "hub chat coordinator helper")
@@ -74,6 +79,8 @@ def main() -> None:
         "useGetAgentsLiveQuery",
         "'/agents/live'",
         "raw?.is_coordinator",
+        "raw?.project_id",  # normalizer reads project_id -> projectId
+        "projectId: string;",
     ]:
         require(AGENTS_LIVE_TS, snippet, "agentsLive endpoint")
 

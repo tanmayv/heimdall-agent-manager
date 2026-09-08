@@ -2,10 +2,11 @@ package http
 
 // Unit tests for the GET /api/v1/agents/live tree builder + JSON serializer.
 // build_agents_live_tree is pure (takes already-fetched data), so these lock the
-// resolver semantics and wire shape without a DB: empty=all projects always,
-// chains filtered to those with >=1 live agent, coordinator/live flags, project
-// resolution via the coordinator instance, deterministic ordering, and the
-// trailing Unassigned bucket.
+// resolver semantics and wire shape without a DB, including cross-project chains
+// (Option A): a chain with a RUNNING agent anywhere is emitted under EVERY project
+// that has any of its members (live OR dead); per-project live_agents is scoped to
+// that project's running agents (may be empty); members[] is the full roster with
+// project_id on every entry.
 
 import "core:strings"
 import "core:testing"
@@ -13,40 +14,51 @@ import domain "odin_test:hub/domain"
 
 // live_test_fixture builds a small owner graph:
 //   projects: "Beta" (proj_b), "Alpha" (proj_a)  -> alphabetical => Alpha, Beta
-//   chain_a (project proj_a): coordinator inst_coord (running) + inst_worker (running)
-//   chain_b (project proj_b): only inst_dead (stopped) => NO live agent => omitted
-//   chain_u (no project on coordinator, live worker has proj "" ) => Unassigned
+//   chain_x (CROSS-PROJECT): coordinator inst_coord (proj_a, running) +
+//                            inst_worker (proj_b, running) +
+//                            inst_rev (proj_a, stopped, non-live member)
+//   chain_dead: only inst_dead (proj_b, stopped) => NO running agent => omitted
+//   chain_p2dead (P1-live/P2-dead-only): inst_p1 (proj_a, running) +
+//                            inst_p2dead (proj_b, stopped) => appears under BOTH
+//                            proj_a (live_agents=[P1]) and proj_b (live_agents=[])
+//   chain_u: inst_ucoord (project "", running) => trailing Unassigned bucket
 // Returns caller-owned maps; delete via live_test_fixture_free.
 live_test_fixture :: proc() -> (projects: []domain.Project, chains: []domain.Task_Chain, members_by_chain: map[string][]domain.Task_Chain_Member, instances_by_id: map[string]domain.Agent_Instance) {
 	projects = make([]domain.Project, 2)
 	projects[0] = domain.Project{project_id = "proj_b", name = "Beta"}
 	projects[1] = domain.Project{project_id = "proj_a", name = "Alpha"}
 
-	chains = make([]domain.Task_Chain, 3)
-	chains[0] = domain.Task_Chain{chain_id = "chain_a", title = "Alpha chain", coordinator_agent_instance_id = "inst_coord"}
-	chains[1] = domain.Task_Chain{chain_id = "chain_b", title = "Dead chain", coordinator_agent_instance_id = "inst_dead"}
-	chains[2] = domain.Task_Chain{chain_id = "chain_u", title = "Unassigned chain", coordinator_agent_instance_id = "inst_ucoord"}
+	chains = make([]domain.Task_Chain, 4)
+	chains[0] = domain.Task_Chain{chain_id = "chain_x", title = "Cross chain", coordinator_agent_instance_id = "inst_coord"}
+	chains[1] = domain.Task_Chain{chain_id = "chain_dead", title = "Dead chain", coordinator_agent_instance_id = "inst_dead"}
+	chains[2] = domain.Task_Chain{chain_id = "chain_p2dead", title = "P2-dead chain", coordinator_agent_instance_id = "inst_p1"}
+	chains[3] = domain.Task_Chain{chain_id = "chain_u", title = "Unassigned chain", coordinator_agent_instance_id = "inst_ucoord"}
 
 	members_by_chain = make(map[string][]domain.Task_Chain_Member)
-	ma := make([]domain.Task_Chain_Member, 2)
-	ma[0] = domain.Task_Chain_Member{chain_id = "chain_a", agent_instance_id = "inst_coord", role = "coordinator"}
-	ma[1] = domain.Task_Chain_Member{chain_id = "chain_a", agent_instance_id = "inst_worker", role = "member"}
-	members_by_chain["chain_a"] = ma
-	mb := make([]domain.Task_Chain_Member, 1)
-	mb[0] = domain.Task_Chain_Member{chain_id = "chain_b", agent_instance_id = "inst_dead", role = "coordinator"}
-	members_by_chain["chain_b"] = mb
-	mu := make([]domain.Task_Chain_Member, 2)
+	mx := make([]domain.Task_Chain_Member, 3)
+	mx[0] = domain.Task_Chain_Member{chain_id = "chain_x", agent_instance_id = "inst_coord", role = "coordinator"}
+	mx[1] = domain.Task_Chain_Member{chain_id = "chain_x", agent_instance_id = "inst_worker", role = "member"}
+	mx[2] = domain.Task_Chain_Member{chain_id = "chain_x", agent_instance_id = "inst_rev", role = "reviewer"}
+	members_by_chain["chain_x"] = mx
+	md := make([]domain.Task_Chain_Member, 1)
+	md[0] = domain.Task_Chain_Member{chain_id = "chain_dead", agent_instance_id = "inst_dead", role = "coordinator"}
+	members_by_chain["chain_dead"] = md
+	mp := make([]domain.Task_Chain_Member, 2)
+	mp[0] = domain.Task_Chain_Member{chain_id = "chain_p2dead", agent_instance_id = "inst_p1", role = "coordinator"}
+	mp[1] = domain.Task_Chain_Member{chain_id = "chain_p2dead", agent_instance_id = "inst_p2dead", role = "member"}
+	members_by_chain["chain_p2dead"] = mp
+	mu := make([]domain.Task_Chain_Member, 1)
 	mu[0] = domain.Task_Chain_Member{chain_id = "chain_u", agent_instance_id = "inst_ucoord", role = "coordinator"}
-	mu[1] = domain.Task_Chain_Member{chain_id = "chain_u", agent_instance_id = "inst_ulive", role = "member"}
 	members_by_chain["chain_u"] = mu
 
 	instances_by_id = make(map[string]domain.Agent_Instance)
 	instances_by_id["inst_coord"] = domain.Agent_Instance{agent_instance_id = "inst_coord", display_name = "Coordinator", project_id = "proj_a", runtime_status = "running", activity_status = "busy"}
-	instances_by_id["inst_worker"] = domain.Agent_Instance{agent_instance_id = "inst_worker", display_name = "Worker", project_id = "proj_a", runtime_status = "idle", activity_status = "idle"}
+	instances_by_id["inst_worker"] = domain.Agent_Instance{agent_instance_id = "inst_worker", display_name = "Worker", project_id = "proj_b", runtime_status = "idle", activity_status = "idle"}
+	instances_by_id["inst_rev"] = domain.Agent_Instance{agent_instance_id = "inst_rev", display_name = "Reviewer", project_id = "proj_a", runtime_status = "stopped"}
 	instances_by_id["inst_dead"] = domain.Agent_Instance{agent_instance_id = "inst_dead", display_name = "Dead", project_id = "proj_b", runtime_status = "stopped"}
-	// chain_u: coordinator instance has no project; the live worker also has "".
+	instances_by_id["inst_p1"] = domain.Agent_Instance{agent_instance_id = "inst_p1", display_name = "P1 Runner", project_id = "proj_a", runtime_status = "running", activity_status = "busy"}
+	instances_by_id["inst_p2dead"] = domain.Agent_Instance{agent_instance_id = "inst_p2dead", display_name = "P2 Dead", project_id = "proj_b", runtime_status = "stopped"}
 	instances_by_id["inst_ucoord"] = domain.Agent_Instance{agent_instance_id = "inst_ucoord", display_name = "UCoord", project_id = "", runtime_status = "running"}
-	instances_by_id["inst_ulive"] = domain.Agent_Instance{agent_instance_id = "inst_ulive", display_name = "ULive", project_id = "", runtime_status = "running"}
 	return
 }
 
@@ -60,8 +72,18 @@ live_test_fixture_free :: proc(projects: []domain.Project, chains: []domain.Task
 	delete(im)
 }
 
+// find_project returns the project entry with the given id (or a zero value).
+find_project :: proc(tree: []Agents_Live_Project, project_id: string) -> (Agents_Live_Project, bool) {
+	for p in tree do if p.project_id == project_id do return p, true
+	return Agents_Live_Project{}, false
+}
+find_chain :: proc(p: Agents_Live_Project, chain_id: string) -> (Agents_Live_Chain, bool) {
+	for c in p.chains do if c.chain_id == chain_id do return c, true
+	return Agents_Live_Chain{}, false
+}
+
 @(test)
-agents_live_tree_shape_and_ordering :: proc(t: ^testing.T) {
+agents_live_tree_all_projects_alphabetical :: proc(t: ^testing.T) {
 	projects, chains, members_by_chain, instances_by_id := live_test_fixture()
 	defer live_test_fixture_free(projects, chains, members_by_chain, instances_by_id)
 	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
@@ -73,66 +95,100 @@ agents_live_tree_shape_and_ordering :: proc(t: ^testing.T) {
 	testing.expect_value(t, tree[1].name, "Beta")
 	testing.expect_value(t, tree[2].name, "Unassigned")
 	testing.expect_value(t, tree[2].project_id, "")
-
-	// Alpha carries chain_a (has live agents); Beta has none (chain_b omitted).
-	testing.expect_value(t, len(tree[0].chains), 1)
-	testing.expect_value(t, len(tree[1].chains), 0)
-	testing.expect_value(t, len(tree[2].chains), 1)
-
-	ca := tree[0].chains[0]
-	testing.expect_value(t, ca.chain_id, "chain_a")
-	testing.expect_value(t, ca.coordinator_agent_instance_id, "inst_coord")
-	// Two live agents ordered by display_name: Coordinator, Worker.
-	testing.expect_value(t, len(ca.live_agents), 2)
-	testing.expect_value(t, ca.live_agents[0].display_name, "Coordinator")
-	testing.expect_value(t, ca.live_agents[0].is_coordinator, true)
-	testing.expect_value(t, ca.live_agents[1].display_name, "Worker")
-	testing.expect_value(t, ca.live_agents[1].is_coordinator, false)
-	testing.expect_value(t, len(ca.members), 2)
+	// Unassigned holds chain_u (running agent with no resolvable project).
+	_, u_ok := find_chain(tree[2], "chain_u")
+	testing.expect(t, u_ok, "chain_u under Unassigned bucket")
 }
 
 @(test)
-agents_live_chain_filtered_when_no_live_agent :: proc(t: ^testing.T) {
+agents_live_cross_project_chain_under_both :: proc(t: ^testing.T) {
 	projects, chains, members_by_chain, instances_by_id := live_test_fixture()
 	defer live_test_fixture_free(projects, chains, members_by_chain, instances_by_id)
 	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
 	defer free_agents_live_tree(tree)
-	// Beta's only chain (chain_b) has a single stopped member -> omitted entirely.
-	for p in tree {
-		for c in p.chains {
-			testing.expect(t, c.chain_id != "chain_b", "chain with no live agent must be omitted")
-		}
-	}
-}
 
-@(test)
-agents_live_members_include_non_live :: proc(t: ^testing.T) {
-	projects, chains, members_by_chain, instances_by_id := live_test_fixture()
-	defer live_test_fixture_free(projects, chains, members_by_chain, instances_by_id)
-	// Add a stopped member to chain_a; it must appear in members (is_live=false)
-	// but NOT in live_agents.
-	extra := make([]domain.Task_Chain_Member, 3)
-	extra[0] = members_by_chain["chain_a"][0]
-	extra[1] = members_by_chain["chain_a"][1]
-	extra[2] = domain.Task_Chain_Member{chain_id = "chain_a", agent_instance_id = "inst_reviewer", role = "reviewer"}
-	delete(members_by_chain["chain_a"])
-	members_by_chain["chain_a"] = extra
-	instances_by_id["inst_reviewer"] = domain.Agent_Instance{agent_instance_id = "inst_reviewer", display_name = "Reviewer", project_id = "proj_a", runtime_status = "stopped"}
+	alpha, a_ok := find_project(tree, "proj_a")
+	beta, b_ok := find_project(tree, "proj_b")
+	testing.expect(t, a_ok && b_ok, "both projects present")
 
-	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
-	defer free_agents_live_tree(tree)
-	ca := tree[0].chains[0]
-	testing.expect_value(t, len(ca.members), 3)
-	testing.expect_value(t, len(ca.live_agents), 2)
-	found_dead := false
-	for m in ca.members {
-		if m.agent_instance_id == "inst_reviewer" {
-			found_dead = true
+	// chain_x appears under BOTH proj_a and proj_b, live_agents scoped per project.
+	ax, ax_ok := find_chain(alpha, "chain_x")
+	bx, bx_ok := find_chain(beta, "chain_x")
+	testing.expect(t, ax_ok, "chain_x under proj_a")
+	testing.expect(t, bx_ok, "chain_x under proj_b")
+	testing.expect_value(t, len(ax.live_agents), 1)
+	testing.expect_value(t, ax.live_agents[0].display_name, "Coordinator")
+	testing.expect_value(t, ax.live_agents[0].project_id, "proj_a")
+	testing.expect_value(t, ax.live_agents[0].is_coordinator, true)
+	testing.expect_value(t, len(bx.live_agents), 1)
+	testing.expect_value(t, bx.live_agents[0].display_name, "Worker")
+	testing.expect_value(t, bx.live_agents[0].project_id, "proj_b")
+
+	// members[] is the FULL roster on BOTH entries (Coordinator/proj_a live,
+	// Reviewer/proj_a dead, Worker/proj_b live), each with its own project_id.
+	testing.expect_value(t, len(ax.members), 3)
+	testing.expect_value(t, len(bx.members), 3)
+	saw_rev := false
+	saw_worker := false
+	for m in bx.members {
+		if m.agent_instance_id == "inst_rev" {
+			saw_rev = true
 			testing.expect_value(t, m.is_live, false)
+			testing.expect_value(t, m.project_id, "proj_a")
 			testing.expect_value(t, m.role, "reviewer")
 		}
+		if m.agent_instance_id == "inst_worker" {
+			saw_worker = true
+			testing.expect_value(t, m.is_live, true)
+			testing.expect_value(t, m.project_id, "proj_b")
+		}
 	}
-	testing.expect(t, found_dead, "non-live member present in members roster")
+	testing.expect(t, saw_rev, "non-live cross-project member present in members roster")
+	testing.expect(t, saw_worker, "live cross-project member present in members roster")
+}
+
+@(test)
+agents_live_p1_live_p2_dead_only :: proc(t: ^testing.T) {
+	projects, chains, members_by_chain, instances_by_id := live_test_fixture()
+	defer live_test_fixture_free(projects, chains, members_by_chain, instances_by_id)
+	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
+	defer free_agents_live_tree(tree)
+
+	alpha, _ := find_project(tree, "proj_a")
+	beta, _ := find_project(tree, "proj_b")
+	// chain_p2dead has a running agent in proj_a and only a DEAD member in proj_b.
+	// It must appear under BOTH; under proj_b live_agents is EMPTY but members[]
+	// still lists the full roster incl. the dead proj_b member.
+	ap, ap_ok := find_chain(alpha, "chain_p2dead")
+	bp, bp_ok := find_chain(beta, "chain_p2dead")
+	testing.expect(t, ap_ok, "chain_p2dead under proj_a (live)")
+	testing.expect(t, bp_ok, "chain_p2dead under proj_b (dead-only)")
+	testing.expect_value(t, len(ap.live_agents), 1)
+	testing.expect_value(t, ap.live_agents[0].display_name, "P1 Runner")
+	testing.expect_value(t, len(bp.live_agents), 0) // dead-only project => empty
+	testing.expect_value(t, len(bp.members), 2)     // full roster on the dead-only entry
+	saw_p2dead := false
+	for m in bp.members {
+		if m.agent_instance_id == "inst_p2dead" {
+			saw_p2dead = true
+			testing.expect_value(t, m.is_live, false)
+			testing.expect_value(t, m.project_id, "proj_b")
+		}
+	}
+	testing.expect(t, saw_p2dead, "dead proj_b member present in members roster")
+}
+
+@(test)
+agents_live_chain_omitted_when_no_running_agent :: proc(t: ^testing.T) {
+	projects, chains, members_by_chain, instances_by_id := live_test_fixture()
+	defer live_test_fixture_free(projects, chains, members_by_chain, instances_by_id)
+	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
+	defer free_agents_live_tree(tree)
+	// chain_dead has a single stopped member -> omitted from EVERY project.
+	for p in tree {
+		_, ok := find_chain(p, "chain_dead")
+		testing.expect(t, !ok, "chain with no running agent must be omitted everywhere")
+	}
 }
 
 @(test)
@@ -147,12 +203,14 @@ agents_live_json_contract :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, "\"projects\":["), "top-level projects array")
 	testing.expect(t, strings.contains(out, "\"project_id\":\"proj_a\""), "project_id emitted")
 	testing.expect(t, strings.contains(out, "\"name\":\"Alpha\""), "project name emitted")
-	testing.expect(t, strings.contains(out, "\"chains\":["), "chains array")
 	testing.expect(t, strings.contains(out, "\"coordinator_agent_instance_id\":\"inst_coord\""), "coordinator id emitted")
 	testing.expect(t, strings.contains(out, "\"live_agents\":["), "live_agents array")
 	testing.expect(t, strings.contains(out, "\"is_coordinator\":true"), "coordinator flag emitted")
-	testing.expect(t, strings.contains(out, "\"is_live\":true"), "member is_live emitted")
+	testing.expect(t, strings.contains(out, "\"is_live\":false"), "non-live member emitted")
 	testing.expect(t, strings.contains(out, "\"activity_status\":\"busy\""), "activity_status emitted")
+	// project_id present in BOTH live_agents and members entries.
+	testing.expect(t, strings.contains(out, "\"activity_status\":\"busy\",\"project_id\":\"proj_a\""), "live_agent project_id emitted")
+	testing.expect(t, strings.contains(out, "\"runtime_status\":\"stopped\",\"project_id\":\"proj_a\""), "member project_id emitted")
 	// Alphabetical: Alpha's project object precedes Beta's.
 	testing.expect(t, strings.index(out, "\"name\":\"Alpha\"") < strings.index(out, "\"name\":\"Beta\""), "projects alphabetical")
 }

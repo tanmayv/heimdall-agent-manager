@@ -14,6 +14,9 @@ export type LiveAgent = {
   isCoordinator: boolean;
   runtimeStatus: string;
   activityStatus: string;
+  // Project this running agent belongs to (matches the chain entry's project for
+  // live agents; cross-project chains list an agent under its own project).
+  projectId: string;
 };
 
 export type LiveMember = {
@@ -23,6 +26,9 @@ export type LiveMember = {
   isCoordinator: boolean;
   isLive: boolean;
   runtimeStatus: string;
+  // Project this member's instance belongs to ('' when unresolved). members[] is
+  // the full chain roster, so cross-project members each carry their own id.
+  projectId: string;
 };
 
 export type LiveChain = {
@@ -46,6 +52,7 @@ function normalizeLiveAgent(raw: any): LiveAgent {
     isCoordinator: Boolean(raw?.is_coordinator ?? raw?.isCoordinator),
     runtimeStatus: String(raw?.runtime_status || raw?.runtimeStatus || ''),
     activityStatus: String(raw?.activity_status || raw?.activityStatus || ''),
+    projectId: String(raw?.project_id || raw?.projectId || ''),
   };
 }
 
@@ -57,6 +64,7 @@ function normalizeLiveMember(raw: any): LiveMember {
     isCoordinator: Boolean(raw?.is_coordinator ?? raw?.isCoordinator),
     isLive: Boolean(raw?.is_live ?? raw?.isLive),
     runtimeStatus: String(raw?.runtime_status || raw?.runtimeStatus || ''),
+    projectId: String(raw?.project_id || raw?.projectId || ''),
   };
 }
 
