@@ -11,11 +11,11 @@ import Icon from './Icon';
 function str(v: any): string { return String(v ?? '').trim(); }
 
 function normalizeGoogle3Path(raw: string): string {
-  const clean = String(raw ?? '').trim().replace(/^google3\/?/, '');
+  const clean = String(raw ?? '').trim().replace(/^(google3\/?)+/, '');
   const segments = clean.split('/').filter(Boolean);
   const resolved: string[] = [];
   for (const seg of segments) {
-    if (seg === '.') continue;
+    if (seg === '.' || seg === 'google3') continue;
     if (seg === '..') {
       resolved.pop();
     } else {
