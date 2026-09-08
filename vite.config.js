@@ -18,6 +18,8 @@ export default defineConfig({
   plugins: [react()],
   base: './',
   server: {
+    // Allow Google Cloudtop and ÜberProxy PEN domains
+    allowedHosts: ['.proxy.googlers.com', '.c.googlers.com', '.corp.google.com', 'localhost'],
     // Route the trusted-proxy auth surface through ham-dev-proxy in dev.
     proxy: {
       // Dev login/logout cookie flow (sets ham_dev_user). Kept on the renderer
