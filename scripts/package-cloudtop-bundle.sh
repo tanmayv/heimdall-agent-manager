@@ -42,6 +42,8 @@ cp -r src/hub/repository/sqlite/migrations/* "$BUNDLE_DIR/share/migrations/"
 cp systemd/heimdall.service "$BUNDLE_DIR/systemd/heimdall.service"
 cp scripts/install-systemd-service.sh "$BUNDLE_DIR/scripts/install-systemd-service.sh"
 cp scripts/snapshot-hub.sh "$BUNDLE_DIR/scripts/snapshot-hub.sh"
+cp scripts/install.sh "$BUNDLE_DIR/install.sh"
+chmod +x "$BUNDLE_DIR/install.sh"
 
 echo "[bundle] 4. Writing start.sh and stop.sh..."
 cat << 'STARTEOF' > "$BUNDLE_DIR/start.sh"
@@ -53,8 +55,24 @@ BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${HEIMDALL_DATA_DIR:-$HOME/.local/share/heimdall}"
 RUN_DIR="$DATA_DIR/run"
 LOG_DIR="$DATA_DIR/logs"
-BIN_DIR="$BUNDLE_DIR/bin"
-MIGRATIONS_DIR="$BUNDLE_DIR/share/migrations"
+
+if [ -d "$BUNDLE_DIR/bin" ]; then
+  BIN_DIR="$BUNDLE_DIR/bin"
+elif [ -f "$BUNDLE_DIR/ham-hub" ]; then
+  BIN_DIR="$BUNDLE_DIR"
+else
+  BIN_DIR="$DATA_DIR/bin"
+fi
+
+if [ -d "$BUNDLE_DIR/share/migrations" ]; then
+  MIGRATIONS_DIR="$BUNDLE_DIR/share/migrations"
+elif [ -d "$DATA_DIR/share/migrations" ]; then
+  MIGRATIONS_DIR="$DATA_DIR/share/migrations"
+elif [ -d "$BUNDLE_DIR/../share/migrations" ]; then
+  MIGRATIONS_DIR="$BUNDLE_DIR/../share/migrations"
+else
+  MIGRATIONS_DIR="$DATA_DIR/share/migrations"
+fi
 
 mkdir -p "$DATA_DIR" "$RUN_DIR" "$LOG_DIR"
 chmod 0700 "$DATA_DIR"
@@ -105,7 +123,7 @@ BRIDGE_RUN_DIR="${HEIMDALL_BRIDGE_RUN_DIR:-/tmp/heimdall-bridge-local}"
 BRIDGE_TOKEN_FILE="$DATA_DIR/bridge_token_cloudtop"
 
 # Detect if default port 49323 is already in use (e.g. multi-agent supervisor connected to remote hub)
-if ss -tlpn 2>/dev/null | grep -q ":$BRIDGE_PORT\b"; then
+if python3 -c "import socket; s=socket.socket(); s.settimeout(0.1); exit(0 if s.connect_ex(('127.0.0.1', int('$BRIDGE_PORT'))) == 0 else 1)" 2>/dev/null; then
   if [ "$BRIDGE_PORT" = "49323" ]; then
     echo "[bridge] Port 49323 is occupied; using port 49325 for standalone bridge"
     BRIDGE_PORT=49325
@@ -120,7 +138,7 @@ else
   # Auto-pair if token not yet present
   if [ ! -s "$BRIDGE_TOKEN_FILE" ]; then
     echo "[bridge] Auto-pairing bridge with local Hub..."
-    "$BIN_DIR/ham-bridge" enroll --hub http://127.0.0.1:49322 --bridge-token-file "$BRIDGE_TOKEN_FILE" || true
+    "$BIN_DIR/ham-bridge" enroll --hub http://127.0.0.1:49322 --name "$(hostname -s)" --bridge-token-file "$BRIDGE_TOKEN_FILE" || true
   fi
 
   echo "[bridge] Starting ham-bridge on 127.0.0.1:$BRIDGE_PORT..."
@@ -164,14 +182,37 @@ else
       UI_DIR="$(cd "$BUNDLE_DIR/../.." && pwd)"
     elif [ -f "$HOME/heimdall-cloudtop/package.json" ]; then
       UI_DIR="$HOME/heimdall-cloudtop"
+    elif [ -f "$HOME/heimdall-agent-manager/package.json" ]; then
+      UI_DIR="$HOME/heimdall-agent-manager"
     fi
   fi
   if [ -d "$UI_DIR" ] && [ -f "$UI_DIR/package.json" ]; then
     echo "[ui] Starting Vite dev server in $UI_DIR on 127.0.0.1:5173..."
-    (cd "$UI_DIR" && HEIMDALL_DEV_PROXY_URL="http://127.0.0.1:8989" nohup npx vite --host 127.0.0.1 --port 5173 > "$VITE_LOG" 2>&1 & echo $! > "$VITE_PID_FILE")
-    disown $(cat "$VITE_PID_FILE") 2>/dev/null || true
+    nohup bash -c "cd '$UI_DIR' && HEIMDALL_DEV_PROXY_URL='http://127.0.0.1:8989' exec npx vite --host 127.0.0.1 --port 5173" > "$VITE_LOG" 2>&1 &
+    PID=$!
+    echo $PID > "$VITE_PID_FILE"
+    disown $PID 2>/dev/null || true
   fi
 fi
+
+# Wait for Dev-Proxy and Vite ports
+deadline=$((SECONDS + 10))
+while ! curl -s "http://127.0.0.1:8989/api/v1/health" >/dev/null 2>&1; do
+  if [ $SECONDS -ge $deadline ]; then
+    echo "[proxy] Warning: Dev proxy gateway not yet responding on port 8989. Check $PROXY_LOG"
+    break
+  fi
+  sleep 0.2
+done
+
+deadline=$((SECONDS + 10))
+while ! curl -s "http://127.0.0.1:5173" >/dev/null 2>&1; do
+  if [ $SECONDS -ge $deadline ]; then
+    echo "[ui] Notice: Vite server is bundling in background. Check $VITE_LOG"
+    break
+  fi
+  sleep 0.2
+done
 
 HOST_FQDN="$(hostname | sed 's/\.c\.googlers\.com$//').c.googlers.com"
 echo "=== Heimdall Single-Node Stack is UP ==="

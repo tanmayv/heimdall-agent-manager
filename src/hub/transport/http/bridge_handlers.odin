@@ -134,7 +134,10 @@ auto_pair_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	user_name := json_string(req.body, "user")
 	if user_name == "" do user_name = "default"
 	token := json_string(req.body, "bridge_token")
-	bridge, resolved_token, ok, err := bridge_service.ensure_local_loopback_bridge(h.bridges, user_name, token)
+	hostname := json_string(req.body, "hostname")
+	if hostname == "" do hostname = json_string(req.body, "name")
+	if hostname == "" do hostname = json_string(req.body, "label")
+	bridge, resolved_token, ok, err := bridge_service.ensure_local_loopback_bridge(h.bridges, user_name, token, hostname)
 	if !ok do return respond_error(err, req.request_id)
 
 	b := strings.builder_make()

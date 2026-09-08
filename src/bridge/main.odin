@@ -150,8 +150,11 @@ bridge_is_loopback_url :: proc(url_str: string) -> bool {
 
 bridge_auto_pair_loopback :: proc(args: []string, hub_url: string) -> bool {
 	endpoint := strings.trim_right(strings.trim_space(hub_url), "/")
-	fmt.printfln("bridge enroll: attempting local loopback auto-pairing with hub at %s", endpoint)
-	resp, ok := http.request_with_headers_timeout("POST", endpoint, "/api/v1/bridges/auto-pair", "{}", nil, http.DEFAULT_TIMEOUT_MS)
+	hostname := option_value(args, "--name", option_value(args, "--hostname", os.get_env("HOSTNAME", context.allocator)))
+	if hostname == "" do hostname = "cloudtop"
+	fmt.printfln("bridge enroll: attempting local loopback auto-pairing with hub at %s (hostname=%s)", endpoint, hostname)
+	body := fmt.tprintf("{\"hostname\":\"%s\",\"label\":\"%s\"}", hostname, hostname)
+	resp, ok := http.request_with_headers_timeout("POST", endpoint, "/api/v1/bridges/auto-pair", body, nil, http.DEFAULT_TIMEOUT_MS)
 	if !ok || resp.status != 200 {
 		fmt.eprintfln("bridge enroll: local loopback auto-pair failed (HTTP %d); fall back to --enrollment-token", resp.status if ok else 0)
 		return false
@@ -203,9 +206,13 @@ bridge_enroll_command :: proc(args: []string) -> bool {
 		fmt.eprintln("ham-bridge enroll --hub must be an http:// or https:// base URL")
 		return false
 	}
+	hostname := option_value(args, "--name", option_value(args, "--hostname", os.get_env("HOSTNAME", context.allocator)))
+	if hostname == "" do hostname = "ham-bridge"
 	body_b := strings.builder_make()
 	strings.write_string(&body_b, "{\"hub_url\":\""); json_write_string(&body_b, hub_url)
-	strings.write_string(&body_b, "\",\"machine\":{\"hostname\":\"ham-bridge\"}}")
+	strings.write_string(&body_b, "\",\"hostname\":\""); json_write_string(&body_b, hostname)
+	strings.write_string(&body_b, "\",\"label\":\""); json_write_string(&body_b, hostname)
+	strings.write_string(&body_b, "\",\"machine\":{\"hostname\":\""); json_write_string(&body_b, hostname); strings.write_string(&body_b, "\"}}")
 	body := strings.to_string(body_b)
 	// Log a token PREVIEW only (never the full secret) so we can tell it was passed.
 	token_preview := token[:min(8, len(token))]

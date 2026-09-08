@@ -85,8 +85,12 @@ create_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inpu
 	if strings.trim_space(input.name) == "" do return domain.Agent{}, false, domain.domain_error(.Validation_Failed, "agent name is required")
 	slug := input.slug
 	if slug == "" do slug = input.name
+	default_provider := input.default_provider
+	if default_provider == "" do default_provider = "jetski"
+	default_tier := input.default_tier
+	if default_tier == "" do default_tier = "normal"
 	now := platform.clock_now(service.clock)
-	agent := domain.Agent{agent_id = platform.generate_id(service.ids, "agt_"), owner_user_id = owner, name = input.name, slug = slug, template_id = input.template_id, default_provider = input.default_provider, default_tier = input.default_tier, instructions = input.instructions, state = .Active, created_at = now, updated_at = now}
+	agent := domain.Agent{agent_id = platform.generate_id(service.ids, "agt_"), owner_user_id = owner, name = input.name, slug = slug, template_id = input.template_id, default_provider = default_provider, default_tier = default_tier, instructions = input.instructions, state = .Active, created_at = now, updated_at = now}
 	return iface.agent_save(service.agents, agent)
 }
 
@@ -642,16 +646,31 @@ relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 			return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "audit mode active: agent relaunching disabled for non-owner")
 		}
 	}
-	_, auth_ok, auth_err := validate_pinned_provider_tier(service, auth, inst, provider, tier)
+	target_inst := inst
+	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, target_inst.bridge_id)
+	if !bridge_ok || bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, target_inst.bridge_id) {
+		// Single-node Cloudtop resilience: if the instance's pinned bridge is offline,
+		// fall back to the live local loopback bridge (brg_local) if available.
+		if local_bridge, local_ok, _ := iface.bridge_get_bridge(service.bridges, "brg_local"); local_ok && local_bridge.status == .Online && project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, "brg_local") {
+			bridge = local_bridge
+			bridge_ok = true
+			target_inst.bridge_id = "brg_local"
+		} else {
+			if !bridge_ok do return domain.Agent_Instance{}, false, bridge_err
+			if bridge.bridge_id != "brg_local" && bridge.owner_user_id != "default" && bridge.owner_user_id != inst.owner_user_id do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "bridge not found")
+			return domain.Agent_Instance{}, false, domain.domain_error(.Bridge_Offline, "pinned bridge is offline")
+		}
+	}
+	if bridge.bridge_id != "brg_local" && bridge.owner_user_id != "default" && bridge.owner_user_id != inst.owner_user_id {
+		return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "bridge not found")
+	}
+	resolved, auth_ok, auth_err := validate_pinned_provider_tier(service, auth, target_inst, provider, tier)
 	if !auth_ok do return domain.Agent_Instance{}, false, auth_err
-	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
-	if !bridge_ok do return domain.Agent_Instance{}, false, bridge_err
-	if bridge.owner_user_id != inst.owner_user_id do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "bridge not found")
-	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, inst.bridge_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Bridge_Offline, "pinned bridge is offline")
 	now := platform.clock_now(service.clock)
-	next := inst
-	next.provider = provider
-	next.tier = tier
+	next := target_inst
+	next.bridge_id = bridge.bridge_id
+	next.provider = resolved.provider
+	next.tier = resolved.tier
 	next.runtime_status = "launching"
 	next.startup_status = "starting"
 	next.activity_status = "unknown"
@@ -937,9 +956,9 @@ resolve_provider_tier :: proc(service: ^Agent_Service, auth: contracts.Auth_Cont
 	}
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
 	if !bridge_ok do return domain.Resolved_Provider_Tier{}, false, bridge_err
-	// Resolution order: request > per-bridge override > agent default tier > Bridge default.
-	provider := first_non_empty(req.provider, support.provider, default_provider_from_bridge(bridge), "")
-	tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, provider))
+	// Resolution order: request > per-bridge override > agent default tier > Bridge default > "jetski"/"normal".
+	provider := first_non_empty(req.provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge), "jetski")
+	tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, provider), "normal")
 	return validate_provider_tier_intersection(bridge, support, provider, tier)
 }
 
@@ -954,8 +973,8 @@ validate_pinned_provider_tier :: proc(service: ^Agent_Service, auth: contracts.A
 	}
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
 	if !bridge_ok do return domain.Resolved_Provider_Tier{}, false, bridge_err
-	resolved_provider := first_non_empty(provider, support.provider, default_provider_from_bridge(bridge), "")
-	resolved_tier := first_non_empty(tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, resolved_provider))
+	resolved_provider := first_non_empty(provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge), "jetski")
+	resolved_tier := first_non_empty(tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, resolved_provider), "normal")
 	return validate_provider_tier_intersection(bridge, support, resolved_provider, resolved_tier)
 }
 
@@ -1054,8 +1073,8 @@ select_bridge_for_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 		bridge, bridge_ok, _ := iface.bridge_get_bridge(service.bridges, support.bridge_id)
 		if !bridge_ok || bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do continue
 		online_enabled_found = true
-		provider := first_non_empty(req.provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge))
-		tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, provider))
+		provider := first_non_empty(req.provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge), "jetski")
+		tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, provider), "normal")
 		last_provider = provider
 		last_tier = tier
 		if !bridge_supports_provider_tier(bridge, provider, tier) do continue
@@ -1220,7 +1239,9 @@ default_tier_for_provider_from_bridge :: proc(bridge: domain.Bridge, provider: s
 	}
 	return default_tier_from_bridge(bridge)
 }
-first_non_empty :: proc(a, b, c, d: string) -> string { if a != "" do return a; if b != "" do return b; if c != "" do return c; return d }
+first_non_empty :: proc{first_non_empty_4, first_non_empty_5}
+first_non_empty_4 :: proc(a, b, c, d: string) -> string { if a != "" do return a; if b != "" do return b; if c != "" do return c; return d }
+first_non_empty_5 :: proc(a, b, c, d, e: string) -> string { if a != "" do return a; if b != "" do return b; if c != "" do return c; if d != "" do return d; return e }
 
 json_value :: proc(body, key: string) -> string {
 	needle := strings.concatenate({"\"", key, "\""}); defer delete(needle)

@@ -4,11 +4,10 @@ Documentation=https://github.com/google/heimdall
 After=network.target
 
 [Service]
-Type=simple
-KillMode=control-group
-TimeoutStopSec=10
-Restart=on-failure
-RestartSec=5
+Type=oneshot
+RemainAfterExit=yes
+KillMode=none
+TimeoutStopSec=15
 Environment=HOME=%h
 Environment=HEIMDALL_DATA_DIR=%h/.local/share/heimdall
 ExecStart=%h/.local/share/heimdall/bin/start.sh

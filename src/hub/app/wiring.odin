@@ -151,8 +151,14 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
-	// CT-2: Pre-seed the loopback local bridge for zero-ceremony single-node Cloudtop operation
-	_, _, _, _ = bridge_service.ensure_local_loopback_bridge(&graph.bridges, "default")
+	// CT-2 / CT-10: Pre-seed the loopback local bridge for zero-ceremony single-node Cloudtop operation
+	default_owner := os.get_env("HAM_CLOUDTOP_OWNER", context.allocator)
+	if default_owner == "" do default_owner = os.get_env("HEIMDALL_OWNER", context.allocator)
+	if default_owner == "" do default_owner = os.get_env("USER", context.allocator)
+	if default_owner == "" do default_owner = "default"
+	default_hostname := os.get_env("HOSTNAME", context.allocator)
+	if default_hostname == "" do default_hostname = "cloudtop"
+	_, _, _, _ = bridge_service.ensure_local_loopback_bridge(&graph.bridges, default_owner, "", default_hostname)
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
 	graph.agents.audit_mode = cfg.audit_mode

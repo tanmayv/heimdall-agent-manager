@@ -98,6 +98,10 @@ enroll_bridge :: proc(service: ^Bridge_Service, input: Enroll_Bridge_Input) -> (
 	label := enrollment.label
 	customized := label != ""
 	if label == "" do label = hostname
+	caps := strings.trim_space(input.capabilities_json)
+	if caps == "" || caps == "{}" || !strings.contains(caps, "\"provider\"") {
+		caps = DEFAULT_JETSKI_CAPABILITIES_JSON
+	}
 	bridge := domain.Bridge{
 		bridge_id = platform.generate_id(service.ids, "brg_"),
 		owner_user_id = enrollment.owner_user_id,
@@ -106,7 +110,7 @@ enroll_bridge :: proc(service: ^Bridge_Service, input: Enroll_Bridge_Input) -> (
 		machine_hostname = hostname,
 		machine_os = input.machine_os,
 		machine_arch = input.machine_arch,
-		capabilities_json = input.capabilities_json,
+		capabilities_json = caps,
 		hub_url = hub_url,
 		status = .Offline,
 		bridge_token_hash = hash_token(bridge_token),
@@ -259,11 +263,22 @@ write_loopback_token_file :: proc(path, token: string) -> bool {
 	return true
 }
 
-ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: string, explicit_token: string = "") -> (domain.Bridge, string, bool, domain.Domain_Error) {
+DEFAULT_JETSKI_CAPABILITIES_JSON :: "{\"capabilities\":[{\"provider\":\"jetski\",\"tiers\":[\"cheap\",\"normal\",\"smart\"],\"default_tier\":\"normal\"}],\"provider\":\"jetski\",\"default_tier\":\"normal\"}"
+
+ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: string, explicit_token: string = "", hostname: string = "") -> (domain.Bridge, string, bool, domain.Domain_Error) {
 	if service == nil || service.repo == nil do return domain.Bridge{}, "", false, domain.domain_error(.Internal_Error, "bridge service not configured")
 	now := platform.clock_now(service.clock)
 	owner := strings.trim_space(owner_user_id)
 	if owner == "" do owner = "default"
+
+	resolved_hostname := strings.trim_space(hostname)
+	if resolved_hostname == "" {
+		if h := os.get_env("HOSTNAME", context.allocator); h != "" {
+			resolved_hostname = h
+		} else {
+			resolved_hostname = "cloudtop"
+		}
+	}
 
 	token_path := get_default_bridge_token_path()
 	active_token := strings.trim_space(explicit_token)
@@ -294,9 +309,19 @@ ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: st
 			updated.bridge_token_hash = hash_token(active_token)
 			changed = true
 		}
-		if owner != "" && string(updated.owner_user_id) != owner && string(updated.owner_user_id) == "default" {
-			updated.owner_user_id = domain.User_ID(owner)
+		if updated.capabilities_json == "" || !strings.contains(updated.capabilities_json, `"jetski"`) {
+			updated.capabilities_json = DEFAULT_JETSKI_CAPABILITIES_JSON
 			changed = true
+		}
+		if resolved_hostname != "" && (updated.machine_hostname == "cloudtop" || updated.machine_hostname == "" || !updated.label_is_user_customized) {
+			if updated.machine_hostname != resolved_hostname {
+				updated.machine_hostname = resolved_hostname
+				changed = true
+			}
+			if !updated.label_is_user_customized && updated.label != resolved_hostname {
+				updated.label = resolved_hostname
+				changed = true
+			}
 		}
 		if changed {
 			updated.updated_at = now
@@ -309,11 +334,12 @@ ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: st
 	bridge := domain.Bridge{
 		bridge_id = "brg_local",
 		owner_user_id = domain.User_ID(owner),
-		label = "Local Cloudtop Bridge",
+		label = resolved_hostname,
 		label_is_user_customized = false,
-		machine_hostname = "cloudtop",
+		machine_hostname = resolved_hostname,
 		machine_os = "linux",
 		machine_arch = "amd64",
+		capabilities_json = DEFAULT_JETSKI_CAPABILITIES_JSON,
 		hub_url = "http://127.0.0.1:49322",
 		status = .Offline,
 		bridge_token_hash = hash_token(active_token),
