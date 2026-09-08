@@ -519,6 +519,10 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 		fmt.println("bridge launch_agent REJECTED: audit mode active")
 		return false, "audit mode active: agent spawning and PTY allocation disabled"
 	}
+	if bridge_gcert_is_expired() {
+		fmt.println("bridge launch_agent REJECTED: LOAS/gcert expired")
+		return false, "LOAS/gcert credentials expired: run gcert on Cloudtop to re-arm"
+	}
 	instance_id := extract_json_string(command_json, "agent_instance_id", "")
 	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id"
 	// A genuine (re)launch supersedes any prior stop intent for this instance id.

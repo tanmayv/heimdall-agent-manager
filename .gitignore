@@ -28,3 +28,7 @@ hub.db-wal
 /bridge
 /ctl
 /wrapper
+
+# Python bytecode and caches
+__pycache__/
+*.pyc

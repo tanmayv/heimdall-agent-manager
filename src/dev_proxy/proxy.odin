@@ -15,6 +15,9 @@ rewrite_headers_for_hub :: proc(config: ^Dev_Proxy_Config, incoming: []contracts
 	append(&out, contracts.HTTP_Header{name = strings.clone(config.username_header), value = strings.clone(user.username)})
 	append(&out, contracts.HTTP_Header{name = strings.clone(config.display_name_header), value = strings.clone(user.display_name)})
 	append(&out, contracts.HTTP_Header{name = strings.clone(config.email_header), value = strings.clone(user.email)})
+	if config.proxy_secret != "" {
+		append(&out, contracts.HTTP_Header{name = strings.clone("X-Heimdall-Proxy-Secret"), value = strings.clone(config.proxy_secret)})
+	}
 	return out[:], true
 }
 
@@ -27,10 +30,16 @@ free_headers :: proc(headers: []contracts.HTTP_Header) {
 }
 
 is_client_control_header :: proc(name: string, config: ^Dev_Proxy_Config) -> bool {
+	lower := strings.to_lower(name, context.temp_allocator)
+	if strings.has_prefix(lower, "x-authentik-") do return true
+	if strings.has_prefix(lower, "x-forwarded-") do return true
+	if lower == "forwarded" do return true
+	if lower == "x-real-ip" do return true
+	if lower == "x-dev-user" do return true
+	if lower == "x-heimdall-proxy-secret" do return true
 	if ascii_equal_fold(name, config.username_header) do return true
 	if ascii_equal_fold(name, config.display_name_header) do return true
 	if ascii_equal_fold(name, config.email_header) do return true
-	if ascii_equal_fold(name, "X-Dev-User") do return true
 	return false
 }
 

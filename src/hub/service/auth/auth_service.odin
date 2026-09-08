@@ -19,6 +19,7 @@ Trusted_Proxy_Config :: struct {
 	auto_provision_users: bool,
 	login_url: string,
 	logout_url: string,
+	proxy_secret: string,
 }
 
 Auth_Service :: struct {
@@ -151,6 +152,12 @@ resolve_auth :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Au
 	}
 	if !remote_addr_trusted(req.remote_addr, service.config.trusted_proxy_cidrs) {
 		return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "request did not come from a trusted proxy")
+	}
+	if service.config.proxy_secret != "" {
+		sec_hdr := header_value(req.headers, "X-Heimdall-Proxy-Secret")
+		if sec_hdr == "" || sec_hdr != service.config.proxy_secret {
+			return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "invalid or missing proxy secret")
+		}
 	}
 	username := header_value(req.headers, service.config.username_header)
 	if strings.trim_space(username) == "" {

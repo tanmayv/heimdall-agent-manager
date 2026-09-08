@@ -65,6 +65,8 @@ bridge_sequence: i64
 main :: proc() {
 	when ODIN_OS != .Windows {
 		_ = posix.signal(.SIGPIPE, auto_cast posix.SIG_IGN)
+		_ = posix.signal(.SIGINT, auto_cast bridge_signal_handler)
+		_ = posix.signal(.SIGTERM, auto_cast bridge_signal_handler)
 	}
 	if has_flag(os.args, "--version") {
 		fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION, "bridge", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION, "ws", contracts.BRIDGE_WS_FRAME_VERSION)
@@ -116,9 +118,18 @@ main :: proc() {
 	bridge_task_scheduler_configure()
 	bridge_task_scheduler_start()
 	bridge_action_scheduler_start()
+	// CT-5: Monitor 20-hour Cloudtop LOAS/gcert credentials and re-arm on renewal
+	bridge_gcert_monitor_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	bridge_peer_state_init(bridge_config.peers[:])
 	_ = run_bridge_server(bridge_config)
+}
+
+when ODIN_OS != .Windows {
+	bridge_signal_handler :: proc "c" (sig: posix.Signal) {
+		// Clean up processes on SIGTERM/SIGINT before cgroup reaping
+		os.exit(0)
+	}
 }
 
 print_usage :: proc() {

@@ -1,6 +1,7 @@
 package agent
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:crypto/hash"
@@ -194,12 +195,16 @@ default_support_for_agent_bridge :: proc(agent: domain.Agent, bridge_id: string)
 
 create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
-	if !owner_ok do return domain.Agent_Instance{}, false, owner_err
-	if service.audit_mode && auth.user_id != "tanmayvijay" && auth.user_id != "tanmay" && auth.user_id != "default" {
-		return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "audit mode active: agent spawning disabled for non-owner")
-	}
 	agent, agent_ok, agent_err := get_agent(service, auth, input.agent_id)
 	if !agent_ok do return domain.Agent_Instance{}, false, agent_err
+	if service.audit_mode {
+		env_user := os.get_env("USER", context.allocator)
+		agent_owner := string(agent.owner_user_id)
+		is_owner := (auth.user_id == agent_owner) || (env_user != "" && auth.user_id == env_user) || (auth.user_id == "default")
+		if !is_owner {
+			return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "audit mode active: agent spawning disabled for non-owner")
+		}
+	}
 	bridge_id := strings.trim_space(input.bridge_id)
 	if bridge_id == "" do return domain.Agent_Instance{}, false, domain.domain_error(.Validation_Failed, "bridge_id is required; choose the bridge to run this agent on")
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
@@ -629,8 +634,13 @@ reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Conte
 }
 
 relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst: domain.Agent_Instance, provider, tier: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
-	if service.audit_mode && auth.user_id != "tanmayvijay" && auth.user_id != "tanmay" && auth.user_id != "default" {
-		return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "audit mode active: agent relaunching disabled for non-owner")
+	if service.audit_mode {
+		env_user := os.get_env("USER", context.allocator)
+		inst_owner := string(inst.owner_user_id)
+		is_owner := (auth.user_id == inst_owner) || (env_user != "" && auth.user_id == env_user) || (auth.user_id == "default")
+		if !is_owner {
+			return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "audit mode active: agent relaunching disabled for non-owner")
+		}
 	}
 	_, auth_ok, auth_err := validate_pinned_provider_tier(service, auth, inst, provider, tier)
 	if !auth_ok do return domain.Agent_Instance{}, false, auth_err

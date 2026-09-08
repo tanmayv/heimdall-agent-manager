@@ -371,6 +371,45 @@
             exec ${pkgs.nodejs}/bin/npx vite preview --host 127.0.0.1 --port "$PORT"
           ''}/bin/ham-ui-server";
         };
+        cloudtop = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "heimdall-cloudtop" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+            DATA_DIR="''${HEIMDALL_DATA_DIR:-$HOME/.local/share/heimdall}"
+            mkdir -p "$DATA_DIR"
+            chmod 0700 "$DATA_DIR"
+
+            export HEIMDALL_HAM_PTY_HOST_BIN="${self.packages.${system}.ham-pty-host}/bin/ham-pty-host"
+            export HEIMDALL_HAM_CTL_BIN="${self.packages.${system}.ham-ctl}/bin/ham-ctl"
+            MIGRATIONS="${self.packages.${system}.ham-hub}/share/ham-hub/migrations"
+
+            echo "[cloudtop] Starting Hub on 127.0.0.1:49322..."
+            ${self.packages.${system}.ham-hub}/bin/ham-hub --listen 127.0.0.1:49322 --db "$DATA_DIR/hub.db" --migrations-dir "$MIGRATIONS" &
+            HUB_PID=$!
+
+            cleanup() {
+              kill "$HUB_PID" 2>/dev/null || true
+            }
+            trap cleanup EXIT INT TERM
+
+            while ! ${pkgs.curl}/bin/curl -s "http://127.0.0.1:49322/api/v1/health" >/dev/null 2>&1; do
+              sleep 0.2
+            done
+
+            echo "[cloudtop] Starting Bridge on 127.0.0.1:49323..."
+            ${self.packages.${system}.ham-bridge}/bin/ham-bridge --bind-host 127.0.0.1 --port 49323 --hub http://127.0.0.1:49322 &
+            BRIDGE_PID=$!
+            cleanup2() {
+              kill "$BRIDGE_PID" 2>/dev/null || true
+              cleanup
+            }
+            trap cleanup2 EXIT INT TERM
+
+            echo "[cloudtop] Starting Dev-Proxy on 127.0.0.1:8080..."
+            exec ${self.packages.${system}.ham-dev-proxy}/bin/ham-dev-proxy --listen 127.0.0.1:8080 --hub-url http://127.0.0.1:49322
+          ''}/bin/heimdall-cloudtop";
+        };
         default = self.apps.${system}.hub;
       });
 

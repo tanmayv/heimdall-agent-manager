@@ -45,6 +45,11 @@ Hub_Config :: struct {
 	// CT-4: Code-level audit mode. When enabled, non-owner requests are strictly
 	// forbidden from mutating state, spawning agents, or requesting PTY operations.
 	audit_mode: bool,
+	// CT-3 / Hardened Proxy-to-Hub Trust:
+	proxy_secret: string,
+	proxy_secret_file: string,
+	require_proxy_secret: bool,
+	cloudtop: bool,
 }
 
 // vapid_is_configured reports whether a usable VAPID keypair is present. Push

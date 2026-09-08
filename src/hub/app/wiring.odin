@@ -1,7 +1,10 @@
 package app
 
 import "core:fmt"
+import "core:os"
+import "core:strings"
 import "core:sync"
+import "core:time"
 import iface "odin_test:hub/repository/iface"
 import sqlite "odin_test:hub/repository/sqlite"
 import auth_service "odin_test:hub/service/auth"
@@ -68,16 +71,71 @@ App_Graph :: struct {
 	router: http.Router,
 }
 
+ensure_hub_proxy_secret :: proc(config: ^Hub_Config) {
+	if config.proxy_secret != "" do return
+	if v := os.get_env("HAM_PROXY_SECRET", context.allocator); v != "" {
+		config.proxy_secret = v
+		return
+	}
+	if v := os.get_env("HEIMDALL_PROXY_SECRET", context.allocator); v != "" {
+		config.proxy_secret = v
+		return
+	}
+	secret_path := config.proxy_secret_file
+	if secret_path == "" {
+		if env_path := os.get_env("HAM_PROXY_SECRET_FILE", context.allocator); env_path != "" {
+			secret_path = env_path
+		} else if env_path2 := os.get_env("HEIMDALL_PROXY_SECRET_FILE", context.allocator); env_path2 != "" {
+			secret_path = env_path2
+		} else if config.cloudtop || config.require_proxy_secret {
+			home := os.get_env("HOME", context.allocator)
+			if home == "" do home = "/tmp"
+			secret_path = fmt.tprintf("%s/.local/share/heimdall/proxy_secret", home)
+		}
+	}
+	if secret_path != "" {
+		if data, err := os.read_entire_file(secret_path, context.allocator); err == nil {
+			tok := strings.trim_space(string(data))
+			if tok != "" {
+				config.proxy_secret = tok
+				return
+			}
+		}
+		if config.cloudtop || config.require_proxy_secret || config.proxy_secret_file != "" {
+			tok := fmt.tprintf("hps_%v_%d", time.now()._nsec, os.get_pid())
+			if slash := strings.last_index_byte(secret_path, '/'); slash > 0 {
+				_ = os.make_directory_all(secret_path[:slash])
+			}
+			content := strings.concatenate({tok, "\n"})
+			defer delete(content)
+			_ = os.write_entire_file(secret_path, content, os.Permissions{.Read_User, .Write_User})
+			_ = os.chmod(secret_path, os.Permissions{.Read_User, .Write_User})
+			config.proxy_secret = tok
+		}
+	}
+}
+
 build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
-	graph.config = config
+	cfg := config
+	ensure_hub_proxy_secret(&cfg)
+	graph.config = cfg
 	graph.clock = platform.real_clock()
 	graph.ids = platform.real_id_generator()
 
-	db, db_ok, db_err := sqlite.open(config.database_path)
+	// CT-5: Ensure persistence directory exists and open DB
+	if slash := strings.last_index_byte(cfg.database_path, '/'); slash > 0 {
+		_ = os.make_directory_all(cfg.database_path[:slash])
+	}
+	db, db_ok, db_err := sqlite.open(cfg.database_path)
 	if !db_ok do return false, db_err.message
 	graph.db = db
 
-	migrations_ok, migration_err := sqlite.run_migrations(&graph.db, config.migrations_dir)
+	// CT-5: Enforce strict 0600 file permissions on hub.db and sidecar files
+	_ = os.chmod(cfg.database_path, os.Permissions{.Read_User, .Write_User})
+	_ = os.chmod(fmt.tprintf("%s-wal", cfg.database_path), os.Permissions{.Read_User, .Write_User})
+	_ = os.chmod(fmt.tprintf("%s-shm", cfg.database_path), os.Permissions{.Read_User, .Write_User})
+
+	migrations_ok, migration_err := sqlite.run_migrations(&graph.db, cfg.migrations_dir)
 	if !migrations_ok do return false, migration_err.message
 
 	graph.repos.users = sqlite.new_user_repository(&graph.sqlite_users, &graph.db)
@@ -97,26 +155,27 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	_, _, _, _ = bridge_service.ensure_local_loopback_bridge(&graph.bridges, "default")
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
-	graph.agents.audit_mode = config.audit_mode
+	graph.agents.audit_mode = cfg.audit_mode
 	graph.projects = project_service.new_project_service_with_command_sink(&graph.repos.projects, &graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content = content_service.new_content_service_with_runtime(&graph.repos.content, &graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.taskchains, bridge_command_sink, &graph.clock, &graph.ids)
-	graph.content.audit_mode = config.audit_mode
-	graph.content.title_nudge_cooldown_seconds = config.title_nudge_cooldown_seconds
+	graph.content.audit_mode = cfg.audit_mode
+	graph.content.title_nudge_cooldown_seconds = cfg.title_nudge_cooldown_seconds
 	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.push = push_service.new_push_service(&graph.repos.push_subscriptions, &graph.clock, &graph.ids, push_service.Vapid_Config{
-		public_key = config.vapid_public_key,
-		private_key = config.vapid_private_key,
-		subject = config.vapid_subject,
+		public_key = cfg.vapid_public_key,
+		private_key = cfg.vapid_private_key,
+		subject = cfg.vapid_subject,
 	})
 	graph.auth = auth_service.new_auth_service_with_tokens(auth_service.Trusted_Proxy_Config{
-		username_header = config.username_header,
-		display_name_header = config.display_name_header,
-		email_header = config.email_header,
-		trusted_proxy_cidrs = config.trusted_proxy_cidrs,
-		auto_provision_users = config.auto_provision_users,
-		login_url = config.login_url,
-		logout_url = config.logout_url,
+		username_header = cfg.username_header,
+		display_name_header = cfg.display_name_header,
+		email_header = cfg.email_header,
+		trusted_proxy_cidrs = cfg.trusted_proxy_cidrs,
+		auto_provision_users = cfg.auto_provision_users,
+		login_url = cfg.login_url,
+		logout_url = cfg.logout_url,
+		proxy_secret = cfg.proxy_secret,
 	}, &graph.users, &graph.repos.users, &graph.clock, &graph.ids)
 	graph.auth.bridges = &graph.bridges
 	graph.auth.agents = &graph.agents

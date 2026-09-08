@@ -1,0 +1,18 @@
+[Unit]
+Description=Heimdall Agent Manager (Cloudtop Single-Node)
+Documentation=https://github.com/google/heimdall
+After=network.target
+
+[Service]
+Type=simple
+KillMode=control-group
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+Environment=HEIMDALL_DATA_DIR=%h/.local/share/heimdall
+ExecStart=%h/.local/share/heimdall/bin/start.sh
+ExecStop=%h/.local/share/heimdall/bin/stop.sh
+
+[Install]
+WantedBy=default.target

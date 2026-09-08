@@ -28,6 +28,14 @@ main :: proc() {
 		}
 		return
 	}
+	if is_snapshot_command() {
+		ok, message := run_snapshot_command(&config)
+		if !ok {
+			fmt.eprintln(message)
+			os.exit(1)
+		}
+		return
+	}
 	parse_args(&config)
 	ok, message := app.run(config)
 	if !ok {
@@ -124,6 +132,63 @@ run_tokens_command :: proc(config: ^app.Hub_Config) -> (bool, string) {
 	return false, "usage: ham-hub tokens issue|list|revoke [options]"
 }
 
+is_snapshot_command :: proc() -> bool {
+	for i := 1; i < len(os.args); i += 1 {
+		if os.args[i] == "snapshot" do return true
+	}
+	return false
+}
+
+snapshot_index :: proc() -> int {
+	for i := 1; i < len(os.args); i += 1 {
+		if os.args[i] == "snapshot" do return i
+	}
+	return -1
+}
+
+run_snapshot_command :: proc(config: ^app.Hub_Config) -> (bool, string) {
+	idx := snapshot_index()
+	if idx < 0 || idx + 1 >= len(os.args) do return false, "usage: ham-hub snapshot export [--out <path>] | snapshot restore --file <path>"
+	action := os.args[idx + 1]
+	parse_args(config)
+
+	home := os.get_env("HOME", context.allocator)
+	if home == "" do home = "/tmp"
+	default_snapshot_dir := fmt.tprintf("%s/.local/share/heimdall/snapshots", home)
+
+	switch action {
+	case "export":
+		_ = os.make_directory_all(default_snapshot_dir)
+		_ = os.chmod(default_snapshot_dir, os.Permissions{.Read_User, .Write_User, .Execute_User})
+		out_path := arg_value("--out")
+		if out_path == "" {
+			now_str := platform.expires_at_after_seconds(0)
+			out_path = fmt.tprintf("%s/hub-%s.db", default_snapshot_dir, now_str)
+		}
+		data, read_err := os.read_entire_file(config.database_path, context.allocator)
+		if read_err != nil do return false, fmt.tprintf("failed to read database at %s", config.database_path)
+		write_err := os.write_entire_file(out_path, data, os.Permissions{.Read_User, .Write_User})
+		if write_err != nil do return false, fmt.tprintf("failed to write snapshot at %s", out_path)
+		_ = os.chmod(out_path, os.Permissions{.Read_User, .Write_User})
+		fmt.println("snapshot_exported=", out_path)
+		return true, ""
+	case "restore":
+		file_path := arg_value("--file")
+		if file_path == "" do return false, "--file <path> is required for restore"
+		data, read_err := os.read_entire_file(file_path, context.allocator)
+		if read_err != nil do return false, fmt.tprintf("failed to read snapshot file %s", file_path)
+		if slash := strings.last_index_byte(config.database_path, '/'); slash > 0 {
+			_ = os.make_directory_all(config.database_path[:slash])
+		}
+		write_err := os.write_entire_file(config.database_path, data, os.Permissions{.Read_User, .Write_User})
+		if write_err != nil do return false, fmt.tprintf("failed to restore database to %s", config.database_path)
+		_ = os.chmod(config.database_path, os.Permissions{.Read_User, .Write_User})
+		fmt.println("snapshot_restored=", config.database_path)
+		return true, ""
+	}
+	return false, "usage: ham-hub snapshot export [--out <path>] | snapshot restore --file <path>"
+}
+
 print_token_metadata :: proc(token: domain.User_API_Token) {
 	status := "active"
 	if token.revoked_at != "" do status = "revoked"
@@ -191,6 +256,9 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	if os.get_env_alloc("HEIMDALL_AUDIT_MODE", context.allocator) == "1" || os.get_env_alloc("HEIMDALL_AUDIT_MODE", context.allocator) == "true" {
 		config.audit_mode = true
 	}
+	if os.get_env_alloc("HEIMDALL_REQUIRE_PROXY_SECRET", context.allocator) == "1" || os.get_env_alloc("HAM_REQUIRE_PROXY_SECRET", context.allocator) == "1" {
+		config.require_proxy_secret = true
+	}
 	// VAPID config resolves as: built-in default -> environment -> flags. Applying
 	// env first (below) and flags second (in the loop) keeps precedence uniform
 	// across all VAPID fields, including vapid_subject which carries a default.
@@ -238,6 +306,18 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			config.vapid_subject = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--audit-mode" {
 			config.audit_mode = true
+		} else if arg == "--proxy-secret" && i + 1 < len(os.args) {
+			config.proxy_secret = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--proxy-secret-file" && i + 1 < len(os.args) {
+			config.proxy_secret_file = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--require-proxy-secret" {
+			config.require_proxy_secret = true
+		} else if arg == "--cloudtop" {
+			config.cloudtop = true
+			config.require_proxy_secret = true
+			home := os.get_env("HOME", context.allocator)
+			if home == "" do home = "/tmp"
+			config.database_path = fmt.tprintf("%s/.local/share/heimdall/hub.db", home)
 		}
 	}
 }

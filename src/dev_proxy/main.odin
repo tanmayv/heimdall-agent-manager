@@ -10,6 +10,7 @@ import "core:time"
 import contracts "odin_test:contracts"
 
 main :: proc() {
+	dev_proxy_gcert_init()
 	config := default_dev_proxy_config()
 	parse_args(&config)
 	if len(os.args) > 1 && os.args[1] == "--print-config" {
@@ -24,6 +25,15 @@ main :: proc() {
 	data_dir, store_path, loaded := dev_proxy_store_init(store, &config)
 	fmt.println("ham-dev-proxy data_dir", data_dir)
 	fmt.printfln("ham-dev-proxy store_path=%s loaded=%v active=%s", store_path, loaded, config.default_user)
+
+	// If proxy_secret is not explicitly passed, look for <data_dir>/proxy_secret
+	if config.proxy_secret == "" {
+		default_sec_path := fmt.tprintf("%s/proxy_secret", data_dir)
+		if data, err := os.read_entire_file(default_sec_path, context.allocator); err == nil {
+			config.proxy_secret = strings.clone(strings.trim_space(string(data)))
+		}
+	}
+
 	// DP-7: management API/UI (/_dev/*) are served ONLY on a loopback bind.
 	// A non-loopback --listen disables management routes (they 404) so the
 	// dev-only identity manager is never exposed remotely.
@@ -39,6 +49,17 @@ parse_args :: proc(config: ^Dev_Proxy_Config) {
 	if v := os.get_env_alloc("HAM_DEV_PROXY_DEFAULT_USER", context.allocator); v != "" {
 		config.default_user = v
 	}
+	if v := os.get_env_alloc("HEIMDALL_AUDIT_MODE", context.allocator); v == "1" || v == "true" {
+		config.audit_mode = true
+	}
+	if v := os.get_env_alloc("HAM_PROXY_SECRET", context.allocator); v != "" {
+		config.proxy_secret = v
+	}
+	if v := os.get_env_alloc("HAM_PROXY_SECRET_FILE", context.allocator); v != "" {
+		if data, err := os.read_entire_file(v, context.allocator); err == nil {
+			config.proxy_secret = strings.clone(strings.trim_space(string(data)))
+		}
+	}
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
 		if arg == "--listen" && i + 1 < len(os.args) {
@@ -47,6 +68,16 @@ parse_args :: proc(config: ^Dev_Proxy_Config) {
 			config.hub_url = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--default-user" && i + 1 < len(os.args) {
 			config.default_user = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--audit-mode" {
+			config.audit_mode = true
+		} else if arg == "--proxy-secret" && i + 1 < len(os.args) {
+			config.proxy_secret = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--proxy-secret-file" && i + 1 < len(os.args) {
+			config.proxy_secret_file = strings.clone(os.args[i + 1])
+			if data, err := os.read_entire_file(config.proxy_secret_file, context.allocator); err == nil {
+				config.proxy_secret = strings.clone(strings.trim_space(string(data)))
+			}
+			i += 1
 		}
 	}
 }
@@ -175,6 +206,13 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 		write_response(client, 404, "Not Found", "text/plain", "not found")
 		return
 	}
+
+	// Ingress security: LOAS/gcert credential check before forwarding to Hub
+	if valid, gcert_msg := dev_proxy_check_gcert(); !valid {
+		write_response(client, 401, "Unauthorized", "text/plain", gcert_msg)
+		return
+	}
+
 	forward_request(client, ctx.config, request, method, target)
 }
 
