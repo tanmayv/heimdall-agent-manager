@@ -63,6 +63,7 @@ fig_citc_user_root :: proc() -> string {
 
 fig_is_valid_workspace_name :: proc(name: string) -> bool {
 	if len(name) == 0 || len(name) > 64 do return false
+	if name[0] == '-' || name[0] == '_' do return false
 	for ch in name {
 		switch ch {
 		case 'a'..='z', 'A'..='Z', '0'..='9', '-', '_':
@@ -155,8 +156,8 @@ fig_create_workspace :: proc(name: string, custom_root: string = "", mock: bool 
 		}
 	}
 
-	// Real CitC creation via g4 citc <name>
-	cmd := []string{"g4", "citc", name}
+	// Real CitC creation via g4 citc -- <name>
+	cmd := []string{"g4", "citc", "--", name}
 	process, start_err := os.process_start(os.Process_Desc{command = cmd})
 	if start_err != nil {
 		return Fig_Create_Workspace_Result{
@@ -210,7 +211,7 @@ fig_list_dir :: proc(workspace, path: string, cursor: string = "", limit: int = 
 
 	rel_clean := strings.trim_space(path)
 	rel_clean = strings.trim_left(rel_clean, "/")
-	if strings.contains(rel_clean, "..") {
+	if strings.contains(rel_clean, "..") || strings.contains(rel_clean, "\x00") {
 		return Fig_List_Dir_Result{
 			ok = false,
 			workspace = workspace,
@@ -227,6 +228,21 @@ fig_list_dir :: proc(workspace, path: string, cursor: string = "", limit: int = 
 		rel_clean = ""
 	} else {
 		target_dir = fmt.tprintf("%s/%s", ws_root, rel_clean)
+	}
+
+	target_clean, _ := filepath.clean(target_dir, context.temp_allocator)
+	ws_root_clean, _ := filepath.clean(ws_root, context.temp_allocator)
+	ws_prefix := ws_root_clean
+	if !strings.has_suffix(ws_prefix, "/") do ws_prefix = fmt.tprintf("%s/", ws_root_clean)
+	if target_clean != ws_root_clean && !strings.has_prefix(target_clean, ws_prefix) {
+		return Fig_List_Dir_Result{
+			ok = false,
+			workspace = workspace,
+			path = path,
+			root = ws_root,
+			error_code = "path_outside_root",
+			message = "Path traversal is not permitted",
+		}
 	}
 
 	if !os.exists(target_dir) {

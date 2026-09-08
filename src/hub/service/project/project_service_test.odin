@@ -92,4 +92,36 @@ test_create_fig_project_defaults_and_paths :: proc(t: ^testing.T) {
 	testing.expect(t, ok4, "local project creation ok")
 	testing.expect_value(t, p4.project_type, "local")
 	testing.expect_value(t, p4.default_path, "/home/user/repo")
+
+	// 5. Fig project with invalid workspace_name (starting with hyphen or special chars)
+	_, ok5, err5 := create(&service, auth, Create_Project_Input{
+		name = "Bad WS Project",
+		project_type = "fig",
+		workspace_name = "-invalid_ws",
+	})
+	testing.expect(t, !ok5, "fig project with leading hyphen in workspace_name fails")
+	testing.expect_value(t, err5.code, domain.Error_Code.Validation_Failed)
+
+	// 6. Fig project with path traversal in relative_path
+	_, ok6, err6 := create(&service, auth, Create_Project_Input{
+		name = "Traversal Project",
+		project_type = "fig",
+		workspace_name = "heimdall",
+		relative_path = "cloud/../../etc",
+	})
+	testing.expect(t, !ok6, "fig project with '..' in relative_path fails")
+	testing.expect_value(t, err6.code, domain.Error_Code.Validation_Failed)
+
+	// 7. Relative path with leading/trailing slashes trimmed
+	p7, ok7, _ := create(&service, auth, Create_Project_Input{
+		name = "Slash Trim Project",
+		project_type = "fig",
+		workspace_name = "heimdall",
+		relative_path = "/cloud/security/",
+	})
+	testing.expect(t, ok7, "fig project with slashes trimmed ok")
+	testing.expect_value(t, p7.relative_path, "cloud/security")
+	testing.expect_value(t, p7.default_path, "/google/src/cloud/testuser/heimdall/google3/cloud/security")
+	testing.expect_value(t, p7.repo_url, "//depot/google3/cloud/security")
 }
+

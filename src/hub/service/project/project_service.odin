@@ -186,6 +186,20 @@ bridge_command_send_runtime_wait :: proc(sink: Bridge_Command_Sink, command: Run
 }
 
 
+is_valid_fig_workspace_name :: proc(name: string) -> bool {
+	if len(name) == 0 || len(name) > 64 do return false
+	if name[0] == '-' || name[0] == '_' do return false
+	for ch in name {
+		switch ch {
+		case 'a'..='z', 'A'..='Z', '0'..='9', '-', '_':
+			// ok
+		case:
+			return false
+		}
+	}
+	return true
+}
+
 create :: proc(service: ^Project_Service, auth: contracts.Auth_Context, input: Create_Project_Input) -> (domain.Project, bool, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return domain.Project{}, false, err
@@ -204,19 +218,26 @@ create :: proc(service: ^Project_Service, auth: contracts.Auth_Context, input: C
 		if workspace_name == "" {
 			return domain.Project{}, false, domain.domain_error(.Validation_Failed, "workspace_name is required for fig projects")
 		}
+		if !is_valid_fig_workspace_name(workspace_name) {
+			return domain.Project{}, false, domain.domain_error(.Validation_Failed, "invalid workspace_name")
+		}
+		if relative_path != "" {
+			if strings.contains(relative_path, "..") || strings.contains(relative_path, "\x00") {
+				return domain.Project{}, false, domain.domain_error(.Validation_Failed, "relative_path cannot contain '..' or null bytes")
+			}
+			relative_path = strings.trim(relative_path, "/")
+		}
 		if default_path == "" {
 			if relative_path != "" {
-				trimmed_rel := strings.trim_left(relative_path, "/")
-				default_path = fmt.tprintf("/google/src/cloud/%s/%s/google3/%s", string(owner), workspace_name, trimmed_rel)
+				default_path = fmt.tprintf("/google/src/cloud/%s/%s/google3/%s", string(owner), workspace_name, relative_path)
 			} else {
 				default_path = fmt.tprintf("/google/src/cloud/%s/%s/google3", string(owner), workspace_name)
 			}
 		}
 		if vcs_kind == "" do vcs_kind = "piper"
 		if repo_url == "" {
-			trimmed_rel := strings.trim_left(relative_path, "/")
-			if trimmed_rel != "" {
-				repo_url = fmt.tprintf("//depot/google3/%s", trimmed_rel)
+			if relative_path != "" {
+				repo_url = fmt.tprintf("//depot/google3/%s", relative_path)
 			} else {
 				repo_url = "//depot/google3"
 			}
@@ -268,8 +289,19 @@ update :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_
 	if input.vcs_kind != "" do project.vcs_kind = input.vcs_kind
 	if input.default_path != "" do project.default_path = input.default_path
 	if input.project_type != "" do project.project_type = input.project_type
-	if input.workspace_name != "" do project.workspace_name = input.workspace_name
-	if input.relative_path != "" do project.relative_path = input.relative_path
+	if input.workspace_name != "" {
+		if !is_valid_fig_workspace_name(input.workspace_name) {
+			return domain.Project{}, false, domain.domain_error(.Validation_Failed, "invalid workspace_name")
+		}
+		project.workspace_name = input.workspace_name
+	}
+	if input.relative_path != "" {
+		rel := input.relative_path
+		if strings.contains(rel, "..") || strings.contains(rel, "\x00") {
+			return domain.Project{}, false, domain.domain_error(.Validation_Failed, "relative_path cannot contain '..' or null bytes")
+		}
+		project.relative_path = strings.trim(rel, "/")
+	}
 	project.updated_at = platform.clock_now(service.clock)
 	return iface.project_update(service.projects, project)
 }
