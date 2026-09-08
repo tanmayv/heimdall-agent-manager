@@ -13,6 +13,8 @@ export type PaletteConversation = {
   agentInstanceId?: string;
   title: string;
   agentName?: string;
+  // Coordinator display name for this conversation's chain (yellow accent).
+  coordinatorDisplayName?: string;
   runtimeStatus?: string;
   activityStatus?: string;
   unreadCount?: number;
@@ -319,6 +321,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                         <span aria-hidden="true" className="grid w-5 place-items-center text-zinc-400 opacity-80"><Icon name={icon} size={16} /></span>
                       )}
                       <span className="min-w-0 flex-1 truncate">{label}</span>
+                      {isConvo && result.convo.coordinatorDisplayName ? <span data-debug-id={`command-palette-result-coordinator-${idx}`} className="ml-auto shrink-0 truncate pl-2 text-[11px] text-amber-300" title={`Coordinator: ${result.convo.coordinatorDisplayName}`}>{result.convo.coordinatorDisplayName}</span> : null}
                       {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-sky-400 px-1.5 text-center text-[10px] font-bold leading-4 text-black">{unread > 99 ? '99+' : unread}</span> : null}
                       {result.hint ? <span className="ml-auto shrink-0 truncate pl-2 text-[11px] text-zinc-500">{result.hint}</span> : null}
                     </button>

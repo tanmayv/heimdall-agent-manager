@@ -66,6 +66,8 @@ type ConversationSummary = {
   agentId: string;
   agentInstanceId: string;
   agentName: string;
+  // Coordinator display name for this conversation's chain (yellow accent).
+  coordinatorDisplayName?: string;
   projectId: string;
   title: string;
   unreadCount: number;
@@ -345,6 +347,7 @@ function sidebarConversationToSummary(c: SidebarConversation, agentNamesById: Ma
     agentId,
     agentInstanceId: c.agentInstanceId,
     agentName: displayAgentName(agentId, c.agentName || agentNamesById.get(agentId)),
+    coordinatorDisplayName: c.coordinatorDisplayName,
     projectId: c.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId,
     title: c.title,
     unreadCount: c.unreadCount,
@@ -612,6 +615,7 @@ function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: Pr
                       label={conversation.agentName}
                     />
                     <span className="min-w-0 flex-1 truncate">{conversation.agentName}</span>
+                    {conversation.coordinatorDisplayName ? <span data-debug-id={`sidebar-session-coordinator-${conversation.conversationId}`} className="shrink-0 truncate text-[11px] text-amber-300" title={`Coordinator: ${conversation.coordinatorDisplayName}`}>{conversation.coordinatorDisplayName}</span> : null}
                     {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
                     <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
                   </a>
@@ -1131,7 +1135,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         />
       ) : null}
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, coordinatorDisplayName: c.coordinatorDisplayName, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
     </div>
   );
 }
