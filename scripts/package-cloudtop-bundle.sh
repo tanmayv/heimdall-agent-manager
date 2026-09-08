@@ -240,7 +240,16 @@ BRIDGE_PID_FILE="$RUN_DIR/bridge.pid"
 BRIDGE_PORT="${HEIMDALL_BRIDGE_PORT:-49323}"
 BRIDGE_ENDPOINT_PORT="${HEIMDALL_BRIDGE_ENDPOINT_PORT:-49324}"
 BRIDGE_RUN_DIR="${HEIMDALL_BRIDGE_RUN_DIR:-/tmp/heimdall-bridge-local}"
-BRIDGE_TOKEN_FILE="$DATA_DIR/bridge_token_cloudtop"
+BRIDGE_TOKEN_FILE="$DATA_DIR/bridge_token"
+
+# Sync bridge tokens if one exists and the other doesn't (REQ-CT-12a)
+if [ -s "$DATA_DIR/bridge_token" ] && [ ! -s "$DATA_DIR/bridge_token_cloudtop" ]; then
+  cp "$DATA_DIR/bridge_token" "$DATA_DIR/bridge_token_cloudtop"
+  chmod 0600 "$DATA_DIR/bridge_token_cloudtop"
+elif [ ! -s "$DATA_DIR/bridge_token" ] && [ -s "$DATA_DIR/bridge_token_cloudtop" ]; then
+  cp "$DATA_DIR/bridge_token_cloudtop" "$DATA_DIR/bridge_token"
+  chmod 0600 "$DATA_DIR/bridge_token"
+fi
 
 # Detect if default port 49323 is already in use
 if python3 -c "import socket; s=socket.socket(); s.settimeout(0.1); exit(0 if s.connect_ex(('127.0.0.1', int('$BRIDGE_PORT'))) == 0 else 1)" 2>/dev/null; then
@@ -259,15 +268,32 @@ else
   if [ ! -s "$BRIDGE_TOKEN_FILE" ]; then
     echo "[bridge] Auto-pairing bridge with local Hub..."
     "$BIN_DIR/ham-bridge" enroll --hub http://127.0.0.1:49322 --name "$(hostname -s)" --user "${USER:-$(whoami)}" --bridge-token-file "$BRIDGE_TOKEN_FILE" || true
+    if [ -s "$DATA_DIR/bridge_token" ]; then
+      cp "$DATA_DIR/bridge_token" "$DATA_DIR/bridge_token_cloudtop"
+      chmod 0600 "$DATA_DIR/bridge_token_cloudtop"
+    fi
   fi
 
   echo "[bridge] Starting ham-bridge on 127.0.0.1:$BRIDGE_PORT..."
   export HEIMDALL_HAM_PTY_HOST_BIN="$BIN_DIR/ham-pty-host"
   export HEIMDALL_HAM_CTL_BIN="$BIN_DIR/ham-ctl"
-  nohup "$BIN_DIR/ham-bridge" --bind-host 127.0.0.1 --port "$BRIDGE_PORT" --local-endpoint-port "$BRIDGE_ENDPOINT_PORT" --hub http://127.0.0.1:49322 --local-run-dir "$BRIDGE_RUN_DIR" --bridge-token-file "$BRIDGE_TOKEN_FILE" > "$BRIDGE_LOG" 2>&1 &
+  nohup "$BIN_DIR/ham-bridge" --daemon-id brg_local --bind-host 127.0.0.1 --port "$BRIDGE_PORT" --local-endpoint-port "$BRIDGE_ENDPOINT_PORT" --hub http://127.0.0.1:49322 --local-run-dir "$BRIDGE_RUN_DIR" --bridge-token-file "$BRIDGE_TOKEN_FILE" > "$BRIDGE_LOG" 2>&1 &
   PID=$!
   echo $PID > "$BRIDGE_PID_FILE"
   disown $PID 2>/dev/null || true
+fi
+
+# Wait for Bridge port
+deadline=$((SECONDS + 10))
+while ! curl -s "http://127.0.0.1:$BRIDGE_PORT/api/v1/health" >/dev/null 2>&1; do
+  if [ $SECONDS -ge $deadline ]; then
+    echo "[bridge] Warning: ham-bridge did not respond on port $BRIDGE_PORT within 10s. Check $BRIDGE_LOG"
+    break
+  fi
+  sleep 0.2
+done
+if curl -s "http://127.0.0.1:$BRIDGE_PORT/api/v1/health" >/dev/null 2>&1; then
+  echo "[bridge] Ready at http://127.0.0.1:$BRIDGE_PORT"
 fi
 
 # 4. Start Dev-Proxy (Port 8989 Cloudtop Gateway)

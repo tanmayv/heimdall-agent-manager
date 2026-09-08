@@ -273,8 +273,9 @@ bridge_hub_url_supported :: proc(hub_url: string) -> bool {
 }
 
 bridge_write_enrolled_config :: proc(path, hub_url, bridge_token, bridge_id: string) -> bool {
-	if strings.trim_space(path) == "" || strings.trim_space(hub_url) == "" do return false
-	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
+	expanded := cfg_lib.expand_home(path)
+	if strings.trim_space(expanded) == "" || strings.trim_space(hub_url) == "" do return false
+	if slash := strings.last_index_byte(expanded, '/'); slash > 0 { _ = os.make_directory_all(expanded[:slash]) }
 	b := strings.builder_make()
 	strings.write_string(&b, "[wrapper]\ndaemon_url = \""); json_write_string(&b, hub_url)
 	strings.write_string(&b, "\"\n\n[daemon]\n")
@@ -284,25 +285,27 @@ bridge_write_enrolled_config :: proc(path, hub_url, bridge_token, bridge_id: str
 	}
 	strings.write_string(&b, "daemon_id = \""); json_write_string(&b, bridge_id)
 	strings.write_string(&b, "\"\n")
-	return os.write_entire_file(path, strings.to_string(b)) == nil
+	return os.write_entire_file(expanded, strings.to_string(b)) == nil
 }
 
 bridge_write_token_file :: proc(path, token: string) -> bool {
-	if strings.trim_space(path) == "" || strings.trim_space(token) == "" do return false
-	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
+	expanded := cfg_lib.expand_home(path)
+	if strings.trim_space(expanded) == "" || strings.trim_space(token) == "" do return false
+	if slash := strings.last_index_byte(expanded, '/'); slash > 0 { _ = os.make_directory_all(expanded[:slash]) }
 	content := strings.concatenate({strings.trim_space(token), "\n"})
 	defer delete(content)
-	err := os.write_entire_file(path, content, os.Permissions{.Read_User, .Write_User})
+	err := os.write_entire_file(expanded, content, os.Permissions{.Read_User, .Write_User})
 	if err != nil {
-		fmt.eprintln("failed to write bridge token file", path)
+		fmt.eprintln("failed to write bridge token file", expanded)
 		return false
 	}
-	_ = os.chmod(path, os.Permissions{.Read_User, .Write_User})
+	_ = os.chmod(expanded, os.Permissions{.Read_User, .Write_User})
 	return true
 }
 
 bridge_read_token_file :: proc(path: string) -> (string, bool) {
-	trimmed_path := strings.trim_space(path)
+	expanded := cfg_lib.expand_home(path)
+	trimmed_path := strings.trim_space(expanded)
 	if trimmed_path == "" do return "", false
 	data, err := os.read_entire_file(trimmed_path, context.allocator)
 	if err != nil {

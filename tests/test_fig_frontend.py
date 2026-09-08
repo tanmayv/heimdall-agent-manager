@@ -75,7 +75,9 @@ def main() -> None:
     require("settings-project-fig-modal" in projects_panel_tsx, "ProjectsPanel.tsx must have CitC workspace creation modal")
     require("settings-project-fig-relative-path-input" in projects_panel_tsx, "ProjectsPanel.tsx must have relative google3 path input")
     require("settings-project-fig-browse-btn" in projects_panel_tsx, "ProjectsPanel.tsx must have Browse google3 button")
-    require("settings-project-fig-picker" in projects_panel_tsx, "ProjectsPanel.tsx must embed FigDirectoryPicker")
+    require("settings-project-fig-offline-warning" in projects_panel_tsx, "ProjectsPanel.tsx must have offline warning banner")
+    require("settings-project-fig-retry-btn" in projects_panel_tsx, "ProjectsPanel.tsx must have offline retry button")
+    require("settings-project-fig-bridge-select" in projects_panel_tsx, "ProjectsPanel.tsx must have bridge select")
 
     # 6. REQ-FIG-7: Desktop UI ProjectsSurface (ProjectsSurface.tsx)
     require("projects-create-type-toggle" in projects_surface_tsx, "ProjectsSurface.tsx must have project type toggle")
@@ -87,6 +89,9 @@ def main() -> None:
     require("projects-create-fig-relative-path-input" in projects_surface_tsx, "ProjectsSurface.tsx must have relative google3 path input")
     require("projects-create-fig-browse-btn" in projects_surface_tsx, "ProjectsSurface.tsx must have Browse google3 button")
     require("projects-create-fig-picker" in projects_surface_tsx, "ProjectsSurface.tsx must embed FigDirectoryPicker")
+    require("projects-create-fig-offline-warning" in projects_surface_tsx, "ProjectsSurface.tsx must have offline warning banner")
+    require("projects-create-fig-retry-btn" in projects_surface_tsx, "ProjectsSurface.tsx must have offline retry button")
+    require("projects-create-fig-bridge-select" in projects_surface_tsx, "ProjectsSurface.tsx must have bridge select")
 
     print("[+] FIG CITC FRONTEND & PICKER REGRESSION TESTS PASSED")
 

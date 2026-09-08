@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useListProjectsQuery,
   useFetchProjectQuery,
@@ -97,6 +97,26 @@ export default function ProjectsPanel() {
     { skip: !selectedBridgeId || projectType !== "fig" }
   );
   const figWorkspaces: FigWorkspace[] = figWorkspacesQuery.data?.workspaces || [];
+
+  const isBridgeOnline = (b: any) => {
+    const s = String(b?.status || b?.runtime_status || "").toLowerCase();
+    return s === "online" || s === "connected";
+  };
+  const selectedBridge = useMemo(
+    () => bridges.find((b) => String(b?.bridge_id || b?.bridgeId || b?.id || "") === selectedBridgeId) || null,
+    [bridges, selectedBridgeId]
+  );
+  const isSelectedBridgeOffline = selectedBridge ? !isBridgeOnline(selectedBridge) : false;
+  const figWorkspacesError = useMemo(() => {
+    if (figWorkspacesQuery.isError) {
+      const err: any = figWorkspacesQuery.error;
+      return err?.data?.error?.message || err?.error || err?.message || "Bridge is offline or unreachable (409 Conflict)";
+    }
+    if (isSelectedBridgeOffline) {
+      return `Bridge ${selectedBridge?.label || selectedBridgeId} is currently offline. CitC discovery requires an active ham-bridge daemon.`;
+    }
+    return "";
+  }, [figWorkspacesQuery.isError, figWorkspacesQuery.error, isSelectedBridgeOffline, selectedBridge, selectedBridgeId]);
 
   // Update edit form state when selected project changes
   useEffect(() => {
@@ -367,14 +387,21 @@ export default function ProjectsPanel() {
                 <select
                   data-debug-id="settings-project-fig-workspace-select"
                   value={workspaceName}
+                  disabled={Boolean(figWorkspacesError && figWorkspaces.length === 0)}
                   onChange={(e) => {
                     const ws = e.target.value;
                     setWorkspaceName(ws);
                     if (!name.trim() && ws) setName(ws);
                   }}
-                  className="w-full min-h-[44px] rounded-xl border border-amber-500/30 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400 font-mono"
+                  className="w-full min-h-[44px] rounded-xl border border-amber-500/30 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400 font-mono disabled:opacity-50"
                 >
-                  <option value="">-- Select CitC Workspace --</option>
+                  <option value="">
+                    {figWorkspacesQuery.isLoading
+                      ? "Loading CitC workspaces…"
+                      : figWorkspacesError
+                      ? "-- CitC Bridge Offline --"
+                      : "-- Select CitC Workspace --"}
+                  </option>
                   {figWorkspaces.map((ws) => (
                     <option key={ws.name} value={ws.name}>
                       {ws.name} {ws.has_google3 ? "✓ (google3)" : ""}
@@ -386,7 +413,33 @@ export default function ProjectsPanel() {
           </div>
 
           {projectType === "fig" ? (
-            <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-2">
+            <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3 space-y-3">
+              {figWorkspacesError ? (
+                <div
+                  data-debug-id="settings-project-fig-offline-warning"
+                  className="flex items-start gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"
+                >
+                  <Icon name="alert" size={16} className="shrink-0 text-amber-400 mt-0.5" />
+                  <div className="flex-1 space-y-1">
+                    <div className="font-semibold text-amber-300">
+                      CitC Bridge Offline (409 Conflict)
+                    </div>
+                    <div>{figWorkspacesError}</div>
+                    <div className="text-[11px] text-amber-400/80">
+                      CitC workspace discovery runs on the bridge machine. Start the bridge daemon:
+                      <code className="ml-1 px-1.5 py-0.5 rounded bg-black/40 text-amber-200 font-mono">./start.sh</code>
+                    </div>
+                  </div>
+                  <button
+                    data-debug-id="settings-project-fig-retry-btn"
+                    type="button"
+                    onClick={() => figWorkspacesQuery.refetch()}
+                    className="shrink-0 px-2.5 py-1 text-[11px] rounded-lg border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 font-medium text-amber-200 transition"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : null}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div className="flex-1">
                   <label className="block text-xs font-medium text-zinc-300 mb-1">
@@ -403,7 +456,7 @@ export default function ProjectsPanel() {
                     <button
                       data-debug-id="settings-project-fig-browse-btn"
                       type="button"
-                      disabled={!workspaceName || !selectedBridgeId}
+                      disabled={!workspaceName || !selectedBridgeId || Boolean(figWorkspacesError)}
                       onClick={() => setShowFigPicker((v) => !v)}
                       className="min-h-[38px] shrink-0 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 disabled:opacity-40"
                     >
@@ -411,8 +464,8 @@ export default function ProjectsPanel() {
                     </button>
                   </div>
                 </div>
-                {bridges.length > 1 ? (
-                  <div className="w-full sm:w-48">
+                {bridges.length > 0 ? (
+                  <div className="w-full sm:w-56">
                     <label className="block text-xs font-medium text-zinc-400 mb-1">Bridge Host</label>
                     <select
                       data-debug-id="settings-project-fig-bridge-select"
@@ -420,11 +473,16 @@ export default function ProjectsPanel() {
                       onChange={(e) => setSelectedBridgeId(e.target.value)}
                       className="w-full min-h-[38px] rounded-xl border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"
                     >
-                      {bridges.map((b) => (
-                        <option key={b.bridge_id || b.id} value={b.bridge_id || b.id}>
-                          {b.label || b.machine_hostname || b.bridge_id || b.id}
-                        </option>
-                      ))}
+                      {bridges.map((b) => {
+                        const online = isBridgeOnline(b);
+                        const id = String(b.bridge_id || b.bridgeId || b.id || "");
+                        const label = String(b.label || b.machine_hostname || id);
+                        return (
+                          <option key={id} value={id}>
+                            {label} ({online ? "● Online" : "○ Offline"})
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                 ) : null}

@@ -386,6 +386,20 @@ else
     cp -R -p "$BUNDLE_DIR/ui/"* "$DATA_DIR/ui/"
   fi
 
+  # Pre-seed bridge token upfront for full single-node mode (REQ-CT-12a)
+  TOKEN_VAL=""
+  if [ -s "$DATA_DIR/bridge_token" ]; then
+    TOKEN_VAL="$(tr -d '[:space:]' < "$DATA_DIR/bridge_token")"
+  elif [ -s "$DATA_DIR/bridge_token_cloudtop" ]; then
+    TOKEN_VAL="$(tr -d '[:space:]' < "$DATA_DIR/bridge_token_cloudtop")"
+  else
+    TOKEN_VAL="hbr_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  fi
+  printf "%s\n" "$TOKEN_VAL" > "$DATA_DIR/bridge_token"
+  printf "%s\n" "$TOKEN_VAL" > "$DATA_DIR/bridge_token_cloudtop"
+  chmod 0600 "$DATA_DIR/bridge_token" "$DATA_DIR/bridge_token_cloudtop"
+  echo "[install] Pre-seeded bridge credentials at $DATA_DIR/bridge_token"
+
   # Configure systemd user unit
   if [ -f "$BUNDLE_DIR/scripts/install-systemd-service.sh" ]; then
     echo "[install] Configuring systemd --user service..."
@@ -425,6 +439,27 @@ else
     echo "[-] Check logs: $LOG_DIR/proxy.log, $LOG_DIR/hub.log, $LOG_DIR/bridge.log"
   else
     echo "[install] Edge Gateway verified active on port 8989."
+  fi
+
+  # Verify bridge port 49323 (or fallback port 49325) (REQ-CT-12b)
+  echo "[install] Verifying local Bridge on port 49323..."
+  B_PORT=49323
+  if ! curl -s "http://127.0.0.1:49323/api/v1/health" >/dev/null 2>&1 && curl -s "http://127.0.0.1:49325/api/v1/health" >/dev/null 2>&1; then
+    B_PORT=49325
+  fi
+  deadline=$((SECONDS + 10))
+  bridge_ok=false
+  while [ $SECONDS -lt $deadline ]; do
+    if curl -s "http://127.0.0.1:$B_PORT/api/v1/health" >/dev/null 2>&1; then
+      bridge_ok=true
+      break
+    fi
+    sleep 0.5
+  done
+  if [ "$bridge_ok" = true ]; then
+    echo "[install] Local Bridge verified active on port $B_PORT."
+  else
+    echo "[-] Warning: Bridge on port $B_PORT did not respond in time. Check $LOG_DIR/bridge.log"
   fi
 
   echo ""

@@ -10,6 +10,9 @@ TimeoutStopSec=10
 Restart=on-failure
 RestartSec=5
 Environment=HOME=%h
+Environment=USER=%u
+Environment=LOGNAME=%u
+Environment=HAM_CLOUDTOP_OWNER=%u
 Environment=HEIMDALL_DATA_DIR=%h/.local/share/heimdall
 ExecStart=%h/.local/share/heimdall/bin/start.sh --foreground
 ExecStop=%h/.local/share/heimdall/bin/stop.sh

@@ -132,12 +132,46 @@ enroll_bridge :: proc(service: ^Bridge_Service, input: Enroll_Bridge_Input) -> (
 list_bridges :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context) -> ([]domain.Bridge, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	return iface.bridge_list_by_owner(service.repo, owner)
+	bridges, list_err := iface.bridge_list_by_owner(service.repo, owner)
+	if list_err.code != .None do return nil, list_err
+
+	// CT-2 & CT-12: Ensure brg_local is always visible and auto-adopted by authenticated users on this node
+	if local, local_ok, _ := iface.bridge_get_bridge(service.repo, "brg_local"); local_ok {
+		has_local := false
+		for b in bridges {
+			if b.bridge_id == "brg_local" {
+				has_local = true
+				break
+			}
+		}
+		if !has_local {
+			if local.owner_user_id != owner {
+				local.owner_user_id = owner
+				local.updated_at = platform.clock_now(service.clock)
+				saved, save_ok, _ := iface.bridge_save_bridge(service.repo, local)
+				if save_ok do local = saved
+			}
+			out := make([dynamic]domain.Bridge)
+			append(&out, local)
+			for b in bridges do append(&out, b)
+			return out[:], domain.Domain_Error{}
+		}
+	}
+	return bridges, domain.Domain_Error{}
 }
 
 get_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	bridge, ok, err := iface.bridge_get_bridge(service.repo, bridge_id)
 	if !ok do return domain.Bridge{}, false, err
+	if bridge.bridge_id == "brg_local" || bridge.owner_user_id == "default" {
+		if auth.user_id != "" && bridge.owner_user_id != domain.User_ID(auth.user_id) {
+			bridge.owner_user_id = domain.User_ID(auth.user_id)
+			bridge.updated_at = platform.clock_now(service.clock)
+			saved, save_ok, _ := iface.bridge_save_bridge(service.repo, bridge)
+			if save_ok do bridge = saved
+		}
+		return bridge, true, domain.Domain_Error{}
+	}
 	if owner_ok, owner_err := ownership.require_owner(auth, bridge.owner_user_id); !owner_ok do return domain.Bridge{}, false, owner_err
 	return bridge, true, domain.Domain_Error{}
 }
@@ -235,6 +269,11 @@ valid_hub_authority :: proc(value: string) -> bool {
 
 get_default_bridge_token_path :: proc() -> string {
 	if env_path := os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator); env_path != "" {
+		if strings.has_prefix(env_path, "~/") {
+			home := os.get_env("HOME", context.allocator)
+			if home == "" do home = "/tmp"
+			return fmt.tprintf("%s/%s", home, env_path[2:])
+		}
 		return env_path
 	}
 	home := os.get_env("HOME", context.allocator)
@@ -311,6 +350,10 @@ ensure_local_loopback_bridge :: proc(service: ^Bridge_Service, owner_user_id: st
 		changed := false
 		if updated.status == .Revoked {
 			updated.status = .Offline
+			changed = true
+		}
+		if (updated.owner_user_id == "default" || updated.owner_user_id == "") && owner != "" && owner != "default" {
+			updated.owner_user_id = domain.User_ID(owner)
 			changed = true
 		}
 		if updated.bridge_token_hash != hash_token(active_token) {
