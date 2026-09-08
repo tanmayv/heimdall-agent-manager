@@ -51,11 +51,19 @@ export default function FigDirectoryPicker({
 }) {
   const [activeWorkspace, setActiveWorkspace] = useState(initialWorkspace);
   const [wsSearch, setWsSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [showNewWs, setShowNewWs] = useState(false);
   const [newWsInput, setNewWsInput] = useState('');
   const [createWsError, setCreateWsError] = useState('');
 
-  // Workspaces query (search-as-you-type in API)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(wsSearch.trim());
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [wsSearch]);
+
+  // Workspaces query (search-as-you-type in API with 200ms debounce)
   const {
     data: wsData,
     isLoading: isWsLoading,
@@ -63,7 +71,7 @@ export default function FigDirectoryPicker({
     error: wsQueryError,
     refetch: refetchWs,
   } = useListBridgeFigWorkspacesQuery(
-    { bridgeId, query: wsSearch.trim() },
+    { bridgeId, query: debouncedSearch },
     { skip: !bridgeId }
   );
 
