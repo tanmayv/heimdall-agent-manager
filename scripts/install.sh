@@ -61,6 +61,13 @@ if [ -d "$BUNDLE_DIR/share/migrations" ]; then
   cp -a "$BUNDLE_DIR/share/migrations/"* "$SHARE_DIR/"
 fi
 
+# 3.5. Copy pre-built static UI
+if [ -d "$BUNDLE_DIR/ui" ] && [ -f "$BUNDLE_DIR/ui/index.html" ]; then
+  echo "[install] Copying pre-built static UI..."
+  mkdir -p "$DATA_DIR/ui"
+  cp -a "$BUNDLE_DIR/ui/"* "$DATA_DIR/ui/"
+fi
+
 # 4. Copy management scripts
 cp "$BUNDLE_DIR/start.sh" "$BIN_DIR/start.sh"
 cp "$BUNDLE_DIR/stop.sh" "$BIN_DIR/stop.sh"

@@ -1,0 +1,14 @@
+# Google MPM package definition for Heimdall Cloudtop Single-Node distribution.
+# Build & publish: mpm build -f packaging/mpm/heimdall.pkgdef -b dev (or -b live)
+# Install: mpm install heimdall/cloudtop live ~/.local/share/heimdall
+
+pkgdef mpm = {
+  package_name = 'heimdall/cloudtop'
+
+  source = [
+    {
+      source_dir = 'dist/heimdall-cloudtop'
+      package_path = '.'
+    },
+  ]
+}

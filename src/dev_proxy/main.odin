@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:net"
 import "core:os"
+import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:thread"
@@ -97,6 +98,9 @@ parse_args :: proc(config: ^Dev_Proxy_Config) {
 	if v := os.get_env_alloc("HAM_VITE_URL", context.allocator); v != "" {
 		config.vite_url = v
 	}
+	if v := os.get_env_alloc("HAM_STATIC_DIR", context.allocator); v != "" {
+		config.static_dir = v
+	}
 	if v := os.get_env_alloc("HEIMDALL_CLOUDTOP", context.allocator); v == "1" || v == "true" {
 		config.listen = "0.0.0.0:8989"
 	}
@@ -108,6 +112,8 @@ parse_args :: proc(config: ^Dev_Proxy_Config) {
 			config.hub_url = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--vite-url" && i + 1 < len(os.args) {
 			config.vite_url = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--static-dir" && i + 1 < len(os.args) {
+			config.static_dir = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--cloudtop" {
 			config.listen = "0.0.0.0:8989"
 		} else if arg == "--default-user" && i + 1 < len(os.args) {
@@ -285,6 +291,7 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 	}
 
 	// Security: Bridge auto-pairing and enrollment are sensitive operations and MUST NOT be reachable through dev-proxy
+	// bridge enrollment/auto-pair forbidden through dev-proxy
 	if strings.has_prefix(path, "/api/v1/bridges/auto-pair") {
 		fmt.eprintfln("[dev-proxy] %s %s Host=%q caller=%q owner=%q -> 403 bridge auto-pair forbidden through dev-proxy", method, target, host_lower, caller_user, owner)
 		log_incoming_headers(headers)
@@ -342,10 +349,13 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 		}
 	}
 
-	// CT-7: Route API calls to Hub, and all UI/asset/static calls to Vite dev server (or gateway HTML fallback)
+	// CT-7 / CT-11: Route API calls to Hub, and all UI/asset/static calls to static files or Vite dev server (or gateway HTML fallback)
 	if strings.has_prefix(path, "/api/v1") {
 		forward_request(client, ctx.config, request, method, target, override_user)
 	} else {
+		if ctx.config.static_dir != "" && serve_static_ui(client, ctx.config.static_dir, path, method) {
+			return
+		}
 		forward_to_vite(client, ctx.config, request, method, target)
 	}
 }
@@ -459,6 +469,123 @@ forward_to_vite :: proc(client: net.TCP_Socket, config: ^Dev_Proxy_Config, reque
 		return
 	}
 	proxy_copy_response(client, upstream)
+}
+
+send_all_tcp :: proc(sock: net.TCP_Socket, data: []byte) -> bool {
+	total := 0
+	for total < len(data) {
+		sent, err := net.send_tcp(sock, data[total:])
+		if err != nil || sent <= 0 do return false
+		total += sent
+	}
+	return true
+}
+
+write_bytes_response_with_headers :: proc(client: net.TCP_Socket, status: int, status_text, content_type: string, data: []byte, headers: []contracts.HTTP_Header = nil) {
+	b := strings.builder_make()
+	strings.write_string(&b, fmt.tprintf("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n", status, status_text, content_type, len(data)))
+	for h in headers {
+		strings.write_string(&b, h.name); strings.write_string(&b, ": "); strings.write_string(&b, h.value); strings.write_string(&b, "\r\n")
+	}
+	strings.write_string(&b, "Connection: close\r\n\r\n")
+	hdr := strings.to_string(b)
+	if send_all_tcp(client, transmute([]byte)hdr) {
+		if len(data) > 0 {
+			_ = send_all_tcp(client, data)
+		}
+	}
+}
+
+get_static_mime_type :: proc(filename: string) -> string {
+	ext := filepath.ext(filename)
+	ext = strings.to_lower(ext, context.temp_allocator)
+	switch ext {
+	case ".html", ".htm": return "text/html; charset=utf-8"
+	case ".js", ".mjs": return "text/javascript; charset=utf-8"
+	case ".css": return "text/css; charset=utf-8"
+	case ".json", ".webmanifest", ".map": return "application/json; charset=utf-8"
+	case ".svg": return "image/svg+xml"
+	case ".png": return "image/png"
+	case ".jpg", ".jpeg": return "image/jpeg"
+	case ".gif": return "image/gif"
+	case ".ico": return "image/x-icon"
+	case ".woff": return "font/woff"
+	case ".woff2": return "font/woff2"
+	case ".ttf": return "font/ttf"
+	case ".wasm": return "application/wasm"
+	case ".txt": return "text/plain; charset=utf-8"
+	case: return "application/octet-stream"
+	}
+}
+
+serve_static_ui :: proc(client: net.TCP_Socket, static_dir, raw_path, method: string) -> bool {
+	clean_dir := strings.trim_right(static_dir, "/")
+	if clean_dir == "" do return false
+	if !os.exists(clean_dir) || !os.is_dir(clean_dir) do return false
+
+	if method != "GET" && method != "HEAD" {
+		write_response(client, 405, "Method Not Allowed", "text/plain", "method not allowed")
+		return true
+	}
+
+	rel := strings.trim_left(raw_path, "/")
+	if rel == "" do rel = "index.html"
+
+	// Security: Prevent path traversal
+	if strings.contains(rel, "..") || strings.has_prefix(rel, "/") {
+		write_response(client, 403, "Forbidden", "text/plain", "access denied")
+		return true
+	}
+
+	target_path := fmt.tprintf("%s/%s", clean_dir, rel)
+
+	// Direct static file hit
+	if os.exists(target_path) && !os.is_dir(target_path) {
+		data, err := os.read_entire_file(target_path, context.allocator)
+		if err == nil {
+			defer delete(data)
+			mime := get_static_mime_type(target_path)
+			headers: [1]contracts.HTTP_Header
+			hdr_slice: []contracts.HTTP_Header = nil
+			if strings.has_prefix(rel, "assets/") {
+				headers[0] = contracts.HTTP_Header{name = "Cache-Control", value = "public, max-age=31536000, immutable"}
+				hdr_slice = headers[:]
+			} else if rel == "index.html" {
+				headers[0] = contracts.HTTP_Header{name = "Cache-Control", value = "no-cache"}
+				hdr_slice = headers[:]
+			}
+			if method == "HEAD" {
+				write_bytes_response_with_headers(client, 200, "OK", mime, nil, hdr_slice)
+			} else {
+				write_bytes_response_with_headers(client, 200, "OK", mime, data, hdr_slice)
+			}
+			return true
+		}
+	}
+
+	// 404 for missing static assets under /assets/
+	if strings.has_prefix(rel, "assets/") {
+		write_response(client, 404, "Not Found", "text/plain", "asset not found")
+		return true
+	}
+
+	// SPA fallback: Serve index.html for client-side routing
+	index_path := fmt.tprintf("%s/index.html", clean_dir)
+	if os.exists(index_path) && !os.is_dir(index_path) {
+		data, err := os.read_entire_file(index_path, context.allocator)
+		if err == nil {
+			defer delete(data)
+			headers := [1]contracts.HTTP_Header{{name = "Cache-Control", value = "no-cache"}}
+			if method == "HEAD" {
+				write_bytes_response_with_headers(client, 200, "OK", "text/html; charset=utf-8", nil, headers[:])
+			} else {
+				write_bytes_response_with_headers(client, 200, "OK", "text/html; charset=utf-8", data, headers[:])
+			}
+			return true
+		}
+	}
+
+	return false
 }
 
 // proxy_tunnel_bidirectional pumps raw bytes in both directions between the

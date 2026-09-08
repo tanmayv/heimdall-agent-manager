@@ -23,6 +23,7 @@ Dev_Proxy_Config :: struct {
 	proxy_secret: string,
 	proxy_secret_file: string,
 	audit_mode: bool,
+	static_dir: string,
 	// DP-7: management API/UI (/_dev/*) are served ONLY on a loopback bind.
 	// Set in main() from the parsed --listen host; non-loopback binds get 404
 	// on every /_dev/ route so management is never exposed remotely.

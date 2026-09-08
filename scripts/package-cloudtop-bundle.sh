@@ -44,6 +44,18 @@ cp scripts/install-systemd-service.sh "$BUNDLE_DIR/scripts/install-systemd-servi
 cp scripts/snapshot-hub.sh "$BUNDLE_DIR/scripts/snapshot-hub.sh"
 cp scripts/install.sh "$BUNDLE_DIR/install.sh"
 chmod +x "$BUNDLE_DIR/install.sh"
+if [ -f "scripts/publish-mpm.sh" ]; then
+  cp scripts/publish-mpm.sh "$BUNDLE_DIR/scripts/publish-mpm.sh"
+  chmod +x "$BUNDLE_DIR/scripts/publish-mpm.sh"
+fi
+if [ -d "packaging" ]; then
+  cp -r packaging "$BUNDLE_DIR/"
+fi
+
+echo "[bundle] 3.5. Building production UI assets via vite..."
+mkdir -p "$BUNDLE_DIR/ui"
+npm run typecheck
+npx vite build --outDir "$BUNDLE_DIR/ui"
 
 echo "[bundle] 4. Writing start.sh and stop.sh..."
 cat << 'STARTEOF' > "$BUNDLE_DIR/start.sh"
@@ -158,40 +170,59 @@ if [ -f "$DATA_DIR/proxy_secret" ]; then
   PROXY_SECRET_FLAG="--proxy-secret-file $DATA_DIR/proxy_secret"
 fi
 
+STATIC_UI_DIR=""
+if [ -d "$BUNDLE_DIR/ui" ] && [ -f "$BUNDLE_DIR/ui/index.html" ]; then
+  STATIC_UI_DIR="$BUNDLE_DIR/ui"
+elif [ -d "$DATA_DIR/ui" ] && [ -f "$DATA_DIR/ui/index.html" ]; then
+  STATIC_UI_DIR="$DATA_DIR/ui"
+elif [ -d "$BIN_DIR/../ui" ] && [ -f "$BIN_DIR/../ui/index.html" ]; then
+  STATIC_UI_DIR="$BIN_DIR/../ui"
+fi
+
+STATIC_UI_FLAG=""
+if [ -n "$STATIC_UI_DIR" ]; then
+  STATIC_UI_FLAG="--static-dir $STATIC_UI_DIR"
+  echo "[ui] Found pre-built static UI at $STATIC_UI_DIR (no Node.js/Vite needed)"
+fi
+
 if [ -f "$PROXY_PID_FILE" ] && kill -0 "$(cat "$PROXY_PID_FILE")" 2>/dev/null; then
   echo "[proxy] Already running (PID $(cat "$PROXY_PID_FILE"))"
 else
   echo "[proxy] Starting ham-dev-proxy on 0.0.0.0:8989..."
-  nohup "$BIN_DIR/ham-dev-proxy" --listen 0.0.0.0:8989 --hub-url http://127.0.0.1:49322 --vite-url http://127.0.0.1:5173 $PROXY_SECRET_FLAG > "$PROXY_LOG" 2>&1 &
+  nohup "$BIN_DIR/ham-dev-proxy" --listen 0.0.0.0:8989 --hub-url http://127.0.0.1:49322 --vite-url http://127.0.0.1:5173 $PROXY_SECRET_FLAG $STATIC_UI_FLAG > "$PROXY_LOG" 2>&1 &
   PID=$!
   echo $PID > "$PROXY_PID_FILE"
   disown $PID 2>/dev/null || true
 fi
 
-# 5. Start Vite Dev Server (Frontend UI)
-VITE_LOG="$LOG_DIR/vite.log"
-VITE_PID_FILE="$RUN_DIR/vite.pid"
-if [ -f "$VITE_PID_FILE" ] && kill -0 "$(cat "$VITE_PID_FILE")" 2>/dev/null; then
-  echo "[ui] Vite server already running (PID $(cat "$VITE_PID_FILE"))"
-elif ss -tlpn 2>/dev/null | grep -q ":5173\b"; then
-  echo "[ui] Vite server already running on port 5173"
+# 5. Start Vite Dev Server (Frontend UI) - only if no static UI is available
+if [ -n "$STATIC_UI_DIR" ]; then
+  echo "[ui] Static UI served directly by dev-proxy; skipping Vite dev server."
 else
-  UI_DIR="$BUNDLE_DIR/ui"
-  if [ ! -d "$UI_DIR" ]; then
-    if [ -f "$BUNDLE_DIR/../../package.json" ]; then
-      UI_DIR="$(cd "$BUNDLE_DIR/../.." && pwd)"
-    elif [ -f "$HOME/heimdall-cloudtop/package.json" ]; then
-      UI_DIR="$HOME/heimdall-cloudtop"
-    elif [ -f "$HOME/heimdall-agent-manager/package.json" ]; then
-      UI_DIR="$HOME/heimdall-agent-manager"
+  VITE_LOG="$LOG_DIR/vite.log"
+  VITE_PID_FILE="$RUN_DIR/vite.pid"
+  if [ -f "$VITE_PID_FILE" ] && kill -0 "$(cat "$VITE_PID_FILE")" 2>/dev/null; then
+    echo "[ui] Vite server already running (PID $(cat "$VITE_PID_FILE"))"
+  elif ss -tlpn 2>/dev/null | grep -q ":5173\b"; then
+    echo "[ui] Vite server already running on port 5173"
+  else
+    UI_DIR="$BUNDLE_DIR/ui"
+    if [ ! -d "$UI_DIR" ]; then
+      if [ -f "$BUNDLE_DIR/../../package.json" ]; then
+        UI_DIR="$(cd "$BUNDLE_DIR/../.." && pwd)"
+      elif [ -f "$HOME/heimdall-cloudtop/package.json" ]; then
+        UI_DIR="$HOME/heimdall-cloudtop"
+      elif [ -f "$HOME/heimdall-agent-manager/package.json" ]; then
+        UI_DIR="$HOME/heimdall-agent-manager"
+      fi
     fi
-  fi
-  if [ -d "$UI_DIR" ] && [ -f "$UI_DIR/package.json" ]; then
-    echo "[ui] Starting Vite dev server in $UI_DIR on 127.0.0.1:5173..."
-    nohup bash -c "cd '$UI_DIR' && HEIMDALL_DEV_PROXY_URL='http://127.0.0.1:8989' exec npx vite --host 127.0.0.1 --port 5173" > "$VITE_LOG" 2>&1 &
-    PID=$!
-    echo $PID > "$VITE_PID_FILE"
-    disown $PID 2>/dev/null || true
+    if [ -d "$UI_DIR" ] && [ -f "$UI_DIR/package.json" ]; then
+      echo "[ui] Starting Vite dev server in $UI_DIR on 127.0.0.1:5173..."
+      nohup bash -c "cd '$UI_DIR' && HEIMDALL_DEV_PROXY_URL='http://127.0.0.1:8989' exec npx vite --host 127.0.0.1 --port 5173" > "$VITE_LOG" 2>&1 &
+      PID=$!
+      echo $PID > "$VITE_PID_FILE"
+      disown $PID 2>/dev/null || true
+    fi
   fi
 fi
 
@@ -205,14 +236,16 @@ while ! curl -s "http://127.0.0.1:8989/api/v1/health" >/dev/null 2>&1; do
   sleep 0.2
 done
 
-deadline=$((SECONDS + 10))
-while ! curl -s "http://127.0.0.1:5173" >/dev/null 2>&1; do
-  if [ $SECONDS -ge $deadline ]; then
-    echo "[ui] Notice: Vite server is bundling in background. Check $VITE_LOG"
-    break
-  fi
-  sleep 0.2
-done
+if [ -z "$STATIC_UI_DIR" ]; then
+  deadline=$((SECONDS + 10))
+  while ! curl -s "http://127.0.0.1:5173" >/dev/null 2>&1; do
+    if [ $SECONDS -ge $deadline ]; then
+      echo "[ui] Notice: Vite server is bundling in background. Check $VITE_LOG"
+      break
+    fi
+    sleep 0.2
+  done
+fi
 
 HOST_FQDN="$(hostname | sed 's/\.c\.googlers\.com$//').c.googlers.com"
 echo "=== Heimdall Single-Node Stack is UP ==="
@@ -220,7 +253,11 @@ echo "Access points:"
 echo "  Cloudtop Gateway: http://127.0.0.1:8989 (or http://${HOST_FQDN}:8989)"
 echo "  Hub API:        http://127.0.0.1:49322"
 echo "  Bridge Status:  http://127.0.0.1:$BRIDGE_PORT"
-echo "  Vite UI Server: http://127.0.0.1:5173"
+if [ -z "$STATIC_UI_DIR" ]; then
+  echo "  Vite UI Server: http://127.0.0.1:5173"
+else
+  echo "  Web UI:         Served directly via Cloudtop Gateway (Zero Node.js dependency)"
+fi
 
 if [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "-f" ]; then
   trap 'echo "[supervisor] Shutting down Heimdall services..."; "$BIN_DIR/stop.sh" || true; exit 0' SIGTERM SIGINT SIGHUP
@@ -284,12 +321,13 @@ chmod +x "$BUNDLE_DIR/stop.sh"
 cat << 'READMEEOF' > "$BUNDLE_DIR/README.md"
 # Heimdall Agent Manager - Cloudtop Standalone Bundle
 
-This bundle contains self-contained ELF binaries adapted to run on a Google Cloudtop workstation without requiring Nix or compilation.
+This bundle contains self-contained ELF binaries and pre-built static UI assets adapted to run on a Google Cloudtop workstation without requiring Nix, Node.js, or compilation.
 
-## Quick Start
+## Zero-Dependency Quick Start
 1. Run `./start.sh` to launch the stack on Cloudtop:
    - Cloudtop Gateway: `http://127.0.0.1:8989` (or `http://<ldap>.c.googlers.com:8989`)
    - Hub API: `http://127.0.0.1:49322`
+   - Static Web UI is served directly via `ham-dev-proxy` (no Node.js or Vite required).
 2. Run `./stop.sh` to shut down the stack.
 
 ## Systemd User Service with Linger
@@ -297,6 +335,13 @@ To run automatically on login / boot with systemd:
 ```bash
 ./scripts/install-systemd-service.sh
 systemctl --user enable --now heimdall.service
+```
+
+## MPM Package Deployment
+Alternatively, deploy or update via Google MPM:
+```bash
+mpm install heimdall/cloudtop live ~/.local/share/heimdall
+~/.local/share/heimdall/bin/start.sh
 ```
 
 ## Backups & Snapshots
@@ -331,7 +376,21 @@ for f in '$BUNDLE_DIR'/lib/libsqlite3.so.*; do
     ln -s \"\$(basename \"\$f\")\" '$BUNDLE_DIR'/lib/libsqlite3.so
   fi
 done
+for libfile in '$BUNDLE_DIR'/lib/*.so*; do
+  if [ -f \"\$libfile\" ] && [ ! -L \"\$libfile\" ]; then
+    patchelf --set-rpath '\$ORIGIN' \"\$libfile\" 2>/dev/null || true
+  fi
+done
 "
+
+echo "[bundle] 5.5. Verifying zero /nix/store references in binaries..."
+NIX_REFS=$(ldd "$BUNDLE_DIR/bin/"* 2>/dev/null | grep '/nix/store' || true)
+if [ -n "$NIX_REFS" ]; then
+  echo "[-] ERROR: Detected lingering /nix/store references in bundled binaries:"
+  echo "$NIX_REFS"
+  exit 1
+fi
+echo "[bundle] Zero /nix/store references verified!"
 
 echo "[bundle] 6. Creating archive dist/heimdall-cloudtop-bundle.tar.gz..."
 tar -czf "$DIST_DIR/heimdall-cloudtop-bundle.tar.gz" -C "$DIST_DIR" heimdall-cloudtop
