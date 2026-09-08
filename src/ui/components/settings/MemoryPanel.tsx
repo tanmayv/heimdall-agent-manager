@@ -6,6 +6,7 @@ import {
   useApproveMemoryMutation,
   useRejectMemoryMutation,
   useArchiveMemoryMutation,
+  memoryErrorText,
 } from "../../api/endpoints/memory";
 import { MemoryScopeSelector, MemoryScopeValue, MEMORY_TYPES, scopeToLists, listsToScope } from "./MemoryScopeSelector";
 
@@ -60,7 +61,7 @@ export const MemoryPanel: React.FC = () => {
       setCreateScope({ type: "fact" });
       setCreateOpen(false);
     } catch (err: any) {
-      setCreateError(String(err?.data?.error || err?.message || err || "Failed to create memory"));
+      setCreateError(memoryErrorText(err, "Failed to create memory"));
     }
   };
 
@@ -300,7 +301,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
       }).unwrap();
       setMsg({ text: "Edits saved." });
     } catch (err: any) {
-      setMsg({ text: String(err?.data?.error || err?.message || "Failed to save edits"), error: true });
+      setMsg({ text: memoryErrorText(err, "Failed to save edits"), error: true });
     }
   };
 
@@ -317,7 +318,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
       }).unwrap();
       setMsg({ text: "Proposal approved!" });
     } catch (err: any) {
-      setMsg({ text: String(err?.data?.error || err?.message || "Failed to approve proposal"), error: true });
+      setMsg({ text: memoryErrorText(err, "Failed to approve proposal"), error: true });
     }
   };
 
@@ -327,7 +328,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
       await rejectMemory({ memoryId, reason: "Rejected by reviewer" }).unwrap();
       setMsg({ text: "Proposal rejected." });
     } catch (err: any) {
-      setMsg({ text: String(err?.data?.error || err?.message || "Failed to reject proposal"), error: true });
+      setMsg({ text: memoryErrorText(err, "Failed to reject proposal"), error: true });
     }
   };
 

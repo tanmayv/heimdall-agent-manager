@@ -14,6 +14,7 @@ import {
   useGetMemoryQuery,
   useUpdateMemoryMutation,
   useArchiveMemoryMutation,
+  memoryErrorText,
 } from '../../api/endpoints/memory';
 import {
   MEMORY_TYPES,
@@ -75,7 +76,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
       await updateMemory({ memoryId: record.memoryId || memoryId, body, type, expectedVersion: record.version, ...targeting }).unwrap();
       setEditing(false);
     } catch (err: any) {
-      setError(String(err?.data?.error || err?.message || err || 'Failed to save changes.'));
+      setError(memoryErrorText(err, 'Failed to save changes.'));
     } finally {
       setSaving(false);
     }
@@ -87,7 +88,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
       await archiveMemory({ memoryId: record.memoryId || memoryId }).unwrap();
       goBack();
     } catch (err: any) {
-      setError(String(err?.data?.error || err?.message || err || 'Failed to delete memory.'));
+      setError(memoryErrorText(err, 'Failed to delete memory.'));
       setConfirmDelete(false);
     }
   }

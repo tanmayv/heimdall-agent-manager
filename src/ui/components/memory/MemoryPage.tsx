@@ -17,6 +17,7 @@ import {
   useApproveMemoryMutation,
   useRejectMemoryMutation,
   useCreateMemoryMutation,
+  memoryErrorText,
 } from '../../api/endpoints/memory';
 import {
   MEMORY_TYPES,
@@ -234,7 +235,7 @@ function ProposalCard({ memory, catalog }: { memory: any; catalog: ScopeCatalog 
         await approveMemory({ memoryId: id, title: memory.title, body: memory.body, evidence: memory.evidence || undefined, type: memory.type, reason: reason || undefined, ...targeting }).unwrap();
       }
     } catch (err: any) {
-      setError(String(err?.data?.error || err?.message || err || 'Decision failed.'));
+      setError(memoryErrorText(err, 'Decision failed.'));
     } finally {
       setBusy('');
     }
@@ -297,7 +298,7 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
       await createMemory({ title: title.trim(), body: body.trim(), evidence: evidence.trim() || undefined, type, status: 'active', ...targeting }).unwrap();
       onClose();
     } catch (err: any) {
-      setError(String(err?.data?.error || err?.message || err || 'Failed to create memory.'));
+      setError(memoryErrorText(err, 'Failed to create memory.'));
     }
   }
 
