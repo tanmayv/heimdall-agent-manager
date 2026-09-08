@@ -275,6 +275,7 @@ Bridge_Fig_Command :: struct {
 	command_type: string,
 	workspace:    string,
 	path:         string,
+	query:        string,
 	cursor:       string,
 	limit:        int,
 	send_limit:   bool,
@@ -305,6 +306,9 @@ bridge_fig_command_json :: proc(cmd: Bridge_Fig_Command, command_id: string) -> 
 	if cmd.path != "" {
 		strings.write_string(&b, ",\"path\":\""); write_handler_json_string(&b, cmd.path); strings.write_string(&b, "\"")
 	}
+	if cmd.query != "" {
+		strings.write_string(&b, ",\"query\":\""); write_handler_json_string(&b, cmd.query); strings.write_string(&b, "\"")
+	}
 	if cmd.cursor != "" {
 		strings.write_string(&b, ",\"cursor\":\""); write_handler_json_string(&b, cmd.cursor); strings.write_string(&b, "\"")
 	}
@@ -318,7 +322,10 @@ bridge_fig_command_json :: proc(cmd: Bridge_Fig_Command, command_id: string) -> 
 list_bridge_fig_workspaces_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	bridge_id := path_part(req.path, 4)
-	result, ok, err := bridge_fig_relay(h, req, bridge_id, Bridge_Fig_Command{command_type = "fig_list_workspaces"})
+	query := query_value(req.query, "query")
+	if query == "" do query = query_value(req.query, "search")
+	if query == "" do query = query_value(req.query, "q")
+	result, ok, err := bridge_fig_relay(h, req, bridge_id, Bridge_Fig_Command{command_type = "fig_list_workspaces", query = query})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }

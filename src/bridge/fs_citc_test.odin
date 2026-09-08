@@ -53,15 +53,19 @@ test_fig_list_and_create_workspaces_mock :: proc(t: ^testing.T) {
 	testing.expect_value(t, c1.name, "ws-beta")
 	testing.expect(t, c1.created, "created flag true")
 
-	// Create workspace 2 via mock create
+	time.sleep(10 * time.Millisecond)
+
+	// Create workspace 2 via mock create (newer timestamp)
 	c2 := fig_create_workspace("ws-alpha", root, true)
 	testing.expect(t, c2.ok, "create ws-alpha ok")
 
-	// Create a non-CitC dir without google3 to verify it is ignored
-	non_citc := strings.concatenate({root, "/not-a-workspace"})
-	_ = os.make_directory_all(non_citc)
+	// Create a non-directory file and hidden/invalid dir to verify they are ignored
+	non_dir := strings.concatenate({root, "/not-a-dir.txt"})
+	_ = os.write_entire_file_from_string(non_dir, "content")
+	invalid_name := strings.concatenate({root, "/.hidden_workspace"})
+	_ = os.make_directory_all(invalid_name)
 
-	// List workspaces: should discover ws-alpha and ws-beta in sorted order
+	// List workspaces: should discover ws-alpha and ws-beta in recency order (ws-alpha first)
 	res1 := fig_list_workspaces(root)
 	testing.expect(t, res1.ok, "list workspaces ok")
 	testing.expect_value(t, len(res1.workspaces), 2)

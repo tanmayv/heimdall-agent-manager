@@ -9,7 +9,10 @@ import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 export type FigWorkspace = {
   name: string;
   path: string;
-  has_google3: boolean;
+  has_google3?: boolean;
+  modified_at?: string;
+  last_sync_head_change?: string;
+  age_text?: string;
 };
 
 export type ListBridgeFigWorkspacesResult = {
@@ -47,10 +50,11 @@ export type ListBridgeFigFsResult = {
 
 export const bridgeFigApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listBridgeFigWorkspaces: build.query<ListBridgeFigWorkspacesResult, { bridgeId: string }>({
-      queryFn: async ({ bridgeId }) => {
+    listBridgeFigWorkspaces: build.query<ListBridgeFigWorkspacesResult, { bridgeId: string; query?: string }>({
+      queryFn: async ({ bridgeId, query }) => {
         try {
-          const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/fig/workspaces`);
+          const qs = query ? `?query=${encodeURIComponent(query)}` : '';
+          const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/fig/workspaces${qs}`);
           return { data: data as ListBridgeFigWorkspacesResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

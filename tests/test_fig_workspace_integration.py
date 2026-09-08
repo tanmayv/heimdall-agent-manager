@@ -176,7 +176,7 @@ exit 1
         # Pre-seed workspaces in citc_root
         (citc_root / "ws_alpha" / "google3").mkdir(parents=True, exist_ok=True)
         (citc_root / "ws_beta" / "google3").mkdir(parents=True, exist_ok=True)
-        (citc_root / "not_a_citc_ws" / "other_dir").mkdir(parents=True, exist_ok=True)
+        (citc_root / "invalid$ws" / "other_dir").mkdir(parents=True, exist_ok=True)
         (citc_root / ".hidden_ws" / "google3").mkdir(parents=True, exist_ok=True)
 
         hub_port = free_port()
@@ -285,7 +285,7 @@ exit 1
         print(f"[+] Discovered workspaces: {ws_names}")
         assert "ws_alpha" in ws_names, f"ws_alpha missing from {ws_names}"
         assert "ws_beta" in ws_names, f"ws_beta missing from {ws_names}"
-        assert "not_a_citc_ws" not in ws_names, f"Non-CitC workspace must be excluded: {ws_names}"
+        assert "invalid$ws" not in ws_names, f"Invalid workspace must be excluded: {ws_names}"
         assert ".hidden_ws" not in ws_names, f"Hidden workspace must be excluded: {ws_names}"
 
         alpha_entry = next(w for w in workspaces if w["name"] == "ws_alpha")

@@ -11,12 +11,17 @@ import "core:os"
 import "core:path/filepath"
 import "core:slice"
 import "core:strings"
+import "core:sync"
+import "core:thread"
+import "core:time"
 import ws "odin_test:lib/ws"
 
 Fig_Workspace_Entry :: struct {
-	name:        string,
-	path:        string,
-	modified_at: string,
+	name:                  string,
+	path:                  string,
+	modified_at:           string,
+	last_sync_head_change: string,
+	age_text:              string,
 }
 
 Fig_List_Workspaces_Result :: struct {
@@ -75,51 +80,229 @@ fig_is_valid_workspace_name :: proc(name: string) -> bool {
 	return true
 }
 
-fig_list_workspaces :: proc(custom_root: string = "") -> Fig_List_Workspaces_Result {
-	user_root := custom_root if custom_root != "" else fig_citc_user_root()
-	if !os.exists(user_root) || !os.is_dir(user_root) {
-		return Fig_List_Workspaces_Result{
-			ok = true,
-			user_root = user_root,
-			workspaces = make([]Fig_Workspace_Entry, 0, context.allocator),
+Fig_Cache_Item :: struct {
+	name:                  string,
+	path:                  string,
+	modified_at:           string,
+	last_sync_head_change: string,
+	age_text:              string,
+	mtime_ns:              i64,
+}
+
+Fig_Workspace_Cache :: struct {
+	lock:          sync.Mutex,
+	initialized:   bool,
+	is_refreshing: bool,
+	last_refresh:  time.Time,
+	user_root:     string,
+	items:         [dynamic]Fig_Cache_Item,
+}
+
+fig_cache: Fig_Workspace_Cache
+
+fig_format_age :: proc(mtime: time.Time) -> string {
+	now := time.now()
+	diff_ns := time.diff(mtime, now)
+	if diff_ns < 0 do return "just now"
+	diff_sec := i64(diff_ns / 1_000_000_000)
+	if diff_sec < 60 do return "just now"
+	diff_min := diff_sec / 60
+	if diff_min < 60 {
+		if diff_min == 1 do return "1m ago"
+		return fmt.tprintf("%dm ago", diff_min)
+	}
+	diff_hours := diff_min / 60
+	if diff_hours < 24 {
+		if diff_hours == 1 do return "1h ago"
+		return fmt.tprintf("%dh ago", diff_hours)
+	}
+	diff_days := diff_hours / 24
+	if diff_days < 30 {
+		if diff_days == 1 do return "1d ago"
+		return fmt.tprintf("%dd ago", diff_days)
+	}
+	diff_months := diff_days / 30
+	if diff_months == 1 do return "1mo ago"
+	return fmt.tprintf("%dmo ago", diff_months)
+}
+
+fig_extract_last_sync_head :: proc(user_root, ws_name: string) -> string {
+	version_map_path := fmt.tprintf("%s/%s/VERSION_MAP", user_root, ws_name)
+	data, err := os.read_entire_file(version_map_path, context.allocator)
+	if err != nil do return ""
+	defer delete(data)
+	content := string(data)
+	for line in strings.split_lines_iterator(&content) {
+		trimmed := strings.trim_space(line)
+		if strings.has_prefix(trimmed, "map ") {
+			rest := strings.trim_space(trimmed[4:])
+			end_idx := strings.index_byte(rest, ' ')
+			if end_idx > 0 {
+				cl := rest[:end_idx]
+				is_digits := true
+				for ch in cl {
+					if ch < '0' || ch > '9' {
+						is_digits = false
+						break
+					}
+				}
+				if is_digits && len(cl) > 0 {
+					return strings.clone(cl)
+				}
+			}
 		}
 	}
+	return ""
+}
+
+fig_cache_start_prefetch :: proc() {
+	sync.mutex_lock(&fig_cache.lock)
+	if fig_cache.is_refreshing {
+		sync.mutex_unlock(&fig_cache.lock)
+		return
+	}
+	fig_cache.is_refreshing = true
+	sync.mutex_unlock(&fig_cache.lock)
+	thread.run(fig_cache_refresh_worker)
+}
+
+fig_cache_refresh_worker :: proc() {
+	user_root := fig_citc_user_root()
+	items := fig_scan_workspaces_internal(user_root)
+
+	sync.mutex_lock(&fig_cache.lock)
+	for item in fig_cache.items {
+		delete(item.name)
+		delete(item.path)
+		delete(item.modified_at)
+		delete(item.last_sync_head_change)
+		delete(item.age_text)
+	}
+	clear(&fig_cache.items)
+	for item in items {
+		append(&fig_cache.items, item)
+	}
+	delete(items)
+	fig_cache.initialized = true
+	fig_cache.is_refreshing = false
+	fig_cache.last_refresh = time.now()
+	delete(fig_cache.user_root)
+	fig_cache.user_root = strings.clone(user_root)
+	sync.mutex_unlock(&fig_cache.lock)
+}
+
+fig_scan_workspaces_internal :: proc(user_root: string) -> [dynamic]Fig_Cache_Item {
+	items := make([dynamic]Fig_Cache_Item)
+	if !os.exists(user_root) || !os.is_dir(user_root) do return items
 	infos, err := os.read_directory_by_path(user_root, -1, context.allocator)
-	if err != nil {
-		return Fig_List_Workspaces_Result{
-			ok = false,
-			user_root = user_root,
-			error_code = "read_failed",
-			message = "Could not read CitC user directory",
-		}
-	}
+	if err != nil do return items
 	defer os.file_info_slice_delete(infos, context.allocator)
 
-	list := make([dynamic]Fig_Workspace_Entry, context.allocator)
 	for info in infos {
 		name := info.name
 		if name == "" || name == "." || name == ".." do continue
 		if len(name) > 0 && name[0] == '.' do continue
 		if info.type != .Directory do continue
+		if !fig_is_valid_workspace_name(name) do continue
 
 		g3_path := fmt.tprintf("%s/%s/google3", user_root, name)
-		if !os.exists(g3_path) || !os.is_dir(g3_path) do continue
-
 		mtime := bridge_fs_format_mtime(info.modification_time)
-		append(&list, Fig_Workspace_Entry{
+		mtime_ns := time.to_unix_nanoseconds(info.modification_time)
+		age := fig_format_age(info.modification_time)
+
+		append(&items, Fig_Cache_Item{
 			name = strings.clone(name),
 			path = strings.clone(g3_path),
-			modified_at = mtime,
+			modified_at = strings.clone(mtime),
+			last_sync_head_change = "",
+			age_text = strings.clone(age),
+			mtime_ns = mtime_ns,
 		})
 	}
-	slice.sort_by(list[:], proc(i, j: Fig_Workspace_Entry) -> bool {
+
+	slice.sort_by(items[:], proc(i, j: Fig_Cache_Item) -> bool {
+		if i.mtime_ns != j.mtime_ns {
+			return i.mtime_ns > j.mtime_ns // descending: newest first
+		}
 		return i.name < j.name
 	})
+
+	max_version_map_checks := min(25, len(items))
+	for i in 0..<max_version_map_checks {
+		cl := fig_extract_last_sync_head(user_root, items[i].name)
+		if cl != "" {
+			items[i].last_sync_head_change = cl
+		}
+	}
+
+	return items
+}
+
+fig_filter_items :: proc(items: []Fig_Cache_Item, user_root, query: string) -> Fig_List_Workspaces_Result {
+	clean_query := strings.to_lower(strings.trim_space(query))
+	defer delete(clean_query)
+
+	matched := make([dynamic]Fig_Workspace_Entry, context.allocator)
+	for item in items {
+		if clean_query != "" {
+			name_lower := strings.to_lower(item.name)
+			defer delete(name_lower)
+			if !strings.contains(name_lower, clean_query) do continue
+		}
+		append(&matched, Fig_Workspace_Entry{
+			name = strings.clone(item.name),
+			path = strings.clone(item.path),
+			modified_at = strings.clone(item.modified_at),
+			last_sync_head_change = strings.clone(item.last_sync_head_change),
+			age_text = strings.clone(item.age_text),
+		})
+	}
+
 	return Fig_List_Workspaces_Result{
 		ok = true,
-		user_root = user_root,
-		workspaces = list[:],
+		user_root = strings.clone(user_root),
+		workspaces = matched[:],
 	}
+}
+
+fig_list_workspaces :: proc(custom_root: string = "", query: string = "") -> Fig_List_Workspaces_Result {
+	user_root := custom_root if custom_root != "" else fig_citc_user_root()
+
+	if custom_root != "" {
+		items := fig_scan_workspaces_internal(custom_root)
+		defer {
+			for item in items {
+				delete(item.name)
+				delete(item.path)
+				delete(item.modified_at)
+				delete(item.last_sync_head_change)
+				delete(item.age_text)
+			}
+			delete(items)
+		}
+		return fig_filter_items(items[:], user_root, query)
+	}
+
+	sync.mutex_lock(&fig_cache.lock)
+	needs_initial_scan := !fig_cache.initialized && len(fig_cache.items) == 0
+	sync.mutex_unlock(&fig_cache.lock)
+
+	if needs_initial_scan {
+		fig_cache_refresh_worker()
+	} else {
+		now := time.now()
+		sync.mutex_lock(&fig_cache.lock)
+		age_sec := i64(time.diff(fig_cache.last_refresh, now) / 1_000_000_000)
+		should_refresh := age_sec > 30 && !fig_cache.is_refreshing
+		sync.mutex_unlock(&fig_cache.lock)
+		if should_refresh {
+			fig_cache_start_prefetch()
+		}
+	}
+
+	sync.mutex_lock(&fig_cache.lock)
+	defer sync.mutex_unlock(&fig_cache.lock)
+	return fig_filter_items(fig_cache.items[:], user_root, query)
 }
 
 fig_create_workspace :: proc(name: string, custom_root: string = "", mock: bool = false) -> Fig_Create_Workspace_Result {
@@ -350,6 +533,8 @@ bridge_fig_workspaces_result_json :: proc(command_id: string, r: Fig_List_Worksp
 		strings.write_string(&b, "{\"name\":\""); json_write_string(&b, ws_entry.name)
 		strings.write_string(&b, "\",\"path\":\""); json_write_string(&b, ws_entry.path)
 		strings.write_string(&b, "\",\"modified_at\":\""); json_write_string(&b, ws_entry.modified_at)
+		strings.write_string(&b, "\",\"last_sync_head_change\":\""); json_write_string(&b, ws_entry.last_sync_head_change)
+		strings.write_string(&b, "\",\"age_text\":\""); json_write_string(&b, ws_entry.age_text)
 		strings.write_string(&b, "\"}")
 	}
 	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
@@ -409,7 +594,10 @@ bridge_fig_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> b
 	case "fig_list_workspaces":
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
-		result := fig_list_workspaces()
+		query := extract_json_string(text, "query", "")
+		if query == "" do query = extract_json_string(text, "search", "")
+		if query == "" do query = extract_json_string(text, "q", "")
+		result := fig_list_workspaces("", query)
 		out := bridge_fig_workspaces_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
 		_ = ws.send_text(conn, out)

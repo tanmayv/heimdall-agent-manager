@@ -262,7 +262,7 @@ function ProjectList() {
               </div>
             ) : (
               <div>
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between mb-1.5">
                   <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">CitC Workspace *</span>
                   <button
                     data-debug-id="projects-create-fig-new-workspace-btn"
@@ -273,6 +273,42 @@ function ProjectList() {
                     <Icon name="plus" size={11} /> + New CitC Workspace
                   </button>
                 </div>
+
+                {/* Styled Workspace Selection Card */}
+                <div className="rounded-xl border border-amber-500/30 bg-black/30 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      {workspaceName ? (
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <Icon name="folder" size={14} className="text-amber-400 shrink-0" />
+                            <span className="font-mono text-xs font-bold text-amber-300 truncate">{workspaceName}</span>
+                            <span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 border border-amber-500/20">CitC</span>
+                          </div>
+                          <div className="mt-1 text-[11px] font-mono text-zinc-400 truncate">
+                            /google/src/cloud/…/{workspaceName}/google3{relativePath ? `/${relativePath}` : ''}
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="text-xs font-semibold text-zinc-300">No CitC Workspace Selected</div>
+                          <div className="text-[11px] text-zinc-500">Pick a workspace to configure your CitC project</div>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      data-debug-id="projects-create-fig-browse-btn"
+                      type="button"
+                      disabled={!selectedBridgeId}
+                      onClick={() => setShowFigPicker((v) => !v)}
+                      className="shrink-0 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/25 transition disabled:opacity-40"
+                    >
+                      {showFigPicker ? 'Close Picker' : workspaceName ? 'Change Workspace / Browse…' : 'Browse CitC Workspaces…'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Preserved select for automation & regression test compatibility */}
                 <select
                   data-debug-id="projects-create-fig-workspace-select"
                   value={workspaceName}
@@ -282,7 +318,8 @@ function ProjectList() {
                     setWorkspaceName(ws);
                     if (!name.trim() && ws) setName(ws);
                   }}
-                  className="w-full min-h-[44px] rounded-xl border border-amber-500/30 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-400 font-mono disabled:opacity-50"
+                  className="hidden"
+                  aria-hidden="true"
                 >
                   <option value="">
                     {figWorkspacesQuery.isLoading
@@ -291,6 +328,7 @@ function ProjectList() {
                       ? '-- CitC Bridge Offline --'
                       : '-- Select CitC Workspace --'}
                   </option>
+                  {workspaceName ? <option value={workspaceName}>{workspaceName}</option> : null}
                   {figWorkspaces.map((ws) => (
                     <option key={ws.name} value={ws.name}>
                       {ws.name} {ws.has_google3 ? '✓ (google3)' : ''}
@@ -418,16 +456,24 @@ function ProjectList() {
                 Default path preview: <span className="text-amber-300">/google/src/cloud/…/{workspaceName || '<workspace>'}/google3{relativePath ? `/${relativePath}` : ''}</span>
               </div>
 
-              {showFigPicker && workspaceName && selectedBridgeId ? (
+              {showFigPicker && selectedBridgeId ? (
                 <div className="pt-2">
                   <FigDirectoryPicker
                     debugId="projects-create-fig-picker"
                     bridgeId={selectedBridgeId}
                     workspace={workspaceName}
                     initialPath={relativePath}
-                    onPick={(p) => {
+                    onPick={(p, ws) => {
+                      if (ws) {
+                        setWorkspaceName(ws);
+                        if (!name.trim()) setName(ws);
+                      }
                       setRelativePath(p);
                       setShowFigPicker(false);
+                    }}
+                    onSelectWorkspace={(ws) => {
+                      setWorkspaceName(ws);
+                      if (!name.trim()) setName(ws);
                     }}
                     onClose={() => setShowFigPicker(false)}
                   />

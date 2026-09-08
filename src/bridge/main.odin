@@ -120,6 +120,8 @@ main :: proc() {
 	bridge_action_scheduler_start()
 	// CT-5: Monitor 20-hour Cloudtop LOAS/gcert credentials and re-arm on renewal
 	bridge_gcert_monitor_start()
+	// CT-14: Start CitC workspace in-memory cache prefetch in background
+	fig_cache_start_prefetch()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	bridge_peer_state_init(bridge_config.peers[:])
 	_ = run_bridge_server(bridge_config)
