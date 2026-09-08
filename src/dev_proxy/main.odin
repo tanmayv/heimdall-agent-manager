@@ -181,9 +181,14 @@ is_origin_or_referer_allowed :: proc(origin_or_ref: string) -> bool {
 log_incoming_headers :: proc(headers: []contracts.HTTP_Header) {
 	fmt.eprintln("[dev-proxy] Incoming headers on denial:")
 	for h in headers {
+		lower_name := strings.to_lower(h.name, context.temp_allocator)
 		if ascii_equal_fold(h.name, "Authorization") {
 			preview := h.value[:min(12, len(h.value))]
 			fmt.eprintfln("[dev-proxy]   %s: %s... (masked, len=%d)", h.name, preview, len(h.value))
+		} else if lower_name == "cookie" || lower_name == "set-cookie" {
+			fmt.eprintfln("[dev-proxy]   %s: [REDACTED] (len=%d)", h.name, len(h.value))
+		} else if strings.contains(lower_name, "secret") || strings.contains(lower_name, "token") {
+			fmt.eprintfln("[dev-proxy]   %s: [REDACTED] (len=%d)", h.name, len(h.value))
 		} else {
 			fmt.eprintfln("[dev-proxy]   %s: %s", h.name, h.value)
 		}

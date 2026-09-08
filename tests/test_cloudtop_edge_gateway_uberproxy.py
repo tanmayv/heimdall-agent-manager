@@ -270,6 +270,23 @@ def main() -> None:
                 assert "invalid host header" in body
             print("PASS 3f: Untrusted Host header rejected even with valid ÜberProxy authentication")
 
+            # TEST 3g: Credential Masking in Denial Logs (Cookie & sensitive headers redacted)
+            req_cookie_leak = urllib.request.Request(
+                f"http://127.0.0.1:{gateway_port}/api/v1/me",
+                headers={
+                    "Host": "evil-attacker.com:8989",
+                    "X-UberProxy-User": "tanmayvijay",
+                    "Cookie": "super_secret_session_token=12345; user=tanmayvijay",
+                    "X-Custom-Secret": "sensitive_key_val",
+                },
+            )
+            try:
+                urllib.request.urlopen(req_cookie_leak, timeout=5)
+                assert False, "expected 403 Forbidden for evil-attacker.com"
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
+            print("PASS 3g: Request with sensitive Cookie/secret headers rejected")
+
             # TEST 4: Non-owner caller identity rejected with 403 Forbidden for all header types
             for bad_header, bad_val in [
                 ("X-Goog-Authenticated-User-Email", "alice@google.com"),
@@ -336,7 +353,11 @@ def main() -> None:
 
         finally:
             proc.terminate()
-            proc.wait()
+            stdout_data, _ = proc.communicate()
+            assert "super_secret_session_token" not in stdout_data, "Cookie secret must be redacted from denial logs!"
+            assert "sensitive_key_val" not in stdout_data, "Custom secret must be redacted from denial logs!"
+            assert "Cookie: [REDACTED]" in stdout_data, "Expected Cookie: [REDACTED] in logs"
+            print("PASS 3h: Denial logs verified: Cookie and secret headers are strictly redacted")
 
         # TEST 8: Fallback Gateway HTML when Vite dev server is offline
         offline_vite_port = free_port()

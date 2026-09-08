@@ -6,6 +6,14 @@ import "core:strings"
 import contracts "odin_test:contracts"
 
 // extract_uberproxy_identity extracts the caller username and email from ÜberProxy headers.
+//
+// Security & Transport Boundary Note:
+// In Google Cloudtop single-node deployments, port 8989 ingress relies on the Cloudtop GCE Enforcer
+// firewall and corp network perimeter to drop untrusted direct intra-VPC external connections.
+// Traffic reaches the edge gateway either locally (loopback) or authenticated via ÜberProxy / PEN,
+// which strips unverified client-supplied headers and injects authoritative identity headers
+// (X-UberProxy-User, X-UberProxy-User-Email).
+//
 // Priority order:
 // 1. X-UberProxy-User / X-UberProxy-User-Email (Google internal ÜberProxy PEN headers)
 // 2. X-Goog-Authenticated-User-Email (GCP Cloud IAP, supporting accounts.google.com: prefix)
