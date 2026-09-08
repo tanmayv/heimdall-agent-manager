@@ -933,6 +933,265 @@ write_member_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth: con
 	strings.write_string(b, "\"}")
 }
 
+// ---- GET /api/v1/agents/live : project -> live-chains -> agents tree ---------
+// One call that powers the sidebar rail. It returns EVERY project (alphabetical
+// by name, even with nothing live) -> the task-chains in that project that
+// currently have >=1 LIVE agent (chains with no live agent are omitted) -> those
+// chains' live agents plus the full member roster (live or not). "live" mirrors
+// the agent-instance live filter (agent_service.runtime_expected_active). Field
+// names/casing reuse the existing project / chain-member wire contracts.
+Agents_Live_Agent :: struct {
+	agent_instance_id: string,
+	display_name:      string,
+	is_coordinator:    bool,
+	runtime_status:    string,
+	activity_status:   string,
+}
+
+Agents_Live_Member :: struct {
+	agent_instance_id: string,
+	display_name:      string,
+	role:              string,
+	is_coordinator:    bool,
+	is_live:           bool,
+	runtime_status:    string,
+}
+
+Agents_Live_Chain :: struct {
+	chain_id:                      string,
+	title:                         string,
+	coordinator_agent_instance_id: string,
+	live_agents:                   []Agents_Live_Agent,
+	members:                       []Agents_Live_Member,
+}
+
+Agents_Live_Project :: struct {
+	project_id: string,
+	name:       string,
+	chains:     []Agents_Live_Chain,
+}
+
+// Deterministic orderings so the sidebar never jumps: chains by title then id,
+// agents/members by display_name then instance id.
+agents_live_chain_less :: proc(a, b: Agents_Live_Chain) -> bool {
+	if a.title != b.title do return a.title < b.title
+	return a.chain_id < b.chain_id
+}
+agents_live_agent_less :: proc(a, b: Agents_Live_Agent) -> bool {
+	if a.display_name != b.display_name do return a.display_name < b.display_name
+	return a.agent_instance_id < b.agent_instance_id
+}
+agents_live_member_less :: proc(a, b: Agents_Live_Member) -> bool {
+	if a.display_name != b.display_name do return a.display_name < b.display_name
+	return a.agent_instance_id < b.agent_instance_id
+}
+
+// build_agents_live_tree assembles the projects->live-chains->agents tree from
+// already-fetched data. It is kept pure (no services) so it is unit-testable
+// without a DB. Inputs:
+//   projects          all of the owner's projects
+//   chains            all of the owner's chains
+//   members_by_chain  chain_id -> its canonical member roster (incl. non-live)
+//   instances_by_id   agent_instance_id -> instance (liveness + project + labels)
+// A chain is emitted only when it has >=1 live agent; its project is the
+// coordinator instance's project (else the first live agent's project). Projects
+// are alphabetical by name; a trailing "Unassigned" bucket (project_id "") holds
+// any live chain that resolves to no known project. String fields are VIEWS into
+// the inputs (valid for the request); the JSON serializer copies them out. The
+// returned tree is caller-owned — free it with free_agents_live_tree.
+build_agents_live_tree :: proc(projects: []domain.Project, chains: []domain.Task_Chain, members_by_chain: map[string][]domain.Task_Chain_Member, instances_by_id: map[string]domain.Agent_Instance) -> []Agents_Live_Project {
+	// 1) Build each live chain and remember its resolved project id (parallel).
+	live_chains := make([dynamic]Agents_Live_Chain); defer delete(live_chains)
+	project_of_chain := make([dynamic]string); defer delete(project_of_chain)
+	for chain in chains {
+		members := members_by_chain[string(chain.chain_id)] or_else nil
+		// Canonical coordinator (H9): the earliest member with role "coordinator";
+		// members come ordered by created_at ASC. Fall back to the derived mirror.
+		coordinator_id := chain.coordinator_agent_instance_id
+		for m in members {
+			if m.role == "coordinator" { coordinator_id = m.agent_instance_id; break }
+		}
+		agents := make([dynamic]Agents_Live_Agent)
+		roster := make([dynamic]Agents_Live_Member)
+		for m in members {
+			inst, has_inst := instances_by_id[m.agent_instance_id]
+			live := has_inst && agent_service.runtime_expected_active(inst.runtime_status)
+			is_coord := m.agent_instance_id == coordinator_id
+			append(&roster, Agents_Live_Member{
+				agent_instance_id = m.agent_instance_id,
+				display_name = inst.display_name if has_inst else "",
+				role = m.role,
+				is_coordinator = is_coord,
+				is_live = live,
+				runtime_status = inst.runtime_status if has_inst else "",
+			})
+			if live {
+				append(&agents, Agents_Live_Agent{
+					agent_instance_id = m.agent_instance_id,
+					display_name = inst.display_name,
+					is_coordinator = is_coord,
+					runtime_status = inst.runtime_status,
+					activity_status = inst.activity_status,
+				})
+			}
+		}
+		if len(agents) == 0 { delete(agents); delete(roster); continue }
+		slice.sort_by(agents[:], agents_live_agent_less)
+		slice.sort_by(roster[:], agents_live_member_less)
+		project_id := ""
+		if coord_inst, ok := instances_by_id[coordinator_id]; ok do project_id = string(coord_inst.project_id)
+		if project_id == "" {
+			for a in agents {
+				if inst, ok := instances_by_id[a.agent_instance_id]; ok && string(inst.project_id) != "" { project_id = string(inst.project_id); break }
+			}
+		}
+		append(&live_chains, Agents_Live_Chain{
+			chain_id = string(chain.chain_id),
+			title = chain.title,
+			coordinator_agent_instance_id = coordinator_id,
+			live_agents = agents[:],
+			members = roster[:],
+		})
+		append(&project_of_chain, project_id)
+	}
+
+	// 2) Bucket live chains by their resolved project id.
+	chains_by_project := make(map[string][dynamic]Agents_Live_Chain)
+	defer { for _, bkt in chains_by_project do delete(bkt); delete(chains_by_project) }
+	for lc, i in live_chains {
+		pid := project_of_chain[i]
+		if pid not_in chains_by_project do chains_by_project[pid] = make([dynamic]Agents_Live_Chain)
+		append(&chains_by_project[pid], lc)
+	}
+
+	// 3) Emit ALL projects alphabetically, attaching their live chains; then a
+	//    trailing "Unassigned" bucket for live chains with no known project.
+	out := make([dynamic]Agents_Live_Project)
+	sorted_projects := make([]domain.Project, len(projects)); defer delete(sorted_projects)
+	for p, i in projects do sorted_projects[i] = p
+	slice.sort_by(sorted_projects, proc(a, b: domain.Project) -> bool {
+		if a.name != b.name do return a.name < b.name
+		return string(a.project_id) < string(b.project_id)
+	})
+	matched := make(map[string]bool); defer delete(matched)
+	for p in sorted_projects {
+		pid := string(p.project_id)
+		matched[pid] = true
+		bucket := chains_by_project[pid] or_else nil
+		append(&out, Agents_Live_Project{ project_id = pid, name = p.name, chains = agents_live_copy_sorted_chains(bucket[:]) })
+	}
+	unassigned := make([dynamic]Agents_Live_Chain); defer delete(unassigned)
+	for pid, bucket in chains_by_project {
+		if matched[pid] do continue
+		for lc in bucket do append(&unassigned, lc)
+	}
+	if len(unassigned) > 0 {
+		append(&out, Agents_Live_Project{ project_id = "", name = "Unassigned", chains = agents_live_copy_sorted_chains(unassigned[:]) })
+	}
+	return out[:]
+}
+
+// agents_live_copy_sorted_chains copies a bucket into a fresh owned slice sorted
+// by agents_live_chain_less. The copied structs share the live_agents/members
+// backing arrays (single ownership: each live chain lands in exactly one bucket).
+agents_live_copy_sorted_chains :: proc(bucket: []Agents_Live_Chain) -> []Agents_Live_Chain {
+	out := make([]Agents_Live_Chain, len(bucket))
+	for c, i in bucket do out[i] = c
+	slice.sort_by(out, agents_live_chain_less)
+	return out
+}
+
+free_agents_live_tree :: proc(tree: []Agents_Live_Project) {
+	for p in tree {
+		for c in p.chains {
+			delete(c.live_agents)
+			delete(c.members)
+		}
+		delete(p.chains)
+	}
+	delete(tree)
+}
+
+write_agents_live_json :: proc(b: ^strings.Builder, tree: []Agents_Live_Project) {
+	strings.write_string(b, "{\"projects\":[")
+	for p, pi in tree {
+		if pi > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, p.project_id)
+		strings.write_string(b, "\",\"name\":\""); write_handler_json_string(b, p.name)
+		strings.write_string(b, "\",\"chains\":[")
+		for c, ci in p.chains {
+			if ci > 0 do strings.write_byte(b, ',')
+			strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, c.chain_id)
+			strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title)
+			strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id)
+			strings.write_string(b, "\",\"live_agents\":[")
+			for a, ai in c.live_agents {
+				if ai > 0 do strings.write_byte(b, ',')
+				strings.write_string(b, "{\"agent_instance_id\":\""); write_handler_json_string(b, a.agent_instance_id)
+				strings.write_string(b, "\",\"display_name\":\""); write_handler_json_string(b, a.display_name)
+				strings.write_string(b, "\",\"is_coordinator\":"); strings.write_string(b, "true" if a.is_coordinator else "false")
+				strings.write_string(b, ",\"runtime_status\":\""); write_handler_json_string(b, a.runtime_status)
+				strings.write_string(b, "\",\"activity_status\":\""); write_handler_json_string(b, a.activity_status)
+				strings.write_string(b, "\"}")
+			}
+			strings.write_string(b, "],\"members\":[")
+			for m, mi in c.members {
+				if mi > 0 do strings.write_byte(b, ',')
+				strings.write_string(b, "{\"agent_instance_id\":\""); write_handler_json_string(b, m.agent_instance_id)
+				strings.write_string(b, "\",\"display_name\":\""); write_handler_json_string(b, m.display_name)
+				strings.write_string(b, "\",\"role\":\""); write_handler_json_string(b, m.role)
+				strings.write_string(b, "\",\"is_coordinator\":"); strings.write_string(b, "true" if m.is_coordinator else "false")
+				strings.write_string(b, ",\"is_live\":"); strings.write_string(b, "true" if m.is_live else "false")
+				strings.write_string(b, ",\"runtime_status\":\""); write_handler_json_string(b, m.runtime_status)
+				strings.write_string(b, "\"}")
+			}
+			strings.write_string(b, "]}")
+		}
+		strings.write_string(b, "]}")
+	}
+	strings.write_string(b, "]}")
+}
+
+// agents_live_handler serves GET /api/v1/agents/live. It gathers the owner's
+// instances (labels + liveness + project in one query), chains, and projects,
+// fetches members only for chains that actually have a live instance (bounded),
+// then builds + serializes the tree.
+agents_live_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	instances, inst_err := agent_service.list_instances(h.agents, auth_ctx, 2000)
+	if inst_err.code != .None do return respond_error(inst_err, req.request_id)
+	instances_by_id := make(map[string]domain.Agent_Instance); defer delete(instances_by_id)
+	live_chain_ids := make(map[string]bool); defer delete(live_chain_ids)
+	for inst in instances {
+		instances_by_id[inst.agent_instance_id] = inst
+		if inst.chain_id != "" && agent_service.runtime_expected_active(inst.runtime_status) do live_chain_ids[inst.chain_id] = true
+	}
+	chains, chain_err := taskchain_service.list_chains(h.taskchains, auth_ctx)
+	if chain_err.code != .None do return respond_error(chain_err, req.request_id)
+	projects: []domain.Project
+	if h.projects != nil {
+		ps, perr := project_service.list(h.projects, auth_ctx, 500)
+		if perr.code != .None do return respond_error(perr, req.request_id)
+		projects = ps
+	}
+	// Members only for chains with a live instance — the only chains that can be
+	// emitted — so we avoid fetching rosters for the (often larger) dormant set.
+	members_by_chain := make(map[string][]domain.Task_Chain_Member)
+	defer { for _, v in members_by_chain do delete(v); delete(members_by_chain) }
+	for chain in chains {
+		if !live_chain_ids[string(chain.chain_id)] do continue
+		members, merr := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain.chain_id)
+		if merr.code != .None do continue
+		members_by_chain[string(chain.chain_id)] = members
+	}
+	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
+	defer free_agents_live_tree(tree)
+	b := strings.builder_make(); write_agents_live_json(&b, tree)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 write_task_vote_json :: proc(b: ^strings.Builder, v: domain.Task_Vote) {
 	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(v.task_id))
 	strings.write_string(b, "\",\"reviewer_agent_instance_id\":\""); write_handler_json_string(b, v.reviewer_agent_instance_id)

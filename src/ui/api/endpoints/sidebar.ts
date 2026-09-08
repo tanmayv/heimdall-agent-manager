@@ -35,11 +35,6 @@ export type SidebarConversation = {
   agentId: string;
   agentInstanceId: string;
   agentName?: string;
-  // Coordinator of this conversation's chain (resolved by the hub). Used to show
-  // the coordinator's display name as a yellow accent in the sidebar/palette.
-  // Empty when the conversation has no coordinator or is its own coordinator.
-  coordinatorAgentInstanceId?: string;
-  coordinatorDisplayName?: string;
   projectId: string;
   title: string;
   unreadCount: number;
@@ -114,8 +109,6 @@ function normalizeSidebarConversation(raw: any): SidebarConversation {
     agentId: agentId || 'unknown-agent',
     agentInstanceId,
     agentName: String(raw?.agent_display_name || raw?.agentDisplayName || raw?.agent_name || raw?.agentName || '').trim() || undefined,
-    coordinatorAgentInstanceId: String(raw?.coordinator_agent_instance_id || raw?.coordinatorAgentInstanceId || '').trim() || undefined,
-    coordinatorDisplayName: String(raw?.coordinator_display_name || raw?.coordinatorDisplayName || '').trim() || undefined,
     projectId: projectId || 'default-conversations',
     title: String(raw?.title || lastMessagePreview || agentInstanceId || conversationId || 'Untitled session'),
     unreadCount: asNumber(raw?.unread_count ?? raw?.unreadCount),

@@ -10,10 +10,9 @@ import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import content_service "odin_test:hub/service/content"
-import taskchain_service "odin_test:hub/service/taskchain"
 import events "odin_test:hub/service/events"
 
-Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, taskchains: ^taskchain_service.Taskchain_Service, event_bus: ^events.User_Event_Bus }
+Content_Handlers :: struct { auth: ^auth_service.Auth_Service, agents: ^agent_service.Agent_Service, content: ^content_service.Content_Service, event_bus: ^events.User_Event_Bus }
 
 list_memories_handler :: proc(ctx:rawptr, req:Request)->Response{
 	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
@@ -470,7 +469,6 @@ write_chat_json :: proc(b:^strings.Builder,c:domain.Chat_Conversation){ strings.
 write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversation,h:^Content_Handlers,auth:contracts.Auth_Context){
 	bridge_id:=""; runtime_status:=""; activity_status:=""; agent_name:=""; agent_slug:=""; agent_display_name:=""
 	if h!=nil && h.agents!=nil { if c.agent_instance_id!="" { if inst,inst_ok,_:=agent_service.get_instance(h.agents,auth,c.agent_instance_id); inst_ok { bridge_id=inst.bridge_id; runtime_status=inst.runtime_status; activity_status=inst.activity_status; agent_display_name=inst.display_name } }; if c.agent_id!="" { if agent,agent_ok,_:=agent_service.get_agent(h.agents,auth,c.agent_id); agent_ok { agent_name=agent.name; agent_slug=agent.slug } } }
-	coordinator_instance_id,coordinator_display_name:=chat_coordinator(c,h,auth)
 	last_at:=chat_last_message_at(c)
 	standard_direction:=chat_last_message_standard_direction(c.last_message_direction)
 	sender_name:="You" if standard_direction=="sent" else agent_name
@@ -488,11 +486,6 @@ write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversati
 	strings.write_string(b,"\",\"activity_status\":\""); write_handler_json_string(b,activity_status)
 	strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(c.project_id))
 	strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id)
-	// Coordinator of this conversation's chain, rendered as a yellow accent in the
-	// sidebar + command palette. Empty when the conversation has no chain, no
-	// coordinator, or the coordinator IS this conversation's own agent instance.
-	strings.write_string(b,"\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b,coordinator_instance_id)
-	strings.write_string(b,"\",\"coordinator_display_name\":\""); write_handler_json_string(b,coordinator_display_name)
 	strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title)
 	strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count))
 	strings.write_string(b,",\"message_count\":"); strings.write_string(b,fmt.tprintf("%d",c.message_count))
@@ -520,25 +513,6 @@ write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversati
 write_message_json :: proc(b:^strings.Builder,m:domain.Chat_Message,svc:^content_service.Content_Service){ body:=content_service.message_body_for_response(svc,m); typ:=m.message_type; if typ=="" do typ="text"; status:=m.message_status; if status=="" do status="complete"; metadata:=m.metadata_json; if strings.trim_space(metadata)=="" do metadata="{}"; strings.write_string(b,"{\"message_id\":\""); write_handler_json_string(b,m.message_id); strings.write_string(b,"\",\"conversation_id\":\""); write_handler_json_string(b,m.conversation_id); strings.write_string(b,"\",\"direction\":\""); write_handler_json_string(b,m.direction); strings.write_string(b,"\",\"body\":\""); write_handler_json_string(b,body); strings.write_string(b,"\",\"artifact_ids\":"); strings.write_string(b,artifact_json_or_empty(m.artifact_ids_json)); strings.write_string(b,",\"message_type\":\""); write_handler_json_string(b,typ); strings.write_string(b,"\",\"message_status\":\""); write_handler_json_string(b,status); strings.write_string(b,"\",\"metadata\":"); strings.write_string(b,metadata); strings.write_string(b,",\"metadata_json\":\""); write_handler_json_string(b,metadata); strings.write_string(b,"\",\"created_at\":\""); write_handler_json_string(b,m.created_at); strings.write_string(b,"\",\"delivered_at\":\""); write_handler_json_string(b,m.delivered_at); strings.write_string(b,"\",\"read_at\":\""); write_handler_json_string(b,m.read_at); strings.write_string(b,"\"}") }
 write_artifact_json :: proc(b:^strings.Builder,a:domain.Artifact,with_content:bool){ strings.write_string(b,"{\"artifact_id\":\""); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"kind\":\""); write_handler_json_string(b,a.kind); strings.write_string(b,"\",\"name\":\""); write_handler_json_string(b,a.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,a.description); strings.write_string(b,"\",\"content_type\":\""); write_handler_json_string(b,a.content_type); strings.write_string(b,"\",\"mime\":\""); write_handler_json_string(b,a.mime); strings.write_string(b,"\",\"ext\":\""); write_handler_json_string(b,a.ext); strings.write_string(b,"\",\"sha256\":\""); write_handler_json_string(b,a.sha256); strings.write_string(b,"\",\"origin_kind\":\""); write_handler_json_string(b,a.origin_kind); strings.write_string(b,"\",\"origin_ref\":\""); write_handler_json_string(b,a.origin_ref); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,a.agent_id); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,a.agent_instance_id); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,a.chain_id); strings.write_string(b,"\",\"task_id\":\""); write_handler_json_string(b,a.task_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(a.project_id)); strings.write_string(b,"\",\"link\":\"artifact://"); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"size_bytes\":"); strings.write_string(b,fmt.tprintf("%d",a.size_bytes)); if with_content {strings.write_string(b,",\"content\":\""); write_handler_json_string(b,a.content)}; strings.write_string(b,",\"deleted_at\":\""); write_handler_json_string(b,a.deleted_at); strings.write_string(b,"\",\"created_at\":\""); write_handler_json_string(b,a.created_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,a.updated_at); strings.write_string(b,"\"}") }
 write_template_json :: proc(b:^strings.Builder,t:domain.Template){ strings.write_string(b,"{\"template_id\":\""); write_handler_json_string(b,t.template_id); strings.write_string(b,"\",\"is_system\":"); strings.write_string(b,"true" if t.is_system else "false"); strings.write_string(b,",\"name\":\""); write_handler_json_string(b,t.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,t.description); strings.write_string(b,"\",\"persona\":\""); write_handler_json_string(b,t.persona); strings.write_string(b,"\",\"instructions\":\""); write_handler_json_string(b,t.instructions); strings.write_string(b,"\"}") }
-
-// chat_coordinator resolves the display name of the chain coordinator bound to a
-// conversation, for the sidebar/command-palette "coordinator" accent. It returns
-// empty strings (so the UI omits the accent) when the conversation has no chain,
-// the chain has no coordinator, the coordinator can't be resolved, or the
-// coordinator IS the conversation's own agent instance (a self/uncoordinated
-// conversation). The lookups are a single indexed row fetch each (chain by id,
-// instance by id), cheap relative to the surrounding conversation listing.
-chat_coordinator :: proc(c:domain.Chat_Conversation,h:^Content_Handlers,auth:contracts.Auth_Context)->(instance_id:string,display_name:string){
-	if h==nil || h.taskchains==nil || h.agents==nil do return "",""
-	if strings.trim_space(c.chain_id)=="" do return "",""
-	chain,chain_ok,_:=taskchain_service.get_chain(h.taskchains,auth,domain.Task_Chain_ID(c.chain_id))
-	if !chain_ok do return "",""
-	coordinator:=strings.trim_space(chain.coordinator_agent_instance_id)
-	if coordinator=="" || coordinator==c.agent_instance_id do return "",""
-	inst,inst_ok,_:=agent_service.get_instance(h.agents,auth,coordinator)
-	if !inst_ok do return coordinator,""
-	return coordinator,inst.display_name
-}
 
 // chat_instance_runtime_active reports whether the conversation's bound agent
 // instance is in a live runtime state (used by the ?active filter). No instance,
