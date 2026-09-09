@@ -6,7 +6,7 @@ import {
   ChainListItem,
 } from '../../api/endpoints/tasks';
 import {
-  useListAgentsQuery,
+  useListAgentIdentitiesQuery,
   useListAgentInstancesQuery,
   useStartAgentInstanceMutation,
   useLaunchAgentInstanceMutation,
@@ -34,7 +34,7 @@ export default function ProjectLaunchModal({
   const [selectedChainAgentIds, setSelectedChainAgentIds] = useState<Set<string>>(new Set());
 
   // Tab 2 state
-  const [agentsOffset, setAgentsOffset] = useState<number>(0);
+  const [agentsPage, setAgentsPage] = useState<number>(0);
   const [selectedNewAgentIds, setSelectedNewAgentIds] = useState<Set<string>>(new Set());
 
   // Tab 3 state
@@ -70,39 +70,35 @@ export default function ProjectLaunchModal({
   const chainMembers: any[] = chainDetail?.members || [];
   const coordinatorAgentInstanceId = chainDetail?.coordinatorAgentInstanceId || '';
 
-  // Tab 2: Durable agents catalog
+  // Tab 2: Durable agents catalog via useListAgentIdentitiesQuery (cookie-auth /api/v1/agents)
   const AGENTS_PAGE_SIZE = 10;
-  const agentsQuery = useListAgentsQuery(
-    { limit: AGENTS_PAGE_SIZE, offset: agentsOffset },
+  const identitiesQuery = useListAgentIdentitiesQuery(
+    { limit: 200 },
     { skip: !isOpen || activeTab !== 'new' }
   );
+  const rawIdentities: any[] = identitiesQuery.data?.agents || [];
   const durableAgents = useMemo(() => {
-    if (agentsQuery.data?.identities && agentsQuery.data.identities.length > 0) {
-      return agentsQuery.data.identities.map((id: any) => ({
-        agentId: String(id.agent_id || id.agentId || ''),
-        name: String(id.name || id.agent_id || id.agentId || ''),
-        tier: String(id.default_tier || id.defaultTier || ''),
-        provider: String(id.default_provider || id.defaultProvider || ''),
-      })).filter((a: any) => Boolean(a.agentId));
-    }
-    const seen = new Set<string>();
-    const list: Array<{ agentId: string; name: string; tier: string; provider: string }> = [];
-    for (const a of (agentsQuery.data?.agents || [])) {
-      const agentId = String(a.agentId || a.agent_id || a.id || '');
-      if (agentId && !seen.has(agentId)) {
-        seen.add(agentId);
-        list.push({
-          agentId,
-          name: String(a.name || a.label || a.displayName || agentId),
-          tier: String(a.tier || a.defaultTier || a.default_tier || ''),
-          provider: String(a.provider || a.defaultProvider || ''),
-        });
-      }
+    const list: Array<{ agentId: string; name: string; tier: string; provider: string; state: string }> = [];
+    for (const item of rawIdentities) {
+      const agentId = String(item.agent_id || item.agentId || item.id || '').trim();
+      const state = String(item.state || '').trim().toLowerCase();
+      // Filter out archived agents
+      if (!agentId || state === 'archived') continue;
+      list.push({
+        agentId,
+        name: String(item.name || item.slug || agentId),
+        tier: String(item.default_tier || item.defaultTier || ''),
+        provider: String(item.default_provider || item.defaultProvider || ''),
+        state: item.state || 'active',
+      });
     }
     return list;
-  }, [agentsQuery.data]);
-  const totalAgents = agentsQuery.data?.totalCount ?? durableAgents.length;
-  const hasMoreAgents = Boolean(agentsQuery.data?.hasMore || (agentsOffset + AGENTS_PAGE_SIZE < totalAgents));
+  }, [rawIdentities]);
+  const totalAgentPages = Math.max(1, Math.ceil(durableAgents.length / AGENTS_PAGE_SIZE));
+  const paginatedDurableAgents = durableAgents.slice(
+    agentsPage * AGENTS_PAGE_SIZE,
+    (agentsPage + 1) * AGENTS_PAGE_SIZE
+  );
 
   // Tab 3: Existing agent instances for project
   const EXISTING_PAGE_SIZE = 10;
@@ -124,7 +120,7 @@ export default function ProjectLaunchModal({
       setChainCursorHistory([]);
       setSelectedChainId('');
       setSelectedChainAgentIds(new Set());
-      setAgentsOffset(0);
+      setAgentsPage(0);
       setSelectedNewAgentIds(new Set());
       setExistingPage(0);
       setSelectedExistingInstanceIds(new Set());
@@ -264,10 +260,10 @@ export default function ProjectLaunchModal({
     >
       <div
         data-debug-id="project-launch-modal"
-        className="flex flex-col w-full max-w-2xl max-h-[85vh] rounded-2xl border border-white/10 bg-[#121212] p-6 shadow-2xl text-white space-y-4"
+        className="flex flex-col w-full max-w-2xl max-h-[85vh] h-[640px] rounded-2xl border border-white/10 bg-[#121212] p-6 shadow-2xl text-white"
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between">
+        <div className="shrink-0 flex items-center justify-between pb-3">
           <div>
             <h2 className="text-base font-semibold text-white">
               Launch Agent — <span className="text-sky-400">{project.name}</span>
@@ -288,7 +284,7 @@ export default function ProjectLaunchModal({
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center gap-2 border-b border-white/10 pb-2.5">
+        <div className="shrink-0 flex items-center gap-2 border-b border-white/10 pb-2.5 mb-3">
           <button
             type="button"
             data-debug-id="project-launch-tab-chain"
@@ -340,7 +336,7 @@ export default function ProjectLaunchModal({
         {feedback && (
           <div
             data-debug-id="project-launch-feedback-banner"
-            className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs leading-5 ${
+            className={`shrink-0 mb-3 flex items-center gap-2 rounded-xl px-3 py-2 text-xs leading-5 ${
               feedback.type === 'success'
                 ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
                 : 'border border-red-500/20 bg-red-500/10 text-red-300'
@@ -351,11 +347,11 @@ export default function ProjectLaunchModal({
           </div>
         )}
 
-        {/* Scrollable Content Body */}
-        <div className="flex-1 overflow-y-auto space-y-4 pr-1 min-h-[260px]">
+        {/* Scrollable / Flexible Content Area */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
           {/* TAB 1: Existing Task Chain Agent */}
           {activeTab === 'chain' && (
-            <div className="space-y-4">
+            <div className="flex-1 min-h-0 flex flex-col space-y-3 overflow-hidden">
               {chainsQuery.isLoading ? (
                 <div className="py-8 text-center text-xs text-zinc-500">Loading task chains…</div>
               ) : chains.length === 0 ? (
@@ -366,12 +362,45 @@ export default function ProjectLaunchModal({
                   No task chains found for this project.
                 </div>
               ) : (
-                <div className="space-y-3">
-                  <div>
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
-                      Select Task Chain
-                    </span>
-                    <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+                <>
+                  {/* Task chains list section */}
+                  <div className="shrink-0 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                        Select Task Chain
+                      </span>
+                      {(chainHasMore || chainCursorHistory.length > 0) && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={chainCursorHistory.length === 0 || isActionRunning}
+                            onClick={() => {
+                              const newHistory = [...chainCursorHistory];
+                              const prev = newHistory.pop() || '';
+                              setChainCursorHistory(newHistory);
+                              setChainCursor(prev);
+                            }}
+                            className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10.5px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!chainHasMore || !chainNextCursor || isActionRunning}
+                            onClick={() => {
+                              setChainCursorHistory((prev) => [...prev, chainCursor]);
+                              setChainCursor(chainNextCursor);
+                            }}
+                            className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10.5px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Scrollable chains grid */}
+                    <div className="max-h-36 overflow-y-auto pr-1 grid gap-2 sm:grid-cols-2">
                       {chains.map((chain) => {
                         const isSelected = chain.chainId === selectedChainId;
                         return (
@@ -389,7 +418,7 @@ export default function ProjectLaunchModal({
                             <span className="truncate w-full text-xs font-medium text-zinc-200">
                               {chain.title || chain.chainId}
                             </span>
-                            <div className="mt-1.5 flex items-center gap-2 text-[10px] text-zinc-400">
+                            <div className="mt-1 flex items-center gap-2 text-[10px] text-zinc-400">
                               <span className="rounded bg-white/5 px-1.5 py-0.5 capitalize">
                                 {chain.status || 'active'}
                               </span>
@@ -399,42 +428,12 @@ export default function ProjectLaunchModal({
                         );
                       })}
                     </div>
-
-                    {/* Chain Pagination Controls */}
-                    {(chainHasMore || chainCursorHistory.length > 0) && (
-                      <div className="mt-2 flex items-center justify-end gap-2 pt-1">
-                        <button
-                          type="button"
-                          disabled={chainCursorHistory.length === 0 || isActionRunning}
-                          onClick={() => {
-                            const newHistory = [...chainCursorHistory];
-                            const prev = newHistory.pop() || '';
-                            setChainCursorHistory(newHistory);
-                            setChainCursor(prev);
-                          }}
-                          className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
-                        >
-                          Previous
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!chainHasMore || !chainNextCursor || isActionRunning}
-                          onClick={() => {
-                            setChainCursorHistory((prev) => [...prev, chainCursor]);
-                            setChainCursor(chainNextCursor);
-                          }}
-                          className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
-                        >
-                          Next
-                        </button>
-                      </div>
-                    )}
                   </div>
 
                   {/* Chain Agents List */}
                   {selectedChainId && (
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3.5 space-y-2.5">
-                      <div className="flex items-center justify-between">
+                    <div className="flex-1 min-h-0 flex flex-col rounded-xl border border-white/10 bg-black/20 p-3 overflow-hidden">
+                      <div className="shrink-0 flex items-center justify-between pb-2">
                         <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
                           Chain Agents
                         </span>
@@ -445,15 +444,15 @@ export default function ProjectLaunchModal({
                         )}
                       </div>
 
-                      {chainDetailQuery.isLoading ? (
-                        <div className="py-4 text-center text-xs text-zinc-500">Loading chain agents…</div>
-                      ) : chainMembers.length === 0 ? (
-                        <div className="py-3 text-center text-xs text-zinc-500">
-                          No agents found in this task chain.
-                        </div>
-                      ) : (
-                        <div className="space-y-1.5">
-                          {chainMembers.map((member) => {
+                      <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
+                        {chainDetailQuery.isLoading ? (
+                          <div className="py-4 text-center text-xs text-zinc-500">Loading chain agents…</div>
+                        ) : chainMembers.length === 0 ? (
+                          <div className="py-3 text-center text-xs text-zinc-500">
+                            No agents found in this task chain.
+                          </div>
+                        ) : (
+                          chainMembers.map((member) => {
                             const isCoordinator =
                               member.agentInstanceId === coordinatorAgentInstanceId ||
                               member.role === 'coordinator';
@@ -502,42 +501,42 @@ export default function ProjectLaunchModal({
                                 </span>
                               </label>
                             );
-                          })}
-                        </div>
-                      )}
+                          })
+                        )}
+                      </div>
                     </div>
                   )}
-                </div>
+                </>
               )}
             </div>
           )}
 
           {/* TAB 2: New Agent Instance */}
           {activeTab === 'new' && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
+            <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
+              <div className="shrink-0 flex items-center justify-between pb-1">
                 <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Durable Agents Catalog
                 </span>
-                {totalAgents > 0 && (
+                {durableAgents.length > 0 && (
                   <span className="text-[11px] text-zinc-500">
-                    Showing {agentsOffset + 1}–{Math.min(agentsOffset + AGENTS_PAGE_SIZE, totalAgents)} of {totalAgents}
+                    Showing {agentsPage * AGENTS_PAGE_SIZE + 1}–{Math.min((agentsPage + 1) * AGENTS_PAGE_SIZE, durableAgents.length)} of {durableAgents.length}
                   </span>
                 )}
               </div>
 
-              {agentsQuery.isLoading ? (
-                <div className="py-8 text-center text-xs text-zinc-500">Loading agents…</div>
-              ) : durableAgents.length === 0 ? (
-                <div
-                  data-debug-id="project-launch-new-agents-empty"
-                  className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
-                >
-                  No durable agents found.
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {durableAgents.map((agent) => {
+              <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
+                {identitiesQuery.isLoading ? (
+                  <div className="py-8 text-center text-xs text-zinc-500">Loading agents…</div>
+                ) : durableAgents.length === 0 ? (
+                  <div
+                    data-debug-id="project-launch-new-agents-empty"
+                    className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
+                  >
+                    No durable agents found.
+                  </div>
+                ) : (
+                  paginatedDurableAgents.map((agent) => {
                     const isChecked = selectedNewAgentIds.has(agent.agentId);
                     return (
                       <label
@@ -576,30 +575,33 @@ export default function ProjectLaunchModal({
                         )}
                       </label>
                     );
-                  })}
-                </div>
-              )}
+                  })
+                )}
+              </div>
 
               {/* Pagination Controls */}
-              {totalAgents > AGENTS_PAGE_SIZE && (
-                <div className="flex items-center justify-between border-t border-white/5 pt-2">
+              {totalAgentPages > 1 && (
+                <div className="shrink-0 flex items-center justify-between border-t border-white/5 pt-2">
                   <span className="text-[11px] text-zinc-500">
                     {selectedNewAgentIds.size} agent(s) selected
                   </span>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      disabled={agentsOffset === 0 || isActionRunning}
-                      onClick={() => setAgentsOffset(Math.max(0, agentsOffset - AGENTS_PAGE_SIZE))}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
+                      disabled={agentsPage === 0 || isActionRunning}
+                      onClick={() => setAgentsPage(Math.max(0, agentsPage - 1))}
+                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Previous
                     </button>
+                    <span className="text-[11px] text-zinc-400">
+                      {agentsPage + 1} / {totalAgentPages}
+                    </span>
                     <button
                       type="button"
-                      disabled={!hasMoreAgents || isActionRunning}
-                      onClick={() => setAgentsOffset(agentsOffset + AGENTS_PAGE_SIZE)}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
+                      disabled={agentsPage >= totalAgentPages - 1 || isActionRunning}
+                      onClick={() => setAgentsPage(agentsPage + 1)}
+                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Next
                     </button>
@@ -611,30 +613,30 @@ export default function ProjectLaunchModal({
 
           {/* TAB 3: Existing Agent Instance */}
           {activeTab === 'existing' && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
+            <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
+              <div className="shrink-0 flex items-center justify-between pb-1">
                 <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Project Instances
                 </span>
                 {instances.length > 0 && (
                   <span className="text-[11px] text-zinc-500">
-                    Page {existingPage + 1} of {totalExistingPages} ({instances.length} instance{instances.length === 1 ? '' : 's'})
+                    Showing {existingPage * EXISTING_PAGE_SIZE + 1}–{Math.min((existingPage + 1) * EXISTING_PAGE_SIZE, instances.length)} of {instances.length} ({instances.length} instance{instances.length === 1 ? '' : 's'})
                   </span>
                 )}
               </div>
 
-              {instancesQuery.isLoading ? (
-                <div className="py-8 text-center text-xs text-zinc-500">Loading instances…</div>
-              ) : instances.length === 0 ? (
-                <div
-                  data-debug-id="project-launch-existing-instances-empty"
-                  className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
-                >
-                  No existing instances for this project yet.
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {currentInstances.map((inst) => {
+              <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
+                {instancesQuery.isLoading ? (
+                  <div className="py-8 text-center text-xs text-zinc-500">Loading instances…</div>
+                ) : instances.length === 0 ? (
+                  <div
+                    data-debug-id="project-launch-existing-instances-empty"
+                    className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
+                  >
+                    No existing instances for this project yet.
+                  </div>
+                ) : (
+                  currentInstances.map((inst) => {
                     const instanceId = String(inst.instance_id || inst.instanceId || inst.id || '');
                     const agentId = String(inst.agent_id || inst.agentId || '');
                     const displayName = String(inst.display_name || inst.displayName || agentId || instanceId);
@@ -679,13 +681,13 @@ export default function ProjectLaunchModal({
                         </span>
                       </label>
                     );
-                  })}
-                </div>
-              )}
+                  })
+                )}
+              </div>
 
               {/* Pagination Controls */}
               {totalExistingPages > 1 && (
-                <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                <div className="shrink-0 flex items-center justify-between border-t border-white/5 pt-2">
                   <span className="text-[11px] text-zinc-500">
                     {selectedExistingInstanceIds.size} instance(s) selected
                   </span>
@@ -694,15 +696,18 @@ export default function ProjectLaunchModal({
                       type="button"
                       disabled={existingPage === 0 || isActionRunning}
                       onClick={() => setExistingPage(Math.max(0, existingPage - 1))}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
+                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Previous
                     </button>
+                    <span className="text-[11px] text-zinc-400">
+                      {existingPage + 1} / {totalExistingPages}
+                    </span>
                     <button
                       type="button"
                       disabled={existingPage >= totalExistingPages - 1 || isActionRunning}
                       onClick={() => setExistingPage(existingPage + 1)}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
+                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Next
                     </button>
@@ -714,7 +719,7 @@ export default function ProjectLaunchModal({
         </div>
 
         {/* Modal Footer with Action Buttons */}
-        <div className="flex items-center justify-between border-t border-white/10 pt-3">
+        <div className="shrink-0 flex items-center justify-between border-t border-white/10 pt-3">
           <button
             type="button"
             data-debug-id="project-launch-cancel-btn"
