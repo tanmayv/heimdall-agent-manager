@@ -11,6 +11,7 @@ import {
   useStartAgentInstanceMutation,
   useLaunchAgentInstanceMutation,
 } from '../../api/endpoints/agents';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 
 export type ProjectLaunchModalProps = {
   isOpen: boolean;
@@ -19,6 +20,24 @@ export type ProjectLaunchModalProps = {
 };
 
 type TabKey = 'chain' | 'new' | 'existing';
+
+const ACTIVE_STATUSES = new Set([
+  'running',
+  'idle',
+  'busy',
+  'launching',
+  'starting',
+  'stopping',
+  'blocked',
+  'connected',
+  'ready',
+  'live',
+  'active',
+]);
+
+function isInstanceActive(status: string): boolean {
+  return ACTIVE_STATUSES.has(String(status || '').trim().toLowerCase());
+}
 
 export default function ProjectLaunchModal({
   isOpen,
@@ -36,6 +55,7 @@ export default function ProjectLaunchModal({
   // Tab 2 state
   const [agentsPage, setAgentsPage] = useState<number>(0);
   const [selectedNewAgentIds, setSelectedNewAgentIds] = useState<Set<string>>(new Set());
+  const [selectedBridgeId, setSelectedBridgeId] = useState<string>('');
 
   // Tab 3 state
   const [existingPage, setExistingPage] = useState<number>(0);
@@ -100,15 +120,56 @@ export default function ProjectLaunchModal({
     (agentsPage + 1) * AGENTS_PAGE_SIZE
   );
 
-  // Tab 3: Existing agent instances for project
+  // Tab 2: Available bridges query and normalization
+  const bridgesQuery = useListBridgesQuery(undefined, {
+    skip: !isOpen,
+  });
+  const rawBridges: any[] = bridgesQuery.data?.bridges || [];
+  const availableBridges = useMemo(() => {
+    const list: Array<{ bridgeId: string; label: string; status: string; isOnline: boolean }> = [];
+    for (const raw of rawBridges) {
+      const b = raw?.bridge || raw;
+      const bridgeId = String(b?.bridge_id || b?.bridgeId || b?.id || '').trim();
+      if (!bridgeId) continue;
+      const status = String(b?.status || b?.runtime_status || 'offline').toLowerCase();
+      if (status === 'revoked') continue;
+      const isOnline = status === 'online' || status === 'connected';
+      const label = String(b?.label || b?.machine_hostname || b?.hostname || bridgeId);
+      list.push({ bridgeId, label, status, isOnline });
+    }
+    // Prefer online bridges first, then alphabetical by label
+    return list.sort((a, b) => {
+      if (a.isOnline && !b.isOnline) return -1;
+      if (!a.isOnline && b.isOnline) return 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [rawBridges]);
+
+  // Tab 3: Existing agent instances for project (filtered to stopped / inactive only)
   const EXISTING_PAGE_SIZE = 10;
   const instancesQuery = useListAgentInstancesQuery(
     { projectId, limit: 100 },
     { skip: !isOpen || !projectId || activeTab !== 'existing' }
   );
-  const instances: any[] = instancesQuery.data?.instances || [];
-  const totalExistingPages = Math.max(1, Math.ceil(instances.length / EXISTING_PAGE_SIZE));
-  const currentInstances = instances.slice(
+  const rawInstances: any[] = instancesQuery.data?.instances || [];
+  const stoppedInstances = useMemo(() => {
+    return rawInstances.filter((inst) => {
+      const instanceId = String(
+        inst.agent_instance_id ||
+        inst.agentInstanceId ||
+        inst.instance_id ||
+        inst.instanceId ||
+        inst.id ||
+        ''
+      ).trim();
+      if (!instanceId) return false;
+      const status = String(inst.runtime_status || inst.runtimeStatus || inst.status || '').toLowerCase();
+      return !isInstanceActive(status);
+    });
+  }, [rawInstances]);
+  const hasOnlyActiveInstances = rawInstances.length > 0 && stoppedInstances.length === 0;
+  const totalExistingPages = Math.max(1, Math.ceil(stoppedInstances.length / EXISTING_PAGE_SIZE));
+  const currentInstances = stoppedInstances.slice(
     existingPage * EXISTING_PAGE_SIZE,
     (existingPage + 1) * EXISTING_PAGE_SIZE
   );
@@ -122,11 +183,23 @@ export default function ProjectLaunchModal({
       setSelectedChainAgentIds(new Set());
       setAgentsPage(0);
       setSelectedNewAgentIds(new Set());
+      setSelectedBridgeId('');
       setExistingPage(0);
       setSelectedExistingInstanceIds(new Set());
       setFeedback(null);
     }
   }, [isOpen, projectId]);
+
+  // Auto-select first bridge by default (preferring online status)
+  useEffect(() => {
+    if (availableBridges.length > 0) {
+      if (!selectedBridgeId || !availableBridges.some((b) => b.bridgeId === selectedBridgeId)) {
+        setSelectedBridgeId(availableBridges[0].bridgeId);
+      }
+    } else if (!bridgesQuery.isLoading) {
+      setSelectedBridgeId('');
+    }
+  }, [availableBridges, selectedBridgeId, bridgesQuery.isLoading]);
 
   // When chains load, auto-select first chain if none selected
   useEffect(() => {
@@ -135,22 +208,34 @@ export default function ProjectLaunchModal({
     }
   }, [activeTab, selectedChainId, chains]);
 
-  // When chainDetail loads, coordinator agent is checked by default
+  // When chainDetail loads, coordinator agent is checked by default ONLY if not already active
   useEffect(() => {
     if (chainDetail) {
       const coordId = chainDetail.coordinatorAgentInstanceId;
       if (coordId) {
-        setSelectedChainAgentIds(new Set([coordId]));
+        const coordMember = (chainDetail.members || []).find(
+          (m: any) =>
+            m.agentInstanceId === coordId ||
+            m.agent_instance_id === coordId ||
+            m.role === 'coordinator'
+        );
+        const coordStatus = coordMember?.runtimeStatus || coordMember?.runtime_status || '';
+        if (!isInstanceActive(coordStatus)) {
+          setSelectedChainAgentIds(new Set([coordId]));
+        } else {
+          setSelectedChainAgentIds(new Set());
+        }
       } else {
         setSelectedChainAgentIds(new Set());
       }
     }
-  }, [chainDetail?.chainId, chainDetail?.coordinatorAgentInstanceId]);
+  }, [chainDetail?.chainId, chainDetail?.coordinatorAgentInstanceId, chainDetail?.members]);
 
   if (!isOpen || !project) return null;
 
   // Tab 1 handlers
-  const toggleChainAgent = (instanceId: string) => {
+  const toggleChainAgent = (instanceId: string, isActive?: boolean) => {
+    if (!instanceId || isActive) return;
     setSelectedChainAgentIds((prev) => {
       const next = new Set(prev);
       if (next.has(instanceId)) next.delete(instanceId);
@@ -160,18 +245,44 @@ export default function ProjectLaunchModal({
   };
 
   const handleStartChainAgents = async () => {
-    if (selectedChainAgentIds.size === 0) return;
+    const ids = Array.from(selectedChainAgentIds).filter(Boolean);
+    if (ids.length === 0) return;
     setIsActionRunning(true);
     setFeedback(null);
     try {
-      const ids = Array.from(selectedChainAgentIds);
+      let startedCount = 0;
+      let alreadyRunningCount = 0;
       for (const instanceId of ids) {
-        await startAgentInstance({ instanceId }).unwrap();
+        try {
+          await startAgentInstance({ instanceId }).unwrap();
+          startedCount++;
+        } catch (err: any) {
+          const errStr = String(
+            err?.data?.error?.message ||
+            err?.data?.error ||
+            err?.error ||
+            err?.message ||
+            ''
+          ).toLowerCase();
+          const isAlreadyRunning =
+            err?.status === 409 ||
+            err?.data?.status === 409 ||
+            errStr.includes('already_running') ||
+            errStr.includes('already running');
+          if (isAlreadyRunning) {
+            alreadyRunningCount++;
+          } else {
+            throw err;
+          }
+        }
       }
       setFeedback({
         type: 'success',
-        message: `Successfully started ${ids.length} chain agent instance(s).`,
+        message: `Successfully started ${startedCount} chain agent instance(s)${
+          alreadyRunningCount > 0 ? ` (${alreadyRunningCount} already running)` : ''
+        }.`,
       });
+      onClose();
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -193,19 +304,20 @@ export default function ProjectLaunchModal({
   };
 
   const handleLaunchNewAgents = async () => {
-    if (selectedNewAgentIds.size === 0 || !projectId) return;
+    if (selectedNewAgentIds.size === 0 || !projectId || !selectedBridgeId) return;
     setIsActionRunning(true);
     setFeedback(null);
     try {
       const ids = Array.from(selectedNewAgentIds);
       for (const agentId of ids) {
-        await launchAgentInstance({ agentId, projectId }).unwrap();
+        await launchAgentInstance({ agentId, projectId, bridgeId: selectedBridgeId }).unwrap();
       }
       setFeedback({
         type: 'success',
         message: `Successfully launched ${ids.length} new agent instance(s) for ${project.name}.`,
       });
       setSelectedNewAgentIds(new Set());
+      onClose();
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -218,6 +330,7 @@ export default function ProjectLaunchModal({
 
   // Tab 3 handlers
   const toggleExistingInstance = (instanceId: string) => {
+    if (!instanceId) return;
     setSelectedExistingInstanceIds((prev) => {
       const next = new Set(prev);
       if (next.has(instanceId)) next.delete(instanceId);
@@ -227,19 +340,45 @@ export default function ProjectLaunchModal({
   };
 
   const handleStartExistingInstances = async () => {
-    if (selectedExistingInstanceIds.size === 0) return;
+    const ids = Array.from(selectedExistingInstanceIds).filter(Boolean);
+    if (ids.length === 0) return;
     setIsActionRunning(true);
     setFeedback(null);
     try {
-      const ids = Array.from(selectedExistingInstanceIds);
+      let startedCount = 0;
+      let alreadyRunningCount = 0;
       for (const instanceId of ids) {
-        await startAgentInstance({ instanceId }).unwrap();
+        try {
+          await startAgentInstance({ instanceId }).unwrap();
+          startedCount++;
+        } catch (err: any) {
+          const errStr = String(
+            err?.data?.error?.message ||
+            err?.data?.error ||
+            err?.error ||
+            err?.message ||
+            ''
+          ).toLowerCase();
+          const isAlreadyRunning =
+            err?.status === 409 ||
+            err?.data?.status === 409 ||
+            errStr.includes('already_running') ||
+            errStr.includes('already running');
+          if (isAlreadyRunning) {
+            alreadyRunningCount++;
+          } else {
+            throw err;
+          }
+        }
       }
       setFeedback({
         type: 'success',
-        message: `Successfully started ${ids.length} existing instance(s).`,
+        message: `Successfully started ${startedCount} existing instance(s)${
+          alreadyRunningCount > 0 ? ` (${alreadyRunningCount} already running)` : ''
+        }.`,
       });
       setSelectedExistingInstanceIds(new Set());
+      onClose();
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -453,27 +592,44 @@ export default function ProjectLaunchModal({
                           </div>
                         ) : (
                           chainMembers.map((member) => {
+                            const memberInstanceId = String(
+                              member.agent_instance_id ||
+                              member.agentInstanceId ||
+                              member.instance_id ||
+                              member.id ||
+                              ''
+                            ).trim();
+                            if (!memberInstanceId) return null;
                             const isCoordinator =
+                              memberInstanceId === coordinatorAgentInstanceId ||
                               member.agentInstanceId === coordinatorAgentInstanceId ||
+                              member.agent_instance_id === coordinatorAgentInstanceId ||
                               member.role === 'coordinator';
-                            const isChecked = selectedChainAgentIds.has(member.agentInstanceId);
+                            const isChecked = selectedChainAgentIds.has(memberInstanceId);
+                            const memberStatus = String(
+                              member.runtimeStatus || member.runtime_status || 'offline'
+                            ).toLowerCase();
+                            const isActive = isInstanceActive(memberStatus);
 
                             return (
                               <label
-                                key={member.agentInstanceId}
-                                data-debug-id={`project-launch-chain-agent-row-${member.agentInstanceId}`}
-                                className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                                  isChecked
-                                    ? 'border-white/20 bg-white/[0.06]'
-                                    : 'border-transparent hover:bg-white/[0.03]'
+                                key={memberInstanceId}
+                                data-debug-id={`project-launch-chain-agent-row-${memberInstanceId}`}
+                                className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors ${
+                                  isActive
+                                    ? 'border-transparent opacity-60 cursor-not-allowed bg-white/[0.01]'
+                                    : isChecked
+                                    ? 'border-white/20 bg-white/[0.06] cursor-pointer'
+                                    : 'border-transparent hover:bg-white/[0.03] cursor-pointer'
                                 }`}
                               >
                                 <input
                                   type="checkbox"
-                                  data-debug-id={`project-launch-chain-agent-checkbox-${member.agentInstanceId}`}
+                                  data-debug-id={`project-launch-chain-agent-checkbox-${memberInstanceId}`}
                                   checked={isChecked}
-                                  onChange={() => toggleChainAgent(member.agentInstanceId)}
-                                  className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                  disabled={isActive}
+                                  onChange={() => toggleChainAgent(memberInstanceId, isActive)}
+                                  className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
                                 />
                                 <div className="min-w-0 flex-1 flex items-center gap-2">
                                   <span
@@ -483,7 +639,7 @@ export default function ProjectLaunchModal({
                                         : 'text-zinc-200'
                                     }`}
                                   >
-                                    {member.displayName || member.agentId || member.agentInstanceId}
+                                    {member.displayName || member.agentId || memberInstanceId}
                                   </span>
                                   {isCoordinator && (
                                     <span className="rounded-full bg-amber-400/15 border border-amber-400/30 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
@@ -496,9 +652,18 @@ export default function ProjectLaunchModal({
                                     </span>
                                   )}
                                 </div>
-                                <span className="font-mono text-[10.5px] text-zinc-500">
-                                  {member.runtimeStatus || 'offline'}
-                                </span>
+                                {isActive ? (
+                                  <span
+                                    data-debug-id={`project-launch-chain-agent-active-badge-${memberInstanceId}`}
+                                    className="rounded-full bg-emerald-400/15 border border-emerald-400/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300"
+                                  >
+                                    Active ({memberStatus})
+                                  </span>
+                                ) : (
+                                  <span className="font-mono text-[10.5px] text-zinc-500">
+                                    {memberStatus}
+                                  </span>
+                                )}
                               </label>
                             );
                           })
@@ -514,7 +679,38 @@ export default function ProjectLaunchModal({
           {/* TAB 2: New Agent Instance */}
           {activeTab === 'new' && (
             <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
-              <div className="shrink-0 flex items-center justify-between pb-1">
+              {/* Bridge Selector */}
+              <div className="shrink-0 flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                <label
+                  htmlFor="project-launch-bridge-select"
+                  className="text-xs font-medium text-zinc-300 shrink-0"
+                >
+                  Target Bridge:
+                </label>
+                <div className="flex-1 min-w-0 flex items-center justify-end">
+                  {bridgesQuery.isLoading ? (
+                    <span className="text-xs text-zinc-500">Loading bridges…</span>
+                  ) : availableBridges.length === 0 ? (
+                    <span className="text-xs text-amber-400">No bridges available</span>
+                  ) : (
+                    <select
+                      id="project-launch-bridge-select"
+                      data-debug-id="project-launch-bridge-select"
+                      value={selectedBridgeId}
+                      onChange={(e) => setSelectedBridgeId(e.target.value)}
+                      className="w-full max-w-xs rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 text-xs text-zinc-100 outline-none focus:border-sky-400 cursor-pointer"
+                    >
+                      {availableBridges.map((b) => (
+                        <option key={b.bridgeId} value={b.bridgeId}>
+                          {b.label} ({b.status})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+
+              <div className="shrink-0 flex items-center justify-between pb-1 pt-1">
                 <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Durable Agents Catalog
                 </span>
@@ -618,9 +814,9 @@ export default function ProjectLaunchModal({
                 <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Project Instances
                 </span>
-                {instances.length > 0 && (
+                {stoppedInstances.length > 0 && (
                   <span className="text-[11px] text-zinc-500">
-                    Showing {existingPage * EXISTING_PAGE_SIZE + 1}–{Math.min((existingPage + 1) * EXISTING_PAGE_SIZE, instances.length)} of {instances.length} ({instances.length} instance{instances.length === 1 ? '' : 's'})
+                    Showing {existingPage * EXISTING_PAGE_SIZE + 1}–{Math.min((existingPage + 1) * EXISTING_PAGE_SIZE, stoppedInstances.length)} of {stoppedInstances.length} ({stoppedInstances.length} stopped instance{stoppedInstances.length === 1 ? '' : 's'})
                   </span>
                 )}
               </div>
@@ -628,19 +824,34 @@ export default function ProjectLaunchModal({
               <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
                 {instancesQuery.isLoading ? (
                   <div className="py-8 text-center text-xs text-zinc-500">Loading instances…</div>
-                ) : instances.length === 0 ? (
+                ) : rawInstances.length === 0 ? (
                   <div
                     data-debug-id="project-launch-existing-instances-empty"
                     className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
                   >
                     No existing instances for this project yet.
                   </div>
+                ) : hasOnlyActiveInstances ? (
+                  <div
+                    data-debug-id="project-launch-existing-instances-all-active"
+                    className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-400"
+                  >
+                    All existing instances for this project are currently running.
+                  </div>
                 ) : (
                   currentInstances.map((inst) => {
-                    const instanceId = String(inst.instance_id || inst.instanceId || inst.id || '');
+                    const instanceId = String(
+                      inst.agent_instance_id ||
+                      inst.agentInstanceId ||
+                      inst.instance_id ||
+                      inst.instanceId ||
+                      inst.id ||
+                      ''
+                    ).trim();
+                    if (!instanceId) return null;
                     const agentId = String(inst.agent_id || inst.agentId || '');
                     const displayName = String(inst.display_name || inst.displayName || agentId || instanceId);
-                    const runtimeStatus = String(inst.runtime_status || inst.runtimeStatus || 'unknown').toLowerCase();
+                    const runtimeStatus = String(inst.runtime_status || inst.runtimeStatus || 'stopped').toLowerCase();
                     const isChecked = selectedExistingInstanceIds.has(instanceId);
 
                     return (
@@ -668,15 +879,7 @@ export default function ProjectLaunchModal({
                             {instanceId}
                           </div>
                         </div>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
-                            runtimeStatus === 'running' || runtimeStatus === 'connected'
-                              ? 'bg-emerald-400/15 border-emerald-400/30 text-emerald-300'
-                              : runtimeStatus === 'idle'
-                              ? 'bg-sky-400/15 border-sky-400/30 text-sky-300'
-                              : 'bg-zinc-700/50 border-zinc-600/50 text-zinc-400'
-                          }`}
-                        >
+                        <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold border bg-zinc-700/50 border-zinc-600/50 text-zinc-400">
                           {runtimeStatus}
                         </span>
                       </label>
@@ -746,7 +949,7 @@ export default function ProjectLaunchModal({
             <button
               type="button"
               data-debug-id="project-launch-launch-new-agents-btn"
-              disabled={selectedNewAgentIds.size === 0 || isActionRunning}
+              disabled={selectedNewAgentIds.size === 0 || !selectedBridgeId || isActionRunning}
               onClick={handleLaunchNewAgents}
               className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-black hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
