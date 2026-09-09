@@ -413,8 +413,10 @@ agent_action_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	if last > TASK_COMMENTS_LAST_MAX do last = TASK_COMMENTS_LAST_MAX
 	comments, cerr := taskchain_service.list_recent_task_comments(h.taskchains, auth, task_id, last)
 	if cerr.code != .None do return respond_error(cerr, req.request_id)
+	// MEM-7: resolve author display name via the same agent repo the member view uses.
+	tch := Taskchain_Handlers{auth = h.auth, taskchains = h.taskchains, agents = h.agents, event_bus = h.event_bus}
 	b := strings.builder_make(); strings.write_byte(&b, '[')
-	for c, i in comments { if i > 0 do strings.write_byte(&b, ','); write_task_comment_json(&b, c) }
+	for c, i in comments { if i > 0 do strings.write_byte(&b, ','); write_task_comment_json(&b, c, resolve_comment_author_display(&tch, auth, c)) }
 	strings.write_byte(&b, ']')
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }
@@ -450,8 +452,9 @@ agent_action_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response
 	comment, notified, saved, err := taskchain_service.comment_task(h.taskchains, auth, taskchain_service.Task_Comment_Input{task_id = domain.Task_ID(json_string(params, "task_id")), body = json_string(params, "body"), notify = notify})
 	if !saved do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_comment", fmt.tprintf("commented: %s", json_string(params, "body")))
+	tch := Taskchain_Handlers{auth = h.auth, taskchains = h.taskchains, agents = h.agents, event_bus = h.event_bus}
 	b := strings.builder_make()
-	write_task_comment_response_json(&b, comment, notified)
+	write_task_comment_response_json(&b, comment, resolve_comment_author_display(&tch, auth, comment), notified)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 

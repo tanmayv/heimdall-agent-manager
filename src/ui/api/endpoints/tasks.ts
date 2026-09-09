@@ -77,6 +77,10 @@ function normalizeTaskComments(comment: any) {
     taskId: comment.task_id || '',
     chainId: comment.chain_id || '',
     authorAgentInstanceId: comment.author_agent_instance_id || '',
+    // MEM-7: author identity for the comment view — resolved agent display name
+    // (clickable) or, for user-authored comments, the owner user id.
+    authorDisplayName: comment.author_display_name || '',
+    authorUserId: comment.author_user_id || '',
     body: comment.body || '',
     resolved: Boolean(comment.resolved),
     createdUnixMs: Number(comment.created_unix_ms || 0),
