@@ -154,6 +154,15 @@ export default function ProjectLaunchModal({
   const rawInstances: any[] = instancesQuery.data?.instances || [];
   const stoppedInstances = useMemo(() => {
     return rawInstances.filter((inst) => {
+      const instanceId = String(
+        inst.agent_instance_id ||
+        inst.agentInstanceId ||
+        inst.instance_id ||
+        inst.instanceId ||
+        inst.id ||
+        ''
+      ).trim();
+      if (!instanceId) return false;
       const status = String(inst.runtime_status || inst.runtimeStatus || inst.status || '').toLowerCase();
       return !isInstanceActive(status);
     });
@@ -226,7 +235,7 @@ export default function ProjectLaunchModal({
 
   // Tab 1 handlers
   const toggleChainAgent = (instanceId: string, isActive?: boolean) => {
-    if (isActive) return;
+    if (!instanceId || isActive) return;
     setSelectedChainAgentIds((prev) => {
       const next = new Set(prev);
       if (next.has(instanceId)) next.delete(instanceId);
@@ -236,11 +245,11 @@ export default function ProjectLaunchModal({
   };
 
   const handleStartChainAgents = async () => {
-    if (selectedChainAgentIds.size === 0) return;
+    const ids = Array.from(selectedChainAgentIds).filter(Boolean);
+    if (ids.length === 0) return;
     setIsActionRunning(true);
     setFeedback(null);
     try {
-      const ids = Array.from(selectedChainAgentIds);
       let startedCount = 0;
       let alreadyRunningCount = 0;
       for (const instanceId of ids) {
@@ -321,6 +330,7 @@ export default function ProjectLaunchModal({
 
   // Tab 3 handlers
   const toggleExistingInstance = (instanceId: string) => {
+    if (!instanceId) return;
     setSelectedExistingInstanceIds((prev) => {
       const next = new Set(prev);
       if (next.has(instanceId)) next.delete(instanceId);
@@ -330,11 +340,11 @@ export default function ProjectLaunchModal({
   };
 
   const handleStartExistingInstances = async () => {
-    if (selectedExistingInstanceIds.size === 0) return;
+    const ids = Array.from(selectedExistingInstanceIds).filter(Boolean);
+    if (ids.length === 0) return;
     setIsActionRunning(true);
     setFeedback(null);
     try {
-      const ids = Array.from(selectedExistingInstanceIds);
       let startedCount = 0;
       let alreadyRunningCount = 0;
       for (const instanceId of ids) {
@@ -582,10 +592,20 @@ export default function ProjectLaunchModal({
                           </div>
                         ) : (
                           chainMembers.map((member) => {
+                            const memberInstanceId = String(
+                              member.agent_instance_id ||
+                              member.agentInstanceId ||
+                              member.instance_id ||
+                              member.id ||
+                              ''
+                            ).trim();
+                            if (!memberInstanceId) return null;
                             const isCoordinator =
+                              memberInstanceId === coordinatorAgentInstanceId ||
                               member.agentInstanceId === coordinatorAgentInstanceId ||
+                              member.agent_instance_id === coordinatorAgentInstanceId ||
                               member.role === 'coordinator';
-                            const isChecked = selectedChainAgentIds.has(member.agentInstanceId);
+                            const isChecked = selectedChainAgentIds.has(memberInstanceId);
                             const memberStatus = String(
                               member.runtimeStatus || member.runtime_status || 'offline'
                             ).toLowerCase();
@@ -593,8 +613,8 @@ export default function ProjectLaunchModal({
 
                             return (
                               <label
-                                key={member.agentInstanceId}
-                                data-debug-id={`project-launch-chain-agent-row-${member.agentInstanceId}`}
+                                key={memberInstanceId}
+                                data-debug-id={`project-launch-chain-agent-row-${memberInstanceId}`}
                                 className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors ${
                                   isActive
                                     ? 'border-transparent opacity-60 cursor-not-allowed bg-white/[0.01]'
@@ -605,10 +625,10 @@ export default function ProjectLaunchModal({
                               >
                                 <input
                                   type="checkbox"
-                                  data-debug-id={`project-launch-chain-agent-checkbox-${member.agentInstanceId}`}
+                                  data-debug-id={`project-launch-chain-agent-checkbox-${memberInstanceId}`}
                                   checked={isChecked}
                                   disabled={isActive}
-                                  onChange={() => toggleChainAgent(member.agentInstanceId, isActive)}
+                                  onChange={() => toggleChainAgent(memberInstanceId, isActive)}
                                   className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
                                 />
                                 <div className="min-w-0 flex-1 flex items-center gap-2">
@@ -619,7 +639,7 @@ export default function ProjectLaunchModal({
                                         : 'text-zinc-200'
                                     }`}
                                   >
-                                    {member.displayName || member.agentId || member.agentInstanceId}
+                                    {member.displayName || member.agentId || memberInstanceId}
                                   </span>
                                   {isCoordinator && (
                                     <span className="rounded-full bg-amber-400/15 border border-amber-400/30 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
@@ -634,7 +654,7 @@ export default function ProjectLaunchModal({
                                 </div>
                                 {isActive ? (
                                   <span
-                                    data-debug-id={`project-launch-chain-agent-active-badge-${member.agentInstanceId}`}
+                                    data-debug-id={`project-launch-chain-agent-active-badge-${memberInstanceId}`}
                                     className="rounded-full bg-emerald-400/15 border border-emerald-400/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300"
                                   >
                                     Active ({memberStatus})
@@ -820,7 +840,15 @@ export default function ProjectLaunchModal({
                   </div>
                 ) : (
                   currentInstances.map((inst) => {
-                    const instanceId = String(inst.instance_id || inst.instanceId || inst.id || '');
+                    const instanceId = String(
+                      inst.agent_instance_id ||
+                      inst.agentInstanceId ||
+                      inst.instance_id ||
+                      inst.instanceId ||
+                      inst.id ||
+                      ''
+                    ).trim();
+                    if (!instanceId) return null;
                     const agentId = String(inst.agent_id || inst.agentId || '');
                     const displayName = String(inst.display_name || inst.displayName || agentId || instanceId);
                     const runtimeStatus = String(inst.runtime_status || inst.runtimeStatus || 'stopped').toLowerCase();
