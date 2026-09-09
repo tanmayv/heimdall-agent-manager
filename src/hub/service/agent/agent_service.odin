@@ -55,6 +55,7 @@ List_Instances_Filter :: struct {
 	agent_id: string,
 	bridge_id: string,
 	runtime_status: string,
+	project_id: string,
 }
 
 Create_Instance_Input :: struct {
@@ -273,7 +274,7 @@ list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, li
 list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, filter: List_Instances_Filter, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	has_filter := filter.agent_id != "" || filter.bridge_id != "" || filter.runtime_status != ""
+	has_filter := filter.agent_id != "" || filter.bridge_id != "" || filter.runtime_status != "" || filter.project_id != ""
 	fetch_limit := limit if !has_filter else max(limit * 10, 500)
 	instances, list_err := iface.agent_list_instances_by_owner(service.agents, owner, fetch_limit, cursor)
 	if list_err.code != .None do return nil, list_err
@@ -281,6 +282,7 @@ list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	for inst in instances {
 		if filter.agent_id != "" && inst.agent_id != filter.agent_id do continue
 		if filter.bridge_id != "" && inst.bridge_id != filter.bridge_id do continue
+		if filter.project_id != "" && string(inst.project_id) != filter.project_id do continue
 		if filter.runtime_status != "" {
 			if filter.runtime_status == "live" || filter.runtime_status == "active" {
 				if !runtime_expected_active(inst.runtime_status) do continue

@@ -226,6 +226,22 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       providesTags: (_result, _error, { projectId }) => [{ type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` }],
     }),
+    listTaskChains: build.query<ChainProjectGroup, { projectId: string; limit?: number; cursor?: string; hasTasks?: boolean }>({
+      queryFn: async ({ projectId, limit = 20, cursor = '', hasTasks = false }) => {
+        try {
+          const params = new URLSearchParams();
+          params.set('project_id', projectId);
+          params.set('limit', String(limit));
+          if (cursor) params.set('cursor', cursor);
+          if (hasTasks) params.set('has_tasks', '1');
+          const raw = await cookieJsonFetch(`/task-chains?${params.toString()}`);
+          return { data: normalizeChainProjectGroup(raw) };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId }) => [{ type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` }],
+    }),
     fetchTaskChainDetail: build.query<any, { chainId: string }>({
       queryFn: async ({ chainId }) => {
         if (!chainId) return { data: { chain: null } };
@@ -785,6 +801,8 @@ export const {
   useFetchTaskChainGroupsQuery,
   useFetchTaskChainProjectPageQuery,
   useLazyFetchTaskChainProjectPageQuery,
+  useListTaskChainsQuery,
+  useLazyListTaskChainsQuery,
   useFetchTaskChainDetailQuery,
   useFetchChainTaskDetailQuery,
   useFetchChainTaskCommentsQuery,
