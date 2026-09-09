@@ -342,17 +342,30 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
     }),
-    listAgentInstances: build.query<any, { agentId: string }>({
-      queryFn: async ({ agentId }) => {
-        if (!agentId) return { data: { instances: [] } };
+    listAgentInstances: build.query<any, { agentId?: string; projectId?: string; limit?: number; cursor?: string } | void>({
+      queryFn: async (arg) => {
         try {
-          const data = await cookieJsonFetch(`/agent-instances?agent_id=${encodeURIComponent(agentId)}`);
+          const params = new URLSearchParams();
+          const opts = (arg && typeof arg === 'object') ? arg : undefined;
+          if (opts?.agentId) params.set('agent_id', opts.agentId);
+          if (opts?.projectId) params.set('project_id', opts.projectId);
+          if (opts?.limit) params.set('limit', String(opts.limit));
+          if (opts?.cursor) params.set('cursor', opts.cursor);
+          const qs = params.toString() ? `?${params.toString()}` : '';
+          const data = await cookieJsonFetch(`/agent-instances${qs}`);
           return { data: { instances: data || [] } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: (_result, _error, { agentId }) => [{ type: 'AgentInstances' as const, id: agentId }],
+      providesTags: (_result, _error, arg) => {
+        const opts = (arg && typeof arg === 'object') ? arg : undefined;
+        return [
+          { type: 'AgentInstances' as const, id: 'LIST' },
+          ...(opts?.agentId ? [{ type: 'AgentInstances' as const, id: opts.agentId }] : []),
+          ...(opts?.projectId ? [{ type: 'AgentInstances' as const, id: `PROJECT:${opts.projectId}` }] : []),
+        ];
+      },
     }),
     fetchAgentInstance: build.query<any, { instanceId: string }>({
       queryFn: async ({ instanceId }) => {
@@ -397,7 +410,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
-    restartAgentInstance: build.mutation<any, { agentId: string; instanceId: string }>({
+    restartAgentInstance: build.mutation<any, { agentId?: string; instanceId: string }>({
       queryFn: async ({ instanceId }) => {
         try {
           const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/restart`, 'POST', {});
@@ -406,7 +419,22 @@ export const agentsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
+      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, ...(agentId ? [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }] : [])],
+    }),
+    startAgentInstance: build.mutation<any, { agentId?: string; instanceId: string }>({
+      queryFn: async ({ instanceId }) => {
+        try {
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/start`, 'POST', {});
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { agentId, instanceId }) => [
+        { type: 'Agents' as const, id: 'LIST' },
+        ...(agentId ? [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }] : []),
+        { type: 'AgentInstances' as const, id: instanceId },
+      ],
     }),
     reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; tier?: string; bridgeId?: string }>({
       queryFn: async ({ instanceId, provider, tier, bridgeId }) => {
@@ -556,4 +584,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }]));
 }
 
-export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
+export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
