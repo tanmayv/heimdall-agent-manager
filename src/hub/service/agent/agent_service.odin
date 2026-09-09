@@ -34,6 +34,7 @@ Create_Agent_Input :: struct {
 	default_provider: string,
 	default_tier: string,
 	instructions: string,
+	has_template_id: bool,
 	has_default_provider: bool,
 	has_default_tier: bool,
 }
@@ -85,12 +86,16 @@ create_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inpu
 	if strings.trim_space(input.name) == "" do return domain.Agent{}, false, domain.domain_error(.Validation_Failed, "agent name is required")
 	slug := input.slug
 	if slug == "" do slug = input.name
+	// Default new agents to the built-in 'empty' template when none is supplied so
+	// every agent has a valid template (see domain.TEMPLATE_EMPTY_ID).
+	template_id := strings.trim_space(input.template_id)
+	if template_id == "" do template_id = domain.TEMPLATE_EMPTY_ID
 	default_provider := input.default_provider
 	if default_provider == "" do default_provider = "jetski"
 	default_tier := input.default_tier
 	if default_tier == "" do default_tier = "normal"
 	now := platform.clock_now(service.clock)
-	agent := domain.Agent{agent_id = platform.generate_id(service.ids, "agt_"), owner_user_id = owner, name = input.name, slug = slug, template_id = input.template_id, default_provider = default_provider, default_tier = default_tier, instructions = input.instructions, state = .Active, created_at = now, updated_at = now}
+	agent := domain.Agent{agent_id = platform.generate_id(service.ids, "agt_"), owner_user_id = owner, name = input.name, slug = slug, template_id = template_id, default_provider = default_provider, default_tier = default_tier, instructions = input.instructions, state = .Active, created_at = now, updated_at = now}
 	return iface.agent_save(service.agents, agent)
 }
 
@@ -112,11 +117,29 @@ update_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agen
 	if !ok do return domain.Agent{}, false, err
 	if input.name != "" do agent.name = input.name
 	if input.slug != "" do agent.slug = input.slug
+	if input.has_template_id {
+		template_id := strings.trim_space(input.template_id)
+		if template_id == "" do template_id = domain.TEMPLATE_EMPTY_ID
+		if !agent_template_available(service, agent.owner_user_id, template_id) do return domain.Agent{}, false, domain.domain_error(.Validation_Failed, "template not found")
+		agent.template_id = template_id
+	}
 	if input.has_default_provider || input.default_provider != "" do agent.default_provider = input.default_provider
 	if input.has_default_tier || input.default_tier != "" do agent.default_tier = input.default_tier
 	if input.instructions != "" do agent.instructions = input.instructions
 	agent.updated_at = platform.clock_now(service.clock)
 	return iface.agent_save(service.agents, agent)
+}
+
+// agent_template_available reports whether template_id is usable by owner: the
+// built-in 'empty' template, any system template, or a template the owner owns.
+// Mirrors content_service.template_available but reads the content repository the
+// agent service already holds (avoiding a cross-service dependency).
+agent_template_available :: proc(service: ^Agent_Service, owner: domain.User_ID, template_id: string) -> bool {
+	if template_id == "" do return false
+	if template_id == domain.TEMPLATE_EMPTY_ID do return true
+	if service.content == nil do return false
+	t, ok, _ := iface.content_get_template(service.content, template_id)
+	return ok && (t.is_system || t.owner_user_id == owner)
 }
 
 archive_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string) -> (domain.Agent, bool, domain.Domain_Error) {

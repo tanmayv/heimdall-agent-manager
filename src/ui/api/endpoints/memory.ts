@@ -68,6 +68,36 @@ function buildTargetingBody(input: MemoryTargeting): Record<string, string[]> {
   return out;
 }
 
+// memoryErrorText turns whatever a memory mutation's .unwrap() rejects with into
+// a human-readable string. These endpoints use a custom queryFn that, on failure,
+// rejects with an RTK "CUSTOM_ERROR" object { status: "CUSTOM_ERROR", error:
+// "<message>" } — so the real message lives on err.error, NOT err.data or
+// err.message. Callers that only read err?.data?.error || err?.message fell
+// through to String(err) and rendered the useless "[object Object]". This helper
+// also handles the FetchBaseQueryError shape ({ data: { error | message } }),
+// plain Error ({ message }), and bare strings, with a caller-supplied fallback.
+export function memoryErrorText(err: unknown, fallback = "Something went wrong"): string {
+  const nonBlank = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim() ? v : undefined;
+  if (err == null) return fallback;
+  if (typeof err === "string") return nonBlank(err) ?? fallback;
+  const e = err as any;
+  // FetchBaseQueryError server-envelope payload.
+  const data = e.data;
+  if (data) {
+    if (typeof data === "string") { const s = nonBlank(data); if (s) return s; }
+    else {
+      const s = nonBlank(data?.error?.message) ?? nonBlank(data?.error) ?? nonBlank(data?.message);
+      if (s) return s;
+    }
+  }
+  // Custom queryFn CUSTOM_ERROR shape: { status: "CUSTOM_ERROR", error: "<msg>" }.
+  const fromError = nonBlank(e.error) ?? nonBlank(e.error?.message);
+  if (fromError) return fromError;
+  // Plain Error / anything carrying a string message.
+  return nonBlank(e.message) ?? fallback;
+}
+
 export type RejectMemoryInput = {
   memoryId: string;
   reason?: string;

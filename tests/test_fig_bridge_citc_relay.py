@@ -12,7 +12,9 @@ WIRING = ROOT / "src" / "hub" / "app" / "wiring.odin"
 PROJECT_DOMAIN = ROOT / "src" / "hub" / "domain" / "project.odin"
 PROJECT_SERVICE = ROOT / "src" / "hub" / "service" / "project" / "project_service.odin"
 PROJECT_REPO = ROOT / "src" / "hub" / "repository" / "sqlite" / "project_repo_sqlite.odin"
-MIGRATION_SQL = ROOT / "src" / "hub" / "repository" / "sqlite" / "migrations" / "027_fig_projects.sql"
+MIGRATION_SQL = ROOT / "src" / "hub" / "repository" / "sqlite" / "migrations" / "028_fig_projects.sql"
+if not MIGRATION_SQL.exists():
+    MIGRATION_SQL = ROOT / "src" / "hub" / "repository" / "sqlite" / "migrations" / "027_fig_projects.sql"
 MIGRATIONS_ODIN = ROOT / "src" / "hub" / "repository" / "sqlite" / "migrations.odin"
 
 
@@ -80,7 +82,7 @@ def main() -> None:
     require("ALTER TABLE projects ADD COLUMN workspace_name" in migration_sql, "027 migration must add workspace_name")
     require("ALTER TABLE projects ADD COLUMN relative_path" in migration_sql, "027 migration must add relative_path")
     require("idx_projects_owner_type" in migration_sql, "027 migration must index owner and project_type")
-    require("027_fig_projects.sql" in migrations_odin, "migrations.odin must register 027_fig_projects.sql")
+    require("028_fig_projects.sql" in migrations_odin or "027_fig_projects.sql" in migrations_odin, "migrations.odin must register 028_fig_projects.sql")
 
     print("[+] FIG CITC BRIDGE RELAY TESTS PASSED")
 

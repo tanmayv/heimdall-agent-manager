@@ -235,7 +235,7 @@ patch_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 agent_input_from_body :: proc(body: string) -> agent_service.Create_Agent_Input {
-	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), default_provider = json_string(body, "default_provider"), default_tier = json_string(body, "default_tier"), instructions = json_string(body, "instructions"), has_default_provider = strings.contains(body, "\"default_provider\""), has_default_tier = strings.contains(body, "\"default_tier\"")}
+	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), default_provider = json_string(body, "default_provider"), default_tier = json_string(body, "default_tier"), instructions = json_string(body, "instructions"), has_template_id = strings.contains(body, "\"template_id\""), has_default_provider = strings.contains(body, "\"default_provider\""), has_default_tier = strings.contains(body, "\"default_tier\"")}
 }
 
 instance_input_from_body :: proc(body: string) -> agent_service.Create_Instance_Input {

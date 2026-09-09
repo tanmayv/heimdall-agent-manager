@@ -33,6 +33,13 @@ type AgentActivityState = {
   // Per-instance most-recent action time; feeds the working-indicator decoupling
   // in P4 (dots animate while now - lastActionAt is within a short window).
   lastActionAt: Record<string, number>;
+  // Per-instance set of action ids that have ALREADY been surfaced on screen,
+  // mapped to the time they were shown. This outlives the component (it survives
+  // conversation switches and remounts within the session) so an action shown
+  // once is never replayed again — the ring buffer keeps items for the 5-min
+  // replay window, but this set records which of them the user has actually seen.
+  // Reset with the rest of the slice on user switch (priorUserClientStateCleared).
+  shownByInstance: Record<string, Record<string, number>>;
   // Monotonic counter so concurrent same-ts actions still get unique ids.
   seq: number;
 };
@@ -40,6 +47,7 @@ type AgentActivityState = {
 const initialState: AgentActivityState = {
   byInstance: {},
   lastActionAt: {},
+  shownByInstance: {},
   seq: 0,
 };
 
@@ -78,12 +86,32 @@ const agentActivitySlice = createSlice({
       }
       state.lastActionAt[instanceId] = Math.max(Number(state.lastActionAt[instanceId] || 0), ts);
     },
+    // Mark one action as surfaced (actually shown on screen) for an instance so it
+    // is never replayed again. Idempotent: re-marking an id just refreshes its
+    // timestamp. Called at the moment a bubble appears (not when it is merely
+    // scheduled), so items staged during replay but never shown stay replayable.
+    // Prunes entries older than the replay window on insert to bound the set.
+    agentActionSurfaced(state, action: PayloadAction<{ instanceId: string; id: string; ts?: number }>) {
+      const instanceId = String(action.payload?.instanceId || '');
+      const id = String(action.payload?.id || '');
+      if (!instanceId || !id) return;
+      const ts = Number(action.payload?.ts) || Date.now();
+      const shown = state.shownByInstance[instanceId] || (state.shownByInstance[instanceId] = {});
+      // Prune ids older than the replay window relative to this event; anything
+      // beyond the window can no longer be replayed, so we needn't remember it.
+      const cutoff = ts - AGENT_ACTIVITY_REPLAY_WINDOW_MS;
+      for (const key of Object.keys(shown)) {
+        if (shown[key] < cutoff) delete shown[key];
+      }
+      shown[id] = ts;
+    },
     // Drop an instance's buffered activity (e.g. when it is stopped/removed).
     agentActivityInstanceCleared(state, action: PayloadAction<string>) {
       const instanceId = String(action.payload || '');
       if (!instanceId) return;
       delete state.byInstance[instanceId];
       delete state.lastActionAt[instanceId];
+      delete state.shownByInstance[instanceId];
     },
   },
 });
@@ -91,14 +119,19 @@ const agentActivitySlice = createSlice({
 // selectReplayableActions returns the buffered actions still within the replay
 // window (< AGENT_ACTIVITY_REPLAY_WINDOW_MS old), oldest-first — the exact set the
 // bubble row replays (staggered) when the user opens/focuses the conversation.
+// Already-surfaced ids (from `shownIds`) are excluded so an action shown once is
+// never replayed again. `shownIds` is optional and defaults to none, preserving
+// the original behavior for callers/tests that don't track surfaced state.
 // Pure so the component (P3) and the unit tests share one implementation.
 export function selectReplayableActions(
   buffer: AgentActionItem[] | undefined,
   now: number,
+  shownIds?: Record<string, number>,
 ): AgentActionItem[] {
   if (!buffer || buffer.length === 0) return [];
   return buffer
     .filter((item) => now - Number(item?.ts || 0) < AGENT_ACTIVITY_REPLAY_WINDOW_MS)
+    .filter((item) => !shownIds || !Object.prototype.hasOwnProperty.call(shownIds, String(item?.id || '')))
     .slice()
     .sort((left, right) => Number(left?.ts || 0) - Number(right?.ts || 0));
 }
@@ -107,11 +140,21 @@ export function selectReplayableActions(
 // buffered activity.
 const EMPTY_BUFFER: AgentActionItem[] = [];
 
+// Stable empty reference for the shown-id map (same churn-avoidance rationale).
+const EMPTY_SHOWN: Record<string, number> = {};
+
 export const selectAgentActivityBuffer = (state: any, instanceId: string): AgentActionItem[] =>
   state?.agentActivity?.byInstance?.[instanceId] || EMPTY_BUFFER;
 
 export const selectAgentLastActionAt = (state: any, instanceId: string): number =>
   Number(state?.agentActivity?.lastActionAt?.[instanceId] || 0);
 
-export const { agentActionReceived, agentActivityInstanceCleared } = agentActivitySlice.actions;
+// selectAgentShownIds returns the map of action-id → shown-time for an instance
+// (ids already surfaced on screen). Feeds selectReplayableActions so re-opening a
+// conversation never re-shows a bubble the user has already seen.
+export const selectAgentShownIds = (state: any, instanceId: string): Record<string, number> =>
+  state?.agentActivity?.shownByInstance?.[instanceId] || EMPTY_SHOWN;
+
+export const { agentActionReceived, agentActionSurfaced, agentActivityInstanceCleared } =
+  agentActivitySlice.actions;
 export default agentActivitySlice.reducer;

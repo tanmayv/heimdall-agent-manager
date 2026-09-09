@@ -1,5 +1,5 @@
 import TaskChainsPage from '../taskchain/TaskChainsPage';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
@@ -12,7 +12,8 @@ import { heimdallApi } from '../../api/heimdallApi';
 import { useUserWebSocket } from '../../api/useUserWebSocket';
 import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
-import { useListSidebarConversationsQuery, useListSidebarProjectsQuery, type SidebarConversation, type SidebarProject } from '../../api/endpoints/sidebar';
+import { useListSidebarConversationsQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
+import { useGetAgentsLiveQuery, type LiveProject } from '../../api/endpoints/agentsLive';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
@@ -66,6 +67,12 @@ type ConversationSummary = {
   agentId: string;
   agentInstanceId: string;
   agentName: string;
+  // True when THIS agent instance is a coordinator of its chain (per
+  // /api/v1/agents/live). Renders the agent's own name gold in the rail/palette.
+  isCoordinator?: boolean;
+  // True on the first row of a chain-group (except the project's first group), so
+  // the rail draws a subtle separator between chain-groups within a project.
+  startsNewGroup?: boolean;
   projectId: string;
   title: string;
   unreadCount: number;
@@ -365,17 +372,6 @@ function sidebarConversationToSummary(c: SidebarConversation, agentNamesById: Ma
   };
 }
 
-function sidebarProjectToSummary(p: SidebarProject): ProjectSummary {
-  const projectId = p.projectId || (p.isDefaultConversations ? DEFAULT_CONVERSATIONS_PROJECT.projectId : p.name);
-  return {
-    projectId,
-    name: p.name,
-    isDefaultConversations: p.isDefaultConversations || projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId,
-    projectType: p.projectType || p.project_type,
-    workspaceName: p.workspaceName || p.workspace_name,
-  };
-}
-
 function looksLikeInternalId(value: string): boolean {
   return /^(agt|inst|chat|conv|usr|brg|task|chain|proj|art)_[a-z0-9]/i.test(String(value || '').trim());
 }
@@ -401,45 +397,87 @@ function displayConversationMeta(conversation: ConversationSummary): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function buildProjectConversationTree(conversations: ConversationSummary[], projects: ProjectSummary[]): ProjectGroup[] {
-  const projectsById = new Map<string, ProjectSummary>();
-  const markedDefaultProject = projects.find((project) => project.isDefaultConversations);
-  const defaultProject = markedDefaultProject || DEFAULT_CONVERSATIONS_PROJECT;
-  const defaultProjectId = defaultProject.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId;
-  projectsById.set(defaultProjectId, { ...defaultProject, projectId: defaultProjectId, isDefaultConversations: true });
-  projects.forEach((project) => {
-    if (project.projectId) projectsById.set(project.projectId, project.projectId === defaultProjectId ? { ...project, isDefaultConversations: true } : project);
+// buildProjectConversationTree renders the rail strictly in /api/v1/agents/live
+// order (NO client-side re-sort): EVERY project the endpoint returns, in its
+// FIXED order (alphabetical by name, then the '' Unassigned bucket), even when it
+// has no live conversation. Within a project, conversation rows are CHAIN-GROUPED
+// in the endpoint's chain order, and agents within a chain follow the endpoint's
+// (creation-time) order. Each row carries isCoordinator (own-name gold) and
+// startsNewGroup (the first row of a chain-group, except the very first group in
+// the project — the renderer draws a subtle separator before it). Live
+// conversations not represented in the endpoint (e.g. an agent in no chain) are
+// appended as a trailing group in their own project bucket. The endpoint's ''
+// bucket and the UI's implicit "no project" share the default-conversations bucket.
+function buildProjectConversationTree(conversations: ConversationSummary[], liveProjects: LiveProject[]): ProjectGroup[] {
+  const defaultProjectId = DEFAULT_CONVERSATIONS_PROJECT.projectId;
+  const bucketId = (raw?: string) => {
+    const id = String(raw || '').trim();
+    return id === '' || id === defaultProjectId ? defaultProjectId : id;
+  };
+
+  const order: string[] = [];
+  const descById = new Map<string, ProjectSummary>();
+  const rowsByBucket = new Map<string, ConversationSummary[]>();
+  const ensureBucket = (rawId: string, name: string, projectType?: string, workspaceName?: string) => {
+    const id = bucketId(rawId);
+    if (!descById.has(id)) {
+      const isDefault = id === defaultProjectId;
+      descById.set(id, {
+        projectId: id,
+        name: isDefault ? DEFAULT_CONVERSATIONS_PROJECT.name : name,
+        isDefaultConversations: isDefault,
+        projectType,
+        workspaceName,
+      });
+      order.push(id);
+      rowsByBucket.set(id, []);
+    }
+    return id;
+  };
+
+  // Only live conversations appear in the rail; index them by instance so the
+  // endpoint's ordered agent list can pull each row's live state/unread.
+  const byInstance = new Map<string, ConversationSummary>();
+  conversations.forEach((c) => { if (isLiveConversation(c)) byInstance.set(c.agentInstanceId, c); });
+  const placed = new Set<string>();
+
+  // API order: project -> chain-group -> agent. Mark the first row of each group
+  // (after the first) so the renderer inserts a separator between groups.
+  liveProjects.forEach((project) => {
+    const id = ensureBucket(project.projectId, project.name, project.projectType, project.workspaceName);
+    const rows = rowsByBucket.get(id)!;
+    project.chains.forEach((chain) => {
+      let firstInGroup = true;
+      chain.liveAgents.forEach((agent) => {
+        const conv = byInstance.get(agent.agentInstanceId);
+        if (!conv || placed.has(agent.agentInstanceId)) return;
+        placed.add(agent.agentInstanceId);
+        rows.push({ ...conv, isCoordinator: agent.isCoordinator, startsNewGroup: firstInGroup && rows.length > 0 });
+        firstInGroup = false;
+      });
+    });
   });
 
-  const grouped = new Map<string, ConversationSummary[]>();
-  conversations.forEach((conversation) => {
-    // Only surface conversations whose agent runtime is live/starting in the rail;
-    // stopped/unreachable/failed sessions are hidden here (still reachable from the
-    // Conversations inbox / Agents surfaces).
-    if (!isLiveConversation(conversation)) return;
-    const rawProjectId = conversation.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId;
-    const projectId = rawProjectId === DEFAULT_CONVERSATIONS_PROJECT.projectId ? defaultProjectId : rawProjectId;
-    if (!projectsById.has(projectId)) projectsById.set(projectId, { projectId, name: projectId });
-    if (!grouped.has(projectId)) grouped.set(projectId, []);
-    grouped.get(projectId)!.push(conversation);
-  });
-  if (!grouped.has(defaultProjectId)) grouped.set(defaultProjectId, []);
-
+  // Trailing group per project for live conversations the endpoint didn't list.
   const recency = (c: ConversationSummary) => Number(c.lastMessageUnixMs || Date.parse(c.lastMessageAt || c.updatedAt || '') || 0);
+  const leftoverByBucket = new Map<string, ConversationSummary[]>();
+  conversations.forEach((c) => {
+    if (!isLiveConversation(c) || placed.has(c.agentInstanceId)) return;
+    const id = ensureBucket(c.projectId, c.projectId);
+    if (!leftoverByBucket.has(id)) leftoverByBucket.set(id, []);
+    leftoverByBucket.get(id)!.push(c);
+  });
+  leftoverByBucket.forEach((list, id) => {
+    const rows = rowsByBucket.get(id)!;
+    list.sort((a, b) => recency(b) - recency(a)).forEach((c, i) => {
+      rows.push({ ...c, isCoordinator: false, startsNewGroup: i === 0 && rows.length > 0 });
+    });
+  });
 
-  return Array.from(grouped.entries()).map(([projectId, list]) => {
-    // Flat, most-recent-first list of conversations directly under the project
-    // (no agent-id grouping layer).
-    const sorted = [...list].sort((a, b) => recency(b) - recency(a));
-    return { project: projectsById.get(projectId) || { projectId, name: projectId }, conversations: sorted, unreadCount: sorted.reduce((sum, c) => sum + c.unreadCount, 0) };
-  })
-  // With the live-only filter, a project with no running conversations would be an
-  // empty header — drop those so the rail only shows projects with live work.
-  .filter((group) => group.conversations.length > 0)
-  .sort((a, b) => {
-    if (a.project.isDefaultConversations) return -1;
-    if (b.project.isDefaultConversations) return 1;
-    return b.unreadCount - a.unreadCount || a.project.name.localeCompare(b.project.name);
+  // Every project renders (all-projects rule), in the endpoint's fixed order.
+  return order.map((projectId) => {
+    const rows = rowsByBucket.get(projectId) || [];
+    return { project: descById.get(projectId) || { projectId, name: projectId }, conversations: rows, unreadCount: rows.reduce((sum, c) => sum + c.unreadCount, 0) };
   });
 }
 
@@ -622,8 +660,9 @@ function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: Pr
                    currentPath.startsWith(`/conversations/${conversation.agentInstanceId}/`))
                 );
                 return (
+                  <Fragment key={conversation.conversationId}>
+                  {conversation.startsNewGroup ? <div data-debug-id={`sidebar-session-group-separator-${conversation.conversationId}`} role="separator" className="mx-6 my-1 border-t border-white/5" /> : null}
                   <a
-                    key={conversation.conversationId}
                     data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
                     href={shellHash(`/conversations/${encodeURIComponent(conversation.agentInstanceId)}`)}
                     className={`flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] transition ${isSelected ? 'bg-white/[0.06] text-white' : 'text-zinc-400 hover:bg-white/[0.06] hover:text-white'}`}
@@ -635,10 +674,11 @@ function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: Pr
                       debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
                       label={conversation.agentName}
                     />
-                    <span className="min-w-0 flex-1 truncate">{conversation.agentName}</span>
+                    <span data-debug-id={conversation.isCoordinator ? `sidebar-session-coordinator-name-${conversation.conversationId}` : undefined} className={`min-w-0 flex-1 truncate ${conversation.isCoordinator ? 'text-amber-300' : ''}`} title={conversation.isCoordinator ? 'Coordinator' : undefined}>{conversation.agentName}</span>
                     {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
                     <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
                   </a>
+                  </Fragment>
                 );
               })}
             </div>
@@ -949,7 +989,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // over the user WS, so poll periodically (paused when the tab is unfocused) so a
   // just-started/stopped agent appears/disappears without a manual refresh.
   const conversationsQuery = useListSidebarConversationsQuery({ limit: 30 }, { pollingInterval: 10000, skipPollingIfUnfocused: true });
-  const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
+  // Consolidated project -> live-chains -> agents tree. Drives the rail's project
+  // list/order (ALL projects, endpoint-fixed alphabetical) and the coordinator set
+  // used to gold-highlight a coordinator agent's own name.
+  const agentsLiveQuery = useGetAgentsLiveQuery(undefined, { pollingInterval: 10000, skipPollingIfUnfocused: true });
   const agentIdentitiesQuery = useListAgentIdentitiesQuery();
   const agentNamesById = useMemo(() => {
     const map = new Map<string, string>();
@@ -964,10 +1007,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     () => (conversationsQuery.data || []).map((conversation) => sidebarConversationToSummary(conversation, agentNamesById)),
     [agentNamesById, conversationsQuery.data],
   );
-  const projects = useMemo(
-    () => (projectsQuery.data || []).map(sidebarProjectToSummary),
-    [projectsQuery.data],
-  );
+  const liveProjects = useMemo(() => agentsLiveQuery.data || [], [agentsLiveQuery.data]);
 
   // UI-14: the shell owns exactly one user WebSocket connection (cookie-auth
   // `/api/v1/user-ws`). Its events flow through the single `handleUserWsEvent`
@@ -1056,11 +1096,11 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
 
   const primary = NAV_ROUTES.filter((item) => item.group === 'primary');
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
-  const conversationTree = useMemo(() => buildProjectConversationTree(conversations, projects), [conversations, projects]);
+  const conversationTree = useMemo(() => buildProjectConversationTree(conversations, liveProjects), [conversations, liveProjects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
   const hideMobileShellChrome = isMobile && mobileChromeSuppressed;
-  const sidebarError = String((conversationsQuery.error as any)?.error || (projectsQuery.error as any)?.error || '');
-  const sidebarLoading = conversationsQuery.isLoading || projectsQuery.isLoading;
+  const sidebarError = String((conversationsQuery.error as any)?.error || (agentsLiveQuery.error as any)?.error || '');
+  const sidebarLoading = conversationsQuery.isLoading || agentsLiveQuery.isLoading;
 
   return (
     <div data-debug-id="app-shell" className="flex h-screen bg-[#090909] text-zinc-100">
@@ -1155,7 +1195,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         />
       ) : null}
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, isCoordinator: c.isCoordinator, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
     </div>
   );
 }

@@ -80,11 +80,15 @@ export const agentsApi = heimdallApi.injectEndpoints({
       // invalidate the Agents id tag.
       keepUnusedDataFor: 600,
     }),
-    updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
-      queryFn: async ({ agentId, name, defaultProvider, defaultTier, instructions }) => {
+    updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; templateId?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
+      queryFn: async ({ agentId, name, templateId, defaultProvider, defaultTier, instructions }) => {
         try {
           const payload: any = {};
           if (name !== undefined) payload.name = name;
+          // Only send template_id when explicitly provided; the hub applies it only
+          // when the key is present (has_template_id), so omitting it leaves the
+          // agent's template unchanged.
+          if (templateId !== undefined) payload.template_id = templateId;
           if (defaultProvider !== undefined) payload.default_provider = defaultProvider;
           if (defaultTier !== undefined) payload.default_tier = defaultTier;
           if (instructions !== undefined) payload.instructions = instructions;
