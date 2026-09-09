@@ -99,7 +99,7 @@ function normalizeProject(project: ProjectOption): ProjectOption {
 
 function normalizeAgent(agent: any): AgentOption {
   const templateId = String(agent?.template_id || agent?.templateId || '');
-  // Derive a short human role from the template id (tmpl_system_reviewer → reviewer).
+  // Derive a short human role from the template id (e.g. a 'reviewer' template → reviewer).
   const role = String(agent?.role || '').trim() || templateRole(templateId);
   return {
     ...agent,

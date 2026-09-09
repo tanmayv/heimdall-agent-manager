@@ -33,6 +33,7 @@ Create_Agent_Input :: struct {
 	default_provider: string,
 	default_tier: string,
 	instructions: string,
+	has_template_id: bool,
 	has_default_provider: bool,
 	has_default_tier: bool,
 }
@@ -55,6 +56,7 @@ List_Instances_Filter :: struct {
 	agent_id: string,
 	bridge_id: string,
 	runtime_status: string,
+	project_id: string,
 }
 
 Create_Instance_Input :: struct {
@@ -84,8 +86,12 @@ create_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inpu
 	if strings.trim_space(input.name) == "" do return domain.Agent{}, false, domain.domain_error(.Validation_Failed, "agent name is required")
 	slug := input.slug
 	if slug == "" do slug = input.name
+	// Default new agents to the built-in 'empty' template when none is supplied so
+	// every agent has a valid template (see domain.TEMPLATE_EMPTY_ID).
+	template_id := strings.trim_space(input.template_id)
+	if template_id == "" do template_id = domain.TEMPLATE_EMPTY_ID
 	now := platform.clock_now(service.clock)
-	agent := domain.Agent{agent_id = platform.generate_id(service.ids, "agt_"), owner_user_id = owner, name = input.name, slug = slug, template_id = input.template_id, default_provider = input.default_provider, default_tier = input.default_tier, instructions = input.instructions, state = .Active, created_at = now, updated_at = now}
+	agent := domain.Agent{agent_id = platform.generate_id(service.ids, "agt_"), owner_user_id = owner, name = input.name, slug = slug, template_id = template_id, default_provider = input.default_provider, default_tier = input.default_tier, instructions = input.instructions, state = .Active, created_at = now, updated_at = now}
 	return iface.agent_save(service.agents, agent)
 }
 
@@ -107,11 +113,29 @@ update_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agen
 	if !ok do return domain.Agent{}, false, err
 	if input.name != "" do agent.name = input.name
 	if input.slug != "" do agent.slug = input.slug
+	if input.has_template_id {
+		template_id := strings.trim_space(input.template_id)
+		if template_id == "" do template_id = domain.TEMPLATE_EMPTY_ID
+		if !agent_template_available(service, agent.owner_user_id, template_id) do return domain.Agent{}, false, domain.domain_error(.Validation_Failed, "template not found")
+		agent.template_id = template_id
+	}
 	if input.has_default_provider || input.default_provider != "" do agent.default_provider = input.default_provider
 	if input.has_default_tier || input.default_tier != "" do agent.default_tier = input.default_tier
 	if input.instructions != "" do agent.instructions = input.instructions
 	agent.updated_at = platform.clock_now(service.clock)
 	return iface.agent_save(service.agents, agent)
+}
+
+// agent_template_available reports whether template_id is usable by owner: the
+// built-in 'empty' template, any system template, or a template the owner owns.
+// Mirrors content_service.template_available but reads the content repository the
+// agent service already holds (avoiding a cross-service dependency).
+agent_template_available :: proc(service: ^Agent_Service, owner: domain.User_ID, template_id: string) -> bool {
+	if template_id == "" do return false
+	if template_id == domain.TEMPLATE_EMPTY_ID do return true
+	if service.content == nil do return false
+	t, ok, _ := iface.content_get_template(service.content, template_id)
+	return ok && (t.is_system || t.owner_user_id == owner)
 }
 
 archive_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string) -> (domain.Agent, bool, domain.Domain_Error) {
@@ -251,7 +275,7 @@ list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, li
 list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, filter: List_Instances_Filter, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	has_filter := filter.agent_id != "" || filter.bridge_id != "" || filter.runtime_status != ""
+	has_filter := filter.agent_id != "" || filter.bridge_id != "" || filter.runtime_status != "" || filter.project_id != ""
 	fetch_limit := limit if !has_filter else max(limit * 10, 500)
 	instances, list_err := iface.agent_list_instances_by_owner(service.agents, owner, fetch_limit, cursor)
 	if list_err.code != .None do return nil, list_err
@@ -259,6 +283,7 @@ list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	for inst in instances {
 		if filter.agent_id != "" && inst.agent_id != filter.agent_id do continue
 		if filter.bridge_id != "" && inst.bridge_id != filter.bridge_id do continue
+		if filter.project_id != "" && string(inst.project_id) != filter.project_id do continue
 		if filter.runtime_status != "" {
 			if filter.runtime_status == "live" || filter.runtime_status == "active" {
 				if !runtime_expected_active(inst.runtime_status) do continue
@@ -345,7 +370,13 @@ bootstrap_skill_file_content :: proc(m: domain.Memory, name: string) -> string {
 	content := strings.builder_make()
 	strings.write_string(&content, "---\nname: "); strings.write_string(&content, name)
 	strings.write_string(&content, "\ndescription: ")
-	if strings.trim_space(m.title) != "" { strings.write_string(&content, m.title) } else { strings.write_string(&content, name) }
+	if strings.trim_space(m.description) != "" {
+		strings.write_string(&content, m.description)
+	} else if strings.trim_space(m.title) != "" {
+		strings.write_string(&content, m.title)
+	} else {
+		strings.write_string(&content, name)
+	}
 	strings.write_string(&content, "\nheimdall_managed: true\n---\n\n# ")
 	if strings.trim_space(m.title) != "" { strings.write_string(&content, m.title) } else { strings.write_string(&content, name) }
 	strings.write_string(&content, "\n\n")

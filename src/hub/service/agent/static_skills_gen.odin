@@ -16,6 +16,7 @@ Static_Skill :: struct {
 STATIC_SKILLS := []Static_Skill{
 	{"coordinator-task-management", #load("../../../prompts/skills/coordinator-task-management/SKILL.md", string)},
 	{"heimdall-ctl-communication", #load("../../../prompts/skills/heimdall-ctl-communication/SKILL.md", string)},
+	{"memory-management-workflow", #load("../../../prompts/skills/memory-management-workflow/SKILL.md", string)},
 	{"odin-style-guide", #load("../../../prompts/skills/odin-style-guide/SKILL.md", string)},
 	{"worker-task-management", #load("../../../prompts/skills/worker-task-management/SKILL.md", string)},
 }

@@ -731,12 +731,125 @@ agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Respon
 	project_ids := json_project_id_array(params, "project_ids")
 	template_ids := json_string_array(params, "template_ids")
 	bridge_ids := json_string_array(params, "bridge_ids")
-	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = "pending"})
+	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), description = json_string(params, "description"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = "pending"})
 	if !saved do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "memory_propose", fmt.tprintf("proposed memory \"%s\"", mem.title))
 	b := strings.builder_make()
 	write_memory_json(&b, mem, false)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+write_memory_metadata_json :: proc(b: ^strings.Builder, m: domain.Memory) {
+	typ := domain.memory_type_string(m.type)
+	strings.write_string(b, "{\"memory_id\":\"")
+	write_handler_json_string(b, m.memory_id)
+	strings.write_string(b, "\",\"type\":\"")
+	write_handler_json_string(b, typ)
+	strings.write_string(b, "\",\"status\":\"")
+	write_handler_json_string(b, m.status)
+	strings.write_string(b, "\",\"title\":\"")
+	write_handler_json_string(b, m.title)
+	strings.write_string(b, "\",\"description\":\"")
+	write_handler_json_string(b, m.description)
+	strings.write_string(b, "\",\"agent_ids\":")
+	write_memory_id_array(b, m.agent_ids)
+	strings.write_string(b, ",\"project_ids\":")
+	write_memory_project_array(b, m.project_ids)
+	strings.write_string(b, ",\"template_ids\":")
+	write_memory_id_array(b, m.template_ids)
+	strings.write_string(b, ",\"bridge_ids\":")
+	write_memory_id_array(b, m.bridge_ids)
+	strings.write_string(b, ",\"created_at\":\"")
+	write_handler_json_string(b, m.created_at)
+	strings.write_string(b, "\",\"updated_at\":\"")
+	write_handler_json_string(b, m.updated_at)
+	strings.write_string(b, "\"}")
+}
+
+agent_action_memory_filter_value :: proc(params, plural_key, singular_key: string) -> string {
+	arr := json_string_array(params, plural_key)
+	defer delete(arr)
+	for item in arr {
+		trimmed := strings.trim_space(item)
+		if trimmed != "" do return trimmed
+	}
+	raw := json_string(params, plural_key)
+	if raw == "" do raw = json_string(params, singular_key)
+	raw = strings.trim_space(raw)
+	if comma := strings.index_byte(raw, ','); comma >= 0 do return strings.trim_space(raw[:comma])
+	return raw
+}
+
+agent_action_memory_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	limit := json_int(params, "limit", 50)
+	if limit <= 0 do limit = 50
+	if limit > 200 do limit = 200
+	status := json_string(params, "status")
+	type_str := json_string(params, "type")
+	agent_id := agent_action_memory_filter_value(params, "agent_ids", "agent_id")
+	project_id := agent_action_memory_filter_value(params, "project_ids", "project_id")
+	bridge_id := agent_action_memory_filter_value(params, "bridge_ids", "bridge_id")
+	template_id := agent_action_memory_filter_value(params, "template_ids", "template_id")
+	filter := content_service.Memory_Filter{
+		status      = status,
+		type        = type_str,
+		agent_id    = agent_id,
+		project_id  = domain.Project_ID(project_id),
+		bridge_id   = bridge_id,
+		template_id = template_id,
+	}
+	rows, err := content_service.list_memories(h.content, auth, filter, limit)
+	if err.code != .None do return respond_error(err, req.request_id)
+	defer delete(rows)
+	publish_agent_action(h, inst, "memory_list", "listed memories")
+	b := strings.builder_make()
+	strings.write_byte(&b, '[')
+	for mem, i in rows {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_memory_metadata_json(&b, mem)
+	}
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = limit, has_more = len(rows) >= limit}, req.request_id, auth_ctx_server_time(req))
+}
+
+agent_action_memory_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	memory_id := json_string(params, "memory_id")
+	if memory_id == "" do memory_id = json_string(params, "memory")
+	if memory_id == "" do memory_id = json_string(params, "id")
+	if memory_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "memory_id is required"), req.request_id)
+	mem, got, err := content_service.get_memory(h.content, auth, memory_id)
+	if !got do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "memory_show", fmt.tprintf("opened memory \"%s\"", mem.title))
+	b := strings.builder_make()
+	write_memory_json(&b, mem, false)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_memory_content_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	memory_id := json_string(params, "memory_id")
+	if memory_id == "" do memory_id = json_string(params, "memory")
+	if memory_id == "" do memory_id = json_string(params, "id")
+	if memory_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "memory_id is required"), req.request_id)
+	mem, got, err := content_service.get_memory(h.content, auth, memory_id)
+	if !got do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "memory_content", fmt.tprintf("read memory \"%s\"", mem.title))
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"memory_id\":\""); write_handler_json_string(&b, mem.memory_id)
+	strings.write_string(&b, "\",\"content\":\""); write_handler_json_string(&b, mem.body)
+	strings.write_string(&b, "\"}")
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
 agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Response {

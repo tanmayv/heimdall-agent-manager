@@ -70,7 +70,7 @@ export default function MemoryPage() {
   const filteredActive = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return activeItems;
-    return activeItems.filter((m) => [m.title, m.body, m.memoryId, m.type].some((v) => String(v || '').toLowerCase().includes(q)));
+    return activeItems.filter((m) => [m.title, m.description, m.body, m.memoryId, m.type].some((v) => String(v || '').toLowerCase().includes(q)));
   }, [activeItems, search]);
 
   const [archiveMemory] = useArchiveMemoryMutation();
@@ -200,6 +200,7 @@ function MemoryListItem({ memory, catalog, onDelete }: { memory: any; catalog: S
             <span className="text-[11px] text-zinc-600">·</span>
             <span className="text-[11px] text-zinc-600">{timeAgo(memory.updatedUnixMs || memory.createdUnixMs)}</span>
           </div>
+          {memory.description ? <p className="mt-1 line-clamp-2 text-[12.5px] font-medium text-zinc-300">{memory.description}</p> : null}
           {memory.body ? <p className="mt-1.5 line-clamp-2 text-[12.5px] leading-5 text-zinc-400">{memory.body}</p> : null}
           <div className="mt-2">
             <ScopeChips targeting={targeting} catalog={catalog} debugId={`memory-row-scope-${id}`} />
@@ -232,7 +233,7 @@ function ProposalCard({ memory, catalog }: { memory: any; catalog: ScopeCatalog 
       if (decision === 'reject') {
         await rejectMemory({ memoryId: id, reason: reason || undefined }).unwrap();
       } else {
-        await approveMemory({ memoryId: id, title: memory.title, body: memory.body, evidence: memory.evidence || undefined, type: memory.type, reason: reason || undefined, ...targeting }).unwrap();
+        await approveMemory({ memoryId: id, title: memory.title, description: memory.description || undefined, body: memory.body, evidence: memory.evidence || undefined, type: memory.type, reason: reason || undefined, ...targeting }).unwrap();
       }
     } catch (err: any) {
       setError(memoryErrorText(err, 'Decision failed.'));
@@ -251,6 +252,10 @@ function ProposalCard({ memory, catalog }: { memory: any; catalog: ScopeCatalog 
         </div>
         <span className="font-mono text-[11px] text-zinc-500">{memory.proposalId || id}</span>
       </div>
+
+      {memory.description ? (
+        <p className="mt-2 text-[13px] font-medium text-zinc-300">{memory.description}</p>
+      ) : null}
 
       {memory.body ? (
         <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
@@ -281,6 +286,7 @@ function ProposalCard({ memory, catalog }: { memory: any; catalog: ScopeCatalog 
 
 function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClose: () => void }) {
   const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [body, setBody] = useState('');
   const [evidence, setEvidence] = useState('');
   const [type, setType] = useState('fact');
@@ -295,7 +301,7 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
       return;
     }
     try {
-      await createMemory({ title: title.trim(), body: body.trim(), evidence: evidence.trim() || undefined, type, status: 'active', ...targeting }).unwrap();
+      await createMemory({ title: title.trim(), description: description.trim() || undefined, body: body.trim(), evidence: evidence.trim() || undefined, type, status: 'active', ...targeting }).unwrap();
       onClose();
     } catch (err: any) {
       setError(memoryErrorText(err, 'Failed to create memory.'));
@@ -315,6 +321,9 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
           </select>
         </Field>
       </div>
+      <Field label="Description (optional)">
+        <input data-debug-id="memory-create-description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Short summary of this memory" className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+      </Field>
       <Field label="Body">
         <textarea data-debug-id="memory-create-body" value={body} onChange={(e) => setBody(e.target.value)} rows={6} placeholder="Memory body (Markdown)" className="w-full resize-y rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
       </Field>

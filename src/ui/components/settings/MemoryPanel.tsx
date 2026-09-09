@@ -32,6 +32,7 @@ export const MemoryPanel: React.FC = () => {
 
   // Creation form state
   const [createTitle, setCreateTitle] = useState("");
+  const [createDescription, setCreateDescription] = useState("");
   const [createBody, setCreateBody] = useState("");
   const [createEvidence, setCreateEvidence] = useState("");
   const [createScope, setCreateScope] = useState<MemoryScopeValue>({ type: "fact" });
@@ -49,6 +50,7 @@ export const MemoryPanel: React.FC = () => {
     try {
       await createMemory({
         title: createTitle.trim(),
+        description: createDescription.trim() || undefined,
         body: createBody.trim(),
         evidence: createEvidence.trim() || undefined,
         type: createScope.type || "fact",
@@ -56,6 +58,7 @@ export const MemoryPanel: React.FC = () => {
         status: "active",
       }).unwrap();
       setCreateTitle("");
+      setCreateDescription("");
       setCreateBody("");
       setCreateEvidence("");
       setCreateScope({ type: "fact" });
@@ -118,6 +121,18 @@ export const MemoryPanel: React.FC = () => {
                 value={createTitle}
                 onChange={(e) => setCreateTitle(e.target.value)}
                 placeholder="Memory title..."
+                className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2.5 focus:border-sky-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1">Description (Optional)</label>
+              <input
+                type="text"
+                data-debug-id="memory-create-description-input"
+                id="memory-create-description-input"
+                value={createDescription}
+                onChange={(e) => setCreateDescription(e.target.value)}
+                placeholder="Short summary of this memory..."
                 className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2.5 focus:border-sky-500 focus:outline-none"
               />
             </div>
@@ -278,6 +293,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
   const isSystem = memory.ownerUserId === "system" || memory.owner_user_id === "system";
 
   const [title, setTitle] = useState(memory.title || "");
+  const [description, setDescription] = useState(memory.description || "");
   const [body, setBody] = useState(memory.body || "");
   const [evidence, setEvidence] = useState(memory.evidence || "");
   // Shim: collapse the record's targeting lists to the single-value selector.
@@ -294,6 +310,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
       await updateMemory({
         memoryId,
         title,
+        description: description.trim() || undefined,
         body,
         evidence: evidence || undefined,
         type: scope.type,
@@ -311,6 +328,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
       await approveMemory({
         memoryId,
         title,
+        description: description.trim() || undefined,
         body,
         evidence: evidence || undefined,
         type: scope.type,
@@ -361,6 +379,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
       {isSystem ? (
         <div className="space-y-2">
           <h4 className="font-semibold text-white">{memory.title}</h4>
+          {memory.description && <p className="text-xs font-medium text-zinc-300">{memory.description}</p>}
           <p className="text-xs text-zinc-300 whitespace-pre-wrap">{memory.body}</p>
           {memory.evidence && <p className="text-xs italic text-zinc-400">Evidence: {memory.evidence}</p>}
         </div>
@@ -374,6 +393,19 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
               id={`memory-proposal-title-input-${memoryId}`}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2 focus:border-amber-500 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-zinc-400 mb-1">Description</label>
+            <input
+              type="text"
+              data-debug-id={`memory-proposal-description-input-${memoryId}`}
+              id={`memory-proposal-description-input-${memoryId}`}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Short summary of this memory..."
               className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2 focus:border-amber-500 focus:outline-none"
             />
           </div>
@@ -540,6 +572,12 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
         </div>
       </div>
 
+      {memory.description ? (
+        <p className="text-xs font-medium text-zinc-300 line-clamp-2">
+          {memory.description}
+        </p>
+      ) : null}
+
       <p className="text-xs text-zinc-300 whitespace-pre-wrap line-clamp-3">
         {memory.body}
       </p>
@@ -547,6 +585,7 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
       {expanded && (
         <div className="mt-3 pt-3 border-t border-white/10 space-y-2 text-xs text-zinc-400">
           <div><span className="font-semibold text-zinc-200">Full Body:</span> {memory.body}</div>
+          {memory.description && <div><span className="font-semibold text-zinc-200">Description:</span> {memory.description}</div>}
           {memory.evidence && <div><span className="font-semibold text-zinc-200">Evidence:</span> {memory.evidence}</div>}
           <div><span className="font-semibold text-zinc-200">ID:</span> {memoryId}</div>
           {memory.sourceTaskId && <div><span className="font-semibold text-zinc-200">Source Task ID:</span> {memory.sourceTaskId}</div>}
@@ -567,6 +606,7 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
 const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory, onClose }) => {
   const memoryId = memory.id || memory.memoryId;
   const [title, setTitle] = useState(memory.title || "");
+  const [description, setDescription] = useState(memory.description || "");
   const [body, setBody] = useState(memory.body || "");
   const [evidence, setEvidence] = useState(memory.evidence || "");
   // Shim: collapse the record's targeting lists to the single-value selector.
@@ -582,6 +622,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
       await updateMemory({
         memoryId,
         title,
+        description: description.trim() || undefined,
         body,
         evidence: evidence || undefined,
         type: scope.type,
@@ -605,6 +646,18 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
           id={`memory-edit-title-input-${memoryId}`}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
+          className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
+        />
+      </div>
+      <div>
+        <label className="block text-[11px] text-zinc-400 mb-1">Description</label>
+        <input
+          type="text"
+          data-debug-id={`memory-edit-description-input-${memoryId}`}
+          id={`memory-edit-description-input-${memoryId}`}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Short summary of this memory..."
           className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
         />
       </div>
