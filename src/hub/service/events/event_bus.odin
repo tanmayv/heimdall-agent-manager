@@ -39,7 +39,19 @@ publish_resource_changed :: proc(bus: ^User_Event_Bus, owner_user_id, resource, 
 	if bus == nil || owner_user_id == "" do return
 	bus.event_seq += 1
 	event := resource_changed_json(bus.event_seq, resource, resource_id, change, summary_json)
-	publish_raw_to_user(bus, owner_user_id, event)
+	publish_owned(bus, owner_user_id, event)
+}
+
+// publish_owned fans an event string out to the user's connections and then frees
+// it. Fan-out is synchronous (publish_raw_to_user writes every connected socket
+// inline), so the string can be released as soon as it returns. Use this for any
+// freshly-built event JSON whose ownership is being handed to the bus. On the
+// per-request arena delete is a no-op (the arena reclaims it); on the persistent
+// heap (the reaper and the bridge WS runtime loop) it actually frees, closing the
+// per-fan-out event-string leak.
+publish_owned :: proc(bus: ^User_Event_Bus, owner_user_id, event_json: string) {
+	defer delete(event_json)
+	publish_raw_to_user(bus, owner_user_id, event_json)
 }
 
 publish_raw_to_user :: proc(bus: ^User_Event_Bus, owner_user_id, event_json: string) {
@@ -71,6 +83,7 @@ write_ws_text_frame :: proc(socket: net.TCP_Socket, text: string) -> bool {
 	header_len := 2
 	if n > 125 do header_len = 4
 	frame := make([]byte, header_len + n)
+	defer delete(frame) // previously leaked one frame buffer per sent message
 	frame[0] = 0x81
 	if n <= 125 { frame[1] = byte(n) } else { frame[1] = 126; frame[2] = byte((n >> 8) & 0xff); frame[3] = byte(n & 0xff) }
 	copy(frame[header_len:], transmute([]byte)text)

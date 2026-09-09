@@ -1,5 +1,6 @@
 package agent
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
@@ -1373,13 +1374,41 @@ Hub_Fragment_Cache :: struct {
 
 global_hub_fragment_cache: Hub_Fragment_Cache
 
+// Upper bound on distinct cached fragments. The cache previously never evicted,
+// so it grew without limit as new content hashes appeared (every skills/manifest
+// revision). Fragments are content-addressed and cheap to re-render, so a simple
+// capacity cap is safe.
+HUB_FRAGMENT_CACHE_MAX :: 512
+
 hub_fragment_cache_put :: proc(hash, body: string) {
+	// The cache outlives the request that populates it, so it MUST own its strings
+	// on the persistent heap — never on the caller's per-request arena. Previously
+	// it stored the caller's pointers verbatim (a use-after-free waiting to happen
+	// once callers freed per request) and overwrote entries without freeing the
+	// prior body (a leak on every re-render).
+	heap := runtime.heap_allocator()
 	sync.mutex_lock(&global_hub_fragment_cache.lock)
 	defer sync.mutex_unlock(&global_hub_fragment_cache.lock)
 	if global_hub_fragment_cache.entries == nil {
-		global_hub_fragment_cache.entries = make(map[string]Hub_Fragment_Cache_Entry)
+		global_hub_fragment_cache.entries = make(map[string]Hub_Fragment_Cache_Entry, heap)
 	}
-	global_hub_fragment_cache.entries[hash] = Hub_Fragment_Cache_Entry{hash = hash, body = body}
+	if prev, ok := global_hub_fragment_cache.entries[hash]; ok {
+		delete_key(&global_hub_fragment_cache.entries, hash)
+		delete(prev.hash, heap)
+		delete(prev.body, heap)
+	} else if len(global_hub_fragment_cache.entries) >= HUB_FRAGMENT_CACHE_MAX {
+		// Evict one entry (capture first, then mutate — never delete during range).
+		evict_key, evict_hash, evict_body: string
+		for k, v in global_hub_fragment_cache.entries {
+			evict_key, evict_hash, evict_body = k, v.hash, v.body
+			break
+		}
+		delete_key(&global_hub_fragment_cache.entries, evict_key)
+		delete(evict_hash, heap)
+		delete(evict_body, heap)
+	}
+	key := strings.clone(hash, heap)
+	global_hub_fragment_cache.entries[key] = Hub_Fragment_Cache_Entry{hash = key, body = strings.clone(body, heap)}
 }
 
 hub_fragment_cache_get :: proc(hash: string) -> (string, bool) {

@@ -41,7 +41,7 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 	// still fetched durably via REST (fetch_required). System messages
 	// (e.g. start-success banners) are not user-actionable, so skip their preview.
 	if h.event_bus != nil && msg.message_type != "system" {
-		events.publish_raw_to_user(h.event_bus, string(inst.owner_user_id), agent_to_user_chat_event_json(inst, msg))
+		events.publish_owned(h.event_bus, string(inst.owner_user_id), agent_to_user_chat_event_json(inst, msg))
 	}
 	// Web Push (WP-SEND-2): also deliver an OS notification for backgrounded/
 	// closed PWAs. Mirrors the client notify policy (chat only, never system):
@@ -281,7 +281,7 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 // content_handlers (same package). No-op without an event bus (test wiring).
 publish_agent_messages_read :: proc(h:^Agent_Action_Handlers, owner_user_id:string, c:domain.Chat_Conversation, message_ids:[]string, reader_instance_id:string){
 	if h==nil || h.event_bus==nil || owner_user_id=="" || len(message_ids)==0 do return
-	events.publish_raw_to_user(h.event_bus, owner_user_id, messages_read_event_json(c, message_ids, reader_instance_id))
+	events.publish_owned(h.event_bus, owner_user_id, messages_read_event_json(c, message_ids, reader_instance_id))
 }
 
 // publish_current_task_changed emits a live resource_changed event on an agent
