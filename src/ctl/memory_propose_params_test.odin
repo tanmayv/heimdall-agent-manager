@@ -71,3 +71,45 @@ test_json_string_array_field_escapes_values :: proc(t: ^testing.T) {
 	empty := json_string_array_field("agent_ids", []string{})
 	testing.expect_value(t, empty, `"agent_ids":[]`)
 }
+
+@(test)
+test_memory_params_description_handling :: proc(t: ^testing.T) {
+	args_with := []string{"--type", "fact", "--title", "T", "--description", "Desc text", "--body", "B"}
+	out_with := ctl_agentmode_memory_propose_params(args_with)
+	testing.expect(t, strings.contains(out_with, `"description":"Desc text"`), out_with)
+
+	args_without := []string{"--type", "fact", "--title", "T", "--body", "B"}
+	out_without := ctl_agentmode_memory_propose_params(args_without)
+	testing.expect(t, !strings.contains(out_without, `"description"`), out_without)
+}
+
+@(test)
+test_memory_list_params_defaults :: proc(t: ^testing.T) {
+	args := []string{}
+	out := ctl_agentmode_memory_list_params(args)
+	testing.expect_value(t, out, `{}`)
+}
+
+@(test)
+test_memory_list_params_status_type_limit :: proc(t: ^testing.T) {
+	args := []string{"--status", "active", "--type", "fact", "--limit", "25"}
+	out := ctl_agentmode_memory_list_params(args)
+	testing.expect(t, strings.contains(out, `"status":"active"`), out)
+	testing.expect(t, strings.contains(out, `"type":"fact"`), out)
+	testing.expect(t, strings.contains(out, `"limit":25`), out)
+}
+
+@(test)
+test_memory_list_params_scope_dimensions :: proc(t: ^testing.T) {
+	args := []string{
+		"--agent-ids", "agt_1,agt_2",
+		"--project", "proj_1", "--project-ids", "proj_2",
+		"--bridge-id", "brg_1",
+		"--template-ids", "tmpl_1",
+	}
+	out := ctl_agentmode_memory_list_params(args)
+	testing.expect(t, strings.contains(out, `"agent_ids":["agt_1","agt_2"]`), out)
+	testing.expect(t, strings.contains(out, `"project_ids":["proj_1","proj_2"]`), out)
+	testing.expect(t, strings.contains(out, `"bridge_ids":["brg_1"]`), out)
+	testing.expect(t, strings.contains(out, `"template_ids":["tmpl_1"]`), out)
+}

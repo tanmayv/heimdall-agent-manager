@@ -258,40 +258,13 @@ MIGRATION_003_DEVICE_TOKENS :: `ALTER TABLE user_api_tokens ADD COLUMN created_f
 ALTER TABLE user_api_tokens ADD COLUMN device_label TEXT NOT NULL DEFAULT '';
 `
 
-MIGRATION_004_DEFAULT_SKILL_MEMORY :: `INSERT INTO memories (memory_id, owner_user_id, agent_id, type, status, title, body, evidence, created_at, updated_at)
-VALUES (
-  'mem_system_heimdall_ctl_communication',
-  'system',
-  '',
-  'skill',
-  'active',
-  'Heimdall CLI communication basics',
-  'Use the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: ./.heimdall/bin/ham-ctl. The wrapper injects HEIMDALL_AGENT_TOKEN, HEIMDALL_AGENT_INSTANCE_ID, and HEIMDALL_BRIDGE_ENDPOINT, so do not paste tokens into commands unless explicitly needed.\n\nStartup: after you are fully ready, report readiness with ./.heimdall/bin/ham-ctl agent start-success.\n\nList live agents: to discover other running instances you can message, run ./.heimdall/bin/ham-ctl agents live (equivalent: ./.heimdall/bin/ham-ctl agent agents live). Use returned agent_instance_id values for agent-to-agent messaging; do not rely on display names.\n\nReading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.\n\nReplying to the user: use ./.heimdall/bin/ham-ctl agent chat send --body "<concise status or answer>". Keep replies concise, include concrete results, blockers, and next steps. Do not dump large logs or files inline; summarize and attach/create an artifact when appropriate.\n\nAgent-to-agent communication: use ./.heimdall/bin/ham-ctl agent chat send-to-agent --to-instance <agent_instance_id> --body "..." when you know the target instance id. This is allowed across task chains and across bridges for agents owned by the same user. Target exact agent_instance_id values.\n\nTask communication: prefer durable Heimdall task comments/status/chat commands over ad-hoc terminal notes. Reference stable IDs such as agent_instance_id, task_id, chain_id, artifact_id, and file paths.\n\nBest practices: acknowledge messages promptly, state what you changed or checked, include exact commands/tests run when reporting completion, mention blockers explicitly, and avoid exposing secrets or raw tokens in chat, comments, artifacts, or logs.',
-  'Seeded system default memory. Applies to all agents because agent_id is empty and owner_user_id is system.',
-  '2026-07-28T00:00:00Z',
-  '2026-07-28T00:00:00Z'
-)
-ON CONFLICT(memory_id) DO UPDATE SET
-  agent_id=excluded.agent_id,
-  type=excluded.type,
-  status=excluded.status,
-  title=excluded.title,
-  body=excluded.body,
-  evidence=excluded.evidence,
-  updated_at=excluded.updated_at;
+MIGRATION_004_DEFAULT_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
-MIGRATION_005_AGENT_TO_AGENT_CROSS_CHAIN_MEMORY :: `UPDATE memories
-SET body = 'Use the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: ./.heimdall/bin/ham-ctl. The wrapper injects HEIMDALL_AGENT_TOKEN, HEIMDALL_AGENT_INSTANCE_ID, and HEIMDALL_BRIDGE_ENDPOINT, so do not paste tokens into commands unless explicitly needed.\n\nStartup: after you are fully ready, report readiness with ./.heimdall/bin/ham-ctl agent start-success.\n\nList live agents: to discover other running instances you can message, run ./.heimdall/bin/ham-ctl agents live (equivalent: ./.heimdall/bin/ham-ctl agent agents live). Use returned agent_instance_id values for agent-to-agent messaging; do not rely on display names.\n\nReading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.\n\nReplying to the user: use ./.heimdall/bin/ham-ctl agent chat send --body "<concise status or answer>". Keep replies concise, include concrete results, blockers, and next steps. Do not dump large logs or files inline; summarize and attach/create an artifact when appropriate.\n\nAgent-to-agent communication: use ./.heimdall/bin/ham-ctl agent chat send-to-agent --to-instance <agent_instance_id> --body "..." when you know the target instance id. This is allowed across task chains and across bridges for agents owned by the same user. Target exact agent_instance_id values.\n\nTask communication: prefer durable Heimdall task comments/status/chat commands over ad-hoc terminal notes. Reference stable IDs such as agent_instance_id, task_id, chain_id, artifact_id, and file paths.\n\nBest practices: acknowledge messages promptly, state what you changed or checked, include exact commands/tests run when reporting completion, mention blockers explicitly, and avoid exposing secrets or raw tokens in chat, comments, artifacts, or logs.',
-    updated_at = '2026-07-28T00:10:00Z'
-WHERE memory_id = 'mem_system_heimdall_ctl_communication';
+MIGRATION_005_AGENT_TO_AGENT_CROSS_CHAIN_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
-
-MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY :: `UPDATE memories
-SET body = 'Use the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: ./.heimdall/bin/ham-ctl. The wrapper injects HEIMDALL_AGENT_TOKEN, HEIMDALL_AGENT_INSTANCE_ID, and HEIMDALL_BRIDGE_ENDPOINT, so do not paste tokens into commands unless explicitly needed.\n\nStartup: after you are fully ready, report readiness with ./.heimdall/bin/ham-ctl agent start-success.\n\nList live agents: to discover other running instances you can message, run ./.heimdall/bin/ham-ctl agents live (equivalent: ./.heimdall/bin/ham-ctl agent agents live). Use returned agent_instance_id values for agent-to-agent messaging; do not rely on display names.\n\nReading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.\n\nReplying to the user: use ./.heimdall/bin/ham-ctl agent chat send --body "<concise status or answer>". Keep replies concise, include concrete results, blockers, and next steps. Do not dump large logs or files inline; summarize and attach/create an artifact when appropriate.\n\nAgent-to-agent communication: use ./.heimdall/bin/ham-ctl agent chat send-to-agent --to-instance <agent_instance_id> --body "..." when you know the target instance id. This is allowed across task chains and across bridges for agents owned by the same user. Target exact agent_instance_id values.\n\nTask communication: prefer durable Heimdall task comments/status/chat commands over ad-hoc terminal notes. Reference stable IDs such as agent_instance_id, task_id, chain_id, artifact_id, and file paths.\n\nBest practices: acknowledge messages promptly, state what you changed or checked, include exact commands/tests run when reporting completion, mention blockers explicitly, and avoid exposing secrets or raw tokens in chat, comments, artifacts, or logs.',
-    updated_at = '2026-07-28T00:20:00Z'
-WHERE memory_id = 'mem_system_heimdall_ctl_communication';
+MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
 
@@ -348,18 +321,7 @@ AND NOT EXISTS (
 `
 
 
-MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY :: `UPDATE memories
-SET body = replace(
-  replace(
-    body,
-    'Reading user messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. Treat chat messages from the user as authoritative task guidance.',
-    'Reading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.'
-  ),
-  'Reading user messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. Treat chat messages from the user as authoritative task guidance.',
-  'Reading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.'
-),
-updated_at = '2026-07-28T00:25:00Z'
-WHERE memory_id = 'mem_system_heimdall_ctl_communication';
+MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
 MIGRATION_009_ARTIFACT_METADATA :: `ALTER TABLE artifacts ADD COLUMN mime TEXT NOT NULL DEFAULT '';
@@ -370,24 +332,10 @@ ALTER TABLE artifacts ADD COLUMN origin_ref TEXT NOT NULL DEFAULT '';
 ALTER TABLE artifacts ADD COLUMN deleted_at TEXT;
 `
 
-MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY :: `UPDATE memories
-SET body = body || '
-
-Artifacts: use artifacts for large logs, screenshots, diffs, generated files, or any output too large/noisy for chat. Create artifacts from an agent run with ./.heimdall/bin/ham-ctl agent artifacts create --name "<name>" --kind markdown --content "...", --file <path>, or --stdin; use --content-type <mime> when useful. List available artifacts with ./.heimdall/bin/ham-ctl agent artifacts list. Inspect metadata with ./.heimdall/bin/ham-ctl agent artifacts show --artifact-id <artifact_id> or include content with --with-content. Read artifact bodies with ./.heimdall/bin/ham-ctl agent artifacts read --artifact-id <artifact_id> (aliases: content or get). When reporting work, summarize briefly in chat and include the artifact_id / artifact://<artifact_id> reference rather than pasting large content inline.',
-    updated_at = '2026-07-28T00:30:00Z'
-WHERE memory_id = 'mem_system_heimdall_ctl_communication'
-  AND instr(body, 'Artifacts: use artifacts for large logs') = 0;
+MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
-MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY :: `UPDATE memories
-SET body = replace(
-  body,
-  'Read artifact bodies with ./.heimdall/bin/ham-ctl agent artifacts read --artifact-id <artifact_id> (aliases: content or get).',
-  'Read artifact bodies with ./.heimdall/bin/ham-ctl agent artifacts read --artifact-id <artifact_id> (aliases: content or get). To materialize an artifact as a local file, run ./.heimdall/bin/ham-ctl agent artifacts download --artifact-id <artifact_id> --dir <directory>; it writes a random filename with the inferred extension and returns the filename/path.'
-),
-updated_at = '2026-07-28T22:45:00Z'
-WHERE memory_id = 'mem_system_heimdall_ctl_communication'
-  AND instr(body, 'artifacts download --artifact-id') = 0;
+MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
 MIGRATION_012_TASK_CHAINS_V2 :: `ALTER TABLE task_chains ADD COLUMN description TEXT NOT NULL DEFAULT '';
@@ -429,76 +377,10 @@ CREATE TRIGGER IF NOT EXISTS task_dependencies_owner_immutable BEFORE UPDATE OF 
 CREATE TRIGGER IF NOT EXISTS task_votes_owner_immutable BEFORE UPDATE OF owner_user_id ON task_votes BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
 `
 
-MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY :: `INSERT INTO memories (memory_id, owner_user_id, agent_id, type, status, title, body, evidence, created_at, updated_at)
-VALUES (
-  'mem_system_heimdall_tasks',
-  'system',
-  '',
-  'skill',
-  'active',
-  'Heimdall Task Workflow Skill',
-  'Use the managed Heimdall CLI wrapper to manage and execute tasks within your assigned task chain: ./.heimdall/bin/ham-ctl agent tasks ...\n\nFetch current tasks: run ./.heimdall/bin/ham-ctl agent tasks list (or fetch) to discover tasks assigned to you or available in your chain.\n\nCreate tasks: if you are the chain coordinator, decompose complex work into discrete tasks with ./.heimdall/bin/ham-ctl agent tasks create --title "<title>" --description "<description>". Set dependencies when appropriate.\n\nUpdate task status: start work by moving task to in_progress. When finished, submit for review with ./.heimdall/bin/ham-ctl agent tasks done --task-id <id> (or status --status in_validation).\n\nReview & Vote: as a reviewer, evaluate submitted tasks and record your decision with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment "<feedback>".\n\nTask Comments: post progress updates or clarify requirements with ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body "<comment>".\n\nNudge: request attention on a stalled task with ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id>.',
-  'Seeded system task workflow skill memory.',
-  '2026-07-28T00:00:00Z',
-  '2026-07-28T00:00:00Z'
-)
-ON CONFLICT(memory_id) DO UPDATE SET
-  agent_id=excluded.agent_id,
-  type=excluded.type,
-  status=excluded.status,
-  title=excluded.title,
-  body=excluded.body,
-  evidence=excluded.evidence,
-  updated_at=excluded.updated_at;
-
-INSERT INTO memories (memory_id, owner_user_id, agent_id, type, status, title, body, evidence, created_at, updated_at)
-VALUES (
-  'mem_system_use_current_chain_tasks',
-  'system',
-  '',
-  'habit',
-  'active',
-  'Use Current Task Chain to Organize Work',
-  'Organize all substantial work as tasks within your current task chain. Before starting work, check active tasks with ./.heimdall/bin/ham-ctl agent tasks fetch. Keep task status current as work progresses. Submit tasks for review using status --status in_validation when complete. If a reviewer returns NGTM, address feedback promptly and re-submit for review.',
-  'Seeded system default habit memory.',
-  '2026-07-28T00:00:00Z',
-  '2026-07-28T00:00:00Z'
-)
-ON CONFLICT(memory_id) DO UPDATE SET
-  agent_id=excluded.agent_id,
-  type=excluded.type,
-  status=excluded.status,
-  title=excluded.title,
-  body=excluded.body,
-  evidence=excluded.evidence,
-  updated_at=excluded.updated_at;
+MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
-MIGRATION_014_TASK_WORKFLOW_SKILL_COMMENTS :: `UPDATE memories
-SET body = 'Use the managed Heimdall CLI wrapper to manage and execute tasks within your assigned task chain: ./.heimdall/bin/ham-ctl agent tasks ...
-
-Tracking work as tasks is REQUIRED, not optional. All substantial work must be represented by a task in your current task chain, and you must keep task status and comments current so the chain reflects real progress.
-
-Fetch current tasks: run ./.heimdall/bin/ham-ctl agent tasks fetch (or list) to discover tasks assigned to you or available in your chain. Do this before starting any work.
-
-Create tasks: if you are the chain coordinator, decompose complex work into discrete tasks with ./.heimdall/bin/ham-ctl agent tasks create --title "<title>" --description "<description>". Set dependencies when appropriate. If work has no task, create one or ask the coordinator to create one before proceeding.
-
-Update task status: start work by moving the task to in_progress with ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress. When finished, submit for review with ./.heimdall/bin/ham-ctl agent tasks done --task-id <id> (or status --status in_validation).
-
-Comment progress on EVERY task (REQUIRED): as you work, post progress updates on the task with ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body "<what you did, what changed, what is next>". Add a comment at every meaningful step, when you hit a blocker, and with a review summary before submitting for review. Comments are the durable record of how the work progressed.
-
-Review & Vote: as a reviewer, evaluate submitted tasks and record your decision with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment "<feedback>". If you receive ngtm on your task, address the feedback, comment what you changed, and re-submit for review.
-
-Nudge: request attention on a stalled task with ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id>.',
-    evidence = 'Seeded system task workflow skill memory with mandatory progress-comment guidance.',
-    updated_at = '2026-07-29T00:00:00Z'
-WHERE memory_id = 'mem_system_heimdall_tasks';
-
-UPDATE memories
-SET body = 'Organize all substantial work as tasks within your current task chain; this is required. Before starting work, check active tasks with ./.heimdall/bin/ham-ctl agent tasks fetch. Move a task to in_progress when you start it, and post a progress comment on the task at every meaningful step with ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body "<update>". Keep task status current as work progresses. Submit tasks for review using status --status in_validation (or tasks done) when complete, including a summary comment. If a reviewer returns NGTM, address feedback promptly, comment what you changed, and re-submit for review.',
-    evidence = 'Seeded system default habit memory with mandatory progress-comment guidance.',
-    updated_at = '2026-07-29T00:00:00Z'
-WHERE memory_id = 'mem_system_use_current_chain_tasks';
+MIGRATION_014_TASK_WORKFLOW_SKILL_COMMENTS :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
 MIGRATION_015_MEMORY_TARGET_SCOPE :: `ALTER TABLE memories ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
@@ -517,67 +399,7 @@ ALTER TABLE chat_messages ADD COLUMN message_status TEXT NOT NULL DEFAULT 'compl
 ALTER TABLE chat_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
 `
 
-MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: `INSERT INTO memories (memory_id, owner_user_id, agent_id, project_id, template_id, bridge_id, type, status, title, body, evidence, created_at, updated_at)
-VALUES (
-  'mem_system_heimdall_memory',
-  'system',
-  '',
-  '',
-  '',
-  '',
-  'skill',
-  'active',
-  'Heimdall Memory Management & Workflow Skill',
-  '---
-name: memory-management-workflow
-description: Core guidance for Heimdall memory management, scope selection, proposal review, and ham-ctl CLI commands.
----
-
-# Heimdall Memory Management & Workflow Skill
-
-Use Heimdall memory management for managing long-term agent knowledge, project scopes, habits, facts, and expertise.
-
-## Scope Selection Rules
-- **Agent Scope** (agent_id): Knowledge specific to an agent definition across instances.
-- **Project Scope** (project_id): Knowledge scoped to a specific project repository.
-- **Bridge Scope** (bridge_id): Host environment or infrastructure knowledge.
-- **Template Scope** (template_id): Guidance for agents initialized from a specific template.
-- **Global Scope**: Leave scope fields empty for system-wide knowledge.
-- **Ephemeral Instances**: Ephemeral instance memories bind durably to the instance''s underlying agent_id (and project/bridge where applicable).
-
-## Memory Types
-- fact: Static declarative truth or project configuration.
-- habit: Behavioral pattern or operational preference.
-- episode: Record of specific past event or task run outcome.
-- expertise: Special knowledge, architectural insight, or deep domain rule.
-- skill: Machine-actionable procedure or SKILL.md instruction set.
-Template targeting is available through template_id scope; template is not a memory type.
-
-## Propose-Review-Approve Workflow
-- Agents propose new memories in pending status using ham-ctl or agent actions.
-- Humans review pending proposals in Settings -> Memory UI or CLI.
-- Proposals can be edited before approval, approved directly (flipping status to active), or rejected.
-- System memories (owner_user_id = ''system'') are read-only.
-
-## CLI Usage Examples (ham-ctl)
-- Propose a memory: ./.heimdall/bin/ham-ctl agent memory propose --title "Build Rule" --type "fact" --body "Always run tests before committing."
-- Approve proposal: ./.heimdall/bin/ham-ctl memory approve mem_123
-- List memories: ./.heimdall/bin/ham-ctl memory list --status active',
-  'Seeded system default memory for memory workflow skill.',
-  '2026-07-29T00:00:00Z',
-  '2026-07-29T00:00:00Z'
-)
-ON CONFLICT(memory_id) DO UPDATE SET
-  agent_id=excluded.agent_id,
-  project_id=excluded.project_id,
-  template_id=excluded.template_id,
-  bridge_id=excluded.bridge_id,
-  type=excluded.type,
-  status=excluded.status,
-  title=excluded.title,
-  body=excluded.body,
-  evidence=excluded.evidence,
-  updated_at=excluded.updated_at;
+MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
 `
 
 MIGRATION_019_CURRENT_TASK_AND_PRIORITY :: `ALTER TABLE agent_instances ADD COLUMN current_task_id TEXT NOT NULL DEFAULT '';
@@ -733,7 +555,40 @@ ALTER TABLE memories DROP COLUMN template_id;
 ALTER TABLE memories DROP COLUMN bridge_id;
 `
 
-migration_order :: [26]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql"}
+// MIGRATION_027_DEFAULT_COORDINATOR_AGENT seeds a durable 'coordinator' agent for
+// every existing user that lacks one and remaps agents off the removed built-in
+// 'System Reviewer' template onto the default 'tmpl_empty'. Idempotent via the
+// NOT EXISTS guard + deterministic agent_id and the template WHERE clause. Kept
+// byte-identical to 027_default_coordinator_agent.sql.
+MIGRATION_027_DEFAULT_COORDINATOR_AGENT :: `INSERT INTO agents (agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at)
+SELECT 'agt_coordinator_' || u.user_id,
+       u.user_id,
+       'coordinator',
+       'coordinator',
+       'tmpl_empty',
+       '',
+       '',
+       '',
+       'active',
+       u.created_at,
+       u.updated_at
+FROM users u
+WHERE NOT EXISTS (
+        SELECT 1 FROM agents a
+        WHERE a.owner_user_id = u.user_id
+          AND a.slug = 'coordinator'
+);
+
+UPDATE agents SET template_id = 'tmpl_empty' WHERE template_id = 'tmpl_system_reviewer';
+`
+
+// MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP adds first-class description to
+// memories and deletes legacy seeded system memories in favor of static skills.
+MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP :: `ALTER TABLE memories ADD COLUMN description TEXT NOT NULL DEFAULT '';
+DELETE FROM memories WHERE owner_user_id = 'system' AND (type = 'skill' OR memory_id LIKE 'mem_system_%');
+`
+
+migration_order :: [28]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -780,6 +635,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "028_memory_description_and_cleanup.sql" && table_column_exists(conn, "memories", "description") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -803,6 +662,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_scheduled_prompts_schema(conn) do return false, domain.domain_error(.Internal_Error, "scheduled prompts schema upgrade failed")
 	if !upgrade_actions_schema(conn) do return false, domain.domain_error(.Internal_Error, "actions schema upgrade failed")
 	if !upgrade_push_subscriptions_schema(conn) do return false, domain.domain_error(.Internal_Error, "push subscriptions schema upgrade failed")
+	if !upgrade_memory_description_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory description schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -838,6 +698,8 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "024_push_subscriptions.sql" do return strings.clone(MIGRATION_024_PUSH_SUBSCRIPTIONS)
 	if name == "025_lookup_indexes.sql" do return strings.clone(MIGRATION_025_LOOKUP_INDEXES)
 	if name == "026_memory_scope_lists.sql" do return strings.clone(MIGRATION_026_MEMORY_SCOPE_LISTS)
+	if name == "027_default_coordinator_agent.sql" do return strings.clone(MIGRATION_027_DEFAULT_COORDINATOR_AGENT)
+	if name == "028_memory_description_and_cleanup.sql" do return strings.clone(MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP)
 	return ""
 }
 
@@ -1041,5 +903,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscr
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_owner ON push_subscriptions(owner_user_id);
 CREATE TRIGGER IF NOT EXISTS push_subscriptions_owner_immutable BEFORE UPDATE OF owner_user_id ON push_subscriptions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`)
 }
+
+upgrade_memory_description_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "memories", "description") {
+		if !exec(conn, "ALTER TABLE memories ADD COLUMN description TEXT NOT NULL DEFAULT '';") do return false
+	}
+	exec(conn, "DELETE FROM memories WHERE owner_user_id = 'system' AND (type = 'skill' OR memory_id LIKE 'mem_system_%');")
+	return true
+}
+
 
 

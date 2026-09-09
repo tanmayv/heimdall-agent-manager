@@ -1,7 +1,7 @@
 // TemplatesPanel — manage agent templates (personas) used at agent creation.
 //
 // Templates are DB-backed on the hub (GET/POST /api/v1/templates, plus PATCH and
-// DELETE for user templates). The built-in "System Reviewer" is read-only and
+// DELETE for user templates). The built-in "empty" template is read-only and
 // cannot be edited/deleted. This panel exposes create / edit / delete so users
 // can define their own personas (researcher, bug-fixer, …) that then appear in
 // the create-agent template picker.

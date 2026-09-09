@@ -42,7 +42,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "task-chain", "task-chains": ctl_v2_task_chain(endpoint, token, rest, args); return
 	case "task", "tasks": ctl_v2_task(endpoint, token, rest, args); return
 	case "chat", "chats": ctl_v2_chat(endpoint, token, rest, args); return
-	case "memory":        ctl_agentmode_memory(endpoint, token, action, args); return
+	case "memory":        ctl_v2_memory(endpoint, token, rest, args); return
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
 	}
 	print_agent_help(cmd[idx:])
@@ -501,15 +501,69 @@ ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string) {
 	fmt.println(strings.to_string(b))
 }
 
-ctl_agentmode_memory :: proc(endpoint, token, action: string, args: []string) {
-	if action == "" || action == "propose" {
+ctl_v2_memory :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "", "list":
+		ctl_agent_call(endpoint, token, "agent.memory.list", ctl_agentmode_memory_list_params(args))
+	case "show":
+		memory_id := pos(tokens, 1)
+		if memory_id == "" do memory_id = option_value(args, "--memory-id", option_value(args, "--memory", option_value(args, "--id", "")))
+		if memory_id == "" { print_agent_help([]string{"memory"}); return }
+		ctl_agent_call(endpoint, token, "agent.memory.show", json_object(json_kv("memory_id", memory_id)))
+	case "content", "get", "read":
+		memory_id := pos(tokens, 1)
+		if memory_id == "" do memory_id = option_value(args, "--memory-id", option_value(args, "--memory", option_value(args, "--id", "")))
+		if memory_id == "" { print_agent_help([]string{"memory"}); return }
+		ctl_agent_memory_content(endpoint, token, memory_id)
+	case "propose", "create":
 		mem_type := option_value(args, "--type", "")
 		title := option_value(args, "--title", "")
-		if mem_type == "" || title == "" { fmt.println("usage: ham-ctl agent memory propose --type <type> --title <title> [--body <text>] [--evidence <text>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]\n  Scope flags target LISTS (repeatable or comma-separated); an omitted dimension applies to all (agent defaults to the caller's own)."); return }
+		if mem_type == "" || title == "" {
+			fmt.println("usage: ham-ctl memory propose --type <type> --title <title> [--description <text>] [--body <text>] [--evidence <text>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]\n  Scope flags target LISTS (repeatable or comma-separated); an omitted dimension applies to all (agent defaults to the caller's own).")
+			return
+		}
 		ctl_agent_call(endpoint, token, "agent.memory.propose", ctl_agentmode_memory_propose_params(args))
+	case:
+		print_agent_help([]string{"memory"})
+	}
+}
+
+ctl_agentmode_memory :: proc(endpoint, token: string, tokens, args: []string) {
+	ctl_v2_memory(endpoint, token, tokens, args)
+}
+
+ctl_agent_memory_content :: proc(endpoint, token, memory_id: string) {
+	response, ok := ctl_agent_local_call(endpoint, token, "agent.memory.content", json_object(json_kv("memory_id", memory_id)))
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	if !strings.contains(response, `"ok":true`) {
+		fmt.println(response)
 		return
 	}
-	fmt.println("usage: ham-ctl agent memory <propose>")
+	content := extract_json_string_unescaped(response, "content", "")
+	fmt.print(content)
+}
+
+ctl_agentmode_memory_list_params :: proc(args: []string) -> string {
+	fields := make([dynamic]string)
+	defer delete(fields)
+	if s := option_value(args, "--status", ""); s != "" do append(&fields, json_kv("status", s))
+	if t := option_value(args, "--type", ""); t != "" do append(&fields, json_kv("type", t))
+	if l := option_value(args, "--limit", ""); l != "" do append(&fields, json_kv_raw("limit", l))
+
+	agent_ids := collect_multi_values(args, "--agent-id", "--agent-ids", "--agent", "--agents"); defer delete(agent_ids)
+	if len(agent_ids) > 0 do append(&fields, json_string_array_field("agent_ids", agent_ids[:]))
+
+	project_ids := collect_multi_values(args, "--project-id", "--project-ids", "--project", "--projects"); defer delete(project_ids)
+	if len(project_ids) > 0 do append(&fields, json_string_array_field("project_ids", project_ids[:]))
+
+	bridge_ids := collect_multi_values(args, "--bridge-id", "--bridge-ids", "--bridge", "--bridges"); defer delete(bridge_ids)
+	if len(bridge_ids) > 0 do append(&fields, json_string_array_field("bridge_ids", bridge_ids[:]))
+
+	template_ids := collect_multi_values(args, "--template-id", "--template-ids", "--template", "--templates"); defer delete(template_ids)
+	if len(template_ids) > 0 do append(&fields, json_string_array_field("template_ids", template_ids[:]))
+
+	return json_object_from_slice(fields[:])
 }
 
 // ctl_agentmode_memory_propose_params builds the agent.memory.propose params
@@ -524,6 +578,7 @@ ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	fields := make([dynamic]string)
 	append(&fields, json_kv("type", option_value(args, "--type", "")))
 	append(&fields, json_kv("title", option_value(args, "--title", "")))
+	if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
 	append(&fields, json_kv("body", option_value(args, "--body", "")))
 	if ev := option_value(args, "--evidence", ""); ev != "" do append(&fields, json_kv("evidence", ev))
 
@@ -787,7 +842,7 @@ print_help_overview :: proc() {
 	fmt.println("  task-chain  Your task chains")
 	fmt.println("  task        Tasks within a chain (one command per action)")
 	fmt.println("  chat        Read your inbox / send to the user or another agent")
-	fmt.println("  memory      Propose a memory")
+	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")
@@ -940,15 +995,26 @@ print_help_artifact :: proc() {
 }
 
 print_help_memory :: proc() {
-	fmt.println("ham-ctl memory — propose a durable memory for later review")
+	fmt.println("ham-ctl memory — list, show, read content, or propose durable memories")
 	fmt.println("")
 	fmt.println("VERBS")
-	fmt.println("  propose --type <t> --title <t> [--body <t>] [--evidence <t>]")
+	fmt.println("  list [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]")
+	fmt.println("      [--status <s>] [--type <t>] [--limit <n>]")
+	fmt.println("      List memories (metadata only, no bodies).")
+	fmt.println("  show <memory-id>")
+	fmt.println("      Show full memory details including body and evidence.")
+	fmt.println("  content <memory-id>")
+	fmt.println("      Print the raw memory body to stdout.")
+	fmt.println("  propose --type <t> --title <t> [--description <t>] [--body <t>] [--evidence <t>]")
 	fmt.println("      [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]")
 	fmt.println("  Scope flags target LISTS: repeatable (--agent-ids a --agent-ids b) or comma-separated (--agent-ids a,b).")
 	fmt.println("  An omitted dimension applies to all; agent defaults to the caller's own agent. Non-empty = must match one.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl memory list")
+	fmt.println("  ham-ctl memory list --type fact --status active")
+	fmt.println("  ham-ctl memory show mem_123")
+	fmt.println("  ham-ctl memory content mem_123")
 	fmt.println("  ham-ctl memory propose --type fact --title 'Test command' --body 'odin check src/hub'")
 	fmt.println("  ham-ctl memory propose --type habit --title 'Reviewer checklist' --body '...' --template-ids tmpl_reviewer")
 	fmt.println("  ham-ctl memory propose --type fact --title 'Two agents' --body '...' --agent-ids agt_a,agt_b")

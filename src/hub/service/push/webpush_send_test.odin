@@ -14,9 +14,22 @@ build_chat_notification_plain :: proc(t: ^testing.T) {
 	defer free_notification_content(c)
 	testing.expect_value(t, c.title, "New message")
 	testing.expect_value(t, c.body, "hello world")
+	// Tag keys on the conversation id (dedup), route keys on the INSTANCE id
+	// because conversation routing is instance-id-only.
 	testing.expect_value(t, c.tag, "heimdall:chat:conv_1")
-	testing.expect_value(t, c.route, "/conversations/conv_1")
+	testing.expect_value(t, c.route, "/conversations/inst_1")
 	testing.expect_value(t, c.category, Push_Category.Chat)
+}
+
+@(test)
+build_chat_notification_route_keys_on_instance_not_conversation :: proc(t: ^testing.T) {
+	// Regression: when BOTH ids are present, the deep-link route MUST use the
+	// agent instance id, never the conversation id (conversation routing is
+	// instance-id-only). The dedup tag still keys on the conversation id.
+	c := build_chat_notification("conv_42", "inst_42", "text", "hi")
+	defer free_notification_content(c)
+	testing.expect_value(t, c.route, "/conversations/inst_42")
+	testing.expect_value(t, c.tag, "heimdall:chat:conv_42")
 }
 
 @(test)

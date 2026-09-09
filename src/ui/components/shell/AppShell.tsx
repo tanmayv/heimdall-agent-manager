@@ -21,6 +21,7 @@ import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
 import TemplatesPanel from '../settings/TemplatesPanel';
 import ProjectsSurface from '../projects/ProjectsSurface';
+import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import ActionsPanel from '../actions/ActionsPanel';
 import ActionEditorPage from '../actions/ActionEditorPage';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
@@ -584,7 +585,15 @@ function StatusDot({
   );
 }
 
-function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: ProjectGroup; currentPath?: string }) {
+function ProjectGroupItem({
+  projectGroup,
+  currentPath = '',
+  onLaunchProject,
+}: {
+  projectGroup: ProjectGroup;
+  currentPath?: string;
+  onLaunchProject?: (project: { projectId: string; name: string }) => void;
+}) {
   const projectId = projectGroup.project.projectId;
   const storageKey = `heimdall:project-collapsed:${projectId}`;
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -621,7 +630,19 @@ function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: Pr
           </span>
           <span className="truncate">{projectGroup.project.name}</span>
         </button>
-        <UnreadBadge count={projectGroup.unreadCount} debugId={`sidebar-project-unread-${projectId}`} />
+        <button
+          type="button"
+          data-debug-id={`sidebar-project-launch-btn-${projectId}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onLaunchProject?.(projectGroup.project);
+          }}
+          title={`Launch agent for ${projectGroup.project.name}`}
+          aria-label={`Launch agent for ${projectGroup.project.name}`}
+          className="flex h-5 w-5 items-center justify-center rounded-md text-zinc-400 hover:bg-white/10 hover:text-white transition-colors"
+        >
+          <Icon name="plus" size={13} />
+        </button>
       </div>
       {!collapsed && (
         <div id={`sidebar-project-body-${projectId}`} data-debug-id={`sidebar-project-body-${projectId}`}>
@@ -665,7 +686,19 @@ function ProjectGroupItem({ projectGroup, currentPath = '' }: { projectGroup: Pr
   );
 }
 
-function ProjectConversationTree({ groups, loading = false, error = '', currentPath = '' }: { groups: ProjectGroup[]; loading?: boolean; error?: string; currentPath?: string }) {
+function ProjectConversationTree({
+  groups,
+  loading = false,
+  error = '',
+  currentPath = '',
+  onLaunchProject,
+}: {
+  groups: ProjectGroup[];
+  loading?: boolean;
+  error?: string;
+  currentPath?: string;
+  onLaunchProject?: (project: { projectId: string; name: string }) => void;
+}) {
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
   const bridges = (bridgesQuery.data?.bridges || []).filter((bridge: any) => !bridgeIsRevoked(bridge));
 
@@ -684,7 +717,12 @@ function ProjectConversationTree({ groups, loading = false, error = '', currentP
       ) : null}
       <div className="space-y-0.5">
         {groups.map((projectGroup) => (
-          <ProjectGroupItem key={projectGroup.project.projectId} projectGroup={projectGroup} currentPath={currentPath} />
+          <ProjectGroupItem
+            key={projectGroup.project.projectId}
+            projectGroup={projectGroup}
+            currentPath={currentPath}
+            onLaunchProject={onLaunchProject}
+          />
         ))}
       </div>
     </section>
@@ -956,6 +994,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
+  const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
   const displayName = user.display_name || user.name || user.user_id || 'Current user';
 
   // UI-14: server state for the sidebar lives in RTK Query (cookie-auth), not
@@ -1128,7 +1167,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
-          {!collapsed && <ProjectConversationTree groups={conversationTree} loading={sidebarLoading} error={sidebarError} currentPath={path} />}
+          {!collapsed && <ProjectConversationTree groups={conversationTree} loading={sidebarLoading} error={sidebarError} currentPath={path} onLaunchProject={setLaunchModalProject} />}
         </div>
 
         <div className="border-t border-white/10 p-3">
@@ -1172,6 +1211,11 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       ) : null}
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, isCoordinator: c.isCoordinator, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
+      <ProjectLaunchModal
+        isOpen={Boolean(launchModalProject)}
+        project={launchModalProject}
+        onClose={() => setLaunchModalProject(null)}
+      />
     </div>
   );
 }

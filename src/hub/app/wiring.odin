@@ -91,7 +91,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
-	graph.users = user_service.new_user_service(&graph.repos.users, &graph.clock, &graph.ids)
+	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
@@ -303,6 +303,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/show", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/content", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_content_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/propose", rawptr(&graph.agent_action_handlers), http.agent_action_memory_propose_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/list", rawptr(&graph.agent_action_handlers), http.agent_action_memory_list_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/show", rawptr(&graph.agent_action_handlers), http.agent_action_memory_show_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/content", rawptr(&graph.agent_action_handlers), http.agent_action_memory_content_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/start-success", rawptr(&graph.agent_action_handlers), http.agent_action_start_success_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.create_bridge_enrollment_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.list_bridge_enrollments_handler)

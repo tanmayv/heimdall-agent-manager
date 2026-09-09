@@ -142,7 +142,7 @@ list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if limit <= 0 do limit = 50
 	if limit > 200 do limit = 200
 	cursor := query_value(req.query, "cursor")
-	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status")}, limit, cursor)
+	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status"), project_id = query_value(req.query, "project_id")}, limit, cursor)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
 	next_cursor := ""
@@ -235,7 +235,7 @@ patch_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 agent_input_from_body :: proc(body: string) -> agent_service.Create_Agent_Input {
-	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), default_provider = json_string(body, "default_provider"), default_tier = json_string(body, "default_tier"), instructions = json_string(body, "instructions"), has_default_provider = strings.contains(body, "\"default_provider\""), has_default_tier = strings.contains(body, "\"default_tier\"")}
+	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), default_provider = json_string(body, "default_provider"), default_tier = json_string(body, "default_tier"), instructions = json_string(body, "instructions"), has_template_id = strings.contains(body, "\"template_id\""), has_default_provider = strings.contains(body, "\"default_provider\""), has_default_tier = strings.contains(body, "\"default_tier\"")}
 }
 
 instance_input_from_body :: proc(body: string) -> agent_service.Create_Instance_Input {
