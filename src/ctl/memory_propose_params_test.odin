@@ -82,3 +82,34 @@ test_memory_params_description_handling :: proc(t: ^testing.T) {
 	out_without := ctl_agentmode_memory_propose_params(args_without)
 	testing.expect(t, !strings.contains(out_without, `"description"`), out_without)
 }
+
+@(test)
+test_memory_list_params_defaults :: proc(t: ^testing.T) {
+	args := []string{}
+	out := ctl_agentmode_memory_list_params(args)
+	testing.expect_value(t, out, `{}`)
+}
+
+@(test)
+test_memory_list_params_status_type_limit :: proc(t: ^testing.T) {
+	args := []string{"--status", "active", "--type", "fact", "--limit", "25"}
+	out := ctl_agentmode_memory_list_params(args)
+	testing.expect(t, strings.contains(out, `"status":"active"`), out)
+	testing.expect(t, strings.contains(out, `"type":"fact"`), out)
+	testing.expect(t, strings.contains(out, `"limit":25`), out)
+}
+
+@(test)
+test_memory_list_params_scope_dimensions :: proc(t: ^testing.T) {
+	args := []string{
+		"--agent-ids", "agt_1,agt_2",
+		"--project", "proj_1", "--project-ids", "proj_2",
+		"--bridge-id", "brg_1",
+		"--template-ids", "tmpl_1",
+	}
+	out := ctl_agentmode_memory_list_params(args)
+	testing.expect(t, strings.contains(out, `"agent_ids":["agt_1","agt_2"]`), out)
+	testing.expect(t, strings.contains(out, `"project_ids":["proj_1","proj_2"]`), out)
+	testing.expect(t, strings.contains(out, `"bridge_ids":["brg_1"]`), out)
+	testing.expect(t, strings.contains(out, `"template_ids":["tmpl_1"]`), out)
+}

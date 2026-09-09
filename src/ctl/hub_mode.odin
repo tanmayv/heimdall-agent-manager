@@ -35,7 +35,7 @@ ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
 	}
 	if resource == "projects" { ctl_hub_projects(base, user_token, action, args); return }
 	if resource == "artifacts" { ctl_hub_artifacts(base, user_token, action, args); return }
-	if resource == "memories" || resource == "memory" { ctl_hub_memories(base, user_token, action, args); return }
+	if resource == "memories" || resource == "memory" { ctl_hub_memories(base, user_token, cmd[idx + 1:], args); return }
 	fmt.println("usage: ham-ctl hub <me|health|agents|launch|chats|tasks|task-chains|projects|artifacts|memories> ...")
 }
 
@@ -304,8 +304,34 @@ ctl_hub_artifacts :: proc(base, token, action: string, args: []string) {
 	fmt.println("usage: ham-ctl hub artifacts <list|create|show|content|update|delete>")
 }
 
-ctl_hub_memories :: proc(base, token, action: string, args: []string) {
-	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/memories", ""); return }
+ctl_hub_memories :: proc(base, token: string, tokens, args: []string) {
+	action := pos(tokens, 0)
+	if action == "" || action == "list" {
+		query := make([dynamic]string)
+		defer delete(query)
+		if s := option_value(args, "--status", ""); s != "" do append(&query, fmt.tprintf("status=%s", s))
+		if t := option_value(args, "--type", ""); t != "" do append(&query, fmt.tprintf("type=%s", t))
+		if l := option_value(args, "--limit", ""); l != "" do append(&query, fmt.tprintf("limit=%s", l))
+
+		agent_ids := collect_multi_values(args, "--agent-id", "--agent-ids", "--agent", "--agents"); defer delete(agent_ids)
+		if len(agent_ids) > 0 do append(&query, fmt.tprintf("agent_ids=%s", strings.join(agent_ids[:], ",")))
+
+		project_ids := collect_multi_values(args, "--project-id", "--project-ids", "--project", "--projects"); defer delete(project_ids)
+		if len(project_ids) > 0 do append(&query, fmt.tprintf("project_ids=%s", strings.join(project_ids[:], ",")))
+
+		bridge_ids := collect_multi_values(args, "--bridge-id", "--bridge-ids", "--bridge", "--bridges"); defer delete(bridge_ids)
+		if len(bridge_ids) > 0 do append(&query, fmt.tprintf("bridge_ids=%s", strings.join(bridge_ids[:], ",")))
+
+		template_ids := collect_multi_values(args, "--template-id", "--template-ids", "--template", "--templates"); defer delete(template_ids)
+		if len(template_ids) > 0 do append(&query, fmt.tprintf("template_ids=%s", strings.join(template_ids[:], ",")))
+
+		path := "/api/v1/memories"
+		if len(query) > 0 {
+			path = fmt.tprintf("/api/v1/memories?%s", strings.join(query[:], "&"))
+		}
+		ctl_hub_request(base, token, "GET", path, "")
+		return
+	}
 	if action == "create" || action == "propose" {
 		body := option_value(args, "--body", "")
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
@@ -326,11 +352,29 @@ ctl_hub_memories :: proc(base, token, action: string, args: []string) {
 		ctl_hub_request(base, token, "POST", "/api/v1/memories", json_object_from_slice(fields[:]))
 		return
 	}
-	memory_id := option_value(args, "--memory-id", option_value(args, "--memory", ""))
-	if memory_id == "" { fmt.println("usage: ham-ctl hub memories <show|approve|reject|archive> --memory-id <id>"); return }
+	memory_id := pos(tokens, 1)
+	if memory_id == "" do memory_id = option_value(args, "--memory-id", option_value(args, "--memory", option_value(args, "--id", "")))
+	if memory_id == "" { fmt.println("usage: ham-ctl hub memories <show|content|approve|reject|archive> <id> (or --memory-id <id>)"); return }
 	if action == "show" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/memories/%s", safe_path_part(memory_id)), ""); return }
+	if action == "content" || action == "get" {
+		ctl_hub_memory_content(base, token, memory_id)
+		return
+	}
 	if action == "approve" || action == "reject" || action == "archive" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/memories/%s/%s", safe_path_part(memory_id), action), "{}"); return }
-	fmt.println("usage: ham-ctl hub memories <list|create|show|approve|reject|archive>")
+	fmt.println("usage: ham-ctl hub memories <list|create|show|content|approve|reject|archive>")
+}
+
+ctl_hub_memory_content :: proc(base, user_token, memory_id: string) {
+	full_path := hub_url_path_prefix_join(base, fmt.tprintf("/api/v1/memories/%s", safe_path_part(memory_id)))
+	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", user_token})}}
+	response, ok := http.request_with_headers_timeout("GET", base, full_path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
+	if !ok { fmt.println(`{"ok":false,"message":"Hub request failed"}`); return }
+	if response.status >= 400 {
+		fmt.println(response.body)
+		return
+	}
+	body := extract_json_string_unescaped(response.body, "body", "")
+	fmt.print(body)
 }
 
 hub_user_mode_url :: proc(args: []string) -> string {
@@ -400,7 +444,7 @@ print_hub_help :: proc(cmd: []string) {
 	if resource == "task-chains" { fmt.println("ham-ctl hub task-chains <list|create|show|publish|complete>\nPurpose: manage Hub task chains.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... task-chains create --title 'Fix bug'"); return }
 	if resource == "projects" { fmt.println("ham-ctl hub projects <list|create|show|update>\nPurpose: manage Hub projects.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... projects list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... projects create --name demo --repo-url https://example/repo.git"); return }
 	if resource == "artifacts" { fmt.println("ham-ctl hub artifacts <list|create|show|content|update|delete>\nPurpose: manage Hub artifacts.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... artifacts list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... artifacts create --name notes --content 'hello'"); return }
-	if resource == "memories" || resource == "memory" { fmt.println("ham-ctl hub memories <list|create|show|approve|reject|archive>\nPurpose: manage Hub memories.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories create --body 'Use nix check.' --title 'Test command'"); return }
+	if resource == "memories" || resource == "memory" { fmt.println("ham-ctl hub memories <list|create|show|content|approve|reject|archive>\nPurpose: manage Hub memories.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories show mem_123\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories content mem_123\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories create --body 'Use nix check.' --title 'Test command'"); return }
 	fmt.println("ham-ctl hub — Hub /api/v1 user mode; uses Authorization: Bearer only")
 	fmt.println("commands:")
 	fmt.println("  me           Show authenticated user")
@@ -412,7 +456,7 @@ print_hub_help :: proc(cmd: []string) {
 	fmt.println("  task-chains  List/create/publish/complete chains")
 	fmt.println("  projects     List/create/show/update projects")
 	fmt.println("  artifacts    List/create/show/update artifacts")
-	fmt.println("  memories     List/create/approve/reject/archive memories")
+	fmt.println("  memories     List/create/show/content/approve/reject/archive memories")
 	fmt.println("examples:")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... me")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... launch --agent-id reviewer")

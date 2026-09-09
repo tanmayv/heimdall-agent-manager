@@ -173,6 +173,12 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/conversation/set-title"}
 	case "agent.memory.propose":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/memory/propose"}
+	case "agent.memory.list":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/memory/list"}
+	case "agent.memory.show":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/memory/show"}
+	case "agent.memory.content":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/memory/content"}
 	case "agent.artifact.create":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/artifacts/create"}
 	case "agent.artifact.list":
@@ -211,7 +217,8 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.task.set_current", "agent.task.vote", "agent.task.nudge",
 	     // chat + self/misc
 	     "agent.chat.send", "agent.chat.read",
-	     "agent.context.get", "agent.conversation.set_title", "agent.memory.propose",
+	     "agent.context.get", "agent.conversation.set_title",
+	     "agent.memory.propose", "agent.memory.list", "agent.memory.show", "agent.memory.content",
 	     "agent.artifact.create", "agent.artifact.list", "agent.artifact.show",
 	     "agent.artifact.content":
 		return true
