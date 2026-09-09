@@ -756,7 +756,7 @@ list_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	comments, err := taskchain_service.list_recent_task_comments(h.taskchains, auth_ctx, task_id, last)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
-	for c, i in comments { if i > 0 do strings.write_byte(&b, ','); write_task_comment_json(&b, c) }
+	for c, i in comments { if i > 0 do strings.write_byte(&b, ','); write_task_comment_json(&b, c, resolve_comment_author_display(h, auth_ctx, c)) }
 	strings.write_byte(&b, ']')
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }
@@ -777,7 +777,7 @@ create_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !saved do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(comment.owner_user_id), string(comment.task_id), string(comment.chain_id), "commented")
 	b := strings.builder_make()
-	write_task_comment_response_json(&b, comment, notified)
+	write_task_comment_response_json(&b, comment, resolve_comment_author_display(h, auth_ctx, comment), notified)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
@@ -1273,11 +1273,37 @@ write_task_vote_json :: proc(b: ^strings.Builder, v: domain.Task_Vote) {
 	strings.write_string(b, "\"}")
 }
 
-write_task_comment_json :: proc(b: ^strings.Builder, c: domain.Task_Comment) {
+// resolve_comment_author_display returns the display name for a comment's author
+// agent instance (MEM-7), mirroring write_member_json: prefer the instance's
+// display_name, else the durable agent's name. Empty for user-authored comments
+// (no author instance) or when it can't be resolved.
+resolve_comment_author_display :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, c: domain.Task_Comment) -> string {
+	if h == nil || h.agents == nil do return ""
+	if strings.trim_space(c.author_agent_instance_id) == "" do return ""
+	display_name := ""
+	agent_id := ""
+	if inst, inst_ok, _ := agent_service.get_instance(h.agents, auth, c.author_agent_instance_id); inst_ok {
+		display_name = inst.display_name
+		agent_id = inst.agent_id
+	}
+	if strings.trim_space(display_name) == "" && strings.trim_space(agent_id) != "" {
+		if agent, agent_ok, _ := agent_service.get_agent(h.agents, auth, agent_id); agent_ok {
+			display_name = agent.name
+		}
+	}
+	return display_name
+}
+
+// write_task_comment_json emits a comment. MEM-7: it also carries the resolved
+// author_display_name (for a clickable agent label) and author_user_id (the owner
+// user id, shown for user-authored comments where author_agent_instance_id is "").
+write_task_comment_json :: proc(b: ^strings.Builder, c: domain.Task_Comment, author_display_name: string) {
 	strings.write_string(b, "{\"comment_id\":\""); write_handler_json_string(b, c.comment_id)
 	strings.write_string(b, "\",\"task_id\":\""); write_handler_json_string(b, string(c.task_id))
 	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id))
 	strings.write_string(b, "\",\"author_agent_instance_id\":\""); write_handler_json_string(b, c.author_agent_instance_id)
+	strings.write_string(b, "\",\"author_display_name\":\""); write_handler_json_string(b, author_display_name)
+	strings.write_string(b, "\",\"author_user_id\":\""); write_handler_json_string(b, string(c.owner_user_id))
 	strings.write_string(b, "\",\"body\":\""); write_handler_json_string(b, c.body)
 	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, c.created_at)
 	strings.write_string(b, "\"}")
@@ -1294,11 +1320,13 @@ write_task_comment_summary_json :: proc(b: ^strings.Builder, s: domain.Task_Comm
 	strings.write_string(b, "\"}")
 }
 
-write_task_comment_response_json :: proc(b: ^strings.Builder, c: domain.Task_Comment, notified: []string) {
+write_task_comment_response_json :: proc(b: ^strings.Builder, c: domain.Task_Comment, author_display_name: string, notified: []string) {
 	strings.write_string(b, "{\"comment_id\":\""); write_handler_json_string(b, c.comment_id)
 	strings.write_string(b, "\",\"task_id\":\""); write_handler_json_string(b, string(c.task_id))
 	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id))
 	strings.write_string(b, "\",\"author_agent_instance_id\":\""); write_handler_json_string(b, c.author_agent_instance_id)
+	strings.write_string(b, "\",\"author_display_name\":\""); write_handler_json_string(b, author_display_name)
+	strings.write_string(b, "\",\"author_user_id\":\""); write_handler_json_string(b, string(c.owner_user_id))
 	strings.write_string(b, "\",\"body\":\""); write_handler_json_string(b, c.body)
 	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, c.created_at)
 	strings.write_string(b, "\",\"notified\":[")

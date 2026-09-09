@@ -1,5 +1,6 @@
 package http
 
+import "base:runtime"
 import "core:crypto/legacy/sha1"
 import base64 "core:encoding/base64"
 import "core:fmt"
@@ -178,13 +179,47 @@ user_ws_ticket_store_put :: proc(store: ^User_WS_Ticket_Store, ticket: string, a
 	now := time.to_unix_seconds(time.now())
 	ttl := ttl_seconds
 	if ttl <= 0 do ttl = 30
+	// The ticket store outlives the issuing request, so every string it retains must
+	// live on the persistent heap — the caller's `ticket`/`auth_ctx` fields are on
+	// the per-request arena and vanish when the request returns. Previously only
+	// `ticket` was cloned (and on the ambient allocator), so the arena fix would
+	// leave the user fields (and the arena-cloned key) dangling.
+	heap := runtime.heap_allocator()
 	sync.mutex_lock(&store.mutex)
 	defer sync.mutex_unlock(&store.mutex)
-	if store.tickets == nil do store.tickets = make(map[string]User_WS_Ticket)
+	if store.tickets == nil do store.tickets = make(map[string]User_WS_Ticket, heap)
+	// Evict expired tickets. Capture keys first, then mutate — deleting during a
+	// map range is unsafe — and free each expired entry's owned strings.
+	expired: [dynamic]string
+	expired.allocator = context.temp_allocator
 	for existing, item in store.tickets {
-		if item.expires_at <= now do delete_key(&store.tickets, existing)
+		if item.expires_at <= now do append(&expired, existing)
 	}
-	store.tickets[strings.clone(ticket)] = User_WS_Ticket{ticket = strings.clone(ticket), user_id = auth_ctx.user_id, name = auth_ctx.name, display_name = auth_ctx.display_name, email = auth_ctx.email, expires_at = now + ttl}
+	for key in expired {
+		if item, ok := store.tickets[key]; ok {
+			delete_key(&store.tickets, key)
+			free_user_ws_ticket(item, heap)
+		}
+	}
+	key := strings.clone(ticket, heap)
+	store.tickets[key] = User_WS_Ticket{
+		ticket = key,
+		user_id = strings.clone(auth_ctx.user_id, heap),
+		name = strings.clone(auth_ctx.name, heap),
+		display_name = strings.clone(auth_ctx.display_name, heap),
+		email = strings.clone(auth_ctx.email, heap),
+		expires_at = now + ttl,
+	}
+}
+
+// free_user_ws_ticket releases the heap strings a stored ticket owns. The map key
+// aliases `ticket`, so it is freed exactly once here (callers delete_key first).
+free_user_ws_ticket :: proc(item: User_WS_Ticket, heap: runtime.Allocator) {
+	delete(item.ticket, heap)
+	delete(item.user_id, heap)
+	delete(item.name, heap)
+	delete(item.display_name, heap)
+	delete(item.email, heap)
 }
 
 user_ws_ticket_store_consume :: proc(store: ^User_WS_Ticket_Store, ticket: string) -> (contracts.Auth_Context, bool) {

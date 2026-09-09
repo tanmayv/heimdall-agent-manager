@@ -326,11 +326,23 @@ bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> boo
 	return bridge_pty_host_deliver_line(socket, instance, msg)
 }
 
-// bridge_pty_host_deliver_task_nudge mirrors the wrapper task-nudge notice.
-bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string) -> bool {
-	msg := bridge_pty_host_task_nudge_notice(task_id, target_role)
+// bridge_pty_host_deliver_task_nudge delivers the task-nudge notice. MEM-6: when
+// the hub supplies a human_message it is delivered verbatim (context-rich line);
+// otherwise we fall back to the legacy generated notice for backwards compat with
+// older hubs that don't populate human_message.
+bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "") -> bool {
+	msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message)
 	defer delete(msg)
 	return bridge_pty_host_deliver_line(socket, instance, msg)
+}
+
+// bridge_pty_host_task_nudge_line picks the line to deliver for a task nudge: the
+// hub's human_message verbatim when present, else the legacy generated notice
+// (backwards compat with hubs that don't populate human_message). Pure/testable.
+// Caller owns the returned string.
+bridge_pty_host_task_nudge_line :: proc(task_id, target_role, human_message: string) -> string {
+	if strings.trim_space(human_message) != "" do return strings.clone(human_message)
+	return bridge_pty_host_task_nudge_notice(task_id, target_role)
 }
 
 // bridge_pty_host_deliver_notice delivers an arbitrary prefixed nudge/notice line
@@ -343,14 +355,14 @@ bridge_pty_host_deliver_notice :: proc(socket, instance, notice: string) -> bool
 // in the wrapper-free path: it ensures the daemon is up, then renders+delivers the
 // notice for the given kind ("message" | "task_nudge"). Returns false if the daemon
 // is unavailable or the delivery fails.
-bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string) -> bool {
+bridge_pty_host_deliver_to_agent :: proc(instance, kind, sender, task_id, target_role: string, human_message: string = "") -> bool {
 	socket, ok := bridge_pty_host_ensure_daemon()
 	if !ok do return false
 	switch kind {
 	case "message":
 		return bridge_pty_host_deliver_message(socket, instance, sender)
 	case "task_nudge":
-		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role)
+		return bridge_pty_host_deliver_task_nudge(socket, instance, task_id, target_role, human_message)
 	}
 	return false
 }

@@ -108,13 +108,20 @@ main :: proc() {
 	sink := project.Bridge_Command_Sink{ctx = nil, send_runtime_command = capture_send}
 	service := taskchain_service.new_taskchain_service_with_runtime(&repo, &agents, sink, &clock, &ids)
 
-	// 1) Comment without --notify must NOT emit any automatic notifications.
+	// 1) USER-authored comment (no --notify) wakes ALL role-holders: coordinator +
+	//    assignee (+ reviewer(s), none here), per the user directive (2026-09-09).
+	//    The message is human-readable, tagged [Comment], authored by @User.
 	captured.count = 0
 	user_auth := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "alice"}
 	_, notified1, ok, err := taskchain_service.comment_task(&service, user_auth, taskchain_service.Task_Comment_Input{task_id = "task_1", body = "please continue"})
 	check(ok, fmt.tprintf("user comment should save: %v", err))
-	check(captured.count == 0, fmt.tprintf("comment without notify must emit 0 notifications, got %d", captured.count))
-	check(len(notified1) == 0, "notified list should be empty")
+	check(captured.count == 2, fmt.tprintf("user comment must wake coordinator + assignee, got %d", captured.count))
+	check(len(notified1) == 2, fmt.tprintf("notified list should have 2 role-holders, got %d", len(notified1)))
+	joined1 := strings.concatenate({captured.bodies[0], captured.bodies[1]})
+	check(strings.contains(joined1, `"agent_instance_id":"inst_coord"`), "user comment must wake coordinator")
+	check(strings.contains(joined1, `"agent_instance_id":"inst_assignee"`), "user comment must wake assignee")
+	check(strings.contains(joined1, "[Comment]"), "human_message must carry the [Comment] tag")
+	check(strings.contains(joined1, "@User"), "user-authored comment must render actor as @User")
 
 	// 2) Comment with explicit --notify target must emit notification to target.
 	captured.count = 0

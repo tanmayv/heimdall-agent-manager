@@ -47,6 +47,7 @@ export function scopeToLists(scope: MemoryScopeValue): MemoryScopeLists {
   };
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 export function listsToScope(record: any, type?: string): MemoryScopeValue {
   const first = (arr?: string[]) => (Array.isArray(arr) && arr.length ? arr[0] : undefined);
   return {
@@ -87,20 +88,28 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
       ? identitiesData
       : [];
     return list
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       .map((item: any) => ({
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         id: String(item.agent_id || item.agentId || item.id || ""),
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         name: String(item.name || item.slug || item.agent_id || item.agentId || "Unnamed Agent"),
       }))
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       .filter((item: any) => Boolean(item.id));
   }, [identitiesData]);
 
   const projects = useMemo(() => {
     const list = Array.isArray(projectsData) ? projectsData : [];
     return list
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       .map((item: any) => ({
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         id: String(item.projectId || item.project_id || item.id || ""),
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         name: String(item.name || item.title || item.projectId || "Unnamed Project"),
       }))
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       .filter((item: any) => Boolean(item.id));
   }, [projectsData]);
 
@@ -108,10 +117,14 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
     const raw = bridgesData?.bridges || bridgesData || [];
     const list = Array.isArray(raw) ? raw : [];
     return list
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       .map((item: any) => ({
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         id: String(item.bridge_id || item.bridgeId || item.id || ""),
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         name: String(item.name || item.label || item.bridge_id || item.bridgeId || "Unnamed Bridge"),
       }))
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       .filter((item: any) => Boolean(item.id));
   }, [bridgesData]);
 
@@ -119,10 +132,14 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
     const raw = templatesData?.templates || templatesData || [];
     const list = Array.isArray(raw) ? raw : [];
     return list
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       .map((item: any) => ({
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         id: String(item.template_id || item.templateId || item.id || ""),
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         name: String(item.name || item.title || item.template_id || "Unnamed Template"),
       }))
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       .filter((item: any) => Boolean(item.id));
   }, [templatesData]);
 

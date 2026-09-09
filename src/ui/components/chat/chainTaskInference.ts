@@ -49,6 +49,7 @@ export function taskIdOf(task: TaskLike | null | undefined): string {
 }
 
 export function chainIdOfTask(task: TaskLike | null | undefined): string {
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   return String(task?.chainId || task?.chain_id || '');
 }
 
@@ -57,14 +58,17 @@ export function taskStatusOf(task: TaskLike | null | undefined): string {
 }
 
 export function taskAssigneeOf(task: TaskLike | null | undefined): string {
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   return String(task?.assigneeAgentInstanceId || task?.assignee_agent_instance_id || '');
 }
 
 export function taskReviewerOf(task: TaskLike | null | undefined): string {
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   return String(task?.reviewerAgentInstanceId || task?.reviewer_agent_instance_id || '');
 }
 
 export function taskCreatedMs(task: TaskLike | null | undefined): number {
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   return Number(task?.createdAtUnixMs || task?.created_at_unix_ms || task?.updatedAtUnixMs || task?.updated_at_unix_ms || 0);
 }
 
@@ -86,13 +90,16 @@ export function isInstanceEffectiveReviewer(task: TaskLike | null | undefined, a
 
 export function isInstanceCoordinatorOf(chain: ChainLike | null | undefined, agentInstanceId: string): boolean {
   if (!chain || !agentInstanceId) return false;
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   return String(chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '') === agentInstanceId;
 }
 
 // Tasks belonging to a specific chain.
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 export function chainTasks(tasksById: Record<string, any>, chainId: string): TaskLike[] {
   if (!chainId || !tasksById) return [];
   return Object.values(tasksById)
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     .filter((task: any) => chainIdOfTask(task) === chainId)
     .filter(Boolean);
 }

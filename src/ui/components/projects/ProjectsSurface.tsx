@@ -35,8 +35,13 @@ import Icon from '../Icon';
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
 import FigDirectoryPicker from '../FigDirectoryPicker';
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+// TODO(FIX): Replace loose fallback chain with canonical typed schema property
 function bridgeId(b: any): string { return str(b?.bridge_id || b?.bridgeId || b?.id); }
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+// TODO(FIX): Replace loose fallback chain with canonical typed schema property
 function bridgeLabel(b: any): string { return str(b?.label || b?.machine_hostname || bridgeId(b)); }
 
 function projectIdFromRoute(): string {
@@ -590,8 +595,12 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const bridgesQuery = useListBridgesQuery();
 
   const project: Project | null = detailQuery.data?.project || null;
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const agents: any[] = agentsQuery.data?.agents || [];
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const memories: any[] = memoryQuery.data?.items || [];
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const bridges: any[] = (bridgesQuery.data?.bridges || []).filter((b: any) => str(b?.status || b?.state || 'online').toLowerCase() !== 'revoked');
 
   return (
@@ -776,6 +785,7 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
   );
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function AgentsPanel({ agents, loading, projectId }: { agents: any[]; loading: boolean; projectId: string }) {
   return (
     <Card title="Agents" count={agents.length} debugId="project-detail-agents"
@@ -787,9 +797,13 @@ function AgentsPanel({ agents, loading, projectId }: { agents: any[]; loading: b
       ) : (
         <div className="space-y-1">
           {agents.map((a) => {
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             const id = str(a?.id || a?.agent_id || a?.agentId);
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             const name = str(a?.name || a?.display_name || a?.displayName || id);
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             const tier = str(a?.tier || a?.defaultTier || a?.default_tier);
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             const instances = Number(a?.activeInstanceCount ?? a?.active_instance_count ?? 0);
             return (
               <a key={id} data-debug-id={`project-detail-agent-${id}`} href={buildRouteHash('/agents', `agentId=${encodeURIComponent(id)}`)} className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-white/[0.05]">
@@ -806,6 +820,7 @@ function AgentsPanel({ agents, loading, projectId }: { agents: any[]; loading: b
   );
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function MemoryPanel({ memories, loading, projectId }: { memories: any[]; loading: boolean; projectId: string }) {
   return (
     <Card title="Memory" count={memories.length} debugId="project-detail-memory"
@@ -817,8 +832,11 @@ function MemoryPanel({ memories, loading, projectId }: { memories: any[]; loadin
       ) : (
         <div className="space-y-1">
           {memories.slice(0, 12).map((m) => {
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             const id = str(m?.memoryId || m?.memory_id || m?.id);
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             const title = str(m?.title) || str(m?.body).slice(0, 60) || id;
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             const type = str(m?.type || m?.memory_type);
             const status = str(m?.status);
             return (
@@ -835,8 +853,11 @@ function MemoryPanel({ memories, loading, projectId }: { memories: any[]; loadin
   );
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+// TODO(FIX): Replace loose fallback chain with canonical typed schema property
 function bridgeIsOnline(b: any): boolean { return str(b?.status || b?.state || 'online').toLowerCase() === 'online'; }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; project: Project | null; bridges: any[] }) {
   const [updateProject, updateState] = useUpdateProjectMutation();
   const [setBridgePath] = useSetProjectBridgePathMutation();

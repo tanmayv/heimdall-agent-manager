@@ -52,7 +52,9 @@ export function emptyTargeting(): Targeting {
 
 // Pull the targeting lists off a normalized memory record (memoryCatalog already
 // exposes agentIds/projectIds/bridgeIds/templateIds as arrays).
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 export function targetingFromRecord(record: any): Targeting {
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const list = (value: any) => (Array.isArray(value) ? value.map((v: any) => String(v || '').trim()).filter(Boolean) : []);
   return {
     agentIds: list(record?.agentIds),
@@ -90,6 +92,8 @@ export function useMemoryScopeCatalog(): ScopeCatalog {
     const raw = identitiesQuery.data?.agents;
     const list = Array.isArray(raw) ? raw : Array.isArray(identitiesQuery.data) ? (identitiesQuery.data as any[]) : [];
     return list
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       .map((item: any) => ({ id: String(item.agent_id || item.agentId || item.id || ''), name: String(item.name || item.slug || item.agent_id || item.agentId || 'Unnamed agent') }))
       .filter((item) => Boolean(item.id));
   }, [identitiesQuery.data]);
@@ -97,22 +101,30 @@ export function useMemoryScopeCatalog(): ScopeCatalog {
   const projects = useMemo(() => {
     const list = Array.isArray(projectsQuery.data) ? projectsQuery.data : [];
     return list
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       .map((item: any) => ({ id: String(item.projectId || item.project_id || item.id || ''), name: String(item.name || item.title || item.projectId || 'Unnamed project') }))
       .filter((item) => Boolean(item.id));
   }, [projectsQuery.data]);
 
   const bridges = useMemo(() => {
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     const raw = (bridgesQuery.data as any)?.bridges || bridgesQuery.data || [];
     const list = Array.isArray(raw) ? raw : [];
     return list
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       .map((item: any) => ({ id: String(item.bridge_id || item.bridgeId || item.id || ''), name: String(item.name || item.label || item.bridge_id || item.bridgeId || 'Unnamed bridge') }))
       .filter((item) => Boolean(item.id));
   }, [bridgesQuery.data]);
 
   const templates = useMemo(() => {
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     const raw = (templatesQuery.data as any)?.templates || templatesQuery.data || [];
     const list = Array.isArray(raw) ? raw : [];
     return list
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       .map((item: any) => ({ id: String(item.template_id || item.templateId || item.id || ''), name: String(item.name || item.title || item.template_id || 'Unnamed template') }))
       .filter((item) => Boolean(item.id));
   }, [templatesQuery.data]);

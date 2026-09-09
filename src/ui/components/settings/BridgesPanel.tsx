@@ -43,21 +43,27 @@ export default function BridgesPanel() {
     setHasPendingEnrollments(pendingEnrollments.length > 0);
   }, [pendingEnrollments.length]);
 
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   function isPendingEnrollment(enrollment: any): boolean {
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     const status = String(enrollment?.status || enrollment?.state || '').toLowerCase();
     if (status) return status === 'pending' || status === 'created' || status === 'active';
     if (enrollment?.consumed_at || enrollment?.consumed_by_bridge_id || enrollment?.revoked_at) return false;
     return true;
   }
 
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   function statusTone(bridge: any): string {
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
     if (status === 'revoked') return 'bg-rose-400';
     if (status === 'online' || status === 'connected') return 'bg-emerald-400';
     return 'bg-zinc-600';
   }
 
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   function statusLabel(bridge: any): string {
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
     return status || 'offline';
   }
@@ -198,7 +204,9 @@ export default function BridgesPanel() {
         <div data-debug-id="settings-bridges-pending" className="mt-4">
           <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Pending enrollments</div>
           <div className="space-y-2">
+            {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
             {pendingEnrollments.map((enr: any) => {
+              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
               const id = String(enr?.enrollment_id || enr?.id || '');
               return (
                 <div key={id} data-debug-id={`settings-bridges-pending-${id}`} className="flex items-center justify-between gap-2 rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-sm">
@@ -222,7 +230,9 @@ export default function BridgesPanel() {
           <div data-debug-id="settings-bridges-empty" className="rounded-xl border border-dashed border-white/10 bg-black/20 p-4 text-center text-sm text-zinc-500">No bridges yet. Add one to connect a machine.</div>
         ) : (
           <div className="space-y-2">
+            {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
             {bridges.map((bridge: any) => {
+              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
               const id = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
               const isRenaming = renamingId === id;
               const isRevoking = revokeConfirmId === id;
@@ -235,14 +245,18 @@ export default function BridgesPanel() {
                         {isRenaming ? (
                           <input data-debug-id={`settings-bridge-rename-input-${id}`} value={renameValue} onChange={(e) => setRenameValue(e.target.value)} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/40 px-2 py-0.5 text-sm text-zinc-100 outline-none focus:border-sky-400" autoFocus />
                         ) : (
+                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                           <span className="truncate text-sm font-medium text-zinc-100">{bridge?.label || bridge?.machine_hostname || bridge?.hostname || id}</span>
                         )}
                         <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeReady(bridge) ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : 'border-amber-400/20 bg-amber-400/5 text-amber-200'}`}>{bridgeReady(bridge) ? 'ready' : 'setup incomplete'}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-zinc-500">
                         <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-zinc-300">{statusLabel(bridge)}</span></span>
+                        {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                         <span>host: <span className="text-zinc-300">{bridge?.machine_hostname || bridge?.hostname || '—'}</span></span>
+                        {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                         <span>os: <span className="text-zinc-300">{bridge?.machine_os || bridge?.os || '—'}</span></span>
+                        {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                         <span>arch: <span className="text-zinc-300">{bridge?.machine_arch || bridge?.arch || '—'}</span></span>
                         <span>caps: <span data-debug-id={`settings-bridge-caps-${id}`} className="text-zinc-300">{capabilitiesLabel(bridge)}</span></span>
                         <span>instances: <span className="text-zinc-300">{bridge?.active_instance_count ?? bridge?.instance_count ?? bridge?.instances?.length ?? 0}</span></span>

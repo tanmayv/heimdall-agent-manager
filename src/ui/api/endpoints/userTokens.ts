@@ -25,11 +25,13 @@ export type CurrentUserToken = {
 };
 
 function tokenId(token: CurrentUserToken): string {
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   return String(token?.token_id || token?.tokenId || '');
 }
 
 export const userTokensApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchCurrentUser: build.query<any, void>({
       queryFn: async () => {
         try {
@@ -41,6 +43,7 @@ export const userTokensApi = heimdallApi.injectEndpoints({
       },
       providesTags: [{ type: 'UserTokens' as const, id: 'ME' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     listCurrentUserTokens: build.query<any, void>({
       queryFn: async () => {
         try {
@@ -52,12 +55,15 @@ export const userTokensApi = heimdallApi.injectEndpoints({
       },
       providesTags: (result) => [
         { type: 'UserTokens' as const, id: 'LIST' },
+        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
         ...((result?.tokens || []).map((token: CurrentUserToken) => ({ type: 'UserTokens' as const, id: tokenId(token) })).filter((tag: any) => Boolean(tag.id))),
       ],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     issueCurrentUserToken: build.mutation<any, { label?: string; expiresAt?: string }>({
       queryFn: async ({ label = '', expiresAt = '' }) => {
         try {
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = { label: label.trim() || 'Electron app' };
           if (expiresAt.trim()) payload.expires_at = expiresAt.trim();
           const data = await cookieMutation('/me/tokens', 'POST', payload);
@@ -68,6 +74,7 @@ export const userTokensApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'UserTokens' as const, id: 'LIST' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     revokeCurrentUserToken: build.mutation<any, { tokenId: string }>({
       queryFn: async ({ tokenId }) => {
         if (!tokenId) return { error: { status: 'CUSTOM_ERROR', error: 'Missing token id' } as any };

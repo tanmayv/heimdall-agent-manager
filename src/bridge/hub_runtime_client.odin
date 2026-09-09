@@ -309,8 +309,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			return
 		}
 		// Deliver the task-nudge notice straight to the agent via the daemon.
+		// MEM-6: prefer the hub's human_message (verbatim) when present.
 		target_role := extract_json_string(text, "target_role", "participant")
-		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role)
+		human_message := extract_json_string(text, "human_message", "")
+		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message)
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
@@ -341,6 +343,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		new_status := extract_json_string(text, "new_status", "")
 		actor_agent_instance_id := extract_json_string(text, "actor_agent_instance_id", "")
 		mutation_id := extract_json_string(text, "mutation_id", "")
+		// MEM-6: human_message (verbatim) preferred over the legacy generated notice.
+		human_message := extract_json_string(text, "human_message", "")
 
 		assignees_arr, _ := bridge_provider_json_extract_array(text, "assignee_instance_ids")
 		assignees := bridge_provider_json_parse_string_array(assignees_arr)
@@ -395,7 +399,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 				// lives here. Deliver straight to the local agent via the daemon;
 				// otherwise wake the local agent (coalesced) so it can pick up the work
 				// on boot. Targets not local to this bridge are ignored.
-				if bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant") {
+				if bridge_pty_host_deliver_to_agent(inst, "task_nudge", "", task_id, "participant", human_message) {
 					delivered += 1
 					continue
 				}

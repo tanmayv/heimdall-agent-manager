@@ -3,26 +3,32 @@ import * as daemonApi from '../api/daemonApi';
 import { selectCachedChainById } from '../api/chainViewCache';
 import { fetchSelectedChat, appendMessage } from './chatSlice';
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function auth(state: any) {
   const { session } = state.chat;
   return { daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken };
 }
 
 export const fetchChainCoordinatorChatPage = createAsyncThunk('chainView/fetchChainCoordinatorChatPage', async (payload: { chainId: string; cursor?: number; limit?: number }, { dispatch, getState }) => {
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const state = getState() as any;
   const session = auth(state);
   const chainId = payload.chainId || '';
   const chain = selectCachedChainById(state, chainId);
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const coordinator = chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
   if (!chainId || !coordinator || !session.clientToken) return { chainId, messages: [], nextCursor: 0, isAppend: false };
   const cursor = Number(payload.cursor || 0);
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   return await (dispatch as any)(fetchSelectedChat({ agentId: coordinator, cursor, limit: payload.limit || 50 })).unwrap();
 });
 
 export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinatorMessage', async (payload: { chainId: string; body: string; localId: string; artifactIds?: string[] }, { dispatch, getState }) => {
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const state = getState() as any;
   const session = auth(state);
   const chain = selectCachedChainById(state, payload.chainId);
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const coordinatorAgentInstanceId = chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
   if (coordinatorAgentInstanceId) {
     dispatch(appendMessage({

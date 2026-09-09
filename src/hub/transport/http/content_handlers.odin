@@ -145,7 +145,7 @@ read_chat_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handl
 // the agent instance id. No-op when the event bus is unavailable (test wiring).
 publish_messages_read :: proc(h:^Content_Handlers, owner_user_id:string, c:domain.Chat_Conversation, message_ids:[]string, reader:string){
 	if h==nil || h.event_bus==nil || owner_user_id=="" || len(message_ids)==0 do return
-	events.publish_raw_to_user(h.event_bus, owner_user_id, messages_read_event_json(c, message_ids, reader))
+	events.publish_owned(h.event_bus, owner_user_id, messages_read_event_json(c, message_ids, reader))
 }
 
 messages_read_event_json :: proc(c:domain.Chat_Conversation, message_ids:[]string, reader:string)->string{

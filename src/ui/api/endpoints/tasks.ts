@@ -7,14 +7,19 @@ import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 // legacy per-client token session. Task-chain reads/writes below must use
 // cookieJsonFetch/cookieMutation against /api/v1/task-chains/... so they work in
 // the routed/Electron shell where session.clientToken is not populated.
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function unwrapData(res: any): any {
   if (res && typeof res === 'object' && 'data' in res && !Array.isArray(res)) return (res as any).data;
   return res;
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function normalizeTask(task: any) {
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const result: any = {
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     id: task.task_id || task.id,
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     taskId: task.task_id || task.id,
     chainId: task.chain_id || '',
     title: task.title || '',
@@ -26,7 +31,9 @@ function normalizeTask(task: any) {
     coordinatorAgentInstanceId: task.coordinator_agent_instance_id || '',
     dependsOn: task.depends_on || (task.depends_on_task_ids ? task.depends_on_task_ids : []),
     blocked: Boolean(task.blocked),
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     assigneeRef: task.assignee_ref || task.assigneeRef || (task.assignee_agent_instance_id ? { type: 'agent_instance', agent_instance_id: task.assignee_agent_instance_id } : null),
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     reviewerRefs: task.reviewer_refs || task.reviewerRefs || (task.reviewer_agent_instance_id ? [{ type: 'agent_instance', agent_instance_id: task.reviewer_agent_instance_id }] : []),
     comments: (task.comments || []).map(normalizeTaskComments),
     commentSummary: task.comment_summary ? {
@@ -39,11 +46,15 @@ function normalizeTask(task: any) {
     createdAtUnixMs: Number(task.created_at_unix_ms || 0),
     updatedAtUnixMs: Number(task.updated_at_unix_ms || 0),
     notActionableReason: task.not_actionable_reason || '',
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     votes: (task.votes || []).map((vote: any) => ({
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       reviewerAgentInstanceId: vote.reviewer_agent_instance_id || vote.reviewerAgentInstanceId,
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       vote: vote.vote || (vote.approved ? 'lgtm' : 'ngtm'),
       comment: vote.comment || '',
     })),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     participants: (task.participants || []).map((participant: any) => ({
       agentInstanceId: participant.agent_instance_id,
       role: participant.role,
@@ -57,6 +68,7 @@ function normalizeTask(task: any) {
   return result;
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function normalizeTaskLogEvent(event: any) {
   return {
     eventId: event.event_id || '',
@@ -71,28 +83,37 @@ function normalizeTaskLogEvent(event: any) {
   };
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function normalizeTaskComments(comment: any) {
   return {
     commentId: comment.comment_id || '',
     taskId: comment.task_id || '',
     chainId: comment.chain_id || '',
     authorAgentInstanceId: comment.author_agent_instance_id || '',
+    // MEM-7: author identity for the comment view — resolved agent display name
+    // (clickable) or, for user-authored comments, the owner user id.
+    authorDisplayName: comment.author_display_name || '',
+    authorUserId: comment.author_user_id || '',
     body: comment.body || '',
     resolved: Boolean(comment.resolved),
     createdUnixMs: Number(comment.created_unix_ms || 0),
   };
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function normalizeTaskLogPage(taskId: string, data: any) {
   return {
     taskId,
     events: (data?.events || []).map(normalizeTaskLogEvent),
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     nextCursor: Number(data?.next_cursor || data?.nextCursor || 0),
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     hasMore: Boolean(data?.has_more || data?.hasMore),
     total: Number(data?.total || 0),
   };
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function taskMutationAuth(session: any, agentToken?: string) {
   return {
     agentToken: String(agentToken || '').trim(),
@@ -116,9 +137,11 @@ function preciseTaskTags(taskId?: string, chainId?: string, includeComments = tr
 }
 
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function normalizeTaskChainDetail(data: any) {
   if (!data) return null;
   return {
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     chainId: data.chain_id || data.chainId,
     title: data.title || '',
     description: data.description || '',
@@ -127,6 +150,7 @@ function normalizeTaskChainDetail(data: any) {
     kind: data.kind || 'team_work',
     coordinatorAgentInstanceId: data.coordinator_agent_instance_id || '',
     defaultReviewerRefs: data.default_reviewer_refs || [],
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     members: (data.members || []).map((m: any) => ({
       chainId: m.chain_id,
       agentInstanceId: m.agent_instance_id,
@@ -242,6 +266,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       providesTags: (_result, _error, { projectId }) => [{ type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskChainDetail: build.query<any, { chainId: string }>({
       queryFn: async ({ chainId }) => {
         if (!chainId) return { data: { chain: null } };
@@ -261,6 +286,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
     // Cookie-auth lazy single-task fetch. The chain/task list ships tasks WITHOUT
     // their description (to keep listings light); the full task — including the
     // Markdown description — is loaded on demand when a task row is expanded.
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchChainTaskDetail: build.query<any, { chainId: string; taskId: string }>({
       queryFn: async ({ chainId, taskId }) => {
         if (!chainId || !taskId) return { data: { task: null } };
@@ -277,6 +303,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
     // Cookie-auth lazy comment fetch for the live shell. The chain/task list now
     // ships only a comment_summary (count + last), so the comment thread is
     // loaded on demand (task expand) via GET .../comments?last=N.
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchChainTaskComments: build.query<any, { chainId: string; taskId: string; last?: number }>({
       queryFn: async ({ chainId, taskId, last }) => {
         if (!chainId || !taskId) return { data: { taskId, comments: [] } };
@@ -304,7 +331,9 @@ export const tasksApi = heimdallApi.injectEndpoints({
           const data = unwrapData(raw);
           const list = Array.isArray(data) ? data : [];
           return {
+            // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
             data: list.map((c: any) => ({
+              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
               chainId: c.chain_id || c.chainId || '',
               title: c.title || '',
               status: c.status || 'active',
@@ -319,6 +348,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         'ChainList',
       ],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createTaskChain: build.mutation<any, { title: string; description?: string; kind?: string; coordinatorAgentId?: string }>({
       queryFn: async ({ title, description, kind, coordinatorAgentId }) => {
         try {
@@ -330,9 +360,11 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: ['ChainList'],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateTaskChain: build.mutation<any, { chainId: string; title?: string; description?: string; status?: string }>({
       queryFn: async ({ chainId, title, description, status }) => {
         try {
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const body: any = {};
           if (title !== undefined) body.title = title;
           if (description !== undefined) body.description = description;
@@ -348,6 +380,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
     // Explicit self-heal: promote actionable tasks, set current-tasks, nudge idle
     // agents. Coordinator/owner only (enforced hub-side). Invalidates the chain so
     // the freshly-healed statuses/pointers render.
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     reconcileTaskChain: build.mutation<any, { chainId: string }>({
       queryFn: async ({ chainId }) => {
         try {
@@ -359,9 +392,11 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, { type: 'ChainTasks', id: chainId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
       queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs, dependsOn }) => {
         try {
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const body: any = {};
           if (title !== undefined) body.title = title;
           if (description !== undefined) body.description = description;
@@ -376,6 +411,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     cancelTaskDetail: build.mutation<any, { chainId: string; taskId: string }>({
       queryFn: async ({ chainId, taskId }) => {
         try {
@@ -389,6 +425,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
     }),
     // CT-3: set a task's priority (P0/P1/P2). The hub recomputes current-task
     // selection so raising priority can preempt a busy assignee.
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateTaskPriority: build.mutation<any, { chainId: string; taskId: string; priority: string }>({
       queryFn: async ({ chainId, taskId, priority }) => {
         try {
@@ -400,6 +437,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     setInstanceCurrentTask: build.mutation<any, { chainId: string; taskId: string; agentInstanceId: string }>({
       queryFn: async ({ chainId, taskId, agentInstanceId }) => {
         try {
@@ -414,6 +452,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         ...(agentInstanceId ? [{ type: 'AgentInstances' as const, id: agentInstanceId }] : []),
       ],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     addChainMember: build.mutation<any, { chainId: string; agentInstanceId: string; role?: string }>({
       queryFn: async ({ chainId, agentInstanceId, role }) => {
         try {
@@ -425,6 +464,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     removeChainMember: build.mutation<any, { chainId: string; agentInstanceId: string }>({
       queryFn: async ({ chainId, agentInstanceId }) => {
         try {
@@ -437,6 +477,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }],
     }),
 
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchChainTasks: build.query<any, { chainId: string; limit?: number; offset?: number }>({
       queryFn: withSessionQuery(async ({ chainId, limit = 100, offset = 0 }, { session }) => {
         if (!session?.clientToken || !chainId) return { chainId, tasks: [] };
@@ -459,9 +500,11 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       providesTags: (result, _error, { chainId }) => [
         { type: 'ChainTasks' as const, id: chainId },
+        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
         ...((result?.tasks || []).map((task: any) => ({ type: 'Task' as const, id: task.taskId }))),
       ],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchChainTasksPage: build.query<any, { chainId: string; limit?: number; offset: number }>({
       queryFn: withSessionQuery(async ({ chainId, limit = 100, offset }, { session }) => {
         if (!session?.clientToken || !chainId) return { chainId, tasks: [] };
@@ -488,12 +531,14 @@ export const tasksApi = heimdallApi.injectEndpoints({
           const { chainId, limit = 100 } = arg;
           const cacheKeyArgs = { chainId, limit };
           dispatch(
+            // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
             tasksApi.util.updateQueryData('fetchChainTasks', cacheKeyArgs as any, (draft) => {
               if (!draft) return;
               draft.has_more = data.has_more;
               draft.next_offset = data.next_offset;
               draft.total = data.total;
               
+              // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
               const existingIds = new Set(draft.tasks.map((t: any) => t.taskId));
               for (const task of data.tasks) {
                 if (!existingIds.has(task.taskId)) {
@@ -505,6 +550,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         } catch {}
       }
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTask: build.query<any, { taskId: string }>({
       queryFn: withSessionQuery(async ({ taskId }, { session }) => {
         if (!session?.clientToken || !taskId) return { task: null };
@@ -519,6 +565,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       providesTags: (_result, _error, { taskId }) => [{ type: 'Task', id: taskId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskComments: build.query<any, { taskId: string; unresolved?: boolean; limit?: number; offset?: number }>({
       queryFn: withSessionQuery(async ({ taskId, unresolved = false, limit = 20, offset = 0 }, { session }) => {
         if (!session?.clientToken || !taskId) return { taskId, comments: [] };
@@ -542,6 +589,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       providesTags: (_result, _error, { taskId }) => [{ type: 'TaskComments', id: taskId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskCommentsPage: build.query<any, { taskId: string; unresolved?: boolean; limit?: number; offset: number }>({
       queryFn: withSessionQuery(async ({ taskId, unresolved = false, limit = 20, offset }, { session }) => {
         if (!session?.clientToken || !taskId) return { taskId, comments: [] };
@@ -569,14 +617,18 @@ export const tasksApi = heimdallApi.injectEndpoints({
           const { taskId, unresolved = false, limit = 20 } = arg;
           const cacheKeyArgs = { taskId, unresolved, limit };
           dispatch(
+            // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
             tasksApi.util.updateQueryData('fetchTaskComments', cacheKeyArgs as any, (draft) => {
               if (!draft) return;
               draft.has_more = data.has_more;
               draft.next_offset = data.next_offset;
               draft.total = data.total;
               
+              // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
               const existingIds = new Set(draft.comments.map((c: any) => c.comment_id || c.commentId));
               for (const comment of data.comments) {
+                // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                 const id = comment.comment_id || comment.commentId;
                 if (!existingIds.has(id)) {
                   draft.comments.push(comment);
@@ -587,6 +639,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
         } catch {}
       }
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskComment: build.query<any, { taskId: string; commentId: string }>({
       queryFn: withSessionQuery(async ({ taskId, commentId }, { session }) => {
         if (!session?.clientToken || !taskId || !commentId) return { comment: null };
@@ -602,6 +655,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       providesTags: (_result, _error, { taskId }) => [{ type: 'TaskComments', id: taskId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskLog: build.query<any, { taskId: string; limit?: number }>({
       queryFn: withSessionQuery(async ({ taskId, limit = 50 }, { session }) => {
         if (!session?.clientToken || !taskId) return normalizeTaskLogPage(taskId, null);
@@ -617,6 +671,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       providesTags: (_result, _error, { taskId }) => [{ type: 'TaskLog', id: taskId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskLogPage: build.query<any, { taskId: string; cursor: number; limit?: number }>({
       queryFn: withSessionQuery(async ({ taskId, cursor, limit = 50 }, { session }) => {
         if (!session?.clientToken || !taskId) return normalizeTaskLogPage(taskId, null);
@@ -633,6 +688,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       async onQueryStarted({ taskId }, { dispatch, queryFulfilled }) {
         try {
           const { data } = await queryFulfilled;
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           dispatch(tasksApi.util.updateQueryData('fetchTaskLog', { taskId }, (draft: any) => {
             if (!draft) return;
             for (const event of data?.events || []) {
@@ -647,9 +703,11 @@ export const tasksApi = heimdallApi.injectEndpoints({
         }
       },
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string; assigneeRef?: any; reviewerRefs?: any[]; dependsOn?: string[] }>({
       queryFn: async ({ chainId, title, description, assigneeRef, reviewerRefs, dependsOn }) => {
         try {
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const body: any = { title, description: description || '' };
           if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
           if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
@@ -662,6 +720,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { chainId }) => chainId ? [{ type: 'Chain' as const, id: chainId }, { type: 'ChainTasks' as const, id: chainId }] : [],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     deleteTask: build.mutation<any, { taskId: string; chainId: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, agentToken }, { session }) => {
         return daemonApi.deleteTask({
@@ -673,6 +732,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId, true),
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     addTaskComment: build.mutation<any, { taskId: string; chainId: string; body: string; agentToken?: string; resolveImmediately?: boolean }>({
       queryFn: async ({ taskId, chainId, body }) => {
         try {
@@ -684,6 +744,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { taskId, chainId }) => [...preciseTaskTags(taskId, chainId, true), { type: 'Chain' as const, id: chainId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     resolveTaskComment: build.mutation<any, { taskId: string; chainId: string; commentId: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, commentId, agentToken }, { session }) => {
         return daemonApi.resolveTaskComment({
@@ -696,6 +757,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId, true),
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     setTaskStatus: build.mutation<any, { taskId: string; chainId: string; status: string; body?: string; agentToken?: string }>({
       queryFn: async ({ taskId, chainId, status }) => {
         try {
@@ -707,6 +769,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { taskId, chainId }) => [...preciseTaskTags(taskId, chainId), { type: 'Chain' as const, id: chainId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateTask: build.mutation<any, { taskId: string; chainId: string; title?: string; description?: string; acceptanceCriteria?: string; dependsOn?: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, title, description, acceptanceCriteria, dependsOn, agentToken }, { session }) => {
         return daemonApi.updateTask({
@@ -722,6 +785,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     assignTask: build.mutation<any, { taskId: string; chainId: string; agentInstanceId: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, agentInstanceId, agentToken }, { session }) => {
         return daemonApi.assignTask({
@@ -734,6 +798,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     addTaskParticipant: build.mutation<any, { taskId: string; chainId: string; agentInstanceId: string; role: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, agentInstanceId, role, agentToken }, { session }) => {
         return daemonApi.addTaskParticipant({
@@ -747,6 +812,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     removeTaskParticipant: build.mutation<any, { taskId: string; chainId: string; agentInstanceId: string; role: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, agentInstanceId, role, agentToken }, { session }) => {
         return daemonApi.removeTaskParticipant({
@@ -760,6 +826,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     voteTask: build.mutation<any, { taskId: string; chainId: string; result?: 'lgtm' | 'ngtm'; approved?: boolean; comment?: string; agentToken?: string }>({
       queryFn: async ({ taskId, chainId, result, approved, comment = '' }) => {
         try {
@@ -772,6 +839,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { taskId, chainId }) => [...preciseTaskTags(taskId, chainId), { type: 'Chain' as const, id: chainId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     nudgeTask: build.mutation<any, { taskId: string; chainId: string; body?: string; message?: string; interrupt?: boolean; agentToken?: string }>({
       queryFn: async ({ taskId, chainId, body, message }) => {
         try {

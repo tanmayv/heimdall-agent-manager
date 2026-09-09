@@ -20,6 +20,42 @@ interface CommentSummary {
   lastCommentPreview: string;
 }
 
+// shellHash mirrors the local helper used across the taskchain views (e.g.
+// TaskChainOverview) for hash-router links.
+function shellHash(path: string): string { return `#${path.startsWith('/') ? path : `/${path}`}`; }
+
+/**
+ * CommentAuthor (MEM-7) renders a comment's author identity. An agent-authored
+ * comment shows the resolved display name as a clickable link to that agent's
+ * conversation (the same affordance the agent "Open" button uses). A user-authored
+ * comment (no author instance) shows the human commenter's user id instead.
+ */
+const CommentAuthor: React.FC<{ instanceId: string; displayName: string; userId: string; debugId: string }> = ({
+  instanceId,
+  displayName,
+  userId,
+  debugId,
+}) => {
+  if (instanceId) {
+    const label = displayName || instanceId;
+    return (
+      <a
+        data-debug-id={debugId}
+        href={shellHash(`/conversations/${encodeURIComponent(instanceId)}`)}
+        title={`Open ${label} (${instanceId})`}
+        className="text-sky-300 hover:text-sky-200 hover:underline"
+      >
+        @{label}
+      </a>
+    );
+  }
+  return (
+    <span data-debug-id={debugId} className="text-zinc-300">
+      {userId || 'user'}
+    </span>
+  );
+};
+
 /**
  * TaskCommentsThread renders a task's comment thread. The chain/task list ships
  * only a `comment_summary` (count + last comment) to keep payloads small, so the
@@ -70,7 +106,12 @@ export const TaskCommentsThread: React.FC<{
           className="rounded bg-zinc-900 p-2 text-[11px]"
         >
           <div className="font-semibold text-zinc-400">
-            {comment.authorAgentInstanceId || comment.author_agent_instance_id || 'user'}:
+            <CommentAuthor
+              instanceId={comment.authorAgentInstanceId || comment.author_agent_instance_id || ''}
+              displayName={comment.authorDisplayName || comment.author_display_name || ''}
+              userId={comment.authorUserId || comment.author_user_id || ''}
+              debugId={`taskchain-task-comment-author-${taskId}-${idx}`}
+            />:
           </div>
           <div className="mt-1 text-zinc-200">
             <Markdown source={comment.body || ''} compact copyAll={false} data-debug-id={`taskchain-task-comment-body-${taskId}-${idx}`} />

@@ -351,6 +351,8 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 			if same, same_err := agent_instance_same_chain(service, input.coordinator_agent_instance_id, chain); !same do return domain.Task_Chain{}, false, same_err
 		}
 		chain = set_chain_coordinator(service, chain, input.coordinator_agent_instance_id)
+		// MEM-6 #9: notify the newly-designated coordinator.
+		if input.coordinator_agent_instance_id != "" do notify_coordinator_assigned(service, auth, chain, input.coordinator_agent_instance_id)
 	}
 	if input.status != "" {
 		st := chain_status_from_string(input.status)
@@ -439,7 +441,62 @@ change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	} else if next == .Active {
 		chain.completed_at = ""
 	}
-	return iface.taskchain_save_chain(service.repo, chain)
+	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	// MEM-6 (#10): on chain close, broadcast a wake to all live members so any
+	// long-running loops/tasks halt.
+	if save_ok && (next == .Completed || next == .Cancelled) {
+		broadcast_chain_closed(service, auth, saved, next)
+	}
+	return saved, save_ok, save_err
+}
+
+// broadcast_chain_closed wakes every live member of a just-closed chain with a
+// human-readable [Chain Closed] notice so their loops/tasks stop. Fire-and-forget;
+// the actor (closer) is not woken. MEM-6 spec §4 #10.
+broadcast_chain_closed :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain: domain.Task_Chain, next: domain.Task_Chain_Status) {
+	if service.bridge_command_sink.send_runtime_command == nil || service.agents == nil do return
+	actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+	members, merr := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if merr.code != .None do return
+
+	verb := "completed" if next == .Completed else "cancelled"
+	actor_display := resolve_actor_display(service, actor)
+	defer delete(actor_display)
+	title := strings.trim_space(chain.title)
+	if title == "" do title = string(chain.chain_id)
+	title_disp := truncate_runes(title, NOTICE_TITLE_MAX_RUNES)
+	defer delete(title_disp)
+	human_message := strings.concatenate({`[Chain Closed] Task chain "`, title_disp, `" (`, string(chain.chain_id), ") was marked ", verb, " by ", actor_display, ". All task activities halted."})
+	defer delete(human_message)
+
+	seen := make(map[string]bool)
+	defer delete(seen)
+	for m in members {
+		id := m.agent_instance_id
+		if id == "" || id == actor || seen[id] do continue
+		seen[id] = true
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, id)
+		if !inst_ok || inst.bridge_id == "" do continue
+		cmd_id := platform.generate_id(service.ids, "cmd_")
+		b := strings.builder_make()
+		strings.write_string(&b, `{"type":"notify_task_nudge","origin":"chain_closed","command_id":"`)
+		contracts.write_json_string(&b, cmd_id)
+		strings.write_string(&b, `","agent_instance_id":"`)
+		contracts.write_json_string(&b, id)
+		strings.write_string(&b, `","task_id":"","chain_id":"`)
+		contracts.write_json_string(&b, string(chain.chain_id))
+		strings.write_string(&b, `","target_instance_id":"`)
+		contracts.write_json_string(&b, id)
+		strings.write_string(&b, `","target_role":"member","action":"chain_closed","message":"`)
+		contracts.write_json_string(&b, human_message)
+		strings.write_string(&b, `","human_message":"`)
+		contracts.write_json_string(&b, human_message)
+		strings.write_string(&b, `","created_at":"`)
+		contracts.write_json_string(&b, chain.updated_at)
+		strings.write_string(&b, `"}`)
+		_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id = inst.bridge_id, command_id = cmd_id, body_json = strings.to_string(b)})
+		strings.builder_destroy(&b)
+	}
 }
 
 valid_chain_transition :: proc(current, next: domain.Task_Chain_Status) -> bool {
@@ -502,6 +559,17 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 	// whole plan, then triggers `reconcile` explicitly. A newly-created task does
 	// not promote/nudge until the coordinator kicks off or re-plans.
 
+	// MEM-6 #1: on an ACTIVE, published chain a new task assignment notifies the
+	// assignee + coordinator (draft chains stay silent to avoid setup thrashing).
+	if chain.publish_state == .Published && chain.status == .Active && saved_task.publish_state == .Published {
+		actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+		prio := task_priority_label(saved_task.priority)
+		assignee := primary_assignee_instance(saved_task.assignee_ref_json)
+		defer delete(assignee)
+		_ = send_task_wake(service, saved_task, assignee, "assigned", "Task Assigned", "assigned to you", prio, actor)
+		if chain.coordinator_agent_instance_id != assignee do _ = send_task_wake(service, saved_task, chain.coordinator_agent_instance_id, "assigned", "Task Assigned", "assigned", prio, actor)
+	}
+
 	return saved_task, true, domain.Domain_Error{}
 }
 
@@ -523,6 +591,7 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	// current_task pointer if it no longer holds the task (CT-7 consistency).
 	prev_assignee := primary_assignee_instance(task.assignee_ref_json)
 	defer delete(prev_assignee)
+	prev_priority := task.priority // MEM-6 #2: detect a P0 escalation.
 
 	if input.title != "" do task.title = input.title
 	if input.description != "" do task.description = input.description
@@ -561,6 +630,22 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	// setup-phase changes): the coordinator triggers `reconcile` when the new plan
 	// should take effect. (Task STATUS changes reconcile — that's a different proc,
 	// change_task_status.)
+
+	// MEM-6 #2: on an ACTIVE, published chain, a reassignment notifies the new
+	// assignee + coordinator, and a P0 escalation notifies the assignee. Text-only
+	// edits stay silent (UI-only). Draft chains stay silent.
+	if chain.publish_state == .Published && chain.status == .Active && saved.publish_state == .Published {
+		actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+		new_assignee := primary_assignee_instance(saved.assignee_ref_json)
+		defer delete(new_assignee)
+		if new_assignee != "" && new_assignee != prev_assignee {
+			_ = send_task_wake(service, saved, new_assignee, "reassigned", "Task Reassigned", "reassigned to you", "", actor)
+			if chain.coordinator_agent_instance_id != new_assignee do _ = send_task_wake(service, saved, chain.coordinator_agent_instance_id, "reassigned", "Task Reassigned", "reassigned", "", actor)
+		}
+		if input.has_priority && saved.priority == .P0 && prev_priority != .P0 {
+			_ = send_task_wake(service, saved, new_assignee, "priority", "Priority P0", "escalated to P0", "", actor)
+		}
+	}
 
 	return saved, true, domain.Domain_Error{}
 }
@@ -641,6 +726,9 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 		// label (R8). Ordering matters: gating reads the persisted pointer.
 		_ = recompute_chain_promotions(service, chain)
 		notify_task_status_change(service, auth, task_ret, chain)
+		// MEM-6 #6/#7: paused/cancelled/validated_good policy wakes (not covered by
+		// the CT-6 work/review gate above).
+		notify_status_policy(service, auth, task_ret, chain)
 	}
 	return task_ret, saved_ok, save_err
 }
@@ -679,6 +767,9 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 	if action == "" do return
 	message := status_notify_message(task, action)
 	defer delete(message)
+	// MEM-6: human-readable message for the bridge to deliver verbatim.
+	human_message := status_human_message(service, task, actor_agent_instance_id)
+	defer delete(human_message)
 
 	// Bridges to notify: the union of gated recipients' bridges plus the
 	// coordinator's (kept for cross-bridge fan-out parity). A bridge that ends up
@@ -712,6 +803,8 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 		contracts.write_json_string(&b, action)
 		strings.write_string(&b, `","message":"`)
 		contracts.write_json_string(&b, message)
+		strings.write_string(&b, `","human_message":"`)
+		contracts.write_json_string(&b, human_message)
 		strings.write_string(&b, `","assignee_instance_ids":[`)
 		for id, i in assignees { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, `"`); contracts.write_json_string(&b, id); strings.write_string(&b, `"`) }
 		strings.write_string(&b, `],"reviewer_instance_ids":[`)
@@ -732,6 +825,27 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 }
 
 
+
+// notify_status_policy emits human-readable wakes for status transitions the CT-6
+// work/review gate (notify_task_status_change) does NOT cover: paused/cancelled
+// (assignee + coordinator stop execution) and validated_good (coordinator sign-off).
+// MEM-6 spec §4 #6/#7. Fire-and-forget; the actor is never self-woken.
+notify_status_policy :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task: domain.Task, chain: domain.Task_Chain) {
+	if service.bridge_command_sink.send_runtime_command == nil || service.agents == nil do return
+	actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+	coord := chain.coordinator_agent_instance_id
+	#partial switch task.status {
+	case .Paused, .Cancelled:
+		tag := "Task Paused" if task.status == .Paused else "Task Cancelled"
+		verb := "paused" if task.status == .Paused else "cancelled"
+		assignee := primary_assignee_instance(task.assignee_ref_json)
+		defer delete(assignee)
+		_ = send_task_wake(service, task, assignee, "status", tag, verb, "", actor)
+		if coord != assignee do _ = send_task_wake(service, task, coord, "status", tag, verb, "", actor)
+	case .Validated_Good:
+		_ = send_task_wake(service, task, coord, "status", "Review Consensus", "marked ready for sign-off", "", actor)
+	}
+}
 
 valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	if current == next do return true
@@ -891,6 +1005,88 @@ comment_preview_safe :: proc(body: string) -> string {
 		strings.write_string(&b, "...")
 	}
 	return strings.to_string(b)
+}
+
+// --- MEM-6: human-readable notification messages ---------------------------
+// Every task/chain wake carries a `human_message` built here so the bridge can
+// deliver a context-rich line instead of the legacy generic string. Format:
+//   [<TAG>] @<Actor> <verb> "<title>" (<task-id>)[: "<excerpt>"]
+
+// NOTICE_TITLE_MAX_RUNES caps a task/chain title rendered in a notice. User
+// directive (2026-09-09): 20, matching the excerpt cap (spec §2 said 60).
+NOTICE_TITLE_MAX_RUNES :: 20
+// NOTICE_EXCERPT_MAX_RUNES caps inline free-text excerpts (comment bodies, review
+// feedback, custom nudge messages). User directive (2026-09-09): 20, not the
+// spec's 140.
+NOTICE_EXCERPT_MAX_RUNES :: 20
+
+// truncate_runes clamps s to max runes, appending an ellipsis when it had to cut.
+// Caller owns the returned string.
+truncate_runes :: proc(s: string, max: int) -> string {
+	trimmed := strings.trim_space(s)
+	b := strings.builder_make()
+	count := 0
+	truncated := false
+	for r in trimmed {
+		if count >= max { truncated = true; break }
+		strings.write_rune(&b, r)
+		count += 1
+	}
+	if truncated do strings.write_string(&b, "…")
+	return strings.to_string(b)
+}
+
+// resolve_actor_display renders "@<display-name>" for an actor agent instance,
+// falling back to "@<trimmed-id>" when the instance can't be resolved, and to
+// "@User" for an empty actor (user-authored / system-with-user origin).
+resolve_actor_display :: proc(service: ^Taskchain_Service, actor_instance_id: string) -> string {
+	id := strings.trim_space(actor_instance_id)
+	if id == "" do return strings.clone("@User")
+	if service != nil && service.agents != nil {
+		if inst, ok, _ := iface.agent_get_instance(service.agents, id); ok {
+			dn := strings.trim_space(inst.display_name)
+			if dn != "" do return strings.concatenate({"@", dn})
+		}
+	}
+	return strings.concatenate({"@", id})
+}
+
+// notice_task_title returns the task title clamped to NOTICE_TITLE_MAX_RUNES
+// (falling back to the task id when blank). Caller owns the returned string.
+notice_task_title :: proc(task: domain.Task) -> string {
+	return truncate_runes(task_display_name(task), NOTICE_TITLE_MAX_RUNES)
+}
+
+// build_human_readable_task_notice renders the standardized notice (spec §2).
+// `excerpt` is optional; when non-blank it is appended as a 20-rune-max quoted
+// tail. Caller owns the returned string.
+build_human_readable_task_notice :: proc(service: ^Taskchain_Service, task: domain.Task, actor_instance_id, event_tag, action_verb, excerpt: string) -> string {
+	actor := resolve_actor_display(service, actor_instance_id)
+	defer delete(actor)
+	title := notice_task_title(task)
+	defer delete(title)
+	head := strings.concatenate({"[", event_tag, "] ", actor, " ", action_verb, " \"", title, "\" (", string(task.task_id), ")"})
+	if strings.trim_space(excerpt) == "" do return head
+	defer delete(head)
+	ex := truncate_runes(excerpt, NOTICE_EXCERPT_MAX_RUNES)
+	defer delete(ex)
+	return strings.concatenate({head, ": \"", ex, "\""})
+}
+
+// status_human_message builds the human_message for a status-change wake from the
+// task's new status (spec §3). Returns "" for statuses that carry no wake.
+status_human_message :: proc(service: ^Taskchain_Service, task: domain.Task, actor_instance_id: string) -> string {
+	assignee := primary_assignee_instance(task.assignee_ref_json)
+	defer delete(assignee)
+	#partial switch task.status {
+	case .In_Progress:
+		return build_human_readable_task_notice(service, task, assignee, "Work Started", "started work on", "")
+	case .In_Validation:
+		return build_human_readable_task_notice(service, task, assignee, "Review Requested", "submitted for review", "")
+	case .Validated_Not_Good:
+		return build_human_readable_task_notice(service, task, actor_instance_id, "Changes Requested", "requested changes on", "")
+	}
+	return ""
 }
 
 should_debounce_nudge_dispatch :: proc(service: ^Taskchain_Service, instance_id, task_id: string) -> bool {
@@ -1080,6 +1276,14 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		return nudge, true, domain.Domain_Error{}
 	}
 	
+	// MEM-6: human-readable nudge line — custom message if provided, else a
+	// stable fallback. Actor is the nudger (empty => "@User").
+	nudger := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+	nudge_excerpt := strings.trim_space(message)
+	if nudge_excerpt == "" do nudge_excerpt = "Awaiting progress update"
+	nudge_human_message := build_human_readable_task_notice(service, task, nudger, "Nudge", "nudged on", nudge_excerpt)
+	defer delete(nudge_human_message)
+
 	live_delivered := 0
 	durable_queued := 0
 	failed := 0
@@ -1131,10 +1335,12 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		contracts.write_json_string(&b, task_status_string(task.status))
 		strings.write_string(&b, `","body":"`)
 		contracts.write_json_string(&b, message)
+		strings.write_string(&b, `","human_message":"`)
+		contracts.write_json_string(&b, nudge_human_message)
 		strings.write_string(&b, `","created_at":"`)
 		contracts.write_json_string(&b, now)
 		strings.write_string(&b, `"}`)
-		
+
 		sent := false
 		if service.bridge_command_sink.send_runtime_command_wait != nil {
 			result_json, sent, _ := project.bridge_command_send_runtime_wait(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)}, 1000)
@@ -1182,6 +1388,133 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	return nudge, true, domain.Domain_Error{}
 }
 
+// send_task_wake emits one human-readable notify_task_nudge for a task-level event
+// to a single instance. `origin`/`tag`/`verb`/`excerpt` shape the [tag] @actor verb
+// "title" (id): "excerpt" message; `actor_instance` is the acting agent ("" =>
+// "@User"). Returns true when a command was actually sent (instance live + bridge).
+// MEM-6. Skips the actor itself and blank/unresolvable targets.
+send_task_wake :: proc(service: ^Taskchain_Service, task: domain.Task, target_instance_id, origin, tag, verb, excerpt, actor_instance: string) -> bool {
+	if service.bridge_command_sink.send_runtime_command == nil || service.agents == nil do return false
+	tid := strings.trim_space(target_instance_id)
+	if tid == "" || tid == strings.trim_space(actor_instance) do return false
+	inst, inst_ok, _ := iface.agent_get_instance(service.agents, tid)
+	if !inst_ok || inst.bridge_id == "" do return false
+	hm := build_human_readable_task_notice(service, task, actor_instance, tag, verb, excerpt)
+	defer delete(hm)
+	now := platform.clock_now(service.clock)
+	cmd_id := platform.generate_id(service.ids, "cmd_")
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, `{"type":"notify_task_nudge","origin":"`)
+	contracts.write_json_string(&b, origin)
+	strings.write_string(&b, `","command_id":"`)
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, `","agent_instance_id":"`)
+	contracts.write_json_string(&b, tid)
+	strings.write_string(&b, `","task_id":"`)
+	contracts.write_json_string(&b, string(task.task_id))
+	strings.write_string(&b, `","chain_id":"`)
+	contracts.write_json_string(&b, string(task.chain_id))
+	strings.write_string(&b, `","target_instance_id":"`)
+	contracts.write_json_string(&b, tid)
+	strings.write_string(&b, `","target_role":"`)
+	contracts.write_json_string(&b, origin)
+	strings.write_string(&b, `","action":"`)
+	contracts.write_json_string(&b, origin)
+	strings.write_string(&b, `","task_status":"`)
+	contracts.write_json_string(&b, task_status_string(task.status))
+	strings.write_string(&b, `","message":"`)
+	contracts.write_json_string(&b, hm)
+	strings.write_string(&b, `","human_message":"`)
+	contracts.write_json_string(&b, hm)
+	strings.write_string(&b, `","created_at":"`)
+	contracts.write_json_string(&b, now)
+	strings.write_string(&b, `"}`)
+	sent, _ := project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id = inst.bridge_id, command_id = cmd_id, body_json = strings.to_string(b)})
+	return sent
+}
+
+// send_chain_level_wake emits a chain-level notify_task_nudge (task_id empty) with
+// a prebuilt human_message to one instance. Used for coordinator-assigned and
+// member-removed notices (spec §4 #9/#11). MEM-6.
+send_chain_level_wake :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, target_instance_id, origin, human_message: string) -> bool {
+	if service.bridge_command_sink.send_runtime_command == nil || service.agents == nil do return false
+	tid := strings.trim_space(target_instance_id)
+	if tid == "" do return false
+	inst, inst_ok, _ := iface.agent_get_instance(service.agents, tid)
+	if !inst_ok || inst.bridge_id == "" do return false
+	now := platform.clock_now(service.clock)
+	cmd_id := platform.generate_id(service.ids, "cmd_")
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, `{"type":"notify_task_nudge","origin":"`)
+	contracts.write_json_string(&b, origin)
+	strings.write_string(&b, `","command_id":"`)
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, `","agent_instance_id":"`)
+	contracts.write_json_string(&b, tid)
+	strings.write_string(&b, `","task_id":"","chain_id":"`)
+	contracts.write_json_string(&b, string(chain.chain_id))
+	strings.write_string(&b, `","target_instance_id":"`)
+	contracts.write_json_string(&b, tid)
+	strings.write_string(&b, `","target_role":"`)
+	contracts.write_json_string(&b, origin)
+	strings.write_string(&b, `","action":"`)
+	contracts.write_json_string(&b, origin)
+	strings.write_string(&b, `","message":"`)
+	contracts.write_json_string(&b, human_message)
+	strings.write_string(&b, `","human_message":"`)
+	contracts.write_json_string(&b, human_message)
+	strings.write_string(&b, `","created_at":"`)
+	contracts.write_json_string(&b, now)
+	strings.write_string(&b, `"}`)
+	sent, _ := project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id = inst.bridge_id, command_id = cmd_id, body_json = strings.to_string(b)})
+	return sent
+}
+
+// task_priority_label renders a priority as its P0/P1/P2 label for notices.
+task_priority_label :: proc(p: domain.Task_Priority) -> string {
+	switch p {
+	case .P0: return "P0"
+	case .P1: return "P1"
+	case .P2: return "P2"
+	}
+	return "P2"
+}
+
+// send_comment_wake pushes one comment/progress wake (notify_task_nudge, origin
+// "comment") to a single instance. Returns true when a command was actually sent
+// (the instance is resolvable and has a live bridge). MEM-6.
+send_comment_wake :: proc(service: ^Taskchain_Service, task: domain.Task, target_instance_id, legacy_message, human_message, now: string) -> bool {
+	if service.agents == nil do return false
+	inst, inst_ok, _ := iface.agent_get_instance(service.agents, target_instance_id)
+	if !inst_ok || inst.bridge_id == "" do return false
+	cmd_id := platform.generate_id(service.ids, "cmd_")
+	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
+	strings.write_string(&b, `{"type":"notify_task_nudge","origin":"comment","command_id":"`)
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, `","agent_instance_id":"`)
+	contracts.write_json_string(&b, target_instance_id)
+	strings.write_string(&b, `","task_id":"`)
+	contracts.write_json_string(&b, string(task.task_id))
+	strings.write_string(&b, `","chain_id":"`)
+	contracts.write_json_string(&b, string(task.chain_id))
+	strings.write_string(&b, `","target_instance_id":"`)
+	contracts.write_json_string(&b, target_instance_id)
+	strings.write_string(&b, `","target_role":"comment","action":"comment","task_status":"`)
+	contracts.write_json_string(&b, task_status_string(task.status))
+	strings.write_string(&b, `","message":"`)
+	contracts.write_json_string(&b, legacy_message)
+	strings.write_string(&b, `","human_message":"`)
+	contracts.write_json_string(&b, human_message)
+	strings.write_string(&b, `","created_at":"`)
+	contracts.write_json_string(&b, now)
+	strings.write_string(&b, `"}`)
+	sent, _ := project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id = inst.bridge_id, command_id = cmd_id, body_json = strings.to_string(b)})
+	return sent
+}
+
 comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Task_Comment_Input) -> (domain.Task_Comment, []string, bool, domain.Domain_Error) {
 	if strings.trim_space(input.body) == "" do return domain.Task_Comment{}, nil, false, domain.domain_error(.Validation_Failed, "comment body is required")
 	task, ok, err := get_task(service, auth, input.task_id)
@@ -1221,47 +1554,69 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	saved, ok2, err2 := iface.taskchain_save_comment(service.repo, comment)
 	if !ok2 do return saved, nil, ok2, err2
 
+	// MEM-6 comment fan-out. Recipients (de-duped, author excluded):
+	//   * explicit --notify ids                         -> [Comment]
+	//   * chain coordinator, always kept informed       -> [Progress Update] for an
+	//     agent comment, [Comment] for a user comment
+	//   * USER-authored comment (any task): every role-holder (assignee + reviewer(s)
+	//     + default reviewers) regardless of --notify   -> [Comment]
+	//     (user directive 2026-09-09)
 	notified := make([dynamic]string)
-	if len(input.notify) > 0 && service.bridge_command_sink.send_runtime_command != nil && service.agents != nil {
+	if service.bridge_command_sink.send_runtime_command != nil && service.agents != nil {
 		author := auth.agent_instance_id if auth.kind == .Instance_Token && auth.agent_instance_id != "" else (auth.user_id if auth.user_id != "" else "user")
 		preview := comment_preview_safe(input.body)
 		defer delete(preview)
-		message := fmt.tprintf("Comment from %s on task %s: %s", author, string(task.task_id), preview)
+		legacy_message := fmt.tprintf("Comment from %s on task %s: %s", author, string(task.task_id), preview)
+		// Actor is the authoring instance ("" => "@User" for a user-authored comment).
+		author_instance := auth.agent_instance_id if auth.kind == .Instance_Token && auth.agent_instance_id != "" else ""
+		is_user_author := auth.kind != .Instance_Token
+		comment_msg := build_human_readable_task_notice(service, task, author_instance, "Comment", "commented on", input.body)
+		defer delete(comment_msg)
+		progress_msg := build_human_readable_task_notice(service, task, author_instance, "Progress Update", "posted an update on", input.body)
+		defer delete(progress_msg)
 
-		seen := make(map[string]bool)
-		defer delete(seen)
-		for target in input.notify {
-			t := strings.trim_space(target)
-			if t == "" || seen[t] do continue
-			seen[t] = true
-			inst, inst_ok, _ := iface.agent_get_instance(service.agents, t)
-			if !inst_ok || inst.bridge_id == "" do continue
+		chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
 
-			cmd_id := platform.generate_id(service.ids, "cmd_")
-			b := strings.builder_make()
-			strings.write_string(&b, `{"type":"notify_task_nudge","origin":"comment","command_id":"`)
-			contracts.write_json_string(&b, cmd_id)
-			strings.write_string(&b, `","agent_instance_id":"`)
-			contracts.write_json_string(&b, t)
-			strings.write_string(&b, `","task_id":"`)
-			contracts.write_json_string(&b, string(task.task_id))
-			strings.write_string(&b, `","chain_id":"`)
-			contracts.write_json_string(&b, string(task.chain_id))
-			strings.write_string(&b, `","target_instance_id":"`)
-			contracts.write_json_string(&b, t)
-			strings.write_string(&b, `","target_role":"comment"`)
-			strings.write_string(&b, `,"action":"comment"`)
-			strings.write_string(&b, `,"task_status":"`)
-			contracts.write_json_string(&b, task_status_string(task.status))
-			strings.write_string(&b, `","message":"`)
-			contracts.write_json_string(&b, message)
-			strings.write_string(&b, `","created_at":"`)
-			contracts.write_json_string(&b, now)
-			strings.write_string(&b, `"}`)
-			_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
-			strings.builder_destroy(&b)
-			append(&notified, t)
+		recips := make(map[string]string)
+		defer delete(recips)
+		order := make([dynamic]string)
+		defer delete(order)
+		// Keys are cloned (the source blobs/refs are freed below before we send), so
+		// `order`/`recips` own their ids; freed after the send loop.
+		add_recip := proc(recips: ^map[string]string, order: ^[dynamic]string, author_instance, id, msg: string) {
+			t := strings.trim_space(id)
+			if t == "" || t == author_instance do return
+			if _, exists := recips[t]; exists do return
+			key := strings.clone(t)
+			recips[key] = msg
+			append(order, key)
 		}
+
+		// Explicit --notify targets: [Comment].
+		for target in input.notify do add_recip(&recips, &order, author_instance, target, comment_msg)
+		// Coordinator kept informed.
+		if chain_ok && chain.coordinator_agent_instance_id != "" {
+			add_recip(&recips, &order, author_instance, chain.coordinator_agent_instance_id, comment_msg if is_user_author else progress_msg)
+		}
+		// User-authored comment: wake every role-holder regardless of --notify.
+		if is_user_author {
+			a := primary_assignee_instance(task.assignee_ref_json)
+			add_recip(&recips, &order, author_instance, a, comment_msg)
+			delete(a)
+			revs := extract_instances_from_ref_blob(task.reviewer_refs_json)
+			for id in revs do add_recip(&recips, &order, author_instance, id, comment_msg)
+			delete(revs)
+			if chain_ok {
+				drevs := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
+				for id in drevs do add_recip(&recips, &order, author_instance, id, comment_msg)
+				delete(drevs)
+			}
+		}
+
+		for id in order {
+			if send_comment_wake(service, task, id, legacy_message, recips[id], now) do append(&notified, strings.clone(id))
+		}
+		for id in order do delete(id)
 	}
 
 	return saved, notified[:], true, domain.Domain_Error{}
@@ -1379,10 +1734,41 @@ remove_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 		return false, domain.domain_error(.Conflict, "cannot remove sole coordinator from task chain")
 	}
 
+	// MEM-6 #11: capture the non-terminal tasks this member still holds (as assignee)
+	// BEFORE removal so we can alert the coordinator that a reassignment is needed.
+	held_tasks := make([dynamic]string)
+	defer delete(held_tasks)
+	if tasks, terr := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id); terr.code == .None {
+		for t in tasks {
+			if task_is_terminal(t.status) do continue
+			a := primary_assignee_instance(t.assignee_ref_json)
+			if a == agent_instance_id do append(&held_tasks, string(t.task_id))
+			delete(a)
+		}
+		delete(tasks)
+	}
+
 	removed, remove_err := iface.taskchain_remove_member(service.repo, chain.chain_id, agent_instance_id, chain.owner_user_id)
 	// If a coordinator member was removed, resync the derived mirror column from
 	// the canonical members table (H9).
 	if removed && is_target_coordinator do _ = coordinator_sync_mirror(service, chain)
+
+	// MEM-6 #11: if the removed member still held tasks, alert the coordinator that a
+	// reassignment is required (skip when the coordinator is the one being removed).
+	if removed && len(held_tasks) > 0 {
+		coord := chain.coordinator_agent_instance_id
+		if coord != "" && coord != agent_instance_id {
+			removed_display := resolve_actor_display(service, agent_instance_id)
+			defer delete(removed_display)
+			ids_joined := strings.join(held_tasks[:], ", ")
+			defer delete(ids_joined)
+			ids_excerpt := truncate_runes(ids_joined, NOTICE_EXCERPT_MAX_RUNES)
+			defer delete(ids_excerpt)
+			human_message := strings.concatenate({"[Member Removed] ", removed_display, " was removed while holding tasks (", ids_excerpt, "). Reassignment required."})
+			defer delete(human_message)
+			_ = send_chain_level_wake(service, chain, coord, "member_removed", human_message)
+		}
+	}
 	return removed, remove_err
 }
 
@@ -1429,8 +1815,26 @@ remove_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 	if !ok do return false, err
 	removed, remove_err := iface.taskchain_remove_dependency(service.repo, task.task_id, depends_on_task_id, task.owner_user_id)
 	if remove_err.code != .None do return removed, remove_err
-	// NO auto-reconcile on dependency change (explicit decision): coordinator
-	// triggers `reconcile` manually after restructuring dependencies.
+
+	// MEM-6 #3: removing a dependency can UNBLOCK the task. On an active/published
+	// chain, notify the coordinator [Task Unblocked] and auto-reconcile so the
+	// assignee is promoted/woken to the now-ready work (the promotion wake is the
+	// assignee's "ready" signal; a per-instance debounce coalesces any overlap).
+	if removed {
+		if chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id); chain_ok && chain.publish_state == .Published && chain.status == .Active {
+			tasks, terr := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+			deps, derr := iface.taskchain_list_dependencies_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+			if terr.code == .None && derr.code == .None {
+				fresh, fresh_ok, _ := iface.taskchain_get_task(service.repo, task.task_id)
+				if fresh_ok && work_status_is_actionable(fresh.status) && deps_satisfied_for_task(tasks, deps, fresh.task_id) {
+					actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+					_ = send_task_wake(service, fresh, chain.coordinator_agent_instance_id, "unblocked", "Task Unblocked", "is now unblocked —", "dependencies satisfied", actor)
+				}
+				delete(tasks); delete(deps)
+			}
+			_ = recompute_chain_promotions(service, chain)
+		}
+	}
 	return removed, remove_err
 }
 
@@ -1500,6 +1904,30 @@ record_task_vote :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 
 	// Evaluate Quorum and auto-promote task status
 	evaluate_task_quorum(service, task)
+
+	// MEM-6 #5: vote visibility. Coordinator is always informed; on an approving
+	// quorum the assignee is told; on a pending LGTM the remaining reviewers are too;
+	// an NGTM tells the coordinator changes were requested (the assignee is already
+	// re-focused by the quorum -> Validated_Not_Good reconcile).
+	if chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id); chain_ok {
+		coord := chain.coordinator_agent_instance_id
+		updated, _, _ := iface.taskchain_get_task(service.repo, task.task_id)
+		if v == "lgtm" {
+			if updated.status == .Completed {
+				assignee := primary_assignee_instance(updated.assignee_ref_json)
+				defer delete(assignee)
+				_ = send_task_wake(service, updated, assignee, "vote", "Task Approved", "voted LGTM on", input.comment, voter_instance_id)
+				_ = send_task_wake(service, updated, coord, "vote", "Task Approved", "voted LGTM on", input.comment, voter_instance_id)
+			} else {
+				_ = send_task_wake(service, updated, coord, "vote", "Review Progress", "voted LGTM on", input.comment, voter_instance_id)
+				reviewers := extract_instances_from_ref_blob(updated.reviewer_refs_json)
+				defer delete(reviewers)
+				for rid in reviewers do if rid != voter_instance_id do _ = send_task_wake(service, updated, rid, "vote", "Review Progress", "voted LGTM on", input.comment, voter_instance_id)
+			}
+		} else {
+			_ = send_task_wake(service, updated, coord, "vote", "Changes Requested", "requested changes on", input.comment, voter_instance_id)
+		}
+	}
 
 	return saved_vote, true, domain.Domain_Error{}
 }
@@ -1635,7 +2063,27 @@ update_chain_coordinator :: proc(service: ^Taskchain_Service, auth: contracts.Au
 	// stamps the derived mirror column.
 	chain = set_chain_coordinator(service, chain, coordinator_agent_instance_id)
 	chain.updated_at = platform.clock_now(service.clock)
-	return iface.taskchain_save_chain(service.repo, chain)
+	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	// MEM-6 #9: tell the new coordinator they now hold the role.
+	if save_ok && coordinator_agent_instance_id != "" {
+		notify_coordinator_assigned(service, auth, saved, coordinator_agent_instance_id)
+	}
+	return saved, save_ok, save_err
+}
+
+// notify_coordinator_assigned wakes the newly-designated coordinator with a
+// human-readable [Coordinator Assigned] chain-level notice. MEM-6 spec §4 #9.
+notify_coordinator_assigned :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain: domain.Task_Chain, new_coordinator: string) {
+	if service.bridge_command_sink.send_runtime_command == nil || service.agents == nil do return
+	actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+	if strings.trim_space(new_coordinator) == "" || new_coordinator == actor do return
+	title := strings.trim_space(chain.title)
+	if title == "" do title = string(chain.chain_id)
+	title_disp := truncate_runes(title, NOTICE_TITLE_MAX_RUNES)
+	defer delete(title_disp)
+	human_message := strings.concatenate({`[Coordinator Assigned] You are now designated Coordinator for task chain "`, title_disp, `" (`, string(chain.chain_id), ")."})
+	defer delete(human_message)
+	_ = send_chain_level_wake(service, chain, new_coordinator, "coordinator_assigned", human_message)
 }
 
 validate_actor_refs :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, assignee_ref_json, reviewer_refs_json: string) -> (bool, domain.Domain_Error) {
