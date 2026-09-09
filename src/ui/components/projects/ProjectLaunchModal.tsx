@@ -11,6 +11,7 @@ import {
   useStartAgentInstanceMutation,
   useLaunchAgentInstanceMutation,
 } from '../../api/endpoints/agents';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 
 export type ProjectLaunchModalProps = {
   isOpen: boolean;
@@ -36,6 +37,7 @@ export default function ProjectLaunchModal({
   // Tab 2 state
   const [agentsPage, setAgentsPage] = useState<number>(0);
   const [selectedNewAgentIds, setSelectedNewAgentIds] = useState<Set<string>>(new Set());
+  const [selectedBridgeId, setSelectedBridgeId] = useState<string>('');
 
   // Tab 3 state
   const [existingPage, setExistingPage] = useState<number>(0);
@@ -100,6 +102,31 @@ export default function ProjectLaunchModal({
     (agentsPage + 1) * AGENTS_PAGE_SIZE
   );
 
+  // Tab 2: Available bridges query and normalization
+  const bridgesQuery = useListBridgesQuery(undefined, {
+    skip: !isOpen,
+  });
+  const rawBridges: any[] = bridgesQuery.data?.bridges || [];
+  const availableBridges = useMemo(() => {
+    const list: Array<{ bridgeId: string; label: string; status: string; isOnline: boolean }> = [];
+    for (const raw of rawBridges) {
+      const b = raw?.bridge || raw;
+      const bridgeId = String(b?.bridge_id || b?.bridgeId || b?.id || '').trim();
+      if (!bridgeId) continue;
+      const status = String(b?.status || b?.runtime_status || 'offline').toLowerCase();
+      if (status === 'revoked') continue;
+      const isOnline = status === 'online' || status === 'connected';
+      const label = String(b?.label || b?.machine_hostname || b?.hostname || bridgeId);
+      list.push({ bridgeId, label, status, isOnline });
+    }
+    // Prefer online bridges first, then alphabetical by label
+    return list.sort((a, b) => {
+      if (a.isOnline && !b.isOnline) return -1;
+      if (!a.isOnline && b.isOnline) return 1;
+      return a.label.localeCompare(b.label);
+    });
+  }, [rawBridges]);
+
   // Tab 3: Existing agent instances for project
   const EXISTING_PAGE_SIZE = 10;
   const instancesQuery = useListAgentInstancesQuery(
@@ -122,11 +149,23 @@ export default function ProjectLaunchModal({
       setSelectedChainAgentIds(new Set());
       setAgentsPage(0);
       setSelectedNewAgentIds(new Set());
+      setSelectedBridgeId('');
       setExistingPage(0);
       setSelectedExistingInstanceIds(new Set());
       setFeedback(null);
     }
   }, [isOpen, projectId]);
+
+  // Auto-select first bridge by default (preferring online status)
+  useEffect(() => {
+    if (availableBridges.length > 0) {
+      if (!selectedBridgeId || !availableBridges.some((b) => b.bridgeId === selectedBridgeId)) {
+        setSelectedBridgeId(availableBridges[0].bridgeId);
+      }
+    } else if (!bridgesQuery.isLoading) {
+      setSelectedBridgeId('');
+    }
+  }, [availableBridges, selectedBridgeId, bridgesQuery.isLoading]);
 
   // When chains load, auto-select first chain if none selected
   useEffect(() => {
@@ -172,6 +211,7 @@ export default function ProjectLaunchModal({
         type: 'success',
         message: `Successfully started ${ids.length} chain agent instance(s).`,
       });
+      onClose();
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -193,19 +233,20 @@ export default function ProjectLaunchModal({
   };
 
   const handleLaunchNewAgents = async () => {
-    if (selectedNewAgentIds.size === 0 || !projectId) return;
+    if (selectedNewAgentIds.size === 0 || !projectId || !selectedBridgeId) return;
     setIsActionRunning(true);
     setFeedback(null);
     try {
       const ids = Array.from(selectedNewAgentIds);
       for (const agentId of ids) {
-        await launchAgentInstance({ agentId, projectId }).unwrap();
+        await launchAgentInstance({ agentId, projectId, bridgeId: selectedBridgeId }).unwrap();
       }
       setFeedback({
         type: 'success',
         message: `Successfully launched ${ids.length} new agent instance(s) for ${project.name}.`,
       });
       setSelectedNewAgentIds(new Set());
+      onClose();
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -240,6 +281,7 @@ export default function ProjectLaunchModal({
         message: `Successfully started ${ids.length} existing instance(s).`,
       });
       setSelectedExistingInstanceIds(new Set());
+      onClose();
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -514,7 +556,38 @@ export default function ProjectLaunchModal({
           {/* TAB 2: New Agent Instance */}
           {activeTab === 'new' && (
             <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
-              <div className="shrink-0 flex items-center justify-between pb-1">
+              {/* Bridge Selector */}
+              <div className="shrink-0 flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                <label
+                  htmlFor="project-launch-bridge-select"
+                  className="text-xs font-medium text-zinc-300 shrink-0"
+                >
+                  Target Bridge:
+                </label>
+                <div className="flex-1 min-w-0 flex items-center justify-end">
+                  {bridgesQuery.isLoading ? (
+                    <span className="text-xs text-zinc-500">Loading bridges…</span>
+                  ) : availableBridges.length === 0 ? (
+                    <span className="text-xs text-amber-400">No bridges available</span>
+                  ) : (
+                    <select
+                      id="project-launch-bridge-select"
+                      data-debug-id="project-launch-bridge-select"
+                      value={selectedBridgeId}
+                      onChange={(e) => setSelectedBridgeId(e.target.value)}
+                      className="w-full max-w-xs rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 text-xs text-zinc-100 outline-none focus:border-sky-400 cursor-pointer"
+                    >
+                      {availableBridges.map((b) => (
+                        <option key={b.bridgeId} value={b.bridgeId}>
+                          {b.label} ({b.status})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </div>
+
+              <div className="shrink-0 flex items-center justify-between pb-1 pt-1">
                 <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Durable Agents Catalog
                 </span>
@@ -746,7 +819,7 @@ export default function ProjectLaunchModal({
             <button
               type="button"
               data-debug-id="project-launch-launch-new-agents-btn"
-              disabled={selectedNewAgentIds.size === 0 || isActionRunning}
+              disabled={selectedNewAgentIds.size === 0 || !selectedBridgeId || isActionRunning}
               onClick={handleLaunchNewAgents}
               className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-black hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
