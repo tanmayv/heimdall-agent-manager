@@ -112,6 +112,23 @@ pty_host_task_nudge_notice_rendering :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(n2, "nudged on unknown (participant)"), "blank task/role defaults")
 }
 
+// MEM-6: the delivered line prefers the hub's human_message verbatim, falling back
+// to the legacy generated notice when it is absent/blank.
+@(test)
+pty_host_task_nudge_line_prefers_human_message :: proc(t: ^testing.T) {
+	hm := bridge_pty_host_task_nudge_line("task_9", "assignee", `[Review Requested] @coder #1 submitted for review "Fix bug" (task_9)`)
+	defer delete(hm)
+	testing.expect_value(t, hm, `[Review Requested] @coder #1 submitted for review "Fix bug" (task_9)`)
+
+	lg := bridge_pty_host_task_nudge_line("task_9", "assignee", "")
+	defer delete(lg)
+	testing.expect(t, strings.contains(lg, "you have been nudged on task_9 (assignee)"), "empty human_message falls back to legacy notice")
+
+	blank := bridge_pty_host_task_nudge_line("task_9", "reviewer", "   ")
+	defer delete(blank)
+	testing.expect(t, strings.contains(blank, "nudged on task_9 (reviewer)"), "whitespace human_message falls back to legacy notice")
+}
+
 // pty_host_delivery_maps_push_to_input_enter proves the delivery primitive's wire
 // shape: a notice becomes Input(instance, text) followed by Key(instance, Enter) —
 // the host analog of tmux.send_text(pane, text, enter=true).
