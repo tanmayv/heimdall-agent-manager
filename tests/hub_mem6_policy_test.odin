@@ -55,6 +55,13 @@ main :: proc() {
 	check(strings.contains(notice, "0123456789ABCDEFGHIJ…"), fmt.tprintf("excerpt must truncate at 20 runes + ellipsis: %s", notice))
 	check(!strings.contains(notice, "OVERFLOW"), "excerpt must not exceed 20 runes")
 
+	// 1b) Title is also capped at 20 runes + ellipsis (user directive 2026-09-09).
+	long_title_task := domain.Task{task_id = "task_2", title = "This Task Title Is Way Too Long To Fit", status = .In_Progress}
+	tnotice := taskchain_service.build_human_readable_task_notice(&service, long_title_task, "inst_coord", "Work Started", "started work on", "")
+	defer delete(tnotice)
+	check(strings.contains(tnotice, "\"This Task Title Is W…\""), fmt.tprintf("title must truncate at 20 runes + ellipsis: %s", tnotice))
+	check(!strings.contains(tnotice, "Too Long"), "title must not exceed 20 runes")
+
 	// 2) Paused -> assignee + coordinator, [Task Paused], actor @User (user auth).
 	captured.count = 0
 	taskchain_service.notify_status_policy(&service, user_auth, task, chain)

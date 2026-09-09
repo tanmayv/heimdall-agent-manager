@@ -1012,8 +1012,9 @@ comment_preview_safe :: proc(body: string) -> string {
 // deliver a context-rich line instead of the legacy generic string. Format:
 //   [<TAG>] @<Actor> <verb> "<title>" (<task-id>)[: "<excerpt>"]
 
-// NOTICE_TITLE_MAX_RUNES caps the task title in a notice (spec §2: 60).
-NOTICE_TITLE_MAX_RUNES :: 60
+// NOTICE_TITLE_MAX_RUNES caps a task/chain title rendered in a notice. User
+// directive (2026-09-09): 20, matching the excerpt cap (spec §2 said 60).
+NOTICE_TITLE_MAX_RUNES :: 20
 // NOTICE_EXCERPT_MAX_RUNES caps inline free-text excerpts (comment bodies, review
 // feedback, custom nudge messages). User directive (2026-09-09): 20, not the
 // spec's 140.
