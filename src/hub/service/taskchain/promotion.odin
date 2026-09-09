@@ -565,6 +565,11 @@ notify_current_task_changed :: proc(service: ^Taskchain_Service, inst: domain.Ag
 	verb := "WORK ON" if action == "work" else "REVIEW"
 	message := strings.concatenate({"Your current task changed — ", verb, ": ", name})
 	defer delete(message)
+	// MEM-6: human-readable focus-switch line (spec §3 [Focus Switched]).
+	ntitle := notice_task_title(task)
+	defer delete(ntitle)
+	human_message := strings.concatenate({`[Focus Switched] Your active focus changed to "`, ntitle, `" (`, string(task.task_id), ") (Role: ", action, ")"})
+	defer delete(human_message)
 	b := strings.builder_make()
 	defer strings.builder_destroy(&b)
 	strings.write_string(&b, `{"type":"notify_task_nudge","origin":"current_task_changed","command_id":"`)
@@ -585,6 +590,8 @@ notify_current_task_changed :: proc(service: ^Taskchain_Service, inst: domain.Ag
 	contracts.write_json_string(&b, task_status_string(task.status))
 	strings.write_string(&b, `","message":"`)
 	contracts.write_json_string(&b, message)
+	strings.write_string(&b, `","human_message":"`)
+	contracts.write_json_string(&b, human_message)
 	strings.write_string(&b, `","created_at":"`)
 	contracts.write_json_string(&b, now)
 	strings.write_string(&b, `"}`)

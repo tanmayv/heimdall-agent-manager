@@ -679,6 +679,9 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 	if action == "" do return
 	message := status_notify_message(task, action)
 	defer delete(message)
+	// MEM-6: human-readable message for the bridge to deliver verbatim.
+	human_message := status_human_message(service, task, actor_agent_instance_id)
+	defer delete(human_message)
 
 	// Bridges to notify: the union of gated recipients' bridges plus the
 	// coordinator's (kept for cross-bridge fan-out parity). A bridge that ends up
@@ -712,6 +715,8 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 		contracts.write_json_string(&b, action)
 		strings.write_string(&b, `","message":"`)
 		contracts.write_json_string(&b, message)
+		strings.write_string(&b, `","human_message":"`)
+		contracts.write_json_string(&b, human_message)
 		strings.write_string(&b, `","assignee_instance_ids":[`)
 		for id, i in assignees { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, `"`); contracts.write_json_string(&b, id); strings.write_string(&b, `"`) }
 		strings.write_string(&b, `],"reviewer_instance_ids":[`)
@@ -891,6 +896,87 @@ comment_preview_safe :: proc(body: string) -> string {
 		strings.write_string(&b, "...")
 	}
 	return strings.to_string(b)
+}
+
+// --- MEM-6: human-readable notification messages ---------------------------
+// Every task/chain wake carries a `human_message` built here so the bridge can
+// deliver a context-rich line instead of the legacy generic string. Format:
+//   [<TAG>] @<Actor> <verb> "<title>" (<task-id>)[: "<excerpt>"]
+
+// NOTICE_TITLE_MAX_RUNES caps the task title in a notice (spec §2: 60).
+NOTICE_TITLE_MAX_RUNES :: 60
+// NOTICE_EXCERPT_MAX_RUNES caps inline free-text excerpts (comment bodies, review
+// feedback, custom nudge messages). User directive (2026-09-09): 20, not the
+// spec's 140.
+NOTICE_EXCERPT_MAX_RUNES :: 20
+
+// truncate_runes clamps s to max runes, appending an ellipsis when it had to cut.
+// Caller owns the returned string.
+truncate_runes :: proc(s: string, max: int) -> string {
+	trimmed := strings.trim_space(s)
+	b := strings.builder_make()
+	count := 0
+	truncated := false
+	for r in trimmed {
+		if count >= max { truncated = true; break }
+		strings.write_rune(&b, r)
+		count += 1
+	}
+	if truncated do strings.write_string(&b, "…")
+	return strings.to_string(b)
+}
+
+// resolve_actor_display renders "@<display-name>" for an actor agent instance,
+// falling back to "@<trimmed-id>" when the instance can't be resolved, and to
+// "@User" for an empty actor (user-authored / system-with-user origin).
+resolve_actor_display :: proc(service: ^Taskchain_Service, actor_instance_id: string) -> string {
+	id := strings.trim_space(actor_instance_id)
+	if id == "" do return "@User"
+	if service != nil && service.agents != nil {
+		if inst, ok, _ := iface.agent_get_instance(service.agents, id); ok {
+			dn := strings.trim_space(inst.display_name)
+			if dn != "" do return strings.concatenate({"@", dn})
+		}
+	}
+	return strings.concatenate({"@", id})
+}
+
+// notice_task_title returns the task title clamped to NOTICE_TITLE_MAX_RUNES
+// (falling back to the task id when blank). Caller owns the returned string.
+notice_task_title :: proc(task: domain.Task) -> string {
+	return truncate_runes(task_display_name(task), NOTICE_TITLE_MAX_RUNES)
+}
+
+// build_human_readable_task_notice renders the standardized notice (spec §2).
+// `excerpt` is optional; when non-blank it is appended as a 20-rune-max quoted
+// tail. Caller owns the returned string.
+build_human_readable_task_notice :: proc(service: ^Taskchain_Service, task: domain.Task, actor_instance_id, event_tag, action_verb, excerpt: string) -> string {
+	actor := resolve_actor_display(service, actor_instance_id)
+	defer delete(actor)
+	title := notice_task_title(task)
+	defer delete(title)
+	head := strings.concatenate({"[", event_tag, "] ", actor, " ", action_verb, " \"", title, "\" (", string(task.task_id), ")"})
+	if strings.trim_space(excerpt) == "" do return head
+	defer delete(head)
+	ex := truncate_runes(excerpt, NOTICE_EXCERPT_MAX_RUNES)
+	defer delete(ex)
+	return strings.concatenate({head, ": \"", ex, "\""})
+}
+
+// status_human_message builds the human_message for a status-change wake from the
+// task's new status (spec §3). Returns "" for statuses that carry no wake.
+status_human_message :: proc(service: ^Taskchain_Service, task: domain.Task, actor_instance_id: string) -> string {
+	assignee := primary_assignee_instance(task.assignee_ref_json)
+	defer delete(assignee)
+	#partial switch task.status {
+	case .In_Progress:
+		return build_human_readable_task_notice(service, task, assignee, "Work Started", "started work on", "")
+	case .In_Validation:
+		return build_human_readable_task_notice(service, task, assignee, "Review Requested", "submitted for review", "")
+	case .Validated_Not_Good:
+		return build_human_readable_task_notice(service, task, actor_instance_id, "Changes Requested", "requested changes on", "")
+	}
+	return ""
 }
 
 should_debounce_nudge_dispatch :: proc(service: ^Taskchain_Service, instance_id, task_id: string) -> bool {
@@ -1080,6 +1166,14 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		return nudge, true, domain.Domain_Error{}
 	}
 	
+	// MEM-6: human-readable nudge line — custom message if provided, else a
+	// stable fallback. Actor is the nudger (empty => "@User").
+	nudger := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+	nudge_excerpt := strings.trim_space(message)
+	if nudge_excerpt == "" do nudge_excerpt = "Awaiting progress update"
+	nudge_human_message := build_human_readable_task_notice(service, task, nudger, "Nudge", "nudged on", nudge_excerpt)
+	defer delete(nudge_human_message)
+
 	live_delivered := 0
 	durable_queued := 0
 	failed := 0
@@ -1131,10 +1225,12 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		contracts.write_json_string(&b, task_status_string(task.status))
 		strings.write_string(&b, `","body":"`)
 		contracts.write_json_string(&b, message)
+		strings.write_string(&b, `","human_message":"`)
+		contracts.write_json_string(&b, nudge_human_message)
 		strings.write_string(&b, `","created_at":"`)
 		contracts.write_json_string(&b, now)
 		strings.write_string(&b, `"}`)
-		
+
 		sent := false
 		if service.bridge_command_sink.send_runtime_command_wait != nil {
 			result_json, sent, _ := project.bridge_command_send_runtime_wait(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)}, 1000)
@@ -1227,6 +1323,11 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		preview := comment_preview_safe(input.body)
 		defer delete(preview)
 		message := fmt.tprintf("Comment from %s on task %s: %s", author, string(task.task_id), preview)
+		// MEM-6: human-readable comment line. Actor is the authoring instance ("" =>
+		// "@User" for a user-authored comment); excerpt is the comment body (20-cap).
+		author_instance := auth.agent_instance_id if auth.kind == .Instance_Token && auth.agent_instance_id != "" else ""
+		comment_human_message := build_human_readable_task_notice(service, task, author_instance, "Comment", "commented on", input.body)
+		defer delete(comment_human_message)
 
 		seen := make(map[string]bool)
 		defer delete(seen)
@@ -1255,6 +1356,8 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 			contracts.write_json_string(&b, task_status_string(task.status))
 			strings.write_string(&b, `","message":"`)
 			contracts.write_json_string(&b, message)
+			strings.write_string(&b, `","human_message":"`)
+			contracts.write_json_string(&b, comment_human_message)
 			strings.write_string(&b, `","created_at":"`)
 			contracts.write_json_string(&b, now)
 			strings.write_string(&b, `"}`)
