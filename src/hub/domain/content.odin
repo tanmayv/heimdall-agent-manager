@@ -60,6 +60,7 @@ Memory :: struct {
 	type: Memory_Type,
 	status: string,
 	title: string,
+	description: string,
 	body: string,
 	evidence: string,
 	created_at: string,

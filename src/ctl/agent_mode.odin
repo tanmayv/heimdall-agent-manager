@@ -505,7 +505,7 @@ ctl_agentmode_memory :: proc(endpoint, token, action: string, args: []string) {
 	if action == "" || action == "propose" {
 		mem_type := option_value(args, "--type", "")
 		title := option_value(args, "--title", "")
-		if mem_type == "" || title == "" { fmt.println("usage: ham-ctl agent memory propose --type <type> --title <title> [--body <text>] [--evidence <text>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]\n  Scope flags target LISTS (repeatable or comma-separated); an omitted dimension applies to all (agent defaults to the caller's own)."); return }
+		if mem_type == "" || title == "" { fmt.println("usage: ham-ctl agent memory propose --type <type> --title <title> [--description <text>] [--body <text>] [--evidence <text>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]\n  Scope flags target LISTS (repeatable or comma-separated); an omitted dimension applies to all (agent defaults to the caller's own)."); return }
 		ctl_agent_call(endpoint, token, "agent.memory.propose", ctl_agentmode_memory_propose_params(args))
 		return
 	}
@@ -524,6 +524,7 @@ ctl_agentmode_memory_propose_params :: proc(args: []string) -> string {
 	fields := make([dynamic]string)
 	append(&fields, json_kv("type", option_value(args, "--type", "")))
 	append(&fields, json_kv("title", option_value(args, "--title", "")))
+	if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
 	append(&fields, json_kv("body", option_value(args, "--body", "")))
 	if ev := option_value(args, "--evidence", ""); ev != "" do append(&fields, json_kv("evidence", ev))
 
@@ -943,7 +944,7 @@ print_help_memory :: proc() {
 	fmt.println("ham-ctl memory — propose a durable memory for later review")
 	fmt.println("")
 	fmt.println("VERBS")
-	fmt.println("  propose --type <t> --title <t> [--body <t>] [--evidence <t>]")
+	fmt.println("  propose --type <t> --title <t> [--description <t>] [--body <t>] [--evidence <t>]")
 	fmt.println("      [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]")
 	fmt.println("  Scope flags target LISTS: repeatable (--agent-ids a --agent-ids b) or comma-separated (--agent-ids a,b).")
 	fmt.println("  An omitted dimension applies to all; agent defaults to the caller's own agent. Non-empty = must match one.")

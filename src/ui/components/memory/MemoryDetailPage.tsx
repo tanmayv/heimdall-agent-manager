@@ -42,6 +42,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
   const record = memoryQuery.data;
 
   const [editing, setEditing] = useState(startsEditing());
+  const [description, setDescription] = useState('');
   const [body, setBody] = useState('');
   const [type, setType] = useState('fact');
   const [targeting, setTargeting] = useState<Targeting>(emptyTargeting());
@@ -58,6 +59,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
   // Depending on the whole record would clobber in-progress edits on cache refresh.
   useEffect(() => {
     if (!record) return;
+    setDescription(record.description || '');
     setBody(record.body || '');
     setType(record.type || 'fact');
     setTargeting(targetingFromRecord(record));
@@ -73,7 +75,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
     setSaving(true);
     setError('');
     try {
-      await updateMemory({ memoryId: record.memoryId || memoryId, body, type, expectedVersion: record.version, ...targeting }).unwrap();
+      await updateMemory({ memoryId: record.memoryId || memoryId, description: description.trim() || undefined, body, type, expectedVersion: record.version, ...targeting }).unwrap();
       setEditing(false);
     } catch (err: any) {
       setError(memoryErrorText(err, 'Failed to save changes.'));
@@ -122,6 +124,9 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
                 <span className="text-[11px] text-zinc-600">v{record.version || 0}</span>
               </div>
               <h1 className="mt-1.5 text-2xl font-semibold tracking-[-0.01em] text-zinc-100">{record.title || record.memoryId}</h1>
+              {!editing && record.description ? (
+                <p className="mt-1 text-sm text-zinc-400">{record.description}</p>
+              ) : null}
             </div>
             <div className="flex items-center gap-2">
               {editing ? (
@@ -143,6 +148,18 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
           <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(300px,1fr)]">
             {/* Main: body */}
             <div className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+              {editing ? (
+                <div className="mb-4">
+                  <div className="mb-1 text-sm font-semibold text-zinc-100">Description</div>
+                  <input
+                    data-debug-id="memory-detail-description-input"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Short summary of this memory"
+                    className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                  />
+                </div>
+              ) : null}
               <div className="mb-2 flex items-center justify-between">
                 <div className="text-sm font-semibold text-zinc-100">Body</div>
                 {editing ? <span className="text-[11px] text-zinc-500">Markdown</span> : null}

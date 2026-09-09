@@ -380,7 +380,13 @@ bootstrap_skill_file_content :: proc(m: domain.Memory, name: string) -> string {
 	content := strings.builder_make()
 	strings.write_string(&content, "---\nname: "); strings.write_string(&content, name)
 	strings.write_string(&content, "\ndescription: ")
-	if strings.trim_space(m.title) != "" { strings.write_string(&content, m.title) } else { strings.write_string(&content, name) }
+	if strings.trim_space(m.description) != "" {
+		strings.write_string(&content, m.description)
+	} else if strings.trim_space(m.title) != "" {
+		strings.write_string(&content, m.title)
+	} else {
+		strings.write_string(&content, name)
+	}
 	strings.write_string(&content, "\nheimdall_managed: true\n---\n\n# ")
 	if strings.trim_space(m.title) != "" { strings.write_string(&content, m.title) } else { strings.write_string(&content, name) }
 	strings.write_string(&content, "\n\n")

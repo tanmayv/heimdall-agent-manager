@@ -309,9 +309,9 @@ ctl_hub_memories :: proc(base, token, action: string, args: []string) {
 	if action == "create" || action == "propose" {
 		body := option_value(args, "--body", "")
 		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
-		if body == "" { fmt.println("usage: ham-ctl hub memories create --body <text> [--type <type>] [--title <title>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]"); return }
+		if body == "" { fmt.println("usage: ham-ctl hub memories create --body <text> [--type <type>] [--title <title>] [--description <text>] [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>]"); return }
 		fields := make([dynamic]string)
-		append(&fields, json_kv("body", body)); append(&fields, json_kv("type", option_value(args, "--type", "fact"))); append(&fields, json_kv("title", option_value(args, "--title", ""))); append(&fields, json_kv("evidence", option_value(args, "--evidence", "")))
+		append(&fields, json_kv("body", body)); append(&fields, json_kv("type", option_value(args, "--type", "fact"))); append(&fields, json_kv("title", option_value(args, "--title", ""))); append(&fields, json_kv("description", option_value(args, "--description", ""))); append(&fields, json_kv("evidence", option_value(args, "--evidence", "")))
 		// Targeting lists match the T1 contract (agent_ids/project_ids/bridge_ids/
 		// template_ids). Each dimension is repeatable AND/OR comma-separated; an
 		// omitted dimension is sent as an empty array (applies to all).
