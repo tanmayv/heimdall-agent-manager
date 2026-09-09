@@ -3,12 +3,15 @@ import { applyAgentRuntimeEvent, loadKnownAgents, mapAgent, mergeKnownAndLiveAge
 import { cookieMutation, cookieJsonFetch } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function agentTagId(agent: any, fallback = '') {
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   return String(agent?.id || agent?.agent_instance_id || agent?.agentInstanceId || fallback || '');
 }
 
 export const agentsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     listAgentIdentities: build.query<{ agents: any[] }, { limit?: number; cursor?: string } | void>({
       queryFn: async (arg) => {
         try {
@@ -26,6 +29,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       providesTags: [{ type: 'Agents' as const, id: 'LIST' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     listAgentTemplates: build.query<any, void>({
       queryFn: async () => {
         try {
@@ -37,6 +41,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       providesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createAgentTemplate: build.mutation<any, { name: string; description?: string; persona?: string; instructions?: string }>({
       queryFn: async (payload) => {
         try {
@@ -48,6 +53,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateAgentTemplate: build.mutation<any, { templateId: string; name?: string; description?: string; persona?: string; instructions?: string }>({
       queryFn: async ({ templateId, ...payload }) => {
         try {
@@ -59,6 +65,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     deleteAgentTemplate: build.mutation<any, { templateId: string }>({
       queryFn: async ({ templateId }) => {
         try {
@@ -70,6 +77,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchAgentIdentity: build.query<any, { agentId: string }>({
       queryFn: async ({ agentId }) => {
         if (!agentId) return { data: { agent: null } };
@@ -86,9 +94,11 @@ export const agentsApi = heimdallApi.injectEndpoints({
       // invalidate the Agents id tag.
       keepUnusedDataFor: 600,
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; templateId?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
       queryFn: async ({ agentId, name, templateId, defaultProvider, defaultTier, instructions }) => {
         try {
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = {};
           if (name !== undefined) payload.name = name;
           // Only send template_id when explicitly provided; the hub applies it only
@@ -289,6 +299,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
     // UI-8: Add agent to chain via the rewrite API (POST /api/v1/agent-instances
     // with existing chain_id). Hydrates a fresh AgentInstance into the chain and
     // creates its 1:1 conversation; never attaches an unrelated live instance.
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; bridgeId?: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }>({
       // Launch a new instance of a durable agent, bound to a chain. Uses the cookie
       // path (POST /agent-instances) like launchAgentInstance, so it works in the
@@ -300,6 +311,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       queryFn: async ({ agentId, chainId, bridgeId, providerProfile, modelTier, projectId, displayName, templateId }) => {
         if (!agentId || !chainId) return { data: { ok: false, message: 'Choose an agent identity to launch.' } };
         try {
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = { agent_id: agentId, chain_id: chainId };
           if (bridgeId) payload.bridge_id = bridgeId;
           if (providerProfile) payload.provider = providerProfile;
@@ -318,11 +330,14 @@ export const agentsApi = heimdallApi.injectEndpoints({
         { type: 'ChainTasks' as const, id: chainId },
       ],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     createAgent: build.mutation<any, { name: string; slug?: string; templateId?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
       queryFn: async (arg) => {
         try {
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = {
             name: arg.name,
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             slug: arg.slug || arg.name,
             template_id: arg.templateId || '',
             instructions: arg.instructions || '',
@@ -337,6 +352,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     archiveAgentIdentity: build.mutation<any, { agentId: string }>({
       queryFn: async ({ agentId }) => {
         try {
@@ -348,6 +364,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     listAgentInstances: build.query<any, { agentId?: string; projectId?: string; limit?: number; cursor?: string } | void>({
       queryFn: async (arg) => {
         try {
@@ -373,6 +390,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
         ];
       },
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchAgentInstance: build.query<any, { instanceId: string }>({
       queryFn: async ({ instanceId }) => {
         if (!instanceId) return { data: { instance: null } };
@@ -389,9 +407,11 @@ export const agentsApi = heimdallApi.injectEndpoints({
       // reconfigure invalidates it, so cached-on-switch stays correct.
       keepUnusedDataFor: 300,
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     launchAgentInstance: build.mutation<any, { agentId: string; bridgeId?: string; provider?: string; tier?: string; projectId?: string }>({
       queryFn: async ({ agentId, bridgeId, provider, tier, projectId }) => {
         try {
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = { agent_id: agentId };
           if (bridgeId) payload.bridge_id = bridgeId;
           if (provider) payload.provider = provider;
@@ -405,6 +425,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     stopAgentInstance: build.mutation<any, { agentId: string; instanceId: string }>({
       queryFn: async ({ instanceId }) => {
         try {
@@ -416,6 +437,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     restartAgentInstance: build.mutation<any, { agentId?: string; instanceId: string }>({
       queryFn: async ({ instanceId }) => {
         try {
@@ -427,6 +449,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, ...(agentId ? [{ type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }] : [])],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     startAgentInstance: build.mutation<any, { agentId?: string; instanceId: string }>({
       queryFn: async ({ instanceId }) => {
         try {
@@ -442,6 +465,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
         { type: 'AgentInstances' as const, id: instanceId },
       ],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; tier?: string; bridgeId?: string }>({
       queryFn: async ({ instanceId, provider, tier, bridgeId }) => {
         try {
@@ -461,6 +485,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
     // Remote role content for a local-proxy agent-id. Cached aggressively
     // (keepUnusedDataFor long) since remote templates change rarely; keyed by
     // peer + remote agent-id so it is fetched once per mapping.
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchPeerAgentTemplate: build.query<any, { peerId: string; remoteAgentId: string }>({
       queryFn: withSessionQuery(async ({ peerId, remoteAgentId }, { session }) => {
         if (!session?.daemonUrl || !session?.clientToken || !peerId || !remoteAgentId) return { template: null, agentId: remoteAgentId };
@@ -478,6 +503,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
       keepUnusedDataFor: 120,
       providesTags: (_result, _error, { peerId }) => [{ type: 'Agents' as const, id: `peer-advertised:${peerId}` }],
     }),
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     remapRemoteProxy: build.mutation<any, { localAgentId: string; remoteAgentId: string; peerId?: string; originDaemonId?: string; displayName?: string; templateId?: string }>({
       queryFn: withSessionQuery(async (arg, { session }) => {
         if (!session?.daemonUrl || !session?.clientToken) return { ok: false, message: 'No session' };
@@ -488,9 +514,11 @@ export const agentsApi = heimdallApi.injectEndpoints({
   }),
 });
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 export function upsertAgentInCaches(dispatch: any, rawAgent: any) {
   const mapped = mapAgent(rawAgent);
   if (!mapped?.id) return '';
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   dispatch(agentsApi.util.updateQueryData('listAgents', undefined, (draft: any) => {
     const rows = draft?.agents || (draft.agents = []);
     upsertKnownAgentRecord(rows, mapped);
@@ -499,15 +527,18 @@ export function upsertAgentInCaches(dispatch: any, rawAgent: any) {
   return mapped.id;
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   const type = String(payload?.type || '');
   if (type === 'agent_runtime_changed') {
     let agentId = '';
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     dispatch(agentsApi.util.updateQueryData('listAgents', undefined, (draft: any) => {
       const rows = draft?.agents || (draft.agents = []);
       agentId = applyAgentRuntimeEvent(rows, payload) || agentId;
     }));
     if (!agentId) return;
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     dispatch(agentsApi.util.updateQueryData('fetchAgent', { agentInstanceId: agentId }, (draft: any) => {
       if (!draft?.agent) return;
       const rows = [draft.agent];
@@ -517,6 +548,7 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
     return;
   }
 
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const agentId = String(payload?.target_agent_instance_id || payload?.agent_instance_id || payload?.agent?.agent_instance_id || payload?.record?.agent_instance_id || '');
   if (!agentId) return;
 
@@ -525,14 +557,17 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
     const lastSeenUnixMs = Number(payload?.last_seen_unix_ms || 0);
     if (lastSeenUnixMs) {
       const formatted = new Date(lastSeenUnixMs).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       dispatch(agentsApi.util.updateQueryData('listAgents', undefined, (draft: any) => {
         const rows = draft?.agents || (draft.agents = []);
+        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
         const idx = rows.findIndex((r: any) => r.id === agentId);
         if (idx >= 0) {
           rows[idx].lastSeenUnixMs = lastSeenUnixMs;
           rows[idx].lastSeen = formatted;
         }
       }));
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
       dispatch(agentsApi.util.updateQueryData('fetchAgent', { agentInstanceId: agentId }, (draft: any) => {
         if (draft?.agent) {
           draft.agent.lastSeenUnixMs = lastSeenUnixMs;
@@ -560,14 +595,17 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
     exec_state: payload?.exec_state,
   };
   let known = false;
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   dispatch(agentsApi.util.updateQueryData('listAgents', undefined, (draft: any) => {
     const rows = draft?.agents || (draft.agents = []);
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     known = rows.some((r: any) => r.id === agentId);
     if (known) applyAgentRuntimeEvent(rows, runtimePatch);
   }));
   // Also patch the per-instance runtime cache (fetchAgentInstance) used by the
   // conversation page's runtime chip / model switcher / current-task strip, so a
   // WS status change updates it live without a refetch-on-switch.
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   dispatch(agentsApi.util.updateQueryData('fetchAgentInstance', { instanceId: agentId }, (draft: any) => {
     if (!draft?.instance) return;
     if (runtimePatch.runtime_status != null) draft.instance.runtime_status = runtimePatch.runtime_status;
@@ -575,6 +613,7 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
     if (runtimePatch.activity_status != null) draft.instance.activity_status = runtimePatch.activity_status;
   }));
   if (known) {
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     dispatch(agentsApi.util.updateQueryData('fetchAgent', { agentInstanceId: agentId }, (draft: any) => {
       if (!draft?.agent) return;
       const rows = [draft.agent];

@@ -87,6 +87,7 @@ export default function ProjectLaunchModal({
     { skip: !isOpen || !selectedChainId || activeTab !== 'chain' }
   );
   const chainDetail = chainDetailQuery.data?.chain || null;
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const chainMembers: any[] = chainDetail?.members || [];
   const coordinatorAgentInstanceId = chainDetail?.coordinatorAgentInstanceId || '';
 
@@ -96,18 +97,23 @@ export default function ProjectLaunchModal({
     { limit: 200 },
     { skip: !isOpen || activeTab !== 'new' }
   );
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const rawIdentities: any[] = identitiesQuery.data?.agents || [];
   const durableAgents = useMemo(() => {
     const list: Array<{ agentId: string; name: string; tier: string; provider: string; state: string }> = [];
     for (const item of rawIdentities) {
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const agentId = String(item.agent_id || item.agentId || item.id || '').trim();
       const state = String(item.state || '').trim().toLowerCase();
       // Filter out archived agents
       if (!agentId || state === 'archived') continue;
       list.push({
         agentId,
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         name: String(item.name || item.slug || agentId),
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         tier: String(item.default_tier || item.defaultTier || ''),
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         provider: String(item.default_provider || item.defaultProvider || ''),
         state: item.state || 'active',
       });
@@ -124,16 +130,20 @@ export default function ProjectLaunchModal({
   const bridgesQuery = useListBridgesQuery(undefined, {
     skip: !isOpen,
   });
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const rawBridges: any[] = bridgesQuery.data?.bridges || [];
   const availableBridges = useMemo(() => {
     const list: Array<{ bridgeId: string; label: string; status: string; isOnline: boolean }> = [];
     for (const raw of rawBridges) {
       const b = raw?.bridge || raw;
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const bridgeId = String(b?.bridge_id || b?.bridgeId || b?.id || '').trim();
       if (!bridgeId) continue;
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const status = String(b?.status || b?.runtime_status || 'offline').toLowerCase();
       if (status === 'revoked') continue;
       const isOnline = status === 'online' || status === 'connected';
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const label = String(b?.label || b?.machine_hostname || b?.hostname || bridgeId);
       list.push({ bridgeId, label, status, isOnline });
     }
@@ -151,9 +161,11 @@ export default function ProjectLaunchModal({
     { projectId, limit: 100 },
     { skip: !isOpen || !projectId || activeTab !== 'existing' }
   );
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const rawInstances: any[] = instancesQuery.data?.instances || [];
   const stoppedInstances = useMemo(() => {
     return rawInstances.filter((inst) => {
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const instanceId = String(
         inst.agent_instance_id ||
         inst.agentInstanceId ||
@@ -163,6 +175,7 @@ export default function ProjectLaunchModal({
         ''
       ).trim();
       if (!instanceId) return false;
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const status = String(inst.runtime_status || inst.runtimeStatus || inst.status || '').toLowerCase();
       return !isInstanceActive(status);
     });
@@ -214,11 +227,14 @@ export default function ProjectLaunchModal({
       const coordId = chainDetail.coordinatorAgentInstanceId;
       if (coordId) {
         const coordMember = (chainDetail.members || []).find(
+          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           (m: any) =>
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             m.agentInstanceId === coordId ||
             m.agent_instance_id === coordId ||
             m.role === 'coordinator'
         );
+        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
         const coordStatus = coordMember?.runtimeStatus || coordMember?.runtime_status || '';
         if (!isInstanceActive(coordStatus)) {
           setSelectedChainAgentIds(new Set([coordId]));
@@ -592,6 +608,7 @@ export default function ProjectLaunchModal({
                           </div>
                         ) : (
                           chainMembers.map((member) => {
+                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                             const memberInstanceId = String(
                               member.agent_instance_id ||
                               member.agentInstanceId ||
@@ -600,12 +617,14 @@ export default function ProjectLaunchModal({
                               ''
                             ).trim();
                             if (!memberInstanceId) return null;
+                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                             const isCoordinator =
                               memberInstanceId === coordinatorAgentInstanceId ||
                               member.agentInstanceId === coordinatorAgentInstanceId ||
                               member.agent_instance_id === coordinatorAgentInstanceId ||
                               member.role === 'coordinator';
                             const isChecked = selectedChainAgentIds.has(memberInstanceId);
+                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                             const memberStatus = String(
                               member.runtimeStatus || member.runtime_status || 'offline'
                             ).toLowerCase();
@@ -639,6 +658,7 @@ export default function ProjectLaunchModal({
                                         : 'text-zinc-200'
                                     }`}
                                   >
+                                    {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                                     {member.displayName || member.agentId || memberInstanceId}
                                   </span>
                                   {isCoordinator && (
@@ -840,6 +860,7 @@ export default function ProjectLaunchModal({
                   </div>
                 ) : (
                   currentInstances.map((inst) => {
+                    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                     const instanceId = String(
                       inst.agent_instance_id ||
                       inst.agentInstanceId ||
@@ -849,8 +870,11 @@ export default function ProjectLaunchModal({
                       ''
                     ).trim();
                     if (!instanceId) return null;
+                    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                     const agentId = String(inst.agent_id || inst.agentId || '');
+                    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                     const displayName = String(inst.display_name || inst.displayName || agentId || instanceId);
+                    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                     const runtimeStatus = String(inst.runtime_status || inst.runtimeStatus || 'stopped').toLowerCase();
                     const isChecked = selectedExistingInstanceIds.has(instanceId);
 

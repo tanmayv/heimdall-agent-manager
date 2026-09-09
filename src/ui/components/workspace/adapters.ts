@@ -132,16 +132,21 @@ export function adaptDirectAgentWorkspaceContext({
   modelTier,
 }: {
   agent: any;
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   tasksById: Record<string, any>;
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   chainsById: Record<string, any>;
   runtimeLabel: string;
   live: boolean;
   provider: string;
   modelTier: string;
 }): WorkspaceContext {
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const taskIds = Object.values(tasksById || {}).filter((task: any) => {
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     const assignee = task?.assigneeAgentInstanceId || task?.assignee_agent_instance_id || '';
     return assignee && assignee === agent?.id;
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   }).map((task: any) => task.taskId).filter(Boolean);
   const chainIds = Array.from(new Set(taskIds.map((taskId) => tasksById?.[taskId]?.chainId).filter(Boolean)));
   const capabilities: WorkspaceCapabilities = {

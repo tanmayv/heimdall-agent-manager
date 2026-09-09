@@ -488,7 +488,9 @@ function bridgeColorSlot(bridgeId?: string): string {
   return BRIDGE_PALETTE[h % BRIDGE_PALETTE.length];
 }
 
+// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function bridgeIsRevoked(bridge: any): boolean {
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const status = String(bridge?.status || bridge?.runtime_status || bridge?.runtimeStatus || bridge?.state || '').trim().toLowerCase();
   return status === 'revoked' || Boolean(bridge?.revoked_at || bridge?.revokedAt);
 }
@@ -881,8 +883,33 @@ function MemorySettingsPanel() {
 
 function DefaultsSettingsPanel() {
   const agentsQuery = useListAgentIdentitiesQuery();
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const agents = agentsQuery.data?.agents || [];
-  return <div data-debug-id="settings-defaults-panel" className="w-full max-w-4xl space-y-4 text-left"><h2 className="text-xl font-semibold text-white">Defaults</h2><p className="text-sm text-zinc-400">Default-agent choices are managed from available durable identities.</p>{agentsQuery.isLoading ? <div className="text-sm text-zinc-500">Loading agents…</div> : <div className="space-y-2">{agents.map((agent: any) => <div key={agent.agent_id || agent.agentId} data-debug-id={`settings-default-agent-row-${agent.agent_id || agent.agentId}`} className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="break-words font-semibold text-zinc-100">{agent.name || agent.agent_id}</div><div className="mt-1 break-all text-xs text-zinc-500">{agent.agent_id || agent.agentId} · template {agent.template_id || '—'} · tier {agent.default_tier || 'Bridge default'}</div></div>)}</div>}</div>;
+  return (
+    <div data-debug-id="settings-defaults-panel" className="w-full max-w-4xl space-y-4 text-left">
+      <h2 className="text-xl font-semibold text-white">Defaults</h2>
+      <p className="text-sm text-zinc-400">Default-agent choices are managed from available durable identities.</p>
+      {agentsQuery.isLoading ? (
+        <div className="text-sm text-zinc-500">Loading agents…</div>
+      ) : (
+        <div className="space-y-2">
+          {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
+          {agents.map((agent: any) => {
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
+            const agentKey = agent.agent_id || agent.agentId;
+            return (
+              <div key={agentKey} data-debug-id={`settings-default-agent-row-${agentKey}`} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
+                <div className="break-words font-semibold text-zinc-100">{agent.name || agent.agent_id}</div>
+                {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
+                <div className="mt-1 break-all text-xs text-zinc-500">{agent.agent_id || agent.agentId} · template {agent.template_id || '—'} · tier {agent.default_tier || 'Bridge default'}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: { path: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
@@ -1012,7 +1039,9 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const agentNamesById = useMemo(() => {
     const map = new Map<string, string>();
     for (const agent of (agentIdentitiesQuery.data?.agents || [])) {
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const id = String(agent?.agent_id || agent?.agentId || agent?.id || '').trim();
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const name = String(agent?.name || agent?.display_name || agent?.displayName || '').trim();
       if (id && name) map.set(id, name);
     }

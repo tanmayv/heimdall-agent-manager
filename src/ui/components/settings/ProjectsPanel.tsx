@@ -56,6 +56,7 @@ export default function ProjectsPanel() {
   const projects: Project[] = projectsQuery.data?.projects || [];
   const selectedProject: Project | null = projectDetailQuery.data?.project || null;
   const bridgePaths: ProjectBridgePath[] = projectDetailQuery.data?.bridge_paths || selectedProject?.bridge_paths || [];
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const bridges: any[] = bridgesQuery.data?.bridges || [];
 
   // Update edit form state when selected project changes
@@ -434,8 +435,11 @@ export default function ProjectsPanel() {
                 ) : (
                   <div className="space-y-3">
                     {bridges.map((bridge) => {
+                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                       const bridgeId = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || "");
+                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                       const bridgeName = String(bridge?.label || bridge?.machine_hostname || bridge?.hostname || bridgeId);
+                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                       const bridgeStatus = String(bridge?.status || bridge?.runtime_status || "").toLowerCase();
                       const isOnline = bridgeStatus === "online" || bridgeStatus === "connected";
 
@@ -573,6 +577,8 @@ export default function ProjectsPanel() {
           ) : (
             <div className="space-y-2">
               {projects.map((project) => {
+                // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                 const projectId = String(project.project_id || (project as any).projectId || (project as any).id || "");
                 return (
                   <div

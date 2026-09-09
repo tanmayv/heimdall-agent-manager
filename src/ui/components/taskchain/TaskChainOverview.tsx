@@ -71,13 +71,16 @@ export function AgentInstanceOption({
   const trimmed = String(instanceId || '').trim();
   const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed || Boolean(defaultAgentName) });
   const inst = data?.instance || null;
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const agentId = String(inst?.agent_id || inst?.agentId || '');
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const instName = inst?.display_name || inst?.displayName || '';
 
   // The instance already carries display_name; only fall back to a per-agent
   // identity fetch when it is genuinely missing (avoids a redundant /agents/<id>
   // call per member in the common case).
   const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(defaultAgentName) || Boolean(instName) });
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const agentName = defaultAgentName || instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   const label = agentName !== trimmed
@@ -105,10 +108,13 @@ export function MemberInstanceOption({
   const trimmed = String(instanceId || '').trim();
   const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed });
   const inst = data?.instance || null;
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const agentId = String(inst?.agent_id || inst?.agentId || '');
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const instName = inst?.display_name || inst?.displayName || '';
 
   const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(instName) });
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const agentName = instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   const label = agentName !== trimmed
@@ -300,13 +306,24 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     });
 
   // Add-Agent popup dependent option lists (identity -> bridge -> provider -> tier).
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const agentIdentities: any[] = agentIdentitiesQuery.data?.agents || [];
   const addBridgeRows = launchableBridgeRows(bridgesQuery.data?.bridges || []);
   const selectedAddBridge = addBridgeRows.find((row) => row.bridgeId === addBridgeId)?.bridge;
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const selectedAddAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addAgentId);
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const selectedAssigneeAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === editAssigneeAgentId);
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const selectedReviewerAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === addReviewerAgentId);
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const selectedNewTaskAssigneeAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === newTaskAssigneeAgentId);
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const selectedNewTaskReviewerAgent = agentIdentities.find((a: any) => String(a.agent_id || a.agentId || a.id || '') === newTaskAddReviewerAgentId);
   // H14: existing instances of the chosen identity (cookieJsonFetch — works in the
   // shell). Only offered in 'existing' mode; skip the fetch otherwise.
@@ -314,27 +331,34 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     { agentId: addAgentId },
     { skip: !addAgentId || addMode !== 'existing' },
   );
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const existingInstances: any[] = existingInstancesQuery.data?.instances || [];
   const assigneeInstancesQuery = useListAgentInstancesQuery(
     { agentId: editAssigneeAgentId },
     { skip: !editAssigneeAgentId || editAssigneeMode !== 'existing' },
   );
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const assigneeExistingInstances: any[] = assigneeInstancesQuery.data?.instances || [];
   const reviewerInstancesQuery = useListAgentInstancesQuery(
     { agentId: addReviewerAgentId },
     { skip: !addReviewerAgentId || addReviewerMode !== 'existing' },
   );
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const reviewerExistingInstances: any[] = reviewerInstancesQuery.data?.instances || [];
   const newTaskAssigneeInstancesQuery = useListAgentInstancesQuery(
     { agentId: newTaskAssigneeAgentId },
     { skip: !newTaskAssigneeAgentId || newTaskAssigneeMode !== 'existing' },
   );
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const newTaskAssigneeExistingInstances: any[] = newTaskAssigneeInstancesQuery.data?.instances || [];
   const newTaskReviewerInstancesQuery = useListAgentInstancesQuery(
     { agentId: newTaskAddReviewerAgentId },
     { skip: !newTaskAddReviewerAgentId || newTaskAddReviewerMode !== 'existing' },
   );
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const newTaskReviewerExistingInstances: any[] = newTaskReviewerInstancesQuery.data?.instances || [];
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const memberInstanceIds = new Set(members.map((m: any) => String(m.agentInstanceId || m.agent_instance_id || '')));
   const addProviderOptions = selectedAddBridge ? launchProvidersFor(selectedAddBridge) : [];
   const addTierOptions = selectedAddBridge ? launchTiersFor(selectedAddBridge, addProvider, selectedAddAgent) : [];
@@ -510,8 +534,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       // The cookie path (POST /agent-instances) returns the instance object
       // FLAT (agent_instance_id at top level); the older token path nested it under
       // agent_instance/agent. Accept both shapes.
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const newInstance = result?.agent_instance || result?.agentInstance || result?.agent
         || ((result?.agent_instance_id || result?.agentInstanceId) ? result : undefined);
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const newInstanceId = String(newInstance?.agent_instance_id || newInstance?.agentInstanceId || '');
       if (result?.ok === false || !newInstanceId) {
         setAddAgentError(String(result?.message || 'Could not launch a new instance in this app session. Use “Add existing instance” instead.'));
@@ -520,8 +546,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       upsertAgentInCaches(dispatch, newInstance);
       // Ensure the new instance is a chain member with the chosen role (create may
       // not attach the role). Skip if it already landed as a member.
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const alreadyMember = members.some((m: any) => String(m.agentInstanceId || m.agent_instance_id || '') === newInstanceId);
       if (!alreadyMember) {
+        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
         const memberRes: any = await addMember({ chainId, agentInstanceId: newInstanceId, role: newMemberRole });
         if (memberRes?.error) {
           setAddAgentError(String(memberRes.error?.error || memberRes.error?.message || 'Instance launched but adding it as a member failed.'));
@@ -546,11 +575,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     }
   };
 
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const openEditAssigneeModal = (task: any) => {
     setEditingAssigneeTask(task);
     setAssigneeError('');
     if (task.assigneeRef?.agent_instance_id) {
       const instId = task.assigneeRef.agent_instance_id;
+      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
       const isMember = members.some((m: any) => (m.agentInstanceId || m.agent_instance_id) === instId);
       if (isMember) {
         setEditAssigneeMode('member');
@@ -601,11 +633,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     }
   };
 
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const openEditReviewersModal = (task: any) => {
     setEditingReviewersTask(task);
     setStagedReviewerRefs(task.reviewerRefs ? [...task.reviewerRefs] : []);
     setReviewersError('');
     setAddReviewerMode('member');
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     setAddReviewerMemberInstanceId(members[0]?.agentInstanceId || members[0]?.agent_instance_id || '');
     setAddReviewerAgentId('');
     setAddReviewerInstanceId('');
@@ -614,6 +648,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
   const handleAddStagedReviewer = () => {
     setReviewersError('');
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     let refToAdd: any = null;
     if (addReviewerMode === 'member') {
       if (!addReviewerMemberInstanceId) {
@@ -803,7 +838,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     }
   };
 
+  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const renderTaskCard = (task: any) => {
+    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     const taskId = task.taskId || task.id;
     const isExpanded = Boolean(expandedTaskIds[taskId]);
     const taskCommentAttachments = commentAttachments[taskId] || [];
@@ -861,7 +898,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 <span data-debug-id={`taskchain-task-reviewers-${taskId}`} className="inline-flex items-center gap-1">
                   reviewers: {task.reviewerRefs && task.reviewerRefs.length > 0 ? (
                     <span>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {task.reviewerRefs.map((r: any, ri: number) => (
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
                           {ri > 0 ? ', ' : ''}
                           {r.agent_instance_id
@@ -1037,6 +1076,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               {task.dependsOn && task.dependsOn.length > 0 ? (
                 <div data-debug-id={`taskchain-task-dependencies-list-${taskId}`} className="mt-1.5 space-y-1">
                   {task.dependsOn.map((depId: string) => {
+                    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                     const depTask = tasks.find((t: any) => String(t.taskId || t.id) === String(depId));
                     return (
                       <div
@@ -1279,27 +1320,32 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           className="mt-4 flex flex-wrap items-center gap-3 border-t border-white/5 pt-3 text-xs"
         >
           <span className="font-semibold text-zinc-400">Members:</span>
-          {members.map((m: any) => (
-            <div
-              key={m.agentInstanceId || m.agent_instance_id}
-              data-debug-id={`taskchain-overview-member-${m.agentInstanceId || m.agent_instance_id}`}
-              className="flex items-center gap-1 rounded bg-zinc-800 px-2 py-0.5"
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${(() => { const s = String(m.runtimeStatus || '').toLowerCase(); if (s === 'running' || s === 'ready' || s === 'live') return 'bg-emerald-400'; if (s === 'starting' || s === 'launching') return 'bg-amber-400'; if (s === '') return 'bg-emerald-400'; return 'bg-zinc-500'; })()}`}></span>
-              <span className="font-mono text-zinc-300">
-                {m.role}: <InstanceIdLink instanceId={m.agentInstanceId || m.agent_instance_id} displayName={m.displayName} />
-              </span>
-              <button
-                type="button"
-                data-debug-id={`taskchain-overview-member-remove-btn-${m.agentInstanceId || m.agent_instance_id}`}
-                onClick={() => handleRemoveMember(m.agentInstanceId || m.agent_instance_id)}
-                className="ml-1 text-zinc-500 hover:text-red-400"
-                title="Remove member"
+          {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
+          {members.map((m: any) => {
+            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
+            const memberId = m.agentInstanceId || m.agent_instance_id;
+            return (
+              <div
+                key={memberId}
+                data-debug-id={`taskchain-overview-member-${memberId}`}
+                className="flex items-center gap-1 rounded bg-zinc-800 px-2 py-0.5"
               >
-                ×
-              </button>
-            </div>
-          ))}
+                <span className={`h-1.5 w-1.5 rounded-full ${(() => { const s = String(m.runtimeStatus || '').toLowerCase(); if (s === 'running' || s === 'ready' || s === 'live') return 'bg-emerald-400'; if (s === 'starting' || s === 'launching') return 'bg-amber-400'; if (s === '') return 'bg-emerald-400'; return 'bg-zinc-500'; })()}`}></span>
+                <span className="font-mono text-zinc-300">
+                  {m.role}: <InstanceIdLink instanceId={memberId} displayName={m.displayName} />
+                </span>
+                <button
+                  type="button"
+                  data-debug-id={`taskchain-overview-member-remove-btn-${memberId}`}
+                  onClick={() => handleRemoveMember(memberId)}
+                  className="ml-1 text-zinc-500 hover:text-red-400"
+                  title="Remove member"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
           <button
             type="button"
             data-debug-id="taskchain-overview-add-member-btn"
@@ -1550,7 +1596,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                     >
                       <option value="">Select member…</option>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {members.map((m: any) => {
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         const id = String(m.agentInstanceId || m.agent_instance_id || '');
                         return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
                       })}
@@ -1570,7 +1618,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                     >
                       <option value="">Choose agent…</option>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {agentIdentities.map((a: any) => {
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         const id = String(a.agent_id || a.agentId || a.id || '');
                         return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                       })}
@@ -1583,13 +1633,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
                     >
                       <option value="">{!newTaskAssigneeAgentId ? 'Choose an agent first…' : newTaskAssigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {newTaskAssigneeExistingInstances.map((inst: any) => {
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
                         return (
                           <AgentInstanceOption
                             key={iid}
                             value={iid}
                             instanceId={iid}
+                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                             defaultAgentName={selectedNewTaskAssigneeAgent?.name || selectedNewTaskAssigneeAgent?.display_name || selectedNewTaskAssigneeAgent?.agent_id}
                             runtimeStatus={inst.runtime_status}
                           />
@@ -1677,7 +1730,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                       >
                         <option value="">Select member…</option>
+                        {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                         {members.map((m: any) => {
+                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                           const id = String(m.agentInstanceId || m.agent_instance_id || '');
                           return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
                         })}
@@ -1694,7 +1749,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                       >
                         <option value="">Choose agent…</option>
+                        {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                         {agentIdentities.map((a: any) => {
+                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                           const id = String(a.agent_id || a.agentId || a.id || '');
                           return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                         })}
@@ -1707,13 +1764,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
                       >
                         <option value="">{!newTaskAddReviewerAgentId ? 'Choose an agent first…' : newTaskReviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                        {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                         {newTaskReviewerExistingInstances.map((inst: any) => {
+                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                           const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
                           return (
                             <AgentInstanceOption
                               key={iid}
                               value={iid}
                               instanceId={iid}
+                              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                               defaultAgentName={selectedNewTaskReviewerAgent?.name || selectedNewTaskReviewerAgent?.display_name || selectedNewTaskReviewerAgent?.agent_id}
                               runtimeStatus={inst.runtime_status}
                             />
@@ -1861,7 +1921,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                 >
                   <option value="">Choose agent…</option>
+                  {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                   {agentIdentities.map((a: any) => {
+                    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                     const id = String(a.agent_id || a.agentId || a.id || '');
                     return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                   })}
@@ -1879,7 +1941,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
                   >
                     <option value="">{!addAgentId ? 'Choose an agent first…' : existingInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                    {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                     {existingInstances.map((inst: any) => {
+                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                       const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
                       const already = memberInstanceIds.has(iid);
                       return (
@@ -1887,6 +1951,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           key={iid}
                           value={iid}
                           instanceId={iid}
+                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                           defaultAgentName={selectedAddAgent?.name || selectedAddAgent?.display_name || selectedAddAgent?.agent_id}
                           disabled={already}
                           suffix={already ? ' (already a member)' : ''}
@@ -2054,7 +2119,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                   >
                     <option value="">Select member…</option>
+                    {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                     {members.map((m: any) => {
+                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                       const id = String(m.agentInstanceId || m.agent_instance_id || '');
                       return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
                     })}
@@ -2076,7 +2143,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                     >
                       <option value="">Choose agent…</option>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {agentIdentities.map((a: any) => {
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         const id = String(a.agent_id || a.agentId || a.id || '');
                         return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                       })}
@@ -2092,13 +2161,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
                     >
                       <option value="">{!editAssigneeAgentId ? 'Choose an agent first…' : assigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {assigneeExistingInstances.map((inst: any) => {
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
                         return (
                           <AgentInstanceOption
                             key={iid}
                             value={iid}
                             instanceId={iid}
+                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                             defaultAgentName={selectedAssigneeAgent?.name || selectedAssigneeAgent?.display_name || selectedAssigneeAgent?.agent_id}
                             runtimeStatus={inst.runtime_status}
                           />
@@ -2244,7 +2316,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                     >
                       <option value="">Select member…</option>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {members.map((m: any) => {
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         const id = String(m.agentInstanceId || m.agent_instance_id || '');
                         return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
                       })}
@@ -2261,7 +2335,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
                     >
                       <option value="">Choose agent…</option>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {agentIdentities.map((a: any) => {
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         const id = String(a.agent_id || a.agentId || a.id || '');
                         return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                       })}
@@ -2274,13 +2350,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
                     >
                       <option value="">{!addReviewerAgentId ? 'Choose an agent first…' : reviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
+                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                       {reviewerExistingInstances.map((inst: any) => {
+                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                         const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
                         return (
                           <AgentInstanceOption
                             key={iid}
                             value={iid}
                             instanceId={iid}
+                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                             defaultAgentName={selectedReviewerAgent?.name || selectedReviewerAgent?.display_name || selectedReviewerAgent?.agent_id}
                             runtimeStatus={inst.runtime_status}
                           />
@@ -2372,6 +2451,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 Select tasks that must be completed before this task can start.
               </p>
 
+              {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
+              {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
               {tasks.filter((t: any) => String(t.taskId || t.id) !== String(editingDependenciesTask.taskId || editingDependenciesTask.id)).length === 0 ? (
                 <div className="mt-2 rounded border border-white/10 bg-zinc-900/50 p-3 text-center text-xs text-zinc-500 italic">
                   No other tasks in this chain.
@@ -2381,9 +2462,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   data-debug-id="taskchain-edit-dependencies-list"
                   className="mt-2 max-h-56 overflow-y-auto space-y-1.5 rounded border border-white/10 bg-zinc-900/50 p-2"
                 >
+                  {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                   {tasks
+                    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                     .filter((t: any) => String(t.taskId || t.id) !== String(editingDependenciesTask.taskId || editingDependenciesTask.id))
+                    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
                     .map((t: any) => {
+                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                       const tid = String(t.taskId || t.id);
                       const isSelected = stagedDependsOnIds.includes(tid);
                       return (
@@ -2464,10 +2549,13 @@ export function InstanceIdLink({ instanceId, displayName }: { instanceId: string
   // Only fetch when we need a label; the href never depends on the fetch.
   const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed || known });
   const inst = data?.instance || null;
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const agentId = String(inst?.agent_id || inst?.agentId || '');
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const instName = String(displayName || '').trim() || inst?.display_name || inst?.displayName || '';
 
   const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || known || Boolean(instName) });
+  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
   const agentName = instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
 
   if (!trimmed) return null;
