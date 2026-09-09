@@ -20,9 +20,10 @@ empty_template :: proc() -> domain.Template {
 }
 
 Content_Service :: struct { content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int }
-Memory_Input :: struct { title,body,evidence,status: string, agent_ids,template_ids,bridge_ids: []string, project_ids: []domain.Project_ID, type: domain.Memory_Type }
+Memory_Input :: struct { title,description,body,evidence,status: string, agent_ids,template_ids,bridge_ids: []string, project_ids: []domain.Project_ID, type: domain.Memory_Type }
 Memory_Update_Input :: struct {
 	title:            string,
+	description:      string,
 	body:             string,
 	evidence:         string,
 	type:             domain.Memory_Type,
@@ -31,6 +32,7 @@ Memory_Update_Input :: struct {
 	bridge_ids:       []string,
 	template_ids:     []string,
 	has_title:        bool,
+	has_description:  bool,
 	has_body:         bool,
 	has_evidence:     bool,
 	has_type:         bool,
@@ -61,7 +63,7 @@ Template_Input :: struct { name,description,persona,instructions: string }
 new_content_service :: proc(content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Content_Service { return Content_Service{content=content, agents=agents, bridges=bridges, projects=projects, taskchains=taskchains, clock=clock, ids=ids} }
 new_content_service_with_runtime :: proc(content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Content_Service { return Content_Service{content=content, agents=agents, bridges=bridges, projects=projects, taskchains=taskchains, bridge_command_sink=sink, clock=clock, ids=ids} }
 
-create_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context, input:Memory_Input)->(domain.Memory,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if strings.trim_space(input.body)=="" do return {},false,domain.domain_error(.Validation_Failed,"memory body is required"); if input.type==.Unknown do return {},false,domain.domain_error(.Validation_Failed,"memory type is invalid"); if verr:=validate_memory_targets(s,owner,input.agent_ids,input.project_ids,input.template_ids,input.bridge_ids); verr.code!=.None do return {},false,verr; now:=platform.clock_now(s.clock); status:=input.status; if status=="" do status="pending"; typ:=input.type; if typ==.Unknown do typ=.Fact; m:=domain.Memory{memory_id=platform.generate_id(s.ids,"mem_"),owner_user_id=owner,agent_ids=input.agent_ids,project_ids=input.project_ids,template_ids=input.template_ids,bridge_ids=input.bridge_ids,type=typ,status=status,title=input.title,body=input.body,evidence=input.evidence,created_at=now,updated_at=now}; return iface.content_save_memory(s.content,m) }
+create_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context, input:Memory_Input)->(domain.Memory,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if strings.trim_space(input.body)=="" do return {},false,domain.domain_error(.Validation_Failed,"memory body is required"); if input.type==.Unknown do return {},false,domain.domain_error(.Validation_Failed,"memory type is invalid"); if verr:=validate_memory_targets(s,owner,input.agent_ids,input.project_ids,input.template_ids,input.bridge_ids); verr.code!=.None do return {},false,verr; now:=platform.clock_now(s.clock); status:=input.status; if status=="" do status="pending"; typ:=input.type; if typ==.Unknown do typ=.Fact; m:=domain.Memory{memory_id=platform.generate_id(s.ids,"mem_"),owner_user_id=owner,agent_ids=input.agent_ids,project_ids=input.project_ids,template_ids=input.template_ids,bridge_ids=input.bridge_ids,type=typ,status=status,title=input.title,description=input.description,body=input.body,evidence=input.evidence,created_at=now,updated_at=now}; return iface.content_save_memory(s.content,m) }
 
 // validate_memory_targets checks that every id in each targeting list is owned
 // by (or available to) the caller. Empty lists are always valid ("applies to
@@ -121,6 +123,7 @@ update_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context, id:string
 	if input.has_template_ids { for id in input.template_ids { if id!="" && !template_available(s,owner,id) do return {},false,domain.domain_error(.Not_Found,"template not found") } }
 	if input.has_bridge_ids { for id in input.bridge_ids { if id!="" && !bridge_owned(s,owner,id) do return {},false,domain.domain_error(.Not_Found,"bridge not found") } }
 	if input.has_title do m.title=input.title
+	if input.has_description do m.description=input.description
 	if input.has_body { if strings.trim_space(input.body)=="" do return {},false,domain.domain_error(.Validation_Failed,"memory body is required"); m.body=input.body }
 	if input.has_evidence do m.evidence=input.evidence
 	if input.has_type { if input.type==.Unknown do return {},false,domain.domain_error(.Validation_Failed,"memory type is invalid"); m.type=input.type }
@@ -144,6 +147,7 @@ approve_memory :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string
 	if input.has_template_ids { for id in input.template_ids { if id!="" && !template_available(s,owner,id) do return {},false,domain.domain_error(.Not_Found,"template not found") } }
 	if input.has_bridge_ids { for id in input.bridge_ids { if id!="" && !bridge_owned(s,owner,id) do return {},false,domain.domain_error(.Not_Found,"bridge not found") } }
 	if input.has_title do m.title=input.title
+	if input.has_description do m.description=input.description
 	if input.has_body { if strings.trim_space(input.body)=="" do return {},false,domain.domain_error(.Validation_Failed,"memory body is required"); m.body=input.body }
 	if input.has_evidence do m.evidence=input.evidence
 	if input.has_type { if input.type==.Unknown do return {},false,domain.domain_error(.Validation_Failed,"memory type is invalid"); m.type=input.type }

@@ -731,7 +731,7 @@ agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Respon
 	project_ids := json_project_id_array(params, "project_ids")
 	template_ids := json_string_array(params, "template_ids")
 	bridge_ids := json_string_array(params, "bridge_ids")
-	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = "pending"})
+	mem, saved, err := content_service.create_memory(h.content, auth, content_service.Memory_Input{agent_ids = agent_ids, project_ids = project_ids, template_ids = template_ids, bridge_ids = bridge_ids, type = domain.memory_type_from_string(json_string(params, "type")), title = json_string(params, "title"), description = json_string(params, "description"), body = json_string(params, "body"), evidence = json_string(params, "evidence"), status = "pending"})
 	if !saved do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "memory_propose", fmt.tprintf("proposed memory \"%s\"", mem.title))
 	b := strings.builder_make()

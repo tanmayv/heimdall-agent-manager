@@ -49,6 +49,7 @@ fresh_db_migrates_to_lists :: proc() {
 	check(column_exists(&conn, "memories", "project_ids"), "memories.project_ids must exist")
 	check(column_exists(&conn, "memories", "template_ids"), "memories.template_ids must exist")
 	check(column_exists(&conn, "memories", "bridge_ids"), "memories.bridge_ids must exist")
+	check(column_exists(&conn, "memories", "description"), "memories.description must exist")
 	check(!column_exists(&conn, "memories", "agent_id"), "scalar memories.agent_id must be dropped")
 	check(!column_exists(&conn, "memories", "project_id"), "scalar memories.project_id must be dropped")
 	check(!column_exists(&conn, "memories", "template_id"), "scalar memories.template_id must be dropped")
@@ -77,6 +78,7 @@ list_targeting_round_trips :: proc() {
 		type = .Fact,
 		status = "active",
 		title = "Targeted",
+		description = "targeted description",
 		body = "targeted body",
 		created_at = "2026-01-01T00:00:00Z",
 		updated_at = "2026-01-01T00:00:00Z",
@@ -86,6 +88,7 @@ list_targeting_round_trips :: proc() {
 
 	got, got_ok, get_err := iface.content_get_memory(&repo, "mem_lists_1")
 	check(got_ok, fmt.tprintf("get targeted memory: %s", get_err.message))
+	check(got.description == "targeted description", "description must round-trip")
 	check(len(got.agent_ids) == 2 && got.agent_ids[0] == "agt_a" && got.agent_ids[1] == "agt_b", "agent_ids must round-trip in order")
 	check(len(got.project_ids) == 1 && string(got.project_ids[0]) == "proj_x", "project_ids must round-trip")
 	check(len(got.template_ids) == 0, "empty template_ids must round-trip as empty")
@@ -133,8 +136,10 @@ legacy_scalar_db_upgrades_in_place :: proc() {
 	check(sqlite.upgrade_memory_scope_lists_schema(&conn), "upgrade_memory_scope_lists_schema")
 	// Idempotent on a second call.
 	check(sqlite.upgrade_memory_scope_lists_schema(&conn), "upgrade_memory_scope_lists_schema idempotent")
+	check(sqlite.upgrade_memory_description_schema(&conn), "upgrade_memory_description_schema")
 
 	check(column_exists(&conn, "memories", "agent_ids"), "agent_ids added")
+	check(column_exists(&conn, "memories", "description"), "memories.description added in legacy upgrade")
 	check(!column_exists(&conn, "memories", "agent_id"), "scalar agent_id dropped")
 
 	repo_impl: sqlite.Content_Repo_SQLite

@@ -23,6 +23,7 @@ export type ListMemoriesQueryArg = ({
 
 export type CreateMemoryInput = {
   title?: string;
+  description?: string;
   body?: string;
   evidence?: string;
   type?: string;
@@ -38,6 +39,7 @@ export type CreateMemoryInput = {
 export type UpdateMemoryInput = {
   memoryId: string;
   title?: string;
+  description?: string;
   body?: string;
   evidence?: string;
   type?: string;
@@ -50,6 +52,7 @@ export type ApproveMemoryInput = {
   decision?: "approve" | "reject" | string;
   reason?: string;
   title?: string;
+  description?: string;
   body?: string;
   evidence?: string;
   type?: string;

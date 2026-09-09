@@ -71,3 +71,14 @@ test_json_string_array_field_escapes_values :: proc(t: ^testing.T) {
 	empty := json_string_array_field("agent_ids", []string{})
 	testing.expect_value(t, empty, `"agent_ids":[]`)
 }
+
+@(test)
+test_memory_params_description_handling :: proc(t: ^testing.T) {
+	args_with := []string{"--type", "fact", "--title", "T", "--description", "Desc text", "--body", "B"}
+	out_with := ctl_agentmode_memory_propose_params(args_with)
+	testing.expect(t, strings.contains(out_with, `"description":"Desc text"`), out_with)
+
+	args_without := []string{"--type", "fact", "--title", "T", "--body", "B"}
+	out_without := ctl_agentmode_memory_propose_params(args_without)
+	testing.expect(t, !strings.contains(out_without, `"description"`), out_without)
+}
