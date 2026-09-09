@@ -439,7 +439,62 @@ change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 	} else if next == .Active {
 		chain.completed_at = ""
 	}
-	return iface.taskchain_save_chain(service.repo, chain)
+	saved, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	// MEM-6 (#10): on chain close, broadcast a wake to all live members so any
+	// long-running loops/tasks halt.
+	if save_ok && (next == .Completed || next == .Cancelled) {
+		broadcast_chain_closed(service, auth, saved, next)
+	}
+	return saved, save_ok, save_err
+}
+
+// broadcast_chain_closed wakes every live member of a just-closed chain with a
+// human-readable [Chain Closed] notice so their loops/tasks stop. Fire-and-forget;
+// the actor (closer) is not woken. MEM-6 spec §4 #10.
+broadcast_chain_closed :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain: domain.Task_Chain, next: domain.Task_Chain_Status) {
+	if service.bridge_command_sink.send_runtime_command == nil || service.agents == nil do return
+	actor := auth.agent_instance_id if auth.kind == .Instance_Token else ""
+	members, merr := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if merr.code != .None do return
+
+	verb := "completed" if next == .Completed else "cancelled"
+	actor_display := resolve_actor_display(service, actor)
+	defer delete(actor_display)
+	title := strings.trim_space(chain.title)
+	if title == "" do title = string(chain.chain_id)
+	title_disp := truncate_runes(title, NOTICE_TITLE_MAX_RUNES)
+	defer delete(title_disp)
+	human_message := strings.concatenate({`[Chain Closed] Task chain "`, title_disp, `" (`, string(chain.chain_id), ") was marked ", verb, " by ", actor_display, ". All task activities halted."})
+	defer delete(human_message)
+
+	seen := make(map[string]bool)
+	defer delete(seen)
+	for m in members {
+		id := m.agent_instance_id
+		if id == "" || id == actor || seen[id] do continue
+		seen[id] = true
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, id)
+		if !inst_ok || inst.bridge_id == "" do continue
+		cmd_id := platform.generate_id(service.ids, "cmd_")
+		b := strings.builder_make()
+		strings.write_string(&b, `{"type":"notify_task_nudge","origin":"chain_closed","command_id":"`)
+		contracts.write_json_string(&b, cmd_id)
+		strings.write_string(&b, `","agent_instance_id":"`)
+		contracts.write_json_string(&b, id)
+		strings.write_string(&b, `","task_id":"","chain_id":"`)
+		contracts.write_json_string(&b, string(chain.chain_id))
+		strings.write_string(&b, `","target_instance_id":"`)
+		contracts.write_json_string(&b, id)
+		strings.write_string(&b, `","target_role":"member","action":"chain_closed","message":"`)
+		contracts.write_json_string(&b, human_message)
+		strings.write_string(&b, `","human_message":"`)
+		contracts.write_json_string(&b, human_message)
+		strings.write_string(&b, `","created_at":"`)
+		contracts.write_json_string(&b, chain.updated_at)
+		strings.write_string(&b, `"}`)
+		_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id = inst.bridge_id, command_id = cmd_id, body_json = strings.to_string(b)})
+		strings.builder_destroy(&b)
+	}
 }
 
 valid_chain_transition :: proc(current, next: domain.Task_Chain_Status) -> bool {
