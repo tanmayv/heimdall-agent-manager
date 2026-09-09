@@ -331,12 +331,18 @@ bridge_pty_host_deliver_message :: proc(socket, instance, sender: string) -> boo
 // otherwise we fall back to the legacy generated notice for backwards compat with
 // older hubs that don't populate human_message.
 bridge_pty_host_deliver_task_nudge :: proc(socket, instance, task_id, target_role: string, human_message: string = "") -> bool {
-	if strings.trim_space(human_message) != "" {
-		return bridge_pty_host_deliver_line(socket, instance, human_message)
-	}
-	msg := bridge_pty_host_task_nudge_notice(task_id, target_role)
+	msg := bridge_pty_host_task_nudge_line(task_id, target_role, human_message)
 	defer delete(msg)
 	return bridge_pty_host_deliver_line(socket, instance, msg)
+}
+
+// bridge_pty_host_task_nudge_line picks the line to deliver for a task nudge: the
+// hub's human_message verbatim when present, else the legacy generated notice
+// (backwards compat with hubs that don't populate human_message). Pure/testable.
+// Caller owns the returned string.
+bridge_pty_host_task_nudge_line :: proc(task_id, target_role, human_message: string) -> string {
+	if strings.trim_space(human_message) != "" do return strings.clone(human_message)
+	return bridge_pty_host_task_nudge_notice(task_id, target_role)
 }
 
 // bridge_pty_host_deliver_notice delivers an arbitrary prefixed nudge/notice line
