@@ -1,5 +1,6 @@
 package http
 
+import "base:runtime"
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
@@ -44,7 +45,15 @@ bump_bridge_version :: proc(h: ^Action_Handlers, bridge_id: string) {
 	if h.mutex == nil || h.bridge_versions == nil do return
 	sync.mutex_lock(h.mutex)
 	defer sync.mutex_unlock(h.mutex)
-	h.bridge_versions^[bridge_id] += 1
+	// A new map key must be heap-owned: `bridge_id` is a repository clone made on
+	// the per-request arena, so storing it verbatim would dangle once the request's
+	// arena is freed. The key set is bounded by the number of bridges (never
+	// evicted), so cloning the key once on first insert is safe.
+	if _, ok := h.bridge_versions^[bridge_id]; ok {
+		h.bridge_versions^[bridge_id] += 1
+	} else {
+		h.bridge_versions^[strings.clone(bridge_id, runtime.heap_allocator())] = 1
+	}
 }
 
 // Parses an interval string into seconds.

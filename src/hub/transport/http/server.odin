@@ -1,6 +1,7 @@
 package http
 
 import "core:fmt"
+import "core:mem/virtual"
 import "core:net"
 import "core:strconv"
 import "core:strings"
@@ -38,6 +39,27 @@ handle_client_thread :: proc(client: net.TCP_Socket, source: net.Endpoint, route
 
 handle_client :: proc(client: net.TCP_Socket, source: net.Endpoint, router: ^Router) {
 	defer net.close(client)
+	// Per-request arena. Every allocation this request makes — the parsed request
+	// strings, handler JSON builders, the response body, and the repository row
+	// clones threaded up through the services — is drawn from one arena and freed
+	// together after the response is written. This structurally reclaims the
+	// per-request working set that previously leaked on the process-wide heap (see
+	// the MEM-2 RCA: server.odin request clones, envelope response bodies, handler
+	// builders, and user/task repository clones). If the arena cannot be created we
+	// fall back to the heap (correct, just not reclaimed) rather than fail the request.
+	heap := context.allocator
+	arena: virtual.Arena
+	arena_ok := virtual.arena_init_growing(&arena, 256 * 1024) == nil
+	defer if arena_ok do virtual.arena_destroy(&arena)
+	// Assign context.allocator at THIS (proc-body) scope — never inside a nested
+	// `if ... {}`/`do`. Odin saves and restores `context` at every block boundary,
+	// so a conditional assignment made in a nested scope silently reverts when that
+	// scope exits (which would leave dispatch running on the heap and the arena
+	// unused). Compute the allocator into a local, then assign once here.
+	req_allocator := heap
+	if arena_ok do req_allocator = virtual.arena_allocator(&arena)
+	context.allocator = req_allocator
+
 	request, ok := read_http_request(client)
 	if !ok do return
 	method, target := request_method_target(request)
@@ -60,7 +82,18 @@ handle_client :: proc(client: net.TCP_Socket, source: net.Endpoint, router: ^Rou
 		write_http_response(client, Response{status = 204, content_type = "text/plain", body = ""})
 		return
 	}
-	if ascii_equal_fold(header_value(headers, "Upgrade"), "websocket") && router_dispatch_upgrade(router, req_obj, client) do return
+	if ascii_equal_fold(header_value(headers, "Upgrade"), "websocket") {
+		// Upgraded connections are long-lived, so the WS read loop and everything it
+		// allocates over the connection's lifetime must run on the persistent heap,
+		// NOT this request arena (which is freed only at disconnect). Assigning
+		// context.allocator here applies for the duration of the upgrade call; if the
+		// request is not actually an upgrade route, control falls through and this
+		// block's boundary restores the arena allocator for the normal dispatch below
+		// (the registry / event-bus / ticket stores clone what they retain, so the
+		// small parse-time arena is safe to free at disconnect).
+		context.allocator = heap
+		if router_dispatch_upgrade(router, req_obj, client) do return
+	}
 	resp := router_dispatch(router, req_obj)
 	write_http_response(client, resp)
 }

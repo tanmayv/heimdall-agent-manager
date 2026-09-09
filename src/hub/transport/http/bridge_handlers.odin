@@ -673,7 +673,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			if h.content != nil {
 				input := content_service.Pane_Capture_Result_Input{command_id=json_string_unescaped(text,"command_id"),pane_capture_request_id=json_string_unescaped(text,"pane_capture_request_id"),conversation_id=json_string_unescaped(text,"conversation_id"),message_id=json_string_unescaped(text,"message_id"),agent_instance_id=json_string_unescaped(text,"agent_instance_id"),ok=json_bool_value(text,"ok"),output=json_string_unescaped(text,"output"),error_code=json_string_unescaped(text,"error_code"),message=json_string_unescaped(text,"message"),width=json_int(text,"width",80),line_count=json_int(text,"line_count",0),truncated=json_bool_value(text,"truncated")}
 				if msg, conv, applied, _ := content_service.complete_pane_capture(h.content, bridge_id, input); applied {
-					events.publish_raw_to_user(h.event_bus, string(conv.owner_user_id), pane_capture_chat_event_json(conv, msg))
+					events.publish_owned(h.event_bus, string(conv.owner_user_id), pane_capture_chat_event_json(conv, msg))
 				}
 			}
 		case "capability_report":

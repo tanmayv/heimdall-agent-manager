@@ -16,9 +16,49 @@
 
 package device_auth
 
+import "base:runtime"
 import "core:strings"
 import "core:sync"
 import "core:time"
+
+// The grant store outlives the requests that populate it, so it owns every string
+// it retains on the persistent heap — never on a caller's per-request arena.
+// Ownership rule: the `grants` map owns each Grant's string fields; the
+// `by_user_code` index only aliases them (its key/value point into the owning
+// grant), so it is never freed independently.
+grant_clone_strings :: proc(g: Grant, heap: runtime.Allocator) -> Grant {
+	c := g
+	c.device_code = strings.clone(g.device_code, heap)
+	c.user_code = strings.clone(g.user_code, heap)
+	c.verification_uri = strings.clone(g.verification_uri, heap)
+	c.owner_user_id = strings.clone(g.owner_user_id, heap)
+	c.device_label = strings.clone(g.device_label, heap)
+	c.os = strings.clone(g.os, heap)
+	c.app_version = strings.clone(g.app_version, heap)
+	c.client = strings.clone(g.client, heap)
+	c.request_ip = strings.clone(g.request_ip, heap)
+	c.minted_token = strings.clone(g.minted_token, heap)
+	c.minted_token_id = strings.clone(g.minted_token_id, heap)
+	c.approver_ip = strings.clone(g.approver_ip, heap)
+	c.approver_ua = strings.clone(g.approver_ua, heap)
+	return c
+}
+
+grant_free_strings :: proc(g: Grant, heap: runtime.Allocator) {
+	delete(g.device_code, heap)
+	delete(g.user_code, heap)
+	delete(g.verification_uri, heap)
+	delete(g.owner_user_id, heap)
+	delete(g.device_label, heap)
+	delete(g.os, heap)
+	delete(g.app_version, heap)
+	delete(g.client, heap)
+	delete(g.request_ip, heap)
+	delete(g.minted_token, heap)
+	delete(g.minted_token_id, heap)
+	delete(g.approver_ip, heap)
+	delete(g.approver_ua, heap)
+}
 
 // Grant_Status models the device-authorization grant lifecycle.
 Grant_Status :: enum {
@@ -131,12 +171,14 @@ new_grant_store :: proc(config: Grant_Store_Config) -> Grant_Store {
 }
 
 grant_store_free :: proc(store: ^Grant_Store) {
+	heap := runtime.heap_allocator()
 	sync.mutex_lock(&store.mutex)
 	defer sync.mutex_unlock(&store.mutex)
-	for code, grant in store.grants {
-		_ = grant
-		delete_key(&store.grants, code)
-	}
+	// Free each grant's owned strings (by_user_code only aliases them) and each
+	// heap-owned rate-limit key, then drop the maps themselves. Iterating without
+	// delete_key is safe; the maps are deleted wholesale afterwards.
+	for _, grant in store.grants do grant_free_strings(grant, heap)
+	for ip in store.rate do delete(ip, heap)
 	delete(store.grants)
 	delete(store.by_user_code)
 	delete(store.rate)
@@ -155,7 +197,7 @@ allow_authorize :: proc(store: ^Grant_Store, ip: string, now: i64) -> bool {
 	if !has || now - entry.window_start >= window {
 		// Map string keys keep the string header/data; clone request-derived IPs so
 		// rate-limit entries never point at temporary request buffers.
-		store.rate[strings.clone(ip)] = Rate_Limit_Entry{window_start = now, count = 1}
+		store.rate[strings.clone(ip, runtime.heap_allocator())] = Rate_Limit_Entry{window_start = now, count = 1}
 		return true
 	}
 	if entry.count >= store.config.rate_limit do return false
@@ -189,12 +231,16 @@ create_grant :: proc(store: ^Grant_Store, input: Authorize_Input, request_ip: st
 		expires_at = now + i64(expires_in),
 		status = .Pending,
 	}
+	heap := runtime.heap_allocator()
 	sync.mutex_lock(&store.mutex)
 	defer sync.mutex_unlock(&store.mutex)
 	// NOTE: device_code collisions are astronomically unlikely (256-bit CSPRNG);
 	// map insertion is idempotent for dups, so no explicit guard is needed.
-	store.grants[device_code] = grant
-	store.by_user_code[user_code] = device_code
+	// Persist heap-owned copies: `grant`'s request-derived fields (device_label,
+	// os, app_version, client, request_ip) live on the per-request arena.
+	stored := grant_clone_strings(grant, heap)
+	store.grants[stored.device_code] = stored
+	store.by_user_code[stored.user_code] = stored.device_code
 	return Authorize_Result{
 		device_code = device_code,
 		user_code = user_code,
@@ -216,9 +262,21 @@ get_grant :: proc(store: ^Grant_Store, device_code: string) -> (Grant, bool) {
 // set_grant replaces the grant for a device_code under the mutex (used by
 // approve to write the terminal decision + audit fields atomically).
 set_grant :: proc(store: ^Grant_Store, device_code: string, grant: Grant) {
+	heap := runtime.heap_allocator()
 	sync.mutex_lock(&store.mutex)
 	defer sync.mutex_unlock(&store.mutex)
-	store.grants[device_code] = grant
+	// Clone onto the heap so the entry never points at the caller's per-request
+	// arena. The previous entry's strings are intentionally NOT freed here: the
+	// store hands out borrowed snapshots (get_grant / grant_by_user_code return a
+	// value copy whose string fields alias the stored heap strings), and a caller
+	// may still be using one — e.g. approve passes grant.client to the token minter
+	// in the same call that then set_grants. So grant strings are treated as
+	// immortal (exactly as the original store did) and reclaimed only at
+	// grant_store_free; the residual is bounded by the grant's short TTL. Overwrite
+	// reuses the existing map keys (Odin keeps the key on assignment to an existing
+	// entry), so no key churn.
+	store.grants[device_code] = grant_clone_strings(grant, heap)
+	store.by_user_code[grant.user_code] = device_code
 }
 
 // grant_by_user_code looks up a grant by its short user_code (for the browser
@@ -241,15 +299,42 @@ is_expired :: proc(grant: Grant, now: i64) -> bool {
 // sweep evicts expired grants (status -> .Expired, then removed). Called by the
 // GC loop and safe to call from tests with a controlled clock.
 sweep :: proc(store: ^Grant_Store, now: i64) -> int {
+	heap := runtime.heap_allocator()
 	sync.mutex_lock(&store.mutex)
 	defer sync.mutex_unlock(&store.mutex)
 	removed := 0
+	// Collect expired codes first — deleting during a map range is unsafe.
+	expired: [dynamic]string
+	expired.allocator = context.temp_allocator
+	defer delete(expired)
 	for code, grant in store.grants {
-		if now >= grant.expires_at {
+		if now >= grant.expires_at do append(&expired, code)
+	}
+	for code in expired {
+		if grant, ok := store.grants[code]; ok {
 			delete_key(&store.grants, code)
 			delete_key(&store.by_user_code, grant.user_code)
+			// Grant strings are NOT freed here: they may be aliased by a borrowed
+			// snapshot a concurrent request is still using (get_grant releases the
+			// mutex before the caller reads the snapshot). They are heap-owned and
+			// reclaimed at grant_store_free; the residual is TTL-bounded.
 			removed += 1
 		}
+	}
+	// Evict stale rate-limit entries; the per-IP rate map previously grew
+	// monotonically with unique source IPs. An entry whose window has fully elapsed
+	// is safe to drop (the next request re-seeds it via allow_authorize/verify/poll).
+	window := i64(store.config.rate_window)
+	if window <= 0 do window = 60
+	stale: [dynamic]string
+	stale.allocator = context.temp_allocator
+	defer delete(stale)
+	for ip, entry in store.rate {
+		if now - entry.window_start >= window do append(&stale, ip)
+	}
+	for ip in stale {
+		delete_key(&store.rate, ip)
+		delete(ip, heap)
 	}
 	return removed
 }

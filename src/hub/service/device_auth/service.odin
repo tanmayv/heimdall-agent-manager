@@ -17,6 +17,7 @@
 
 package device_auth
 
+import "base:runtime"
 import "core:strings"
 import "core:sync"
 import domain "odin_test:hub/domain"
@@ -305,7 +306,7 @@ verify_rate_allow :: proc(store: ^Grant_Store, ip: string, now: i64) -> bool {
 	if window <= 0 do window = 60
 	entry, has := store.rate[key]
 	if !has || now - entry.window_start >= window {
-		store.rate[strings.clone(key)] = Rate_Limit_Entry{window_start = now, count = 1}
+		store.rate[strings.clone(key, runtime.heap_allocator())] = Rate_Limit_Entry{window_start = now, count = 1}
 		return true
 	}
 	if entry.count >= store.config.rate_limit do return false
@@ -332,7 +333,7 @@ poll_rate_allow :: proc(store: ^Grant_Store, ip: string, now: i64) -> bool {
 	if !has || now - entry.window_start >= i64(window) {
 		// Map string keys keep the string header/data; clone the temporary key on
 		// insertion so the stored key remains valid after this proc returns.
-		store.rate[strings.clone(key)] = Rate_Limit_Entry{window_start = now, count = 1}
+		store.rate[strings.clone(key, runtime.heap_allocator())] = Rate_Limit_Entry{window_start = now, count = 1}
 		return true
 	}
 	if entry.count >= limit do return false
