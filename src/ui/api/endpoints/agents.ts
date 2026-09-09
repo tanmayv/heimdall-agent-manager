@@ -9,11 +9,17 @@ function agentTagId(agent: any, fallback = '') {
 
 export const agentsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listAgentIdentities: build.query<any, void>({
-      queryFn: async () => {
+    listAgentIdentities: build.query<{ agents: any[] }, { limit?: number; cursor?: string } | void>({
+      queryFn: async (arg) => {
         try {
-          const data = await cookieJsonFetch('/agents');
-          return { data: { agents: data || [] } };
+          const params = new URLSearchParams();
+          const opts = (arg && typeof arg === 'object') ? arg : undefined;
+          if (opts?.limit) params.set('limit', String(opts.limit));
+          if (opts?.cursor) params.set('cursor', opts.cursor);
+          const qs = params.toString() ? `?${params.toString()}` : '';
+          const data = await cookieJsonFetch(`/agents${qs}`);
+          const agents = Array.isArray(data) ? data : (data?.agents || []);
+          return { data: { agents } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
