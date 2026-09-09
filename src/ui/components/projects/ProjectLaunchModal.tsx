@@ -21,6 +21,24 @@ export type ProjectLaunchModalProps = {
 
 type TabKey = 'chain' | 'new' | 'existing';
 
+const ACTIVE_STATUSES = new Set([
+  'running',
+  'idle',
+  'busy',
+  'launching',
+  'starting',
+  'stopping',
+  'blocked',
+  'connected',
+  'ready',
+  'live',
+  'active',
+]);
+
+function isInstanceActive(status: string): boolean {
+  return ACTIVE_STATUSES.has(String(status || '').trim().toLowerCase());
+}
+
 export default function ProjectLaunchModal({
   isOpen,
   project,
@@ -127,15 +145,22 @@ export default function ProjectLaunchModal({
     });
   }, [rawBridges]);
 
-  // Tab 3: Existing agent instances for project
+  // Tab 3: Existing agent instances for project (filtered to stopped / inactive only)
   const EXISTING_PAGE_SIZE = 10;
   const instancesQuery = useListAgentInstancesQuery(
     { projectId, limit: 100 },
     { skip: !isOpen || !projectId || activeTab !== 'existing' }
   );
-  const instances: any[] = instancesQuery.data?.instances || [];
-  const totalExistingPages = Math.max(1, Math.ceil(instances.length / EXISTING_PAGE_SIZE));
-  const currentInstances = instances.slice(
+  const rawInstances: any[] = instancesQuery.data?.instances || [];
+  const stoppedInstances = useMemo(() => {
+    return rawInstances.filter((inst) => {
+      const status = String(inst.runtime_status || inst.runtimeStatus || inst.status || '').toLowerCase();
+      return !isInstanceActive(status);
+    });
+  }, [rawInstances]);
+  const hasOnlyActiveInstances = rawInstances.length > 0 && stoppedInstances.length === 0;
+  const totalExistingPages = Math.max(1, Math.ceil(stoppedInstances.length / EXISTING_PAGE_SIZE));
+  const currentInstances = stoppedInstances.slice(
     existingPage * EXISTING_PAGE_SIZE,
     (existingPage + 1) * EXISTING_PAGE_SIZE
   );
@@ -174,22 +199,34 @@ export default function ProjectLaunchModal({
     }
   }, [activeTab, selectedChainId, chains]);
 
-  // When chainDetail loads, coordinator agent is checked by default
+  // When chainDetail loads, coordinator agent is checked by default ONLY if not already active
   useEffect(() => {
     if (chainDetail) {
       const coordId = chainDetail.coordinatorAgentInstanceId;
       if (coordId) {
-        setSelectedChainAgentIds(new Set([coordId]));
+        const coordMember = (chainDetail.members || []).find(
+          (m: any) =>
+            m.agentInstanceId === coordId ||
+            m.agent_instance_id === coordId ||
+            m.role === 'coordinator'
+        );
+        const coordStatus = coordMember?.runtimeStatus || coordMember?.runtime_status || '';
+        if (!isInstanceActive(coordStatus)) {
+          setSelectedChainAgentIds(new Set([coordId]));
+        } else {
+          setSelectedChainAgentIds(new Set());
+        }
       } else {
         setSelectedChainAgentIds(new Set());
       }
     }
-  }, [chainDetail?.chainId, chainDetail?.coordinatorAgentInstanceId]);
+  }, [chainDetail?.chainId, chainDetail?.coordinatorAgentInstanceId, chainDetail?.members]);
 
   if (!isOpen || !project) return null;
 
   // Tab 1 handlers
-  const toggleChainAgent = (instanceId: string) => {
+  const toggleChainAgent = (instanceId: string, isActive?: boolean) => {
+    if (isActive) return;
     setSelectedChainAgentIds((prev) => {
       const next = new Set(prev);
       if (next.has(instanceId)) next.delete(instanceId);
@@ -204,12 +241,37 @@ export default function ProjectLaunchModal({
     setFeedback(null);
     try {
       const ids = Array.from(selectedChainAgentIds);
+      let startedCount = 0;
+      let alreadyRunningCount = 0;
       for (const instanceId of ids) {
-        await startAgentInstance({ instanceId }).unwrap();
+        try {
+          await startAgentInstance({ instanceId }).unwrap();
+          startedCount++;
+        } catch (err: any) {
+          const errStr = String(
+            err?.data?.error?.message ||
+            err?.data?.error ||
+            err?.error ||
+            err?.message ||
+            ''
+          ).toLowerCase();
+          const isAlreadyRunning =
+            err?.status === 409 ||
+            err?.data?.status === 409 ||
+            errStr.includes('already_running') ||
+            errStr.includes('already running');
+          if (isAlreadyRunning) {
+            alreadyRunningCount++;
+          } else {
+            throw err;
+          }
+        }
       }
       setFeedback({
         type: 'success',
-        message: `Successfully started ${ids.length} chain agent instance(s).`,
+        message: `Successfully started ${startedCount} chain agent instance(s)${
+          alreadyRunningCount > 0 ? ` (${alreadyRunningCount} already running)` : ''
+        }.`,
       });
       onClose();
     } catch (err: any) {
@@ -273,12 +335,37 @@ export default function ProjectLaunchModal({
     setFeedback(null);
     try {
       const ids = Array.from(selectedExistingInstanceIds);
+      let startedCount = 0;
+      let alreadyRunningCount = 0;
       for (const instanceId of ids) {
-        await startAgentInstance({ instanceId }).unwrap();
+        try {
+          await startAgentInstance({ instanceId }).unwrap();
+          startedCount++;
+        } catch (err: any) {
+          const errStr = String(
+            err?.data?.error?.message ||
+            err?.data?.error ||
+            err?.error ||
+            err?.message ||
+            ''
+          ).toLowerCase();
+          const isAlreadyRunning =
+            err?.status === 409 ||
+            err?.data?.status === 409 ||
+            errStr.includes('already_running') ||
+            errStr.includes('already running');
+          if (isAlreadyRunning) {
+            alreadyRunningCount++;
+          } else {
+            throw err;
+          }
+        }
       }
       setFeedback({
         type: 'success',
-        message: `Successfully started ${ids.length} existing instance(s).`,
+        message: `Successfully started ${startedCount} existing instance(s)${
+          alreadyRunningCount > 0 ? ` (${alreadyRunningCount} already running)` : ''
+        }.`,
       });
       setSelectedExistingInstanceIds(new Set());
       onClose();
@@ -499,23 +586,30 @@ export default function ProjectLaunchModal({
                               member.agentInstanceId === coordinatorAgentInstanceId ||
                               member.role === 'coordinator';
                             const isChecked = selectedChainAgentIds.has(member.agentInstanceId);
+                            const memberStatus = String(
+                              member.runtimeStatus || member.runtime_status || 'offline'
+                            ).toLowerCase();
+                            const isActive = isInstanceActive(memberStatus);
 
                             return (
                               <label
                                 key={member.agentInstanceId}
                                 data-debug-id={`project-launch-chain-agent-row-${member.agentInstanceId}`}
-                                className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                                  isChecked
-                                    ? 'border-white/20 bg-white/[0.06]'
-                                    : 'border-transparent hover:bg-white/[0.03]'
+                                className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors ${
+                                  isActive
+                                    ? 'border-transparent opacity-60 cursor-not-allowed bg-white/[0.01]'
+                                    : isChecked
+                                    ? 'border-white/20 bg-white/[0.06] cursor-pointer'
+                                    : 'border-transparent hover:bg-white/[0.03] cursor-pointer'
                                 }`}
                               >
                                 <input
                                   type="checkbox"
                                   data-debug-id={`project-launch-chain-agent-checkbox-${member.agentInstanceId}`}
                                   checked={isChecked}
-                                  onChange={() => toggleChainAgent(member.agentInstanceId)}
-                                  className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                  disabled={isActive}
+                                  onChange={() => toggleChainAgent(member.agentInstanceId, isActive)}
+                                  className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
                                 />
                                 <div className="min-w-0 flex-1 flex items-center gap-2">
                                   <span
@@ -538,9 +632,18 @@ export default function ProjectLaunchModal({
                                     </span>
                                   )}
                                 </div>
-                                <span className="font-mono text-[10.5px] text-zinc-500">
-                                  {member.runtimeStatus || 'offline'}
-                                </span>
+                                {isActive ? (
+                                  <span
+                                    data-debug-id={`project-launch-chain-agent-active-badge-${member.agentInstanceId}`}
+                                    className="rounded-full bg-emerald-400/15 border border-emerald-400/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300"
+                                  >
+                                    Active ({memberStatus})
+                                  </span>
+                                ) : (
+                                  <span className="font-mono text-[10.5px] text-zinc-500">
+                                    {memberStatus}
+                                  </span>
+                                )}
                               </label>
                             );
                           })
@@ -691,9 +794,9 @@ export default function ProjectLaunchModal({
                 <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Project Instances
                 </span>
-                {instances.length > 0 && (
+                {stoppedInstances.length > 0 && (
                   <span className="text-[11px] text-zinc-500">
-                    Showing {existingPage * EXISTING_PAGE_SIZE + 1}–{Math.min((existingPage + 1) * EXISTING_PAGE_SIZE, instances.length)} of {instances.length} ({instances.length} instance{instances.length === 1 ? '' : 's'})
+                    Showing {existingPage * EXISTING_PAGE_SIZE + 1}–{Math.min((existingPage + 1) * EXISTING_PAGE_SIZE, stoppedInstances.length)} of {stoppedInstances.length} ({stoppedInstances.length} stopped instance{stoppedInstances.length === 1 ? '' : 's'})
                   </span>
                 )}
               </div>
@@ -701,19 +804,26 @@ export default function ProjectLaunchModal({
               <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
                 {instancesQuery.isLoading ? (
                   <div className="py-8 text-center text-xs text-zinc-500">Loading instances…</div>
-                ) : instances.length === 0 ? (
+                ) : rawInstances.length === 0 ? (
                   <div
                     data-debug-id="project-launch-existing-instances-empty"
                     className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
                   >
                     No existing instances for this project yet.
                   </div>
+                ) : hasOnlyActiveInstances ? (
+                  <div
+                    data-debug-id="project-launch-existing-instances-all-active"
+                    className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-400"
+                  >
+                    All existing instances for this project are currently running.
+                  </div>
                 ) : (
                   currentInstances.map((inst) => {
                     const instanceId = String(inst.instance_id || inst.instanceId || inst.id || '');
                     const agentId = String(inst.agent_id || inst.agentId || '');
                     const displayName = String(inst.display_name || inst.displayName || agentId || instanceId);
-                    const runtimeStatus = String(inst.runtime_status || inst.runtimeStatus || 'unknown').toLowerCase();
+                    const runtimeStatus = String(inst.runtime_status || inst.runtimeStatus || 'stopped').toLowerCase();
                     const isChecked = selectedExistingInstanceIds.has(instanceId);
 
                     return (
@@ -741,15 +851,7 @@ export default function ProjectLaunchModal({
                             {instanceId}
                           </div>
                         </div>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold border ${
-                            runtimeStatus === 'running' || runtimeStatus === 'connected'
-                              ? 'bg-emerald-400/15 border-emerald-400/30 text-emerald-300'
-                              : runtimeStatus === 'idle'
-                              ? 'bg-sky-400/15 border-sky-400/30 text-sky-300'
-                              : 'bg-zinc-700/50 border-zinc-600/50 text-zinc-400'
-                          }`}
-                        >
+                        <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold border bg-zinc-700/50 border-zinc-600/50 text-zinc-400">
                           {runtimeStatus}
                         </span>
                       </label>
