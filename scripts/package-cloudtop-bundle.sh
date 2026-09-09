@@ -142,6 +142,172 @@ fi
 mkdir -p "$DATA_DIR" "$RUN_DIR" "$LOG_DIR"
 chmod 0700 "$DATA_DIR"
 
+is_ancestor_or_self() {
+  local target_pid="$1"
+  local cur=$$
+  while [ -n "$cur" ] && [ "$cur" -gt 1 ] 2>/dev/null; do
+    if [ "$cur" -eq "$target_pid" ] 2>/dev/null; then
+      return 0
+    fi
+    cur="$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ' || true)"
+  done
+  return 1
+}
+
+find_port_pids() {
+  local port="$1"
+  local found=""
+  if command -v lsof >/dev/null 2>&1; then
+    local pids_lsof
+    pids_lsof="$(lsof -n -P -ti :"$port" 2>/dev/null || true)"
+    found="$found $pids_lsof"
+  fi
+  if command -v fuser >/dev/null 2>&1; then
+    local pids_fuser
+    pids_fuser="$(fuser "$port/tcp" 2>/dev/null || true)"
+    found="$found $pids_fuser"
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    local pids_ss
+    pids_ss="$(ss -tlpn "sport = :$port" 2>/dev/null | grep -oP 'pid=\K[0-9]+' || true)"
+    found="$found $pids_ss"
+  fi
+  echo "$found" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u || true
+}
+
+check_and_resolve_conflicts() {
+  local force="${1:-false}"
+  local conflict_ports=(49322 49323 49325 8989)
+  local occupied_pids=""
+  local has_conflict=false
+  local service_active_or_looping=false
+
+  # 1. Check systemd service status for heimdall.service
+  local is_own_unit=false
+  if [ -f "/proc/self/cgroup" ] && grep -q "heimdall\.service" /proc/self/cgroup 2>/dev/null; then
+    is_own_unit=true
+  fi
+
+  if [ "$is_own_unit" = false ] && command -v systemctl >/dev/null 2>&1; then
+    local active_state sub_state n_restarts main_pid
+    active_state="$(systemctl --user show heimdall.service -p ActiveState --value 2>/dev/null || true)"
+    sub_state="$(systemctl --user show heimdall.service -p SubState --value 2>/dev/null || true)"
+    n_restarts="$(systemctl --user show heimdall.service -p NRestarts --value 2>/dev/null || true)"
+    main_pid="$(systemctl --user show heimdall.service -p MainPID --value 2>/dev/null || true)"
+
+    if [ "$active_state" = "active" ] || [ "$active_state" = "activating" ] || [ "$sub_state" = "auto-restart" ] || { [ -n "$n_restarts" ] && [ "$n_restarts" -gt 0 ] 2>/dev/null && [ "$active_state" != "inactive" ]; }; then
+      service_active_or_looping=true
+      has_conflict=true
+      if [ -n "$main_pid" ] && [ "$main_pid" -gt 0 ] 2>/dev/null; then
+        occupied_pids="$occupied_pids $main_pid"
+      fi
+    fi
+  fi
+
+  # 2. Check ports via ss / lsof / fuser
+  for p in "${conflict_ports[@]}"; do
+    local pids
+    pids="$(find_port_pids "$p")"
+    if [ -n "$pids" ]; then
+      has_conflict=true
+      occupied_pids="$occupied_pids $pids"
+    fi
+  done
+
+  # 3. Check existing pid files in RUN_DIR
+  if [ -d "$RUN_DIR" ]; then
+    for pf in "$RUN_DIR"/*.pid; do
+      if [ -f "$pf" ]; then
+        local pid
+        pid="$(tr -d '[:space:]' < "$pf" 2>/dev/null || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+          has_conflict=true
+          occupied_pids="$occupied_pids $pid"
+        fi
+      fi
+    done
+  fi
+
+  # Filter out self and ancestor processes
+  local filtered_pids=""
+  for pid in $(echo "$occupied_pids" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u); do
+    if ! is_ancestor_or_self "$pid"; then
+      filtered_pids="$filtered_pids $pid"
+    fi
+  done
+  filtered_pids="$(echo "$filtered_pids" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+  # If no conflict or only protected ancestors, proceed
+  if [ "$has_conflict" = false ] || { [ -z "$filtered_pids" ] && [ "$service_active_or_looping" = false ]; }; then
+    return 0
+  fi
+
+  local pid_display="$filtered_pids"
+  if [ -z "$pid_display" ]; then
+    pid_display="service: heimdall.service"
+  fi
+
+  local prompt_msg="Existing Heimdall processes/service occupy ports (PIDs $pid_display). Stop/kill them to restart cleanly? [Y/n]"
+
+  if [ "$force" = true ] || [ "$is_own_unit" = true ]; then
+    echo "[conflict] --force specified: Automatically stopping existing Heimdall processes/service (PIDs: $pid_display)..."
+  elif [ -t 0 ]; then
+    echo "Existing Heimdall service/processes occupy ports (PIDs $pid_display)."
+    read -rp "$prompt_msg " CONFIRM_CLEAN
+    if [[ "$CONFIRM_CLEAN" =~ ^[Nn]$ ]]; then
+      echo "Startup aborted by user."
+      exit 1
+    fi
+  else
+    echo "[-] Error: $prompt_msg" >&2
+    echo "[-] Existing Heimdall service/processes occupy ports (PIDs $pid_display)." >&2
+    echo "[-] Hint: Pass --force to terminate existing processes/service automatically." >&2
+    exit 1
+  fi
+
+  # Stop systemd unit if running or looping
+  if [ "$is_own_unit" = false ] && command -v systemctl >/dev/null 2>&1; then
+    echo "[conflict] Stopping systemd user service heimdall.service..."
+    systemctl --user stop heimdall.service 2>/dev/null || true
+  fi
+
+  # Kill stale PIDs
+  if [ -n "$filtered_pids" ]; then
+    echo "[conflict] Terminating stale processes (PIDs: $filtered_pids)..."
+    for pid in $filtered_pids; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+    local kill_deadline=$((SECONDS + 3))
+    for pid in $filtered_pids; do
+      while kill -0 "$pid" 2>/dev/null; do
+        if [ $SECONDS -ge $kill_deadline ]; then
+          kill -KILL "$pid" 2>/dev/null || true
+          break
+        fi
+        sleep 0.1
+      done
+    done
+  fi
+
+  # Clean stale pid files in RUN_DIR
+  if [ -d "$RUN_DIR" ]; then
+    echo "[conflict] Cleaning stale pid files in $RUN_DIR..."
+    rm -f "$RUN_DIR"/*.pid
+  fi
+
+  # Ensure ports are freed
+  for p in "${conflict_ports[@]}"; do
+    local remaining
+    remaining="$(find_port_pids "$p")"
+    for pid in $remaining; do
+      if ! is_ancestor_or_self "$pid"; then
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+    done
+  done
+  sleep 0.2
+}
+
 # 0.5 Ensure Jetski provider is preconfigured
 if [ ! -f "$DATA_DIR/bridge/providers.json" ] || ! grep -q '"jetski"' "$DATA_DIR/bridge/providers.json" 2>/dev/null; then
   mkdir -p "$DATA_DIR/bridge"
@@ -154,14 +320,26 @@ if [ ! -f "$DATA_DIR/bridge/providers.json" ] || ! grep -q '"jetski"' "$DATA_DIR
   chmod 0600 "$DATA_DIR/bridge/providers.json" 2>/dev/null || true
 fi
 
-# 1. Detect Standalone Remote Bridge Mode
+# 1. Detect Standalone Remote Bridge Mode and options
 IS_STANDALONE=false
 STANDALONE_HUB_URL=""
+FORCE=false
+FOREGROUND=false
 
 for arg in "$@"; do
   case "$arg" in
     --standalone)
       IS_STANDALONE=true
+      ;;
+    --force)
+      FORCE=true
+      ;;
+    --foreground)
+      FOREGROUND=true
+      ;;
+    -f)
+      FORCE=true
+      FOREGROUND=true
       ;;
   esac
 done
@@ -174,6 +352,9 @@ if [ -f "$DATA_DIR/standalone.env" ]; then
     STANDALONE_HUB_URL="${HEIMDALL_HUB_URL:-}"
   fi
 fi
+
+# 1.5 Inspect and resolve port / service conflicts
+check_and_resolve_conflicts "$FORCE"
 
 # 2. Check LOAS / gcert
 if command -v gcertstatus >/dev/null 2>&1; then
@@ -248,7 +429,7 @@ if [ "$IS_STANDALONE" = true ]; then
   echo "  Logs:            $BRIDGE_LOG"
   echo "========================================================================"
 
-  if [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "-f" ]; then
+  if [ "$FOREGROUND" = true ]; then
     trap 'echo "[supervisor] Shutting down Heimdall bridge..."; "$BIN_DIR/stop.sh" || true; exit 0' SIGTERM SIGINT SIGHUP
     echo "[supervisor] Running in foreground under systemd. Monitoring bridge daemon..."
     while true; do
@@ -449,7 +630,7 @@ echo "  Bridge Status:       http://127.0.0.1:$BRIDGE_PORT"
 echo "  Cloudtop Gateway:    http://${HOST_FQDN}:8989"
 echo "========================================================================"
 
-if [ "${1:-}" = "--foreground" ] || [ "${1:-}" = "-f" ]; then
+if [ "$FOREGROUND" = true ]; then
   trap 'echo "[supervisor] Shutting down Heimdall services..."; "$BIN_DIR/stop.sh" || true; exit 0' SIGTERM SIGINT SIGHUP
   echo "[supervisor] Running in foreground under systemd. Monitoring daemons..."
   while true; do

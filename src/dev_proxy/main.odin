@@ -138,11 +138,27 @@ run_dev_proxy_server :: proc(config: Dev_Proxy_Config, store: ^Dev_Proxy_Store) 
 		fmt.eprintln("invalid --listen", config.listen)
 		return false
 	}
-	address := net.IP4_Loopback
-	if host != "127.0.0.1" {
-		if parsed, parsed_ok := net.parse_ip4_address(host); parsed_ok do address = parsed
+	listener: net.TCP_Socket
+	err: net.Network_Error
+
+	if host == "0.0.0.0" || host == "::" || host == "[::]" || host == "*" {
+		listener, err = net.listen_tcp(net.Endpoint{address = net.IP6_Any, port = port})
+		if err != nil {
+			fmt.eprintln("ham-dev-proxy ipv6 listen failed, falling back to ipv4:", err)
+			listener, err = net.listen_tcp(net.Endpoint{address = net.IP4_Any, port = port})
+		}
+	} else {
+		address: net.Address = net.IP4_Loopback
+		if host != "127.0.0.1" && host != "localhost" && host != "" {
+			if parsed, parsed_ok := net.parse_ip4_address(host); parsed_ok {
+				address = parsed
+			} else if parsed6, parsed6_ok := net.parse_ip6_address(host); parsed6_ok {
+				address = parsed6
+			}
+		}
+		listener, err = net.listen_tcp(net.Endpoint{address = address, port = port})
 	}
-	listener, err := net.listen_tcp({address, port})
+
 	if err != nil {
 		fmt.eprintln("ham-dev-proxy listen failed", config.listen, err)
 		return false
