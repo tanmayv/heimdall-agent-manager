@@ -1,6 +1,13 @@
-import { heimdallApi, withSessionQuery } from '../heimdallApi';
+import { heimdallApi } from '../heimdallApi';
+import { cookieJsonFetch } from '../cookieFetch';
 
-// UI-12 / UI-18 / SEARCH-5: global entity search via GET /api/v1/search.
+// UI-12 / UI-18 / SEARCH-5 / SEARCH-13: global entity search via GET /api/v1/search.
+// The rewrite/web shell is served behind the trusted proxy and authenticates with
+// the SAME cookie session as `/api/v1/me` (`credentials: 'include'`) — like
+// sidebar/chats/artifacts — NOT the legacy per-client token session. So this uses
+// the shared cookieFetch transport; the old withSessionQuery/daemonUrl+clientToken
+// path fired no request in the cookie shell (its session has neither), which is
+// why the command palette returned nothing (SEARCH-13).
 // Response groups hits by resource type; each hit carries the SEARCH-2 clean
 // shape: id/label/sublabel/score/route plus nested parent {id,type} (null for
 // top-level entities), a preview snippet, and matched_field. The `route` field
@@ -37,7 +44,6 @@ export type SearchResponse = {
 export type GlobalSearchArg = {
   q: string;
   types?: string;
-  scopeIds?: string;
   exclude?: string;
   limit?: number;
   cursor?: string;
@@ -87,27 +93,27 @@ function normalizeSearch(data: any): SearchResponse {
 export const searchApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     globalSearch: build.query<SearchResponse, GlobalSearchArg>({
-      queryFn: withSessionQuery(async ({ q, types, scopeIds, exclude, limit = 20, cursor }, { session }) => {
-        // Empty/whitespace q returns empty (per UI-BE-5); skip the network call.
+      queryFn: async ({ q, types, exclude, limit = 20, cursor }) => {
+        // Empty/whitespace q returns empty (per UI-BE-5); skip the network call so
+        // an empty box never hits the endpoint. The palette only sends q/limit/cursor
+        // today; types/exclude are forwarded when present (scope_ids dropped, SEARCH-8).
         const query = String(q || '').trim();
-        if (!query || !session?.daemonUrl || !session?.clientToken) {
-          return { groups: [], hits: [], hasMore: false, nextCursor: null };
+        if (!query) {
+          return { data: { groups: [], hits: [], hasMore: false, nextCursor: null } };
         }
-        const params = new URLSearchParams({ q: query, limit: String(limit) });
-        if (types) params.set('types', types);
-        if (scopeIds) params.set('scope_ids', scopeIds);
-        if (exclude) params.set('exclude', exclude);
-        if (cursor) params.set('cursor', cursor);
-        const res = await fetch(`${session.daemonUrl.replace(/\/$/, '')}/api/v1/search?${params.toString()}`, {
-          headers: { Authorization: `Bearer ${session.clientToken}` },
-        });
-        if (!res.ok) {
-          throw new Error(`Search failed (${res.status})`);
+        try {
+          const params = new URLSearchParams({ q: query, limit: String(limit) });
+          if (types) params.set('types', types);
+          if (exclude) params.set('exclude', exclude);
+          if (cursor) params.set('cursor', cursor);
+          // cookieJsonFetch => GET apiUrl('/search?…') with credentials:'include',
+          // throwing on non-2xx and unwrapping `body.data` (the {groups,page} object).
+          const data = await cookieJsonFetch(`/search?${params.toString()}`);
+          return { data: normalizeSearch(data) };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Search failed') } as any };
         }
-        const json = await res.json();
-        // The Hub wraps data under `data`; normalize either shape.
-        return normalizeSearch(json?.data || json);
-      }),
+      },
     }),
   }),
 });

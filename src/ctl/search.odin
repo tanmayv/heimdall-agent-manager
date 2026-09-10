@@ -70,10 +70,18 @@ ctl_search_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
-	// Human output: page through with the cursor and aggregate.
+	// Human output: page through with the cursor and aggregate. Each row owns its
+	// strings (cloned in ctl_search_collect) so they survive the per-page JSON tree
+	// being destroyed; free them all once printing is done.
 	rows := make([dynamic]Search_Row)
-	defer delete(rows)
+	defer {
+		for row in rows do search_row_delete(row)
+		delete(rows)
+	}
+	// cursor holds a cloned (owned) next_cursor between pages; "" is the unallocated
+	// literal start/end sentinel, so only free it when it points at a clone.
 	cursor := ""
+	defer if cursor != "" do delete(cursor)
 	for _ in 0..<SEARCH_MAX_PAGES {
 		body, ok := ctl_search_fetch(base, token, ctl_build_search_path(args, query, cursor))
 		if !ok { fmt.println("search request failed"); os.exit(1) }
@@ -83,8 +91,9 @@ ctl_search_command :: proc(cmd: []string, args: []string) {
 			fmt.println(body)
 			return
 		}
-		if next == "" do break
+		if cursor != "" do delete(cursor)
 		cursor = next
+		if cursor == "" do break
 	}
 	ctl_print_search_rows(rows[:], query)
 }
@@ -169,22 +178,39 @@ ctl_search_collect :: proc(body: string, rows: ^[dynamic]Search_Row) -> (next_cu
 		for hit_value in hits {
 			hit, hitok := hit_value.(json.Object)
 			if !hitok do continue
+			// json_field_string returns a slice INTO the parsed tree, which the
+			// deferred destroy_value frees when this proc returns. Clone every field
+			// (gtype per row, so no two rows share a backing) so the rows can outlive
+			// the page's JSON tree; ctl_search_command frees them via search_row_delete.
 			append(rows, Search_Row{
-				type          = gtype,
-				label         = json_field_string(hit, "label"),
-				sublabel      = json_field_string(hit, "sublabel"),
-				route         = json_field_string(hit, "route"),
-				preview       = json_field_string(hit, "preview"),
-				matched_field = json_field_string(hit, "matched_field"),
+				type          = strings.clone(gtype),
+				label         = strings.clone(json_field_string(hit, "label")),
+				sublabel      = strings.clone(json_field_string(hit, "sublabel")),
+				route         = strings.clone(json_field_string(hit, "route")),
+				preview       = strings.clone(json_field_string(hit, "preview")),
+				matched_field = strings.clone(json_field_string(hit, "matched_field")),
 			})
 		}
 	}
 	// Only follow the cursor when the server says there is more.
 	if page, has_page := root["page"].(json.Object); has_page {
 		has_more, _ := page["has_more"].(json.Boolean)
-		if has_more do return json_field_string(page, "next_cursor"), false
+		// Clone the cursor too: it points into the tree destroy_value frees below, so
+		// the caller would otherwise read freed memory when building the next page.
+		if has_more do return strings.clone(json_field_string(page, "next_cursor")), false
 	}
 	return "", false
+}
+
+// search_row_delete frees the strings a Search_Row owns (cloned in
+// ctl_search_collect so the row can outlive the parsed JSON tree it came from).
+search_row_delete :: proc(row: Search_Row) {
+	delete(row.type)
+	delete(row.label)
+	delete(row.sublabel)
+	delete(row.route)
+	delete(row.preview)
+	delete(row.matched_field)
 }
 
 json_field_string :: proc(obj: json.Object, key: string) -> string {
