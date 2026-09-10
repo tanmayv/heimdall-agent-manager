@@ -1,9 +1,13 @@
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
-// UI-12 / UI-18: global entity search via GET /api/v1/search (Hub rewrite route).
-// Response groups hits by resource type; each hit carries id/label/sublabel/
-// score/route. The `route` field is the navigation target (e.g.
-// `/library/artifacts/:artifact_id`, `/chains/:chain_id`).
+// UI-12 / UI-18 / SEARCH-5: global entity search via GET /api/v1/search.
+// Response groups hits by resource type; each hit carries the SEARCH-2 clean
+// shape: id/label/sublabel/score/route plus nested parent {id,type} (null for
+// top-level entities), a preview snippet, and matched_field. The `route` field
+// is the navigation target (e.g. `/chains/:chain_id/tasks/:task_id` for a
+// comment, `/skills/:slug` for a skill).
+
+export type SearchParent = { id: string; type: string };
 
 export type SearchHit = {
   id: string;
@@ -12,6 +16,10 @@ export type SearchHit = {
   score?: number;
   route?: string;
   type?: string;
+  // SEARCH-2 clean shape (no back-compat): nested parent, preview, matched field.
+  parent?: SearchParent | null;
+  preview?: string;
+  matchedField?: string;
 };
 
 export type SearchGroup = {
@@ -26,6 +34,24 @@ export type SearchResponse = {
   nextCursor?: string | null;
 };
 
+export type GlobalSearchArg = {
+  q: string;
+  types?: string;
+  scopeIds?: string;
+  exclude?: string;
+  limit?: number;
+  cursor?: string;
+};
+
+function normalizeParent(raw: any): SearchParent | null {
+  const parent = raw?.parent;
+  if (!parent || typeof parent !== 'object') return null;
+  const id = String(parent.id || '');
+  const type = String(parent.type || '');
+  if (!id && !type) return null;
+  return { id, type };
+}
+
 function normalizeHit(raw: any, type: string): SearchHit {
   return {
     id: String(raw?.id || raw?.resource_id || ''),
@@ -34,6 +60,9 @@ function normalizeHit(raw: any, type: string): SearchHit {
     score: raw?.score !== undefined ? Number(raw.score) : undefined,
     route: raw?.route || undefined,
     type,
+    parent: normalizeParent(raw),
+    preview: raw?.preview ? String(raw.preview) : undefined,
+    matchedField: raw?.matched_field ? String(raw.matched_field) : undefined,
   };
 }
 
@@ -57,8 +86,8 @@ function normalizeSearch(data: any): SearchResponse {
 
 export const searchApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    globalSearch: build.query<SearchResponse, { q: string; types?: string; limit?: number }>({
-      queryFn: withSessionQuery(async ({ q, types, limit = 20 }, { session }) => {
+    globalSearch: build.query<SearchResponse, GlobalSearchArg>({
+      queryFn: withSessionQuery(async ({ q, types, scopeIds, exclude, limit = 20, cursor }, { session }) => {
         // Empty/whitespace q returns empty (per UI-BE-5); skip the network call.
         const query = String(q || '').trim();
         if (!query || !session?.daemonUrl || !session?.clientToken) {
@@ -66,6 +95,9 @@ export const searchApi = heimdallApi.injectEndpoints({
         }
         const params = new URLSearchParams({ q: query, limit: String(limit) });
         if (types) params.set('types', types);
+        if (scopeIds) params.set('scope_ids', scopeIds);
+        if (exclude) params.set('exclude', exclude);
+        if (cursor) params.set('cursor', cursor);
         const res = await fetch(`${session.daemonUrl.replace(/\/$/, '')}/api/v1/search?${params.toString()}`, {
           headers: { Authorization: `Bearer ${session.clientToken}` },
         });
@@ -80,4 +112,8 @@ export const searchApi = heimdallApi.injectEndpoints({
   }),
 });
 
-export const { useGlobalSearchQuery } = searchApi;
+// useGlobalSearchQuery: debounced first-page search-as-you-type (RTK Query keeps
+// only the latest arg and cancels superseded requests).
+// useLazyGlobalSearchQuery: on-demand "load more" — the palette calls it with the
+// previous page's nextCursor and appends the returned hits.
+export const { useGlobalSearchQuery, useLazyGlobalSearchQuery } = searchApi;

@@ -34,6 +34,7 @@ App_Graph :: struct {
 	sqlite_content: sqlite.Content_Repo_SQLite,
 	sqlite_taskchains: sqlite.Taskchain_Repo_SQLite,
 	sqlite_search: sqlite.Search_Repo_SQLite,
+	search_skills: []sqlite.Skill_Doc,
 	sqlite_actions: sqlite.Action_Repo_SQLite,
 	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_push: sqlite.Push_Repo_SQLite,
@@ -59,6 +60,7 @@ App_Graph :: struct {
 	content_handlers: http.Content_Handlers,
 	taskchain_handlers: http.Taskchain_Handlers,
 	search_handlers: http.Search_Handlers,
+	skills_handlers: http.Skills_Handlers,
 	push_handlers: http.Push_Handlers,
 	agent_action_handlers: http.Agent_Action_Handlers,
 	action_handlers: http.Action_Handlers,
@@ -86,7 +88,14 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.projects = sqlite.new_project_repository(&graph.sqlite_projects, &graph.db)
 	graph.repos.content = sqlite.new_content_repository(&graph.sqlite_content, &graph.db)
 	graph.repos.taskchains = sqlite.new_taskchain_repository(&graph.sqlite_taskchains, &graph.db)
-	graph.repos.search = sqlite.new_search_repository(&graph.sqlite_search, &graph.db)
+	// Inject the compiled-in skills (slug + SKILL.md contents) into the search repo
+	// so the skills provider can scan them without the repository importing the
+	// agent service (keeps the repository below the service layer).
+	graph.search_skills = make([]sqlite.Skill_Doc, len(agent_service.STATIC_SKILLS))
+	for skill, i in agent_service.STATIC_SKILLS {
+		graph.search_skills[i] = sqlite.Skill_Doc{slug = skill.slug, content = skill.content}
+	}
+	graph.repos.search = sqlite.new_search_repository(&graph.sqlite_search, &graph.db, graph.search_skills)
 	graph.repos.actions = sqlite.new_action_repository(&graph.sqlite_actions, &graph.db)
 	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
@@ -135,9 +144,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents, content = &graph.content, projects = &graph.projects, event_bus = &graph.event_bus}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
+	graph.skills_handlers = http.Skills_Handlers{auth = &graph.auth}
 	graph.push_handlers = http.Push_Handlers{auth = &graph.auth, push = &graph.push, vapid_public_key = config.vapid_public_key}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
-	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
+	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains, search = &graph.search, event_bus = &graph.event_bus, push = &graph.push, public_app_origin = config.public_app_origin}
 	graph.action_bridge_versions = make(map[string]int)
 	graph.action_handlers = http.Action_Handlers{
 		auth = &graph.auth,
@@ -192,6 +202,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "DELETE", "/api/v1/me/push-subscriptions", rawptr(&graph.push_handlers), http.delete_push_subscription_handler)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/user-ws", rawptr(&graph.user_handlers), http.user_ws_upgrade_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/search", rawptr(&graph.search_handlers), http.search_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/skills/*", rawptr(&graph.skills_handlers), http.skill_detail_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/memories", rawptr(&graph.content_handlers), http.list_memories_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/memories", rawptr(&graph.content_handlers), http.create_memory_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/memories/*", rawptr(&graph.content_handlers), http.memory_detail_handler)
@@ -302,6 +313,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/list", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/show", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/content", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_content_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/search", rawptr(&graph.agent_action_handlers), http.agent_action_search_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/propose", rawptr(&graph.agent_action_handlers), http.agent_action_memory_propose_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/list", rawptr(&graph.agent_action_handlers), http.agent_action_memory_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/show", rawptr(&graph.agent_action_handlers), http.agent_action_memory_show_handler)
