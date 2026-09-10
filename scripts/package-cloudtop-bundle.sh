@@ -812,6 +812,12 @@ You can also control services directly:
 ~/.local/share/heimdall/bin/stop.sh
 ```
 
+### Agent Run Directories & CLI (`ham-ctl`)
+
+Each agent instance operates in an isolated run directory (e.g. `instances/<instance_id>/`). On startup, Heimdall installs a bootstrap shim at `.heimdall/bin/ham-ctl` that automatically:
+- Defaults `HAM_HUB_URL` to `http://127.0.0.1:8989` (the Cloudtop Edge Gateway) via `export HAM_HUB_URL=${HAM_HUB_URL:-'http://127.0.0.1:8989'}`, so agents and tools can interact directly with the Hub API without manual environment configuration.
+- Injects `HEIMDALL_BRIDGE_ENDPOINT`, `HEIMDALL_AGENT_TOKEN`, and `HEIMDALL_AGENT_INSTANCE_ID` for secure local bridge IPC.
+
 ---
 
 ## 5. Switching Between Modes

@@ -198,6 +198,12 @@ bridge_bootstrap_render_ham_ctl_shim :: proc(bridge_endpoint, agent_token, insta
 	if strings.trim_space(ctl) == "" do return "", false
 	b := strings.builder_make()
 	strings.write_string(&b, "#!/bin/sh\n")
+	hub_url := os.get_env_alloc("HAM_HUB_URL", context.allocator)
+	if hub_url == "" do hub_url = os.get_env_alloc("HEIMDALL_HUB_URL", context.allocator)
+	if hub_url == "" do hub_url = "http://127.0.0.1:8989"
+	strings.write_string(&b, "export HAM_HUB_URL=${HAM_HUB_URL:-")
+	bridge_bootstrap_shell_quote(&b, hub_url)
+	strings.write_string(&b, "}\n")
 	strings.write_string(&b, "export HEIMDALL_BRIDGE_ENDPOINT="); bridge_bootstrap_shell_quote(&b, bridge_endpoint); strings.write_byte(&b, '\n')
 	strings.write_string(&b, "export HEIMDALL_AGENT_TOKEN="); bridge_bootstrap_shell_quote(&b, agent_token); strings.write_byte(&b, '\n')
 	strings.write_string(&b, "export HEIMDALL_AGENT_INSTANCE_ID="); bridge_bootstrap_shell_quote(&b, instance_id); strings.write_byte(&b, '\n')
@@ -211,12 +217,18 @@ bridge_bootstrap_write_ham_ctl_wrapper :: proc(run_dir, bridge_endpoint, agent_t
 		fmt.eprintln("bridge bootstrap failed: ham-ctl not found; set HEIMDALL_HAM_CTL_BIN or put ham-ctl on PATH (the flake `bridge` app sets this automatically)")
 		return false
 	}
+	hub_url := os.get_env_alloc("HAM_HUB_URL", context.allocator)
+	if hub_url == "" do hub_url = os.get_env_alloc("HEIMDALL_HUB_URL", context.allocator)
+	if hub_url == "" do hub_url = "http://127.0.0.1:8989"
 	bin_dir := strings.concatenate({strings.trim_right(run_dir, "/"), "/.heimdall/bin"})
 	_ = os.make_directory_all(bin_dir)
 	wrapper_path := strings.concatenate({bin_dir, "/ham-ctl"})
 	_ = posix.unlink(cstring(raw_data(wrapper_path)))
 	b := strings.builder_make()
 	strings.write_string(&b, "#!/bin/sh\n")
+	strings.write_string(&b, "export HAM_HUB_URL=${HAM_HUB_URL:-")
+	bridge_bootstrap_shell_quote(&b, hub_url)
+	strings.write_string(&b, "}\n")
 	strings.write_string(&b, "export HEIMDALL_BRIDGE_ENDPOINT="); bridge_bootstrap_shell_quote(&b, bridge_endpoint); strings.write_byte(&b, '\n')
 	strings.write_string(&b, "export HEIMDALL_AGENT_TOKEN="); bridge_bootstrap_shell_quote(&b, agent_token); strings.write_byte(&b, '\n')
 	strings.write_string(&b, "export HEIMDALL_AGENT_INSTANCE_ID="); bridge_bootstrap_shell_quote(&b, instance_id); strings.write_byte(&b, '\n')
