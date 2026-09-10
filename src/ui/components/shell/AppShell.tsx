@@ -135,6 +135,22 @@ function isRouteActive(currentPath: string, itemPath: string): boolean {
   return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
 }
 
+// Parse '/chains/:chainId(/tasks/:taskId)?' into its decoded parts. taskId is
+// undefined for the plain '/chains/:chainId' route. Centralised so the content
+// switch, breadcrumb, and any future consumer agree — a naive slice would pass the
+// whole 'chain.../tasks/task...' string as the chainId and break the chain lookup.
+function parseChainRoute(path: string): { chainId: string; taskId?: string } {
+  const rest = path.slice('/chains/'.length);
+  const tasksAt = rest.indexOf('/tasks/');
+  if (tasksAt >= 0) {
+    return {
+      chainId: decodeURIComponent(rest.slice(0, tasksAt)),
+      taskId: decodeURIComponent(rest.slice(tasksAt + '/tasks/'.length)),
+    };
+  }
+  return { chainId: decodeURIComponent(rest) };
+}
+
 function routeTitle(path: string): string {
   if (path === '/conversations/new') return 'New conversation';
   if (path.startsWith('/conversations/')) return 'Conversation';
@@ -215,7 +231,7 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
     const match = SETTINGS_NAV.find((item) => item.path.endsWith(`/${key}`));
     return [{ label: 'Settings', href: '/settings/bridges' }, { label: match?.label || decodeSegment(key) }];
   }
-  if (path.startsWith('/chains/')) return [{ label: 'Task Chains', href: '/chains' }, { label: decodeSegment(path.split('/')[2] || 'Chain') }];
+  if (path.startsWith('/chains/')) return [{ label: 'Task Chains', href: '/chains' }, { label: parseChainRoute(path).chainId || 'Chain' }];
   if (path === '/actions/new') return [{ label: 'Actions', href: '/actions' }, { label: 'New Action' }];
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return [{ label: 'Actions', href: '/actions' }, { label: 'Edit Action' }];
   if (path.startsWith('/actions')) return [{ label: 'Actions' }];
@@ -988,7 +1004,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
         ) : path === '/chains' ? (
           <TaskChainsPage isMobile={isMobile} />
         ) : path.startsWith('/chains/') ? (
-          <TaskChainsPage chainId={decodeURIComponent(path.slice('/chains/'.length))} isMobile={isMobile} />
+          <TaskChainsPage {...parseChainRoute(path)} isMobile={isMobile} />
         ) : path === '/agents' ? (
           <AgentsPanel />
         ) : path === '/agents/new' ? (

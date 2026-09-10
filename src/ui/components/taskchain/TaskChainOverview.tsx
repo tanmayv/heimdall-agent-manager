@@ -48,6 +48,9 @@ import {
 
 interface TaskChainOverviewProps {
   chainId: string;
+  // Optional deep-link target: when set (from '/chains/:chainId/tasks/:taskId'),
+  // the matching task row is expanded and scrolled into view once it has loaded.
+  focusTaskId?: string;
   onClose?: () => void;
   isMobile?: boolean;
 }
@@ -167,6 +170,7 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
 
 export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   chainId,
+  focusTaskId,
   onClose,
   isMobile,
 }) => {
@@ -200,6 +204,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [completedTasksExpanded, setCompletedTasksExpanded] = useState(false);
   const [cancelledTasksExpanded, setCancelledTasksExpanded] = useState(false);
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
+  // Tracks the focusTaskId we've already auto-opened so a deep-link scroll happens
+  // exactly once (background refetches replace the tasks array but must not yank the
+  // user back to the task on every poll).
+  const focusedTaskRef = useRef<string | null>(null);
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentAttachments, setCommentAttachments] = useState<Record<string, CommentAttachment[]>>({});
   const [statusMenuOpenTaskId, setStatusMenuOpenTaskId] = useState<string | null>(null);
@@ -304,6 +312,33 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       const timeB = new Date(b.updated_at || b.updatedAt || b.created_at || b.createdAt || 0).getTime();
       return timeA - timeB;
     });
+
+  // Deep-link focus (UI: '/chains/:chainId/tasks/:taskId'): once the task list has
+  // loaded, expand the referenced task (and its collapsed Completed/Cancelled
+  // section, if any) and scroll it into view — exactly ONCE per focusTaskId so we
+  // never fight the user's manual scroll on a background refetch. A bogus taskId
+  // just renders the chain (no crash, no scroll).
+  useEffect(() => {
+    if (!focusTaskId || focusedTaskRef.current === focusTaskId) return;
+    if (isLoading) return; // wait for the async task list before deciding
+    const target = tasks.find((t: any) => (t.taskId || t.id) === focusTaskId);
+    if (!target) {
+      focusedTaskRef.current = focusTaskId; // loaded but absent (bogus id): give up
+      return;
+    }
+    focusedTaskRef.current = focusTaskId;
+    setExpandedTaskIds((prev) => ({ ...prev, [focusTaskId]: true }));
+    if (isTaskCompleted(target)) setCompletedTasksExpanded(true);
+    else if (isTaskCancelled(target)) setCancelledTasksExpanded(true);
+    // Scroll after the row (and any just-expanded section) has committed to the DOM.
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-debug-id="taskchain-task-row-${focusTaskId}"]`);
+        el?.scrollIntoView({ block: 'center' });
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [focusTaskId, tasks, isLoading]);
 
   // Add-Agent popup dependent option lists (identity -> bridge -> provider -> tier).
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema

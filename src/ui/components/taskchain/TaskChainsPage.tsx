@@ -13,6 +13,9 @@ import { TaskChainOverview } from './TaskChainOverview';
 
 interface TaskChainsPageProps {
   chainId?: string;
+  // Optional deep-link target task (from '/chains/:chainId/tasks/:taskId'); the
+  // chain view auto-opens + scrolls to it. Undefined for the plain chain route.
+  taskId?: string;
   isMobile?: boolean;
 }
 
@@ -199,7 +202,7 @@ function ChainGroupCard({
   );
 }
 
-export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initialChainId, isMobile }) => {
+export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initialChainId, taskId: focusTaskId, isMobile }) => {
   const [selectedChainId, setSelectedChainId] = useState<string>(initialChainId || '');
   const [filterProjectId, setFilterProjectId] = useState<string>('');
   // Roughly half of real chains carry no tasks yet and have nothing to show, so
@@ -241,7 +244,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   if (selectedChainId) {
     return (
       <div className="h-full w-full">
-        <TaskChainOverview chainId={selectedChainId} onClose={() => setSelectedChainId('')} isMobile={isMobile} />
+        <TaskChainOverview chainId={selectedChainId} focusTaskId={focusTaskId} onClose={() => setSelectedChainId('')} isMobile={isMobile} />
       </div>
     );
   }
