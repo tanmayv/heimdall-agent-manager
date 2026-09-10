@@ -588,13 +588,53 @@ MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP :: `ALTER TABLE memories ADD COLUMN
 DELETE FROM memories WHERE owner_user_id = 'system' AND (type = 'skill' OR memory_id LIKE 'mem_system_%');
 `
 
-MIGRATION_029_FIG_PROJECTS :: `ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'local';
+// MIGRATION_029_SEARCH_FTS_COMMENTS adds an external-content FTS5 index over
+// task_comments.body so comment search is tokenized + multi-word + relevance-
+// ranked (retiring the LIKE '%q%' full scan). Kept byte-identical to the on-disk
+// 029_search_fts_comments.sql twin. Idempotent (IF NOT EXISTS + backfill WHERE NOT
+// IN); run_migrations skips it (marking applied) when FTS5 is unavailable or the
+// vtable already exists, so non-FTS builds still boot on the indexed-LIKE fallback.
+MIGRATION_029_SEARCH_FTS_COMMENTS :: `CREATE VIRTUAL TABLE IF NOT EXISTS task_comments_fts USING fts5(
+  body,
+  content='task_comments',
+  content_rowid='rowid',
+  tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS task_comments_ai AFTER INSERT ON task_comments BEGIN
+  INSERT INTO task_comments_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS task_comments_ad AFTER DELETE ON task_comments BEGIN
+  INSERT INTO task_comments_fts(task_comments_fts, rowid, body) VALUES('delete', old.rowid, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS task_comments_au AFTER UPDATE ON task_comments BEGIN
+  INSERT INTO task_comments_fts(task_comments_fts, rowid, body) VALUES('delete', old.rowid, old.body);
+  INSERT INTO task_comments_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
+
+INSERT INTO task_comments_fts(rowid, body)
+  SELECT rowid, body FROM task_comments
+  WHERE rowid NOT IN (SELECT rowid FROM task_comments_fts);
+`
+
+// MIGRATION_030_SEARCH_FTS_ALL broadens the SEARCH-6 FTS5 foundation to every
+// text-bearing scope (conversations/agents/agent_instances/task-chains/tasks/
+// projects/artifacts/memories) as per-table external-content FTS5 vtables + sync
+// triggers + idempotent backfill. It is embedded via #load of the on-disk twin so
+// the embedded copy is byte-identical BY CONSTRUCTION (no hand-copy drift). Same
+// boot-safe guard as 029: skipped (marked applied) when FTS5 is unavailable or the
+// vtables already exist, so non-FTS builds boot on the indexed-LIKE fallback.
+MIGRATION_030_SEARCH_FTS_ALL :: #load("migrations/030_search_fts_all.sql", string)
+
+MIGRATION_031_FIG_PROJECTS :: `ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'local';
 ALTER TABLE projects ADD COLUMN workspace_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE projects ADD COLUMN relative_path TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_projects_owner_type ON projects(owner_user_id, project_type);
 `
 
-migration_order :: [29]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_fig_projects.sql"}
+migration_order :: [31]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_fig_projects.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -645,7 +685,18 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if (name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql") && table_column_exists(conn, "projects", "project_type") && table_column_exists(conn, "projects", "workspace_name") && table_column_exists(conn, "projects", "relative_path") {
+		// FTS5 migrations are skipped (marked applied) when FTS5 is unavailable or the
+		// vtable already exists, so the append-only ledger stays consistent and
+		// non-FTS builds boot on the indexed-LIKE fallback.
+		if name == "029_search_fts_comments.sql" && (!fts5_available(conn) || sqlite_object_exists(conn, "task_comments_fts")) {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "030_search_fts_all.sql" && (!fts5_available(conn) || sqlite_object_exists(conn, "memories_fts")) {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if (name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql") && table_column_exists(conn, "projects", "project_type") && table_column_exists(conn, "projects", "workspace_name") && table_column_exists(conn, "projects", "relative_path") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -711,7 +762,9 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "026_memory_scope_lists.sql" do return strings.clone(MIGRATION_026_MEMORY_SCOPE_LISTS)
 	if name == "027_default_coordinator_agent.sql" do return strings.clone(MIGRATION_027_DEFAULT_COORDINATOR_AGENT)
 	if name == "028_memory_description_and_cleanup.sql" do return strings.clone(MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP)
-	if name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql" do return strings.clone(MIGRATION_029_FIG_PROJECTS)
+	if name == "029_search_fts_comments.sql" do return strings.clone(MIGRATION_029_SEARCH_FTS_COMMENTS)
+	if name == "030_search_fts_all.sql" do return strings.clone(MIGRATION_030_SEARCH_FTS_ALL)
+	if name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql" do return strings.clone(MIGRATION_031_FIG_PROJECTS)
 	return ""
 }
 
@@ -742,6 +795,28 @@ upgrade_user_api_tokens_schema :: proc(conn: ^Conn) -> bool {
 upgrade_task_comments_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "task_comments", "author_agent_instance_id") && !exec(conn, "ALTER TABLE task_comments ADD COLUMN author_agent_instance_id TEXT NOT NULL DEFAULT '';") do return false
 	return true
+}
+
+// fts5_available reports whether the linked SQLite was built with ENABLE_FTS5.
+fts5_available :: proc(conn: ^Conn) -> bool {
+	if conn == nil || conn.db == nil do return false
+	stmt: sqlite3_stmt = nil
+	query := "SELECT count(*) FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5';"
+	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
+	defer sqlite3_finalize(stmt)
+	if sqlite3_step(stmt) != SQLITE_ROW do return false
+	return int_v(column_text(stmt, 0)) > 0
+}
+
+// sqlite_object_exists reports whether a table/vtable/trigger of the given name
+// exists (sqlite_master lookup). Used to detect the FTS vtable idempotently.
+sqlite_object_exists :: proc(conn: ^Conn, name: string) -> bool {
+	if conn == nil || conn.db == nil do return false
+	stmt: sqlite3_stmt = nil
+	query := fmt.tprintf("SELECT 1 FROM sqlite_master WHERE name='%s' LIMIT 1;", escape_sql_literal(name))
+	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
+	defer sqlite3_finalize(stmt)
+	return sqlite3_step(stmt) == SQLITE_ROW
 }
 
 table_column_exists :: proc(conn: ^Conn, table_name, column_name: string) -> bool {

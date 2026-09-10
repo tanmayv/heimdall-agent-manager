@@ -31,6 +31,7 @@ import UserTokensPanel from '../settings/UserTokensPanel';
 import MemoryPanel from '../settings/MemoryPanel';
 import MemoryPage from '../memory/MemoryPage';
 import MemoryDetailPage from '../memory/MemoryDetailPage';
+import SkillViewerPage from '../skills/SkillViewerPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
 import LibraryPage from '../LibraryPage';
 import ArtifactViewer from '../ArtifactViewer';
@@ -151,6 +152,7 @@ function routeTitle(path: string): string {
   if (path.startsWith('/library')) return 'Library';
   if (path.startsWith('/memory/')) return 'Memory detail';
   if (path.startsWith('/memory')) return 'Memory';
+  if (path.startsWith('/skills/')) return 'Skill';
   if (path.startsWith('/settings/bridges')) return 'Bridge settings';
   if (path.startsWith('/settings/user-tokens')) return 'User token settings';
   if (path.startsWith('/settings/projects')) return 'Project settings';
@@ -1021,6 +1023,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <MemoryPage />
         ) : path.startsWith('/memory/') ? (
           <MemoryDetailPage memoryId={decodeURIComponent(path.slice('/memory/'.length))} />
+        ) : path.startsWith('/skills/') ? (
+          <SkillViewerPage slug={decodeURIComponent(path.slice('/skills/'.length))} />
         ) : path === '/library' ? (
           <LibraryPage session={{ clientToken: 'v1', daemonUrl: '' }} />
         ) : path.startsWith('/library/artifacts/') ? (

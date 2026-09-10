@@ -17,18 +17,35 @@ search_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Search_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
 	if !ok do return auth_resp
-	allowed_filters := [?]string{"types"}
+	// All non-standard filters must be allowlisted: parse_api_query rejects any
+	// unknown filter key as a validation error (see parse.odin), so an
+	// un-allowlisted param would fail the whole request rather than be ignored.
+	allowed_filters := [?]string{
+		"types", "exclude",
+		"task_ids", "chain_ids", "project_ids", "conversation_ids",
+		"not_in_task_ids", "not_in_chain_ids", "not_in_project_ids", "not_in_conversation_ids",
+	}
 	parsed := parse_api_query(req.query, allowed_filters[:], nil, nil)
 	defer parsed_query_free(&parsed)
 	if len(parsed.errors) > 0 do return respond_error(domain.domain_error(.Validation_Failed, parsed.errors[0]), req.request_id)
-	types_csv := ""
+	input := search_service.Search_Input{q = parsed.search, limit = search_limit_from_query(req.query, parsed.limit), cursor = parsed.cursor}
 	for f in parsed.filters {
-		if f.name == "types" do types_csv = f.value
+		switch f.name {
+		case "types": input.types_csv = f.value
+		case "exclude": input.exclude = f.value
+		case "task_ids": input.task_ids = f.value
+		case "chain_ids": input.chain_ids = f.value
+		case "project_ids": input.project_ids = f.value
+		case "conversation_ids": input.conversation_ids = f.value
+		case "not_in_task_ids": input.not_in_task_ids = f.value
+		case "not_in_chain_ids": input.not_in_chain_ids = f.value
+		case "not_in_project_ids": input.not_in_project_ids = f.value
+		case "not_in_conversation_ids": input.not_in_conversation_ids = f.value
+		}
 	}
-	search_limit := search_limit_from_query(req.query, parsed.limit)
-	result, searched, err := search_service.search_resources(h.search, auth_ctx, search_service.Search_Input{q = parsed.search, types_csv = types_csv, limit = search_limit, cursor = parsed.cursor})
+	result, searched, err := search_service.search_resources(h.search, auth_ctx, input)
 	if !searched do return respond_error(err, req.request_id)
-	page_limit := search_limit
+	page_limit := input.limit
 	if page_limit <= 0 do page_limit = search_service.DEFAULT_SEARCH_LIMIT
 	if page_limit > search_service.MAX_SEARCH_LIMIT do page_limit = search_service.MAX_SEARCH_LIMIT
 	data_json := search_groups_json(result.hits)
@@ -58,7 +75,7 @@ search_groups_json :: proc(hits: []iface.Search_Hit) -> string {
 	return strings.to_string(b)
 }
 
-SEARCH_RESPONSE_TYPE_ORDER :: [?]string{"conversation", "agent", "agent_instance", "task-chain", "task", "project", "artifact", "memory"}
+SEARCH_RESPONSE_TYPE_ORDER :: [?]string{"conversation", "agent", "agent_instance", "task-chain", "task", "comment", "project", "artifact", "memory", "skill"}
 
 search_limit_from_query :: proc(query: string, parsed_limit: int) -> int {
 	if !query_has_key(query, "limit") do return search_service.DEFAULT_SEARCH_LIMIT
@@ -89,6 +106,19 @@ write_search_hit_json :: proc(b: ^strings.Builder, hit: iface.Search_Hit) {
 	strings.write_string(b, "\",\"sublabel\":\""); write_handler_json_string(b, hit.sublabel)
 	strings.write_string(b, "\",\"score\":"); strings.write_string(b, score_json(hit.score))
 	strings.write_string(b, ",\"route\":\""); write_handler_json_string(b, hit.route)
+	// Clean nested shape (SEARCH-2 rework): parent is an object {id,type} for child
+	// results (e.g. a comment's task) and null for top-level entities; preview is the
+	// matched-text snippet; matched_field names the column that matched.
+	strings.write_string(b, "\",\"parent\":")
+	if hit.parent_id == "" && hit.parent_type == "" {
+		strings.write_string(b, "null")
+	} else {
+		strings.write_string(b, "{\"id\":\""); write_handler_json_string(b, hit.parent_id)
+		strings.write_string(b, "\",\"type\":\""); write_handler_json_string(b, hit.parent_type)
+		strings.write_string(b, "\"}")
+	}
+	strings.write_string(b, ",\"preview\":\""); write_handler_json_string(b, hit.preview)
+	strings.write_string(b, "\",\"matched_field\":\""); write_handler_json_string(b, hit.matched_field)
 	strings.write_string(b, "\"}")
 }
 

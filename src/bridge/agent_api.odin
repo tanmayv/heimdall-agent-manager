@@ -179,6 +179,9 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/memory/show"}
 	case "agent.memory.content":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/memory/content"}
+	case "agent.search":
+		// Global entity search (SEARCH-7): same owner scoping + hit shape as REST.
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/search"}
 	case "agent.artifact.create":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/artifacts/create"}
 	case "agent.artifact.list":
@@ -219,6 +222,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.chat.send", "agent.chat.read",
 	     "agent.context.get", "agent.conversation.set_title",
 	     "agent.memory.propose", "agent.memory.list", "agent.memory.show", "agent.memory.content",
+	     "agent.search",
 	     "agent.artifact.create", "agent.artifact.list", "agent.artifact.show",
 	     "agent.artifact.content":
 		return true

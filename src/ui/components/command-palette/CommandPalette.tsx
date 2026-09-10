@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useGlobalSearchQuery, type SearchHit } from '../../api/endpoints/search';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useGlobalSearchQuery, useLazyGlobalSearchQuery, type SearchHit } from '../../api/endpoints/search';
 import Icon, { type IconName } from '../Icon';
 
 // UI-12: unified command palette — navigation + entity search + actions.
@@ -101,13 +101,31 @@ function hitRoute(hit: SearchHit): string {
       return `/chains/${id}`;
     case 'task':
       return `/chains`;
+    case 'skill':
+      return `/skills/${id}`;
     case 'project':
       return `/library`;
     case 'artifact':
       return `/library`;
+    // Comments always carry a backend route (to their task); no id-only fallback.
     default:
       return '';
   }
+}
+
+// renderPreview highlights the matched token, which the backend brackets as
+// "…text [match] text…". Falls back to the plain string if no bracket is present.
+function renderPreview(preview: string) {
+  const open = preview.indexOf('[');
+  const close = open >= 0 ? preview.indexOf(']', open + 1) : -1;
+  if (open < 0 || close < 0) return preview;
+  return (
+    <>
+      {preview.slice(0, open)}
+      <span className="rounded bg-amber-400/20 px-0.5 text-amber-200">{preview.slice(open + 1, close)}</span>
+      {preview.slice(close + 1)}
+    </>
+  );
 }
 
 function hitIcon(type: string): IconName {
@@ -118,6 +136,8 @@ function hitIcon(type: string): IconName {
     case 'task-chain':
     case 'chain': return 'tasks';
     case 'task': return 'tasks';
+    case 'comment': return 'chat';
+    case 'skill': return 'spark';
     case 'project': return 'grid';
     case 'artifact': return 'device';
     case 'memory': return 'search';
@@ -145,6 +165,49 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
     { q: trimmed, limit: 12 },
     { skip: !open || trimmed.length < 1 },
   );
+
+  // Real load-more (SEARCH-5): the first page comes from useGlobalSearchQuery;
+  // subsequent pages are fetched on demand with the previous page's cursor and
+  // appended. Reset whenever the (debounced) query or its first page changes.
+  const [extraHits, setExtraHits] = useState<SearchHit[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [fetchMore] = useLazyGlobalSearchQuery();
+
+  useEffect(() => {
+    setExtraHits([]);
+    setCursor(searchQuery.data?.nextCursor ?? null);
+    setHasMore(Boolean(searchQuery.data?.hasMore));
+  }, [trimmed, searchQuery.data]);
+
+  const loadMore = useCallback(async () => {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const res = await fetchMore({ q: trimmed, limit: 12, cursor }).unwrap();
+      setExtraHits((prev) => [...prev, ...res.hits]);
+      setCursor(res.nextCursor ?? null);
+      setHasMore(Boolean(res.hasMore));
+    } catch {
+      setHasMore(false);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [cursor, loadingMore, trimmed, fetchMore]);
+
+  // First page + all loaded pages, de-duped by type+id so paging never dupes.
+  const entityHits = useMemo<SearchHit[]>(() => {
+    const seen = new Set<string>();
+    const out: SearchHit[] = [];
+    for (const hit of [...(searchQuery.data?.hits ?? []), ...extraHits]) {
+      const key = `${hit.type}:${hit.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(hit);
+    }
+    return out;
+  }, [searchQuery.data, extraHits]);
 
   // Reset on open/close.
   useEffect(() => {
@@ -191,16 +254,15 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
       }));
     }
 
-    // Entities from backend search (grouped by type).
-    if (q && searchQuery.data) {
-      for (const group of searchQuery.data.groups) {
-        for (const hit of group.hits) {
-          out.push({ kind: 'entity', label: hit.label || hit.id, hint: hit.sublabel, hit, route: hitRoute(hit), group: ENTITY_GROUP_LABEL[group.type] || group.type || 'Entities' });
-        }
+    // Entities from backend search (first page + loaded pages), grouped by type.
+    if (q) {
+      for (const hit of entityHits) {
+        const t = hit.type || '';
+        out.push({ kind: 'entity', label: hit.label || hit.id, hint: hit.sublabel, hit, route: hitRoute(hit), group: ENTITY_GROUP_LABEL[t] || t || 'Entities' });
       }
     }
     return out;
-  }, [query, searchQuery.data, actions, conversationGroups]);
+  }, [query, entityHits, actions, conversationGroups]);
 
   // Reset active index when results change.
   useEffect(() => {
@@ -321,15 +383,31 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                       ) : (
                         <span aria-hidden="true" className="grid w-5 place-items-center text-zinc-400 opacity-80"><Icon name={icon} size={16} /></span>
                       )}
-                      <span className={`min-w-0 flex-1 truncate ${isConvo && result.convo.isCoordinator ? 'text-amber-300' : ''}`} title={isConvo && result.convo.isCoordinator ? 'Coordinator' : undefined}>{label}</span>
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className={`truncate ${isConvo && result.convo.isCoordinator ? 'text-amber-300' : ''}`} title={isConvo && result.convo.isCoordinator ? 'Coordinator' : undefined}>{label}</span>
+                        {result.kind === 'entity' && result.hit.preview ? (
+                          <span className="truncate text-[11px] text-zinc-500">{renderPreview(result.hit.preview)}</span>
+                        ) : null}
+                      </span>
                       {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-sky-400 px-1.5 text-center text-[10px] font-bold leading-4 text-black">{unread > 99 ? '99+' : unread}</span> : null}
-                      {result.hint ? <span className="ml-auto shrink-0 truncate pl-2 text-[11px] text-zinc-500">{result.hint}</span> : null}
+                      {result.hint ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-[11px] text-zinc-500">{result.hint}</span> : null}
                     </button>
                   );
                 })}
               </div>
             ))
           )}
+          {trimmed && hasMore ? (
+            <button
+              type="button"
+              data-debug-id="command-palette-load-more"
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="mt-1 w-full rounded-lg px-3 py-2 text-center text-[12px] text-zinc-400 hover:bg-white/[0.04] disabled:opacity-50"
+            >
+              {loadingMore ? 'Loading…' : 'Load more results'}
+            </button>
+          ) : null}
         </div>
         {/* Keyboard-hint footer is desktop-only: on mobile it wastes vertical
             space the on-screen keyboard already claims, and the hints are
@@ -352,7 +430,9 @@ const ENTITY_GROUP_LABEL: Record<string, string> = {
   agent_instance: 'Agents',
   'task-chain': 'Task Chains',
   task: 'Tasks',
+  comment: 'Comments',
   project: 'Projects',
   artifact: 'Artifacts',
   memory: 'Memory',
+  skill: 'Skills',
 };
