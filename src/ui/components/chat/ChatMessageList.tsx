@@ -7,6 +7,13 @@ import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 const EMPTY_TIMESTAMP: ChatTimestamp = { label: '', iso: '' };
 const EMPTY_DELIVERY: ChatDeliveryStatus = { glyph: '', label: '', tone: '' };
 
+// CHAT-SCROLL: per the user's request, always scroll the list to the bottom when a
+// new INBOUND message arrives in the active conversation (not only when already
+// near the bottom). Flip this to false to restore the standard "don't yank while
+// reading history" near-bottom guard for inbound messages. The user's OWN send
+// always scrolls to the bottom regardless of this flag.
+const SCROLL_TO_BOTTOM_ON_INBOUND = true;
+
 export default function ChatMessageList({
   conversationKey,
   messages,
@@ -83,7 +90,15 @@ export default function ChatMessageList({
     if (count !== lastCountRef.current) {
       const grew = count > lastCountRef.current;
       lastCountRef.current = count;
-      if (grew && stickyRef.current) requestAnimationFrame(() => scrollToBottom('smooth'));
+      if (grew) {
+        // Always scroll on the user's OWN send (even if scrolled up); for inbound
+        // messages scroll per SCROLL_TO_BOTTOM_ON_INBOUND, else only when the user
+        // is already near the bottom (stickyRef).
+        const ownSend = messages[count - 1]?.isUser === true;
+        if (ownSend || SCROLL_TO_BOTTOM_ON_INBOUND || stickyRef.current) {
+          requestAnimationFrame(() => scrollToBottom('smooth'));
+        }
+      }
     }
   }, [conversationKey, messages.length, scrollToBottom]);
 
