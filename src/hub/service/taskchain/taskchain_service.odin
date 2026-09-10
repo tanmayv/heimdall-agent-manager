@@ -1,5 +1,6 @@
 package taskchain
 
+import "base:runtime"
 import "core:fmt"
 import "core:log"
 import "core:os"
@@ -40,7 +41,6 @@ Taskchain_Service :: struct {
 	agents: ^iface.Agent_Repository,
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
-	nudges: [dynamic]Manual_Nudge,
 	bridge_command_sink: project.Bridge_Command_Sink,
 	// replay_last_unix_ms throttles orphan-recovery replays per bridge so a
 	// flapping bridge (rapid reconnects) does not re-fan-out the whole actionable
@@ -128,11 +128,11 @@ Vote_Input :: struct {
 }
 
 new_taskchain_service :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.Agent_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Taskchain_Service {
-	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, nudges = make([dynamic]Manual_Nudge)}
+	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids}
 }
 
 new_taskchain_service_with_runtime :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.Agent_Repository, bridge_command_sink: project.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Taskchain_Service {
-	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, nudges = make([dynamic]Manual_Nudge), bridge_command_sink = bridge_command_sink}
+	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, bridge_command_sink = bridge_command_sink}
 }
 
 // is_instance_member_or_coordinator: membership OR coordinator authority, read
@@ -1099,7 +1099,7 @@ should_debounce_nudge_dispatch :: proc(service: ^Taskchain_Service, instance_id,
 	defer sync.mutex_unlock(&service.nudge_debounce_mutex)
 
 	if service.nudge_debounce_last_unix_ms == nil {
-		service.nudge_debounce_last_unix_ms = make(map[string]i64)
+		service.nudge_debounce_last_unix_ms = make(map[string]i64, runtime.heap_allocator())
 	}
 
 	if last_ms, ok := service.nudge_debounce_last_unix_ms[key]; ok {
@@ -1108,7 +1108,12 @@ should_debounce_nudge_dispatch :: proc(service: ^Taskchain_Service, instance_id,
 		}
 	}
 
-	service.nudge_debounce_last_unix_ms[strings.clone(key)] = now_ms
+	// The debounce map outlives this request. On the request path context.allocator
+	// is the per-request arena (MEM-4), so the key MUST be cloned onto the persistent
+	// heap or it dangles the moment the arena is freed after the response (a
+	// use-after-free on the next map probe/resize). Mirrors the fragment/device_auth
+	// caches.
+	service.nudge_debounce_last_unix_ms[strings.clone(key, runtime.heap_allocator())] = now_ms
 	return false
 }
 
@@ -1132,8 +1137,8 @@ idle_nudge_due :: proc(service: ^Taskchain_Service, instance_id, task_id: string
 	sync.mutex_lock(&service.idle_nudge_mutex)
 	defer sync.mutex_unlock(&service.idle_nudge_mutex)
 	if service.idle_nudge_last_unix_ms == nil {
-		service.idle_nudge_last_unix_ms = make(map[string]i64)
-		service.idle_nudge_interval_ms = make(map[string]i64)
+		service.idle_nudge_last_unix_ms = make(map[string]i64, runtime.heap_allocator())
+		service.idle_nudge_interval_ms = make(map[string]i64, runtime.heap_allocator())
 	}
 
 	last, seen := service.idle_nudge_last_unix_ms[key]
@@ -1147,8 +1152,9 @@ idle_nudge_due :: proc(service: ^Taskchain_Service, instance_id, task_id: string
 		service.idle_nudge_last_unix_ms[key] = now_ms
 		return true
 	}
-	// first idle nudge for this pair
-	ck := strings.clone(key)
+	// first idle nudge for this pair. Both maps share one heap-owned key so it
+	// outlives the per-request arena (MEM-4); freed once in idle_nudge_reset.
+	ck := strings.clone(key, runtime.heap_allocator())
 	service.idle_nudge_last_unix_ms[ck] = now_ms
 	service.idle_nudge_interval_ms[ck] = IDLE_NUDGE_MIN_INTERVAL_MS
 	return true
@@ -1164,8 +1170,16 @@ idle_nudge_reset :: proc(service: ^Taskchain_Service, instance_id, task_id: stri
 	sync.mutex_lock(&service.idle_nudge_mutex)
 	defer sync.mutex_unlock(&service.idle_nudge_mutex)
 	if service.idle_nudge_last_unix_ms == nil do return
+	// Capture the heap-owned stored key (shared by both maps) so we can free it
+	// after removing the entries — delete_key drops the slot but never frees the
+	// key bytes, which would otherwise leak on every reset.
+	owned_key := ""
+	for k in service.idle_nudge_last_unix_ms {
+		if k == key { owned_key = k; break }
+	}
 	delete_key(&service.idle_nudge_last_unix_ms, key)
 	delete_key(&service.idle_nudge_interval_ms, key)
+	if owned_key != "" do delete(owned_key, runtime.heap_allocator())
 }
 
 // notification_allowed_for_recipient implements CT-6 gating with a fail-open bias:
@@ -1272,7 +1286,6 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	if target == .None || len(instance_ids) == 0 {
 		nudge.delivery_state = "no_targets"
 		nudge.targets_json = "[]"
-		append(&service.nudges, nudge)
 		return nudge, true, domain.Domain_Error{}
 	}
 	
@@ -1383,8 +1396,7 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	} else {
 		nudge.delivery_state = "failed"
 	}
-	
-	append(&service.nudges, nudge)
+
 	return nudge, true, domain.Domain_Error{}
 }
 

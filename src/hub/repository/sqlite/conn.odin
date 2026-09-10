@@ -14,6 +14,7 @@ sqlite3 :: distinct rawptr
 sqlite3_stmt :: distinct rawptr
 
 SQLITE_OK :: 0
+SQLITE_CORRUPT :: 11 // "database disk image is malformed" — e.g. an external-content fts5 sync trigger's 'delete' op against a row missing from its index (see fts_repair.odin).
 SQLITE_ROW :: 100
 SQLITE_DONE :: 101
 SQLITE_TRANSIENT :: rawptr(~uintptr(0))
@@ -25,6 +26,7 @@ foreign sqlite3_lib {
 	sqlite3_prepare_v2 :: proc(db: sqlite3, zSql: cstring, nByte: c.int, ppStmt: [^]sqlite3_stmt, pzTail: [^]cstring) -> c.int ---
 	sqlite3_finalize :: proc(pStmt: sqlite3_stmt) -> c.int ---
 	sqlite3_step :: proc(pStmt: sqlite3_stmt) -> c.int ---
+	sqlite3_reset :: proc(pStmt: sqlite3_stmt) -> c.int ---
 	sqlite3_exec :: proc(db: sqlite3, sql: cstring, callback: rawptr, arg: rawptr, errmsg: [^]cstring) -> c.int ---
 	sqlite3_errmsg :: proc(db: sqlite3) -> cstring ---
 	sqlite3_bind_text :: proc(pStmt: sqlite3_stmt, index: c.int, value: cstring, n: c.int, destructor: rawptr) -> c.int ---

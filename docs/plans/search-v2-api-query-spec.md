@@ -493,3 +493,32 @@ indexed-LIKE variant as the FTS-absent fallback.
 Blocked until: reviewer LGTM on this spec AND coordinator/user confirmation of the two open
 decisions (§3 cursor activation; §5.2 skill route + skill owner-independence). Only then do
 SEARCH-2..7 begin.
+
+---
+
+## 11. FTS index maintenance & recovery (operator guidance)
+The per-table search indexes (`*_fts`, migrations 029/030) are **external-content**
+fts5 vtables kept in sync by AFTER INSERT/UPDATE/DELETE triggers. The UPDATE/DELETE
+triggers use fts5's external-content `'delete'` op, which requires the row's
+postings to be PRESENT in the index.
+
+- **Only supported rebuild:** `INSERT INTO <x>_fts(<x>_fts) VALUES('rebuild');`
+  (optionally `('integrity-check')` to verify). This is idempotent and safe.
+- **Never** run `DELETE FROM <x>_fts` or a partial re-backfill to "reset" an index.
+  That leaves base rows unindexed, and the next UPDATE/DELETE of such a row fires
+  the trigger's `'delete'` op against missing postings, raising SQLITE_CORRUPT
+  ("database disk image is malformed"). The write rolls back and surfaces as a save
+  failure, so **every UPDATE to the affected row jams** (frozen task status /
+  agent-instance heartbeat with a "running" runtime) while INSERTs still succeed.
+- **Recovery is automatic:** `sqlite.repair_fts_indexes()` re-syncs the indexes with
+  the `'rebuild'` op. It runs on hub boot for any *drifted* index (so a deploy/
+  restart unsticks affected rows), and the write path self-heals at runtime
+  (`step_write_healing`: on SQLITE_CORRUPT it rebuilds and retries the write once).
+  To recover a live hub, restart it (boot reconcile) — no data edit required.
+- Drift is detected by comparing each base table's row count to its `<x>_fts_docsize`
+  shadow count. Code: `src/hub/repository/sqlite/fts_repair.odin`; regression test:
+  `tests/hub_fts_repair_test.odin`.
+
+> Future hardening (deferred): converting the vtables to regular (non-external-
+> content) fts5 with `DELETE FROM <x>_fts WHERE rowid=?` triggers would make the
+> sync delete-safe on missing rows at the cost of ~2x text storage.

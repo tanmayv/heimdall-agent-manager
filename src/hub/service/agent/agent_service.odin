@@ -1754,7 +1754,10 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 	sync.mutex_lock(&global_bootstrap_manifest_cache.lock)
 	defer sync.mutex_unlock(&global_bootstrap_manifest_cache.lock)
 	if global_bootstrap_manifest_cache.entries == nil {
-		global_bootstrap_manifest_cache.entries = make(map[string]Bootstrap_Manifest_Cache_Entry)
+		// Heap-back the map itself: on the request path context.allocator is the
+		// per-request arena (MEM-4), so a default make() would put the map's backing
+		// store on the arena and free it after the response.
+		global_bootstrap_manifest_cache.entries = make(map[string]Bootstrap_Manifest_Cache_Entry, runtime.heap_allocator())
 	}
 
 	entry, have := global_bootstrap_manifest_cache.entries[key]
@@ -1764,20 +1767,31 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 		// only path that scans memories / hashes fragments.
 		manifest_json, version := render_agent_manifest(service, owner, agent, is_coordinator, provider, project)
 		etag := strings.concatenate({agent_id, ":", norm_role, ":", provider, ":", project, ":", version})
-		new_entry := Bootstrap_Manifest_Cache_Entry{epoch = current_epoch, version = version, etag = etag, manifest_json = manifest_json}
+		// The cache outlives this request. render_agent_manifest and the concatenate
+		// above build these strings on the caller's per-request arena (MEM-4), which is
+		// freed after the response, so the cache MUST own heap copies or every cached
+		// entry dangles (and the delete() below would free arena pointers via the heap
+		// allocator). Clone the values onto the persistent heap.
+		heap := runtime.heap_allocator()
+		new_entry := Bootstrap_Manifest_Cache_Entry{
+			epoch = current_epoch,
+			version = strings.clone(version, heap),
+			etag = strings.clone(etag, heap),
+			manifest_json = strings.clone(manifest_json, heap),
+		}
 		if have {
 			// Overwrite under the ALREADY-STORED (stable) key: Odin maps store the
 			// string header without copying the key bytes, so we must not insert a
-			// transient key here. Free the superseded value strings first to avoid a
-			// per-re-render leak.
-			delete(entry.version)
-			delete(entry.etag)
-			delete(entry.manifest_json)
+			// transient key here. Free the superseded (heap-owned) value strings first
+			// to avoid a per-re-render leak.
+			delete(entry.version, heap)
+			delete(entry.etag, heap)
+			delete(entry.manifest_json, heap)
 			global_bootstrap_manifest_cache.entries[key] = new_entry
 		} else {
-			// First insert: clone the key so the map owns a stable buffer that
-			// outlives this call's `defer delete(key)` (mirrors device_auth/service).
-			global_bootstrap_manifest_cache.entries[strings.clone(key)] = new_entry
+			// First insert: clone the key onto the heap so the map owns a stable buffer
+			// that outlives this call's `defer delete(key)` (mirrors device_auth/service).
+			global_bootstrap_manifest_cache.entries[strings.clone(key, heap)] = new_entry
 		}
 		entry = new_entry
 		did_render = true

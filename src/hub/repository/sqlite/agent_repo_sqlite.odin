@@ -134,7 +134,15 @@ agent_save_instance_sqlite :: proc(ctx: rawptr, instance: domain.Agent_Instance)
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "failed to prepare instance save")
 	defer sqlite3_finalize(stmt)
 	bind_instance(stmt, instance)
-	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, "agent instance could not be saved")
+	// Heartbeats/status updates take the DO UPDATE branch, firing the
+	// agent_instances_fts AFTER UPDATE trigger which can hit SQLITE_CORRUPT on fts
+	// index drift (see fts_repair.odin) — that is what froze last_seen while the
+	// runtime looked "running". Self-heal + retry once, else report accurately.
+	rc := step_write_healing(impl.conn, stmt)
+	if rc != SQLITE_DONE {
+		if rc == SQLITE_CORRUPT do return domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "agent instance save failed: search index drift (SQLITE_CORRUPT) — run the FTS reconcile/repair")
+		return domain.Agent_Instance{}, false, domain.domain_error(.Conflict, "agent instance could not be saved")
+	}
 	return instance, true, domain.Domain_Error{}
 }
 
