@@ -15,7 +15,7 @@ import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListSidebarConversationsQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { useGetAgentsLiveQuery, type LiveProject } from '../../api/endpoints/agentsLive';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
-import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
+import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
@@ -125,6 +125,20 @@ function routeFromLocation(): string {
   const path = getRoutePathname();
   if (!path || path === '/' || path === '/index.html') return '/conversations';
   return path;
+}
+
+// Deep-link focus target for a conversation message: parse `?msg=<message_id>` from
+// the hash search so a `message` search hit (/conversations/:id?msg=:mid) can scroll
+// to + highlight that message. Empty when absent. Tracked as its own state because
+// routeFromLocation() strips the query, so a msg-only change would not re-render.
+function focusMessageFromLocation(): string {
+  const search = getRouteSearch();
+  if (!search) return '';
+  try {
+    return new URLSearchParams(search.startsWith('?') ? search.slice(1) : search).get('msg') || '';
+  } catch {
+    return '';
+  }
 }
 
 function isRouteActive(currentPath: string, itemPath: string): boolean {
@@ -930,7 +944,7 @@ function DefaultsSettingsPanel() {
   );
 }
 
-function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: { path: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
+function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, conversations = [] }: { path: string; focusMessageId?: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
   const description = routeDescription(path);
@@ -960,7 +974,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
             position, menus) resets synchronously instead of the previous
             conversation's content painting for a frame and then swapping +
             re-scrolling. The RTK Query cache still makes revisits fast. */}
-        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} />
+        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
       </main>
     );
   }
@@ -1038,6 +1052,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
 function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: string }) {
   const [collapsed, setCollapsed] = useState(false);
   const [path, setPath] = useState(routeFromLocation);
+  const [focusMessageId, setFocusMessageId] = useState(focusMessageFromLocation);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
@@ -1148,7 +1163,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   };
 
   useEffect(() => {
-    const update = () => setPath(routeFromLocation());
+    const update = () => { setPath(routeFromLocation()); setFocusMessageId(focusMessageFromLocation()); };
     window.addEventListener('hashchange', update);
     window.addEventListener('popstate', update);
     update();
@@ -1244,7 +1259,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <RouteOutlet path={path} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
+        <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
       </div>
 
       {/* UI-12/UI-13: mobile bottom tab bar with a command-palette center button.

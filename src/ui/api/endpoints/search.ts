@@ -24,6 +24,9 @@ export type SearchHit = {
   route?: string;
   type?: string;
   // SEARCH-2 clean shape (no back-compat): nested parent, preview, matched field.
+  // For `message` hits (MSG-1/MSG-2): id=message_id, sublabel=conversation title,
+  // preview=bracketed body snippet, route=/conversations/<agent_instance_id>, and
+  // parent={id:<conversation/instance>, type:'conversation'}.
   parent?: SearchParent | null;
   preview?: string;
   matchedField?: string;
@@ -67,7 +70,9 @@ function normalizeHit(raw: any, type: string): SearchHit {
     route: raw?.route || undefined,
     type,
     parent: normalizeParent(raw),
-    preview: raw?.preview ? String(raw.preview) : undefined,
+    // `snippet` is accepted as a defensive fallback for the message provider in
+    // case it emits the body excerpt under that key instead of `preview`.
+    preview: raw?.preview ? String(raw.preview) : raw?.snippet ? String(raw.snippet) : undefined,
     matchedField: raw?.matched_field ? String(raw.matched_field) : undefined,
   };
 }

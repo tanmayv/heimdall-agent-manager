@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Markdown from '../Markdown';
 import ChatHoverCopyButton from '../ChatHoverCopyButton';
@@ -18,6 +18,7 @@ export default function ChatMessageList({
   conversationKey,
   messages,
   debugPrefix,
+  focusMessageId,
   emptyText = 'No chat loaded.',
   emptyState,
   hasMore = false,
@@ -35,6 +36,10 @@ export default function ChatMessageList({
   conversationKey: string;
   messages: ChatMessage[];
   debugPrefix: string;
+  // Deep-link focus target (from `/conversations/:id?msg=:mid`): once messages have
+  // loaded, scroll this message into view and briefly highlight it, exactly once per
+  // id. Best-effort: if the message isn't on a loaded page yet we simply stay put.
+  focusMessageId?: string;
   emptyText?: string;
   emptyState?: ReactNode;
   hasMore?: boolean;
@@ -55,6 +60,8 @@ export default function ChatMessageList({
   const lastConversationRef = useRef(conversationKey);
   const didInitialScrollRef = useRef(false);
   const [showJump, setShowJump] = useState(false);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const focusedRef = useRef<string | null>(null);
   const reply = useMemo(() => onReply || (() => undefined), [onReply]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
@@ -102,6 +109,30 @@ export default function ChatMessageList({
     }
   }, [conversationKey, messages.length, scrollToBottom]);
 
+  // Deep-link focus: scroll to + highlight the target message once it is present in
+  // the loaded set. Runs after the initial bottom-scroll layout effect so it wins,
+  // and fires at most once per focusMessageId (a background poll/new message must not
+  // yank the reader back). If the id isn't loaded yet, do nothing (stay at the
+  // conversation); it will resolve if the row appears later (e.g. after Load older).
+  useEffect(() => {
+    if (!focusMessageId) return;
+    if (focusedRef.current === focusMessageId) return;
+    if (messages.length === 0) return;
+    const node = scrollRef.current;
+    if (!node) return;
+    const el = node.querySelector<HTMLElement>(`[data-debug-id="${debugPrefix}-message-${focusMessageId}"]`);
+    if (!el) return;
+    focusedRef.current = focusMessageId;
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: 'center' });
+      stickyRef.current = false; // we intentionally moved off the bottom
+      setShowJump(true);
+    });
+    setHighlightId(focusMessageId);
+    const timer = window.setTimeout(() => setHighlightId((cur) => (cur === focusMessageId ? null : cur)), 2000);
+    return () => window.clearTimeout(timer);
+  }, [focusMessageId, messages, debugPrefix]);
+
   const onScroll = useCallback(() => {
     const node = scrollRef.current;
     if (!node) return;
@@ -127,7 +158,7 @@ export default function ChatMessageList({
           const timestamp = formatTimestamp(message.createdUnixMs);
           const delivery = getDeliveryStatus(message);
           return (
-            <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-full ${message.isUser ? 'justify-end' : 'justify-start'}`}>
+            <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-full rounded-xl transition-colors duration-500 ${message.messageId === highlightId ? 'bg-amber-400/10 ring-1 ring-amber-400/40' : ''} ${message.isUser ? 'justify-end' : 'justify-start'}`}>
               <div className={`flex min-w-0 max-w-full ${message.isUser ? 'max-w-[86%] items-end sm:max-w-[78%]' : 'w-full items-start'} flex-col text-sm`}>
                 {renderMessageTop ? renderMessageTop({ message, index, messages }) : null}
                 <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'text-zinc-200'}`}>

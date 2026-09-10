@@ -86,10 +86,21 @@ function matches(haystack: string, q: string): boolean {
 }
 
 function hitRoute(hit: SearchHit): string {
-  // Prefer the backend-provided route; fall back to type-based routes.
-  if (hit.route) return hit.route;
   const type = String(hit.type || '').toLowerCase();
   const id = hit.id;
+  // Message hits carry the conversation route but the hit id is the MESSAGE id, so
+  // thread it as `?msg=<message_id>` (parsed by AppShell into a focus target that
+  // the conversation view scrolls to). Base route is the backend route, else the
+  // parent conversation/instance id.
+  if (type === 'message') {
+    const base = hit.route || (hit.parent?.id ? `/conversations/${hit.parent.id}` : '');
+    if (!base) return '';
+    if (!id) return base;
+    const sep = base.includes('?') ? '&' : '?';
+    return base.includes('msg=') ? base : `${base}${sep}msg=${encodeURIComponent(id)}`;
+  }
+  // Prefer the backend-provided route; fall back to type-based routes.
+  if (hit.route) return hit.route;
   switch (type) {
     case 'conversation':
       return `/conversations/${id}`;
@@ -137,6 +148,7 @@ function hitIcon(type: string): IconName {
     case 'chain': return 'tasks';
     case 'task': return 'tasks';
     case 'comment': return 'chat';
+    case 'message': return 'chat';
     case 'skill': return 'spark';
     case 'project': return 'grid';
     case 'artifact': return 'device';
@@ -359,6 +371,10 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                   const idx = indices[i];
                   const active = idx === activeIndex;
                   const label = result.label;
+                  // Message hits show the matched-text SNIPPET as the primary line and
+                  // the conversation TITLE (sublabel) as the secondary line — the
+                  // inverse of other entities, which show their name then a preview.
+                  const isMessage = result.kind === 'entity' && String(result.hit.type || '').toLowerCase() === 'message';
                   const icon: IconName = result.kind === 'entity' ? hitIcon(result.hit.type || '') : ((result as any).icon || 'chevron-right');
                   const isConvo = result.kind === 'conversation';
                   const unread = isConvo ? Number(result.convo.unreadCount || 0) : 0;
@@ -384,13 +400,17 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                         <span aria-hidden="true" className="grid w-5 place-items-center text-zinc-400 opacity-80"><Icon name={icon} size={16} /></span>
                       )}
                       <span className="flex min-w-0 flex-1 flex-col">
-                        <span className={`truncate ${isConvo && result.convo.isCoordinator ? 'text-amber-300' : ''}`} title={isConvo && result.convo.isCoordinator ? 'Coordinator' : undefined}>{label}</span>
-                        {result.kind === 'entity' && result.hit.preview ? (
+                        <span className={`truncate ${isConvo && result.convo.isCoordinator ? 'text-amber-300' : ''}`} title={isConvo && result.convo.isCoordinator ? 'Coordinator' : undefined}>
+                          {isMessage && result.hit.preview ? renderPreview(result.hit.preview) : label}
+                        </span>
+                        {isMessage ? (
+                          result.hit.sublabel ? <span className="truncate text-[11px] text-zinc-500">{result.hit.sublabel}</span> : null
+                        ) : result.kind === 'entity' && result.hit.preview ? (
                           <span className="truncate text-[11px] text-zinc-500">{renderPreview(result.hit.preview)}</span>
                         ) : null}
                       </span>
                       {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-sky-400 px-1.5 text-center text-[10px] font-bold leading-4 text-black">{unread > 99 ? '99+' : unread}</span> : null}
-                      {result.hint ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-[11px] text-zinc-500">{result.hint}</span> : null}
+                      {result.hint && !isMessage ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-[11px] text-zinc-500">{result.hint}</span> : null}
                     </button>
                   );
                 })}
@@ -431,6 +451,7 @@ const ENTITY_GROUP_LABEL: Record<string, string> = {
   'task-chain': 'Task Chains',
   task: 'Tasks',
   comment: 'Comments',
+  message: 'Messages',
   project: 'Projects',
   artifact: 'Artifacts',
   memory: 'Memory',
