@@ -590,34 +590,12 @@ DELETE FROM memories WHERE owner_user_id = 'system' AND (type = 'skill' OR memor
 
 // MIGRATION_029_SEARCH_FTS_COMMENTS adds an external-content FTS5 index over
 // task_comments.body so comment search is tokenized + multi-word + relevance-
-// ranked (retiring the LIKE '%q%' full scan). Kept byte-identical to the on-disk
-// 029_search_fts_comments.sql twin. Idempotent (IF NOT EXISTS + backfill WHERE NOT
-// IN); run_migrations skips it (marking applied) when FTS5 is unavailable or the
-// vtable already exists, so non-FTS builds still boot on the indexed-LIKE fallback.
-MIGRATION_029_SEARCH_FTS_COMMENTS :: `CREATE VIRTUAL TABLE IF NOT EXISTS task_comments_fts USING fts5(
-  body,
-  content='task_comments',
-  content_rowid='rowid',
-  tokenize='unicode61'
-);
-
-CREATE TRIGGER IF NOT EXISTS task_comments_ai AFTER INSERT ON task_comments BEGIN
-  INSERT INTO task_comments_fts(rowid, body) VALUES (new.rowid, new.body);
-END;
-
-CREATE TRIGGER IF NOT EXISTS task_comments_ad AFTER DELETE ON task_comments BEGIN
-  INSERT INTO task_comments_fts(task_comments_fts, rowid, body) VALUES('delete', old.rowid, old.body);
-END;
-
-CREATE TRIGGER IF NOT EXISTS task_comments_au AFTER UPDATE ON task_comments BEGIN
-  INSERT INTO task_comments_fts(task_comments_fts, rowid, body) VALUES('delete', old.rowid, old.body);
-  INSERT INTO task_comments_fts(rowid, body) VALUES (new.rowid, new.body);
-END;
-
-INSERT INTO task_comments_fts(rowid, body)
-  SELECT rowid, body FROM task_comments
-  WHERE rowid NOT IN (SELECT rowid FROM task_comments_fts);
-`
+// ranked (retiring the LIKE '%q%' full scan). Embedded via #load of the on-disk
+// twin so the copy is byte-identical BY CONSTRUCTION (no hand-copy drift).
+// Idempotent (IF NOT EXISTS + 'rebuild' backfill); run_migrations skips it (marking
+// applied) when FTS5 is unavailable or the vtable already exists, so non-FTS builds
+// still boot on the indexed-LIKE fallback.
+MIGRATION_029_SEARCH_FTS_COMMENTS :: #load("migrations/029_search_fts_comments.sql", string)
 
 // MIGRATION_030_SEARCH_FTS_ALL broadens the SEARCH-6 FTS5 foundation to every
 // text-bearing scope (conversations/agents/agent_instances/task-chains/tasks/
@@ -628,7 +606,14 @@ INSERT INTO task_comments_fts(rowid, body)
 // vtables already exist, so non-FTS builds boot on the indexed-LIKE fallback.
 MIGRATION_030_SEARCH_FTS_ALL :: #load("migrations/030_search_fts_all.sql", string)
 
-migration_order :: [30]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql"}
+// MIGRATION_031_SEARCH_FTS_MESSAGES adds an external-content FTS5 index over
+// chat_messages.body (MSG-1) so chat MESSAGE content is searchable (previously only
+// conversation titles were indexed). Same wiring/guard as 029/030; the backfill
+// uses the correct 'rebuild' op (the 'WHERE rowid NOT IN' guard is a no-op on
+// external-content, which is why 029/030's backfill was fixed to 'rebuild' too).
+MIGRATION_031_SEARCH_FTS_MESSAGES :: #load("migrations/031_search_fts_messages.sql", string)
+
+migration_order :: [31]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -687,6 +672,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			continue
 		}
 		if name == "030_search_fts_all.sql" && (!fts5_available(conn) || sqlite_object_exists(conn, "memories_fts")) {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "031_search_fts_messages.sql" && (!fts5_available(conn) || sqlite_object_exists(conn, "chat_messages_fts")) {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -753,6 +742,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "028_memory_description_and_cleanup.sql" do return strings.clone(MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP)
 	if name == "029_search_fts_comments.sql" do return strings.clone(MIGRATION_029_SEARCH_FTS_COMMENTS)
 	if name == "030_search_fts_all.sql" do return strings.clone(MIGRATION_030_SEARCH_FTS_ALL)
+	if name == "031_search_fts_messages.sql" do return strings.clone(MIGRATION_031_SEARCH_FTS_MESSAGES)
 	return ""
 }
 

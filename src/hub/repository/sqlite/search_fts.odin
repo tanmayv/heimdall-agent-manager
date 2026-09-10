@@ -26,13 +26,16 @@ import iface "odin_test:hub/repository/iface"
 
 Fts_Provider :: struct {
 	resource_type:         string,
-	base:                  string, // base table
+	base:                  string, // base table (aliased c in the query)
 	fts:                   string, // external-content FTS5 vtable
+	join_sql:              string, // optional extra JOIN (e.g. messages -> chat_conversations as cc) or ''
+	where_extra:           string, // optional literal inner-WHERE predicate (no binds), AND-ed after MATCH, or ''
 	id_expr:               string, // emitted id column (c.<id>)
 	label_expr:            string,
 	sublabel_expr:         string,
 	route_expr:            string,
 	primary_expr:          string, // primary text field for the tier CASE (fts col 0)
+	recency_expr:          string, // ORDER-BY/cursor recency column; '' => c.updated_at (chat_messages has only created_at)
 	scope_task:            string, // scope_task_id expr or '' (see SEARCH-8)
 	scope_chain:           string,
 	scope_project:         string,
@@ -112,6 +115,22 @@ FTS_PROVIDERS := []Fts_Provider{
 			route_expr = "'/settings/memory?memory_id=' || c.memory_id", primary_expr = "c.title",
 			bm25_weights = "10.0, 1.0", secondary_field = "body",
 		},
+		{
+			// MSG-1: chat message bodies. Joins chat_conversations (cc) for the route
+			// (instance-id-only conversation route) + the conversation title sublabel.
+			// Only user-visible text messages are surfaced (agent-to-agent + system/pane
+			// messages are excluded), mirroring list_user_visible_messages semantics.
+			resource_type = "message", base = "chat_messages", fts = "chat_messages_fts",
+			join_sql = "JOIN chat_conversations cc ON cc.conversation_id = c.conversation_id AND cc.owner_user_id = c.owner_user_id",
+			where_extra = "c.direction != 'agent_to_agent' AND c.message_type = 'text'",
+			id_expr = "c.message_id",
+			label_expr = "substr(c.body, 1, 140)",
+			sublabel_expr = "CASE WHEN cc.title != '' THEN cc.title ELSE cc.agent_id END",
+			route_expr = "'/conversations/' || cc.agent_instance_id", primary_expr = "c.body",
+			recency_expr = "c.created_at", // chat_messages has no updated_at column
+			scope_chain = "cc.chain_id", scope_project = "cc.project_id", scope_conversation = "c.conversation_id",
+			bm25_weights = "10.0", secondary_field = "body",
+		},
 }
 
 fts_provider_for :: proc(resource_type: string) -> (Fts_Provider, bool) {
@@ -132,8 +151,9 @@ col_or_empty :: proc(expr: string) -> string {
 build_fts_sql :: proc(d: Fts_Provider) -> string {
 	b := strings.builder_make()
 	fmt.sbprintf(&b, "SELECT resource_type, id, label, sublabel, route, score, parent_id, parent_type, match_text FROM (\n")
-	fmt.sbprintf(&b, "  SELECT '%s' AS resource_type, %s AS id, %s AS label, %s AS sublabel, %s AS route, c.updated_at AS updated_at, c.owner_user_id AS owner_user_id, %s AS scope_task_id, %s AS scope_chain_id, %s AS scope_project_id, %s AS scope_conversation_id, '' AS parent_id, '' AS parent_type, snippet(%s, -1, '[', ']', '\u2026', 10) AS match_text,\n",
-		d.resource_type, d.id_expr, d.label_expr, d.sublabel_expr, d.route_expr,
+	recency := d.recency_expr != "" ? d.recency_expr : "c.updated_at"
+	fmt.sbprintf(&b, "  SELECT '%s' AS resource_type, %s AS id, %s AS label, %s AS sublabel, %s AS route, %s AS updated_at, c.owner_user_id AS owner_user_id, %s AS scope_task_id, %s AS scope_chain_id, %s AS scope_project_id, %s AS scope_conversation_id, '' AS parent_id, '' AS parent_type, snippet(%s, -1, '[', ']', '\u2026', 10) AS match_text,\n",
+		d.resource_type, d.id_expr, d.label_expr, d.sublabel_expr, d.route_expr, recency,
 		col_or_empty(d.scope_task), col_or_empty(d.scope_chain), col_or_empty(d.scope_project), col_or_empty(d.scope_conversation), d.fts)
 	// Tier on the primary field: exact 100 / prefix 90 / word-boundary 80 /
 	// primary-interior 50; ELSE the row matched FTS only in a secondary/body column
@@ -142,7 +162,10 @@ build_fts_sql :: proc(d: Fts_Provider) -> string {
 	fmt.sbprintf(&b, "    CASE WHEN lower(%s) = lower(?) THEN 100 WHEN lower(%s) LIKE lower(?) || '%%' THEN 90 WHEN lower(%s) LIKE '%% ' || lower(?) || '%%' OR lower(%s) LIKE '%%-' || lower(?) || '%%' OR lower(%s) LIKE '%%_' || lower(?) || '%%' THEN 80 WHEN lower(%s) LIKE '%%' || lower(?) || '%%' THEN 50 ELSE %d END AS score\n",
 		d.primary_expr, d.primary_expr, d.primary_expr, d.primary_expr, d.primary_expr, d.primary_expr, FTS_TIER_SECONDARY)
 	fmt.sbprintf(&b, "  FROM %s JOIN %s c ON c.rowid = %s.rowid AND c.owner_user_id = ?\n", d.fts, d.base, d.fts)
-	fmt.sbprintf(&b, "  WHERE %s MATCH ?\n  ORDER BY bm25(%s, %s)\n  LIMIT ?\n", d.fts, d.fts, d.bm25_weights)
+	if d.join_sql != "" do fmt.sbprintf(&b, "  %s\n", d.join_sql)
+	fmt.sbprintf(&b, "  WHERE %s MATCH ?", d.fts)
+	if d.where_extra != "" do fmt.sbprintf(&b, " AND (%s)", d.where_extra)
+	fmt.sbprintf(&b, "\n  ORDER BY bm25(%s, %s)\n  LIMIT ?\n", d.fts, d.bm25_weights)
 	fmt.sbprintf(&b, ") WHERE owner_user_id = ?\n%s;", SCOPE_SQL_ANCHOR)
 	return strings.to_string(b)
 }
@@ -198,6 +221,7 @@ run_fts_search :: proc(impl: ^Search_Repo_SQLite, d: Fts_Provider, query: iface.
 type_priority :: proc(resource_type: string) -> int {
 	switch resource_type {
 	case "conversation": return 4
+	case "message":      return 4 // chat message bodies are high-value; ties with conversation/task, tiebreak only
 	case "task":         return 4
 	case "task-chain":   return 3
 	case "agent":        return 3

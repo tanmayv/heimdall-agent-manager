@@ -30,6 +30,7 @@ Fts_Index :: struct {
 // providers.
 FTS_INDEX_TABLES := [?]Fts_Index{
 	{base = "task_comments", fts = "task_comments_fts"},
+	{base = "chat_messages", fts = "chat_messages_fts"},
 	{base = "chat_conversations", fts = "chat_conversations_fts"},
 	{base = "agents", fts = "agents_fts"},
 	{base = "agent_instances", fts = "agent_instances_fts"},
