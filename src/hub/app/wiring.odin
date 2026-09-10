@@ -82,6 +82,18 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	migrations_ok, migration_err := sqlite.run_migrations(&graph.db, config.migrations_dir)
 	if !migrations_ok do return false, migration_err.message
 
+	// Reconcile drifted search (fts5) indexes on boot: a prior bad manual rebuild can
+	// leave rows unindexed, which makes the external-content sync triggers' 'delete'
+	// op raise SQLITE_CORRUPT and jam every UPDATE to those rows (frozen task status /
+	// agent-instance heartbeats). Re-syncing here unsticks affected rows on deploy;
+	// it is cheap when healthy (skips non-drifted indexes) and runtime writes also
+	// self-heal via step_write_healing. Non-fatal: log and continue on failure.
+	if rebuilt, reconcile_ok, reconcile_err := sqlite.repair_fts_indexes(&graph.db, true); !reconcile_ok {
+		fmt.printfln("ham-hub FTS reconcile failed (search may be stale until repaired): %s", reconcile_err.message)
+	} else if rebuilt > 0 {
+		fmt.printfln("ham-hub FTS reconcile: re-synced %d drifted search index(es)", rebuilt)
+	}
+
 	graph.repos.users = sqlite.new_user_repository(&graph.sqlite_users, &graph.db)
 	graph.repos.bridges = sqlite.new_bridge_repository(&graph.sqlite_bridges, &graph.db)
 	graph.repos.agents = sqlite.new_agent_repository(&graph.sqlite_agents, &graph.db)
