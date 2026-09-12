@@ -11,6 +11,7 @@ import {
 } from '../../api/endpoints/actions';
 import ScheduleEditor, { type ScheduleEditorValue } from './ScheduleEditor';
 import { getLocalTimezone, validateCronExpression } from './scheduleUtils';
+import { Button } from '@ui';
 
 export type ActionEditorPageProps = {
   // When present the page edits an existing action; otherwise it creates a new one.
@@ -317,14 +318,15 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           >
             Cancel
           </a>
-          <button
+          <Button
+            variant="primary"
             data-debug-id="action-editor-submit-btn"
             type="submit"
             disabled={saving || !targetInstanceId || !promptText.trim()}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:opacity-50"
+            className="min-h-[44px]"
           >
             {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Create action'}
-          </button>
+          </Button>
         </div>
       </form>
     </div>

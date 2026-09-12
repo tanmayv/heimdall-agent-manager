@@ -9,6 +9,7 @@ import ArtifactUploadButton, { useArtifactUpload } from './ArtifactUpload';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
 import Icon from './Icon';
+import { Button, Input } from '@ui';
 
 export type LibraryPageProps = {
   session: any;
@@ -211,7 +212,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
 
         {/* Filters */}
         <div data-debug-id="library-filters" className="mt-3 flex flex-wrap items-center gap-2">
-          <input data-debug-id="library-filter-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name / description…" className="min-w-[12rem] flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-400" />
+          <Input type="search" data-debug-id="library-filter-search" value={search} onChange={setSearch} placeholder="Search name / description…" size="sm" className="min-w-[12rem] flex-1" />
           <label className="text-[11px] uppercase tracking-wide text-zinc-500">Kind
             <select data-debug-id="library-filter-kind" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
               <option value="">all</option>
@@ -280,10 +281,10 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                   </div>
                   {renamingId === id ? (
                     <div data-debug-id={`library-card-rename-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl bg-[#0b0d12]/95 p-3">
-                      <input data-debug-id={`library-rename-input-${id}`} value={renameName} onChange={(e) => setRenameName(e.target.value)} className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                      <Input data-debug-id={`library-rename-input-${id}`} value={renameName} onChange={setRenameName} size="sm" width="full" />
                       <div className="flex justify-end gap-1">
-                        <button type="button" data-debug-id={`library-rename-save-${id}`} onClick={() => void handleRename(id)} className="rounded-md bg-sky-400 px-2 py-0.5 text-[11px] font-semibold text-black hover:bg-sky-300">Save</button>
-                        <button type="button" data-debug-id={`library-rename-cancel-${id}`} onClick={() => setRenamingId('')} className="rounded-md bg-white/10 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-white/15">Cancel</button>
+                        <Button variant="primary" size="sm" data-debug-id={`library-rename-save-${id}`} onClick={() => void handleRename(id)}>Save</Button>
+                        <Button variant="secondary" size="sm" data-debug-id={`library-rename-cancel-${id}`} onClick={() => setRenamingId('')}>Cancel</Button>
                       </div>
                     </div>
                   ) : null}
@@ -291,8 +292,8 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                     <div data-debug-id={`library-card-delete-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl bg-[#0b0d12]/95 p-3 text-center">
                       <div className="text-xs text-rose-100">Delete this artifact? References become unavailable placeholders.</div>
                       <div className="flex justify-center gap-1">
-                        <button type="button" data-debug-id={`library-delete-confirm-${id}`} onClick={() => void handleDelete(id)} className="rounded-md bg-rose-400 px-2 py-0.5 text-[11px] font-semibold text-black hover:bg-rose-300">Delete</button>
-                        <button type="button" data-debug-id={`library-delete-cancel-${id}`} onClick={() => setDeleteConfirmId('')} className="rounded-md bg-white/10 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-white/15">Cancel</button>
+                        <Button variant="danger" size="sm" data-debug-id={`library-delete-confirm-${id}`} onClick={() => void handleDelete(id)}>Delete</Button>
+                        <Button variant="secondary" size="sm" data-debug-id={`library-delete-cancel-${id}`} onClick={() => setDeleteConfirmId('')}>Cancel</Button>
                       </div>
                     </div>
                   ) : null}

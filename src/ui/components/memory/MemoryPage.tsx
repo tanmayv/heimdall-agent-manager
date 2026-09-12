@@ -11,6 +11,10 @@ import { useMemo, useState } from 'react';
 import { buildRouteHash } from '../../utils/appLocation';
 import Icon from '../Icon';
 import Markdown from '../Markdown';
+import Badge from '../Badge';
+import EmptyState from '../EmptyState';
+import Modal from '../Modal';
+import { Button, Input } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,
@@ -104,9 +108,9 @@ export default function MemoryPage() {
           <button type="button" data-debug-id="memory-new-btn" onClick={() => setCreateOpen(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-[12.5px] font-semibold text-sky-100 hover:bg-sky-400/20">
             <Icon name="plus" size={14} /> Propose memory
           </button>
-          <button type="button" data-debug-id="memory-refresh-btn" onClick={() => { activeQuery.refetch(); proposalsQuery.refetch(); }} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[12.5px] text-zinc-300 hover:bg-white/10">
+          <Button variant="secondary" size="sm" data-debug-id="memory-refresh-btn" onClick={() => { activeQuery.refetch(); proposalsQuery.refetch(); }}>
             <Icon name="refresh" size={14} /> Refresh
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -121,7 +125,7 @@ export default function MemoryPage() {
           {/* Filter bar */}
           <div data-debug-id="memory-filter-bar" className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <input data-debug-id="memory-filter-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search title / body / id…" className="min-w-[14rem] flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-400" />
+              <Input type="search" data-debug-id="memory-filter-search" value={search} onChange={setSearch} placeholder="Search title / body / id…" size="sm" className="min-w-[14rem] flex-1" />
               <label className="text-[11px] uppercase tracking-wide text-zinc-500">Type
                 <select data-debug-id="memory-filter-type" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
                   <option value="">all</option>
@@ -138,9 +142,9 @@ export default function MemoryPage() {
           {/* List */}
           <div data-debug-id="memory-list" className="mt-4 space-y-3">
             {activeQuery.isFetching && activeItems.length === 0 ? (
-              <Empty text="Loading memories…" />
+              <EmptyState debugId="memory-empty" text="Loading memories…" />
             ) : filteredActive.length === 0 ? (
-              <Empty text={activeItems.length === 0 ? 'No active memories yet. Propose one to get started.' : 'No memories match your filters.'} />
+              <EmptyState debugId="memory-empty" text={activeItems.length === 0 ? 'No active memories yet. Propose one to get started.' : 'No memories match your filters.'} />
             ) : filteredActive.map((memory) => (
               <MemoryListItem key={memory.memoryId || memory.id} memory={memory} catalog={catalog} onDelete={() => setDeleteTarget(memory)} />
             ))}
@@ -149,9 +153,9 @@ export default function MemoryPage() {
       ) : (
         <div data-debug-id="memory-proposals" className="mt-4 space-y-3">
           {proposalsQuery.isFetching && proposals.length === 0 ? (
-            <Empty text="Loading proposals…" />
+            <EmptyState debugId="memory-empty" text="Loading proposals…" />
           ) : proposals.length === 0 ? (
-            <Empty text="No pending proposals." />
+            <EmptyState debugId="memory-empty" text="No pending proposals." />
           ) : proposals.map((memory) => (
             <ProposalCard key={memory.proposalId || memory.memoryId} memory={memory} catalog={catalog} />
           ))}
@@ -274,10 +278,10 @@ function ProposalCard({ memory, catalog }: { memory: any; catalog: ScopeCatalog 
         <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId={`memory-proposal-scope-${id}`} />
       </div>
 
-      <input data-debug-id={`memory-proposal-reason-${id}`} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Decision reason (optional)" className="mt-3 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-400" />
+      <Input data-debug-id={`memory-proposal-reason-${id}`} value={reason} onChange={setReason} placeholder="Decision reason (optional)" width="full" className="mt-3" />
       {error ? <div className="mt-2 rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div> : null}
       <div className="mt-3 flex flex-wrap justify-end gap-2">
-        <button type="button" data-debug-id={`memory-proposal-reject-${id}`} disabled={Boolean(busy)} onClick={() => decide('reject')} className="rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-1.5 text-sm font-semibold text-red-200 hover:bg-red-500/20 disabled:opacity-50">{busy === 'reject' ? 'Rejecting…' : 'Reject'}</button>
+        <Button variant="danger" size="md" data-debug-id={`memory-proposal-reject-${id}`} disabled={Boolean(busy)} onClick={() => decide('reject')}>{busy === 'reject' ? 'Rejecting…' : 'Reject'}</Button>
         <button type="button" data-debug-id={`memory-proposal-approve-${id}`} disabled={Boolean(busy)} onClick={() => decide('approve')} className="rounded-lg bg-emerald-400 px-3.5 py-1.5 text-sm font-bold text-black hover:bg-emerald-300 disabled:opacity-50">{busy === 'approve' ? 'Approving…' : 'Approve'}</button>
       </div>
     </div>
@@ -313,7 +317,7 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
       {error ? <div data-debug-id="memory-create-error" className="rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div> : null}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Title">
-          <input data-debug-id="memory-create-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Memory title" className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+          <Input data-debug-id="memory-create-title" value={title} onChange={setTitle} placeholder="Memory title" width="full" />
         </Field>
         <Field label="Type">
           <select data-debug-id="memory-create-type" value={type} onChange={(e) => setType(e.target.value)} className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400">
@@ -322,20 +326,20 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
         </Field>
       </div>
       <Field label="Description (optional)">
-        <input data-debug-id="memory-create-description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Short summary of this memory" className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+        <Input data-debug-id="memory-create-description" value={description} onChange={setDescription} placeholder="Short summary of this memory" width="full" />
       </Field>
       <Field label="Body">
         <textarea data-debug-id="memory-create-body" value={body} onChange={(e) => setBody(e.target.value)} rows={6} placeholder="Memory body (Markdown)" className="w-full resize-y rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
       </Field>
       <Field label="Evidence (optional)">
-        <input data-debug-id="memory-create-evidence" value={evidence} onChange={(e) => setEvidence(e.target.value)} placeholder="Links, notes, source" className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+        <Input data-debug-id="memory-create-evidence" value={evidence} onChange={setEvidence} placeholder="Links, notes, source" width="full" />
       </Field>
       <Field label="Scope (empty = applies to all)">
         <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId="memory-create-scope" />
       </Field>
       <div className="mt-1 flex justify-end gap-2">
-        <button type="button" data-debug-id="memory-create-cancel" onClick={onClose} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
-        <button type="button" data-debug-id="memory-create-submit" disabled={isLoading} onClick={submit} className="rounded-lg bg-sky-400 px-4 py-1.5 text-sm font-semibold text-black hover:bg-sky-300 disabled:opacity-50">{isLoading ? 'Creating…' : 'Create'}</button>
+        <Button variant="secondary" size="md" data-debug-id="memory-create-cancel" onClick={onClose}>Cancel</Button>
+        <Button variant="primary" size="md" data-debug-id="memory-create-submit" disabled={isLoading} onClick={submit}>{isLoading ? 'Creating…' : 'Create'}</Button>
       </div>
     </ModalShell>
   );
@@ -346,24 +350,23 @@ function ConfirmDeleteModal({ title, onCancel, onConfirm }: { title: string; onC
     <ModalShell debugId="memory-delete-modal" title="Delete memory" onClose={onCancel} maxWidth="max-w-md">
       <p className="text-sm text-zinc-300">Delete <span className="font-semibold text-zinc-100">{title}</span>? Agents will stop receiving it.</p>
       <div className="mt-4 flex justify-end gap-2">
-        <button type="button" data-debug-id="memory-delete-cancel" onClick={onCancel} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
-        <button type="button" data-debug-id="memory-delete-confirm" onClick={onConfirm} className="rounded-lg bg-rose-400 px-4 py-1.5 text-sm font-bold text-black hover:bg-rose-300">Delete</button>
+        <Button variant="secondary" size="sm" data-debug-id="memory-delete-cancel" onClick={onCancel}>Cancel</Button>
+        <Button variant="danger" size="sm" data-debug-id="memory-delete-confirm" onClick={onConfirm}>Delete</Button>
       </div>
     </ModalShell>
   );
 }
 
 function ModalShell({ debugId, title, onClose, maxWidth = 'max-w-2xl', children }: { debugId: string; title: string; onClose: () => void; maxWidth?: string; children: React.ReactNode }) {
+  const size: 'sm' | 'md' | 'lg' | 'xl' = maxWidth === 'max-w-md' ? 'sm' : 'lg';
   return (
-    <div data-debug-id={`${debugId}-overlay`} className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/60 p-4 sm:p-8" onClick={onClose}>
-      <div data-debug-id={debugId} className={`w-full ${maxWidth} rounded-2xl border border-white/10 bg-[#0d0f14] p-5 shadow-2xl shadow-black/70`} onClick={(e) => e.stopPropagation()}>
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-zinc-100">{title}</h2>
-          <button type="button" aria-label="Close" data-debug-id={`${debugId}-close`} onClick={onClose} className="rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="close" size={16} /></button>
-        </div>
-        <div className="space-y-3">{children}</div>
+    <Modal open onClose={onClose} size={size} panelClassName="p-5" debugId={`${debugId}-overlay`} panelDebugId={debugId}>
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-zinc-100">{title}</h2>
+        <button type="button" aria-label="Close" data-debug-id={`${debugId}-close`} onClick={onClose} className="rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="close" size={16} /></button>
       </div>
-    </div>
+      <div className="space-y-3">{children}</div>
+    </Modal>
   );
 }
 
@@ -374,12 +377,4 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </label>
   );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-zinc-300">{children}</span>;
-}
-
-function Empty({ text }: { text: string }) {
-  return <div data-debug-id="memory-empty" className="rounded-2xl border border-dashed border-white/10 bg-white/[0.02] py-12 text-center text-sm text-zinc-500">{text}</div>;
 }

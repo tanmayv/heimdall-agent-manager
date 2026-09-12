@@ -9,6 +9,7 @@ import {
   memoryErrorText,
 } from "../../api/endpoints/memory";
 import { MemoryScopeSelector, MemoryScopeValue, MEMORY_TYPES, scopeToLists, listsToScope } from "./MemoryScopeSelector";
+import { Button, Input } from "@ui";
 
 export const MemoryPanel: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -78,24 +79,22 @@ export const MemoryPanel: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
+          <Button
+            variant="primary"
             data-debug-id="memory-create-toggle-btn"
             id="memory-create-toggle-btn"
             onClick={() => setCreateOpen((prev) => !prev)}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-sky-500 px-4 py-2 text-xs font-bold text-black hover:bg-sky-400 transition"
           >
             {createOpen ? "Cancel" : "+ New Memory"}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="secondary"
             data-debug-id="memory-refresh-btn"
             id="memory-refresh-btn"
             onClick={() => refetch()}
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-zinc-300 hover:bg-white/10 hover:text-white"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -114,26 +113,24 @@ export const MemoryPanel: React.FC = () => {
           <div className="grid grid-cols-1 gap-3">
             <div>
               <label className="block text-xs font-medium text-zinc-300 mb-1">Title</label>
-              <input
-                type="text"
+              <Input
                 data-debug-id="memory-create-title-input"
                 id="memory-create-title-input"
                 value={createTitle}
-                onChange={(e) => setCreateTitle(e.target.value)}
+                onChange={setCreateTitle}
                 placeholder="Memory title..."
-                className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2.5 focus:border-sky-500 focus:outline-none"
+                width="full"
               />
             </div>
             <div>
               <label className="block text-xs font-medium text-zinc-300 mb-1">Description (Optional)</label>
-              <input
-                type="text"
+              <Input
                 data-debug-id="memory-create-description-input"
                 id="memory-create-description-input"
                 value={createDescription}
-                onChange={(e) => setCreateDescription(e.target.value)}
+                onChange={setCreateDescription}
                 placeholder="Short summary of this memory..."
-                className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2.5 focus:border-sky-500 focus:outline-none"
+                width="full"
               />
             </div>
             <div>
@@ -150,14 +147,13 @@ export const MemoryPanel: React.FC = () => {
             </div>
             <div>
               <label className="block text-xs font-medium text-zinc-300 mb-1">Evidence (Optional)</label>
-              <input
-                type="text"
+              <Input
                 data-debug-id="memory-create-evidence-input"
                 id="memory-create-evidence-input"
                 value={createEvidence}
-                onChange={(e) => setCreateEvidence(e.target.value)}
+                onChange={setCreateEvidence}
                 placeholder="Supporting URL, file path, or context reference..."
-                className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2.5 focus:border-sky-500 focus:outline-none"
+                width="full"
               />
             </div>
             <div>
@@ -166,24 +162,23 @@ export const MemoryPanel: React.FC = () => {
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
               data-debug-id="memory-create-cancel-btn"
               id="memory-create-cancel-btn"
               onClick={() => setCreateOpen(false)}
-              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-zinc-300 hover:bg-white/10"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="primary"
               type="submit"
               disabled={isCreating}
               data-debug-id="memory-create-submit-btn"
               id="memory-create-submit-btn"
-              className="rounded-xl bg-sky-500 px-5 py-2 text-xs font-bold text-black hover:bg-sky-400 disabled:opacity-50"
             >
               {isCreating ? "Saving..." : "Create Memory"}
-            </button>
+            </Button>
           </div>
         </form>
       )}
@@ -387,26 +382,24 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
         <div className="space-y-3">
           <div>
             <label className="block text-[11px] font-medium text-zinc-400 mb-1">Title</label>
-            <input
-              type="text"
+            <Input
               data-debug-id={`memory-proposal-title-input-${memoryId}`}
               id={`memory-proposal-title-input-${memoryId}`}
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2 focus:border-amber-500 focus:outline-none"
+              onChange={setTitle}
+              width="full"
             />
           </div>
 
           <div>
             <label className="block text-[11px] font-medium text-zinc-400 mb-1">Description</label>
-            <input
-              type="text"
+            <Input
               data-debug-id={`memory-proposal-description-input-${memoryId}`}
               id={`memory-proposal-description-input-${memoryId}`}
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={setDescription}
               placeholder="Short summary of this memory..."
-              className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2 focus:border-amber-500 focus:outline-none"
+              width="full"
             />
           </div>
 
@@ -424,13 +417,12 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
 
           <div>
             <label className="block text-[11px] font-medium text-zinc-400 mb-1">Evidence</label>
-            <input
-              type="text"
+            <Input
               data-debug-id={`memory-proposal-evidence-input-${memoryId}`}
               id={`memory-proposal-evidence-input-${memoryId}`}
               value={evidence}
-              onChange={(e) => setEvidence(e.target.value)}
-              className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2 focus:border-amber-500 focus:outline-none"
+              onChange={setEvidence}
+              width="full"
             />
           </div>
 
@@ -440,38 +432,38 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-white/10">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               data-debug-id={`memory-proposal-save-btn-${memoryId}`}
               id={`memory-proposal-save-btn-${memoryId}`}
               onClick={handleSave}
               disabled={isUpdating || isApproving || isRejecting}
-              className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/10"
             >
               {isUpdating ? "Saving..." : "Save Edits"}
-            </button>
+            </Button>
 
-            <button
-              type="button"
+            <Button
+              variant="danger"
+              size="sm"
               data-debug-id={`memory-proposal-reject-btn-${memoryId}`}
               id={`memory-proposal-reject-btn-${memoryId}`}
               onClick={handleReject}
               disabled={isUpdating || isApproving || isRejecting}
-              className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-200 hover:bg-red-500/20"
             >
               {isRejecting ? "Rejecting..." : "Reject"}
-            </button>
+            </Button>
 
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="sm"
               data-debug-id={`memory-proposal-approve-btn-${memoryId}`}
               id={`memory-proposal-approve-btn-${memoryId}`}
               onClick={handleApprove}
               disabled={isUpdating || isApproving || isRejecting}
-              className="rounded-xl bg-emerald-500 px-4 py-1.5 text-xs font-bold text-black hover:bg-emerald-400"
             >
               {isApproving ? "Approving..." : "Approve (with edits)"}
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -535,39 +527,39 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             data-debug-id={`memory-row-open-btn-${memoryId}`}
             id={`memory-row-open-btn-${memoryId}`}
             onClick={() => setExpanded((prev) => !prev)}
-            className="rounded-xl border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-white/10"
           >
             {expanded ? "Collapse" : "Details"}
-          </button>
+          </Button>
 
           {!isSystem && (
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               data-debug-id={`memory-row-edit-btn-${memoryId}`}
               id={`memory-row-edit-btn-${memoryId}`}
               onClick={() => setIsEditing((prev) => !prev)}
-              className="rounded-xl border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-white/10"
             >
               {isEditing ? "Close Edit" : "Edit"}
-            </button>
+            </Button>
           )}
 
           {!isSystem && memory.status !== "archived" && (
-            <button
-              type="button"
+            <Button
+              variant="danger"
+              size="sm"
               data-debug-id={`memory-row-archive-btn-${memoryId}`}
               id={`memory-row-archive-btn-${memoryId}`}
               onClick={handleArchive}
               disabled={isArchiving}
-              className="rounded-xl border border-red-400/20 bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-200 hover:bg-red-500/20 disabled:opacity-50"
             >
               {isArchiving ? "Archiving..." : "Archive"}
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -640,25 +632,25 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
       {err && <div className="text-xs text-red-300">{err}</div>}
       <div>
         <label className="block text-[11px] text-zinc-400 mb-1">Title</label>
-        <input
-          type="text"
+        <Input
+          size="sm"
           data-debug-id={`memory-edit-title-input-${memoryId}`}
           id={`memory-edit-title-input-${memoryId}`}
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
+          onChange={setTitle}
+          width="full"
         />
       </div>
       <div>
         <label className="block text-[11px] text-zinc-400 mb-1">Description</label>
-        <input
-          type="text"
+        <Input
+          size="sm"
           data-debug-id={`memory-edit-description-input-${memoryId}`}
           id={`memory-edit-description-input-${memoryId}`}
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={setDescription}
           placeholder="Short summary of this memory..."
-          className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
+          width="full"
         />
       </div>
       <div>
@@ -674,13 +666,13 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
       </div>
       <div>
         <label className="block text-[11px] text-zinc-400 mb-1">Evidence</label>
-        <input
-          type="text"
+        <Input
+          size="sm"
           data-debug-id={`memory-edit-evidence-input-${memoryId}`}
           id={`memory-edit-evidence-input-${memoryId}`}
           value={evidence}
-          onChange={(e) => setEvidence(e.target.value)}
-          className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
+          onChange={setEvidence}
+          width="full"
         />
       </div>
       <div>
@@ -688,24 +680,25 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         <MemoryScopeSelector value={scope} onChange={setScope} debugPrefix={`memory-edit-scope-${memoryId}`} />
       </div>
       <div className="flex justify-end gap-2 pt-1">
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           data-debug-id={`memory-edit-cancel-btn-${memoryId}`}
           id={`memory-edit-cancel-btn-${memoryId}`}
           onClick={onClose}
-          className="rounded-lg border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300"
         >
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
           type="submit"
           data-debug-id={`memory-edit-save-btn-${memoryId}`}
           id={`memory-edit-save-btn-${memoryId}`}
           disabled={isLoading}
-          className="rounded-lg bg-sky-500 px-3 py-1 text-xs font-bold text-black hover:bg-sky-400"
         >
           {isLoading ? "Saving..." : "Save Changes"}
-        </button>
+        </Button>
       </div>
     </form>
   );

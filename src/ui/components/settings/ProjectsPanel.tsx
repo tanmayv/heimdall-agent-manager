@@ -11,6 +11,7 @@ import {
   type ProjectBridgePath,
 } from "../../api/endpoints/projects";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
+import { Button, Input } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -216,48 +217,52 @@ export default function ProjectsPanel() {
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1">Project Name *</label>
-              <input
+              <Input
                 data-debug-id="settings-project-name-input"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={setName}
                 placeholder="Website Rewrite"
                 required
-                className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                width="full"
+                className="min-h-[44px]"
               />
             </div>
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path *</label>
-              <input
+              <Input
                 data-debug-id="settings-project-default-path-input"
                 value={defaultPath}
-                onChange={(e) => setDefaultPath(e.target.value)}
+                onChange={setDefaultPath}
                 placeholder="/home/user/projects/my-app"
                 required
-                className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                width="full"
+                className="min-h-[44px]"
               />
             </div>
           </div>
 
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
-            <input
+            <Input
               data-debug-id="settings-project-description-input"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={setDescription}
               placeholder="Frontend migration and backend refactoring project"
-              className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+              width="full"
+              className="min-h-[44px]"
             />
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1">Repository URL</label>
-              <input
+              <Input
                 data-debug-id="settings-project-repo-input"
                 value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
+                onChange={setRepoUrl}
                 placeholder="https://github.com/org/repo"
-                className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                width="full"
+                className="min-h-[44px]"
               />
             </div>
             <div>
@@ -281,14 +286,15 @@ export default function ProjectsPanel() {
             </div>
           ) : null}
 
-          <button
+          <Button
+            variant="primary"
             data-debug-id="settings-project-create-btn"
             type="submit"
             disabled={!name.trim() || !defaultPath.trim() || creating}
-            className="min-h-[44px] w-full rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black disabled:opacity-50 sm:w-auto hover:bg-sky-300"
+            className="min-h-[44px] w-full sm:w-auto"
           >
             {creating ? "Creating…" : "Create project"}
-          </button>
+          </Button>
         </form>
       </div>
 
@@ -304,14 +310,14 @@ export default function ProjectsPanel() {
               ← Back to all projects
             </button>
             <div className="flex items-center gap-2">
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 data-debug-id={`settings-project-edit-btn-${selectedProjectId}`}
-                type="button"
                 onClick={() => setIsEditing((prev) => !prev)}
-                className="rounded-xl border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10"
               >
                 {isEditing ? "Cancel Edit" : "Edit Project"}
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -335,38 +341,38 @@ export default function ProjectsPanel() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">Project Name</label>
-                        <input
+                        <Input
                           value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                          onChange={setEditName}
+                          width="full"
                         />
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path</label>
-                        <input
+                        <Input
                           value={editDefaultPath}
-                          onChange={(e) => setEditDefaultPath(e.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                          onChange={setEditDefaultPath}
+                          width="full"
                         />
                       </div>
                     </div>
 
                     <div>
                       <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
-                      <input
+                      <Input
                         value={editDescription}
-                        onChange={(e) => setEditDescription(e.target.value)}
-                        className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                        onChange={setEditDescription}
+                        width="full"
                       />
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">Repo URL</label>
-                        <input
+                        <Input
                           value={editRepoUrl}
-                          onChange={(e) => setEditRepoUrl(e.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                          onChange={setEditRepoUrl}
+                          width="full"
                         />
                       </div>
                       <div>
@@ -388,22 +394,22 @@ export default function ProjectsPanel() {
                     ) : null}
 
                     <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         onClick={() => setIsEditing(false)}
-                        className="rounded-xl border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/10"
                       >
                         Cancel
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
                         data-debug-id={`settings-project-save-btn-${selectedProjectId}`}
-                        type="button"
                         onClick={() => void handleSaveProject()}
                         disabled={editSaving || !editName.trim() || !editDefaultPath.trim()}
-                        className="rounded-xl bg-sky-400 px-4 py-1.5 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-50"
                       >
                         {editSaving ? "Saving…" : "Save project"}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ) : (
@@ -483,62 +489,60 @@ export default function ProjectsPanel() {
 
                           {/* Path Input */}
                           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                            <input
+                            <Input
+                              size="sm"
                               data-debug-id={`settings-project-bridge-path-input-${bridgeId}`}
                               value={currentInputValue}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setBridgePathInputs((prev) => ({ ...prev, [bridgeId]: val }));
-                              }}
+                              onChange={(val) => setBridgePathInputs((prev) => ({ ...prev, [bridgeId]: val }))}
                               placeholder={`Default: ${selectedProject.default_path}`}
-                              className="flex-1 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-xs text-zinc-100 outline-none focus:border-sky-400 font-mono"
+                              className="flex-1 font-mono"
                             />
 
                             <div className="flex items-center gap-1.5 shrink-0">
                               {existingOverride ? (
                                 <>
-                                  <button
+                                  <Button
+                                    variant="primary"
+                                    size="sm"
                                     data-debug-id={`settings-project-bridge-path-save-btn-${bridgeId}`}
-                                    type="button"
                                     onClick={() => void handleSaveBridgePath(bridgeId, selectedProject.default_path, existingOverride?.path)}
                                     disabled={Boolean(busyState)}
-                                    className="rounded-lg bg-sky-400/10 border border-sky-400/30 px-2.5 py-1 text-xs text-sky-200 hover:bg-sky-400/20 disabled:opacity-50 font-medium"
                                   >
                                     {busyState === "save" ? "Saving…" : "Save"}
-                                  </button>
+                                  </Button>
 
-                                  <button
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
                                     data-debug-id={`settings-project-bridge-path-validate-btn-${bridgeId}`}
-                                    type="button"
                                     onClick={() => void handleValidateBridgePath(bridgeId)}
                                     disabled={!isOnline || Boolean(busyState)}
                                     title={!isOnline ? "Bridge is offline" : "Validate path on bridge"}
-                                    className="rounded-lg bg-white/10 border border-white/10 px-2.5 py-1 text-xs text-zinc-200 hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
                                   >
                                     {busyState === "validate" ? "Validating…" : "Validate"}
-                                  </button>
+                                  </Button>
 
-                                  <button
+                                  <Button
+                                    variant="danger"
+                                    size="sm"
                                     data-debug-id={`settings-project-bridge-path-remove-btn-${bridgeId}`}
-                                    type="button"
                                     onClick={() => void handleRemoveBridgePath(bridgeId)}
                                     disabled={Boolean(busyState)}
-                                    className="rounded-lg border border-red-400/20 bg-red-400/5 px-2.5 py-1 text-xs text-red-300 hover:bg-red-400/10 disabled:opacity-50 font-medium"
                                   >
                                     {busyState === "remove" ? "Removing…" : "Remove"}
-                                  </button>
+                                  </Button>
                                 </>
                               ) : (
-                                <button
+                                <Button
+                                  variant="primary"
+                                  size="sm"
                                   data-debug-id={`settings-project-bridge-path-set-btn-${bridgeId}`}
-                                  type="button"
                                   onClick={() => void handleSetBridgePath(bridgeId, selectedProject.default_path)}
                                   disabled={Boolean(busyState) || !selectedProject.default_path}
                                   title="Set an override seeded with the project's default path"
-                                  className="rounded-lg bg-sky-400/10 border border-sky-400/30 px-2.5 py-1 text-xs text-sky-200 hover:bg-sky-400/20 disabled:opacity-50 font-medium"
                                 >
                                   {busyState === "set" ? "Setting…" : "Set"}
-                                </button>
+                                </Button>
                               )}
                             </div>
                           </div>
@@ -611,17 +615,18 @@ export default function ProjectsPanel() {
                       ) : null}
                     </div>
 
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       data-debug-id={`settings-project-open-btn-${projectId}`}
-                      type="button"
                       onClick={() => {
                         setSelectedProjectId(projectId);
                         setIsEditing(false);
                       }}
-                      className="shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-sky-400 hover:bg-sky-400 hover:text-black transition"
+                      className="shrink-0"
                     >
                       Open &gt;
-                    </button>
+                    </Button>
                   </div>
                 );
               })}

@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLazyListBridgeDirQuery, useMkdirBridgePathMutation, type BridgeFsEntry } from '../api/endpoints/bridgeFs';
 import Icon from './Icon';
+import { Button, Input } from '@ui';
 
 function str(v: any): string { return String(v ?? '').trim(); }
 
@@ -118,7 +119,7 @@ export default function BridgeDirectoryPicker({
           {root ? <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-600" title={`Allowed root: ${root}`}>root: {root}</div> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <button data-debug-id={`${debugId}-home-btn`} type="button" onClick={() => void load('')} title="Go to root" className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Root</button>
+          <Button data-debug-id={`${debugId}-home-btn`} variant="secondary" size="sm" onClick={() => void load('')} title="Go to root">Root</Button>
           {onClose ? <button data-debug-id={`${debugId}-close-btn`} type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-zinc-500 hover:bg-white/10 hover:text-white"><Icon name="close" size={15} /></button> : null}
         </div>
       </div>
@@ -158,28 +159,28 @@ export default function BridgeDirectoryPicker({
 
       {/* controls row */}
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button data-debug-id={`${debugId}-hidden-toggle`} type="button" onClick={() => setShowHidden((v) => !v)} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">{showHidden ? 'Hide hidden' : 'Show hidden'}</button>
+        <Button data-debug-id={`${debugId}-hidden-toggle`} variant="secondary" size="sm" onClick={() => setShowHidden((v) => !v)}>{showHidden ? 'Hide hidden' : 'Show hidden'}</Button>
         {showNewFolder ? (
           <div className="flex items-center gap-1.5">
-            <input data-debug-id={`${debugId}-new-folder-input`} value={newFolder} onChange={(e) => setNewFolder(e.target.value)} placeholder="folder name" className="w-32 rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-[12px] text-white" />
-            <button data-debug-id={`${debugId}-new-folder-create-btn`} type="button" disabled={mkdirState.isLoading} onClick={createFolder} className="rounded-lg bg-sky-400 px-2 py-1 text-[11px] font-bold text-black hover:bg-sky-300 disabled:opacity-50">Create</button>
-            <button type="button" onClick={() => { setShowNewFolder(false); setNewFolder(''); }} className="rounded-lg px-1.5 py-1 text-[11px] text-zinc-500 hover:text-white">Cancel</button>
+            <Input data-debug-id={`${debugId}-new-folder-input`} value={newFolder} onChange={setNewFolder} placeholder="folder name" size="sm" className="w-32" />
+            <Button data-debug-id={`${debugId}-new-folder-create-btn`} variant="primary" size="sm" disabled={mkdirState.isLoading} onClick={createFolder}>Create</Button>
+            <Button variant="ghost" size="sm" onClick={() => { setShowNewFolder(false); setNewFolder(''); }}>Cancel</Button>
           </div>
         ) : (
-          <button data-debug-id={`${debugId}-new-folder-btn`} type="button" onClick={() => setShowNewFolder(true)} className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10"><Icon name="plus" size={12} /> New folder</button>
+          <Button data-debug-id={`${debugId}-new-folder-btn`} variant="secondary" size="sm" onClick={() => setShowNewFolder(true)} leading={<Icon name="plus" size={12} />}>New folder</Button>
         )}
       </div>
 
       {/* path input + actions */}
       <div className="mt-2">
-        <input data-debug-id={`${debugId}-path-input`} value={pathInput} onChange={(e) => setPathInput(e.target.value)} placeholder="~/path/on/this/device" className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-[12px] text-white" />
+        <Input data-debug-id={`${debugId}-path-input`} value={pathInput} onChange={setPathInput} placeholder="~/path/on/this/device" width="full" className="font-mono" />
       </div>
 
       {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-[11px] text-red-300">{error}</p> : null}
 
       <div className="mt-3 flex items-center justify-end gap-2">
-        <button data-debug-id={`${debugId}-create-typed-btn`} type="button" onClick={createTypedPath} className="rounded-xl border border-white/10 px-3 py-2 text-[12px] text-zinc-300 hover:bg-white/10">Create typed path</button>
-        <button data-debug-id={`${debugId}-pick-btn`} type="button" onClick={() => onPick(str(pathInput) || cwd)} className="rounded-xl bg-sky-400 px-4 py-2 text-[12px] font-bold text-black hover:bg-sky-300">Use this folder</button>
+        <Button data-debug-id={`${debugId}-create-typed-btn`} variant="secondary" onClick={createTypedPath}>Create typed path</Button>
+        <Button data-debug-id={`${debugId}-pick-btn`} variant="primary" onClick={() => onPick(str(pathInput) || cwd)}>Use this folder</Button>
       </div>
     </div>
   );

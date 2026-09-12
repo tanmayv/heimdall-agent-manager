@@ -6,6 +6,7 @@ import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import SearchableSelect, { type SearchableOption } from '../SearchableSelect';
+import { Button } from '@ui';
 
 type AgentOption = {
   agent_id: string;
@@ -466,7 +467,7 @@ export default function ConversationLaunchComposer() {
 
       <div className="mt-5 flex items-center justify-between gap-4">
         <p data-debug-id="launch-send-guard" className="text-xs text-zinc-500">{!agentId ? 'Agent selection is required before starting.' : !selectedBridge ? 'Choose the Bridge to run on.' : launchPairSupported ? 'Ready to start — type your first message inside the thread once it opens.' : 'Choose a provider/tier supported by the selected Bridge.'}</p>
-        <button data-debug-id="new-convo-send-btn" type="submit" disabled={!canSend} className="rounded-2xl bg-sky-400 px-5 py-3 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{status === 'sending' ? 'Starting…' : 'Start conversation'}</button>
+        <Button data-debug-id="new-convo-send-btn" type="submit" variant="primary" size="lg" disabled={!canSend}>{status === 'sending' ? 'Starting…' : 'Start conversation'}</Button>
       </div>
     </form>
   );

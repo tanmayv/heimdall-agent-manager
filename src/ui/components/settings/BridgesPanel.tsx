@@ -8,6 +8,7 @@ import {
   useCreateBridgeEnrollmentMutation,
   useRevokeBridgeEnrollmentMutation,
 } from '../../api/endpoints/bridgeSupport';
+import { Button, Input } from '@ui';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
@@ -164,7 +165,7 @@ export default function BridgesPanel() {
           <h3 className="font-semibold">Bridges</h3>
           <p className="mt-0.5 text-xs text-zinc-500">Your machines. “Remove” revokes the token (record kept); no hard delete in v1.</p>
         </div>
-        <button type="button" data-debug-id="settings-bridges-add-btn" onClick={() => { setEnrollOpen((o) => !o); setEnrollResult(null); setEnrollError(''); }} className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-sm text-sky-100 hover:bg-sky-400/20">＋ Add bridge</button>
+        <Button variant="secondary" size="sm" data-debug-id="settings-bridges-add-btn" onClick={() => { setEnrollOpen((o) => !o); setEnrollResult(null); setEnrollError(''); }}>＋ Add bridge</Button>
       </div>
 
       {bridgesQuery.isError || enrollmentsQuery.isError ? <div data-debug-id="settings-bridges-load-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">Unable to load bridges. Check your trusted-proxy session and Hub connection.</div> : null}
@@ -177,12 +178,12 @@ export default function BridgesPanel() {
             <>
               <div className="text-sm font-medium text-sky-100">Create bridge enrollment</div>
               <label className="mt-2 block text-xs uppercase tracking-wide text-zinc-500">Label (optional; defaults to reported hostname)
-                <input data-debug-id="settings-bridges-enroll-label" value={enrollLabel} onChange={(e) => setEnrollLabel(e.target.value)} placeholder="MacBook" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                <Input data-debug-id="settings-bridges-enroll-label" value={enrollLabel} onChange={setEnrollLabel} placeholder="MacBook" width="full" className="mt-1" />
               </label>
               {enrollError ? <div className="mt-2 text-xs text-red-300">{enrollError}</div> : null}
               <div className="mt-3 flex justify-end gap-2">
-                <button type="button" data-debug-id="settings-bridges-enroll-cancel" onClick={() => setEnrollOpen(false)} className="rounded-xl border border-white/10 px-3 py-1.5 text-sm text-zinc-400 hover:bg-white/10">Cancel</button>
-                <button type="button" data-debug-id="settings-bridges-enroll-create" onClick={() => void handleCreateEnrollment()} disabled={enrollBusy} className="rounded-xl bg-sky-400 px-3 py-1.5 text-sm font-semibold text-black hover:bg-sky-300 disabled:opacity-50">{enrollBusy ? 'Creating…' : 'Create enrollment'}</button>
+                <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-cancel" onClick={() => setEnrollOpen(false)}>Cancel</Button>
+                <Button variant="primary" size="sm" data-debug-id="settings-bridges-enroll-create" onClick={() => void handleCreateEnrollment()} disabled={enrollBusy}>{enrollBusy ? 'Creating…' : 'Create enrollment'}</Button>
               </div>
             </>
           ) : (
@@ -191,8 +192,8 @@ export default function BridgesPanel() {
               <div className="mt-1 text-xs text-amber-200">⚠ Shown once. Store the token now — it is a secret. This page will poll while you connect the bridge.</div>
               <pre data-debug-id="settings-bridges-enroll-command" className="mt-2 overflow-x-auto rounded-xl border border-white/10 bg-black/50 p-3 text-[12px] leading-5 text-emerald-200">{buildSetupCommand(enrollResult)}</pre>
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <button type="button" data-debug-id="settings-bridges-enroll-copy-token" onClick={() => void copyToken(enrollResult?.enrollment_token || '')} className="rounded-xl bg-white/10 px-3 py-1.5 text-sm text-zinc-200 hover:bg-white/15">{copiedToken ? 'Copied' : 'Copy token'}</button>
-                <button type="button" data-debug-id="settings-bridges-enroll-done" onClick={() => { setEnrollOpen(false); setEnrollResult(null); setEnrollLabel(''); }} className="rounded-xl bg-sky-400 px-3 py-1.5 text-sm font-semibold text-black hover:bg-sky-300">Done</button>
+                <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-copy-token" onClick={() => void copyToken(enrollResult?.enrollment_token || '')}>{copiedToken ? 'Copied' : 'Copy token'}</Button>
+                <Button variant="primary" size="sm" data-debug-id="settings-bridges-enroll-done" onClick={() => { setEnrollOpen(false); setEnrollResult(null); setEnrollLabel(''); }}>Done</Button>
               </div>
             </>
           )}
@@ -214,7 +215,7 @@ export default function BridgesPanel() {
                     <div className="truncate text-zinc-200">{enr?.label || 'Unlabeled enrollment'}</div>
                     <div className="mt-0.5 text-[11px] text-zinc-500">waiting for bridge to connect… · expires: {enr?.expires_at ? new Date(enr.expires_at).toLocaleString() : enr?.expires_unix_ms ? new Date(Number(enr.expires_unix_ms)).toLocaleString() : '—'}</div>
                   </div>
-                  <button type="button" data-debug-id={`settings-bridges-pending-revoke-${id}`} onClick={() => void handleRevokeEnrollment(id)} className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">Revoke</button>
+                  <Button variant="secondary" size="sm" data-debug-id={`settings-bridges-pending-revoke-${id}`} onClick={() => void handleRevokeEnrollment(id)} className="shrink-0">Revoke</Button>
                 </div>
               );
             })}
@@ -243,7 +244,7 @@ export default function BridgesPanel() {
                       <div className="flex items-center gap-2">
                         <span data-debug-id={`settings-bridge-status-${id}`} className={`h-2 w-2 shrink-0 rounded-full ${statusTone(bridge)}`} />
                         {isRenaming ? (
-                          <input data-debug-id={`settings-bridge-rename-input-${id}`} value={renameValue} onChange={(e) => setRenameValue(e.target.value)} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/40 px-2 py-0.5 text-sm text-zinc-100 outline-none focus:border-sky-400" autoFocus />
+                          <Input data-debug-id={`settings-bridge-rename-input-${id}`} value={renameValue} onChange={setRenameValue} size="sm" className="min-w-0 flex-1" autoFocus />
                         ) : (
                           // TODO(FIX): Replace loose fallback chain with canonical typed schema property
                           <span className="truncate text-sm font-medium text-zinc-100">{bridge?.label || bridge?.machine_hostname || bridge?.hostname || id}</span>
@@ -266,18 +267,18 @@ export default function BridgesPanel() {
                     <div className="flex shrink-0 items-center gap-1">
                       {isRenaming ? (
                         <>
-                          <button type="button" data-debug-id={`settings-bridge-rename-save-${id}`} onClick={() => void handleSaveRename(id)} className="rounded-lg bg-sky-400 px-2 py-1 text-[11px] font-semibold text-black hover:bg-sky-300">Save</button>
-                          <button type="button" data-debug-id={`settings-bridge-rename-cancel-${id}`} onClick={() => setRenamingId('')} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">Cancel</button>
+                          <Button variant="primary" size="sm" data-debug-id={`settings-bridge-rename-save-${id}`} onClick={() => void handleSaveRename(id)}>Save</Button>
+                          <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-rename-cancel-${id}`} onClick={() => setRenamingId('')}>Cancel</Button>
                         </>
                       ) : isRevoking ? (
                         <>
-                          <button type="button" data-debug-id={`settings-bridge-revoke-confirm-${id}`} onClick={() => void handleRevoke(id)} className="rounded-lg bg-rose-400 px-2 py-1 text-[11px] font-semibold text-black hover:bg-rose-300">Confirm revoke</button>
-                          <button type="button" data-debug-id={`settings-bridge-revoke-cancel-${id}`} onClick={() => setRevokeConfirmId('')} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">Cancel</button>
+                          <Button variant="danger" size="sm" data-debug-id={`settings-bridge-revoke-confirm-${id}`} onClick={() => void handleRevoke(id)}>Confirm revoke</Button>
+                          <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-revoke-cancel-${id}`} onClick={() => setRevokeConfirmId('')}>Cancel</Button>
                         </>
                       ) : (
                         <>
-                          <button type="button" data-debug-id={`settings-bridge-rename-btn-${id}`} onClick={() => { setRenamingId(id); setRenameValue(bridge?.label || ''); }} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">Rename</button>
-                          <button type="button" data-debug-id={`settings-bridge-revoke-btn-${id}`} onClick={() => setRevokeConfirmId(id)} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-rose-300 hover:bg-rose-500/10">Revoke</button>
+                          <Button variant="secondary" size="sm" data-debug-id={`settings-bridge-rename-btn-${id}`} onClick={() => { setRenamingId(id); setRenameValue(bridge?.label || ''); }}>Rename</Button>
+                          <Button variant="danger" size="sm" data-debug-id={`settings-bridge-revoke-btn-${id}`} onClick={() => setRevokeConfirmId(id)}>Revoke</Button>
                         </>
                       )}
                     </div>

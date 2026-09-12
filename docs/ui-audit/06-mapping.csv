@@ -1,0 +1,88 @@
+EL-ID,Element,Destination component,Replacement call (example),Automation,Notes
+EL-001,Primary button sky-400,Button,"<Button variant=""primary"">Save</Button>",codemod,High-frequency; codemod the class signature
+EL-002,Primary button sky-500,Button,"<Button variant=""primary"" size=""sm"">…</Button>",codemod,Snap to primary
+EL-003,Primary button sky-600 white,Button,"<Button variant=""primary"">…</Button>",human,Confirm text-white vs accent-fg intent
+EL-004,Primary button white,Button,"<Button variant=""primary"">…</Button>",human,Decide if white primary is a real second intent (likely not)
+EL-005,Primary button framer,Button,"<Button variant=""primary"" width=""full"">…</Button>",codemod,Token-based already; swap component
+EL-006,Secondary border button,Button,"<Button>Cancel</Button>",codemod,Default variant
+EL-007,Secondary white/10 button,Button,"<Button variant=""secondary"">…</Button>",codemod,
+EL-008,Ghost pill,Button,"<Button variant=""ghost"" size=""sm"">…</Button>",codemod,De-facto default; verify padding→size
+EL-009,Intent-tinted pill,Button,"<Button variant=""primary|danger"">…</Button>",human,Map emerald→primary(confirm)/rose→danger/amber→? per intent
+EL-010,Danger solid,Button,"<Button variant=""danger"">Delete</Button>",codemod,
+EL-011,Danger tint ghost,Button,"<Button variant=""danger"">…</Button>",codemod,Unify red/rose
+EL-012,Success button,Button,"<Button variant=""primary"">Approve</Button>",human,Success is not a button variant; usually primary confirm
+EL-013,Warning button,Button,"<Button variant=""secondary"">…</Button>",human,Decide intent
+EL-014,Icon-only button,IconButton,"<IconButton icon=""close"" label=""Close"" />",human,Requires a label — human supplies accessible name
+EL-015,Bare-glyph button,IconButton,"<IconButton icon=""arrow-left"" label=""Back"" />",human,Add glyph to Icon set; add label
+EL-016,Text link button,Link,"<Link onClick={…}>Open</Link>",codemod,Or Button variant=ghost if it's an action
+EL-017,Framer-pill button,Button,"<Button variant=""secondary"">…</Button>",codemod,Drop global framer-pill class
+EL-018,Send button (3 styles),IconButton,"<IconButton icon=""arrow-up"" label=""Send"" variant=""solid"" />",human,Unify the 3+ send styles in the merged Composer
+EL-019,Toggle button,Toggle,"<Toggle checked={on} onChange={set} label=""…"" />",human,Or Tab if it selects a view
+EL-020,Text input canonical,Input,"<Input value={v} onChange={set} />",codemod,High-frequency
+EL-021,Input bg-black/40,Input,"<Input … />",codemod,Snap to canonical
+EL-022,Input rounded-lg zinc-900,Input,"<Input invalid={!ok} … />",codemod,Keep cron valid/invalid via invalid prop
+EL-023,Input gray/blue outlier,Input,"<Input … />",delete,Delete MemoryScopeSelector shim; use ScopeField
+EL-024,Textarea,Textarea,"<Textarea value={v} onChange={set} autoResize />",codemod,
+EL-025,Native select,Select,"<Select value={v} onChange={set} options={opts} />",human,Options come from data; needs light refactor
+EL-026,SearchableSelect,Combobox,"<Combobox value={v} onChange={set} options={opts} />",human,Add aria-activedescendant; rename
+EL-027,SearchableMultiSelect,Combobox,"<Combobox multiple value={vs} onChange={set} options={opts} />",human,
+EL-028,Checkbox,Checkbox,"<Checkbox checked={c} onChange={set} label=""…"" />",codemod,Remove focus:ring-0
+EL-029,Radio,Radio,"<Radio name=""g"" value={v} checked onChange={set} />",codemod,
+EL-030,Toggle switch,Toggle,"<Toggle checked={c} onChange={set} label=""…"" />",human,Promote NotificationsPanel pattern
+EL-031,Chip-list input,Combobox,"<Combobox multiple creatable … />",human,Or dedicated TagInput if creatable needed
+EL-032,Date/time input,Input,"<Input type=""date"" value={v} onChange={set} />",codemod,
+EL-033,Framer input,Input,"<FormField label=""…""><Input … /></FormField>",codemod,SessionConfig is the model; preserve label wiring
+EL-034,Picker-as-button,AgentPickerField,"<AgentPickerField value={a} onChange={set} />",human,Pattern component
+EL-035,Page header A,PageShell,"<PageShell eyebrow=… title=… description=…>",human,Per-page refactor
+EL-036,Page header B,PageShell,"<PageShell title=… actions={<Badge/>}>",human,
+EL-037,Page header C,PageShell,"<PageShell title=… >",human,
+EL-038,Page header D,PageShell,"<PageShell title=… >",human,
+EL-039,Page header E,PageShell,"<PageShell title=… actions={<Link>Cancel</Link>}>",human,
+EL-040,Page header F,PageShell,"<PageShell title=… >",human,Fixes missing h1 (TaskChainOverview)
+EL-041,Section header,SectionHeader,"<SectionHeader title=… actions=… />",codemod,
+EL-042,Uppercase eyebrow label,Text,"<Text role=""overline"" tone=""muted"">…</Text>",codemod,
+EL-043,Panel/card soft,Panel,"<Panel title=…>{body}</Panel>",human,One radius; kills opacity drift
+EL-044,Card dark hex,Panel,"<Panel tone=""sunken"">…</Panel>",codemod,Replace hardcoded hex bg
+EL-045,Split shell,PageShell/AppShell,(layout primitive),human,Keep in shell layer
+EL-046,Inspector aside,Panel,"<Panel …>",human,Keep collapse behavior
+EL-047,Badge neutral,Badge,"<Badge>{count}</Badge>",codemod,Merge 3 identical Badge helpers
+EL-048,Status pill,StatusPill,"<StatusPill tone=""success"">Running</StatusPill>",human,Map ~10 tones→6; opacity→emphasis
+EL-049,Count/unread pill,Badge,"<Badge tone=""info"">{n}</Badge>",codemod,
+EL-050,Status dot,StatusDot,"<StatusDot tone=""success"" pulse aria-label=""Online"" />",human,Add non-color state label
+EL-051,Tag chip,Badge,"<Badge tone=""info"" emphasis=""soft"">git</Badge>",codemod,
+EL-052,Avatar,Avatar,"<Avatar name=""AB"" shape=""rounded"" />",codemod,Unify 2 shapes via prop
+EL-053,kbd chip,Kbd,"<Kbd>⌘K</Kbd>",codemod,
+EL-054,Tier micro-badge,Badge,"<Badge size=""sm"">PRO</Badge>",codemod,Fix text-[8px]
+EL-055,Modal shell,Modal,"<Modal open onOpenChange title=…>…</Modal>",human,Adds focus trap/Esc/aria
+EL-056,Command palette,CommandPalette,"(pattern on Modal+Combobox)",human,Add dialog role + listbox semantics
+EL-057,Dropdown menu,Menu,"<Menu trigger={…}><Menu.Item/></Menu>",human,Adds roving focus/arrows
+EL-058,Drawer,Drawer,"<Drawer open onOpenChange side=""right"">…</Drawer>",human,
+EL-059,Wizard overlay,Modal,"<Modal size=""lg"" …>{steps}</Modal>",human,Fix undefined --fd-surface-3 dots
+EL-060,Artifact viewer,ArtifactViewer(one-off)+Modal,"wrap overlay in Modal",human,Keep body local
+EL-061,Tabs,Tabs,"<Tabs value onChange><Tab/></Tabs>",human,Collapse 4 styles→variant
+EL-062,Accordion,Accordion,"<Accordion>…</Accordion>",human,Add aria-expanded
+EL-063,Segmented control,Tabs,"<Tabs variant=""segmented"" …>",human,
+EL-064,Tooltip,(none),n/a,none,Rejected promotion; keep title=
+EL-065,Empty rich,EmptyState,"<EmptyState icon title description action />",human,Merge 2 Empty helpers
+EL-066,Empty bare,EmptyState,"<EmptyState title=… />",codemod,
+EL-067,Loading text,Spinner,"<Spinner label=""Loading…"" />",codemod,Add role=status
+EL-068,Loading spinner,Spinner,"<Spinner />",codemod,
+EL-069,Skeleton,Skeleton,"<Skeleton lines={3} />",human,Standardize skeleton usage
+EL-070,Error banner red/rose,Alert,"<Alert tone=""danger"">…</Alert>",codemod,role=alert; unify red/rose
+EL-071,Warning banner amber,Alert,"<Alert tone=""warning"">…</Alert>",codemod,
+EL-072,Success banner,Alert,"<Alert tone=""success"">…</Alert>",codemod,role=status
+EL-073,Inline field error,FormField,"<FormField error={msg}>…</FormField>",human,Wire aria-describedby
+EL-074,Progress bar,ProgressBar,"<ProgressBar value={pct} />",codemod,role=progressbar
+EL-075,Toast,Toast,"toast({tone:'success',title:'…'})",human,Portal + aria-live
+EL-076,Nav item,NavItem(shell),(shell layer),human,Keep in AppShell
+EL-077,Mobile tab,NavItem(shell),(shell layer),human,
+EL-078,Breadcrumb,Breadcrumb,"<Breadcrumb items={…} />",human,Keep local for now
+EL-079,Settings sub-nav,Tabs,"<Tabs variant=""pill"" …>",human,
+EL-080,Pager,Pagination,"<Pagination onLoadMore loading />",codemod,
+EL-081,Message bubble,(one-off),local,none,Keep local
+EL-082,Activity bubble,(one-off),local,none,Keep local
+EL-083,Graph node/canvas,(one-off),local,none,Add keyboard to canvas/edges
+EL-084,Faux table,Table,"<Table columns={cols} rows={rows} />",human,Real table semantics
+EL-085,Markdown renderer,(one-off),local,none,Tokenize injected classes
+EL-086,Scrollbar,(one-off CSS),global,none,Token-drive colors
+EL-087,Connection badge,ConnectionBadge(pattern),"on StatusPill+StatusDot",human,Drop framer vocabulary

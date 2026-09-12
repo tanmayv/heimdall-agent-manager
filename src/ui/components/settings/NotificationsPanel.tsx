@@ -24,6 +24,7 @@ import {
   resubscribeWithCurrentKey,
 } from '../../services/pushSubscriptionService';
 import { showToast } from '../../store/toastSlice';
+import { Button } from '@ui';
 
 const CATEGORY_LABELS: Array<{ key: NotificationCategory; label: string; description: string }> = [
   { key: 'chat', label: 'Chat messages', description: 'New messages directed to you, nudges, and mentions.' },
@@ -317,14 +318,14 @@ export default function NotificationsPanel() {
               granted (and your tab is in the background), plus an in-app toast every time so you always see a result.
             </p>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="primary"
             data-debug-id="settings-notifications-test-btn"
             onClick={() => void onSendTest()}
-            className="shrink-0 rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300"
+            className="shrink-0"
           >
             Send test notification
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -392,19 +393,15 @@ export default function NotificationsPanel() {
             </div>
 
             <div className="flex justify-end pt-1">
-              <button
-                type="button"
+              <Button
+                variant="primary"
                 data-debug-id="settings-push-resubscribe-btn"
                 onClick={() => void onResubscribe()}
                 disabled={resubscribing}
-                className={`shrink-0 rounded-xl px-4 py-2 text-sm font-semibold ${
-                  resubscribing
-                    ? 'cursor-not-allowed bg-white/10 text-zinc-400'
-                    : 'bg-sky-400 text-black hover:bg-sky-300'
-                }`}
+                className="shrink-0"
               >
                 {resubscribing ? 'Re-subscribing…' : 'Re-subscribe with current key'}
-              </button>
+              </Button>
             </div>
           </div>
         )}

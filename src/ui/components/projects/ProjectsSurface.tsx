@@ -28,6 +28,7 @@ import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../ap
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import Icon from '../Icon';
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
+import { Button, Input } from '@ui';
 
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
@@ -103,33 +104,39 @@ function ProjectList() {
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white">Projects</h1>
           <p className="mt-1 text-sm text-zinc-500">Group work by project — agents, memory and per-device paths.</p>
         </div>
-        <button data-debug-id="projects-new-btn" type="button" onClick={() => setShowCreate((v) => !v)} className="inline-flex min-h-10 items-center gap-2 rounded-2xl bg-sky-400 px-4 py-2 text-sm font-black text-black hover:bg-sky-300">
+        <Button variant="primary" size="md" data-debug-id="projects-new-btn" onClick={() => setShowCreate((v) => !v)}>
           <Icon name="plus" size={16} /> New project
-        </button>
+        </Button>
       </header>
 
       {showCreate ? (
         <div data-debug-id="projects-create-form" className="mb-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-              <input data-debug-id="projects-create-name-input" value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white" placeholder="e.g. heimdall agent manager" />
+              <Input data-debug-id="projects-create-name-input" value={name} onChange={setName} width="full" className="mt-1" placeholder="e.g. heimdall agent manager" />
             </label>
             <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
-              <input data-debug-id="projects-create-path-input" value={defaultPath} onChange={(e) => setDefaultPath(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" placeholder="~/path/to/repo" />
+              <Input data-debug-id="projects-create-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="mt-1 font-mono" placeholder="~/path/to/repo" />
             </label>
           </div>
           {createError ? <p data-debug-id="projects-create-error" className="mt-2 text-xs text-red-300">{createError}</p> : null}
           <div className="mt-3 flex gap-2">
-            <button data-debug-id="projects-create-submit-btn" type="button" disabled={createState.isLoading} onClick={submitCreate} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">{createState.isLoading ? 'Creating…' : 'Create'}</button>
-            <button data-debug-id="projects-create-cancel-btn" type="button" onClick={() => setShowCreate(false)} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
+            <Button variant="primary" size="md" data-debug-id="projects-create-submit-btn" disabled={createState.isLoading} onClick={submitCreate}>{createState.isLoading ? 'Creating…' : 'Create'}</Button>
+            <Button variant="secondary" size="md" data-debug-id="projects-create-cancel-btn" onClick={() => setShowCreate(false)}>Cancel</Button>
           </div>
         </div>
       ) : null}
 
-      <div className="mb-3 flex items-center gap-2 rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-zinc-500">
-        <Icon name="search" size={15} />
-        <input data-debug-id="projects-search-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${projects.length} projects…`} className="w-full bg-transparent text-sm text-white outline-none placeholder:text-zinc-600" />
-      </div>
+      <Input
+        type="search"
+        data-debug-id="projects-search-input"
+        value={query}
+        onChange={setQuery}
+        placeholder={`Search ${projects.length} projects…`}
+        width="full"
+        className="mb-3"
+        leading={<Icon name="search" size={15} />}
+      />
 
       <div data-debug-id="projects-list" className="divide-y divide-white/[0.06] overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02]">
         {projectsQuery.isLoading ? (
@@ -240,7 +247,7 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
   return (
     <Card title="About" debugId="project-detail-about"
       action={!editing ? (
-        <button data-debug-id="project-detail-edit-btn" type="button" onClick={() => setEditing(true)} className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:bg-white/10">Edit</button>
+        <Button variant="secondary" size="sm" data-debug-id="project-detail-edit-btn" onClick={() => setEditing(true)}>Edit</Button>
       ) : null}>
       {!editing ? (
         <div className="space-y-2">
@@ -254,18 +261,18 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
       ) : (
         <div className="space-y-3">
           <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-            <input data-debug-id="project-detail-name-input" value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white" />
+            <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" className="mt-1" />
           </label>
           <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
             <textarea data-debug-id="project-detail-description-input" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="What is this project about?" className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white placeholder:text-zinc-600" />
           </label>
           <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
-            <input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={(e) => setDefaultPath(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" placeholder="~/path/to/repo" />
+            <Input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="mt-1 font-mono" placeholder="~/path/to/repo" />
           </label>
           {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-red-300">{err}</p> : null}
           <div className="flex gap-2">
-            <button data-debug-id="project-detail-save-btn" type="button" disabled={updateState.isLoading} onClick={save} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">{updateState.isLoading ? 'Saving…' : 'Save'}</button>
-            <button data-debug-id="project-detail-cancel-btn" type="button" onClick={() => { setEditing(false); setErr(''); }} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
+            <Button variant="primary" size="md" data-debug-id="project-detail-save-btn" disabled={updateState.isLoading} onClick={save}>{updateState.isLoading ? 'Saving…' : 'Save'}</Button>
+            <Button variant="secondary" size="md" data-debug-id="project-detail-cancel-btn" onClick={() => { setEditing(false); setErr(''); }}>Cancel</Button>
           </div>
         </div>
       )}
@@ -414,8 +421,8 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
         <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path (all devices)</label>
         <p className="mt-1 text-xs text-zinc-500">Used on every device unless overridden below. e.g. <span className="font-mono text-zinc-400">~/projects/my-app</span></p>
         <div className="mt-2 flex gap-2">
-          <input data-debug-id="project-detail-default-path-input" value={defaultDraft} onChange={(e) => setDefaultDraft(e.target.value)} placeholder="~/path/to/project" className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" />
-          <button data-debug-id="project-detail-default-path-save-btn" type="button" disabled={updateState.isLoading || defaultDraft.trim() === defaultPath} onClick={saveDefault} className="shrink-0 rounded-xl bg-sky-400 px-4 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-40">Save</button>
+          <Input data-debug-id="project-detail-default-path-input" value={defaultDraft} onChange={setDefaultDraft} placeholder="~/path/to/project" className="min-w-0 flex-1 font-mono" />
+          <Button variant="primary" size="md" data-debug-id="project-detail-default-path-save-btn" disabled={updateState.isLoading || defaultDraft.trim() === defaultPath} onClick={saveDefault} className="shrink-0">Save</Button>
         </div>
         {defaultErr ? <p data-debug-id="project-detail-default-path-error" className="mt-1 text-xs text-red-300">{defaultErr}</p> : null}
       </div>
@@ -453,7 +460,7 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
                     <CreateOnBridgeButton bridgeId={bid} path={path} onDone={() => void probe(bid)} />
                   ) : null}
                   <button data-debug-id={`project-detail-bridge-path-recheck-${bid}`} type="button" onClick={() => void probe(bid)} title="Re-check" aria-label="Re-check" className="shrink-0 rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="refresh" size={13} /></button>
-                  <button data-debug-id={`project-detail-bridge-path-override-${bid}`} type="button" onClick={() => setPickerBridge(isOpen ? '' : bid)} className="shrink-0 rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">{isOpen ? 'Close' : 'Override'}</button>
+                  <Button variant="secondary" size="sm" data-debug-id={`project-detail-bridge-path-override-${bid}`} onClick={() => setPickerBridge(isOpen ? '' : bid)} className="shrink-0">{isOpen ? 'Close' : 'Override'}</Button>
                   {overridden ? <button data-debug-id={`project-detail-bridge-path-reset-${bid}`} type="button" onClick={() => resetToDefault(bid)} className="shrink-0 rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-red-300" title="Reset to default"><Icon name="close" size={14} /></button> : null}
                 </div>
                 {isOpen ? (

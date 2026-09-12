@@ -14,6 +14,7 @@ import {
   useDeleteAgentTemplateMutation,
 } from '../../api/endpoints/agents';
 import Icon from '../Icon';
+import { Button, Input } from '@ui';
 
 function str(v: any): string { return String(v ?? '').trim(); }
 function errMsg(e: any, fallback: string): string {
@@ -80,9 +81,9 @@ export default function TemplatesPanel() {
           <h2 className="text-xl font-semibold text-white">Templates</h2>
           <p className="mt-1 max-w-2xl text-sm text-zinc-400">Reusable personas + instructions applied when creating an agent. Built-in templates are read-only.</p>
         </div>
-        <button data-debug-id="settings-templates-new-btn" type="button" onClick={beginCreate} className="inline-flex min-h-10 items-center gap-2 rounded-2xl bg-sky-400 px-4 py-2 text-sm font-black text-black hover:bg-sky-300">
+        <Button variant="primary" data-debug-id="settings-templates-new-btn" onClick={beginCreate} className="min-h-10">
           <Icon name="plus" size={16} /> New template
-        </button>
+        </Button>
       </div>
 
       {editingId === 'new' ? <TemplateEditor form={form} setForm={setForm} onSave={save} onCancel={cancel} saving={createState.isLoading} error={error} title="New template" /> : null}
@@ -113,14 +114,14 @@ export default function TemplatesPanel() {
                 </div>
                 {!isSystem ? (
                   <div className="flex shrink-0 gap-2">
-                    <button data-debug-id={`settings-template-edit-btn-${id}`} type="button" onClick={() => beginEdit(t)} className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10">Edit</button>
+                    <Button variant="secondary" size="sm" data-debug-id={`settings-template-edit-btn-${id}`} onClick={() => beginEdit(t)}>Edit</Button>
                     {confirmDeleteId === id ? (
                       <>
-                        <button data-debug-id={`settings-template-delete-confirm-${id}`} type="button" onClick={() => remove(id)} className="rounded-lg border border-red-400/30 px-2.5 py-1 text-xs font-bold text-red-200 hover:bg-red-400/10">Confirm</button>
-                        <button data-debug-id={`settings-template-delete-cancel-${id}`} type="button" onClick={() => setConfirmDeleteId('')} className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-400 hover:bg-white/10">Cancel</button>
+                        <Button variant="danger" size="sm" data-debug-id={`settings-template-delete-confirm-${id}`} onClick={() => remove(id)}>Confirm</Button>
+                        <Button variant="secondary" size="sm" data-debug-id={`settings-template-delete-cancel-${id}`} onClick={() => setConfirmDeleteId('')}>Cancel</Button>
                       </>
                     ) : (
-                      <button data-debug-id={`settings-template-delete-btn-${id}`} type="button" onClick={() => setConfirmDeleteId(id)} className="rounded-lg border border-rose-400/20 px-2.5 py-1 text-xs text-rose-200 hover:bg-rose-400/10">Delete</button>
+                      <Button variant="danger" size="sm" data-debug-id={`settings-template-delete-btn-${id}`} onClick={() => setConfirmDeleteId(id)}>Delete</Button>
                     )}
                   </div>
                 ) : null}
@@ -140,10 +141,10 @@ function TemplateEditor({ form, setForm, onSave, onCancel, saving, error, title 
       <h3 className="mb-3 text-sm font-semibold text-white">{title}</h3>
       <div className="grid gap-3">
         <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-          <input data-debug-id="settings-template-name-input" value={form.name} onChange={(e) => set({ name: e.target.value })} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white" placeholder="e.g. Researcher" />
+          <Input data-debug-id="settings-template-name-input" value={form.name} onChange={(value) => set({ name: value })} width="full" className="mt-1" placeholder="e.g. Researcher" />
         </label>
         <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
-          <input data-debug-id="settings-template-description-input" value={form.description} onChange={(e) => set({ description: e.target.value })} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white" placeholder="Short summary shown in the picker" />
+          <Input data-debug-id="settings-template-description-input" value={form.description} onChange={(value) => set({ description: value })} width="full" className="mt-1" placeholder="Short summary shown in the picker" />
         </label>
         <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Persona
           <textarea data-debug-id="settings-template-persona-input" value={form.persona} onChange={(e) => set({ persona: e.target.value })} rows={3} className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white" placeholder="Who the agent is (identity/voice)." />
@@ -154,8 +155,8 @@ function TemplateEditor({ form, setForm, onSave, onCancel, saving, error, title 
       </div>
       {error ? <p data-debug-id="settings-template-editor-error" className="mt-2 text-xs text-red-300">{error}</p> : null}
       <div className="mt-3 flex gap-2">
-        <button data-debug-id="settings-template-save-btn" type="button" disabled={saving} onClick={onSave} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
-        <button data-debug-id="settings-template-cancel-btn" type="button" onClick={onCancel} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
+        <Button variant="primary" data-debug-id="settings-template-save-btn" disabled={saving} onClick={onSave}>{saving ? 'Saving…' : 'Save'}</Button>
+        <Button variant="secondary" data-debug-id="settings-template-cancel-btn" onClick={onCancel}>Cancel</Button>
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Input } from '@ui';
 import {
   useArtifactContentState,
   useCreateArtifactAnnotationMutation,
@@ -1060,7 +1061,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   <div className="font-semibold">Rename / edit description</div>
                   <div className="mt-1 text-sky-50/80">`name` is a human display label (non-unique); `artifact_id` is the identity. `description` is an optional longer note.</div>
                   <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Name
-                    <input data-debug-id="artifact-viewer-edit-name-input" value={editName} onChange={(e) => setEditName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                    <Input data-debug-id="artifact-viewer-edit-name-input" value={editName} onChange={setEditName} width="full" className="mt-1" />
                   </label>
                   <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Description
                     <textarea data-debug-id="artifact-viewer-edit-description-input" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />

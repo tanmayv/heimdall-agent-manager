@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import Icon from '../Icon';
+import { Input } from '@ui';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   Action,
@@ -245,29 +246,28 @@ export default function ActionsPanel() {
       {/* Filter / Search Bar */}
       {totalActionsCount > 0 && (
         <div className="flex items-center gap-3">
-          <div className="relative flex-1">
-            <input
-              type="text"
-              data-debug-id="actions-search-input"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter actions by prompt, agent, or cron expression..."
-              className="w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2 pl-9 text-xs text-zinc-100 placeholder-zinc-500 outline-none focus:border-sky-400"
-            />
-            <div className="absolute left-3 top-2.5 text-zinc-500">
-              <Icon name="search" size={14} />
-            </div>
-            {searchQuery && (
-              <button
-                type="button"
-                aria-label="Clear search"
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-2.5 text-zinc-500 hover:text-white"
-              >
-                <Icon name="close" size={14} />
-              </button>
-            )}
-          </div>
+          <Input
+            type="search"
+            data-debug-id="actions-search-input"
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Filter actions by prompt, agent, or cron expression..."
+            width="full"
+            className="flex-1"
+            leading={<Icon name="search" size={14} />}
+            trailing={
+              searchQuery ? (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => setSearchQuery('')}
+                  className="text-muted hover:text-primary"
+                >
+                  <Icon name="close" size={14} />
+                </button>
+              ) : undefined
+            }
+          />
         </div>
       )}
 

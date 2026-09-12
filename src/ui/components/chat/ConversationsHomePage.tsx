@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useListConversationInboxQuery, useLazyListConversationInboxQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { buildRouteHash } from '../../utils/appLocation';
 import Icon from '../Icon';
+import { Button } from '@ui';
 
 const PAGE_SIZE = 40;
 
@@ -138,9 +139,9 @@ export default function ConversationsHomePage() {
 
       {loadError ? <div data-debug-id="conversation-inbox-load-error" className="mt-3 rounded-2xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-100">{loadError}</div> : null}
       {hasMore ? (
-        <button data-debug-id="conversation-inbox-load-more-btn" type="button" onClick={loadMore} disabled={fetchPageResult.isFetching} className="mx-auto mt-4 min-h-11 rounded-2xl border border-white/10 px-5 py-2 text-sm font-semibold text-zinc-300 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60">
+        <Button data-debug-id="conversation-inbox-load-more-btn" variant="secondary" onClick={loadMore} disabled={fetchPageResult.isFetching} className="mx-auto mt-4 min-h-11 disabled:cursor-wait">
           {fetchPageResult.isFetching ? 'Loading…' : 'Load more conversations'}
-        </button>
+        </Button>
       ) : null}
     </div>
   );

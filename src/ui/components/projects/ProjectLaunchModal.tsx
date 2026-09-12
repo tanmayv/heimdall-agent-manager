@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import Icon from '../Icon';
+import Modal from '../Modal';
+import { Button } from '@ui';
 import {
   useListTaskChainsQuery,
   useFetchTaskChainDetailQuery,
@@ -406,17 +408,14 @@ export default function ProjectLaunchModal({
   };
 
   return (
-    <div
-      data-debug-id="project-launch-modal-overlay"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      open={isOpen}
+      onClose={onClose}
+      size="lg"
+      panelClassName="flex flex-col max-h-[85vh] h-[640px] p-6 text-white"
+      debugId="project-launch-modal-overlay"
+      panelDebugId="project-launch-modal"
     >
-      <div
-        data-debug-id="project-launch-modal"
-        className="flex flex-col w-full max-w-2xl max-h-[85vh] h-[640px] rounded-2xl border border-white/10 bg-[#121212] p-6 shadow-2xl text-white"
-      >
         {/* Modal Header */}
         <div className="shrink-0 flex items-center justify-between pb-3">
           <div>
@@ -526,8 +525,9 @@ export default function ProjectLaunchModal({
                       </span>
                       {(chainHasMore || chainCursorHistory.length > 0) && (
                         <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
+                          <Button
+                            variant="secondary"
+                            size="sm"
                             disabled={chainCursorHistory.length === 0 || isActionRunning}
                             onClick={() => {
                               const newHistory = [...chainCursorHistory];
@@ -535,21 +535,20 @@ export default function ProjectLaunchModal({
                               setChainCursorHistory(newHistory);
                               setChainCursor(prev);
                             }}
-                            className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10.5px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                           >
                             Previous
-                          </button>
-                          <button
-                            type="button"
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
                             disabled={!chainHasMore || !chainNextCursor || isActionRunning}
                             onClick={() => {
                               setChainCursorHistory((prev) => [...prev, chainCursor]);
                               setChainCursor(chainNextCursor);
                             }}
-                            className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10.5px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                           >
                             Next
-                          </button>
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -802,25 +801,25 @@ export default function ProjectLaunchModal({
                     {selectedNewAgentIds.size} agent(s) selected
                   </span>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={agentsPage === 0 || isActionRunning}
                       onClick={() => setAgentsPage(Math.max(0, agentsPage - 1))}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Previous
-                    </button>
+                    </Button>
                     <span className="text-[11px] text-zinc-400">
                       {agentsPage + 1} / {totalAgentPages}
                     </span>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={agentsPage >= totalAgentPages - 1 || isActionRunning}
                       onClick={() => setAgentsPage(agentsPage + 1)}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Next
-                    </button>
+                    </Button>
                   </div>
                 </div>
               )}
@@ -919,25 +918,25 @@ export default function ProjectLaunchModal({
                     {selectedExistingInstanceIds.size} instance(s) selected
                   </span>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={existingPage === 0 || isActionRunning}
                       onClick={() => setExistingPage(Math.max(0, existingPage - 1))}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Previous
-                    </button>
+                    </Button>
                     <span className="text-[11px] text-zinc-400">
                       {existingPage + 1} / {totalExistingPages}
                     </span>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={existingPage >= totalExistingPages - 1 || isActionRunning}
                       onClick={() => setExistingPage(existingPage + 1)}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Next
-                    </button>
+                    </Button>
                   </div>
                 </div>
               )}
@@ -947,53 +946,48 @@ export default function ProjectLaunchModal({
 
         {/* Modal Footer with Action Buttons */}
         <div className="shrink-0 flex items-center justify-between border-t border-white/10 pt-3">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             data-debug-id="project-launch-cancel-btn"
             disabled={isActionRunning}
             onClick={onClose}
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-zinc-300 hover:bg-white/10 transition-colors"
           >
             Cancel
-          </button>
+          </Button>
 
           {activeTab === 'chain' && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
               data-debug-id="project-launch-start-chain-agents-btn"
               disabled={selectedChainAgentIds.size === 0 || isActionRunning}
               onClick={handleStartChainAgents}
-              className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-black hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isActionRunning ? 'Starting…' : 'Start Selected Agents'}
-            </button>
+            </Button>
           )}
 
           {activeTab === 'new' && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
               data-debug-id="project-launch-launch-new-agents-btn"
               disabled={selectedNewAgentIds.size === 0 || !selectedBridgeId || isActionRunning}
               onClick={handleLaunchNewAgents}
-              className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-black hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isActionRunning ? 'Launching…' : 'Launch Selected Agents'}
-            </button>
+            </Button>
           )}
 
           {activeTab === 'existing' && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
               data-debug-id="project-launch-start-existing-instances-btn"
               disabled={selectedExistingInstanceIds.size === 0 || isActionRunning}
               onClick={handleStartExistingInstances}
-              className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-black hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isActionRunning ? 'Starting…' : 'Start Selected Instances'}
-            </button>
+            </Button>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

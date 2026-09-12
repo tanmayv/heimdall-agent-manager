@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
+import { Input } from '@ui';
 
 const API_PREFIX = '/api/v1';
 
@@ -346,13 +347,15 @@ function ElectronDeviceAuthScreen({ onAuthenticated }: { onAuthenticated: () => 
         <form data-debug-id="electron-device-auth-token-form" onSubmit={submitManualToken} className="mt-8 space-y-4 text-left">
           <label className="block text-sm font-medium text-zinc-300">
             User token
-            <input
+            <Input
               data-debug-id="electron-device-auth-token-input"
               type="password"
               value={tokenDraft}
-              onChange={(event) => { setTokenDraft(event.target.value); setManualError(''); }}
+              onChange={(value) => { setTokenDraft(value); setManualError(''); }}
               placeholder="hut_..."
-              className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 font-mono text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60"
+              size="lg"
+              width="full"
+              className="mt-2 font-mono"
               autoFocus
             />
           </label>

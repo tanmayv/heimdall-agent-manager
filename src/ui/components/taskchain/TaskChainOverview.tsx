@@ -1,3 +1,4 @@
+// migrated: ui-audit W2
 import React, { useEffect, useRef, useState } from 'react';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
@@ -5,6 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import Icon from '../Icon';
+import { PageShell } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -48,6 +50,9 @@ import {
 
 interface TaskChainOverviewProps {
   chainId: string;
+  // Optional deep-link target: when set (from '/chains/:chainId/tasks/:taskId'),
+  // the matching task row is expanded and scrolled into view once it has loaded.
+  focusTaskId?: string;
   onClose?: () => void;
   isMobile?: boolean;
 }
@@ -167,6 +172,7 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
 
 export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   chainId,
+  focusTaskId,
   onClose,
   isMobile,
 }) => {
@@ -200,6 +206,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [completedTasksExpanded, setCompletedTasksExpanded] = useState(false);
   const [cancelledTasksExpanded, setCancelledTasksExpanded] = useState(false);
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
+  // Tracks the focusTaskId we've already auto-opened so a deep-link scroll happens
+  // exactly once (background refetches replace the tasks array but must not yank the
+  // user back to the task on every poll).
+  const focusedTaskRef = useRef<string | null>(null);
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentAttachments, setCommentAttachments] = useState<Record<string, CommentAttachment[]>>({});
   const [statusMenuOpenTaskId, setStatusMenuOpenTaskId] = useState<string | null>(null);
@@ -304,6 +314,33 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       const timeB = new Date(b.updated_at || b.updatedAt || b.created_at || b.createdAt || 0).getTime();
       return timeA - timeB;
     });
+
+  // Deep-link focus (UI: '/chains/:chainId/tasks/:taskId'): once the task list has
+  // loaded, expand the referenced task (and its collapsed Completed/Cancelled
+  // section, if any) and scroll it into view — exactly ONCE per focusTaskId so we
+  // never fight the user's manual scroll on a background refetch. A bogus taskId
+  // just renders the chain (no crash, no scroll).
+  useEffect(() => {
+    if (!focusTaskId || focusedTaskRef.current === focusTaskId) return;
+    if (isLoading) return; // wait for the async task list before deciding
+    const target = tasks.find((t: any) => (t.taskId || t.id) === focusTaskId);
+    if (!target) {
+      focusedTaskRef.current = focusTaskId; // loaded but absent (bogus id): give up
+      return;
+    }
+    focusedTaskRef.current = focusTaskId;
+    setExpandedTaskIds((prev) => ({ ...prev, [focusTaskId]: true }));
+    if (isTaskCompleted(target)) setCompletedTasksExpanded(true);
+    else if (isTaskCancelled(target)) setCancelledTasksExpanded(true);
+    // Scroll after the row (and any just-expanded section) has committed to the DOM.
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-debug-id="taskchain-task-row-${focusTaskId}"]`);
+        el?.scrollIntoView({ block: 'center' });
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [focusTaskId, tasks, isLoading]);
 
   // Add-Agent popup dependent option lists (identity -> bridge -> provider -> tier).
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -1230,15 +1267,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         </div>
       )}
 
-      {/* Header Info */}
-      <div className="border-b border-white/10 p-4 sm:p-6">
-        <div className="flex items-center justify-between">
-          <h2
-            data-debug-id="taskchain-overview-title"
-            className="text-lg font-bold text-white sm:text-xl"
-          >
+      {/* Page frame + single <h1> — migrated to PageShell (ui-audit W2). Fixes the
+          h2-as-page-title heading-hierarchy defect (finding #7): the chain title is
+          now the page's one real <h1>. The chain status pill moves into PageShell's
+          `actions` slot with its exact prior styling/behaviour. width="full" keeps
+          the task board full-bleed (no visual regression). */}
+      <PageShell
+        width="full"
+        title={
+          <span data-debug-id="taskchain-overview-title">
             {chain.title || 'Untitled Chain'}
-          </h2>
+          </span>
+        }
+        actions={
           <span
             data-debug-id="taskchain-overview-status"
             className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
@@ -1251,7 +1292,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           >
             {chain.status}
           </span>
-        </div>
+        }
+      >
+        {/* Chain meta band (description, progress, members) — unchanged markup,
+            regrouped directly under the PageShell header. */}
+        <div className="border-b border-white/10 px-4 pb-4 sm:px-6 sm:pb-6">
 
         {/* Collapsible Description */}
         {chain.description && (
@@ -2527,6 +2572,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           </form>
         </div>
       )}
+      </PageShell>
     </div>
   );
 };

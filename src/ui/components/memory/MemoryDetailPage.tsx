@@ -10,6 +10,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import Icon from '../Icon';
 import Markdown from '../Markdown';
+import Badge from '../Badge';
+import Modal from '../Modal';
+import { Button, Input } from '@ui';
 import {
   useGetMemoryQuery,
   useUpdateMemoryMutation,
@@ -131,13 +134,13 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
             <div className="flex items-center gap-2">
               {editing ? (
                 <>
-                  <button type="button" data-debug-id="memory-detail-cancel-btn" onClick={() => { setEditing(false); setError(''); }} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[12.5px] text-zinc-300 hover:bg-white/10">Cancel</button>
-                  <button type="button" data-debug-id="memory-detail-save-btn" disabled={saving} onClick={save} className="rounded-lg bg-sky-400 px-3.5 py-1.5 text-[12.5px] font-semibold text-black hover:bg-sky-300 disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
+                  <Button variant="secondary" size="sm" data-debug-id="memory-detail-cancel-btn" onClick={() => { setEditing(false); setError(''); }}>Cancel</Button>
+                  <Button variant="primary" size="sm" data-debug-id="memory-detail-save-btn" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save'}</Button>
                 </>
               ) : (
                 <>
-                  <button type="button" data-debug-id="memory-detail-edit-btn" onClick={() => setEditing(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[12.5px] text-zinc-300 hover:bg-white/10"><Icon name="pencil" size={13} /> Edit</button>
-                  <button type="button" data-debug-id="memory-detail-delete-btn" onClick={() => setConfirmDelete(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-[12.5px] text-rose-200 hover:bg-rose-500/20"><Icon name="trash" size={13} /> Delete</button>
+                  <Button variant="secondary" size="sm" data-debug-id="memory-detail-edit-btn" onClick={() => setEditing(true)}><Icon name="pencil" size={13} /> Edit</Button>
+                  <Button variant="danger" size="sm" data-debug-id="memory-detail-delete-btn" onClick={() => setConfirmDelete(true)}><Icon name="trash" size={13} /> Delete</Button>
                 </>
               )}
             </div>
@@ -151,12 +154,12 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
               {editing ? (
                 <div className="mb-4">
                   <div className="mb-1 text-sm font-semibold text-zinc-100">Description</div>
-                  <input
+                  <Input
                     data-debug-id="memory-detail-description-input"
                     value={description}
-                    onChange={(e) => setDescription(e.target.value)}
+                    onChange={setDescription}
                     placeholder="Short summary of this memory"
-                    className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                    width="full"
                   />
                 </div>
               ) : null}
@@ -211,16 +214,21 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
       )}
 
       {confirmDelete && record ? (
-        <div data-debug-id="memory-detail-delete-overlay" className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/60 p-4 sm:p-8" onClick={() => setConfirmDelete(false)}>
-          <div data-debug-id="memory-detail-delete-modal" className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0d0f14] p-5 shadow-2xl shadow-black/70" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold text-zinc-100">Delete memory</h2>
-            <p className="mt-2 text-sm text-zinc-300">Delete <span className="font-semibold text-zinc-100">{record.title || record.memoryId}</span>? Agents will stop receiving it.</p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" data-debug-id="memory-detail-delete-cancel" onClick={() => setConfirmDelete(false)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
-              <button type="button" data-debug-id="memory-detail-delete-confirm" onClick={remove} className="rounded-lg bg-rose-400 px-4 py-1.5 text-sm font-bold text-black hover:bg-rose-300">Delete</button>
-            </div>
+        <Modal
+          open
+          onClose={() => setConfirmDelete(false)}
+          size="sm"
+          panelClassName="p-5"
+          debugId="memory-detail-delete-overlay"
+          panelDebugId="memory-detail-delete-modal"
+        >
+          <h2 className="text-lg font-semibold text-zinc-100">Delete memory</h2>
+          <p className="mt-2 text-sm text-zinc-300">Delete <span className="font-semibold text-zinc-100">{record.title || record.memoryId}</span>? Agents will stop receiving it.</p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" size="sm" data-debug-id="memory-detail-delete-cancel" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+            <Button variant="danger" size="sm" data-debug-id="memory-detail-delete-confirm" onClick={remove}>Delete</Button>
           </div>
-        </div>
+        </Modal>
       ) : null}
     </div>
   );
@@ -233,8 +241,4 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
       <dd className="min-w-0 truncate text-right text-zinc-200">{value}</dd>
     </div>
   );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-zinc-300">{children}</span>;
 }

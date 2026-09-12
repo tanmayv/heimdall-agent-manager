@@ -1,0 +1,113 @@
+/*
+ * PageShell — structural styles.
+ * ------------------------------------------------------------------
+ * Everything here resolves to a design token (see `src/ui/tokens.css` /
+ * `docs/ui-audit/02-tokens.md`). No raw colors, shadows, z-index, or motion
+ * live in this file; the only literals are the content-width ramp, which is the
+ * `size-content-*` container token the catalogue (04-component-catalogue.md)
+ * lists as consumed by PageShell — declared once here as named CSS variables so
+ * there is a single source of truth for page width. (These belong in the shared
+ * token layer long-term; they live here to keep this reference migration inside
+ * `@ui`.)
+ */
+
+.ui-pageshell {
+  /* Content-width ramp (container tokens). `full` uses no max-width. */
+  --ps-width-content: 72rem; /* ~1152px — default readable page width */
+  --ps-width-wide: 96rem;    /* ~1536px — dense/dashboard pages */
+
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* The width-constraining, centered column. */
+.ui-pageshell-container {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  width: 100%;
+}
+
+.ui-pageshell[data-width='content'] .ui-pageshell-container {
+  max-width: var(--ps-width-content);
+  margin-inline: auto;
+}
+
+.ui-pageshell[data-width='wide'] .ui-pageshell-container {
+  max-width: var(--ps-width-wide);
+  margin-inline: auto;
+}
+
+/* data-width='full' intentionally sets no max-width (full-bleed pages). */
+
+/* The page body flows below the header and grows to fill remaining height so
+   footers / empty states position correctly on short pages. */
+.ui-pageshell-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/*
+ * Standard body states (loading / error). Token-driven; the soft danger tint
+ * uses `color-mix` on the danger token (the same technique tokens.css uses for
+ * the focus ring), which — unlike a Tailwind `/opacity` modifier — resolves
+ * correctly against a CSS-variable color.
+ */
+.ui-pageshell-status {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--text-body-size);
+}
+
+.ui-pageshell-error {
+  margin: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid color-mix(in oklab, var(--color-danger), transparent 60%);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--color-danger), transparent 88%);
+  color: var(--color-danger);
+  font-size: var(--text-body-sm-size);
+}
+
+/*
+ * Skip link — visible only when focused (keyboard). Lets keyboard/AT users jump
+ * straight to the page content. Uses the standard focus ring token.
+ */
+.ui-pageshell-skip {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: var(--z-sticky);
+  padding: var(--space-1-5) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  font-size: var(--text-label-size);
+  font-weight: var(--text-label-weight);
+  /* Hidden off-screen until focused; no display:none so it stays focusable. */
+  transform: translateY(calc(-100% - var(--space-4)));
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.ui-pageshell-skip:focus-visible {
+  transform: translateY(0);
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-pageshell-skip {
+    transition: none;
+  }
+}

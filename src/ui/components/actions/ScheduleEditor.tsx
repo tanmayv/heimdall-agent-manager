@@ -14,6 +14,7 @@ import {
   timeZoneLabel,
   type PresetType,
 } from './scheduleUtils';
+import { Button, Input } from '@ui';
 
 export type ScheduleEditorValue = {
   cron_expr: string;
@@ -300,15 +301,14 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
           <label className="block text-xs font-medium text-zinc-400">
             Raw 5-Field Cron Expression <span className="text-zinc-600">(minute hour dom month dow)</span>
           </label>
-          <input
-            type="text"
+          <Input
             data-debug-id="schedule-cron-input"
             value={value.cron_expr}
-            onChange={(e) => onChange({ ...value, cron_expr: e.target.value })}
+            onChange={(cron_expr) => onChange({ ...value, cron_expr })}
             placeholder="0 9 * * 1-5"
-            className={`w-full font-mono text-sm rounded-lg border bg-black/40 px-3 py-2 outline-none transition-colors ${
-              validation.valid ? 'border-white/10 text-zinc-100 focus:border-sky-400' : 'border-red-500/60 text-red-200 focus:border-red-500'
-            }`}
+            invalid={!validation.valid}
+            width="full"
+            className="font-mono"
           />
           {!validation.valid && (
             <p data-debug-id="schedule-cron-error" className="text-xs text-red-400">
@@ -430,14 +430,14 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
             onChange={(e) => setNewBlackoutDate(e.target.value)}
             className="rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 outline-none focus:border-sky-400"
           />
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             data-debug-id="schedule-add-blackout-btn"
             onClick={handleAddBlackoutDate}
-            className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-xs font-medium text-white transition-colors"
           >
             Add Date
-          </button>
+          </Button>
         </div>
         {blackoutError && <p className="text-xs text-red-400">{blackoutError}</p>}
       </div>
