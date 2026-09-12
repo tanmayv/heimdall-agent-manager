@@ -9,7 +9,7 @@ import {
   useSetBridgeProviderDefaultsMutation,
   useUpsertBridgeProviderMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, Input } from '@ui';
+import { Button, Input, Textarea } from '@ui';
 
 type AutoEnterPair = { pattern: string; preKey: string };
 type ReasonMapping = { key: string; reason: string };
@@ -279,7 +279,7 @@ function ProviderFormFields({ form, setForm, nameLocked = false }: { form: Provi
       </div>
       <ChipListInput prefix="providers-editor-prompt-flags" label="Prompt flags" placeholder="--prompt" values={form.promptFlags} onChange={(promptFlags) => setForm({ ...form, promptFlags })} />
       <ChipListInput prefix="providers-editor-yolo-flags" label="Yolo/permission flags" placeholder="--dangerously-skip-permissions" values={form.yoloFlags} onChange={(yoloFlags) => setForm({ ...form, yoloFlags })} />
-      <label className="block text-sm text-zinc-300">Starter prompt<textarea data-debug-id="providers-editor-starter-prompt-input" value={form.starterPrompt} onChange={(e) => setForm({ ...form, starterPrompt: e.target.value })} placeholder="You are running under Heimdall. Say start-success when ready." className="mt-1 h-24 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
+      <label className="block text-sm text-zinc-300">Starter prompt<Textarea data-debug-id="providers-editor-starter-prompt-input" value={form.starterPrompt} onChange={(v) => setForm({ ...form, starterPrompt: v })} placeholder="You are running under Heimdall. Say start-success when ready." width="full" className="mt-1 h-24" /></label>
       <div data-debug-id="providers-editor-startup-help" className="rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-zinc-400">
         <div className="text-sm font-medium text-zinc-300">Startup detection</div>
         <p className="mt-1 text-zinc-400">On startup the wrapper watches the agent&apos;s terminal pane for known prompts and auto-dismisses/answers them so the agent reaches its ready state without a human. The controls below tune that behavior:</p>

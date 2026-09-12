@@ -17,7 +17,7 @@ import {
 } from '../../api/endpoints/bridgeSupport';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { useListChainsByCoordinatorQuery } from '../../api/endpoints/tasks';
-import { Button, Input } from '@ui';
+import { Button, Input, Textarea } from '@ui';
 
 type ProviderScope = 'bridge_default' | 'same_provider';
 type BridgeRowDraft = { enabled: boolean; providerScope: ProviderScope; provider: string; tier: string };
@@ -271,7 +271,7 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
             <label className="block text-sm text-zinc-300">Template / persona<select data-debug-id="agents-detail-edit-template" value={editTemplate} onChange={(e) => setEditTemplate(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Choose template</option>{templates.map((tmpl: { id: string; name: string }) => <option key={tmpl.id} value={tmpl.id}>{tmpl.name || tmpl.id}</option>)}</select></label>
             <label className="block text-sm text-zinc-300">Default provider<select data-debug-id="agents-detail-edit-provider" value={editProvider} onChange={(e) => setEditProvider(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use Bridge default</option>{editProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
             <label className="block text-sm text-zinc-300">Default tier<select data-debug-id="agents-detail-edit-tier" value={editTier} onChange={(e) => setEditTier(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use Bridge default tier</option>{editTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}</select></label>
-            <label className="block text-sm text-zinc-300 sm:col-span-2">Instructions<textarea data-debug-id="agents-detail-edit-instructions" value={editInstructions} onChange={(e) => setEditInstructions(e.target.value)} placeholder="Optional additions layered on the selected template." className="mt-1 h-28 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
+            <label className="block text-sm text-zinc-300 sm:col-span-2">Instructions<Textarea data-debug-id="agents-detail-edit-instructions" value={editInstructions} onChange={setEditInstructions} placeholder="Optional additions layered on the selected template." width="full" className="mt-1 h-28" /></label>
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="secondary" data-debug-id="agents-detail-edit-cancel" onClick={() => setEditOpen(false)}>Cancel</Button>

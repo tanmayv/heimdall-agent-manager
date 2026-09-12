@@ -8,3 +8,6 @@ export type { ButtonProps } from './Button';
 
 export { Input } from './Input';
 export type { InputProps, InputType } from './Input';
+
+export { Textarea } from './Textarea';
+export type { TextareaProps } from './Textarea';

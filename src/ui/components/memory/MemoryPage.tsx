@@ -14,7 +14,7 @@ import Markdown from '../Markdown';
 import Badge from '../Badge';
 import EmptyState from '../EmptyState';
 import Modal from '../Modal';
-import { Button, Input } from '@ui';
+import { Button, Input, Textarea } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,
@@ -329,7 +329,7 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
         <Input data-debug-id="memory-create-description" value={description} onChange={setDescription} placeholder="Short summary of this memory" width="full" />
       </Field>
       <Field label="Body">
-        <textarea data-debug-id="memory-create-body" value={body} onChange={(e) => setBody(e.target.value)} rows={6} placeholder="Memory body (Markdown)" className="w-full resize-y rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+        <Textarea data-debug-id="memory-create-body" value={body} onChange={setBody} rows={6} placeholder="Memory body (Markdown)" width="full" />
       </Field>
       <Field label="Evidence (optional)">
         <Input data-debug-id="memory-create-evidence" value={evidence} onChange={setEvidence} placeholder="Links, notes, source" width="full" />

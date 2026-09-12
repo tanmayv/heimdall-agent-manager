@@ -12,7 +12,7 @@ import Icon from '../Icon';
 import Markdown from '../Markdown';
 import Badge from '../Badge';
 import Modal from '../Modal';
-import { Button, Input } from '@ui';
+import { Button, Input, Textarea } from '@ui';
 import {
   useGetMemoryQuery,
   useUpdateMemoryMutation,
@@ -168,7 +168,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
                 {editing ? <span className="text-[11px] text-zinc-500">Markdown</span> : null}
               </div>
               {editing ? (
-                <textarea data-debug-id="memory-detail-body-textarea" value={body} onChange={(e) => setBody(e.target.value)} rows={16} placeholder="Memory body (Markdown)" className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                <Textarea data-debug-id="memory-detail-body-textarea" value={body} onChange={setBody} rows={16} placeholder="Memory body (Markdown)" width="full" />
               ) : (
                 <div data-debug-id="memory-detail-body" className="rounded-xl border border-white/10 bg-black/20 p-4">
                   {record.body ? <Markdown source={record.body} className="text-sm text-zinc-200" /> : <div className="text-sm text-zinc-500">No body.</div>}

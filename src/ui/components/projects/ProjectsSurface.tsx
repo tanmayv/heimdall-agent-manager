@@ -28,7 +28,7 @@ import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../ap
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import Icon from '../Icon';
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
-import { Button, Input } from '@ui';
+import { Button, Input, Textarea } from '@ui';
 
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
@@ -264,7 +264,7 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
             <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" className="mt-1" />
           </label>
           <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
-            <textarea data-debug-id="project-detail-description-input" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="What is this project about?" className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white placeholder:text-zinc-600" />
+            <Textarea data-debug-id="project-detail-description-input" value={description} onChange={setDescription} rows={4} placeholder="What is this project about?" width="full" className="mt-1" />
           </label>
           <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
             <Input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="mt-1 font-mono" placeholder="~/path/to/repo" />

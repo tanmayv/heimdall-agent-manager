@@ -14,7 +14,7 @@ import {
   useDeleteAgentTemplateMutation,
 } from '../../api/endpoints/agents';
 import Icon from '../Icon';
-import { Button, Input } from '@ui';
+import { Button, Input, Textarea } from '@ui';
 
 function str(v: any): string { return String(v ?? '').trim(); }
 function errMsg(e: any, fallback: string): string {
@@ -147,10 +147,10 @@ function TemplateEditor({ form, setForm, onSave, onCancel, saving, error, title 
           <Input data-debug-id="settings-template-description-input" value={form.description} onChange={(value) => set({ description: value })} width="full" className="mt-1" placeholder="Short summary shown in the picker" />
         </label>
         <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Persona
-          <textarea data-debug-id="settings-template-persona-input" value={form.persona} onChange={(e) => set({ persona: e.target.value })} rows={3} className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white" placeholder="Who the agent is (identity/voice)." />
+          <Textarea data-debug-id="settings-template-persona-input" value={form.persona} onChange={(v) => set({ persona: v })} rows={3} width="full" className="mt-1" placeholder="Who the agent is (identity/voice)." />
         </label>
         <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Instructions
-          <textarea data-debug-id="settings-template-instructions-input" value={form.instructions} onChange={(e) => set({ instructions: e.target.value })} rows={4} className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white" placeholder="How the agent should work (defaults layered under per-agent instructions)." />
+          <Textarea data-debug-id="settings-template-instructions-input" value={form.instructions} onChange={(v) => set({ instructions: v })} rows={4} width="full" className="mt-1" placeholder="How the agent should work (defaults layered under per-agent instructions)." />
         </label>
       </div>
       {error ? <p data-debug-id="settings-template-editor-error" className="mt-2 text-xs text-red-300">{error}</p> : null}

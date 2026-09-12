@@ -9,7 +9,7 @@ import {
   memoryErrorText,
 } from "../../api/endpoints/memory";
 import { MemoryScopeSelector, MemoryScopeValue, MEMORY_TYPES, scopeToLists, listsToScope } from "./MemoryScopeSelector";
-import { Button, Input } from "@ui";
+import { Button, Input, Textarea } from "@ui";
 
 export const MemoryPanel: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -135,14 +135,14 @@ export const MemoryPanel: React.FC = () => {
             </div>
             <div>
               <label className="block text-xs font-medium text-zinc-300 mb-1">Body</label>
-              <textarea
+              <Textarea
                 rows={3}
                 data-debug-id="memory-create-body-textarea"
                 id="memory-create-body-textarea"
                 value={createBody}
-                onChange={(e) => setCreateBody(e.target.value)}
+                onChange={setCreateBody}
                 placeholder="Memory details and content..."
-                className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2.5 focus:border-sky-500 focus:outline-none"
+                width="full"
               />
             </div>
             <div>
@@ -655,13 +655,14 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
       </div>
       <div>
         <label className="block text-[11px] text-zinc-400 mb-1">Body</label>
-        <textarea
+        <Textarea
           rows={2}
           data-debug-id={`memory-edit-body-textarea-${memoryId}`}
           id={`memory-edit-body-textarea-${memoryId}`}
           value={body}
-          onChange={(e) => setBody(e.target.value)}
-          className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
+          onChange={setBody}
+          size="sm"
+          width="full"
         />
       </div>
       <div>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Input } from '@ui';
+import { Input, Textarea } from '@ui';
 import {
   useArtifactContentState,
   useCreateArtifactAnnotationMutation,
@@ -559,12 +559,12 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
       <div className="mt-1 text-sm text-zinc-300">{summarizeAnnotationContext(annotation)}</div>
       {isEditing ? (
         <div className="mt-3 space-y-2">
-          <textarea
+          <Textarea
             data-debug-id="artifact-viewer-annotation-comment-input"
             value={draftComment}
-            onChange={(event) => setDraftComment(event.target.value)}
+            onChange={setDraftComment}
             rows={4}
-            className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+            width="full"
             placeholder="Annotation comment"
           />
           <div className="flex flex-wrap gap-2">
@@ -1064,7 +1064,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                     <Input data-debug-id="artifact-viewer-edit-name-input" value={editName} onChange={setEditName} width="full" className="mt-1" />
                   </label>
                   <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Description
-                    <textarea data-debug-id="artifact-viewer-edit-description-input" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                    <Textarea data-debug-id="artifact-viewer-edit-description-input" value={editDescription} onChange={setEditDescription} rows={3} width="full" className="mt-1" />
                   </label>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button type="button" data-debug-id="artifact-viewer-edit-save-btn" onClick={handleSaveMeta} disabled={editBusy || !editName.trim()} className="rounded-xl bg-sky-300 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-200 disabled:cursor-not-allowed disabled:opacity-60">{editBusy ? 'Saving…' : 'Save'}</button>

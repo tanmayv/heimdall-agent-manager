@@ -11,7 +11,7 @@ import {
 } from '../../api/endpoints/actions';
 import ScheduleEditor, { type ScheduleEditorValue } from './ScheduleEditor';
 import { getLocalTimezone, validateCronExpression } from './scheduleUtils';
-import { Button } from '@ui';
+import { Button, Textarea } from '@ui';
 
 export type ActionEditorPageProps = {
   // When present the page edits an existing action; otherwise it creates a new one.
@@ -262,13 +262,13 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
             <h2 className="text-sm font-semibold text-white">Prompt</h2>
             <p className="mt-0.5 text-xs text-zinc-500">The message dispatched to the agent when this action runs.</p>
           </div>
-          <textarea
+          <Textarea
             data-debug-id="action-editor-prompt-input"
             rows={4}
             value={promptText}
-            onChange={(e) => setPromptText(e.target.value)}
+            onChange={setPromptText}
             placeholder="e.g. Check test failures, inspect ongoing branch status, and deliver a summary of pending items."
-            className="w-full resize-y rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-sky-400"
+            width="full"
           />
         </section>
 
