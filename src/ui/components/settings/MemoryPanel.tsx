@@ -9,7 +9,7 @@ import {
   memoryErrorText,
 } from "../../api/endpoints/memory";
 import { MemoryScopeSelector, MemoryScopeValue, MEMORY_TYPES, scopeToLists, listsToScope } from "./MemoryScopeSelector";
-import { Button, Input, Textarea } from "@ui";
+import { Button, Input, Select, Textarea } from "@ui";
 
 export const MemoryPanel: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -212,28 +212,28 @@ export const MemoryPanel: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">Status Filter</label>
-            <select
+            <Select
               data-debug-id="memory-filter-status-select"
               id="memory-filter-status-select"
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-zinc-100 p-2 focus:border-sky-500 focus:outline-none"
+              onChange={setStatusFilter}
+              width="full"
             >
               <option value="all">All Statuses</option>
               <option value="pending">Pending</option>
               <option value="active">Active</option>
               <option value="archived">Archived</option>
               <option value="rejected">Rejected</option>
-            </select>
+            </Select>
           </div>
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">Type Filter</label>
-            <select
+            <Select
               data-debug-id="memory-filter-type-select"
               id="memory-filter-type-select"
               value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-              className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-zinc-100 p-2 focus:border-sky-500 focus:outline-none"
+              onChange={setTypeFilter}
+              width="full"
             >
               <option value="">All Types</option>
               {MEMORY_TYPES.map((t) => (
@@ -241,7 +241,7 @@ export const MemoryPanel: React.FC = () => {
                   {t.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         </div>
         <div className="pt-2">

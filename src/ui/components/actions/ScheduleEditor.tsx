@@ -14,7 +14,7 @@ import {
   timeZoneLabel,
   type PresetType,
 } from './scheduleUtils';
-import { Button, Input } from '@ui';
+import { Button, Input, Select } from '@ui';
 
 export type ScheduleEditorValue = {
   cron_expr: string;
@@ -206,11 +206,11 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
           {presetType === 'every_n_hours' && (
             <div className="rounded-lg border border-white/10 bg-black/20 p-3 flex items-center gap-3">
               <span className="text-xs text-zinc-300">Run every:</span>
-              <select
+              <Select
                 data-debug-id="schedule-preset-hours-select"
-                value={presetHours}
-                onChange={(e) => handleHoursChange(parseInt(e.target.value, 10))}
-                className="rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 outline-none focus:border-sky-400"
+                size="sm"
+                value={String(presetHours)}
+                onChange={(next) => handleHoursChange(parseInt(next, 10))}
               >
                 <option value={1}>1 hour (every hour)</option>
                 <option value={2}>2 hours</option>
@@ -219,7 +219,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
                 <option value={8}>8 hours</option>
                 <option value={12}>12 hours</option>
                 <option value={24}>24 hours</option>
-              </select>
+              </Select>
               <span className="text-xs text-zinc-500">at minute 0</span>
             </div>
           )}
@@ -347,11 +347,12 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
             Use Local ({getLocalTimezone()})
           </button>
         </div>
-        <select
+        <Select
           data-debug-id="schedule-timezone-select"
+          size="sm"
+          width="full"
           value={value.timezone || 'UTC'}
-          onChange={(e) => onChange({ ...value, timezone: e.target.value })}
-          className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-sky-400"
+          onChange={(timezone) => onChange({ ...value, timezone })}
         >
           {COMMON_TIMEZONES.map((tz) => (
             <option key={tz} value={tz}>
@@ -361,7 +362,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
           {!COMMON_TIMEZONES.includes(value.timezone || '') && value.timezone && (
             <option value={value.timezone}>{value.timezone}</option>
           )}
-        </select>
+        </Select>
       </div>
 
       {/* Next 3 Runs Preview */}

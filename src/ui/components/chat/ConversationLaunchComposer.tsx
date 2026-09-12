@@ -6,7 +6,7 @@ import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import SearchableSelect, { type SearchableOption } from '../SearchableSelect';
-import { Button } from '@ui';
+import { Button, Select } from '@ui';
 
 type AgentOption = {
   agent_id: string;
@@ -423,22 +423,22 @@ export default function ConversationLaunchComposer() {
         <div className="grid gap-4 md:grid-cols-3">
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Bridge / machine</span>
-            <select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(event) => { setBridgeId(event.target.value); setProvider(''); setTier(''); }} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
+            <Select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(value) => { setBridgeId(value); setProvider(''); setTier(''); }} disabled={!agentId} width="full" className="mt-2">
               <option value="">Choose Bridge…</option>
               {bridgeOptions.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{bridgeLabel(row)}</option>) }
-            </select>
+            </Select>
           </label>
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Provider for this launch</span>
-            <select data-debug-id="new-convo-provider-select" value={provider} onChange={(event) => { setProvider(event.target.value); setTier(''); }} disabled={!agentId || !selectedBridge} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
+            <Select data-debug-id="new-convo-provider-select" value={provider} onChange={(value) => { setProvider(value); setTier(''); }} disabled={!agentId || !selectedBridge} width="full" className="mt-2">
               {providerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
+            </Select>
           </label>
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Tier for this launch</span>
-            <select data-debug-id="new-convo-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} disabled={!agentId || !selectedBridge} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
+            <Select data-debug-id="new-convo-tier-select" value={tier} onChange={setTier} disabled={!agentId || !selectedBridge} width="full" className="mt-2">
               {tierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
+            </Select>
           </label>
         </div>
         {effectiveBridgePathInfo && effectiveBridgePathInfo.effectivePath ? (

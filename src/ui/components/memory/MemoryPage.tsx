@@ -14,7 +14,7 @@ import Markdown from '../Markdown';
 import Badge from '../Badge';
 import EmptyState from '../EmptyState';
 import Modal from '../Modal';
-import { Button, Input, Textarea } from '@ui';
+import { Button, Input, Select, Textarea } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,
@@ -127,10 +127,10 @@ export default function MemoryPage() {
             <div className="flex flex-wrap items-center gap-2">
               <Input type="search" data-debug-id="memory-filter-search" value={search} onChange={setSearch} placeholder="Search title / body / id…" size="sm" className="min-w-[14rem] flex-1" />
               <label className="text-[11px] uppercase tracking-wide text-zinc-500">Type
-                <select data-debug-id="memory-filter-type" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+                <Select data-debug-id="memory-filter-type" value={typeFilter} onChange={setTypeFilter} size="sm" className="ml-1">
                   <option value="">all</option>
                   {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
+                </Select>
               </label>
               {facetsActive ? (
                 <button type="button" data-debug-id="memory-filter-clear" onClick={() => { setFacets(emptyTargeting()); setTypeFilter(''); setSearch(''); }} className="text-[11px] text-zinc-500 hover:text-zinc-200">clear</button>
@@ -320,9 +320,9 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
           <Input data-debug-id="memory-create-title" value={title} onChange={setTitle} placeholder="Memory title" width="full" />
         </Field>
         <Field label="Type">
-          <select data-debug-id="memory-create-type" value={type} onChange={(e) => setType(e.target.value)} className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400">
+          <Select data-debug-id="memory-create-type" value={type} onChange={setType} width="full">
             {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
+          </Select>
         </Field>
       </div>
       <Field label="Description (optional)">

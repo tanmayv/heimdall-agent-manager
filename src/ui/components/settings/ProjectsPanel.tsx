@@ -11,7 +11,7 @@ import {
   type ProjectBridgePath,
 } from "../../api/endpoints/projects";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
-import { Button, Input } from "@ui";
+import { Button, Input, Select } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -267,16 +267,17 @@ export default function ProjectsPanel() {
             </div>
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1">VCS Kind</label>
-              <select
+              <Select
                 data-debug-id="settings-project-vcs-select"
                 value={vcsKind}
-                onChange={(e) => setVcsKind(e.target.value)}
-                className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                onChange={setVcsKind}
+                width="full"
+                className="min-h-[44px]"
               >
                 <option value="none">none</option>
                 <option value="git">git</option>
                 <option value="jj">jj</option>
-              </select>
+              </Select>
             </div>
           </div>
 
@@ -377,15 +378,15 @@ export default function ProjectsPanel() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">VCS Kind</label>
-                        <select
+                        <Select
                           value={editVcsKind}
-                          onChange={(e) => setEditVcsKind(e.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                          onChange={setEditVcsKind}
+                          width="full"
                         >
                           <option value="none">none</option>
                           <option value="git">git</option>
                           <option value="jj">jj</option>
-                        </select>
+                        </Select>
                       </div>
                     </div>
 

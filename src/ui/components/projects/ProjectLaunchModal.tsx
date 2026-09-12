@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import Icon from '../Icon';
 import Modal from '../Modal';
-import { Button } from '@ui';
+import { Button, Select } from '@ui';
 import {
   useListTaskChainsQuery,
   useFetchTaskChainDetailQuery,
@@ -712,19 +712,21 @@ export default function ProjectLaunchModal({
                   ) : availableBridges.length === 0 ? (
                     <span className="text-xs text-amber-400">No bridges available</span>
                   ) : (
-                    <select
+                    <Select
                       id="project-launch-bridge-select"
                       data-debug-id="project-launch-bridge-select"
                       value={selectedBridgeId}
-                      onChange={(e) => setSelectedBridgeId(e.target.value)}
-                      className="w-full max-w-xs rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 text-xs text-zinc-100 outline-none focus:border-sky-400 cursor-pointer"
+                      onChange={setSelectedBridgeId}
+                      size="sm"
+                      width="full"
+                      className="max-w-xs"
                     >
                       {availableBridges.map((b) => (
                         <option key={b.bridgeId} value={b.bridgeId}>
                           {b.label} ({b.status})
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   )}
                 </div>
               </div>

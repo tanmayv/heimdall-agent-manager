@@ -9,7 +9,7 @@ import {
   useSetBridgeProviderDefaultsMutation,
   useUpsertBridgeProviderMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, Input, Textarea } from '@ui';
+import { Button, Input, Select, Textarea } from '@ui';
 
 type AutoEnterPair = { pattern: string; preKey: string };
 type ReasonMapping = { key: string; reason: string };
@@ -162,9 +162,9 @@ export function ProvidersPanel() {
 
       <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <label className="block text-xs uppercase tracking-wide text-zinc-500">Bridge
-          <select data-debug-id="providers-bridge-select" value={selectedId} onChange={(e) => setSelectedBridgeId(e.target.value)} className="mt-1 min-h-[44px] w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400">
+          <Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="mt-1 min-h-[44px]">
             {bridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)} · {bridge.status || 'offline'}</option>)}
-          </select>
+          </Select>
         </label>
         {bridges.length === 0 ? <div className="mt-3 rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No bridges connected yet. Add a Bridge first.</div> : null}
         {selectedBridge && offline ? <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">bridge_offline: provider edit/test is disabled until this Bridge reconnects.</div> : null}
@@ -250,7 +250,7 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
     <div className="w-full max-w-5xl space-y-6 text-left">
       <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
         <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-start"><div><h2 className="text-2xl font-semibold text-white">{isEdit ? `Edit provider ${providerName}` : 'New provider'}</h2><p className="mt-1 max-w-3xl text-sm text-zinc-400">Add values with controls and chips; no JSON, comma lists, or array syntax is typed by users.</p></div><a data-debug-id="providers-editor-header-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</a></div>
-        <label className="mt-5 block text-xs uppercase tracking-wide text-zinc-500">Bridge<select data-debug-id="providers-bridge-select" value={selectedId} onChange={(e) => setSelectedBridgeId(e.target.value)} className="mt-1 min-h-[44px] w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400">{bridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)} · {bridge.status || 'offline'}</option>)}</select></label>
+        <label className="mt-5 block text-xs uppercase tracking-wide text-zinc-500">Bridge<Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="mt-1 min-h-[44px]">{bridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)} · {bridge.status || 'offline'}</option>)}</Select></label>
         {offline ? <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">This Bridge is offline; saving is disabled until it reconnects.</div> : null}
         {error ? <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}
       </div>

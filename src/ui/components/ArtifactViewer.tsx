@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Input, Textarea } from '@ui';
+import { Input, Select, Textarea } from '@ui';
 import {
   useArtifactContentState,
   useCreateArtifactAnnotationMutation,
@@ -984,22 +984,20 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <label className="text-xs uppercase tracking-wide text-zinc-500">Versions</label>
-              <select
+              <Select
                 data-debug-id="artifact-viewer-version-select"
                 value={versionSelectValue}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
+                onChange={(nextValue) => {
                   setSelectedVersionNo(nextValue === 'HEAD' ? null : Number(nextValue));
                   setRollbackConfirmOpen(false);
                   setActionMessage('');
                 }}
-                className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
               >
                 <option value="HEAD">Head v{currentHeadVersionNo || '?'}</option>
                 {versions.filter((version) => Number(version.version_no) !== currentHeadVersionNo).map((version) => (
                   <option key={version.version_no} value={String(version.version_no)}>v{version.version_no}</option>
                 ))}
-              </select>
+              </Select>
               <button
                 type="button"
                 data-debug-id="artifact-viewer-rollback-btn"

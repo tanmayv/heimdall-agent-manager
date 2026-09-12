@@ -9,7 +9,7 @@ import ArtifactUploadButton, { useArtifactUpload } from './ArtifactUpload';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
 import Icon from './Icon';
-import { Button, Input } from '@ui';
+import { Button, Input, Select } from '@ui';
 
 export type LibraryPageProps = {
   session: any;
@@ -214,28 +214,28 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
         <div data-debug-id="library-filters" className="mt-3 flex flex-wrap items-center gap-2">
           <Input type="search" data-debug-id="library-filter-search" value={search} onChange={setSearch} placeholder="Search name / description…" size="sm" className="min-w-[12rem] flex-1" />
           <label className="text-[11px] uppercase tracking-wide text-zinc-500">Kind
-            <select data-debug-id="library-filter-kind" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+            <Select data-debug-id="library-filter-kind" value={kindFilter} onChange={setKindFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {kindOptions.map((k) => <option key={k} value={k}>{k}</option>)}
-            </select>
+            </Select>
           </label>
           <label className="text-[11px] uppercase tracking-wide text-zinc-500">Agent
-            <select data-debug-id="library-filter-agent" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+            <Select data-debug-id="library-filter-agent" value={agentFilter} onChange={setAgentFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {agentsArray.map((ag: any) => <option key={ag.id || ag.agent_id} value={ag.id || ag.agent_id}>{ag.display_name || ag.displayName || ag.id || ag.agent_id}</option>)}
-            </select>
+            </Select>
           </label>
           <label className="text-[11px] uppercase tracking-wide text-zinc-500">Project
-            <select data-debug-id="library-filter-project" value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+            <Select data-debug-id="library-filter-project" value={projectFilter} onChange={setProjectFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {projectsList.map((p: any) => <option key={p.project_id || p.id} value={p.project_id || p.id}>{p.name || p.project_id || p.id}</option>)}
-            </select>
+            </Select>
           </label>
           <label className="text-[11px] uppercase tracking-wide text-zinc-500">Chain
-            <select data-debug-id="library-filter-chain" value={chainFilter} onChange={(e) => setChainFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+            <Select data-debug-id="library-filter-chain" value={chainFilter} onChange={setChainFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {chainsArray.map((c: any) => <option key={c.chainId || c.chain_id} value={c.chainId || c.chain_id}>{c.title || c.chainId || c.chain_id}</option>)}
-            </select>
+            </Select>
           </label>
           {(search || kindFilter || agentFilter || projectFilter || chainFilter) ? (
             <button type="button" data-debug-id="library-filter-clear" onClick={() => { setSearch(''); setKindFilter(''); setAgentFilter(''); setProjectFilter(''); setChainFilter(''); }} className="text-[11px] text-zinc-500 hover:text-zinc-200">clear</button>

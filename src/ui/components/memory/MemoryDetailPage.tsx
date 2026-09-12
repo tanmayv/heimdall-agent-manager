@@ -12,7 +12,7 @@ import Icon from '../Icon';
 import Markdown from '../Markdown';
 import Badge from '../Badge';
 import Modal from '../Modal';
-import { Button, Input, Textarea } from '@ui';
+import { Button, Input, Select, Textarea } from '@ui';
 import {
   useGetMemoryQuery,
   useUpdateMemoryMutation,
@@ -186,9 +186,9 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
                     <div className="flex items-center justify-between gap-3">
                       <dt className="text-zinc-500">Type</dt>
                       <dd>
-                        <select data-debug-id="memory-detail-type" value={type} onChange={(e) => setType(e.target.value)} className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-sky-400">
+                        <Select data-debug-id="memory-detail-type" value={type} onChange={setType}>
                           {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                        </select>
+                        </Select>
                       </dd>
                     </div>
                   ) : (

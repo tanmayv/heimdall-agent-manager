@@ -1,4 +1,5 @@
 import React, { useMemo } from "react";
+import { Select } from "@ui";
 import {
   useListAgentIdentitiesQuery,
   useListAgentTemplatesQuery,
@@ -149,39 +150,38 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
     return items.find((item) => item.id === id)?.name || "Selected item";
   };
 
-  const handleAgentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newAgentId = e.target.value;
+  const handleAgentChange = (newAgentId: string) => {
     onChange({
       ...value,
       agent_id: newAgentId || undefined,
     });
   };
 
-  const handleProjectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleProjectChange = (newValue: string) => {
     onChange({
       ...value,
-      project_id: e.target.value || undefined,
+      project_id: newValue || undefined,
     });
   };
 
-  const handleBridgeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleBridgeChange = (newValue: string) => {
     onChange({
       ...value,
-      bridge_id: e.target.value || undefined,
+      bridge_id: newValue || undefined,
     });
   };
 
-  const handleTemplateChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleTemplateChange = (newValue: string) => {
     onChange({
       ...value,
-      template_id: e.target.value || undefined,
+      template_id: newValue || undefined,
     });
   };
 
-  const handleTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleTypeChange = (newValue: string) => {
     onChange({
       ...value,
-      type: e.target.value || undefined,
+      type: newValue || undefined,
     });
   };
 
@@ -204,13 +204,13 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
               Memory Type
             </label>
-            <select
+            <Select
               data-debug-id={`${debugPrefix}-type-select`}
               id={`${debugPrefix}-type-select`}
               value={value.type || ""}
               onChange={handleTypeChange}
               disabled={disabled || readOnly}
-              className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
+              width="full"
             >
               <option value="">Select Type...</option>
               {MEMORY_TYPES.map((t) => (
@@ -218,7 +218,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
                   {t.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
         )}
 
@@ -226,13 +226,13 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
             Agent Identity
           </label>
-          <select
+          <Select
             data-debug-id={`${debugPrefix}-agent-select`}
             id={`${debugPrefix}-agent-select`}
             value={value.agent_id || ""}
             onChange={handleAgentChange}
             disabled={disabled || readOnly}
-            className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
+            width="full"
           >
             <option value="">Any agent</option>
             {agentIdentities.map((a) => (
@@ -240,7 +240,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
                 {a.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
 
@@ -248,13 +248,13 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
             Project
           </label>
-          <select
+          <Select
             data-debug-id={`${debugPrefix}-project-select`}
             id={`${debugPrefix}-project-select`}
             value={value.project_id || ""}
             onChange={handleProjectChange}
             disabled={disabled || readOnly}
-            className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
+            width="full"
           >
             <option value="">Any project</option>
             {projects.map((p) => (
@@ -262,20 +262,20 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
                 {p.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
             Bridge
           </label>
-          <select
+          <Select
             data-debug-id={`${debugPrefix}-bridge-select`}
             id={`${debugPrefix}-bridge-select`}
             value={value.bridge_id || ""}
             onChange={handleBridgeChange}
             disabled={disabled || readOnly}
-            className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
+            width="full"
           >
             <option value="">Any bridge</option>
             {bridges.map((b) => (
@@ -283,20 +283,20 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
                 {b.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
             Template
           </label>
-          <select
+          <Select
             data-debug-id={`${debugPrefix}-template-select`}
             id={`${debugPrefix}-template-select`}
             value={value.template_id || ""}
             onChange={handleTemplateChange}
             disabled={disabled || readOnly}
-            className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
+            width="full"
           >
             <option value="">Any template</option>
             {templates.map((tpl) => (
@@ -304,7 +304,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
                 {tpl.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       </div>
 
