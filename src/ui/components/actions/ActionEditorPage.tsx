@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import Icon from '../Icon';
-import SearchableSelect, { type SearchableOption } from '../SearchableSelect';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   parseBlackoutDates,
@@ -11,7 +10,7 @@ import {
 } from '../../api/endpoints/actions';
 import ScheduleEditor, { type ScheduleEditorValue } from './ScheduleEditor';
 import { getLocalTimezone, validateCronExpression } from './scheduleUtils';
-import { Button, Textarea } from '@ui';
+import { Button, Combobox, Textarea, type ComboboxOption } from '@ui';
 
 export type ActionEditorPageProps = {
   // When present the page edits an existing action; otherwise it creates a new one.
@@ -43,7 +42,7 @@ function instanceRuntimeStatus(inst: any): string {
 // ACT-1..ACT-7: dedicated full-page create/edit surface for Actions, replacing the
 // former ActionModal popup. Layout mirrors NewAgentPage (header card + form card +
 // sticky footer) so Actions matches Agents/Templates/Bridges. The target instance
-// is chosen through SearchableSelect (never typed by hand) and display names are the
+// is chosen through the Combobox picker (never typed by hand) and display names are the
 // primary label while raw ids are demoted to a monospace secondary line.
 export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   const isEdit = Boolean(actionId);
@@ -96,7 +95,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   // ACT-3: fold display name, instance id, and agent id into the picker search
   // index so any of the three finds the instance. ACT-4: display name is the
   // primary title, the instance id is the demoted monospace secondary line.
-  const instanceOptions = useMemo<SearchableOption[]>(() => {
+  const instanceOptions = useMemo<ComboboxOption[]>(() => {
     return instances
       .filter((inst) => instanceInstanceId(inst))
       .map((inst) => {
@@ -243,15 +242,16 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
               <span className="text-[11px] text-zinc-500">Target instance cannot be changed after creation</span>
             </div>
           ) : (
-            <SearchableSelect
+            <Combobox
               debugId="action-editor-agent-select"
               options={instanceOptions}
               value={targetInstanceId}
               onChange={setTargetInstanceId}
-              buttonPlaceholder="Choose a target agent instance…"
-              placeholder="Search by name, instance id, or agent id…"
+              placeholder="Choose a target agent instance…"
+              searchPlaceholder="Search by name, instance id, or agent id…"
               emptyLabel="No agent instances match your search."
               loading={instancesLoading}
+              width="full"
             />
           )}
         </section>

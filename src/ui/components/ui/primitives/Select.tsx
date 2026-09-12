@@ -12,7 +12,7 @@
  * focus state, and paints a token-styled chevron over the native arrow.
  *
  * NOT for: searchable / long / multi-select lists (use `Combobox` — the custom
- * listbox in `SearchableSelect`/`SearchableMultiSelect`), free-text entry
+ * searchable listbox), free-text entry
  * (`Input`), or boolean / one-of controls (checkbox/radio/toggle). If the list
  * is long enough to want type-ahead beyond the browser's built-in first-letter
  * match, you want `Combobox`, not more props here.

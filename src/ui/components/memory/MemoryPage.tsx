@@ -5,7 +5,7 @@
 // tabs: Active (browse + filter + edit/delete) and Proposals (approve/reject with
 // editable scope). Row titles open the dedicated /memory/:id detail page. Styling
 // follows the current Heimdall design system (LibraryPage header/filter chrome,
-// SearchableSelect popover, Markdown body, Icon buttons).
+// Combobox popover, Markdown body, Icon buttons).
 
 import { useMemo, useState } from 'react';
 import { buildRouteHash } from '../../utils/appLocation';

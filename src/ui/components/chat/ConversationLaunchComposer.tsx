@@ -5,8 +5,7 @@ import { normalizeBridgeCapabilities, useListAgentBridgeSupportQuery, useListBri
 import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
-import SearchableSelect, { type SearchableOption } from '../SearchableSelect';
-import { Button, Select } from '@ui';
+import { Button, Combobox, Select, type ComboboxOption } from '@ui';
 
 type AgentOption = {
   agent_id: string;
@@ -218,14 +217,14 @@ export default function ConversationLaunchComposer() {
   const bridges = useMemo<BridgeOption[]>(() => bridgesQuery.data?.bridges || [], [bridgesQuery.data?.bridges]);
 
   // Searchable-select option lists (scale to 10–50 with search + descriptions).
-  const agentSelectOptions = useMemo<SearchableOption[]>(() => runnableAgents.map((agent: AgentOption) => ({
+  const agentSelectOptions = useMemo<ComboboxOption[]>(() => runnableAgents.map((agent: AgentOption) => ({
     value: agent.agent_id,
     title: agent.name || agent.agent_id,
     tag: agent.role || undefined,
     subtitle: agent.description || (agent.default_provider || agent.default_tier ? `defaults to ${[agent.default_provider, agent.default_tier].filter(Boolean).join(' · ')}` : undefined),
     id: agent.agent_id,
   })), [runnableAgents]);
-  const projectSelectOptions = useMemo<SearchableOption[]>(() => projects.map((project: ProjectOption) => ({
+  const projectSelectOptions = useMemo<ComboboxOption[]>(() => projects.map((project: ProjectOption) => ({
     value: project.project_id,
     title: project.name + (isDefaultProject(project) ? '' : ''),
     tag: isDefaultProject(project) ? 'default' : undefined,
@@ -392,28 +391,32 @@ export default function ConversationLaunchComposer() {
       <div data-debug-id="launch-required-agent-control" className="mt-5 grid gap-4 md:grid-cols-2">
         <div className="block">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Agent required</span>
-          <SearchableSelect
+          <Combobox
             debugId="new-convo-agent-select"
             options={agentSelectOptions}
             value={agentId}
             onChange={setAgentId}
-            buttonPlaceholder="Choose an agent before sending…"
-            placeholder="Search agents by name, id or role…"
+            placeholder="Choose an agent before sending…"
+            searchPlaceholder="Search agents by name, id or role…"
             emptyLabel="No agents match your search."
             loading={agentsQuery.isLoading}
+            width="full"
+            className="mt-2"
           />
         </div>
         <div data-debug-id="launch-project-default-control" className="block">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Project</span>
-          <SearchableSelect
+          <Combobox
             debugId="new-convo-project-select"
             options={projectSelectOptions}
             value={projectId}
             onChange={setProjectId}
-            buttonPlaceholder="Choose a project…"
-            placeholder="Search projects…"
+            placeholder="Choose a project…"
+            searchPlaceholder="Search projects…"
             emptyLabel="No projects match your search."
             loading={projectsQuery.isLoading}
+            width="full"
+            className="mt-2"
           />
         </div>
       </div>

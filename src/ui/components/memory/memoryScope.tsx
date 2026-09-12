@@ -7,8 +7,7 @@
 // the page, detail, and proposal surfaces all render targeting consistently.
 
 import { useMemo } from 'react';
-import type { SearchableOption } from '../SearchableSelect';
-import SearchableMultiSelect from '../SearchableMultiSelect';
+import { Combobox, type ComboboxOption } from '@ui';
 import {
   useListAgentIdentitiesQuery,
   useListAgentTemplatesQuery,
@@ -65,7 +64,7 @@ export function targetingFromRecord(record: any): Targeting {
 }
 
 export type ScopeCatalogEntry = {
-  options: SearchableOption[];
+  options: ComboboxOption[];
   loading: boolean;
   byId: Map<string, string>;
 };
@@ -81,7 +80,7 @@ function toEntry(rows: { id: string; name: string; subtitle?: string }[], loadin
 // useMemoryScopeCatalog loads the four option catalogs (agents/projects/bridges/
 // templates) used by every scope control on the Memory surface. It mirrors the
 // normalization the previous MemoryScopeSelector used, but exposes reusable
-// SearchableOption lists + id→name lookups keyed by targeting dimension.
+// ComboboxOption lists + id→name lookups keyed by targeting dimension.
 export function useMemoryScopeCatalog(): ScopeCatalog {
   const identitiesQuery = useListAgentIdentitiesQuery();
   const projectsQuery = useListSidebarProjectsQuery();
@@ -163,7 +162,7 @@ export function ScopeChips({ targeting, catalog, debugId }: { targeting: Targeti
   );
 }
 
-// ScopeEditor renders the four targeting dimensions as SearchableMultiSelect
+// ScopeEditor renders the four targeting dimensions as multi-select Combobox
 // controls (empty = all). Shared by the create modal, proposal review, and the
 // detail edit surface so scope editing behaves identically everywhere.
 export function ScopeEditor({ targeting, catalog, onChange, debugId, disabled = false }: { targeting: Targeting; catalog: ScopeCatalog; onChange: (next: Targeting) => void; debugId: string; disabled?: boolean }) {
@@ -172,16 +171,17 @@ export function ScopeEditor({ targeting, catalog, onChange, debugId, disabled = 
       {SCOPE_DIMS.map((dim) => (
         <label key={dim.key} className="block">
           <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">{dim.label}</div>
-          <SearchableMultiSelect
+          <Combobox
+            multiple
             options={catalog[dim.key].options}
-            values={targeting[dim.key]}
+            value={targeting[dim.key]}
             onChange={(next) => onChange({ ...targeting, [dim.key]: next })}
             debugId={`${debugId}-${dim.debug}`}
-            allLabel={dim.allLabel}
+            placeholder={dim.allLabel}
             chipClassName={dim.chip}
             loading={catalog[dim.key].loading}
             disabled={disabled}
-            placeholder={`Search ${dim.label.toLowerCase()}…`}
+            searchPlaceholder={`Search ${dim.label.toLowerCase()}…`}
           />
         </label>
       ))}

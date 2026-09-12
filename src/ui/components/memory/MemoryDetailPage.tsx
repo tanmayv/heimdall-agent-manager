@@ -2,7 +2,7 @@
 //
 // Read mode renders the full body as Markdown with a scope card (empty dimension
 // shows "All"); Edit mode swaps the body to a source textarea (with VimEditButton
-// parity) and the scope card to SearchableMultiSelect controls. Save issues an
+// parity) and the scope card to multi-select Combobox controls. Save issues an
 // optimistic-version update; Delete archives after a confirm. Layout follows the
 // shell's detail routes (breadcrumb + Back) and the two-column card pattern.
 
