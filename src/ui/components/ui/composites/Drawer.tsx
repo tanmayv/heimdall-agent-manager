@@ -12,8 +12,9 @@
  * Layer: composite. Spec: `docs/ui-audit/04-component-catalogue.md` › Modal · Drawer.
  *
  * API mirrors Modal: `open` + `onOpenChange` (controlled) · `title` (required →
- * `aria-labelledby`) · `size` · `side` (`right` default | `left`) · `children`
- * (compose `Drawer.Body` / `Drawer.Footer`).
+ * `aria-labelledby`) · `size` · `side` (`right` default | `left` | `bottom`) ·
+ * `children` (compose `Drawer.Body` / `Drawer.Footer`). `bottom` is a full-width
+ * slide-up sheet (height-capped) for mobile inspector/detail surfaces.
  *
  * Accessibility (built in): portal; `role="dialog"` `aria-modal` `aria-labelledby`;
  * focus trapped and restored; Esc + backdrop close; background scroll locked.
@@ -30,7 +31,7 @@ import { ModalBody, ModalFooter } from './Modal';
 import { useDialogA11y } from './useDialogA11y';
 
 export type DrawerSize = 'sm' | 'md' | 'lg';
-export type DrawerSide = 'left' | 'right';
+export type DrawerSide = 'left' | 'right' | 'bottom';
 
 const SIZE_W: Record<DrawerSize, string> = {
   sm: 'max-w-sm',
@@ -38,9 +39,13 @@ const SIZE_W: Record<DrawerSize, string> = {
   lg: 'max-w-lg',
 };
 
+// Per-side panel shape. left/right are full-height edge sheets (width-capped by
+// `size`); `bottom` is a full-width slide-up sheet (height-capped), for the
+// mobile inspector/detail sheets that a side drawer can't model.
 const SIDE_CLASS: Record<DrawerSide, string> = {
-  left: 'mr-auto border-r',
-  right: 'ml-auto border-l',
+  left: 'h-full w-full mr-auto border-r',
+  right: 'h-full w-full ml-auto border-l',
+  bottom: 'mt-auto w-full max-h-[85vh] border-t rounded-t-[var(--radius-lg)]',
 };
 
 export interface DrawerProps
@@ -82,9 +87,13 @@ const DrawerBase: React.FC<DrawerProps> = ({
 
   if (!open) return null;
 
+  const isBottom = side === 'bottom';
+
   return createPortal(
     <div
-      className="fixed inset-0 z-modal flex bg-black/70 backdrop-blur-sm"
+      className={['fixed inset-0 z-modal flex bg-black/70 backdrop-blur-sm', isBottom ? 'items-end' : '']
+        .filter(Boolean)
+        .join(' ')}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) close();
       }}
@@ -97,8 +106,8 @@ const DrawerBase: React.FC<DrawerProps> = ({
         aria-labelledby={titleId}
         tabIndex={-1}
         className={[
-          'flex h-full w-full flex-col overflow-hidden border-subtle bg-surface-overlay text-primary shadow-overlay outline-none',
-          SIZE_W[size],
+          'flex flex-col overflow-hidden border-subtle bg-surface-overlay text-primary shadow-overlay outline-none',
+          isBottom ? '' : SIZE_W[size],
           SIDE_CLASS[side],
           className,
         ]
