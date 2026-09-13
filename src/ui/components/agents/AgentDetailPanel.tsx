@@ -17,7 +17,7 @@ import {
 } from '../../api/endpoints/bridgeSupport';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { useListChainsByCoordinatorQuery } from '../../api/endpoints/tasks';
-import { Button, Input, Link, Select, Textarea } from '@ui';
+import { Button, Input, Link, PageShell, Select, Textarea } from '@ui';
 
 type ProviderScope = 'bridge_default' | 'same_provider';
 type BridgeRowDraft = { enabled: boolean; providerScope: ProviderScope; provider: string; tier: string };
@@ -245,19 +245,19 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   if (!agent) return <div className="w-full rounded-2xl border border-red-400/20 bg-red-500/10 p-6 text-sm text-red-100">Agent not found.</div>;
 
   return (
-    <div data-debug-id="agent-detail-page" className="w-full max-w-5xl space-y-5 text-left">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Link variant="standalone" tone="muted" data-debug-id="agent-detail-back-btn" href={shellHash('/agents')} className="text-xs">← Back to agents</Link>
-          <h2 data-debug-id="agent-detail-title" className="mt-2 text-2xl font-semibold text-white">{agent.name || agent.agent_id || agentId}</h2>
-          <p className="mt-1 text-sm text-zinc-500">{agent.agent_id || agentId} · template {agent.template_id || '—'} · state {agent.state || 'active'}</p>
-        </div>
+    <PageShell
+      eyebrow="Agent"
+      title={<span data-debug-id="agent-detail-title">{agent.name || agent.agent_id || agentId}</span>}
+      description={`${agent.agent_id || agentId} · template ${agent.template_id || '—'} · state ${agent.state || 'active'}`}
+      actions={
         <div className="flex items-center gap-2">
+          <Link variant="standalone" tone="muted" data-debug-id="agent-detail-back-btn" href={shellHash('/agents')} className="text-xs">← Back</Link>
           <Button variant="secondary" data-debug-id="agents-detail-edit-btn" onClick={openEdit}>Edit</Button>
           <Button variant="primary" data-debug-id="agent-detail-launch-instance-header-btn" onClick={() => setLaunchOpen(!launchOpen)}>Launch instance</Button>
         </div>
-      </div>
-
+      }
+    >
+      <div data-debug-id="agent-detail-page" className="space-y-5 text-left">
       {message ? <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-100">{message}</div> : null}
       {error ? <div data-debug-id="agent-detail-action-error" className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}
 
@@ -339,7 +339,8 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
           {!instances.length ? <div className="rounded-xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No instances yet. Launch one to create a private chain and conversation.</div> : null}
         </div>
       </section>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
