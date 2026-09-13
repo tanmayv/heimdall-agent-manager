@@ -41,3 +41,6 @@ export type { BadgeProps } from './Badge';
 
 export { StatusPill } from './StatusPill';
 export type { StatusPillProps } from './StatusPill';
+
+export { StatusDot } from './StatusDot';
+export type { StatusDotProps } from './StatusDot';
