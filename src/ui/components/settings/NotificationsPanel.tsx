@@ -237,7 +237,7 @@ export default function NotificationsPanel() {
         </p>
       </div>
 
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+      <Panel>
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="font-semibold text-zinc-100">Enable browser notifications</div>
@@ -251,9 +251,9 @@ export default function NotificationsPanel() {
             aria-label="Enable browser notifications"
           />
         </div>
-      </div>
+      </Panel>
 
-      <div className={`rounded-2xl border border-white/10 bg-black/20 p-4 ${state.enabled ? '' : 'opacity-50'}`}>
+      <Panel className={state.enabled ? '' : 'opacity-50'}>
         <div className="mb-3 text-sm font-semibold text-zinc-200">Categories</div>
         <div className="space-y-3">
           {CATEGORY_LABELS.map((cat) => (
@@ -272,7 +272,7 @@ export default function NotificationsPanel() {
             </div>
           ))}
         </div>
-      </div>
+      </Panel>
 
       <Panel>
         <div className="flex items-start justify-between gap-4">
@@ -294,7 +294,7 @@ export default function NotificationsPanel() {
         </div>
       </Panel>
 
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+      <Panel>
         <div className="mb-3">
           <div className="font-semibold text-zinc-100">Web Push diagnostics</div>
           <p className="mt-1 text-sm text-zinc-400">
@@ -370,7 +370,7 @@ export default function NotificationsPanel() {
             </div>
           </div>
         )}
-      </div>
+      </Panel>
     </div>
   );
 }
