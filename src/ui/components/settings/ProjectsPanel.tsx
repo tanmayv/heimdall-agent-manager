@@ -11,7 +11,7 @@ import {
   type ProjectBridgePath,
 } from "../../api/endpoints/projects";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
-import { Badge, Button, Input, SectionHeader, Select } from "@ui";
+import { Badge, Button, Input, SectionHeader, Select, Text } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -212,7 +212,7 @@ export default function ProjectsPanel() {
 
       {/* Project Creation Form */}
       <div data-debug-id="settings-project-create-form" className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 space-y-4">
-        <h3 className="text-sm font-semibold text-zinc-200 uppercase tracking-wide">Create New Project</h3>
+        <Text as="h3" role="overline" tone="primary">Create New Project</Text>
         <form onSubmit={handleCreateProject} className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
@@ -430,7 +430,7 @@ export default function ProjectsPanel() {
               {/* Per-Bridge Paths Editor */}
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
                 <div>
-                  <h4 className="text-sm font-semibold text-zinc-200 uppercase tracking-wide">Per-Bridge Paths Override</h4>
+                  <Text as="h4" role="overline" tone="primary">Per-Bridge Paths Override</Text>
                   <p className="text-xs text-zinc-500 mt-0.5">Configure custom filesystem paths for specific bridges when they differ from the default path.</p>
                 </div>
 
