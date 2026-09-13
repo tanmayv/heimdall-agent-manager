@@ -97,17 +97,27 @@ const MenuRoot: React.FC<MenuProps> = ({
     [],
   );
 
-  // Focus the first item on open.
+  // Read the latest setOpen without re-running the open effect — a controlled
+  // caller with an inline onOpenChange would otherwise re-run it every render and
+  // steal focus back to the first item (same class as the Modal focus bug).
+  const setOpenRef = useRef(setOpen);
+  useEffect(() => {
+    setOpenRef.current = setOpen;
+  });
+
+  // Focus the first item on open + close on outside pointer-down. Keyed on [open]
+  // ONLY so it runs once per open.
   useEffect(() => {
     if (!open) return;
     const first = items()[0];
     first?.focus();
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpenRef.current(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [open, items, setOpen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   function onMenuKeyDown(event: React.KeyboardEvent) {
     const list = items();
