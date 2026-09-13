@@ -38,3 +38,6 @@ export type { EmptyStateProps } from './EmptyState';
 
 export { Toast } from './Toast';
 export type { ToastProps } from './Toast';
+
+export { Table } from './Table';
+export type { TableProps, TableColumn, TableSort } from './Table';
