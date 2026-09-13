@@ -213,7 +213,7 @@ export default function BridgesPanel() {
                 <div key={id} data-debug-id={`settings-bridges-pending-${id}`} className="flex items-center justify-between gap-2 rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-sm">
                   <div className="min-w-0">
                     <div className="truncate text-zinc-200">{enr?.label || 'Unlabeled enrollment'}</div>
-                    <div className="mt-0.5 text-[11px] text-zinc-500">waiting for bridge to connect… · expires: {enr?.expires_at ? new Date(enr.expires_at).toLocaleString() : enr?.expires_unix_ms ? new Date(Number(enr.expires_unix_ms)).toLocaleString() : '—'}</div>
+                    <div className="mt-0.5 text-caption text-zinc-500">waiting for bridge to connect… · expires: {enr?.expires_at ? new Date(enr.expires_at).toLocaleString() : enr?.expires_unix_ms ? new Date(Number(enr.expires_unix_ms)).toLocaleString() : '—'}</div>
                   </div>
                   <Button variant="secondary" size="sm" data-debug-id={`settings-bridges-pending-revoke-${id}`} onClick={() => void handleRevokeEnrollment(id)} className="shrink-0">Revoke</Button>
                 </div>
@@ -251,7 +251,7 @@ export default function BridgesPanel() {
                         )}
                         <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeReady(bridge) ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : 'border-amber-400/20 bg-amber-400/5 text-amber-200'}`}>{bridgeReady(bridge) ? 'ready' : 'setup incomplete'}</span>
                       </div>
-                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-zinc-500">
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-zinc-500">
                         <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-zinc-300">{statusLabel(bridge)}</span></span>
                         {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                         <span>host: <span className="text-zinc-300">{bridge?.machine_hostname || bridge?.hostname || '—'}</span></span>
@@ -290,7 +290,7 @@ export default function BridgesPanel() {
         )}
       </div>
 
-      <div data-debug-id="settings-bridges-gap-note" className="mt-4 rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2 text-[11px] text-zinc-500">
+      <div data-debug-id="settings-bridges-gap-note" className="mt-4 rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2 text-caption text-zinc-500">
         Backend gap: token rotation (<code>POST /bridges/&#123;id&#125;/rotate-token</code>) is not yet served by the Hub. Rename (PATCH) and revoke (POST /revoke) work against <code>/api/v1/bridges</code>.
       </div>
       </div>

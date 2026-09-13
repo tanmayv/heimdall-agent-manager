@@ -58,20 +58,20 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
     <>
       <span
         data-debug-id={`task-chains-row-status-${chain.chainId}`}
-        className={`shrink-0 rounded-md border px-2 py-0.5 text-[11px] font-semibold capitalize ${statusBadgeClass(chain.status)}`}
+        className={`shrink-0 rounded-md border px-2 py-0.5 text-caption font-semibold capitalize ${statusBadgeClass(chain.status)}`}
       >
         {chain.status || 'unknown'}
       </span>
       <span className="min-w-0 flex-1 truncate text-sm text-zinc-100">{chain.title || chain.chainId}</span>
       <span
         data-debug-id={`task-chains-row-task-count-${chain.chainId}`}
-        className="shrink-0 rounded-md border border-white/10 bg-black/40 px-1.5 py-0.5 text-[11px] text-zinc-400"
+        className="shrink-0 rounded-md border border-white/10 bg-black/40 px-1.5 py-0.5 text-caption text-zinc-400"
         title={`${chain.taskCount} ${chain.taskCount === 1 ? 'task' : 'tasks'}`}
       >
         {chain.taskCount}
       </span>
       {chain.updatedAt ? (
-        <span className="shrink-0 text-[11px] text-zinc-500">{formatUpdatedAt(chain.updatedAt)}</span>
+        <span className="shrink-0 text-caption text-zinc-500">{formatUpdatedAt(chain.updatedAt)}</span>
       ) : null}
     </>
   );

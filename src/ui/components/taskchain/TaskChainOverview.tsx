@@ -99,7 +99,7 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
   const description = String(data?.task?.description ?? fallback ?? '').trim();
   if (isFetching && !description) {
     return (
-      <div data-debug-id={`taskchain-task-description-${taskId}`} className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+      <div data-debug-id={`taskchain-task-description-${taskId}`} className="flex items-center gap-1.5 text-caption text-zinc-500">
         <Icon name="refresh" size={12} className="animate-spin" /> Loading description…
       </div>
     );
@@ -867,7 +867,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               >
                 {task.title}
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-zinc-400">
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-caption text-zinc-400">
                 <span data-debug-id={`taskchain-task-assignee-${taskId}`} className="inline-flex items-center gap-1">
                   {task.assigneeRef ? (
                     <>
@@ -987,7 +987,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
                     onClick={() => { setActionsMenuOpenTaskId(null); void handleNudge(taskId); }}
-                    className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 hover:bg-white/10"
+                    className="block w-full rounded px-3 py-1.5 text-left text-caption font-semibold text-zinc-300 hover:bg-white/10"
                   >
                     Nudge
                   </button>
@@ -995,7 +995,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
                     onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'lgtm'); }}
-                    className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-emerald-400 hover:bg-emerald-900/40"
+                    className="block w-full rounded px-3 py-1.5 text-left text-caption font-semibold text-emerald-400 hover:bg-emerald-900/40"
                   >
                     LGTM
                   </button>
@@ -1003,7 +1003,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
                     onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'ngtm'); }}
-                    className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-red-400 hover:bg-red-900/40"
+                    className="block w-full rounded px-3 py-1.5 text-left text-caption font-semibold text-red-400 hover:bg-red-900/40"
                   >
                     NGTM
                   </button>
@@ -1012,7 +1012,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id={`taskchain-task-status-menu-btn-${taskId}`}
                     onClick={() => setStatusMenuOpenTaskId(statusMenuOpenTaskId === taskId ? null : taskId)}
-                    className="block w-full rounded px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-300 hover:bg-white/10"
+                    className="block w-full rounded px-3 py-1.5 text-left text-caption font-semibold text-zinc-300 hover:bg-white/10"
                   >
                     Status ▾
                   </button>
@@ -1024,7 +1024,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           type="button"
                           data-debug-id={`taskchain-task-status-${st}-btn-${taskId}`}
                           onClick={() => { setActionsMenuOpenTaskId(null); setStatusMenuOpenTaskId(null); void handleStatusChange(taskId, st); }}
-                          className="block w-full rounded px-3 py-1.5 text-left text-[11px] text-zinc-300 hover:bg-white/10"
+                          className="block w-full rounded px-3 py-1.5 text-left text-caption text-zinc-300 hover:bg-white/10"
                         >
                           {st}
                         </button>
@@ -1035,7 +1035,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
                     onClick={() => { setActionsMenuOpenTaskId(null); void handleCancelTask(taskId); }}
-                    className="mt-0.5 block w-full rounded border-t border-white/10 px-3 py-1.5 text-left text-[11px] font-semibold text-zinc-400 hover:bg-red-900/50 hover:text-red-300"
+                    className="mt-0.5 block w-full rounded border-t border-white/10 px-3 py-1.5 text-left text-caption font-semibold text-zinc-400 hover:bg-red-900/50 hover:text-red-300"
                   >
                     Cancel
                   </button>
@@ -1053,7 +1053,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             <TaskDescription chainId={chainId} taskId={taskId} fallback={task.description} />
             {/* end description */}
             {/* Dependencies in expanded view */}
-            <div data-debug-id={`taskchain-task-dependencies-section-${taskId}`} className="rounded border border-white/5 bg-zinc-900/40 p-2 text-[11px]">
+            <div data-debug-id={`taskchain-task-dependencies-section-${taskId}`} className="rounded border border-white/5 bg-zinc-900/40 p-2 text-caption">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-zinc-400">
                   Blocked on ({task.dependsOn ? task.dependsOn.length : 0}):
@@ -1095,7 +1095,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   })}
                 </div>
               ) : (
-                <p className="mt-1 text-[11px] text-zinc-500 italic">No dependencies configured.</p>
+                <p className="mt-1 text-caption text-zinc-500 italic">No dependencies configured.</p>
               )}
             </div>
 
@@ -1130,8 +1130,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         {attachment.error ? <div data-debug-id={`taskchain-task-comment-attachment-error-${taskId}-${attachment.localId}`} className="mt-1 text-red-300">{attachment.error}</div> : null}
                       </div>
                     ))}
-                    {taskCommentUploading ? <div data-debug-id={`taskchain-task-comment-uploading-hint-${taskId}`} className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
-                    {taskCommentFailed ? <div data-debug-id={`taskchain-task-comment-failed-hint-${taskId}`} className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
+                    {taskCommentUploading ? <div data-debug-id={`taskchain-task-comment-uploading-hint-${taskId}`} className="text-caption text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
+                    {taskCommentFailed ? <div data-debug-id={`taskchain-task-comment-failed-hint-${taskId}`} className="text-caption text-red-300">Retry or remove failed uploads before sending.</div> : null}
                   </div>
                 ) : null}
                 <div className="flex min-w-0 gap-2">
@@ -1413,7 +1413,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       {completedTasks.length}
                     </span>
                   </div>
-                  <span className="text-[11px] font-normal text-zinc-500">
+                  <span className="text-caption font-normal text-zinc-500">
                     {completedTasksExpanded ? 'Click to collapse' : 'Click to expand'}
                   </span>
                 </button>
@@ -1451,7 +1451,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       {cancelledTasks.length}
                     </span>
                   </div>
-                  <span className="text-[11px] font-normal text-zinc-500">
+                  <span className="text-caption font-normal text-zinc-500">
                     {cancelledTasksExpanded ? 'Click to collapse' : 'Click to expand'}
                   </span>
                 </button>
@@ -1476,7 +1476,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         data-debug-id="taskchain-overview-reconcile-bar"
         className="flex items-center justify-between gap-3 border-t border-white/10 px-4 py-3 sm:px-6"
       >
-        <div className="min-w-0 text-[11px] text-zinc-500">
+        <div className="min-w-0 text-caption text-zinc-500">
           {reconcileMsg ? (
             <span data-debug-id="taskchain-overview-reconcile-status">{reconcileMsg}</span>
           ) : (
@@ -1606,7 +1606,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       ]}
                     />
                     {members.length === 0 && (
-                      <p className="mt-1 text-[11px] text-amber-300/80">No members in this task chain.</p>
+                      <p className="mt-1 text-caption text-amber-300/80">No members in this task chain.</p>
                     )}
                   </div>
                 )}
@@ -1687,7 +1687,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 )}
 
                 <div className="mt-2 border-t border-white/10 pt-2 space-y-2">
-                  <span className="text-[11px] text-zinc-400">Add a reviewer:</span>
+                  <span className="text-caption text-zinc-400">Add a reviewer:</span>
                   <div data-debug-id="taskchain-new-task-add-reviewer-mode" className="flex gap-1 rounded bg-zinc-900 p-1">
                     <button
                       type="button"
@@ -1800,9 +1800,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 <label className="block font-semibold text-zinc-300 mb-1">
                   Blocked On (Depends On) {newTaskDependsOnIds.length > 0 && `(${newTaskDependsOnIds.length})`}
                 </label>
-                <p className="text-[11px] text-zinc-500 mb-2">Select existing tasks that must complete before this task can begin.</p>
+                <p className="text-caption text-zinc-500 mb-2">Select existing tasks that must complete before this task can begin.</p>
                 {tasks.length === 0 ? (
-                  <p className="text-[11px] text-zinc-500 italic">No existing tasks in this chain yet.</p>
+                  <p className="text-caption text-zinc-500 italic">No existing tasks in this chain yet.</p>
                 ) : (
                   <div
                     data-debug-id="taskchain-new-task-depends-on-list"
@@ -1829,7 +1829,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                               }
                             }}
                           />
-                          <span className="font-mono text-zinc-400 text-[11px]">{tid}</span>
+                          <span className="font-mono text-zinc-400 text-caption">{tid}</span>
                           <span className="truncate flex-1 font-medium">{t.title}</span>
                           <span className="text-[10px] text-zinc-500 uppercase">{t.status}</span>
                         </label>
@@ -1840,7 +1840,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </div>
 
               {newTaskError && (
-                <p data-debug-id="taskchain-new-task-error" className="text-[11px] text-red-300">{newTaskError}</p>
+                <p data-debug-id="taskchain-new-task-error" className="text-caption text-red-300">{newTaskError}</p>
               )}
             </div>
 
@@ -1874,9 +1874,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             className="w-full max-w-md rounded-lg border border-white/10 bg-[#141414] p-5 text-xs text-white"
           >
             <h3 className="text-sm font-bold text-white">Add Member to Task Chain</h3>
-            <p className="mt-1 text-[11px] text-zinc-500">Add an existing agent instance to this chain, or launch a new one.</p>
+            <p className="mt-1 text-caption text-zinc-500">Add an existing agent instance to this chain, or launch a new one.</p>
             {/* H14: mode toggle — existing instance (reliable) vs launch new. */}
-            <div data-debug-id="taskchain-add-member-mode" className="mt-3 inline-flex rounded border border-white/10 p-0.5 text-[11px]">
+            <div data-debug-id="taskchain-add-member-mode" className="mt-3 inline-flex rounded border border-white/10 p-0.5 text-caption">
               <button
                 type="button"
                 data-debug-id="taskchain-add-member-mode-existing"
@@ -1940,7 +1940,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     ]}
                   />
                   {addAgentId && !existingInstancesQuery.isFetching && existingInstances.length === 0 && (
-                    <p className="mt-1 text-[11px] text-amber-300/80">No existing instances for this agent. Switch to “Launch new” to create one.</p>
+                    <p className="mt-1 text-caption text-amber-300/80">No existing instances for this agent. Switch to “Launch new” to create one.</p>
                   )}
                 </div>
               )}
@@ -1958,7 +1958,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   <option value="">Choose bridge…</option>
                   {addBridgeRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{bridgeLabel(row.bridge)}</option>)}
                 </Select>
-                {addBridgeRows.length === 0 && <p className="mt-1 text-[11px] text-amber-300/80">No online bridge with provider capabilities is available.</p>}
+                {addBridgeRows.length === 0 && <p className="mt-1 text-caption text-amber-300/80">No online bridge with provider capabilities is available.</p>}
               </div>
               <div>
                 <label className="block text-zinc-400">Provider</label>
@@ -2004,7 +2004,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   <option value="coordinator">coordinator</option>
                 </Select>
               </div>
-              {addAgentError && <p data-debug-id="taskchain-add-agent-error" className="text-[11px] text-red-300">{addAgentError}</p>}
+              {addAgentError && <p data-debug-id="taskchain-add-agent-error" className="text-caption text-red-300">{addAgentError}</p>}
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button
@@ -2111,7 +2111,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     ]}
                   />
                   {members.length === 0 && (
-                    <p className="mt-1 text-[11px] text-amber-300/80">No members in this task chain.</p>
+                    <p className="mt-1 text-caption text-amber-300/80">No members in this task chain.</p>
                   )}
                 </div>
               )}
@@ -2177,7 +2177,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 <p className="text-zinc-400">The task will have no assignee.</p>
               )}
 
-              {assigneeError && <p data-debug-id="taskchain-edit-assignee-error" className="text-[11px] text-red-300">{assigneeError}</p>}
+              {assigneeError && <p data-debug-id="taskchain-edit-assignee-error" className="text-caption text-red-300">{assigneeError}</p>}
             </div>
 
             <div className="mt-5 flex justify-end gap-2 text-xs">
@@ -2365,7 +2365,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </div>
             </div>
 
-            {reviewersError && <p data-debug-id="taskchain-edit-reviewers-error" className="mt-2 text-[11px] text-red-300">{reviewersError}</p>}
+            {reviewersError && <p data-debug-id="taskchain-edit-reviewers-error" className="mt-2 text-caption text-red-300">{reviewersError}</p>}
 
             <div className="mt-5 flex justify-end gap-2 text-xs">
               <button
@@ -2417,7 +2417,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <label className="block text-xs font-semibold text-zinc-400">
                 Blocked On (Depends On) {stagedDependsOnIds.length > 0 && `(${stagedDependsOnIds.length})`}
               </label>
-              <p className="mt-0.5 text-[11px] text-zinc-500">
+              <p className="mt-0.5 text-caption text-zinc-500">
                 Select tasks that must be completed before this task can start.
               </p>
 
@@ -2459,7 +2459,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                               }
                             }}
                           />
-                          <span className="font-mono text-zinc-400 text-[11px]">{tid}</span>
+                          <span className="font-mono text-zinc-400 text-caption">{tid}</span>
                           <span className="truncate flex-1 font-medium">{t.title}</span>
                           <span className="text-[10px] text-zinc-500 uppercase">{t.status}</span>
                         </label>
@@ -2470,7 +2470,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             </div>
 
             {dependenciesError && (
-              <p data-debug-id="taskchain-edit-dependencies-error" className="mt-2 text-[11px] text-red-300">
+              <p data-debug-id="taskchain-edit-dependencies-error" className="mt-2 text-caption text-red-300">
                 {dependenciesError}
               </p>
             )}

@@ -253,7 +253,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="text-xs text-zinc-400 font-medium">On days:</span>
-                  <div className="flex gap-2 text-[11px] text-sky-400">
+                  <div className="flex gap-2 text-caption text-sky-400">
                     <button type="button" onClick={() => handleQuickDays('weekdays')} className="hover:underline">
                       Weekdays
                     </button>
@@ -329,7 +329,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
         <Icon name="clock" size={13} className="mt-0.5 shrink-0" />
         <div>
           <span className="font-semibold">{description}</span>
-          <span className="ml-2 font-mono text-zinc-500 text-[11px]">({value.cron_expr || '* * * * *'})</span>
+          <span className="ml-2 font-mono text-zinc-500 text-caption">({value.cron_expr || '* * * * *'})</span>
         </div>
       </div>
 
@@ -341,7 +341,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
             type="button"
             data-debug-id="schedule-tz-local-btn"
             onClick={() => onChange({ ...value, timezone: getLocalTimezone() })}
-            className="text-[11px] text-sky-400 hover:underline"
+            className="text-caption text-sky-400 hover:underline"
           >
             Use Local ({getLocalTimezone()})
           </button>
@@ -376,7 +376,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
                 <li key={i} className="flex items-center gap-2 text-xs text-zinc-300 font-mono">
                   <span className="text-zinc-500">#{i + 1}</span>
                   <span>{formatInTimeZone(runDate, value.timezone)}</span>
-                  <span className="text-zinc-500 text-[11px]">({timeZoneLabel(runDate, value.timezone)})</span>
+                  <span className="text-zinc-500 text-caption">({timeZoneLabel(runDate, value.timezone)})</span>
                 </li>
               ))}
             </ul>
@@ -391,7 +391,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
         <div className="flex items-center justify-between">
           <div>
             <label className="text-xs font-semibold text-zinc-300">Blackout Dates</label>
-            <p className="text-[11px] text-zinc-500">Dates on which execution is suppressed</p>
+            <p className="text-caption text-zinc-500">Dates on which execution is suppressed</p>
           </div>
         </div>
 

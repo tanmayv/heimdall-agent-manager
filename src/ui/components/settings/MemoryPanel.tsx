@@ -372,16 +372,16 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="rounded-full bg-amber-400/20 text-amber-200 px-2 py-0.5 text-[11px] font-bold uppercase">
+          <span className="rounded-full bg-amber-400/20 text-amber-200 px-2 py-0.5 text-caption font-bold uppercase">
             Pending Proposal
           </span>
           {isSystem && (
-            <span className="rounded-full bg-purple-500/20 text-purple-200 px-2 py-0.5 text-[11px] font-bold">
+            <span className="rounded-full bg-purple-500/20 text-purple-200 px-2 py-0.5 text-caption font-bold">
               System Memory (Read-Only)
             </span>
           )}
         </div>
-        <span className="text-[11px] text-zinc-500 font-mono">{memoryId}</span>
+        <span className="text-caption text-zinc-500 font-mono">{memoryId}</span>
       </div>
 
       {msg && (
@@ -400,7 +400,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
       ) : (
         <div className="space-y-3">
           <div>
-            <label className="block text-[11px] font-medium text-zinc-400 mb-1">Title</label>
+            <label className="block text-caption font-medium text-zinc-400 mb-1">Title</label>
             <Input
               data-debug-id={`memory-proposal-title-input-${memoryId}`}
               id={`memory-proposal-title-input-${memoryId}`}
@@ -411,7 +411,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
           </div>
 
           <div>
-            <label className="block text-[11px] font-medium text-zinc-400 mb-1">Description</label>
+            <label className="block text-caption font-medium text-zinc-400 mb-1">Description</label>
             <Input
               data-debug-id={`memory-proposal-description-input-${memoryId}`}
               id={`memory-proposal-description-input-${memoryId}`}
@@ -423,7 +423,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
           </div>
 
           <div>
-            <label className="block text-[11px] font-medium text-zinc-400 mb-1">Body</label>
+            <label className="block text-caption font-medium text-zinc-400 mb-1">Body</label>
             <textarea
               rows={3}
               data-debug-id={`memory-proposal-body-textarea-${memoryId}`}
@@ -435,7 +435,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
           </div>
 
           <div>
-            <label className="block text-[11px] font-medium text-zinc-400 mb-1">Evidence</label>
+            <label className="block text-caption font-medium text-zinc-400 mb-1">Evidence</label>
             <Input
               data-debug-id={`memory-proposal-evidence-input-${memoryId}`}
               id={`memory-proposal-evidence-input-${memoryId}`}
@@ -447,7 +447,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
 
           <div data-debug-id={`memory-proposal-scope-${memoryId}`} id={`memory-proposal-scope-${memoryId}`} className="space-y-3">
             <div>
-              <label className="block text-[11px] font-medium text-zinc-400 mb-1">Type</label>
+              <label className="block text-caption font-medium text-zinc-400 mb-1">Type</label>
               <Select
                 data-debug-id={`memory-proposal-type-select-${memoryId}`}
                 value={type}
@@ -460,7 +460,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
               </Select>
             </div>
             <div>
-              <label className="block text-[11px] font-medium text-zinc-400 mb-1">Scope Settings</label>
+              <label className="block text-caption font-medium text-zinc-400 mb-1">Scope Settings</label>
               <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId={`memory-proposal-scope-${memoryId}`} />
             </div>
           </div>
@@ -542,11 +542,11 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
             <StatusPill tone={statusTone} className="uppercase">
               {memory.status}
             </StatusPill>
-            <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-medium text-zinc-300">
+            <span className="rounded-full bg-white/10 px-2 py-0.5 text-caption font-medium text-zinc-300">
               {memory.type}
             </span>
             {isSystem && (
-              <span className="rounded-full bg-purple-500/20 text-purple-200 px-2 py-0.5 text-[11px] font-semibold">
+              <span className="rounded-full bg-purple-500/20 text-purple-200 px-2 py-0.5 text-caption font-semibold">
                 System
               </span>
             )}
@@ -666,7 +666,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
       <h5 className="text-xs font-bold text-zinc-200">Edit Memory</h5>
       {err && <div className="text-xs text-red-300">{err}</div>}
       <div>
-        <label className="block text-[11px] text-zinc-400 mb-1">Title</label>
+        <label className="block text-caption text-zinc-400 mb-1">Title</label>
         <Input
           size="sm"
           data-debug-id={`memory-edit-title-input-${memoryId}`}
@@ -677,7 +677,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         />
       </div>
       <div>
-        <label className="block text-[11px] text-zinc-400 mb-1">Description</label>
+        <label className="block text-caption text-zinc-400 mb-1">Description</label>
         <Input
           size="sm"
           data-debug-id={`memory-edit-description-input-${memoryId}`}
@@ -689,7 +689,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         />
       </div>
       <div>
-        <label className="block text-[11px] text-zinc-400 mb-1">Body</label>
+        <label className="block text-caption text-zinc-400 mb-1">Body</label>
         <Textarea
           rows={2}
           data-debug-id={`memory-edit-body-textarea-${memoryId}`}
@@ -701,7 +701,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         />
       </div>
       <div>
-        <label className="block text-[11px] text-zinc-400 mb-1">Evidence</label>
+        <label className="block text-caption text-zinc-400 mb-1">Evidence</label>
         <Input
           size="sm"
           data-debug-id={`memory-edit-evidence-input-${memoryId}`}
@@ -713,7 +713,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
       </div>
       <div className="space-y-3">
         <div>
-          <label className="block text-[11px] text-zinc-400 mb-1">Type</label>
+          <label className="block text-caption text-zinc-400 mb-1">Type</label>
           <Select
             size="sm"
             data-debug-id={`memory-edit-type-select-${memoryId}`}
@@ -727,7 +727,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
           </Select>
         </div>
         <div>
-          <label className="block text-[11px] text-zinc-400 mb-1">Scope</label>
+          <label className="block text-caption text-zinc-400 mb-1">Scope</label>
           <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId={`memory-edit-scope-${memoryId}`} />
         </div>
       </div>

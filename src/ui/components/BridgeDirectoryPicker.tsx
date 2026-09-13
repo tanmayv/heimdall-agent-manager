@@ -114,7 +114,7 @@ export default function BridgeDirectoryPicker({
     <div data-debug-id={debugId} className="w-full rounded-2xl border border-white/12 bg-[#0f1115] p-3 shadow-2xl">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</div>
+          <div className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</div>
           {root ? <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-600" title={`Allowed root: ${root}`}>root: {root}</div> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -175,7 +175,7 @@ export default function BridgeDirectoryPicker({
         <Input data-debug-id={`${debugId}-path-input`} value={pathInput} onChange={setPathInput} placeholder="~/path/on/this/device" width="full" className="font-mono" />
       </div>
 
-      {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-[11px] text-red-300">{error}</p> : null}
+      {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-caption text-red-300">{error}</p> : null}
 
       <div className="mt-3 flex items-center justify-end gap-2">
         <Button data-debug-id={`${debugId}-create-typed-btn`} variant="secondary" onClick={createTypedPath}>Create typed path</Button>

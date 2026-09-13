@@ -68,6 +68,14 @@ export default {
         caption: ['var(--text-caption-size)', { lineHeight: 'var(--text-caption-leading)', letterSpacing: 'var(--text-caption-tracking)', fontWeight: 'var(--text-caption-weight)' }],
         overline: ['var(--text-overline-size)', { lineHeight: 'var(--text-overline-leading)', letterSpacing: 'var(--text-overline-tracking)', fontWeight: 'var(--text-overline-weight)' }],
         code: ['var(--text-code-size)', { lineHeight: 'var(--text-code-leading)', letterSpacing: 'var(--text-code-tracking)', fontWeight: 'var(--text-code-weight)' }],
+        // Body/label long-tail remap (EL / 02-tokens.md): the raw Tailwind
+        // `text-sm` / `text-xs` scale is repointed at the `body` / `label` tokens
+        // so the ~1000-node body/label tail picks up token leading/weight/tracking
+        // in one deliberate change (sizes already matched: sm=14px=body,
+        // xs=12px=label — no reflow; small text normalizes to the token weights).
+        // Explicit `font-*` utilities still win over the token weight.
+        sm: ['var(--text-body-size)', { lineHeight: 'var(--text-body-leading)', letterSpacing: 'var(--text-body-tracking)', fontWeight: 'var(--text-body-weight)' }],
+        xs: ['var(--text-label-size)', { lineHeight: 'var(--text-label-leading)', letterSpacing: 'var(--text-label-tracking)', fontWeight: 'var(--text-label-weight)' }],
       },
       borderRadius: {
         // `pill` is a new, non-colliding alias (`rounded-full` also = 9999px).

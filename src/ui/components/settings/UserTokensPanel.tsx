@@ -118,9 +118,9 @@ export default function UserTokensPanel() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-white">{tokenField(token, 'label', 'label') || 'Untitled token'}</span>
                     <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${revoked ? 'bg-zinc-600/30 text-zinc-400' : 'bg-emerald-400/10 text-emerald-200'}`}>{revoked ? 'revoked' : 'active'}</span>
-                    <span className="font-mono text-[11px] text-zinc-500">{id}</span>
+                    <span className="font-mono text-caption text-zinc-500">{id}</span>
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500">
+                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-caption text-zinc-500">
                     <span>created {tokenDate(tokenField(token, 'created_at', 'createdAt'))}</span>
                     <span>last used {tokenDate(tokenField(token, 'last_used_at', 'lastUsedAt'))}</span>
                     <span>expires {tokenDate(tokenField(token, 'expires_at', 'expiresAt'))}</span>

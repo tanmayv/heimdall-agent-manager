@@ -502,7 +502,7 @@ function ArtifactCodePreview({ artifactId, versionNo, kind, daemonUrl, clientTok
   if (textQuery.error) return <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">Failed to load artifact content.</div>;
   return (
     <div data-debug-id={`artifact-viewer-${kind}-preview`} className="relative">
-      <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg bg-black/60 px-2 py-1 text-[11px] text-zinc-200 hover:bg-black/80">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
+      <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg bg-black/60 px-2 py-1 text-caption text-zinc-200 hover:bg-black/80">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
       <pre data-debug-id={`artifact-viewer-${kind}-body`} className="max-h-[70vh] overflow-auto rounded-2xl border border-white/10 bg-black/40 p-4 text-[12.5px] leading-5 text-zinc-200">
         <code>{display || '(empty)'}</code>
       </pre>
@@ -1058,10 +1058,10 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                 <div data-debug-id="artifact-viewer-edit-meta-panel" className="rounded-2xl border border-sky-400/30 bg-sky-400/10 p-4 text-sm text-sky-100">
                   <div className="font-semibold">Rename / edit description</div>
                   <div className="mt-1 text-sky-50/80">`name` is a human display label (non-unique); `artifact_id` is the identity. `description` is an optional longer note.</div>
-                  <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Name
+                  <label className="mt-3 block text-caption uppercase tracking-wide text-zinc-400">Name
                     <Input data-debug-id="artifact-viewer-edit-name-input" value={editName} onChange={setEditName} width="full" className="mt-1" />
                   </label>
-                  <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Description
+                  <label className="mt-3 block text-caption uppercase tracking-wide text-zinc-400">Description
                     <Textarea data-debug-id="artifact-viewer-edit-description-input" value={editDescription} onChange={setEditDescription} rows={3} width="full" className="mt-1" />
                   </label>
                   <div className="mt-3 flex flex-wrap gap-2">

@@ -477,13 +477,13 @@ export default function ProjectsPanel() {
                                 {isOnline ? "online" : "offline"}
                               </span>
                               {existingOverride?.is_validated ? (
-                                <span className="text-emerald-400 text-[11px] font-medium">✓ Validated</span>
+                                <span className="text-emerald-400 text-caption font-medium">✓ Validated</span>
                               ) : existingOverride?.validation_error ? (
-                                <span className="text-red-400 text-[11px] font-medium" title={existingOverride.validation_error}>⚠ Validation failed</span>
+                                <span className="text-red-400 text-caption font-medium" title={existingOverride.validation_error}>⚠ Validation failed</span>
                               ) : existingOverride ? (
-                                <span className="text-amber-300 text-[11px]">Not validated</span>
+                                <span className="text-amber-300 text-caption">Not validated</span>
                               ) : (
-                                <span className="text-zinc-500 text-[11px]">Using default path</span>
+                                <span className="text-zinc-500 text-caption">Using default path</span>
                               )}
                             </div>
                           </div>
@@ -549,13 +549,13 @@ export default function ProjectsPanel() {
                           </div>
 
                           {!isOnline ? (
-                            <div className="text-[11px] text-amber-300/80 flex items-center gap-1">
+                            <div className="text-caption text-amber-300/80 flex items-center gap-1">
                               ⚠ Bridge is offline. Cannot validate path until bridge connects.
                             </div>
                           ) : null}
 
                           {actionError ? (
-                            <div className="text-[11px] text-red-300">{actionError}</div>
+                            <div className="text-caption text-red-300">{actionError}</div>
                           ) : null}
                         </div>
                       );

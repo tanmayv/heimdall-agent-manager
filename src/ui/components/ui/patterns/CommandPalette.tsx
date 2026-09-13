@@ -415,7 +415,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
             autoComplete="off"
             spellCheck={false}
           />
-          {loading ? <span data-debug-id="command-palette-loading" className="text-[11px] text-muted">searching…</span> : null}
+          {loading ? <span data-debug-id="command-palette-loading" className="text-caption text-muted">searching…</span> : null}
           <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5 text-[10px] text-muted">esc</kbd>
         </div>
         <div
@@ -474,13 +474,13 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
                           {isMessage && result.hit.preview ? renderPreview(result.hit.preview) : label}
                         </span>
                         {isMessage ? (
-                          result.hit.sublabel ? <span className="truncate text-[11px] text-muted">{result.hit.sublabel}</span> : null
+                          result.hit.sublabel ? <span className="truncate text-caption text-muted">{result.hit.sublabel}</span> : null
                         ) : result.kind === 'entity' && result.hit.preview ? (
-                          <span className="truncate text-[11px] text-muted">{renderPreview(result.hit.preview)}</span>
+                          <span className="truncate text-caption text-muted">{renderPreview(result.hit.preview)}</span>
                         ) : null}
                       </span>
                       {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 text-center text-[10px] font-bold leading-4 text-accent-fg">{unread > 99 ? '99+' : unread}</span> : null}
-                      {result.hint && !isMessage ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-[11px] text-muted">{result.hint}</span> : null}
+                      {result.hint && !isMessage ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-caption text-muted">{result.hint}</span> : null}
                     </div>
                   );
                 })}
@@ -502,7 +502,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
         {/* Keyboard-hint footer is desktop-only: on mobile it wastes vertical
             space the on-screen keyboard already claims, and the hints are
             keyboard-only anyway. */}
-        <div className="hidden items-center justify-between border-t border-subtle px-4 py-2 text-[11px] text-faint sm:flex">
+        <div className="hidden items-center justify-between border-t border-subtle px-4 py-2 text-caption text-faint sm:flex">
           <span className="flex items-center gap-2">
             <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5">↑↓</kbd> navigate
             <kbd className="ml-2 rounded border border-subtle bg-white/5 px-1.5 py-0.5">↵</kbd> select

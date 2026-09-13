@@ -236,10 +236,10 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                   <div className="text-sm font-semibold text-white">
                     {selectedInstance ? instanceDisplayName(selectedInstance) : targetInstanceId}
                   </div>
-                  <div className="font-mono text-[11px] text-zinc-500">{targetInstanceId}</div>
+                  <div className="font-mono text-caption text-zinc-500">{targetInstanceId}</div>
                 </div>
               </div>
-              <span className="text-[11px] text-zinc-500">Target instance cannot be changed after creation</span>
+              <span className="text-caption text-zinc-500">Target instance cannot be changed after creation</span>
             </div>
           ) : (
             <Combobox
@@ -282,7 +282,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3">
             <div>
               <span className="text-xs font-semibold text-zinc-200">Scheduled recurring execution</span>
-              <p className="text-[11px] text-zinc-500">
+              <p className="text-caption text-zinc-500">
                 {isScheduled
                   ? 'Will execute automatically according to the cron/preset schedule below.'
                   : 'On-demand only — runs when triggered via "Run now".'}

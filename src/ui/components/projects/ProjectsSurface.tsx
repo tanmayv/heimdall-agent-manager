@@ -112,10 +112,10 @@ function ProjectList() {
       {showCreate ? (
         <div data-debug-id="projects-create-form" className="mb-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
+            <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
               <Input data-debug-id="projects-create-name-input" value={name} onChange={setName} width="full" className="mt-1" placeholder="e.g. heimdall agent manager" />
             </label>
-            <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
+            <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
               <Input data-debug-id="projects-create-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="mt-1 font-mono" placeholder="~/path/to/repo" />
             </label>
           </div>
@@ -153,7 +153,7 @@ function ProjectList() {
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-sky-400/80 to-violet-400/80 text-sm font-black text-black">{(p.name || '?').slice(0, 1).toUpperCase()}</span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold text-zinc-100">{p.name || p.project_id}</span>
-              {p.default_path ? <span className="block truncate font-mono text-[11px] text-zinc-500">{p.default_path}</span> : null}
+              {p.default_path ? <span className="block truncate font-mono text-caption text-zinc-500">{p.default_path}</span> : null}
             </span>
             <Icon name="chevron-right" size={16} className="shrink-0 text-zinc-600" />
           </a>
@@ -263,13 +263,13 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
         </div>
       ) : (
         <div className="space-y-3">
-          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
+          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
             <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" className="mt-1" />
           </label>
-          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
+          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
             <Textarea data-debug-id="project-detail-description-input" value={description} onChange={setDescription} rows={4} placeholder="What is this project about?" width="full" className="mt-1" />
           </label>
-          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
+          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
             <Input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="mt-1 font-mono" placeholder="~/path/to/repo" />
           </label>
           {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-red-300">{err}</p> : null}
@@ -305,10 +305,10 @@ function AgentsPanel({ agents, loading, projectId }: { agents: any[]; loading: b
             const instances = Number(a?.activeInstanceCount ?? a?.active_instance_count ?? 0);
             return (
               <a key={id} data-debug-id={`project-detail-agent-${id}`} href={buildRouteHash('/agents', `agentId=${encodeURIComponent(id)}`)} className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-white/[0.05]">
-                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-[11px] font-bold text-zinc-300">{(name || '?').slice(0, 1).toUpperCase()}</span>
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-caption font-bold text-zinc-300">{(name || '?').slice(0, 1).toUpperCase()}</span>
                 <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">{name}</span>
                 {instances > 0 ? <span className="shrink-0 rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">{instances} live</span> : null}
-                {tier ? <span className="shrink-0 text-[11px] text-zinc-500">{tier}</span> : null}
+                {tier ? <span className="shrink-0 text-caption text-zinc-500">{tier}</span> : null}
               </a>
             );
           })}
@@ -421,7 +421,7 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
     <Card title="Working directory" debugId="project-detail-bridge-paths">
       {/* Default path — not tied to any bridge. */}
       <div className="mb-4">
-        <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path (all devices)</label>
+        <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path (all devices)</label>
         <p className="mt-1 text-xs text-zinc-500">Used on every device unless overridden below. e.g. <span className="font-mono text-zinc-400">~/projects/my-app</span></p>
         <div className="mt-2 flex gap-2">
           <Input data-debug-id="project-detail-default-path-input" value={defaultDraft} onChange={setDefaultDraft} placeholder="~/path/to/project" className="min-w-0 flex-1 font-mono" />
@@ -431,7 +431,7 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
       </div>
 
       {/* Per-device presence + overrides. */}
-      <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Devices</label>
+      <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Devices</label>
       <p className="mt-1 mb-2 text-xs text-zinc-500">Whether the effective path is present on each online device.</p>
       {onlineBridges.length === 0 ? (
         <div data-debug-id="project-detail-bridge-paths-empty" className="text-sm text-zinc-500">No online devices to check.</div>
@@ -451,11 +451,11 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
                     aria-hidden="true"
                     className={`h-2 w-2 shrink-0 rounded-full ${st.loading ? 'bg-zinc-500 animate-pulse' : st.error ? 'bg-amber-400' : st.exists ? 'bg-emerald-400' : 'bg-red-400'}`}
                   />
-                  <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-zinc-300">{bridgeLabel(b)}</span>
+                  <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-caption font-semibold text-zinc-300">{bridgeLabel(b)}</span>
                   <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold ${overridden ? 'bg-sky-400/15 text-sky-300' : 'bg-white/[0.06] text-zinc-500'}`}>{overridden ? 'override' : 'default'}</span>
                   <span className="min-w-0 flex-1 basis-full truncate font-mono text-[12px] text-zinc-400 sm:basis-0" title={path}>{path || <span className="text-zinc-600">no path set</span>}</span>
                   {/* presence label */}
-                  <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className={`shrink-0 text-[11px] font-semibold ${st.loading ? 'text-zinc-500' : st.error ? 'text-amber-400' : st.exists ? 'text-emerald-400' : 'text-red-400'}`}>
+                  <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className={`shrink-0 text-caption font-semibold ${st.loading ? 'text-zinc-500' : st.error ? 'text-amber-400' : st.exists ? 'text-emerald-400' : 'text-red-400'}`}>
                     {st.loading ? 'checking…' : st.error ? st.error : st.exists ? (st.hasGit ? 'present · git' : 'present') : 'not present'}
                   </span>
                   {/* actions */}
@@ -496,7 +496,7 @@ function CreateOnBridgeButton({ bridgeId, path, onDone }: { bridgeId: string; pa
       type="button"
       disabled={state.isLoading}
       onClick={async () => { try { await mkdir({ bridgeId, path }).unwrap(); } catch { /* ignore */ } onDone(); }}
-      className="shrink-0 rounded-md border border-emerald-400/30 px-2 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-400/10 disabled:opacity-50"
+      className="shrink-0 rounded-md border border-emerald-400/30 px-2 py-1 text-caption font-semibold text-emerald-200 hover:bg-emerald-400/10 disabled:opacity-50"
     >
       {state.isLoading ? 'Creating…' : 'Create'}
     </button>

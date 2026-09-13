@@ -2,7 +2,7 @@
  * Text — all typography through one role prop.
  * ------------------------------------------------------------------
  * Purpose: the single primitive for every piece of text, headings included. It
- * folds the ~2000 raw `text-sm` / `text-xs` / `text-[11px]` + heading-class
+ * folds the ~2000 raw `text-sm` / `text-xs` / `text-caption` + heading-class
  * recipes (EL-042 and the type scale in `docs/ui-audit/02-tokens.md` §2) into a
  * fixed set of named roles, each binding size + weight + line-height + tracking
  * from tokens. Pick the ROLE (what the text is) and, for headings, the ELEMENT

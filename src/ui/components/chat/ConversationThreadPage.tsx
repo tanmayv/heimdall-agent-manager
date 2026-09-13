@@ -881,7 +881,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       const lineCount = Number(metadata.line_count || metadata.lineCount || 0);
       return (
         <div data-debug-id={status === 'pending' ? `conversation-pane-capture-loading-${message.messageId}` : status === 'failed' ? `conversation-pane-capture-error-${message.messageId}` : `conversation-pane-capture-output-${message.messageId}`} className={`rounded-2xl border p-3 ${status === 'failed' ? 'border-red-400/30 bg-red-500/10 text-red-100' : 'border-sky-400/20 bg-sky-400/10 text-sky-50'}`}>
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-sky-100/70">
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-caption uppercase tracking-wide text-sky-100/70">
             <span>{status === 'pending' ? 'Requesting terminal pane…' : status === 'failed' ? 'Pane capture failed' : 'Terminal pane capture'}</span>
             <span>{Number(metadata.width || 80)} cols</span>
             {lineCount ? <span>{lineCount} lines</span> : null}
@@ -918,7 +918,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       const { summary, triggeredAt } = scheduleContextFromMetadata(message.metadata);
       return (
         <div data-debug-id={`conversation-action-message-${message.messageId}`} className="rounded-2xl border border-amber-400/25 border-l-2 border-l-amber-400/70 bg-amber-400/[0.06] p-3">
-          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] uppercase tracking-wide text-amber-100/80">
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption uppercase tracking-wide text-amber-100/80">
             <span className="inline-flex items-center gap-1.5 font-semibold text-amber-200">
               <Icon name="clock" size={13} title="Scheduled action" />
               Scheduled action
@@ -926,7 +926,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             {summary ? <span className="normal-case tracking-normal text-amber-100/60">{summary}</span> : null}
           </div>
           {triggeredAt ? (
-            <div className="mb-2 text-[11px] text-amber-100/50">Ran on schedule: {triggeredAt}</div>
+            <div className="mb-2 text-caption text-amber-100/50">Ran on schedule: {triggeredAt}</div>
           ) : null}
           <Markdown source={message.body} compact copyAll={false} />
           {message.artifactIds && message.artifactIds.length > 0 && (
@@ -996,7 +996,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     <div data-debug-id="conversation-runtime-controls" className="text-left">
       <input data-debug-id="conversation-provider-select" type="hidden" value={provider} readOnly />
       <input data-debug-id="conversation-tier-select" type="hidden" value={tier} readOnly />
-      <div className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Provider</div>
+      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-zinc-500">Provider</div>
       {providerOptions.map((p) => {
         const selected = (provider || instanceProvider) === p;
         const current = instanceProvider === p;
@@ -1012,7 +1012,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         );
       })}
       <div className="my-1.5 border-t border-white/10" />
-      <div className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Tier</div>
+      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-zinc-500">Tier</div>
       {tierOptions.map((t) => {
         const selected = (tier || instanceTier) === t;
         const current = instanceTier === t;
@@ -1032,7 +1032,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         <Icon name="alert" size={14} className={pendingReconfig ? 'text-amber-400' : 'text-zinc-600'} />
         <span><span className={`font-semibold ${pendingReconfig ? 'text-amber-300' : 'text-zinc-400'}`}>Restarts the agent</span> — applies on next send.</span>
       </div>
-      {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="px-2 pt-1 text-[11px] text-zinc-400">{reconfigStatus}</div> : null}
+      {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="px-2 pt-1 text-caption text-zinc-400">{reconfigStatus}</div> : null}
     </div>
   );
 
@@ -1176,8 +1176,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
               </div>
             ))}
-            {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
-            {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
+            {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-caption text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
+            {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-caption text-red-300">Retry or remove failed uploads before sending.</div> : null}
           </div>
         )}
         <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
@@ -1198,20 +1198,20 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               </>
             ) : null}
             <div className="relative ml-auto shrink-0" ref={statusMenuRef}>
-              <button type="button" data-debug-id="conversation-runtime-status-chip" aria-haspopup="menu" aria-expanded={statusMenuOpen ? 'true' : 'false'} onClick={() => setStatusMenuOpen((open) => !open)} title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10">
+              <button type="button" data-debug-id="conversation-runtime-status-chip" aria-haspopup="menu" aria-expanded={statusMenuOpen ? 'true' : 'false'} onClick={() => setStatusMenuOpen((open) => !open)} title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-caption text-zinc-300 hover:bg-white/10">
                 <StatusDot size="sm" tone={runtimeStatusToTone(runtimeStatus)} label={needsStart ? 'Stopped' : runtimeStopping ? 'Stopping' : runtimeStateLabel(runtimeStateFromStatus(runtimeStatus))} />
                 {needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}
               </button>
               {statusMenuOpen ? (
                 <div data-debug-id="conversation-runtime-status-menu" role="menu" className="absolute bottom-full right-0 z-40 mb-2 w-[min(88vw,260px)] overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
-                  <div className="px-2 pb-1.5 pt-1 text-[11px] text-zinc-500">
+                  <div className="px-2 pb-1.5 pt-1 text-caption text-zinc-500">
                     Runtime: <span className="font-semibold text-zinc-300">{needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}</span>
                   </div>
                   <button type="button" role="menuitem" data-debug-id="conversation-runtime-status-toggle-btn" disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} onClick={() => void toggleRuntime()} className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 ${needsStart ? 'text-emerald-200' : 'text-red-200'}`}>
                     <Icon name={needsStart ? 'play' : 'stop'} size={15} />
                     <span>{needsStart ? 'Start agent' : 'Stop agent'}</span>
                   </button>
-                  {reconfigStatus ? <div className="px-3 pb-1 pt-1 text-[11px] text-zinc-500">{reconfigStatus}</div> : null}
+                  {reconfigStatus ? <div className="px-3 pb-1 pt-1 text-caption text-zinc-500">{reconfigStatus}</div> : null}
                 </div>
               ) : null}
             </div>
@@ -1299,7 +1299,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <button type="button" data-debug-id="conversation-thread-title-edit-btn" aria-label="Rename conversation" title="Rename" onClick={beginRenameFromHeader} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="pencil" size={14} /></button>
             </>
           )}
-          {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-[11px] text-red-300">{titleError}</div> : null}
+          {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
         </div>
 
         <div className="relative shrink-0" ref={headerActionsRef}>
@@ -1307,7 +1307,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           {headerActionsOpen ? (
             <div data-debug-id="conversation-thread-overflow-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(88vw,300px)] overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
               <button type="button" role="menuitem" data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><Icon name="refresh" size={15} /><span>Refresh messages</span></button>
-              <div data-debug-id="conversation-thread-overflow-details" className="mt-1 border-t border-white/10 px-3 py-2 text-[11px] leading-5 text-zinc-500">
+              <div data-debug-id="conversation-thread-overflow-details" className="mt-1 border-t border-white/10 px-3 py-2 text-caption leading-5 text-zinc-500">
                 <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
                 <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
                 <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>

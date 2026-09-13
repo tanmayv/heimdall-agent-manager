@@ -756,7 +756,7 @@ function ProjectConversationTree({
         <span>Active</span>
         {loading ? <span data-debug-id="sidebar-project-agent-session-loading" className="normal-case tracking-normal text-zinc-600">Loading…</span> : null}
       </div>
-      {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-[11px] leading-4 text-red-100">{error}</div> : null}
+      {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-caption leading-4 text-red-100">{error}</div> : null}
       {!loading && !error && groups.length === 0 ? (
         <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-zinc-600">No running agents. Start one with New chat.</div>
       ) : null}
@@ -1253,7 +1253,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             {secondary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} />)}
           </nav>
           <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${collapsed ? 'justify-center' : ''}`}>
-            <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-[11px] font-bold text-zinc-300`}>
+            <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-caption font-bold text-zinc-300`}>
               {(displayName || 'U').slice(0, 1).toUpperCase()}
               <span className="absolute ml-5 mt-5">
                 <StatusDot

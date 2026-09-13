@@ -202,7 +202,7 @@ export function ArtifactAttachmentPreview({
             <div className="px-3 py-8 text-xs text-zinc-500">{preview.loadingContent || preview.loadingMeta ? 'Loading image…' : 'Image unavailable'}</div>
           )}
         </div>
-        <div className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] text-zinc-400">
+        <div className="flex items-center gap-2 px-2.5 py-1.5 text-caption text-zinc-400">
           <span className="text-sky-300">🖼</span>
           <span className="min-w-0 flex-1 truncate">{label}</span>
           <span className="text-zinc-600 group-hover:text-sky-300">Open</span>
@@ -212,7 +212,7 @@ export function ArtifactAttachmentPreview({
   }
 
   return (
-    <a data-debug-id={`${debugId}-link`} href={target} className="flex min-w-0 max-w-full items-center gap-1 rounded bg-sky-400/10 px-2 py-1 text-[11px] text-sky-300 hover:bg-sky-400/20">
+    <a data-debug-id={`${debugId}-link`} href={target} className="flex min-w-0 max-w-full items-center gap-1 rounded bg-sky-400/10 px-2 py-1 text-caption text-sky-300 hover:bg-sky-400/20">
       <span className="opacity-70">▣</span>
       <span className="truncate">{preview.loadingMeta ? id : label}</span>
     </a>

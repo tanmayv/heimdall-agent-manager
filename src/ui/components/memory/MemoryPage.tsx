@@ -124,14 +124,14 @@ export default function MemoryPage() {
           <div data-debug-id="memory-filter-bar" className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <Input type="search" data-debug-id="memory-filter-search" value={search} onChange={setSearch} placeholder="Search title / body / id…" size="sm" className="min-w-[14rem] flex-1" />
-              <label className="text-[11px] uppercase tracking-wide text-zinc-500">Type
+              <label className="text-caption uppercase tracking-wide text-zinc-500">Type
                 <Select data-debug-id="memory-filter-type" value={typeFilter} onChange={setTypeFilter} size="sm" className="ml-1">
                   <option value="">all</option>
                   {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </Select>
               </label>
               {facetsActive ? (
-                <button type="button" data-debug-id="memory-filter-clear" onClick={() => { setFacets(emptyTargeting()); setTypeFilter(''); setSearch(''); }} className="text-[11px] text-zinc-500 hover:text-zinc-200">clear</button>
+                <button type="button" data-debug-id="memory-filter-clear" onClick={() => { setFacets(emptyTargeting()); setTypeFilter(''); setSearch(''); }} className="text-caption text-zinc-500 hover:text-zinc-200">clear</button>
               ) : null}
             </div>
             <ScopeEditor targeting={facets} catalog={catalog} onChange={setFacets} debugId="memory-filter-scope" />
@@ -199,9 +199,9 @@ function MemoryListItem({ memory, catalog, onDelete }: { memory: any; catalog: S
               {memory.title || id}
             </button>
             <Badge>{memory.type || 'fact'}</Badge>
-            <span className="text-[11px] text-zinc-600">v{memory.version || 0}</span>
-            <span className="text-[11px] text-zinc-600">·</span>
-            <span className="text-[11px] text-zinc-600">{timeAgo(memory.updatedUnixMs || memory.createdUnixMs)}</span>
+            <span className="text-caption text-zinc-600">v{memory.version || 0}</span>
+            <span className="text-caption text-zinc-600">·</span>
+            <span className="text-caption text-zinc-600">{timeAgo(memory.updatedUnixMs || memory.createdUnixMs)}</span>
           </div>
           {memory.description ? <p className="mt-1 line-clamp-2 text-[12.5px] font-medium text-zinc-300">{memory.description}</p> : null}
           {memory.body ? <p className="mt-1.5 line-clamp-2 text-[12.5px] leading-5 text-zinc-400">{memory.body}</p> : null}
@@ -249,11 +249,11 @@ function ProposalCard({ memory, catalog }: { memory: any; catalog: ScopeCatalog 
     <div data-debug-id={`memory-proposal-${id}`} className="rounded-2xl border border-amber-400/25 bg-amber-950/10 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-[11px] font-bold uppercase text-amber-200">Pending</span>
+          <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-caption font-bold uppercase text-amber-200">Pending</span>
           <span className="font-semibold text-zinc-100">{memory.title || id}</span>
           <Badge>{memory.type || 'fact'}</Badge>
         </div>
-        <span className="font-mono text-[11px] text-zinc-500">{memory.proposalId || id}</span>
+        <span className="font-mono text-caption text-zinc-500">{memory.proposalId || id}</span>
       </div>
 
       {memory.description ? (
@@ -368,7 +368,7 @@ function ModalShell({ debugId, title, onClose, maxWidth = 'max-w-2xl', children 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">{label}</div>
+      <div className="mb-1 text-caption uppercase tracking-wide text-zinc-500">{label}</div>
       {children}
     </label>
   );

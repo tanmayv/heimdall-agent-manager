@@ -84,7 +84,7 @@ export const TaskCommentsThread: React.FC<{
 
       {/* Summary line while the thread is loading or before any bodies arrive. */}
       {count > 0 && comments.length === 0 ? (
-        <div data-debug-id={`taskchain-task-comment-summary-${taskId}`} className="rounded bg-zinc-900/60 p-2 text-[11px] text-zinc-400">
+        <div data-debug-id={`taskchain-task-comment-summary-${taskId}`} className="rounded bg-zinc-900/60 p-2 text-caption text-zinc-400">
           {isFetching ? 'Loading comments…' : (
             <>
               <span className="font-semibold text-zinc-300">{summary?.lastCommentAuthorAgentInstanceId || 'user'}</span>
@@ -96,14 +96,14 @@ export const TaskCommentsThread: React.FC<{
       ) : null}
 
       {count === 0 ? (
-        <div data-debug-id={`taskchain-task-comment-empty-${taskId}`} className="text-[11px] text-zinc-600">No comments yet.</div>
+        <div data-debug-id={`taskchain-task-comment-empty-${taskId}`} className="text-caption text-zinc-600">No comments yet.</div>
       ) : null}
 
       {comments.map((comment: any, idx: number) => (
         <div
           key={comment.commentId || comment.comment_id || idx}
           data-debug-id={`taskchain-task-comment-${taskId}-${idx}`}
-          className="rounded bg-zinc-900 p-2 text-[11px]"
+          className="rounded bg-zinc-900 p-2 text-caption"
         >
           <div className="font-semibold text-zinc-400">
             <CommentAuthor

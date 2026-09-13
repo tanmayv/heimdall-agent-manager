@@ -520,7 +520,7 @@ export default function ProjectLaunchModal({
                   {/* Task chains list section */}
                   <div className="shrink-0 space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                      <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">
                         Select Task Chain
                       </span>
                       {(chainHasMore || chainCursorHistory.length > 0) && (
@@ -588,7 +588,7 @@ export default function ProjectLaunchModal({
                   {selectedChainId && (
                     <div className="flex-1 min-h-0 flex flex-col rounded-xl border border-white/10 bg-black/20 p-3 overflow-hidden">
                       <div className="shrink-0 flex items-center justify-between pb-2">
-                        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                        <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
                           Chain Agents
                         </span>
                         {chainMembers.length > 0 && (
@@ -730,11 +730,11 @@ export default function ProjectLaunchModal({
               </div>
 
               <div className="shrink-0 flex items-center justify-between pb-1 pt-1">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Durable Agents Catalog
                 </span>
                 {durableAgents.length > 0 && (
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-caption text-zinc-500">
                     Showing {agentsPage * AGENTS_PAGE_SIZE + 1}–{Math.min((agentsPage + 1) * AGENTS_PAGE_SIZE, durableAgents.length)} of {durableAgents.length}
                   </span>
                 )}
@@ -795,7 +795,7 @@ export default function ProjectLaunchModal({
               {/* Pagination Controls */}
               {totalAgentPages > 1 && (
                 <div className="shrink-0 flex items-center justify-between border-t border-white/5 pt-2">
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-caption text-zinc-500">
                     {selectedNewAgentIds.size} agent(s) selected
                   </span>
                   <div className="flex items-center gap-2">
@@ -807,7 +807,7 @@ export default function ProjectLaunchModal({
                     >
                       Previous
                     </Button>
-                    <span className="text-[11px] text-zinc-400">
+                    <span className="text-caption text-zinc-400">
                       {agentsPage + 1} / {totalAgentPages}
                     </span>
                     <Button
@@ -828,11 +828,11 @@ export default function ProjectLaunchModal({
           {activeTab === 'existing' && (
             <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
               <div className="shrink-0 flex items-center justify-between pb-1">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Project Instances
                 </span>
                 {stoppedInstances.length > 0 && (
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-caption text-zinc-500">
                     Showing {existingPage * EXISTING_PAGE_SIZE + 1}–{Math.min((existingPage + 1) * EXISTING_PAGE_SIZE, stoppedInstances.length)} of {stoppedInstances.length} ({stoppedInstances.length} stopped instance{stoppedInstances.length === 1 ? '' : 's'})
                   </span>
                 )}
@@ -910,7 +910,7 @@ export default function ProjectLaunchModal({
               {/* Pagination Controls */}
               {totalExistingPages > 1 && (
                 <div className="shrink-0 flex items-center justify-between border-t border-white/5 pt-2">
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-caption text-zinc-500">
                     {selectedExistingInstanceIds.size} instance(s) selected
                   </span>
                   <div className="flex items-center gap-2">
@@ -922,7 +922,7 @@ export default function ProjectLaunchModal({
                     >
                       Previous
                     </Button>
-                    <span className="text-[11px] text-zinc-400">
+                    <span className="text-caption text-zinc-400">
                       {existingPage + 1} / {totalExistingPages}
                     </span>
                     <Button

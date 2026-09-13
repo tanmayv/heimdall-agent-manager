@@ -108,7 +108,7 @@ export default function TemplatesPanel() {
                   {str(t.description) ? <p className="mt-1 text-sm text-zinc-400">{t.description}</p> : null}
                   {str(t.persona) ? <p className="mt-2 line-clamp-2 text-[13px] text-zinc-300"><span className="text-zinc-500">Persona: </span>{t.persona}</p> : null}
                   {str(t.instructions) ? <p className="mt-1 line-clamp-2 text-[13px] text-zinc-300"><span className="text-zinc-500">Instructions: </span>{t.instructions}</p> : null}
-                  <p className="mt-2 font-mono text-[11px] text-zinc-600">{id}</p>
+                  <p className="mt-2 font-mono text-caption text-zinc-600">{id}</p>
                 </div>
                 {!isSystem ? (
                   <div className="flex shrink-0 gap-2">

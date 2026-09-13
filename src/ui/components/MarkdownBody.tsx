@@ -148,7 +148,7 @@ function renderTable(lines: string[], start: number): { html: string; nextIndex:
   const head = headers.map((cell, idx) => `<th class="border-b border-white/10 px-3 py-2 ${aligns[idx] || 'text-left'} font-semibold text-zinc-100">${renderInline(cell)}</th>`).join('');
   const body = rows.map((row) => `<tr>${headers.map((_h, idx) => `<td class="border-b border-white/5 px-3 py-2 align-top ${aligns[idx] || 'text-left'}">${renderInline(row[idx] || '')}</td>`).join('')}</tr>`).join('');
   return {
-    html: `<div class="markdown-table my-2 overflow-hidden rounded-xl border border-white/10"><div class="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] text-zinc-500"><span>table</span><button type="button" data-markdown-copy-table="true" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy CSV</button></div><div class="overflow-x-auto"><table class="min-w-full border-collapse text-left text-sm"><thead class="bg-white/[0.04]"><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`,
+    html: `<div class="markdown-table my-2 overflow-hidden rounded-xl border border-white/10"><div class="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-3 py-1.5 text-caption text-zinc-500"><span>table</span><button type="button" data-markdown-copy-table="true" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy CSV</button></div><div class="overflow-x-auto"><table class="min-w-full border-collapse text-left text-sm"><thead class="bg-white/[0.04]"><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`,
     nextIndex: i,
   };
 }
@@ -172,10 +172,10 @@ function renderBlocks(source: string): string {
       const escapedCode = escapeHtml(body.join('\n'));
       const langLabel = escapeHtml(lang || 'code');
       if (/^(?:mermaid|mermedai)$/i.test((lang || '').trim())) {
-        out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 mermaid-block" data-mermaid-code="${escapedCode}"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-[11px] text-zinc-500"><span class="font-mono">mermaid</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><div class="mermaid-diagram-container p-3 overflow-x-auto flex flex-col items-center justify-center bg-black/20" data-mermaid-rendered="false"><pre class="font-mono text-[12px] leading-relaxed text-zinc-100 text-left w-full" data-lang="mermaid"><code>${escapedCode}</code></pre></div></div>`);
+        out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 mermaid-block" data-mermaid-code="${escapedCode}"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-caption text-zinc-500"><span class="font-mono">mermaid</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><div class="mermaid-diagram-container p-3 overflow-x-auto flex flex-col items-center justify-center bg-black/20" data-mermaid-rendered="false"><pre class="font-mono text-[12px] leading-relaxed text-zinc-100 text-left w-full" data-lang="mermaid"><code>${escapedCode}</code></pre></div></div>`);
         continue;
       }
-      out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-[11px] text-zinc-500"><span class="font-mono">${langLabel}</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><pre class="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-zinc-100" data-lang="${escapeHtml(lang)}"><code>${escapedCode}</code></pre></div>`);
+      out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-caption text-zinc-500"><span class="font-mono">${langLabel}</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><pre class="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-zinc-100" data-lang="${escapeHtml(lang)}"><code>${escapedCode}</code></pre></div>`);
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
@@ -346,7 +346,7 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
           tempEl.parentNode.removeChild(tempEl);
         }
         const errorBanner = document.createElement('div');
-        errorBanner.className = 'mb-2 rounded bg-rose-500/10 border border-rose-500/30 px-2 py-1 text-[11px] text-rose-300';
+        errorBanner.className = 'mb-2 rounded bg-rose-500/10 border border-rose-500/30 px-2 py-1 text-caption text-rose-300';
         errorBanner.textContent = 'Failed to render Mermaid diagram';
         if (!container.querySelector('.text-rose-300')) {
           container.insertBefore(errorBanner, container.firstChild);

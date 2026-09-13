@@ -190,7 +190,7 @@ export default function ChatMessageList({
         )}
       </div>
       {showJump ? (
-        <button data-debug-id={`${debugPrefix}-jump-latest-btn`} onClick={() => scrollToBottom('smooth')} className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-[11px] text-zinc-100 shadow-lg hover:bg-black">Jump to latest ↓</button>
+        <button data-debug-id={`${debugPrefix}-jump-latest-btn`} onClick={() => scrollToBottom('smooth')} className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-caption text-zinc-100 shadow-lg hover:bg-black">Jump to latest ↓</button>
       ) : null}
     </div>
   );

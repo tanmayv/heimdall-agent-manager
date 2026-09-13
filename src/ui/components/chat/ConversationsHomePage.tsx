@@ -128,7 +128,7 @@ export default function ConversationsHomePage() {
                 </p>
               </div>
               <div className="flex h-full shrink-0 flex-col items-end justify-start gap-2 pt-1">
-                {ts ? <time data-debug-id={`conversation-inbox-timestamp-${conversation.conversationId}`} className="text-[11px] font-medium text-zinc-500">{ts}</time> : null}
+                {ts ? <time data-debug-id={`conversation-inbox-timestamp-${conversation.conversationId}`} className="text-caption font-medium text-zinc-500">{ts}</time> : null}
                 <span aria-hidden="true" className="text-lg text-zinc-700 group-hover:text-zinc-400">›</span>
               </div>
             </a>

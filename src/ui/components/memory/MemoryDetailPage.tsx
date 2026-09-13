@@ -128,8 +128,8 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
           {/* Meta chips */}
           <div data-debug-id="memory-detail-header" className="flex flex-wrap items-center gap-2">
             <Badge>{record.type || 'fact'}</Badge>
-            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-zinc-300">{record.status || 'active'}</span>
-            <span className="text-[11px] text-zinc-600">v{record.version || 0}</span>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-caption text-zinc-300">{record.status || 'active'}</span>
+            <span className="text-caption text-zinc-600">v{record.version || 0}</span>
           </div>
 
           {error ? <div className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div> : null}
@@ -151,7 +151,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
               ) : null}
               <div className="mb-2 flex items-center justify-between">
                 <div className="text-sm font-semibold text-zinc-100">Body</div>
-                {editing ? <span className="text-[11px] text-zinc-500">Markdown</span> : null}
+                {editing ? <span className="text-caption text-zinc-500">Markdown</span> : null}
               </div>
               {editing ? (
                 <Textarea data-debug-id="memory-detail-body-textarea" value={body} onChange={setBody} rows={16} placeholder="Memory body (Markdown)" width="full" />

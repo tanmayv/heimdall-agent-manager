@@ -158,7 +158,7 @@ export default function CurrentTaskStrip({
               <span className="truncate font-medium text-zinc-100">{title}</span>
             )}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-caption text-zinc-500">
             {/* R8: explicit WORK vs REVIEW action label for the current-task role. */}
             <StatusPill tone={roleActionTone(role)} data-debug-id={`${debugPrefix}-current-task-action`} data-current-task-action={roleActionLabel(role)}>{roleActionLabel(role)}</StatusPill>
             <StatusPill tone={statusTone(status)}>{status}</StatusPill>
@@ -167,7 +167,7 @@ export default function CurrentTaskStrip({
             <span>Assignee: <span className="text-zinc-300">{agentInstanceId}</span></span>
             {reviewer ? <span>Reviewer: <span className="text-zinc-300">{reviewer}</span></span> : null}
           </div>
-          {summary ? <div data-debug-id={`${debugPrefix}-current-task-acceptance`} className="mt-1.5 truncate text-[11px] text-zinc-500">Acceptance: {summary}</div> : null}
+          {summary ? <div data-debug-id={`${debugPrefix}-current-task-acceptance`} className="mt-1.5 truncate text-caption text-zinc-500">Acceptance: {summary}</div> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {onOpenTask ? <button type="button" data-debug-id={`${debugPrefix}-current-task-open`} onClick={() => onOpenTask(taskId)} className="rounded-full border border-white/10 px-2.5 py-1 text-zinc-300 hover:bg-white/10">Open</button> : null}
@@ -234,8 +234,8 @@ export default function CurrentTaskStrip({
             onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submitComment(); } }}
           />
           <div className="mt-1 flex items-center justify-end gap-1.5">
-            <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-cancel`} onClick={() => { setCommenting(false); setCommentBody(''); }} className="rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-white/10">Cancel</button>
-            <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-submit`} onClick={() => void submitComment()} disabled={!commentBody.trim()} className="rounded-full border border-teal-400/30 bg-teal-400/10 px-2.5 py-0.5 text-[11px] text-teal-100 hover:bg-teal-400/20 disabled:opacity-40">Add comment</button>
+            <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-cancel`} onClick={() => { setCommenting(false); setCommentBody(''); }} className="rounded-full border border-white/10 px-2 py-0.5 text-caption text-zinc-400 hover:bg-white/10">Cancel</button>
+            <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-submit`} onClick={() => void submitComment()} disabled={!commentBody.trim()} className="rounded-full border border-teal-400/30 bg-teal-400/10 px-2.5 py-0.5 text-caption text-teal-100 hover:bg-teal-400/20 disabled:opacity-40">Add comment</button>
           </div>
         </div>
       ) : null}

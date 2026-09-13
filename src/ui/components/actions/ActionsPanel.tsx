@@ -439,7 +439,7 @@ function ActionCard({
               }`}
             />
             <span className="font-semibold text-white">{targetName}</span>
-            <span className="text-[11px] text-zinc-500 font-mono">({action.target_instance_id})</span>
+            <span className="text-caption text-zinc-500 font-mono">({action.target_instance_id})</span>
           </div>
 
           {/* Action State badge */}
@@ -462,7 +462,7 @@ function ActionCard({
           {/* Schedule status badge */}
           <span
             data-debug-id={`action-schedule-badge-${action.id}`}
-            className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] border ${
+            className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-caption border ${
               isScheduled
                 ? 'border-sky-500/30 bg-sky-500/10 text-sky-300'
                 : 'border-zinc-800 bg-black/40 text-zinc-400'
@@ -536,7 +536,7 @@ function ActionCard({
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
-            className="mt-1 text-[11px] text-sky-400 hover:underline"
+            className="mt-1 text-caption text-sky-400 hover:underline"
           >
             {expanded ? 'Show less' : 'Show full prompt'}
           </button>
@@ -545,7 +545,7 @@ function ActionCard({
 
       {/* Next Execution Info Footer */}
       {isScheduled && (
-        <div className="flex flex-wrap items-center justify-between text-[11px] text-zinc-500 border-t border-white/5 pt-2">
+        <div className="flex flex-wrap items-center justify-between text-caption text-zinc-500 border-t border-white/5 pt-2">
           <div className="flex items-center gap-1.5">
             <span>Next run:</span>
             {nextRuns.length > 0 ? (

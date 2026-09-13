@@ -147,13 +147,13 @@ export function ScopeChips({ targeting, catalog, debugId }: { targeting: Targeti
         const ids = targeting[dim.key];
         if (ids.length === 0) {
           return (
-            <span key={dim.key} data-debug-id={`${debugId}-${dim.debug}-all`} className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-zinc-500">
+            <span key={dim.key} data-debug-id={`${debugId}-${dim.debug}-all`} className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-caption text-zinc-500">
               {dim.allLabel}
             </span>
           );
         }
         return ids.map((id) => (
-          <span key={`${dim.key}-${id}`} title={id} data-debug-id={`${debugId}-${dim.debug}-${id}`} className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${dim.chip}`}>
+          <span key={`${dim.key}-${id}`} title={id} data-debug-id={`${debugId}-${dim.debug}-${id}`} className={`inline-flex items-center rounded-full border px-2 py-0.5 text-caption ${dim.chip}`}>
             {catalog[dim.key].byId.get(id) || id}
           </span>
         ));
@@ -170,7 +170,7 @@ export function ScopeEditor({ targeting, catalog, onChange, debugId, disabled = 
     <div data-debug-id={debugId} className="grid gap-3 sm:grid-cols-2">
       {SCOPE_DIMS.map((dim) => (
         <label key={dim.key} className="block">
-          <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">{dim.label}</div>
+          <div className="mb-1 text-caption uppercase tracking-wide text-zinc-500">{dim.label}</div>
           <Combobox
             multiple
             options={catalog[dim.key].options}
