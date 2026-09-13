@@ -8,20 +8,28 @@ import {
   useArchiveMemoryMutation,
   memoryErrorText,
 } from "../../api/endpoints/memory";
-import { MemoryScopeSelector, MemoryScopeValue, MEMORY_TYPES, scopeToLists, listsToScope } from "./MemoryScopeSelector";
-import { Button, Input, Select, Textarea } from "@ui";
+import { Button, Input, PageShell, Select, Textarea } from "@ui";
+import {
+  MEMORY_TYPES,
+  ScopeEditor,
+  emptyTargeting,
+  targetingFromRecord,
+  useMemoryScopeCatalog,
+  type Targeting,
+} from "../memory/memoryScope";
 
 export const MemoryPanel: React.FC = () => {
+  const catalog = useMemoryScopeCatalog();
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("");
-  const [scopeFilter, setScopeFilter] = useState<MemoryScopeValue>({});
+  const [filterTargeting, setFilterTargeting] = useState<Targeting>(emptyTargeting());
   const [createOpen, setCreateOpen] = useState<boolean>(false);
 
   // Filters for memories query
   const queryArg = {
     status: statusFilter !== "all" ? statusFilter : undefined,
     type: typeFilter || undefined,
-    ...scopeToLists(scopeFilter),
+    ...filterTargeting,
   };
 
   const { data: listData, isLoading, error: listError, refetch } = useListMemoriesQuery(queryArg);
@@ -36,7 +44,8 @@ export const MemoryPanel: React.FC = () => {
   const [createDescription, setCreateDescription] = useState("");
   const [createBody, setCreateBody] = useState("");
   const [createEvidence, setCreateEvidence] = useState("");
-  const [createScope, setCreateScope] = useState<MemoryScopeValue>({ type: "fact" });
+  const [createType, setCreateType] = useState<string>("fact");
+  const [createTargeting, setCreateTargeting] = useState<Targeting>(emptyTargeting());
   const [createError, setCreateError] = useState("");
 
   const [createMemory, { isLoading: isCreating }] = useCreateMemoryMutation();
@@ -54,15 +63,16 @@ export const MemoryPanel: React.FC = () => {
         description: createDescription.trim() || undefined,
         body: createBody.trim(),
         evidence: createEvidence.trim() || undefined,
-        type: createScope.type || "fact",
-        ...scopeToLists(createScope),
+        type: createType || "fact",
+        ...createTargeting,
         status: "active",
       }).unwrap();
       setCreateTitle("");
       setCreateDescription("");
       setCreateBody("");
       setCreateEvidence("");
-      setCreateScope({ type: "fact" });
+      setCreateType("fact");
+      setCreateTargeting(emptyTargeting());
       setCreateOpen(false);
     } catch (err: any) {
       setCreateError(memoryErrorText(err, "Failed to create memory"));
@@ -70,15 +80,11 @@ export const MemoryPanel: React.FC = () => {
   };
 
   return (
-    <div data-debug-id="settings-memory-panel" id="settings-memory-panel" className="w-full max-w-5xl space-y-6 text-left">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
-        <div>
-          <h2 className="text-xl font-bold text-white">Memory Management</h2>
-          <p className="text-xs text-zinc-400">
-            Manage Hub memory records, proposals, durable scopes, and system memories.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+    <PageShell
+      title="Memory Management"
+      description="Manage Hub memory records, proposals, durable scopes, and system memories."
+      actions={
+        <>
           <Button
             variant="primary"
             data-debug-id="memory-create-toggle-btn"
@@ -95,9 +101,10 @@ export const MemoryPanel: React.FC = () => {
           >
             Refresh
           </Button>
-        </div>
-      </div>
-
+        </>
+      }
+    >
+      <div data-debug-id="settings-memory-panel" id="settings-memory-panel" className="space-y-6 text-left">
       {/* Collapsible Create Form */}
       {createOpen && (
         <form
@@ -157,8 +164,22 @@ export const MemoryPanel: React.FC = () => {
               />
             </div>
             <div>
+              <label className="block text-xs font-medium text-zinc-300 mb-1">Type</label>
+              <Select
+                data-debug-id="memory-create-type-select"
+                id="memory-create-type-select"
+                value={createType}
+                onChange={setCreateType}
+                width="full"
+              >
+                {MEMORY_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </Select>
+            </div>
+            <div>
               <label className="block text-xs font-medium text-zinc-300 mb-1">Scope & Targeting</label>
-              <MemoryScopeSelector value={createScope} onChange={setCreateScope} />
+              <ScopeEditor targeting={createTargeting} catalog={catalog} onChange={setCreateTargeting} debugId="memory-create-scope" />
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
@@ -237,8 +258,8 @@ export const MemoryPanel: React.FC = () => {
             >
               <option value="">All Types</option>
               {MEMORY_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
+                <option key={t} value={t}>
+                  {t}
                 </option>
               ))}
             </Select>
@@ -246,12 +267,7 @@ export const MemoryPanel: React.FC = () => {
         </div>
         <div className="pt-2">
           <label className="block text-xs font-medium text-zinc-400 mb-2">Scope Filters</label>
-          <MemoryScopeSelector
-            value={scopeFilter}
-            onChange={setScopeFilter}
-            hideTypeSelect
-            debugPrefix="memory-filter-scope"
-          />
+          <ScopeEditor targeting={filterTargeting} catalog={catalog} onChange={setFilterTargeting} debugId="memory-filter-scope" />
         </div>
       </div>
 
@@ -278,7 +294,8 @@ export const MemoryPanel: React.FC = () => {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 };
 
@@ -291,8 +308,9 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
   const [description, setDescription] = useState(memory.description || "");
   const [body, setBody] = useState(memory.body || "");
   const [evidence, setEvidence] = useState(memory.evidence || "");
-  // Shim: collapse the record's targeting lists to the single-value selector.
-  const [scope, setScope] = useState<MemoryScopeValue>(listsToScope(memory, memory.type || "fact"));
+  const catalog = useMemoryScopeCatalog();
+  const [type, setType] = useState<string>(memory.type || "fact");
+  const [targeting, setTargeting] = useState<Targeting>(() => targetingFromRecord(memory));
   const [msg, setMsg] = useState<{ text: string; error?: boolean } | null>(null);
 
   const [updateMemory, { isLoading: isUpdating }] = useUpdateMemoryMutation();
@@ -308,8 +326,8 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
         description: description.trim() || undefined,
         body,
         evidence: evidence || undefined,
-        type: scope.type,
-        ...scopeToLists(scope),
+        type,
+        ...targeting,
       }).unwrap();
       setMsg({ text: "Edits saved." });
     } catch (err: any) {
@@ -326,8 +344,8 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
         description: description.trim() || undefined,
         body,
         evidence: evidence || undefined,
-        type: scope.type,
-        ...scopeToLists(scope),
+        type,
+        ...targeting,
       }).unwrap();
       setMsg({ text: "Proposal approved!" });
     } catch (err: any) {
@@ -426,9 +444,24 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
             />
           </div>
 
-          <div data-debug-id={`memory-proposal-scope-${memoryId}`} id={`memory-proposal-scope-${memoryId}`}>
-            <label className="block text-[11px] font-medium text-zinc-400 mb-1">Scope Settings</label>
-            <MemoryScopeSelector value={scope} onChange={setScope} debugPrefix={`memory-proposal-scope-${memoryId}`} />
+          <div data-debug-id={`memory-proposal-scope-${memoryId}`} id={`memory-proposal-scope-${memoryId}`} className="space-y-3">
+            <div>
+              <label className="block text-[11px] font-medium text-zinc-400 mb-1">Type</label>
+              <Select
+                data-debug-id={`memory-proposal-type-select-${memoryId}`}
+                value={type}
+                onChange={setType}
+                width="full"
+              >
+                {MEMORY_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </Select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-zinc-400 mb-1">Scope Settings</label>
+              <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId={`memory-proposal-scope-${memoryId}`} />
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-white/10">
@@ -601,8 +634,9 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
   const [description, setDescription] = useState(memory.description || "");
   const [body, setBody] = useState(memory.body || "");
   const [evidence, setEvidence] = useState(memory.evidence || "");
-  // Shim: collapse the record's targeting lists to the single-value selector.
-  const [scope, setScope] = useState<MemoryScopeValue>(listsToScope(memory, memory.type || "fact"));
+  const catalog = useMemoryScopeCatalog();
+  const [type, setType] = useState<string>(memory.type || "fact");
+  const [targeting, setTargeting] = useState<Targeting>(() => targetingFromRecord(memory));
   const [err, setErr] = useState("");
 
   const [updateMemory, { isLoading }] = useUpdateMemoryMutation();
@@ -617,8 +651,8 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         description: description.trim() || undefined,
         body,
         evidence: evidence || undefined,
-        type: scope.type,
-        ...scopeToLists(scope),
+        type,
+        ...targeting,
       }).unwrap();
       onClose();
     } catch (e: any) {
@@ -676,9 +710,25 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
           width="full"
         />
       </div>
-      <div>
-        <label className="block text-[11px] text-zinc-400 mb-1">Scope</label>
-        <MemoryScopeSelector value={scope} onChange={setScope} debugPrefix={`memory-edit-scope-${memoryId}`} />
+      <div className="space-y-3">
+        <div>
+          <label className="block text-[11px] text-zinc-400 mb-1">Type</label>
+          <Select
+            size="sm"
+            data-debug-id={`memory-edit-type-select-${memoryId}`}
+            value={type}
+            onChange={setType}
+            width="full"
+          >
+            {MEMORY_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </Select>
+        </div>
+        <div>
+          <label className="block text-[11px] text-zinc-400 mb-1">Scope</label>
+          <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId={`memory-edit-scope-${memoryId}`} />
+        </div>
       </div>
       <div className="flex justify-end gap-2 pt-1">
         <Button
