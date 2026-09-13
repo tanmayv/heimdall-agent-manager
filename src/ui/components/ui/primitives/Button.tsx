@@ -51,6 +51,21 @@ const VARIANT_CLASSES: Record<ButtonVariant, string> = {
   danger: 'bg-danger text-primary hover:brightness-110',
 };
 
+/**
+ * Semantic-color actions whose meaning the 4 variants don't carry (a green
+ * "Approve", an amber "Nudge"/"Run", a soft-red "Request changes"). `tone` paints
+ * a SOFT tinted button and overrides the variant's coloring; leave it unset for
+ * ordinary actions. (Distinct from `variant="danger"`, the SOLID destructive
+ * button — `tone="danger"` is the low-emphasis soft-red variant.)
+ */
+export type ButtonTone = 'success' | 'warning' | 'danger';
+
+const TONE_CLASSES: Record<ButtonTone, string> = {
+  success: 'border border-success-soft bg-success-soft text-success hover:brightness-110',
+  warning: 'border border-warning-soft bg-warning-soft text-warning hover:brightness-110',
+  danger: 'border border-danger-soft bg-danger-soft text-danger hover:brightness-110',
+};
+
 const SIZE_CLASSES: Record<Size, string> = {
   sm: 'px-2.5 py-1 text-[length:var(--text-label-size)]',
   md: 'px-4 py-2 text-[length:var(--text-body-sm-size)]',
@@ -67,6 +82,8 @@ export interface ButtonProps
     Pick<ContentProps, 'leading' | 'trailing'> {
   /** Visual weight + intent. Never a raw colour. Default `secondary`. */
   variant?: ButtonVariant;
+  /** Semantic-color action (soft green/amber). Overrides `variant` coloring. */
+  tone?: ButtonTone;
   /** Maps to spacing + type tokens. Default `md`. */
   size?: Size;
   /** `full` = block button (stretches to the container). Default `content`. */
@@ -75,6 +92,7 @@ export interface ButtonProps
 
 export function Button({
   variant = 'secondary',
+  tone,
   size = 'md',
   loading = false,
   width = 'content',
@@ -96,7 +114,7 @@ export function Button({
 
   const rootClassName = [
     BASE,
-    VARIANT_CLASSES[variant],
+    tone ? TONE_CLASSES[tone] : VARIANT_CLASSES[variant],
     SIZE_CLASSES[size],
     width === 'full' ? 'w-full' : '',
     className ?? '',

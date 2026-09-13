@@ -4,7 +4,7 @@
  */
 
 export { Button } from './Button';
-export type { ButtonProps } from './Button';
+export type { ButtonProps, ButtonTone } from './Button';
 
 export { IconButton } from './IconButton';
 export type { IconButtonProps, IconButtonVariant } from './IconButton';

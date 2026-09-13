@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { ChainLike, TaskLike } from './chainTaskInference';
 import { taskStatusOf, taskReviewerOf, isUserEffectiveReviewer } from './chainTaskInference';
-import { Select, StatusPill, Text, type Tone } from '@ui';
+import { Button, Select, StatusPill, Text, type Tone } from '@ui';
 
 export type CurrentTaskStripProps = {
   task: TaskLike;
@@ -181,12 +181,12 @@ export default function CurrentTaskStrip({
         ) : null}
         {(role === 'reviewer' || userIsReviewer) && onVote ? (
           <>
-            <button type="button" data-debug-id={`${debugPrefix}-current-task-vote-good`} onClick={() => void onVote(taskId, true)} className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-1 text-emerald-100 hover:bg-emerald-400/20">Approve</button>
-            <button type="button" data-debug-id={`${debugPrefix}-current-task-vote-bad`} onClick={() => void onVote(taskId, false)} className="rounded-full border border-rose-400/30 bg-rose-400/10 px-2.5 py-1 text-rose-100 hover:bg-rose-400/20">Request changes</button>
+            <Button tone="success" size="sm" data-debug-id={`${debugPrefix}-current-task-vote-good`} onClick={() => void onVote(taskId, true)}>Approve</Button>
+            <Button tone="danger" size="sm" data-debug-id={`${debugPrefix}-current-task-vote-bad`} onClick={() => void onVote(taskId, false)}>Request changes</Button>
           </>
         ) : null}
         {role === 'coordinator' && onNudge ? (
-          <button type="button" data-debug-id={`${debugPrefix}-current-task-nudge`} onClick={() => void onNudge(taskId)} className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-amber-100 hover:bg-amber-400/20">Nudge</button>
+          <Button tone="warning" size="sm" data-debug-id={`${debugPrefix}-current-task-nudge`} onClick={() => void onNudge(taskId)}>Nudge</Button>
         ) : null}
         {onComment ? (
           <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-btn`} onClick={() => setCommenting((open) => !open)} className="rounded-full border border-white/10 px-2.5 py-1 text-zinc-300 hover:bg-white/10">Comment</button>
