@@ -17,7 +17,7 @@ import {
 } from '../../api/endpoints/bridgeSupport';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { useListChainsByCoordinatorQuery } from '../../api/endpoints/tasks';
-import { Button, Input, Select, Textarea } from '@ui';
+import { Button, Input, Link, Select, Textarea } from '@ui';
 
 type ProviderScope = 'bridge_default' | 'same_provider';
 type BridgeRowDraft = { enabled: boolean; providerScope: ProviderScope; provider: string; tier: string };
@@ -248,7 +248,7 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
     <div data-debug-id="agent-detail-page" className="w-full max-w-5xl space-y-5 text-left">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <a data-debug-id="agent-detail-back-btn" href={shellHash('/agents')} className="text-xs text-zinc-500 hover:text-zinc-200">← Back to agents</a>
+          <Link variant="standalone" tone="muted" data-debug-id="agent-detail-back-btn" href={shellHash('/agents')} className="text-xs">← Back to agents</Link>
           <h2 data-debug-id="agent-detail-title" className="mt-2 text-2xl font-semibold text-white">{agent.name || agent.agent_id || agentId}</h2>
           <p className="mt-1 text-sm text-zinc-500">{agent.agent_id || agentId} · template {agent.template_id || '—'} · state {agent.state || 'active'}</p>
         </div>

@@ -11,7 +11,7 @@ import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 
 import Markdown from '../Markdown';
 import Modal from '../Modal';
-import { Badge, Button, Icon, Input, Select, Textarea } from '@ui';
+import { Badge, Button, Icon, Input, Link, Select, Textarea } from '@ui';
 import {
   useGetMemoryQuery,
   useUpdateMemoryMutation,
@@ -102,7 +102,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
       {/* Breadcrumb + back */}
       <div className="flex items-center justify-between gap-3">
         <nav data-debug-id="memory-detail-breadcrumb" className="flex items-center gap-2 text-sm text-zinc-400">
-          <a data-debug-id="memory-detail-breadcrumb-home" href={buildRouteHash('/memory', '')} className="font-semibold text-zinc-300 hover:text-white">Memory</a>
+          <Link variant="standalone" tone="muted" data-debug-id="memory-detail-breadcrumb-home" href={buildRouteHash('/memory', '')} className="font-semibold">Memory</Link>
           <span className="text-zinc-700">/</span>
           <span className="truncate font-semibold text-white">{record?.title || memoryId}</span>
         </nav>

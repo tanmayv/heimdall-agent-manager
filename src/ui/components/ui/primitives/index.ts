@@ -44,3 +44,6 @@ export type { StatusPillProps } from './StatusPill';
 
 export { StatusDot } from './StatusDot';
 export type { StatusDotProps } from './StatusDot';
+
+export { Link } from './Link';
+export type { LinkProps, LinkVariant, LinkTone } from './Link';
