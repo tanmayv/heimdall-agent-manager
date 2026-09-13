@@ -23,3 +23,6 @@ export type { DrawerProps, DrawerSize, DrawerSide } from './Drawer';
 
 export { Menu, MenuItem } from './Menu';
 export type { MenuProps, MenuItemProps } from './Menu';
+
+export { Tabs, TabsList, Tab, TabsPanel } from './Tabs';
+export type { TabsProps, TabProps, TabsPanelProps, TabsVariant } from './Tabs';
