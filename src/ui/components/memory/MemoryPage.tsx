@@ -14,7 +14,7 @@ import Markdown from '../Markdown';
 import Badge from '../Badge';
 import EmptyState from '../EmptyState';
 import Modal from '../Modal';
-import { Button, Icon, Input, Select, Text, Textarea } from '@ui';
+import { Button, Icon, IconButton, Input, Select, Text, Textarea } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,
@@ -214,7 +214,7 @@ function MemoryListItem({ memory, catalog, onDelete }: { memory: any; catalog: S
         <div className="flex shrink-0 items-center gap-1">
           <button type="button" aria-label="Open" title="Open" data-debug-id={`memory-row-detail-${id}`} onClick={() => navigateToMemory(id)} className="rounded-md border border-white/10 px-2 py-1 text-[11.5px] text-zinc-300 hover:bg-white/10">Open</button>
           <button type="button" aria-label="Edit" title="Edit" data-debug-id={`memory-row-edit-${id}`} onClick={() => navigateToMemory(id, { edit: true })} className="rounded-md border border-white/10 px-1.5 py-1 text-zinc-400 hover:bg-white/10"><Icon name="pencil" size={13} /></button>
-          <button type="button" aria-label="Delete" title="Delete" data-debug-id={`memory-row-delete-${id}`} onClick={onDelete} className="rounded-md border border-white/10 px-1.5 py-1 text-rose-300 hover:bg-rose-500/10"><Icon name="trash" size={13} /></button>
+          <IconButton icon="trash" label="Delete" variant="danger" size="sm" data-debug-id={`memory-row-delete-${id}`} onClick={onDelete} />
         </div>
       </div>
     </div>
@@ -363,7 +363,7 @@ function ModalShell({ debugId, title, onClose, maxWidth = 'max-w-2xl', children 
     <Modal open onClose={onClose} size={size} panelClassName="p-5" debugId={`${debugId}-overlay`} panelDebugId={debugId}>
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-semibold text-zinc-100">{title}</h2>
-        <button type="button" aria-label="Close" data-debug-id={`${debugId}-close`} onClick={onClose} className="rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="close" size={16} /></button>
+        <IconButton icon="close" label="Close" size="sm" data-debug-id={`${debugId}-close`} onClick={onClose} />
       </div>
       <div className="space-y-3">{children}</div>
     </Modal>

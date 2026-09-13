@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLazyListBridgeDirQuery, useMkdirBridgePathMutation, type BridgeFsEntry } from '../api/endpoints/bridgeFs';
 
-import { Button, Icon, Input } from '@ui';
+import { Button, Icon, IconButton, Input } from '@ui';
 function str(v: any): string { return String(v ?? '').trim(); }
 
 export default function BridgeDirectoryPicker({
@@ -119,7 +119,7 @@ export default function BridgeDirectoryPicker({
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button data-debug-id={`${debugId}-home-btn`} variant="secondary" size="sm" onClick={() => void load('')} title="Go to root">Root</Button>
-          {onClose ? <button data-debug-id={`${debugId}-close-btn`} type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-zinc-500 hover:bg-white/10 hover:text-white"><Icon name="close" size={15} /></button> : null}
+          {onClose ? <IconButton icon="close" label="Close" size="sm" data-debug-id={`${debugId}-close-btn`} onClick={onClose} /> : null}
         </div>
       </div>
 

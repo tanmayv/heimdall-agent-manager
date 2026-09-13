@@ -6,6 +6,9 @@
 export { Button } from './Button';
 export type { ButtonProps } from './Button';
 
+export { IconButton } from './IconButton';
+export type { IconButtonProps, IconButtonVariant } from './IconButton';
+
 export { Input } from './Input';
 export type { InputProps, InputType } from './Input';
 
