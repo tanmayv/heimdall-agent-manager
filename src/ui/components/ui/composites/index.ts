@@ -20,3 +20,6 @@ export type { ModalProps, ModalSize } from './Modal';
 
 export { Drawer } from './Drawer';
 export type { DrawerProps, DrawerSize, DrawerSide } from './Drawer';
+
+export { Menu, MenuItem } from './Menu';
+export type { MenuProps, MenuItemProps } from './Menu';
