@@ -11,7 +11,7 @@ import {
   type ProjectBridgePath,
 } from "../../api/endpoints/projects";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
-import { Badge, Button, Input, SectionHeader, Select, Text } from "@ui";
+import { Badge, Button, Input, PageShell, SectionHeader, Select, Text } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -204,12 +204,11 @@ export default function ProjectsPanel() {
   }
 
   return (
-    <div data-debug-id="settings-projects-panel" className="w-full max-w-4xl space-y-6 text-left">
-      <div>
-        <h2 className="text-xl font-semibold text-white">Projects</h2>
-        <p className="mt-1 text-sm text-zinc-400">Manage projects, default workspace paths, and bridge path overrides.</p>
-      </div>
-
+    <PageShell
+      title="Projects"
+      description="Manage projects, default workspace paths, and bridge path overrides."
+    >
+      <div data-debug-id="settings-projects-panel" className="space-y-6 text-left">
       {/* Project Creation Form */}
       <div data-debug-id="settings-project-create-form" className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 space-y-4">
         <Text as="h3" role="overline" tone="primary">Create New Project</Text>
@@ -636,6 +635,7 @@ export default function ProjectsPanel() {
           )}
         </div>
       )}
-    </div>
+      </div>
+    </PageShell>
   );
 }

@@ -24,7 +24,7 @@ import {
   resubscribeWithCurrentKey,
 } from '../../services/pushSubscriptionService';
 import { showToast } from '../../store/toastSlice';
-import { Button, Panel, Toggle } from '@ui';
+import { Button, Panel, PageShell, Toggle } from '@ui';
 
 const CATEGORY_LABELS: Array<{ key: NotificationCategory; label: string; description: string }> = [
   { key: 'chat', label: 'Chat messages', description: 'New messages directed to you, nudges, and mentions.' },
@@ -228,15 +228,11 @@ export default function NotificationsPanel() {
           : 'Permission not requested yet. Turn on notifications to grant permission.';
 
   return (
-    <div data-debug-id="settings-notifications-panel" className="w-full max-w-3xl space-y-5 text-left">
-      <div>
-        <h2 className="text-xl font-semibold text-white">Notifications</h2>
-        <p className="mt-1 text-sm text-zinc-400">
-          Get a native browser notification for important events while this tab is open but not focused. When the tab is
-          focused you will keep seeing in-app toasts instead.
-        </p>
-      </div>
-
+    <PageShell
+      title="Notifications"
+      description="Get a native browser notification for important events while this tab is open but not focused. When the tab is focused you will keep seeing in-app toasts instead."
+    >
+      <div data-debug-id="settings-notifications-panel" className="space-y-5 text-left">
       <Panel>
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -371,6 +367,7 @@ export default function NotificationsPanel() {
           </div>
         )}
       </Panel>
-    </div>
+      </div>
+    </PageShell>
   );
 }

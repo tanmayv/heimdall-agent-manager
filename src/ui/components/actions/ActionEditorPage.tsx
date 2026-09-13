@@ -10,7 +10,7 @@ import {
 } from '../../api/endpoints/actions';
 import ScheduleEditor, { type ScheduleEditorValue } from './ScheduleEditor';
 import { getLocalTimezone, validateCronExpression } from './scheduleUtils';
-import { Button, Combobox, Icon, Textarea, Toggle, type ComboboxOption } from '@ui';
+import { Button, Combobox, Icon, PageShell, Textarea, Toggle, type ComboboxOption } from '@ui';
 export type ActionEditorPageProps = {
   // When present the page edits an existing action; otherwise it creates a new one.
   actionId?: string;
@@ -186,28 +186,25 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   }
 
   return (
-    <div data-debug-id="action-editor-page" className="w-full max-w-4xl space-y-6 text-left">
-      {/* Header card */}
-      <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:p-5">
-        <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-start">
-          <div>
-            <h1 className="text-2xl font-semibold text-white">{isEdit ? 'Edit action' : 'Create action'}</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              {isEdit
-                ? 'Update the prompt or schedule for this action. The target instance is fixed once the action exists.'
-                : 'Target an agent instance, write the prompt, and choose whether it runs on a schedule or on demand.'}
-            </p>
-          </div>
-          <a
-            data-debug-id="action-editor-header-cancel-btn"
-            href={shellHash('/actions')}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-          >
-            Cancel
-          </a>
-        </div>
-      </div>
-
+    <PageShell
+      width="full"
+      title={isEdit ? 'Edit action' : 'Create action'}
+      description={
+        isEdit
+          ? 'Update the prompt or schedule for this action. The target instance is fixed once the action exists.'
+          : 'Target an agent instance, write the prompt, and choose whether it runs on a schedule or on demand.'
+      }
+      actions={
+        <a
+          data-debug-id="action-editor-header-cancel-btn"
+          href={shellHash('/actions')}
+          className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+        >
+          Cancel
+        </a>
+      }
+    >
+      <div data-debug-id="action-editor-page" className="space-y-6 text-left">
       {/* Form card */}
       <form onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-white/10 bg-white/[0.035] p-4 sm:p-5">
         {/* Target section */}
@@ -324,6 +321,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           </Button>
         </div>
       </form>
-    </div>
+      </div>
+    </PageShell>
   );
 }

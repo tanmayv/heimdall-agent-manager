@@ -8,7 +8,7 @@ import {
   useCreateBridgeEnrollmentMutation,
   useRevokeBridgeEnrollmentMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, FormField, Input, Text } from '@ui';
+import { Button, FormField, Input, PageShell, Text } from '@ui';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
@@ -159,15 +159,14 @@ export default function BridgesPanel() {
   }
 
   return (
-    <section data-debug-id="settings-bridges-panel" className="w-full min-w-0 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <h3 className="font-semibold">Bridges</h3>
-          <p className="mt-0.5 text-xs text-zinc-500">Your machines. “Remove” revokes the token (record kept); no hard delete in v1.</p>
-        </div>
+    <PageShell
+      title="Bridges"
+      description="Your machines. “Remove” revokes the token (record kept); no hard delete in v1."
+      actions={
         <Button variant="secondary" size="sm" data-debug-id="settings-bridges-add-btn" onClick={() => { setEnrollOpen((o) => !o); setEnrollResult(null); setEnrollError(''); }}>＋ Add bridge</Button>
-      </div>
-
+      }
+    >
+      <div data-debug-id="settings-bridges-panel" className="min-w-0">
       {bridgesQuery.isError || enrollmentsQuery.isError ? <div data-debug-id="settings-bridges-load-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">Unable to load bridges. Check your trusted-proxy session and Hub connection.</div> : null}
       {actionError ? <div data-debug-id="settings-bridges-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{actionError}</div> : null}
 
@@ -293,6 +292,7 @@ export default function BridgesPanel() {
       <div data-debug-id="settings-bridges-gap-note" className="mt-4 rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2 text-[11px] text-zinc-500">
         Backend gap: token rotation (<code>POST /bridges/&#123;id&#125;/rotate-token</code>) is not yet served by the Hub. Rename (PATCH) and revoke (POST /revoke) work against <code>/api/v1/bridges</code>.
       </div>
-    </section>
+      </div>
+    </PageShell>
   );
 }

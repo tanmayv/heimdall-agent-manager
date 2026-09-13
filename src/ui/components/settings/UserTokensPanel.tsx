@@ -6,7 +6,7 @@ import {
   useListCurrentUserTokensQuery,
   useRevokeCurrentUserTokenMutation,
 } from '../../api/endpoints/userTokens';
-import { Button, Input, Text } from '@ui';
+import { Button, Input, PageShell, Text } from '@ui';
 
 function tokenRowId(token: any): string { return String(token?.token_id || token?.tokenId || ''); }
 function tokenDate(value: any): string {
@@ -63,12 +63,11 @@ export default function UserTokensPanel() {
   }
 
   return (
-    <div data-debug-id="settings-user-tokens-panel" className="w-full max-w-4xl space-y-5 text-left">
-      <div>
-        <h2 className="text-xl font-semibold text-white">User tokens</h2>
-        <p className="mt-1 text-sm text-zinc-400">Create bearer tokens for devices such as the Electron app. Tokens assume your current Heimdall identity and can be revoked individually.</p>
-      </div>
-
+    <PageShell
+      title="User tokens"
+      description="Create bearer tokens for devices such as the Electron app. Tokens assume your current Heimdall identity and can be revoked individually."
+    >
+      <div data-debug-id="settings-user-tokens-panel" className="space-y-5 text-left">
       <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
         <Text as="div" role="overline" tone="muted">Current identity</Text>
         <div data-debug-id="settings-user-tokens-current-user" className="mt-2 text-sm text-zinc-200">
@@ -134,6 +133,7 @@ export default function UserTokensPanel() {
           })}
         </div>
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }

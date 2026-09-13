@@ -9,7 +9,7 @@ import {
   useSetBridgeProviderDefaultsMutation,
   useUpsertBridgeProviderMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Alert, Button, Checkbox, FormField, Input, Radio, Select, Textarea } from '@ui';
+import { Alert, Button, Checkbox, FormField, Input, PageShell, Radio, Select, Textarea } from '@ui';
 
 type AutoEnterPair = { pattern: string; preKey: string };
 type ReasonMapping = { key: string; reason: string };
@@ -151,15 +151,14 @@ export function ProvidersPanel() {
   }
 
   return (
-    <div className="w-full max-w-5xl space-y-6 text-left">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold text-white">Providers</h2>
-          <p className="mt-1 max-w-3xl text-sm text-zinc-400">Configure provider profiles on the selected Bridge. Providers run in your machine&apos;s shell environment; Heimdall never stores credentials.</p>
-        </div>
+    <PageShell
+      title="Providers"
+      description="Configure provider profiles on the selected Bridge. Providers run in your machine's shell environment; Heimdall never stores credentials."
+      actions={
         <Button variant="secondary" data-debug-id="providers-refresh-caps-btn" onClick={() => void refreshCapabilities()} disabled={!selectedId || offline} className="min-h-[44px] w-full sm:w-auto">Refresh capabilities</Button>
-      </div>
-
+      }
+    >
+      <div className="space-y-6 text-left">
       <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <FormField label="Bridge">
           <Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="min-h-[44px]">
@@ -205,7 +204,8 @@ export function ProvidersPanel() {
           );
         })}
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
@@ -247,16 +247,24 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
   }
 
   return (
-    <div className="w-full max-w-5xl space-y-6 text-left">
+    <PageShell
+      width="full"
+      title={isEdit ? `Edit provider ${providerName}` : 'New provider'}
+      description="Add values with controls and chips; no JSON, comma lists, or array syntax is typed by users."
+      actions={
+        <a data-debug-id="providers-editor-header-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</a>
+      }
+    >
+      <div className="space-y-6 text-left">
       <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
-        <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-start"><div><h2 className="text-2xl font-semibold text-white">{isEdit ? `Edit provider ${providerName}` : 'New provider'}</h2><p className="mt-1 max-w-3xl text-sm text-zinc-400">Add values with controls and chips; no JSON, comma lists, or array syntax is typed by users.</p></div><a data-debug-id="providers-editor-header-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</a></div>
-        <FormField label="Bridge" className="mt-5"><Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="min-h-[44px]">{bridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)} · {bridge.status || 'offline'}</option>)}</Select></FormField>
+        <FormField label="Bridge"><Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="min-h-[44px]">{bridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)} · {bridge.status || 'offline'}</option>)}</Select></FormField>
         {offline ? <Alert tone="warning" className="mt-3">This Bridge is offline; saving is disabled until it reconnects.</Alert> : null}
         {error ? <Alert tone="danger" className="mt-3">{error}</Alert> : null}
       </div>
       <ProviderFormFields form={form} setForm={setForm} nameLocked={isEdit} />
       <div className="z-10 flex flex-col-reverse gap-2 rounded-2xl border border-white/10 bg-[#0d0f14]/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:sticky md:bottom-0 sm:flex-row sm:justify-end"><a data-debug-id="providers-editor-footer-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</a><Button variant="primary" data-debug-id="providers-editor-save-btn" onClick={() => void saveProvider()} disabled={saving || offline || !form.name.trim()} className="min-h-[44px]">{saving ? 'Saving…' : 'Save provider'}</Button></div>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 

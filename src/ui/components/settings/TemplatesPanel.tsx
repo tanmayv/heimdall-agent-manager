@@ -14,7 +14,7 @@ import {
   useDeleteAgentTemplateMutation,
 } from '../../api/endpoints/agents';
 
-import { Button, FormField, Icon, Input, Textarea } from '@ui';
+import { Button, FormField, Icon, Input, PageShell, Textarea } from '@ui';
 function str(v: any): string { return String(v ?? '').trim(); }
 function errMsg(e: any, fallback: string): string {
   if (!e) return fallback;
@@ -74,17 +74,16 @@ export default function TemplatesPanel() {
   }
 
   return (
-    <div data-debug-id="settings-templates-panel" className="w-full">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold text-white">Templates</h2>
-          <p className="mt-1 max-w-2xl text-sm text-zinc-400">Reusable personas + instructions applied when creating an agent. Built-in templates are read-only.</p>
-        </div>
+    <PageShell
+      title="Templates"
+      description="Reusable personas + instructions applied when creating an agent. Built-in templates are read-only."
+      actions={
         <Button variant="primary" data-debug-id="settings-templates-new-btn" onClick={beginCreate} className="min-h-10">
           <Icon name="plus" size={16} /> New template
         </Button>
-      </div>
-
+      }
+    >
+      <div data-debug-id="settings-templates-panel">
       {editingId === 'new' ? <TemplateEditor form={form} setForm={setForm} onSave={save} onCancel={cancel} saving={createState.isLoading} error={error} title="New template" /> : null}
 
       <div data-debug-id="settings-templates-list" className="space-y-2">
@@ -129,7 +128,8 @@ export default function TemplatesPanel() {
           );
         })}
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 

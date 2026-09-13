@@ -6,6 +6,7 @@ import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import CommandPalette from '../command-palette/CommandPalette';
 import Icon, { type IconName } from '../Icon';
+import { PageShell } from '@ui';
 import { useViewport, MobileTabBar } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
@@ -918,9 +919,11 @@ function DefaultsSettingsPanel() {
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const agents = agentsQuery.data?.agents || [];
   return (
-    <div data-debug-id="settings-defaults-panel" className="w-full max-w-4xl space-y-4 text-left">
-      <h2 className="text-xl font-semibold text-white">Defaults</h2>
-      <p className="text-sm text-zinc-400">Default-agent choices are managed from available durable identities.</p>
+    <PageShell
+      title="Defaults"
+      description="Default-agent choices are managed from available durable identities."
+    >
+      <div data-debug-id="settings-defaults-panel" className="space-y-4 text-left">
       {agentsQuery.isLoading ? (
         <div className="text-sm text-zinc-500">Loading agents…</div>
       ) : (
@@ -940,7 +943,8 @@ function DefaultsSettingsPanel() {
           })}
         </div>
       )}
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
