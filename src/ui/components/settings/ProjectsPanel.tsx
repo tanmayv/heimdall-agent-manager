@@ -11,7 +11,7 @@ import {
   type ProjectBridgePath,
 } from "../../api/endpoints/projects";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
-import { Button, Input, Select } from "@ui";
+import { Badge, Button, Input, SectionHeader, Select } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -328,14 +328,14 @@ export default function ProjectsPanel() {
             <div className="space-y-6">
               {/* Project Main Details Form / Viewer */}
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4 space-y-4">
-                <h3 className="text-base font-semibold text-white flex items-center justify-between">
-                  <span>{selectedProject.name}</span>
-                  {selectedProject.is_default_conversations ? (
-                    <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[10px] text-sky-300">
-                      Default Project
-                    </span>
-                  ) : null}
-                </h3>
+                <SectionHeader
+                  title={selectedProject.name}
+                  actions={
+                    selectedProject.is_default_conversations ? (
+                      <Badge tone="info">Default Project</Badge>
+                    ) : undefined
+                  }
+                />
 
                 {isEditing ? (
                   <div className="space-y-3">
