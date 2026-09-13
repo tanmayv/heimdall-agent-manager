@@ -29,7 +29,7 @@ import {
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
-import { StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { Drawer, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
 import CurrentTaskStrip from './CurrentTaskStrip';
@@ -549,11 +549,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
 
-  const statusMenuRef = useRef<HTMLDivElement | null>(null);
-  const runtimeMenuRef = useRef<HTMLDivElement | null>(null);
-  const runtimeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const headerActionsRef = useRef<HTMLDivElement | null>(null);
-  const headerActionsButtonRef = useRef<HTMLButtonElement | null>(null);
+  // status / runtime / header-actions overlays are @ui Menu / Popover / Drawer —
+  // they own their own outside-click / Esc / focus handling (no bespoke refs).
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
@@ -625,76 +622,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setOlderCursor(String(messagesQuery.data?.nextCursor || ''));
     setOlderHasMore(Boolean(messagesQuery.data?.hasMore));
   }, [messagesQuery.data?.nextCursor, messagesQuery.data?.hasMore, olderMessages.length]);
-  useEffect(() => {
-    if (!statusMenuOpen) return;
-    const isInside = (target: EventTarget | null) => {
-      const node = target as Node | null;
-      return Boolean(node && statusMenuRef.current?.contains(node));
-    };
-    const onPointerDown = (event: MouseEvent | TouchEvent) => { if (!isInside(event.target)) setStatusMenuOpen(false); };
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setStatusMenuOpen(false); };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('touchstart', onPointerDown, { passive: true });
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('touchstart', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [statusMenuOpen]);
-  useEffect(() => {
-    if (!runtimeMenuOpen) return;
-    const isInsideRuntimeMenu = (target: EventTarget | null) => {
-      const node = target as Node | null;
-      return Boolean(node && (runtimeMenuRef.current?.contains(node) || runtimeMenuButtonRef.current?.contains(node)));
-    };
-    const onPointerDown = (event: MouseEvent | TouchEvent) => {
-      if (!isInsideRuntimeMenu(event.target)) setRuntimeMenuOpen(false);
-    };
-    const onFocusIn = (event: FocusEvent) => {
-      if (!isInsideRuntimeMenu(event.target)) setRuntimeMenuOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setRuntimeMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('touchstart', onPointerDown, { passive: true });
-    document.addEventListener('focusin', onFocusIn);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('touchstart', onPointerDown);
-      document.removeEventListener('focusin', onFocusIn);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [runtimeMenuOpen]);
-
-  useEffect(() => {
-    if (!headerActionsOpen) return;
-    const isInsideHeaderActions = (target: EventTarget | null) => {
-      const node = target as Node | null;
-      return Boolean(node && (headerActionsRef.current?.contains(node) || headerActionsButtonRef.current?.contains(node)));
-    };
-    const onPointerDown = (event: MouseEvent | TouchEvent) => {
-      if (!isInsideHeaderActions(event.target)) setHeaderActionsOpen(false);
-    };
-    const onFocusIn = (event: FocusEvent) => {
-      if (!isInsideHeaderActions(event.target)) setHeaderActionsOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setHeaderActionsOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('touchstart', onPointerDown, { passive: true });
-    document.addEventListener('focusin', onFocusIn);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('touchstart', onPointerDown);
-      document.removeEventListener('focusin', onFocusIn);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [headerActionsOpen]);
+  // (status / runtime / header-actions outside-click + Esc handling now lives in
+  // the @ui Menu / Popover / Drawer primitives.)
 
   // Apply & relaunch only matters when the selection differs from what the
   // instance currently runs; otherwise it's a no-op (use Restart instead).
@@ -1197,23 +1126,27 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 </button>
               </>
             ) : null}
-            <div className="relative ml-auto shrink-0" ref={statusMenuRef}>
-              <button type="button" data-debug-id="conversation-runtime-status-chip" aria-haspopup="menu" aria-expanded={statusMenuOpen ? 'true' : 'false'} onClick={() => setStatusMenuOpen((open) => !open)} title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-caption text-zinc-300 hover:bg-white/10">
-                <StatusDot size="sm" tone={runtimeStatusToTone(runtimeStatus)} label={needsStart ? 'Stopped' : runtimeStopping ? 'Stopping' : runtimeStateLabel(runtimeStateFromStatus(runtimeStatus))} />
-                {needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}
-              </button>
-              {statusMenuOpen ? (
-                <div data-debug-id="conversation-runtime-status-menu" role="menu" className="absolute bottom-full right-0 z-40 mb-2 w-[min(88vw,260px)] overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
-                  <div className="px-2 pb-1.5 pt-1 text-caption text-zinc-500">
-                    Runtime: <span className="font-semibold text-zinc-300">{needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}</span>
-                  </div>
-                  <button type="button" role="menuitem" data-debug-id="conversation-runtime-status-toggle-btn" disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} onClick={() => void toggleRuntime()} className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 ${needsStart ? 'text-emerald-200' : 'text-red-200'}`}>
-                    <Icon name={needsStart ? 'play' : 'stop'} size={15} />
-                    <span>{needsStart ? 'Start agent' : 'Stop agent'}</span>
+            <div className="ml-auto shrink-0">
+              <Menu
+                side="top"
+                align="end"
+                label="Runtime status"
+                open={statusMenuOpen}
+                onOpenChange={setStatusMenuOpen}
+                trigger={
+                  <button type="button" data-debug-id="conversation-runtime-status-chip" title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-caption text-zinc-300 hover:bg-white/10">
+                    <StatusDot size="sm" tone={runtimeStatusToTone(runtimeStatus)} label={needsStart ? 'Stopped' : runtimeStopping ? 'Stopping' : runtimeStateLabel(runtimeStateFromStatus(runtimeStatus))} />
+                    {needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}
                   </button>
-                  {reconfigStatus ? <div className="px-3 pb-1 pt-1 text-caption text-zinc-500">{reconfigStatus}</div> : null}
-                </div>
-              ) : null}
+                }
+              >
+                <Menu.Label>Runtime: {needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}</Menu.Label>
+                <Menu.Item data-debug-id="conversation-runtime-status-toggle-btn" disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} onClick={() => void toggleRuntime()} className={needsStart ? 'text-success' : 'text-danger'}>
+                  <Icon name={needsStart ? 'play' : 'stop'} size={15} />
+                  <span>{needsStart ? 'Start agent' : 'Stop agent'}</span>
+                </Menu.Item>
+                {reconfigStatus ? <Menu.Label>{reconfigStatus}</Menu.Label> : null}
+              </Menu>
             </div>
           </div>
 
@@ -1236,29 +1169,36 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
             {/* Model switcher: shows current provider · tier; opens the runtime
                 menu to change them (which restarts the agent). */}
-            <div className="relative" ref={runtimeMenuRef}>
-              <button ref={runtimeMenuButtonRef} type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" aria-haspopup={isMobile ? 'dialog' : 'menu'} aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-2.5 text-[13px] text-zinc-100 hover:bg-white/10">
-                <span className="font-semibold">{instanceProvider || 'model'}</span>
-                <span className="hidden text-zinc-400 sm:inline">· {instanceTier || '—'}</span>
-                <Icon name="chevron-down" size={14} />
-              </button>
-              {runtimeMenuOpen && !isMobile ? (
-                <div data-debug-id="conversation-runtime-menu" role="menu" className="absolute bottom-full right-0 z-40 mb-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 text-left shadow-2xl shadow-black/60">
-                  {runtimeControls}
-                </div>
-              ) : null}
-              {runtimeMenuOpen && isMobile ? (
-                <div data-debug-id="conversation-runtime-mobile-sheet" className="fixed inset-0 z-50 flex items-end bg-black/60 p-2 backdrop-blur-sm sm:hidden" role="dialog" aria-modal="true" aria-labelledby="conversation-runtime-sheet-title" onPointerDown={(event) => { if (event.target === event.currentTarget) setRuntimeMenuOpen(false); }}>
-                  <div data-debug-id="conversation-runtime-mobile-sheet-panel" className="max-h-[86vh] w-full overflow-y-auto rounded-t-[1.75rem] border border-white/10 bg-[#101010] p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] shadow-2xl shadow-black/70">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <h2 id="conversation-runtime-sheet-title" data-debug-id="conversation-runtime-mobile-sheet-title" className="text-sm font-semibold text-white">Runtime controls</h2>
-                      <button type="button" data-debug-id="conversation-runtime-mobile-sheet-close" onClick={() => setRuntimeMenuOpen(false)} aria-label="Close runtime controls" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
-                    </div>
-                    {runtimeControls}
-                  </div>
-                </div>
-              ) : null}
-            </div>
+            {!isMobile ? (
+              <Popover
+                side="top"
+                align="end"
+                label="Runtime controls"
+                open={runtimeMenuOpen}
+                onOpenChange={setRuntimeMenuOpen}
+                className="w-[min(92vw,430px)]"
+                trigger={
+                  <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-2.5 text-[13px] text-zinc-100 hover:bg-white/10">
+                    <span className="font-semibold">{instanceProvider || 'model'}</span>
+                    <span className="hidden text-zinc-400 sm:inline">· {instanceTier || '—'}</span>
+                    <Icon name="chevron-down" size={14} />
+                  </button>
+                }
+              >
+                {runtimeControls}
+              </Popover>
+            ) : (
+              <>
+                <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" aria-haspopup="dialog" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-2.5 text-[13px] text-zinc-100 hover:bg-white/10">
+                  <span className="font-semibold">{instanceProvider || 'model'}</span>
+                  <span className="hidden text-zinc-400 sm:inline">· {instanceTier || '—'}</span>
+                  <Icon name="chevron-down" size={14} />
+                </button>
+                <Drawer side="bottom" title="Runtime controls" open={runtimeMenuOpen} onOpenChange={setRuntimeMenuOpen} data-debug-id="conversation-runtime-mobile-sheet">
+                  <Drawer.Body>{runtimeControls}</Drawer.Body>
+                </Drawer>
+              </>
+            )}
 
             <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"><Icon name="arrow-up" size={18} /></button>
           </div>
@@ -1302,21 +1242,27 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
         </div>
 
-        <div className="relative shrink-0" ref={headerActionsRef}>
-          <button ref={headerActionsButtonRef} type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="Conversation details" title="Details" aria-haspopup="menu" aria-expanded={headerActionsOpen ? 'true' : 'false'} onClick={() => setHeaderActionsOpen((open) => !open)} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"><Icon name="info" size={16} /></button>
-          {headerActionsOpen ? (
-            <div data-debug-id="conversation-thread-overflow-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(88vw,300px)] overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
-              <button type="button" role="menuitem" data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><Icon name="refresh" size={15} /><span>Refresh messages</span></button>
-              <div data-debug-id="conversation-thread-overflow-details" className="mt-1 border-t border-white/10 px-3 py-2 text-caption leading-5 text-zinc-500">
-                <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
-                <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
-                <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
-                <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
-                <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
-                {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
-              </div>
+        <div className="shrink-0">
+          <Menu
+            align="end"
+            label="Conversation details"
+            open={headerActionsOpen}
+            onOpenChange={setHeaderActionsOpen}
+            trigger={
+              <button type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="Conversation details" title="Details" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"><Icon name="info" size={16} /></button>
+            }
+          >
+            <Menu.Item data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader}><Icon name="refresh" size={15} /><span>Refresh messages</span></Menu.Item>
+            <Menu.Separator />
+            <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1 text-caption leading-5 text-zinc-500">
+              <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
+              <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
+              <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
+              <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
+              <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
+              {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
             </div>
-          ) : null}
+          </Menu>
         </div>
 
         {(chainId || projectId) ? (
