@@ -159,29 +159,33 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   // flash empty then repopulate.
   if (isEdit && actionLoading) {
     return (
-      <div data-debug-id="action-editor-loading" className="w-full max-w-4xl space-y-4 text-left">
-        <div className="h-24 animate-pulse rounded-2xl bg-white/5" />
-        <div className="h-64 animate-pulse rounded-2xl bg-white/5" />
-      </div>
+      <PageShell width="full" title="Edit action">
+        <div data-debug-id="action-editor-loading" className="space-y-4 text-left">
+          <div className="h-24 animate-pulse rounded-2xl bg-white/5" />
+          <div className="h-64 animate-pulse rounded-2xl bg-white/5" />
+        </div>
+      </PageShell>
     );
   }
 
   if (isEdit && (actionError || !action)) {
     return (
-      <div data-debug-id="action-editor-not-found" className="w-full max-w-4xl space-y-4 text-left">
-        <div className="rounded-2xl border border-red-500/40 bg-red-950/20 p-5 text-sm text-red-300">
-          {actionError
-            ? `Failed to load action: ${String((actionError as any)?.error || (actionError as any)?.message || actionError)}`
-            : 'This action could not be found. It may have been deleted.'}
+      <PageShell width="full" title="Edit action">
+        <div data-debug-id="action-editor-not-found" className="space-y-4 text-left">
+          <div className="rounded-2xl border border-red-500/40 bg-red-950/20 p-5 text-sm text-red-300">
+            {actionError
+              ? `Failed to load action: ${String((actionError as any)?.error || (actionError as any)?.message || actionError)}`
+              : 'This action could not be found. It may have been deleted.'}
+          </div>
+          <a
+            data-debug-id="action-editor-back-link"
+            href={shellHash('/actions')}
+            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+          >
+            Back to Actions
+          </a>
         </div>
-        <a
-          data-debug-id="action-editor-back-link"
-          href={shellHash('/actions')}
-          className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-        >
-          Back to Actions
-        </a>
-      </div>
+      </PageShell>
     );
   }
 
