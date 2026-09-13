@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { ChainLike, TaskLike } from './chainTaskInference';
 import { taskStatusOf, taskReviewerOf, isUserEffectiveReviewer } from './chainTaskInference';
-import { StatusPill, Text, type Tone } from '@ui';
+import { Select, StatusPill, Text, type Tone } from '@ui';
 
 export type CurrentTaskStripProps = {
   task: TaskLike;
@@ -193,32 +193,32 @@ export default function CurrentTaskStrip({
         ) : null}
         {/* CT-9: manual "switch current task" control (user/coordinator). */}
         {onSwitchCurrentTask && switchableTasks && switchableTasks.length > 0 ? (
-          <select
+          <Select
             data-debug-id={`${debugPrefix}-current-task-switch`}
             value={taskId}
-            onChange={(event) => { const next = event.target.value; if (next && next !== taskId) void onSwitchCurrentTask(next); }}
-            className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] text-zinc-300 outline-none hover:bg-white/10"
+            onChange={(next) => { if (next && next !== taskId) void onSwitchCurrentTask(next); }}
+            size="sm"
             title="Switch current task"
           >
             {switchableTasks.map((candidate) => {
               const cid = String(candidate.taskId || candidate.task_id || '');
               return <option key={cid} value={cid}>{String(candidate.title || cid)}</option>;
             })}
-          </select>
+          </Select>
         ) : null}
         {/* CT-3: set priority (P0/P1/P2) — user/coordinator. */}
         {onSetPriority ? (
-          <select
+          <Select
             data-debug-id={`${debugPrefix}-current-task-set-priority`}
             value={priority || 'p2'}
-            onChange={(event) => { const next = event.target.value; if (next && next !== priority) void onSetPriority(taskId, next); }}
-            className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] uppercase text-zinc-300 outline-none hover:bg-white/10"
+            onChange={(next) => { if (next && next !== priority) void onSetPriority(taskId, next); }}
+            size="sm"
             title="Set priority"
           >
             <option value="p0">P0</option>
             <option value="p1">P1</option>
             <option value="p2">P2</option>
-          </select>
+          </Select>
         ) : null}
       </div>
 

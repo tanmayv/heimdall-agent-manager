@@ -359,25 +359,22 @@ function CoordinatorChainsDropdown({ agentInstanceId, currentChainId }: { agentI
   }
   if (!chains.length) {
     // Empty/disabled state: this agent coordinates no chains.
-    return <select data-debug-id="coordinator-chains-select" disabled aria-label="Coordinated chains (none)" className="rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-zinc-500"><option>No coordinated chains</option></select>;
+    return <Select data-debug-id="coordinator-chains-select" disabled aria-label="Coordinated chains (none)" value="" onChange={() => {}}><option>No coordinated chains</option></Select>;
   }
   const selected = chains.some((c) => c.chainId === currentChainId) ? currentChainId : chains[0].chainId;
   return (
-    <select
+    <Select
       data-debug-id="coordinator-chains-select"
       aria-label="Coordinated chains"
       title="Task chains this agent coordinates"
       value={selected}
-      onChange={(e) => {
-        const target = e.target.value;
-        if (target) window.location.hash = shellHash(`/chains/${target}`).slice(1);
-      }}
-      className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-2 py-1 text-xs text-sky-100 outline-none focus:border-sky-400"
+      onChange={(target) => { if (target) window.location.hash = shellHash(`/chains/${target}`).slice(1); }}
+      size="sm"
     >
       {chains.map((c) => (
         <option key={c.chainId} value={c.chainId}>{(c.title || c.chainId)} · {c.status}</option>
       ))}
-    </select>
+    </Select>
   );
 }
 
