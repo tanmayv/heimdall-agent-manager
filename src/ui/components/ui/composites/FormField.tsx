@@ -56,7 +56,9 @@ export const FormField: React.FC<FormFieldProps> = ({
   const generatedId = React.useId();
   const childProps = children.props as Record<string, unknown>;
   const fieldId = id ?? (childProps.id as string | undefined) ?? generatedId;
-  const hintId = hint ? `${fieldId}-hint` : undefined;
+  // Only reference the hint id when the hint actually renders (it is hidden when
+  // an error is shown) — otherwise aria-describedby points at a missing node.
+  const hintId = hint && !error ? `${fieldId}-hint` : undefined;
   const errorId = error ? `${fieldId}-error` : undefined;
 
   const describedBy = [childProps['aria-describedby'] as string | undefined, hintId, errorId]
