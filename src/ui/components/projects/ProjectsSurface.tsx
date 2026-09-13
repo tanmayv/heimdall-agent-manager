@@ -28,7 +28,7 @@ import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../ap
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
-import { Button, Icon, Input, Link, Text, Textarea } from '@ui';
+import { Button, Icon, Input, Link, PageShell, Text, Textarea } from '@ui';
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -96,17 +96,18 @@ function ProjectList() {
   }
 
   return (
-    <div data-debug-id="projects-surface" className="w-full">
-      <header className="mb-5 flex items-center justify-between gap-3">
-        <div>
-          <Text as="p" role="overline" tone="accent">Projects</Text>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white">Projects</h1>
-          <p className="mt-1 text-sm text-zinc-500">Group work by project — agents, memory and per-device paths.</p>
-        </div>
+    <PageShell
+      width="full"
+      eyebrow="Projects"
+      title="Projects"
+      description="Group work by project — agents, memory and per-device paths."
+      actions={
         <Button variant="primary" size="md" data-debug-id="projects-new-btn" onClick={() => setShowCreate((v) => !v)}>
           <Icon name="plus" size={16} /> New project
         </Button>
-      </header>
+      }
+    >
+      <div data-debug-id="projects-surface">
 
       {showCreate ? (
         <div data-debug-id="projects-create-form" className="mb-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
@@ -158,7 +159,8 @@ function ProjectList() {
           </a>
         ))}
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
@@ -181,16 +183,17 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const bridges: any[] = (bridgesQuery.data?.bridges || []).filter((b: any) => str(b?.status || b?.state || 'online').toLowerCase() !== 'revoked');
 
   return (
-    <div data-debug-id="project-detail" className="w-full">
-      <Link variant="standalone" tone="muted" data-debug-id="project-detail-back-btn" href={buildRouteHash('/projects', '')} className="mb-4 inline-flex items-center gap-1.5 text-sm">
-        <Icon name="chevron-left" size={16} /> All projects
-      </Link>
-
-      <header className="mb-5">
-        <Text as="p" role="overline" tone="accent">Project</Text>
-        <h1 data-debug-id="project-detail-title" className="mt-1 text-2xl font-semibold tracking-tight text-white">{project?.name || projectId}</h1>
-      </header>
-
+    <PageShell
+      width="full"
+      eyebrow="Project"
+      title={<span data-debug-id="project-detail-title">{project?.name || projectId}</span>}
+      actions={
+        <Link variant="standalone" tone="muted" data-debug-id="project-detail-back-btn" href={buildRouteHash('/projects', '')} className="inline-flex items-center gap-1.5 text-sm">
+          <Icon name="chevron-left" size={16} /> All projects
+        </Link>
+      }
+    >
+      <div data-debug-id="project-detail">
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="lg:col-span-2">
           <AboutPanel projectId={projectId} project={project} />
@@ -201,7 +204,8 @@ function ProjectDetail({ projectId }: { projectId: string }) {
           <BridgePathsPanel projectId={projectId} project={project} bridges={bridges} />
         </div>
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 

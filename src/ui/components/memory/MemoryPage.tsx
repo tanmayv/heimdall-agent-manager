@@ -11,7 +11,7 @@ import { useMemo, useState } from 'react';
 import { buildRouteHash } from '../../utils/appLocation';
 
 import Markdown from '../Markdown';
-import { Badge, Button, EmptyState, Icon, IconButton, Input, Modal, Select, Text, Textarea } from '@ui';
+import { Badge, Button, EmptyState, Icon, IconButton, Input, Modal, PageShell, Select, Text, Textarea } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,
@@ -90,27 +90,28 @@ export default function MemoryPage() {
   }
 
   return (
-    <div data-debug-id="memory-page" className="w-full text-zinc-100">
-      {/* Header */}
-      <div data-debug-id="memory-header" className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <Text as="div" role="overline" tone="muted">Memory</Text>
-          <div className="mt-1 flex items-center gap-2">
-            <h1 className="truncate text-2xl font-semibold tracking-[-0.01em] text-zinc-100">Memory</h1>
-            <Badge data-debug-id="memory-active-count-pill">{activeItems.length}</Badge>
-          </div>
-          <p className="mt-1 text-[13px] text-zinc-500">Durable facts, habits &amp; skills for your agents. Empty scope = applies to all.</p>
-        </div>
-        <div className="flex items-center gap-2">
+    <PageShell
+      width="full"
+      eyebrow="Memory"
+      title={
+        <span className="inline-flex items-center gap-2">
+          Memory
+          <Badge data-debug-id="memory-active-count-pill">{activeItems.length}</Badge>
+        </span>
+      }
+      description="Durable facts, habits & skills for your agents. Empty scope = applies to all."
+      actions={
+        <>
           <button type="button" data-debug-id="memory-new-btn" onClick={() => setCreateOpen(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-[12.5px] font-semibold text-sky-100 hover:bg-sky-400/20">
             <Icon name="plus" size={14} /> Propose memory
           </button>
           <Button variant="secondary" size="sm" data-debug-id="memory-refresh-btn" onClick={() => { activeQuery.refetch(); proposalsQuery.refetch(); }}>
             <Icon name="refresh" size={14} /> Refresh
           </Button>
-        </div>
-      </div>
-
+        </>
+      }
+    >
+      <div data-debug-id="memory-page" className="text-zinc-100">
       {/* Tabs */}
       <div data-debug-id="memory-tabs" className="mt-5 flex items-center gap-6 border-b border-white/[0.08]">
         <TabButton id="active" label="Active" count={activeItems.length} active={tab === 'active'} onClick={() => setTab('active')} />
@@ -167,7 +168,8 @@ export default function MemoryPage() {
           onConfirm={confirmDelete}
         />
       ) : null}
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
