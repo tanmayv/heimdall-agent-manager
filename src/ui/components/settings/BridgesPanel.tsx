@@ -8,7 +8,7 @@ import {
   useCreateBridgeEnrollmentMutation,
   useRevokeBridgeEnrollmentMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, FormField, Input, PageShell, StatusDot, Text } from '@ui';
+import { Button, FormField, Icon, Input, PageShell, StatusDot, Text } from '@ui';
 import type { Tone } from '@ui';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
@@ -164,7 +164,7 @@ export default function BridgesPanel() {
       title="Bridges"
       description="Your machines. “Remove” revokes the token (record kept); no hard delete in v1."
       actions={
-        <Button variant="secondary" size="sm" data-debug-id="settings-bridges-add-btn" onClick={() => { setEnrollOpen((o) => !o); setEnrollResult(null); setEnrollError(''); }}>＋ Add bridge</Button>
+        <Button variant="primary" data-debug-id="settings-bridges-add-btn" onClick={() => { setEnrollOpen((o) => !o); setEnrollResult(null); setEnrollError(''); }} leading={<Icon name="plus" size={16} />}>Add bridge</Button>
       }
     >
       <div data-debug-id="settings-bridges-panel" className="min-w-0">

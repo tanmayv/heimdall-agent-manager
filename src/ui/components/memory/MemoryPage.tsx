@@ -92,7 +92,6 @@ export default function MemoryPage() {
   return (
     <PageShell
       width="full"
-      eyebrow="Memory"
       title={
         <span className="inline-flex items-center gap-2">
           Memory
@@ -102,11 +101,11 @@ export default function MemoryPage() {
       description="Durable facts, habits & skills for your agents. Empty scope = applies to all."
       actions={
         <>
-          <button type="button" data-debug-id="memory-new-btn" onClick={() => setCreateOpen(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-[12.5px] font-semibold text-sky-100 hover:bg-sky-400/20">
-            <Icon name="plus" size={14} /> Propose memory
-          </button>
-          <Button variant="secondary" size="sm" data-debug-id="memory-refresh-btn" onClick={() => { activeQuery.refetch(); proposalsQuery.refetch(); }}>
-            <Icon name="refresh" size={14} /> Refresh
+          <Button variant="primary" size="sm" data-debug-id="memory-new-btn" onClick={() => setCreateOpen(true)} leading={<Icon name="plus" size={14} />}>
+            Propose memory
+          </Button>
+          <Button variant="secondary" size="sm" data-debug-id="memory-refresh-btn" onClick={() => { activeQuery.refetch(); proposalsQuery.refetch(); }} leading={<Icon name="refresh" size={14} />}>
+            Refresh
           </Button>
         </>
       }

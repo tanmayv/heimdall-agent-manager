@@ -8,7 +8,7 @@ import {
   useListAgentTemplatesQuery,
 } from '../../api/endpoints/agents';
 import { normalizeBridgeCapabilities, useListBridgesQuery, type BridgeCapability } from '../../api/endpoints/bridgeSupport';
-import { Button, Input, PageShell, Select, StatusPill, Textarea } from '@ui';
+import { Button, Icon, Input, PageShell, Select, StatusPill, Textarea } from '@ui';
 
 type ProviderScope = 'bridge_default' | 'same_provider' | 'per_bridge';
 type BridgeScope = 'all' | string;
@@ -71,7 +71,7 @@ export function AgentsPanel() {
       title="Agents"
       description="Create durable agent identities from templates, choose where they run, and optionally pin a provider while keeping Bridge defaults as the normal path."
       actions={
-        <a data-debug-id="agents-add-agent-btn" href={shellHash('/agents/new')} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">＋ Add agent</a>
+        <Button variant="primary" data-debug-id="agents-add-agent-btn" onClick={() => { window.location.hash = shellHash('/agents/new'); }} leading={<Icon name="plus" size={16} />}>Add agent</Button>
       }
     >
       <div className="space-y-6 text-left">

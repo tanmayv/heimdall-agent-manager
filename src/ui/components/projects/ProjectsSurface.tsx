@@ -98,7 +98,6 @@ function ProjectList() {
   return (
     <PageShell
       width="full"
-      eyebrow="Projects"
       title="Projects"
       description="Group work by project — agents, memory and per-device paths."
       actions={

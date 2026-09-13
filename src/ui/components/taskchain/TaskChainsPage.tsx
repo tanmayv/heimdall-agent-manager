@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { PageShell, Select } from '@ui';
+import { Badge, PageShell, Select } from '@ui';
 import Icon from '../Icon';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
@@ -253,11 +253,11 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   return (
     <PageShell
       title={
-        <span className="inline-flex items-center gap-3">
+        <span className="inline-flex items-center gap-2.5">
           Task Chains
-          <span data-debug-id="task-chains-total-count" className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-xs font-normal text-zinc-400">
+          <Badge data-debug-id="task-chains-total-count" tone="info">
             {totalChains} {totalChains === 1 ? 'chain' : 'chains'}
-          </span>
+          </Badge>
         </span>
       }
       description="Multi-agent workflows grouped by project. Open a chain's coordinator conversation to follow its tasks, dependencies, and reviews."

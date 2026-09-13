@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 
-import { Badge, Icon, IconButton, Input, PageShell, StatusPill } from '@ui';
+import { Badge, Button, Icon, IconButton, Input, PageShell, StatusPill } from '@ui';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   Action,
@@ -200,14 +200,9 @@ export default function ActionsPanel() {
       }
       description="Automated recurring prompts and on-demand tasks executed against your agent instances."
       actions={
-        <a
-          data-debug-id="actions-create-btn"
-          href={shellHash('/actions/new')}
-          className="flex items-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-black transition-colors shadow-sm"
-        >
-          <Icon name="plus" size={16} />
-          <span>New Action</span>
-        </a>
+        <Button variant="primary" data-debug-id="actions-create-btn" onClick={() => navigateTo('/actions/new')} leading={<Icon name="plus" size={16} />}>
+          New Action
+        </Button>
       }
     >
       <div data-debug-id="actions-page" className="space-y-6">
@@ -281,14 +276,9 @@ export default function ActionsPanel() {
           <p className="mt-1 max-w-md text-xs leading-relaxed text-zinc-400">
             Actions allow you to schedule recurring prompts or trigger on-demand automation routines for any running agent instance.
           </p>
-          <a
-            data-debug-id="actions-empty-create-btn"
-            href={shellHash('/actions/new')}
-            className="mt-5 flex items-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-black transition-colors"
-          >
-            <Icon name="plus" size={16} />
-            <span>Create Your First Action</span>
-          </a>
+          <Button variant="primary" data-debug-id="actions-empty-create-btn" className="mt-5" onClick={() => navigateTo('/actions/new')} leading={<Icon name="plus" size={16} />}>
+            Create Your First Action
+          </Button>
         </div>
       )}
 
