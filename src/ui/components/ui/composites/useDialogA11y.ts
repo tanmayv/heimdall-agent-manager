@@ -25,6 +25,14 @@ export function useDialogA11y(
 ): void {
   const restoreRef = useRef<HTMLElement | null>(null);
 
+  // Read the latest onClose without re-running the setup effect. Keying the effect
+  // on `onClose` (typically an inline `() => onOpenChange(false)`) would re-run it
+  // on every render while open — stealing focus back and breaking the trap.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     if (!open) return;
 
@@ -41,7 +49,7 @@ export function useDialogA11y(
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab' || !panel) return;
@@ -71,5 +79,9 @@ export function useDialogA11y(
       document.body.style.overflow = prevOverflow;
       restoreRef.current?.focus?.();
     };
-  }, [open, onClose, panelRef]);
+    // Intentionally keyed on `open` only: setup/focus-in/scroll-lock/restore-capture
+    // must happen once per open, not on every render. `onClose` is read via a ref,
+    // and `panelRef` is a stable ref object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 }
