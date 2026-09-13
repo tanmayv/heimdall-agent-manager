@@ -7,12 +7,14 @@
  * catalogued in `docs/ui-audit/` (finding #7).
  *
  * NOT for: the page's top-level header (use `PageShell`, which owns the single
- * `<h1>`). SectionHeader renders an `<h2>` — a subheading beneath that `<h1>`.
+ * `<h1>`). SectionHeader renders an `<h2>` by default — a subheading beneath that
+ * `<h1>`; set `level="h3"` for a deeper subsection so the heading order never
+ * skips (e.g. a card header whose siblings are `<h3>`/`<h4>`).
  *
  * Layer: composite. Spec: `docs/ui-audit/04-component-catalogue.md` › SectionHeader.
  *
  * Accessibility:
- *   - Renders an `<h2>` (subordinate to PageShell's `<h1>`).
+ *   - Renders an `<h2>` (default) or `<h3>` via `level` (subordinate to PageShell's `<h1>`).
  *   - When `collapsible`, the title is a `<button aria-expanded>` controlling the
  *     `aria-controls` region, with a built-in focus ring. Controlled via
  *     `expanded` + `onToggle`.
@@ -28,8 +30,13 @@ export interface SectionHeaderProps
   extends DescribableProps,
     ExpandableProps,
     RootClassNameProps {
-  /** The section title. Rendered as an `<h2>`. */
+  /** The section title. Rendered as the `level` heading (default `<h2>`). */
   title: React.ReactNode;
+  /**
+   * Heading level, so the section slots correctly under the page hierarchy
+   * without a skip (an `<h2>` page needs `<h3>` subsections). Default `h2`.
+   */
+  level?: 'h2' | 'h3';
   /** Right-aligned actions (buttons, menus) for this section. */
   actions?: React.ReactNode;
   /** When true, the title toggles a disclosure (`aria-expanded`). Controlled. */
@@ -42,6 +49,7 @@ export interface SectionHeaderProps
 
 export const SectionHeader: React.FC<SectionHeaderProps> = ({
   title,
+  level = 'h2',
   description,
   hint,
   actions,
@@ -55,6 +63,8 @@ export const SectionHeader: React.FC<SectionHeaderProps> = ({
     .filter(Boolean)
     .join(' ');
   const subtitle = description ?? hint;
+
+  const titleEl = React.createElement(level, { className: 'text-title text-primary' }, title);
 
   const heading = collapsible ? (
     <button
@@ -71,10 +81,10 @@ export const SectionHeader: React.FC<SectionHeaderProps> = ({
       >
         ▸
       </span>
-      <h2 className="text-title text-primary">{title}</h2>
+      {titleEl}
     </button>
   ) : (
-    <h2 className="text-title text-primary">{title}</h2>
+    titleEl
   );
 
   return (

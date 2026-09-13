@@ -329,6 +329,7 @@ export default function ProjectsPanel() {
               {/* Project Main Details Form / Viewer */}
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4 space-y-4">
                 <SectionHeader
+                  level="h3"
                   title={selectedProject.name}
                   actions={
                     selectedProject.is_default_conversations ? (
