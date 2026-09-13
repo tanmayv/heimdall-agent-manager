@@ -25,6 +25,47 @@ Six header dialects, ten container widths, two card radii, three empty-state sty
 buttons — **on pages that are supposed to look like one product.** `PageShell` + `Panel` +
 `SectionHeader` + `Button` collapse every row above into one.
 
+### 0.1 W2 rollout status (PageShell)
+
+Every standard content/route page now renders through `PageShell` (single `<h1>`, standard
+eyebrow/description/actions slots, and the `content`/`full` width ramp — no page sets its own
+`max-w-*`). Status:
+
+| Page | Route | Status |
+|---|---|---|
+| TaskChainOverview | `/chains/:id` | ✅ PageShell (W2 reference) |
+| ActionsPanel | `/actions` | ✅ PageShell (`full`) |
+| ActionEditorPage | `/actions/new`,`/…/edit` | ✅ PageShell (`full`, sticky-footer form body kept) |
+| MemoryPage | `/memory` | ✅ PageShell (`full`) |
+| MemoryDetailPage | `/memory/:id` | ✅ PageShell (`full`, loading/error via props) |
+| ProjectsSurface (list + detail) | `/projects` | ✅ PageShell (`full`; detail back-link → actions) |
+| SkillViewerPage | `/skills/:slug` | ✅ PageShell (`content`) |
+| AgentsPanel | `/agents` | ✅ PageShell (`content`) |
+| NewAgentPage | `/agents/new` | ✅ PageShell (`content`, sticky-footer form kept) |
+| AgentDetailPanel | `/agents/:id` | ✅ PageShell (`content`) |
+| TaskChainsPage (list) | `/chains` | ✅ PageShell (`content`; native project filter left for a later Select wave) |
+| BridgesPanel | `/settings` | ✅ PageShell (`content`; card chrome unwrapped) |
+| ProvidersPanel + ProviderEditorPage | `/settings/providers*` | ✅ PageShell (list `content`, editor `full`) |
+| UserTokensPanel | `/settings/user-tokens` | ✅ PageShell (`content`) |
+| ProjectsPanel (settings) | `/settings/projects` | ✅ PageShell (`content`) |
+| TemplatesPanel | `/settings/templates` | ✅ PageShell (`content`) |
+| NotificationsPanel | `/settings/notifications` | ✅ PageShell (`content`) |
+| DefaultsSettingsPanel | `/settings/defaults` | ✅ PageShell (`content`) |
+| MemoryPanel (settings) | `/settings/memory` | ⏳ deferred to the EL-023 refactor task (targeting → ScopeEditor); PageShell wrap folded into that task to avoid double-churn |
+
+**Deliberate divergences (kept bespoke — load-bearing, NOT PageShell):**
+
+| Surface | Route | Why it diverges |
+|---|---|---|
+| ConversationsHomePage (inbox) | `/conversations` | Responsive header **defers its title to the mobile shell top bar** (title/eyebrow are `hidden sm:block`); also a sticky-on-scroll translucent header. PageShell always renders an `<h1>` and isn't sticky → migrating would double the title on mobile and drop the sticky behaviour. |
+| ConversationThreadPage | `/conversations/:id` | Full-bleed, page-owned conversation surface (message pane + inspector), independent scroll regions — not a header+body content page. |
+| ConversationLaunchComposer | `/conversations/new` | Centred "composer-first" launch **card** (`rounded-[2rem]` + `shadow-2xl`); the card *is* the surface. |
+| LibraryPage / ArtifactViewer | `/library*` | Full-height artifact browser: fixed toolbar (view toggle + upload + multi-facet filter row) over an independently-scrolling grid. |
+| OnboardingWizard, NewLocalProxyAgentWizard, CommandPalette | — | Render in Modal/Drawer shells, explicitly out of the PageShell checklist. |
+
+`MemoryManagementPage`, `GenericAgentWorkspacePage`, `UnifiedWorkspaceShell` from the original
+checklist do not exist in the tree (superseded before this wave) — no action.
+
 ## 1. Sequencing — order by (occurrences × risk reduction) ÷ effort
 
 | Wave | Ship | Why first | Rough effort |
