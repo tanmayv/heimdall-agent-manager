@@ -24,7 +24,7 @@ import {
   resubscribeWithCurrentKey,
 } from '../../services/pushSubscriptionService';
 import { showToast } from '../../store/toastSlice';
-import { Button, Toggle } from '@ui';
+import { Button, Panel, Toggle } from '@ui';
 
 const CATEGORY_LABELS: Array<{ key: NotificationCategory; label: string; description: string }> = [
   { key: 'chat', label: 'Chat messages', description: 'New messages directed to you, nudges, and mentions.' },
@@ -274,7 +274,7 @@ export default function NotificationsPanel() {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+      <Panel>
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="font-semibold text-zinc-100">Test notifications</div>
@@ -292,7 +292,7 @@ export default function NotificationsPanel() {
             Send test notification
           </Button>
         </div>
-      </div>
+      </Panel>
 
       <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
         <div className="mb-3">
