@@ -11,9 +11,8 @@ import { useMemo, useState } from 'react';
 import { buildRouteHash } from '../../utils/appLocation';
 
 import Markdown from '../Markdown';
-import EmptyState from '../EmptyState';
 import Modal from '../Modal';
-import { Badge, Button, Icon, IconButton, Input, Select, Text, Textarea } from '@ui';
+import { Badge, Button, EmptyState, Icon, IconButton, Input, Select, Text, Textarea } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,
@@ -141,9 +140,9 @@ export default function MemoryPage() {
           {/* List */}
           <div data-debug-id="memory-list" className="mt-4 space-y-3">
             {activeQuery.isFetching && activeItems.length === 0 ? (
-              <EmptyState debugId="memory-empty" text="Loading memories…" />
+              <EmptyState data-debug-id="memory-empty" description="Loading memories…" />
             ) : filteredActive.length === 0 ? (
-              <EmptyState debugId="memory-empty" text={activeItems.length === 0 ? 'No active memories yet. Propose one to get started.' : 'No memories match your filters.'} />
+              <EmptyState data-debug-id="memory-empty" description={activeItems.length === 0 ? 'No active memories yet. Propose one to get started.' : 'No memories match your filters.'} />
             ) : filteredActive.map((memory) => (
               <MemoryListItem key={memory.memoryId || memory.id} memory={memory} catalog={catalog} onDelete={() => setDeleteTarget(memory)} />
             ))}
@@ -152,9 +151,9 @@ export default function MemoryPage() {
       ) : (
         <div data-debug-id="memory-proposals" className="mt-4 space-y-3">
           {proposalsQuery.isFetching && proposals.length === 0 ? (
-            <EmptyState debugId="memory-empty" text="Loading proposals…" />
+            <EmptyState data-debug-id="memory-empty" description="Loading proposals…" />
           ) : proposals.length === 0 ? (
-            <EmptyState debugId="memory-empty" text="No pending proposals." />
+            <EmptyState data-debug-id="memory-empty" description="No pending proposals." />
           ) : proposals.map((memory) => (
             <ProposalCard key={memory.proposalId || memory.memoryId} memory={memory} catalog={catalog} />
           ))}
