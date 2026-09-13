@@ -8,7 +8,7 @@ import {
   useCreateBridgeEnrollmentMutation,
   useRevokeBridgeEnrollmentMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, Input, Text } from '@ui';
+import { Button, FormField, Input, Text } from '@ui';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
@@ -177,9 +177,9 @@ export default function BridgesPanel() {
           {!enrollResult ? (
             <>
               <div className="text-sm font-medium text-sky-100">Create bridge enrollment</div>
-              <label className="mt-2 block text-xs uppercase tracking-wide text-zinc-500">Label (optional; defaults to reported hostname)
-                <Input data-debug-id="settings-bridges-enroll-label" value={enrollLabel} onChange={setEnrollLabel} placeholder="MacBook" width="full" className="mt-1" />
-              </label>
+              <FormField label="Label (optional; defaults to reported hostname)" className="mt-2">
+                <Input data-debug-id="settings-bridges-enroll-label" value={enrollLabel} onChange={setEnrollLabel} placeholder="MacBook" width="full" />
+              </FormField>
               {enrollError ? <div className="mt-2 text-xs text-red-300">{enrollError}</div> : null}
               <div className="mt-3 flex justify-end gap-2">
                 <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-cancel" onClick={() => setEnrollOpen(false)}>Cancel</Button>

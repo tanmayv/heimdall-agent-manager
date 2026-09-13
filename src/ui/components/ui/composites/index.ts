@@ -11,3 +11,6 @@ export type { SectionHeaderProps } from './SectionHeader';
 
 export { Panel } from './Panel';
 export type { PanelProps, PanelPadding, PanelTone } from './Panel';
+
+export { FormField } from './FormField';
+export type { FormFieldProps } from './FormField';
