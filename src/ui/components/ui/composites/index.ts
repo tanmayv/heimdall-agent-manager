@@ -44,3 +44,6 @@ export type { TableProps, TableColumn, TableSort } from './Table';
 
 export { Pagination } from './Pagination';
 export type { PaginationProps } from './Pagination';
+
+export { ProgressBar } from './ProgressBar';
+export type { ProgressBarProps, ProgressTone } from './ProgressBar';
