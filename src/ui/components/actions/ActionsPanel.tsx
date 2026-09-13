@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 
-import { Icon, Input, StatusPill } from '@ui';
+import { Icon, IconButton, Input, StatusPill } from '@ui';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   Action,
@@ -232,14 +232,7 @@ export default function ActionsPanel() {
             <Icon name={feedback.type === 'success' ? 'check' : 'alert'} size={14} />
             <span>{feedback.message}</span>
           </div>
-          <button
-            type="button"
-            aria-label="Dismiss"
-            onClick={() => setFeedback(null)}
-            className="text-zinc-400 hover:text-white transition-colors"
-          >
-            <Icon name="close" size={14} />
-          </button>
+          <IconButton icon="close" label="Dismiss" size="sm" onClick={() => setFeedback(null)} />
         </div>
       )}
 
@@ -257,14 +250,7 @@ export default function ActionsPanel() {
             leading={<Icon name="search" size={14} />}
             trailing={
               searchQuery ? (
-                <button
-                  type="button"
-                  aria-label="Clear search"
-                  onClick={() => setSearchQuery('')}
-                  className="text-muted hover:text-primary"
-                >
-                  <Icon name="close" size={14} />
-                </button>
+                <IconButton icon="close" label="Clear search" size="sm" onClick={() => setSearchQuery('')} />
               ) : undefined
             }
           />
@@ -534,26 +520,10 @@ function ActionCard({
           </button>
 
           {/* Edit Button */}
-          <button
-            type="button"
-            data-debug-id={`action-edit-btn-${action.id}`}
-            onClick={onEdit}
-            className="rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 p-1.5 text-zinc-400 hover:text-white transition-colors"
-            title="Edit action"
-          >
-            <Icon name="pencil" size={14} />
-          </button>
+          <IconButton icon="pencil" label="Edit action" variant="solid" size="sm" data-debug-id={`action-edit-btn-${action.id}`} onClick={onEdit} />
 
           {/* Delete Button */}
-          <button
-            type="button"
-            data-debug-id={`action-delete-btn-${action.id}`}
-            onClick={onDelete}
-            className="rounded-lg border border-white/10 bg-white/5 hover:bg-red-500/20 hover:border-red-500/40 p-1.5 text-zinc-400 hover:text-red-400 transition-colors"
-            title="Delete action"
-          >
-            <Icon name="trash" size={14} />
-          </button>
+          <IconButton icon="trash" label="Delete action" variant="danger" size="sm" data-debug-id={`action-delete-btn-${action.id}`} onClick={onDelete} />
         </div>
       </div>
 
