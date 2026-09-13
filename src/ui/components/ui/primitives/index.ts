@@ -50,3 +50,6 @@ export type { LinkProps, LinkVariant, LinkTone } from './Link';
 
 export { Spinner } from './Spinner';
 export type { SpinnerProps } from './Spinner';
+
+export { Kbd } from './Kbd';
+export type { KbdProps } from './Kbd';
