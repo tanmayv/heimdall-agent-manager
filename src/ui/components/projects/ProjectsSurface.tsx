@@ -28,7 +28,7 @@ import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../ap
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
-import { Button, Icon, Input, Text, Textarea } from '@ui';
+import { Button, Icon, Input, Link, Text, Textarea } from '@ui';
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -182,9 +182,9 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 
   return (
     <div data-debug-id="project-detail" className="w-full">
-      <a data-debug-id="project-detail-back-btn" href={buildRouteHash('/projects', '')} className="mb-4 inline-flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white">
+      <Link variant="standalone" tone="muted" data-debug-id="project-detail-back-btn" href={buildRouteHash('/projects', '')} className="mb-4 inline-flex items-center gap-1.5 text-sm">
         <Icon name="chevron-left" size={16} /> All projects
-      </a>
+      </Link>
 
       <header className="mb-5">
         <Text as="p" role="overline" tone="accent">Project</Text>
