@@ -30,41 +30,11 @@
  */
 import React from 'react';
 import type { Emphasis, RootClassNameProps, Tone } from '../types';
+import { toneClasses } from './toneStyles';
 
 const BASE =
   'inline-flex items-center gap-1 rounded-pill px-2 py-0.5 ' +
   'text-[length:var(--text-caption-size)] font-medium leading-none whitespace-nowrap';
-
-/**
- * tone × emphasis → token classes. `pending` shares the warning hue (the
- * conventional in-progress amber) until a dedicated pending token exists.
- */
-const STYLES: Record<Emphasis, Record<Tone, string>> = {
-  soft: {
-    neutral: 'bg-neutral-soft text-muted border border-subtle',
-    info: 'bg-info-soft text-info border border-info-soft',
-    success: 'bg-success-soft text-success border border-success-soft',
-    warning: 'bg-warning-soft text-warning border border-warning-soft',
-    danger: 'bg-danger-soft text-danger border border-danger-soft',
-    pending: 'bg-warning-soft text-warning border border-warning-soft',
-  },
-  outline: {
-    neutral: 'text-muted border border-subtle',
-    info: 'text-info border border-info',
-    success: 'text-success border border-success',
-    warning: 'text-warning border border-warning',
-    danger: 'text-danger border border-danger',
-    pending: 'text-warning border border-warning',
-  },
-  solid: {
-    neutral: 'bg-strong text-primary',
-    info: 'bg-info text-accent-fg',
-    success: 'bg-success text-canvas',
-    warning: 'bg-warning text-canvas',
-    danger: 'bg-danger text-primary',
-    pending: 'bg-warning text-canvas',
-  },
-};
 
 export interface BadgeProps
   extends Omit<React.HTMLAttributes<HTMLSpanElement>, 'className'>,
@@ -80,7 +50,7 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(function Badg
   { tone = 'neutral', emphasis = 'soft', className, children, ...rest },
   ref,
 ) {
-  const rootClassName = [BASE, STYLES[emphasis][tone], className ?? '']
+  const rootClassName = [BASE, toneClasses(tone, emphasis), className ?? '']
     .filter(Boolean)
     .join(' ')
     .replace(/\s+/g, ' ')

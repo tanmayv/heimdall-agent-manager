@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 
-import { Icon, Input } from '@ui';
+import { Icon, Input, StatusPill } from '@ui';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   Action,
@@ -462,27 +462,21 @@ function ActionCard({
           </div>
 
           {/* Action State badge */}
-          <span
+          <StatusPill
             data-debug-id={`action-state-badge-${action.id}`}
-            className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold border ${
-              action.state === 'in_flight'
-                ? 'border-amber-500/40 bg-amber-950/20 text-amber-300'
-                : action.state === 'completed'
-                ? 'border-zinc-700 bg-zinc-800 text-zinc-400'
-                : 'border-emerald-500/30 bg-emerald-950/20 text-emerald-400'
-            }`}
+            tone={action.state === 'in_flight' ? 'warning' : action.state === 'completed' ? 'neutral' : 'success'}
           >
             {action.state === 'in_flight' ? (
               <>
-                <Icon name="zap" size={11} />
+                <Icon name="zap" size="sm" />
                 <span>In Flight</span>
               </>
             ) : action.state === 'completed' ? (
-              <span>Completed</span>
+              'Completed'
             ) : (
-              <span>Active</span>
+              'Active'
             )}
-          </span>
+          </StatusPill>
 
           {/* Schedule status badge */}
           <span

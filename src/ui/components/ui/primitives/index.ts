@@ -38,3 +38,6 @@ export type { IconProps, IconName, IconSize } from './Icon';
 
 export { Badge } from './Badge';
 export type { BadgeProps } from './Badge';
+
+export { StatusPill } from './StatusPill';
+export type { StatusPillProps } from './StatusPill';
