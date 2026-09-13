@@ -11,8 +11,7 @@ import { useMemo, useState } from 'react';
 import { buildRouteHash } from '../../utils/appLocation';
 
 import Markdown from '../Markdown';
-import Modal from '../Modal';
-import { Badge, Button, EmptyState, Icon, IconButton, Input, Select, Text, Textarea } from '@ui';
+import { Badge, Button, EmptyState, Icon, IconButton, Input, Modal, Select, Text, Textarea } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,
@@ -358,12 +357,8 @@ function ConfirmDeleteModal({ title, onCancel, onConfirm }: { title: string; onC
 function ModalShell({ debugId, title, onClose, maxWidth = 'max-w-2xl', children }: { debugId: string; title: string; onClose: () => void; maxWidth?: string; children: React.ReactNode }) {
   const size: 'sm' | 'md' | 'lg' | 'xl' = maxWidth === 'max-w-md' ? 'sm' : 'lg';
   return (
-    <Modal open onClose={onClose} size={size} panelClassName="p-5" debugId={`${debugId}-overlay`} panelDebugId={debugId}>
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-zinc-100">{title}</h2>
-        <IconButton icon="close" label="Close" size="sm" data-debug-id={`${debugId}-close`} onClick={onClose} />
-      </div>
-      <div className="space-y-3">{children}</div>
+    <Modal open onOpenChange={(next) => { if (!next) onClose(); }} title={title} size={size} data-debug-id={debugId}>
+      <Modal.Body className="space-y-3">{children}</Modal.Body>
     </Modal>
   );
 }

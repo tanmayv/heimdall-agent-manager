@@ -10,8 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 
 import Markdown from '../Markdown';
-import Modal from '../Modal';
-import { Badge, Button, Icon, Input, Link, Select, Textarea } from '@ui';
+import { Badge, Button, Icon, Input, Link, Modal, Select, Textarea } from '@ui';
 import {
   useGetMemoryQuery,
   useUpdateMemoryMutation,
@@ -213,20 +212,14 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
       )}
 
       {confirmDelete && record ? (
-        <Modal
-          open
-          onClose={() => setConfirmDelete(false)}
-          size="sm"
-          panelClassName="p-5"
-          debugId="memory-detail-delete-overlay"
-          panelDebugId="memory-detail-delete-modal"
-        >
-          <h2 className="text-lg font-semibold text-zinc-100">Delete memory</h2>
-          <p className="mt-2 text-sm text-zinc-300">Delete <span className="font-semibold text-zinc-100">{record.title || record.memoryId}</span>? Agents will stop receiving it.</p>
-          <div className="mt-4 flex justify-end gap-2">
-            <Button variant="secondary" size="sm" data-debug-id="memory-detail-delete-cancel" onClick={() => setConfirmDelete(false)}>Cancel</Button>
-            <Button variant="danger" size="sm" data-debug-id="memory-detail-delete-confirm" onClick={remove}>Delete</Button>
-          </div>
+        <Modal open onOpenChange={(next) => { if (!next) setConfirmDelete(false); }} title="Delete memory" size="sm" data-debug-id="memory-detail-delete-modal">
+          <Modal.Body>
+            <p className="text-sm text-zinc-300">Delete <span className="font-semibold text-zinc-100">{record.title || record.memoryId}</span>? Agents will stop receiving it.</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="secondary" size="sm" data-debug-id="memory-detail-delete-cancel" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+              <Button variant="danger" size="sm" data-debug-id="memory-detail-delete-confirm" onClick={remove}>Delete</Button>
+            </div>
+          </Modal.Body>
         </Modal>
       ) : null}
     </div>
