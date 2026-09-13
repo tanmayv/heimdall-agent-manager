@@ -57,6 +57,12 @@ export interface MenuProps extends RootClassNameProps {
   onOpenChange?: OpenChangeHandler;
   /** Popup alignment relative to the trigger. Default `start` (left-aligned). */
   align?: 'start' | 'end';
+  /**
+   * Which side of the trigger the popup opens on. `bottom` (default) opens below;
+   * `top` opens above — for triggers pinned near the viewport bottom (a composer
+   * bar, a bottom toolbar) where a downward menu would clip off-screen.
+   */
+  side?: 'bottom' | 'top';
 }
 
 const MenuRoot: React.FC<MenuProps> = ({
@@ -66,6 +72,7 @@ const MenuRoot: React.FC<MenuProps> = ({
   open: openProp,
   onOpenChange,
   align = 'start',
+  side = 'bottom',
   className,
 }) => {
   const isControlled = openProp !== undefined;
@@ -168,8 +175,9 @@ const MenuRoot: React.FC<MenuProps> = ({
   } as Record<string, unknown>);
 
   const menuClassName = [
-    'absolute z-dropdown mt-1 min-w-[12rem] rounded-[var(--radius-md)] border border-subtle',
+    'absolute z-dropdown min-w-[12rem] rounded-[var(--radius-md)] border border-subtle',
     'bg-surface-raised py-1 shadow-overlay outline-none',
+    side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1',
     align === 'end' ? 'right-0' : 'left-0',
     className ?? '',
   ]
@@ -242,10 +250,38 @@ export const MenuItem: React.FC<MenuItemProps> = ({
   );
 };
 
+/** A non-interactive section heading inside a Menu (groups related items). */
+export const MenuLabel: React.FC<{ children?: React.ReactNode; className?: string }> = ({
+  children,
+  className,
+}) => (
+  <div
+    role="presentation"
+    className={[
+      'px-3 pb-1 pt-2 text-[length:var(--text-caption-size)] font-semibold uppercase tracking-wide text-faint',
+      className ?? '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .trim()}
+  >
+    {children}
+  </div>
+);
+
+/** A thin divider between groups of Menu items. */
+export const MenuSeparator: React.FC = () => (
+  <div role="separator" className="my-1 border-t border-subtle" />
+);
+
 interface MenuComponent extends React.FC<MenuProps> {
   Item: typeof MenuItem;
+  Label: typeof MenuLabel;
+  Separator: typeof MenuSeparator;
 }
 export const Menu = MenuRoot as MenuComponent;
 Menu.Item = MenuItem;
+Menu.Label = MenuLabel;
+Menu.Separator = MenuSeparator;
 
 export default Menu;
