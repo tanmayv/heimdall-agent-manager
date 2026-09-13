@@ -41,3 +41,6 @@ export type { ToastProps } from './Toast';
 
 export { Table } from './Table';
 export type { TableProps, TableColumn, TableSort } from './Table';
+
+export { Pagination } from './Pagination';
+export type { PaginationProps } from './Pagination';
