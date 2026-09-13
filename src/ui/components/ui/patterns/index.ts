@@ -5,3 +5,5 @@
 
 export { RuntimeChip, runtimeStateFromStatus, runtimeStateLabel } from './RuntimeChip';
 export type { RuntimeChipProps, RuntimeState } from './RuntimeChip';
+
+export * from './ScopeField';
