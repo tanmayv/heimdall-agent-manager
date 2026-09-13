@@ -30,10 +30,11 @@
  *
  * Escape hatch: `className` merges onto the panel.
  */
-import React, { useCallback, useEffect, useId, useRef } from 'react';
+import React, { useCallback, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { OpenChangeHandler, RootClassNameProps } from '../types';
 import { IconButton } from '../primitives/IconButton';
+import { useDialogA11y } from './useDialogA11y';
 
 export type ModalSize = 'sm' | 'md' | 'lg' | 'xl';
 
@@ -43,10 +44,6 @@ const SIZE_MAX_W: Record<ModalSize, string> = {
   lg: 'max-w-2xl',
   xl: 'max-w-4xl',
 };
-
-const FOCUSABLE =
-  'a[href],area[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),' +
-  'button:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"]';
 
 export interface ModalProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title' | 'children'>,
@@ -99,59 +96,10 @@ const ModalBase: React.FC<ModalProps> = ({
   ...rest
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const restoreRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
-
-  useEffect(() => {
-    if (!open) return;
-
-    // Remember what to restore focus to, then move focus into the dialog.
-    restoreRef.current = (document.activeElement as HTMLElement) ?? null;
-    const panel = panelRef.current;
-    const first = panel?.querySelector<HTMLElement>(FOCUSABLE);
-    (first ?? panel)?.focus();
-
-    // Lock background scroll.
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        close();
-        return;
-      }
-      if (event.key !== 'Tab' || !panel) return;
-      const nodes = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-        (el) => el.offsetParent !== null || el === document.activeElement,
-      );
-      if (nodes.length === 0) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-      const firstEl = nodes[0];
-      const lastEl = nodes[nodes.length - 1];
-      const active = document.activeElement as HTMLElement | null;
-      if (event.shiftKey && (active === firstEl || active === panel)) {
-        event.preventDefault();
-        lastEl.focus();
-      } else if (!event.shiftKey && active === lastEl) {
-        event.preventDefault();
-        firstEl.focus();
-      }
-    };
-
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown, true);
-      document.body.style.overflow = prevOverflow;
-      // Restore focus to the trigger.
-      restoreRef.current?.focus?.();
-    };
-  }, [open, close]);
+  useDialogA11y(open, close, panelRef);
 
   if (!open) return null;
 

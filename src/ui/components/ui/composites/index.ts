@@ -17,3 +17,6 @@ export type { FormFieldProps } from './FormField';
 
 export { Modal, ModalBody, ModalFooter } from './Modal';
 export type { ModalProps, ModalSize } from './Modal';
+
+export { Drawer } from './Drawer';
+export type { DrawerProps, DrawerSize, DrawerSide } from './Drawer';
