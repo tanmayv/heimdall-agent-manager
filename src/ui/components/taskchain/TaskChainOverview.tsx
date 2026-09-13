@@ -6,7 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 
-import { Checkbox, Icon, PageShell, Select, StatusDot, Text, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { Checkbox, Icon, Menu, PageShell, Select, StatusDot, Text, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -169,23 +169,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const focusedTaskRef = useRef<string | null>(null);
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentAttachments, setCommentAttachments] = useState<Record<string, CommentAttachment[]>>({});
-  const [statusMenuOpenTaskId, setStatusMenuOpenTaskId] = useState<string | null>(null);
-  // H12: single quick-actions menu open at a time (mirrors statusMenuOpenTaskId).
+  // H12: single quick-actions menu open at a time (controlled @ui Menu; the menu
+  // owns its own outside-click/Esc/focus handling).
   const [actionsMenuOpenTaskId, setActionsMenuOpenTaskId] = useState<string | null>(null);
-  const actionsMenuRef = useRef<HTMLDivElement | null>(null);
-
-  // H12: close the quick-actions menu on outside-click (one-open-at-a-time).
-  useEffect(() => {
-    if (!actionsMenuOpenTaskId) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (actionsMenuRef.current && !actionsMenuRef.current.contains(e.target as Node)) {
-        setActionsMenuOpenTaskId(null);
-        setStatusMenuOpenTaskId(null);
-      }
-    };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [actionsMenuOpenTaskId]);
 
   // Modal state
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
@@ -808,7 +794,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const handleStatusChange = async (taskId: string, status: string) => {
     try {
       await setStatus({ chainId, taskId, status, body: '' }).unwrap();
-      setStatusMenuOpenTaskId(null);
       refetch();
     } catch (err) {
       console.error('Failed to update status:', err);
@@ -960,88 +945,33 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             >
               {task.status}
             </span>
-            <div
-              className="relative inline-block text-left"
-              ref={actionsMenuOpenTaskId === taskId ? actionsMenuRef : undefined}
-            >
-              <button
-                type="button"
-                data-debug-id={`taskchain-task-actions-menu-btn-${taskId}`}
-                aria-haspopup="menu"
-                aria-expanded={actionsMenuOpenTaskId === taskId}
-                title="Quick actions"
-                onClick={() => {
-                  setActionsMenuOpenTaskId(actionsMenuOpenTaskId === taskId ? null : taskId);
-                  setStatusMenuOpenTaskId(null);
-                }}
-                className="rounded bg-zinc-800 px-2 py-0.5 text-[13px] font-semibold text-zinc-300 hover:bg-zinc-700"
-              >
-                ⋯
-              </button>
-              {actionsMenuOpenTaskId === taskId && (
-                <div
-                  data-debug-id={`taskchain-task-actions-menu-${taskId}`}
-                  className="absolute right-0 z-30 mt-1 w-40 rounded border border-white/10 bg-[#181818] p-1 shadow-lg"
+            <Menu
+              align="end"
+              label="Task actions"
+              open={actionsMenuOpenTaskId === taskId}
+              onOpenChange={(next) => setActionsMenuOpenTaskId(next ? taskId : null)}
+              trigger={
+                <button
+                  type="button"
+                  data-debug-id={`taskchain-task-actions-menu-btn-${taskId}`}
+                  title="Quick actions"
+                  className="rounded bg-zinc-800 px-2 py-0.5 text-[13px] font-semibold text-zinc-300 hover:bg-zinc-700"
                 >
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
-                    onClick={() => { setActionsMenuOpenTaskId(null); void handleNudge(taskId); }}
-                    className="block w-full rounded px-3 py-1.5 text-left text-caption font-semibold text-zinc-300 hover:bg-white/10"
-                  >
-                    Nudge
-                  </button>
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
-                    onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'lgtm'); }}
-                    className="block w-full rounded px-3 py-1.5 text-left text-caption font-semibold text-emerald-400 hover:bg-emerald-900/40"
-                  >
-                    LGTM
-                  </button>
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
-                    onClick={() => { setActionsMenuOpenTaskId(null); void handleVote(taskId, 'ngtm'); }}
-                    className="block w-full rounded px-3 py-1.5 text-left text-caption font-semibold text-red-400 hover:bg-red-900/40"
-                  >
-                    NGTM
-                  </button>
-                  {/* Status submenu (kept inline; one status list at a time). */}
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-status-menu-btn-${taskId}`}
-                    onClick={() => setStatusMenuOpenTaskId(statusMenuOpenTaskId === taskId ? null : taskId)}
-                    className="block w-full rounded px-3 py-1.5 text-left text-caption font-semibold text-zinc-300 hover:bg-white/10"
-                  >
-                    Status ▾
-                  </button>
-                  {statusMenuOpenTaskId === taskId && (
-                    <div className="ml-2 border-l border-white/10 pl-1">
-                      {['in_progress', 'in_validation', 'paused', 'completed'].map((st) => (
-                        <button
-                          key={st}
-                          type="button"
-                          data-debug-id={`taskchain-task-status-${st}-btn-${taskId}`}
-                          onClick={() => { setActionsMenuOpenTaskId(null); setStatusMenuOpenTaskId(null); void handleStatusChange(taskId, st); }}
-                          className="block w-full rounded px-3 py-1.5 text-left text-caption text-zinc-300 hover:bg-white/10"
-                        >
-                          {st}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
-                    onClick={() => { setActionsMenuOpenTaskId(null); void handleCancelTask(taskId); }}
-                    className="mt-0.5 block w-full rounded border-t border-white/10 px-3 py-1.5 text-left text-caption font-semibold text-zinc-400 hover:bg-red-900/50 hover:text-red-300"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </div>
+                  ⋯
+                </button>
+              }
+            >
+              <Menu.Item data-debug-id={`taskchain-task-nudge-btn-${taskId}`} onClick={() => void handleNudge(taskId)}>Nudge</Menu.Item>
+              <Menu.Item data-debug-id={`taskchain-task-lgtm-btn-${taskId}`} className="text-success" onClick={() => void handleVote(taskId, 'lgtm')}>LGTM</Menu.Item>
+              <Menu.Item data-debug-id={`taskchain-task-ngtm-btn-${taskId}`} danger onClick={() => void handleVote(taskId, 'ngtm')}>NGTM</Menu.Item>
+              <Menu.Separator />
+              <Menu.Label>Set status</Menu.Label>
+              {['in_progress', 'in_validation', 'paused', 'completed'].map((st) => (
+                <Menu.Item key={st} data-debug-id={`taskchain-task-status-${st}-btn-${taskId}`} onClick={() => void handleStatusChange(taskId, st)}>{st}</Menu.Item>
+              ))}
+              <Menu.Separator />
+              <Menu.Item data-debug-id={`taskchain-task-cancel-btn-${taskId}`} danger onClick={() => void handleCancelTask(taskId)}>Cancel</Menu.Item>
+            </Menu>
           </div>
         </div>
 
