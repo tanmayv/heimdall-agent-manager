@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { ChainLike, TaskLike } from './chainTaskInference';
 import { taskStatusOf, taskReviewerOf, isUserEffectiveReviewer } from './chainTaskInference';
-import { Text } from '@ui';
+import { StatusPill, Text, type Tone } from '@ui';
 
 export type CurrentTaskStripProps = {
   task: TaskLike;
@@ -29,28 +29,27 @@ export type CurrentTaskStripProps = {
   collapsed?: boolean;
 };
 
-function statusTone(status: string): string {
+// Status -> semantic StatusPill tone (the ~10 raw statuses collapse onto the 6 tones).
+function statusTone(status: string): Tone {
   const s = status.toLowerCase();
-  if (s === 'in_progress') return 'bg-teal-500/15 text-teal-200 border-teal-500/30';
-  if (s === 'review_ready' || s === 'in_validation') return 'bg-sky-500/15 text-sky-200 border-sky-500/30';
-  if (s === 'validated_not_good') return 'bg-rose-500/15 text-rose-200 border-rose-500/30';
-  if (s === 'blocked') return 'bg-rose-500/15 text-rose-200 border-rose-500/30';
-  // CT-2: Queued is a distinct held-back state — amber so it reads as "waiting".
-  if (s === 'queued') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
-  if (s === 'ready' || s === 'planning') return 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30';
-  return 'bg-white/5 text-zinc-400 border-white/10';
+  if (s === 'in_progress') return 'info';
+  if (s === 'review_ready' || s === 'in_validation') return 'info';
+  if (s === 'validated_not_good' || s === 'blocked') return 'danger';
+  // CT-2: Queued is a distinct held-back state — amber/warning so it reads as "waiting".
+  if (s === 'queued') return 'warning';
+  return 'neutral';
 }
 
 // CT-3: P0/P1/P2 priority indicator. P0 is most urgent (red), P1 amber, P2 muted.
 export function priorityOf(task: { priority?: string }): string {
   return String(task?.priority || '').toLowerCase();
 }
-function priorityTone(priority: string): string {
+function priorityTone(priority: string): Tone | null {
   const p = priority.toLowerCase();
-  if (p === 'p0') return 'bg-red-500/20 text-red-200 border-red-500/40';
-  if (p === 'p1') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
-  if (p === 'p2') return 'bg-zinc-500/10 text-zinc-400 border-zinc-500/25';
-  return '';
+  if (p === 'p0') return 'danger';
+  if (p === 'p1') return 'warning';
+  if (p === 'p2') return 'neutral';
+  return null;
 }
 
 // R8: the current-task role rendered as an explicit WORK vs REVIEW action label.
@@ -61,11 +60,11 @@ function roleActionLabel(role: string): string {
   if (r === 'coordinator') return 'COORDINATE';
   return String(role || '').toUpperCase();
 }
-function roleActionTone(role: string): string {
+function roleActionTone(role: string): Tone {
   const r = String(role || '').toLowerCase();
-  if (r === 'reviewer') return 'bg-sky-500/15 text-sky-200 border-sky-500/30';
-  if (r === 'assignee' || r === 'assigned') return 'bg-teal-500/15 text-teal-200 border-teal-500/30';
-  return 'bg-white/5 text-zinc-300 border-white/10';
+  if (r === 'reviewer') return 'info';
+  if (r === 'assignee' || r === 'assigned') return 'success';
+  return 'neutral';
 }
 
 // Derive the first 1-2 acceptance criteria from the chain description / task description.
@@ -161,10 +160,10 @@ export default function CurrentTaskStrip({
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
             {/* R8: explicit WORK vs REVIEW action label for the current-task role. */}
-            <span data-debug-id={`${debugPrefix}-current-task-action`} data-current-task-action={roleActionLabel(role)} className={`rounded-full border px-2 py-0.5 font-semibold tracking-wide ${roleActionTone(role)}`}>{roleActionLabel(role)}</span>
-            <span className={`rounded-full border px-2 py-0.5 ${statusTone(status)}`}>{status}</span>
+            <StatusPill tone={roleActionTone(role)} data-debug-id={`${debugPrefix}-current-task-action`} data-current-task-action={roleActionLabel(role)}>{roleActionLabel(role)}</StatusPill>
+            <StatusPill tone={statusTone(status)}>{status}</StatusPill>
             {/* CT-3: P0/P1/P2 priority indicator (hidden when unknown). */}
-            {priorityTone(priority) ? <span data-debug-id={`${debugPrefix}-current-task-priority`} data-current-task-priority={priority} className={`rounded-full border px-2 py-0.5 font-semibold uppercase ${priorityTone(priority)}`}>{priority}</span> : null}
+            {(() => { const pt = priorityTone(priority); return pt ? <StatusPill tone={pt} data-debug-id={`${debugPrefix}-current-task-priority`} data-current-task-priority={priority} className="uppercase">{priority}</StatusPill> : null; })()}
             <span>Assignee: <span className="text-zinc-300">{agentInstanceId}</span></span>
             {reviewer ? <span>Reviewer: <span className="text-zinc-300">{reviewer}</span></span> : null}
           </div>
