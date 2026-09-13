@@ -229,6 +229,150 @@ async_push_thread_struct_off_request_arena :: proc(t: ^testing.T) {
 	}
 }
 
+// --- Push hardening: response classification + auto-prune with breaker --------
+
+@(test)
+classify_push_status_maps_statuses :: proc(t: ^testing.T) {
+	testing.expect_value(t, classify_push_status(200, true), Push_Send_Class.Success)
+	testing.expect_value(t, classify_push_status(201, true), Push_Send_Class.Success)
+	testing.expect_value(t, classify_push_status(404, true), Push_Send_Class.Gone)
+	testing.expect_value(t, classify_push_status(410, true), Push_Send_Class.Gone)
+	testing.expect_value(t, classify_push_status(401, true), Push_Send_Class.Auth_Failed)
+	testing.expect_value(t, classify_push_status(403, true), Push_Send_Class.Auth_Failed)
+	// Transient / never-prune: rate limit, server errors, other 4xx.
+	testing.expect_value(t, classify_push_status(429, true), Push_Send_Class.Transient)
+	testing.expect_value(t, classify_push_status(500, true), Push_Send_Class.Transient)
+	testing.expect_value(t, classify_push_status(502, true), Push_Send_Class.Transient)
+	testing.expect_value(t, classify_push_status(400, true), Push_Send_Class.Transient)
+	testing.expect_value(t, classify_push_status(413, true), Push_Send_Class.Transient)
+	// Transport failure (dial/tls/timeout): status is meaningless -> Transient.
+	testing.expect_value(t, classify_push_status(0, false), Push_Send_Class.Transient)
+	testing.expect_value(t, classify_push_status(200, false), Push_Send_Class.Transient)
+}
+
+@(test)
+push_auth_breaker_and_should_prune :: proc(t: ^testing.T) {
+	// No auth failures -> never tripped.
+	testing.expect(t, !push_auth_breaker_tripped(10, 0, 10))
+	// All sends auth-failed (the accidental key-rotation case) -> tripped.
+	testing.expect(t, push_auth_breaker_tripped(0, 11, 11))
+	// Single sub, auth-failed, no other success -> tripped (can't tell sub vs server).
+	testing.expect(t, push_auth_breaker_tripped(0, 1, 1))
+	// Isolated auth failure amid successes -> NOT tripped (prune the one).
+	testing.expect(t, !push_auth_breaker_tripped(10, 1, 11))
+	// KEY-ROTATION w/ mixed providers: 11 Apple 403 + 3 FCM 201 -> auth is a
+	// majority -> tripped, so the 11 Apple subs are NOT wiped.
+	testing.expect(t, push_auth_breaker_tripped(3, 11, 14))
+	// Auth failures at exactly half -> tripped (conservative).
+	testing.expect(t, push_auth_breaker_tripped(3, 3, 6))
+
+	// should_prune: Gone always; Auth only when breaker not tripped; never others.
+	testing.expect(t, push_should_prune(.Gone, false))
+	testing.expect(t, push_should_prune(.Gone, true)) // Gone is exempt from the breaker
+	testing.expect(t, push_should_prune(.Auth_Failed, false))
+	testing.expect(t, !push_should_prune(.Auth_Failed, true))
+	testing.expect(t, !push_should_prune(.Success, false))
+	testing.expect(t, !push_should_prune(.Transient, false))
+}
+
+// Fake repo that records which subscription ids were deleted, so we can assert the
+// prune path actually removes rows via the repository interface.
+@(private = "file")
+Fake_Prune_Repo :: struct {
+	deleted: [dynamic]string,
+}
+
+@(private = "file")
+fake_prune_delete_by_id :: proc(ctx: rawptr, id: domain.Push_Subscription_ID) -> (bool, domain.Domain_Error) {
+	r := (^Fake_Prune_Repo)(ctx)
+	append(&r.deleted, string(id))
+	return true, domain.Domain_Error{}
+}
+
+@(private = "file")
+make_fake_prune_service :: proc(fake: ^Fake_Prune_Repo, repo: ^iface.Push_Repository) -> Push_Service {
+	repo^ = iface.Push_Repository{ctx = rawptr(fake), delete_by_id = fake_prune_delete_by_id}
+	return Push_Service{subscriptions = repo, vapid = Vapid_Config{public_key = "pk", private_key = "sk"}}
+}
+
+@(test)
+apply_push_prune_gone_and_isolated_auth :: proc(t: ^testing.T) {
+	fake := Fake_Prune_Repo{}
+	defer delete(fake.deleted)
+	repo: iface.Push_Repository
+	service := make_fake_prune_service(&fake, &repo)
+
+	// 10 delivered, 1 gone (410), 1 dead (404), 1 isolated auth (403) -> prune the 3.
+	outcomes := []Push_Send_Outcome{
+		{sub_id = "psub_ok1", status = 201, class = .Success},
+		{sub_id = "psub_gone", status = 410, class = .Gone},
+		{sub_id = "psub_404", status = 404, class = .Gone},
+		{sub_id = "psub_auth", status = 403, class = .Auth_Failed},
+		{sub_id = "psub_ok2", status = 201, class = .Success},
+	}
+	pruned, breaker := apply_push_prune(&service, domain.User_ID("usr_1"), outcomes)
+	testing.expect(t, !breaker)
+	testing.expect_value(t, pruned, 3)
+	testing.expect_value(t, len(fake.deleted), 3)
+	testing.expect(t, slice_has(fake.deleted[:], "psub_gone"))
+	testing.expect(t, slice_has(fake.deleted[:], "psub_404"))
+	testing.expect(t, slice_has(fake.deleted[:], "psub_auth"))
+	testing.expect(t, !slice_has(fake.deleted[:], "psub_ok1"))
+}
+
+@(test)
+apply_push_prune_breaker_protects_mass_auth_failure :: proc(t: ^testing.T) {
+	// The incident scenario: an accidental VAPID key rotation makes EVERY Apple sub
+	// 403 at once. The breaker MUST trip and prune NOTHING (only WARN), so we don't
+	// wipe every subscription. 404/410 in the same batch are still pruned.
+	fake := Fake_Prune_Repo{}
+	defer delete(fake.deleted)
+	repo: iface.Push_Repository
+	service := make_fake_prune_service(&fake, &repo)
+
+	outcomes := []Push_Send_Outcome{
+		{sub_id = "psub_a", status = 403, class = .Auth_Failed},
+		{sub_id = "psub_b", status = 403, class = .Auth_Failed},
+		{sub_id = "psub_c", status = 403, class = .Auth_Failed},
+		{sub_id = "psub_gone", status = 410, class = .Gone}, // still pruned (exempt)
+	}
+	pruned, breaker := apply_push_prune(&service, domain.User_ID("usr_1"), outcomes)
+	testing.expect(t, breaker)
+	// Only the Gone sub is pruned; the 3 auth-failed subs are protected.
+	testing.expect_value(t, pruned, 1)
+	testing.expect_value(t, len(fake.deleted), 1)
+	testing.expect(t, slice_has(fake.deleted[:], "psub_gone"))
+	testing.expect(t, !slice_has(fake.deleted[:], "psub_a"))
+}
+
+@(test)
+apply_push_prune_transient_never_pruned :: proc(t: ^testing.T) {
+	fake := Fake_Prune_Repo{}
+	defer delete(fake.deleted)
+	repo: iface.Push_Repository
+	service := make_fake_prune_service(&fake, &repo)
+
+	// 429 + 500 + a transport failure alongside a success: none of these prune.
+	outcomes := []Push_Send_Outcome{
+		{sub_id = "psub_ok", status = 201, class = .Success},
+		{sub_id = "psub_429", status = 429, class = .Transient},
+		{sub_id = "psub_500", status = 500, class = .Transient},
+		{sub_id = "psub_timeout", status = 0, class = .Transient},
+	}
+	pruned, breaker := apply_push_prune(&service, domain.User_ID("usr_1"), outcomes)
+	testing.expect(t, !breaker)
+	testing.expect_value(t, pruned, 0)
+	testing.expect_value(t, len(fake.deleted), 0)
+}
+
+@(private = "file")
+slice_has :: proc(xs: []string, want: string) -> bool {
+	for x in xs {
+		if x == want do return true
+	}
+	return false
+}
+
 @(test)
 send_to_user_noop_when_disabled :: proc(t: ^testing.T) {
 	// A service with no VAPID keypair must not attempt any delivery.
