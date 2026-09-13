@@ -42,6 +42,11 @@ Fts_Provider :: struct {
 	scope_conversation:    string,
 	bm25_weights:          string, // CSV of bm25 column weights, primary first
 	secondary_field:       string, // matched_field label for the ELSE(=40) tier
+	// MSG-2: optional scalar SQL exprs (over the base row `c`) for the message
+	// provider's in-conversation position/total. Empty => emitted as '0' (the
+	// non-message default), so the emitted-column count stays uniform across providers.
+	position_expr:         string,
+	total_expr:            string,
 }
 
 // FTS_WEIGHT_* are the field weights fed to bm25(): the primary title/name column
@@ -130,6 +135,13 @@ FTS_PROVIDERS := []Fts_Provider{
 			recency_expr = "c.created_at", // chat_messages has no updated_at column
 			scope_chain = "cc.chain_id", scope_project = "cc.project_id", scope_conversation = "c.conversation_id",
 			bm25_weights = "10.0", secondary_field = "body",
+			// MSG-2: 1-based index of this message within its conversation's user-visible
+			// timeline, and the total size of that set. The predicate mirrors where_extra
+			// (this provider's own visibility filter) so position is consistent with the
+			// rows this provider surfaces; ordering by (created_at, message_id) is
+			// deterministic even when timestamps collide. Correlated over the base row `c`.
+			position_expr = "(SELECT COUNT(*) FROM chat_messages mp WHERE mp.conversation_id = c.conversation_id AND mp.owner_user_id = c.owner_user_id AND mp.direction != 'agent_to_agent' AND mp.message_type = 'text' AND (mp.created_at < c.created_at OR (mp.created_at = c.created_at AND mp.message_id <= c.message_id)))",
+			total_expr = "(SELECT COUNT(*) FROM chat_messages mp WHERE mp.conversation_id = c.conversation_id AND mp.owner_user_id = c.owner_user_id AND mp.direction != 'agent_to_agent' AND mp.message_type = 'text')",
 		},
 }
 
@@ -150,11 +162,15 @@ col_or_empty :: proc(expr: string) -> string {
 // the merge/cursor pipeline is unchanged.
 build_fts_sql :: proc(d: Fts_Provider) -> string {
 	b := strings.builder_make()
-	fmt.sbprintf(&b, "SELECT resource_type, id, label, sublabel, route, score, parent_id, parent_type, match_text FROM (\n")
+	fmt.sbprintf(&b, "SELECT resource_type, id, label, sublabel, route, score, parent_id, parent_type, match_text, conversation_position, conversation_total FROM (\n")
 	recency := d.recency_expr != "" ? d.recency_expr : "c.updated_at"
-	fmt.sbprintf(&b, "  SELECT '%s' AS resource_type, %s AS id, %s AS label, %s AS sublabel, %s AS route, %s AS updated_at, c.owner_user_id AS owner_user_id, %s AS scope_task_id, %s AS scope_chain_id, %s AS scope_project_id, %s AS scope_conversation_id, '' AS parent_id, '' AS parent_type, snippet(%s, -1, '[', ']', '\u2026', 10) AS match_text,\n",
+	// MSG-2 position/total: emitted for every provider (default '0') so the outer
+	// column indices stay uniform; only the message provider sets these exprs.
+	position := d.position_expr != "" ? d.position_expr : "0"
+	total := d.total_expr != "" ? d.total_expr : "0"
+	fmt.sbprintf(&b, "  SELECT '%s' AS resource_type, %s AS id, %s AS label, %s AS sublabel, %s AS route, %s AS updated_at, c.owner_user_id AS owner_user_id, %s AS scope_task_id, %s AS scope_chain_id, %s AS scope_project_id, %s AS scope_conversation_id, '' AS parent_id, '' AS parent_type, snippet(%s, -1, '[', ']', '\u2026', 10) AS match_text, %s AS conversation_position, %s AS conversation_total,\n",
 		d.resource_type, d.id_expr, d.label_expr, d.sublabel_expr, d.route_expr, recency,
-		col_or_empty(d.scope_task), col_or_empty(d.scope_chain), col_or_empty(d.scope_project), col_or_empty(d.scope_conversation), d.fts)
+		col_or_empty(d.scope_task), col_or_empty(d.scope_chain), col_or_empty(d.scope_project), col_or_empty(d.scope_conversation), d.fts, position, total)
 	// Tier on the primary field: exact 100 / prefix 90 / word-boundary 80 /
 	// primary-interior 50; ELSE the row matched FTS only in a secondary/body column
 	// => the unified secondary tier (40). (FTS providers don't index ids, so the
@@ -207,6 +223,10 @@ run_fts_search :: proc(impl: ^Search_Repo_SQLite, d: Fts_Provider, query: iface.
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		hit := search_hit_from_stmt(stmt)
 		hit.preview = collapse_ws_string(column_text(stmt, 8))
+		// MSG-2: cols 9/10 are the in-conversation position/total (0 for non-message
+		// providers, which the JSON writer omits).
+		hit.conversation_position = int_v(column_text(stmt, 9))
+		hit.conversation_total = int_v(column_text(stmt, 10))
 		// Primary-field match (tier >=50) => matched_field=label; the secondary tier
 		// (40) means the row matched a secondary/body column via FTS.
 		hit.matched_field = hit.score >= 50 ? "label" : d.secondary_field

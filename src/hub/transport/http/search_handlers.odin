@@ -75,7 +75,11 @@ search_groups_json :: proc(hits: []iface.Search_Hit) -> string {
 	return strings.to_string(b)
 }
 
-SEARCH_RESPONSE_TYPE_ORDER :: [?]string{"conversation", "agent", "agent_instance", "task-chain", "task", "comment", "project", "artifact", "memory", "skill"}
+// Kept in sync with the repository's SEARCH_TYPE_ORDER and the ctl's
+// SEARCH_GROUP_ORDER (message is the 2nd group). Omitting a type here silently
+// drops its hits from BOTH /api/v1/search and /api/v1/agent-actions/search, since
+// search_groups_json only emits groups it lists.
+SEARCH_RESPONSE_TYPE_ORDER :: [?]string{"conversation", "message", "agent", "agent_instance", "task-chain", "task", "comment", "project", "artifact", "memory", "skill"}
 
 search_limit_from_query :: proc(query: string, parsed_limit: int) -> int {
 	if !query_has_key(query, "limit") do return search_service.DEFAULT_SEARCH_LIMIT
@@ -119,7 +123,15 @@ write_search_hit_json :: proc(b: ^strings.Builder, hit: iface.Search_Hit) {
 	}
 	strings.write_string(b, ",\"preview\":\""); write_handler_json_string(b, hit.preview)
 	strings.write_string(b, "\",\"matched_field\":\""); write_handler_json_string(b, hit.matched_field)
-	strings.write_string(b, "\"}")
+	strings.write_byte(b, '"')
+	// MSG-2: 1-based position of the hit within its conversation's user-visible
+	// timeline plus that timeline's size (for a future scroll-to-match UI). Only the
+	// message provider populates these; the keys are OMITTED for every other type.
+	if hit.resource_type == "message" {
+		strings.write_string(b, ",\"conversation_position\":"); strings.write_string(b, fmt.tprintf("%d", hit.conversation_position))
+		strings.write_string(b, ",\"conversation_total\":"); strings.write_string(b, fmt.tprintf("%d", hit.conversation_total))
+	}
+	strings.write_byte(b, '}')
 }
 
 score_json :: proc(score: int) -> string {

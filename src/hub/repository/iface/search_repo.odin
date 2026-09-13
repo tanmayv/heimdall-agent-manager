@@ -17,6 +17,14 @@ Search_Hit :: struct {
 	parent_type: string,
 	preview: string,
 	matched_field: string,
+	// MSG-2: 1-based index of a message hit within its conversation's user-visible
+	// timeline (direction != 'agent_to_agent' AND message_type = 'text', ordered by
+	// (created_at, message_id)) and the size of that same set. Set only by the
+	// message provider; 0 for every other resource type (the JSON writer omits the
+	// fields when they are unset, i.e. for non-message hits). For a future
+	// scroll-to-match UI ("message N of M").
+	conversation_position: int,
+	conversation_total: int,
 }
 
 Search_Query :: struct {

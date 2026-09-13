@@ -32,10 +32,17 @@ seed_conversation :: proc(repo: ^iface.Content_Repository, id, owner, inst, titl
 }
 
 seed_message :: proc(repo: ^iface.Content_Repository, id, conv, owner, direction, mtype, body: string) {
+	seed_message_at(repo, id, conv, owner, direction, mtype, body, TS)
+}
+
+// seed_message_at is seed_message with an explicit created_at, so a test can place
+// messages at known chronological positions (incl. deliberate timestamp collisions
+// to exercise the (created_at, message_id) tiebreak used by conversation_position).
+seed_message_at :: proc(repo: ^iface.Content_Repository, id, conv, owner, direction, mtype, body, created_at: string) {
 	_, ok, err := iface.content_save_message(repo, domain.Chat_Message{
 		message_id = id, conversation_id = conv, owner_user_id = domain.User_ID(owner),
 		direction = direction, message_type = mtype, message_status = "complete",
-		body = body, created_at = TS,
+		body = body, created_at = created_at,
 	})
 	check(ok, fmt.tprintf("seed message %s: %s", id, err.message))
 }
@@ -110,5 +117,48 @@ main :: proc() {
 	_, default_ok := find(res_all.hits, "msg_u")
 	check(default_ok, "message hits must appear in an unfiltered (all-types) search")
 
-	fmt.println("PASS: hub search messages (body match + shape + visibility filter + owner isolation + default type)")
+	// (5) MSG-2 conversation_position / conversation_total. Seed a conversation with
+	// 5 user-visible text messages at known chronological positions — including TWO
+	// sharing an identical created_at (pm_3a/pm_3b) so the (created_at, message_id)
+	// tiebreak is exercised — plus two NON-visible rows (agent_to_agent + non-'text')
+	// that must be excluded from both the results AND the position/total counts.
+	seed_conversation(&crepo, "cid_pos", "u", "inst_pos", "Position chat")
+	seed_message_at(&crepo, "pm_1",  "cid_pos", "u", "user_to_agent",  "text", "positronix one",   "2026-02-01T00:00:01Z")
+	seed_message_at(&crepo, "pm_2",  "cid_pos", "u", "agent_to_user",  "text", "positronix two",   "2026-02-01T00:00:02Z")
+	// Identical timestamp: ordered by message_id asc => pm_3a (pos 3) before pm_3b (pos 4).
+	seed_message_at(&crepo, "pm_3a", "cid_pos", "u", "user_to_agent",  "text", "positronix three", "2026-02-01T00:00:03Z")
+	seed_message_at(&crepo, "pm_3b", "cid_pos", "u", "agent_to_user",  "text", "positronix four",  "2026-02-01T00:00:03Z")
+	seed_message_at(&crepo, "pm_5",  "cid_pos", "u", "user_to_agent",  "text", "positronix five",  "2026-02-01T00:00:04Z")
+	// Non-visible rows carrying the same token — must not count toward total/position.
+	seed_message_at(&crepo, "pm_a2a",    "cid_pos", "u", "agent_to_agent", "text",          "positronix hidden a2a",  "2026-02-01T00:00:00Z")
+	seed_message_at(&crepo, "pm_status", "cid_pos", "u", "agent_to_user",  "status_update", "positronix hidden stat", "2026-02-01T00:00:05Z")
+
+	res_pos := search(&repo, "u", "positronix", "message")
+	// Expected (created_at, message_id) order: pm_1, pm_2, pm_3a, pm_3b, pm_5.
+	expected_ids := [?]string{"pm_1", "pm_2", "pm_3a", "pm_3b", "pm_5"}
+	for want_id, i in expected_ids {
+		want_pos := i + 1
+		hit, found := find(res_pos.hits, want_id)
+		check(found, fmt.tprintf("position: %s must be returned", want_id))
+		check(hit.conversation_position == want_pos, fmt.tprintf("%s conversation_position must be %d, got %d", want_id, want_pos, hit.conversation_position))
+		check(hit.conversation_total == 5, fmt.tprintf("%s conversation_total must be 5 (visible text only), got %d", want_id, hit.conversation_total))
+	}
+	// Non-visible rows excluded from the results entirely.
+	_, has_a2a := find(res_pos.hits, "pm_a2a")
+	check(!has_a2a, "agent_to_agent message must not appear in position results")
+	_, has_stat := find(res_pos.hits, "pm_status")
+	check(!has_stat, "status_update message must not appear in position results")
+
+	// (6) position/total are owner-scoped: owner v's own message is position 1 of 1
+	// and owner u's positronix rows never leak into v's search.
+	seed_conversation(&crepo, "cid_pos_v", "v", "inst_pos_v", "V position chat")
+	seed_message_at(&crepo, "pv_1", "cid_pos_v", "v", "user_to_agent", "text", "positronix v-only", "2026-02-01T00:00:01Z")
+	res_pos_v := search(&repo, "v", "positronix", "message")
+	pv, pv_ok := find(res_pos_v.hits, "pv_1")
+	check(pv_ok, "owner v must find their own positronix message")
+	check(pv.conversation_position == 1 && pv.conversation_total == 1, fmt.tprintf("owner v position must be 1 of 1, got %d of %d", pv.conversation_position, pv.conversation_total))
+	_, u_pos_leak := find(res_pos_v.hits, "pm_1")
+	check(!u_pos_leak, "owner v must not see owner u's positronix messages")
+
+	fmt.println("PASS: hub search messages (body match + shape + visibility filter + owner isolation + default type + conversation_position/total incl. created_at tiebreak)")
 }
