@@ -1,12 +1,39 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useGlobalSearchQuery, useLazyGlobalSearchQuery, type SearchHit } from '../../api/endpoints/search';
-import Icon, { type IconName } from '../Icon';
-
-// UI-12: unified command palette — navigation + entity search + actions.
-// One component, invoked from Cmd/Ctrl-K, the sidebar "Search" item, and the
-// mobile bottom-tab center button. Search-as-you-type with debounce + abort
-// of superseded requests (handled by RTK Query: only the latest arg is kept).
-// Keyboard-first: up/down to move, Enter to activate, Esc to close.
+/**
+ * CommandPalette — the unified Cmd/Ctrl-K palette (EL-056).
+ * ------------------------------------------------------------------
+ * Purpose: one keyboard-first surface for navigation + entity search + quick
+ * actions, invoked from Cmd/Ctrl-K, the sidebar "Search" item, and the mobile
+ * center tab. Search-as-you-type (debounced, superseded requests aborted by RTK
+ * Query), grouped results, and real load-more paging.
+ *
+ * Layer: pattern (product-specific). Built on the shared dialog a11y contract
+ * (`useDialogA11y`, the same focus-trap/Esc/scroll-lock/restore Modal uses) and
+ * the ARIA combobox pattern (an input `role="combobox"` driving a `role="listbox"`
+ * of `role="option"` rows via `aria-activedescendant`). It does NOT nest the
+ * `Combobox` primitive: the palette's results are heterogeneous and grouped
+ * (nav / actions / live conversations / backend entities with previews +
+ * load-more), which Combobox's flat option model can't render — so it reuses the
+ * pattern, not the component.
+ *
+ * Accessibility (built in, not props):
+ *   - Panel is `role="dialog"` + `aria-modal` + `aria-label`; `useDialogA11y`
+ *     traps focus, closes on Esc, locks body scroll, and restores focus on close.
+ *   - The input is `role="combobox"` (`aria-expanded`, `aria-controls`,
+ *     `aria-activedescendant`, `aria-autocomplete="list"`); results are a
+ *     `role="listbox"`; each row is a `role="option"` with a stable id and
+ *     `aria-selected`. Focus stays on the input; ↑/↓ move the active option,
+ *     Enter activates it — the options are not tab stops.
+ *
+ * Tokens only: surface/border/text/radius/shadow/z resolve to tokens
+ * (`surface-overlay`, `border-subtle`, `text-primary/muted/faint`, `z-modal`,
+ * `shadow-overlay`). Row hover/active use the app's translucent white-overlay
+ * idiom (not a hex literal). No raw hex / arbitrary z.
+ */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useGlobalSearchQuery, useLazyGlobalSearchQuery, type SearchHit } from '../../../api/endpoints/search';
+import { Icon, StatusDot, type IconName } from '../primitives';
+import { runtimeStatusToTone } from './RuntimeChip';
+import { useDialogA11y } from '../composites/useDialogA11y';
 
 export type PaletteConversation = {
   conversationId: string;
@@ -54,13 +81,12 @@ export type PaletteResult =
   | { kind: 'conversation'; label: string; hint?: string; route: string; group: string; convo: PaletteConversation }
   | { kind: 'entity'; label: string; hint?: string; hit: SearchHit; group: string; route?: string };
 
-// Dot color for a conversation's live runtime state.
-function convoDotClass(convo: PaletteConversation): string {
-  const s = String(convo.runtimeStatus || '').toLowerCase();
+// Live runtime state → StatusDot props for a conversation row's dot. Uses the
+// canonical runtime tone map (EL-050) so the palette matches the sidebar/chips.
+function convoDot(convo: PaletteConversation): { tone: Parameters<typeof StatusDot>[0]['tone']; pulse: boolean } {
+  const tone = runtimeStatusToTone(convo.runtimeStatus || '');
   const busy = ['active', 'busy', 'working'].includes(String(convo.activityStatus || '').toLowerCase());
-  if (s === 'running' || s === 'ready' || s === 'live') return busy ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-400';
-  if (s === 'starting' || s === 'launching') return 'bg-amber-400';
-  return 'bg-zinc-600';
+  return { tone, pulse: tone === 'success' && busy };
 }
 
 const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
@@ -133,7 +159,7 @@ function renderPreview(preview: string) {
   return (
     <>
       {preview.slice(0, open)}
-      <span className="rounded bg-amber-400/20 px-0.5 text-amber-200">{preview.slice(open + 1, close)}</span>
+      <span className="rounded bg-warning-soft px-0.5 text-warning">{preview.slice(open + 1, close)}</span>
       {preview.slice(close + 1)}
     </>
   );
@@ -157,12 +183,35 @@ function hitIcon(type: string): IconName {
   }
 }
 
-export default function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [], currentPath = '' }: CommandPaletteProps) {
+const ENTITY_GROUP_LABEL: Record<string, string> = {
+  conversation: 'Conversations',
+  agent: 'Agents',
+  agent_instance: 'Agents',
+  'task-chain': 'Task Chains',
+  task: 'Tasks',
+  comment: 'Comments',
+  message: 'Messages',
+  project: 'Projects',
+  artifact: 'Artifacts',
+  memory: 'Memory',
+  skill: 'Skills',
+};
+
+/** Stable id for the option at flat index `i` (target of aria-activedescendant). */
+const optionId = (i: number) => `command-palette-option-${i}`;
+
+export function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [], currentPath = '' }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const listboxId = 'command-palette-listbox';
+
+  // Shared dialog contract: focus trap, Esc-to-close, body scroll-lock, and
+  // focus restore on close — the same infrastructure Modal/Drawer use.
+  useDialogA11y(open, onClose, panelRef);
 
   // Debounce the search query (120–200ms per arch doc) to limit requests.
   useEffect(() => {
@@ -221,7 +270,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
     return out;
   }, [searchQuery.data, extraHits]);
 
-  // Reset on open/close.
+  // Reset on open, and move focus to the input (combobox owns focus).
   useEffect(() => {
     if (open) {
       setQuery('');
@@ -299,11 +348,10 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
     }
   }
 
+  // Combobox keyboard model: ↑/↓ move the active option, Enter activates it.
+  // Esc/Tab are owned by useDialogA11y (document-level), so they're not here.
   function handleKeyDown(event: React.KeyboardEvent) {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      onClose();
-    } else if (event.key === 'ArrowDown') {
+    if (event.key === 'ArrowDown') {
       event.preventDefault();
       setActiveIndex((i) => (i + 1) % Math.max(results.length, 1));
     } else if (event.key === 'ArrowUp') {
@@ -334,39 +382,57 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
   return (
     <div
       data-debug-id="command-palette"
-      className="fixed inset-0 z-[90] flex items-start justify-center bg-black/60 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[12vh]"
+      role="presentation"
+      className="fixed inset-0 z-modal flex items-start justify-center bg-black/60 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[12vh]"
       onClick={onClose}
     >
       <div
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
         data-debug-id="command-palette-panel"
-        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0d0f14] shadow-2xl shadow-black/50 sm:max-h-[70vh]"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-subtle bg-surface-overlay shadow-overlay outline-none sm:max-h-[70vh]"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
-          <span aria-hidden="true" className="text-zinc-500"><Icon name="search" size={16} /></span>
+        <div className="flex items-center gap-3 border-b border-subtle px-4 py-3">
+          <span aria-hidden="true" className="text-muted"><Icon name="search" size={16} /></span>
           <input
             ref={inputRef}
             data-debug-id="command-palette-input"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={listboxId}
+            aria-activedescendant={results.length ? optionId(activeIndex) : undefined}
+            aria-autocomplete="list"
+            aria-label="Search commands, conversations, and entities"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Type a command or search…"
-            className="min-w-0 flex-1 bg-transparent text-[15px] text-zinc-100 outline-none placeholder:text-zinc-600"
+            className="min-w-0 flex-1 bg-transparent text-[15px] text-primary outline-none placeholder:text-faint"
             autoComplete="off"
             spellCheck={false}
           />
-          {loading ? <span data-debug-id="command-palette-loading" className="text-[11px] text-zinc-500">searching…</span> : null}
-          <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-500">esc</kbd>
+          {loading ? <span data-debug-id="command-palette-loading" className="text-[11px] text-muted">searching…</span> : null}
+          <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5 text-[10px] text-muted">esc</kbd>
         </div>
-        <div ref={listRef} className="flex-1 overflow-y-auto p-2">
+        <div
+          ref={listRef}
+          id={listboxId}
+          role="listbox"
+          aria-label="Results"
+          className="flex-1 overflow-y-auto p-2"
+        >
           {results.length === 0 ? (
-            <div data-debug-id="command-palette-empty" className="px-3 py-8 text-center text-sm text-zinc-500">
+            <div data-debug-id="command-palette-empty" role="presentation" className="px-3 py-8 text-center text-sm text-muted">
               {trimmed ? `No results for “${trimmed}”.` : 'Start typing to search or jump.'}
             </div>
           ) : (
             Array.from(grouped.entries()).map(([groupLabel, { results: groupResults, indices }]) => (
-              <div key={groupLabel} className="mb-1">
-                <div data-debug-id={`command-palette-group-${groupLabel.toLowerCase().replace(/\s+/g, '-')}`} className="px-3 py-1 text-[10.5px] font-semibold uppercase tracking-[0.18em] text-zinc-600">{groupLabel}</div>
+              <div key={groupLabel} role="group" aria-label={groupLabel} className="mb-1">
+                <div aria-hidden="true" data-debug-id={`command-palette-group-${groupLabel.toLowerCase().replace(/\s+/g, '-')}`} className="px-3 py-1 text-[10.5px] font-semibold uppercase tracking-[0.18em] text-faint">{groupLabel}</div>
                 {groupResults.map((result, i) => {
                   const idx = indices[i];
                   const active = idx === activeIndex;
@@ -385,33 +451,37 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
                   );
                   const highlight = active || isSelectedConvo;
                   return (
-                    <button
+                    <div
                       key={`${groupLabel}-${idx}`}
-                      type="button"
+                      role="option"
+                      id={optionId(idx)}
+                      aria-selected={active}
                       data-debug-id={`command-palette-result-${idx}`}
                       data-palette-index={idx}
                       onClick={() => activate(result)}
                       onMouseEnter={() => setActiveIndex(idx)}
-                      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${highlight ? 'bg-white/[0.08] text-zinc-100' : 'text-zinc-300 hover:bg-white/[0.04]'}`}
+                      className={`flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${highlight ? 'bg-white/[0.08] text-primary' : 'text-muted hover:bg-white/[0.04]'}`}
                     >
                       {isConvo ? (
-                        <span aria-hidden="true" className="grid w-5 place-items-center"><span className={`h-2 w-2 rounded-full ${convoDotClass(result.convo)}`} /></span>
+                        <span aria-hidden="true" className="grid w-5 place-items-center">
+                          <StatusDot tone={convoDot(result.convo).tone} pulse={convoDot(result.convo).pulse} label="" />
+                        </span>
                       ) : (
-                        <span aria-hidden="true" className="grid w-5 place-items-center text-zinc-400 opacity-80"><Icon name={icon} size={16} /></span>
+                        <span aria-hidden="true" className="grid w-5 place-items-center text-muted opacity-80"><Icon name={icon} size={16} /></span>
                       )}
                       <span className="flex min-w-0 flex-1 flex-col">
-                        <span className={`truncate ${isConvo && result.convo.isCoordinator ? 'text-amber-300' : ''}`} title={isConvo && result.convo.isCoordinator ? 'Coordinator' : undefined}>
+                        <span className={`truncate ${isConvo && result.convo.isCoordinator ? 'text-warning' : ''}`} title={isConvo && result.convo.isCoordinator ? 'Coordinator' : undefined}>
                           {isMessage && result.hit.preview ? renderPreview(result.hit.preview) : label}
                         </span>
                         {isMessage ? (
-                          result.hit.sublabel ? <span className="truncate text-[11px] text-zinc-500">{result.hit.sublabel}</span> : null
+                          result.hit.sublabel ? <span className="truncate text-[11px] text-muted">{result.hit.sublabel}</span> : null
                         ) : result.kind === 'entity' && result.hit.preview ? (
-                          <span className="truncate text-[11px] text-zinc-500">{renderPreview(result.hit.preview)}</span>
+                          <span className="truncate text-[11px] text-muted">{renderPreview(result.hit.preview)}</span>
                         ) : null}
                       </span>
-                      {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-sky-400 px-1.5 text-center text-[10px] font-bold leading-4 text-black">{unread > 99 ? '99+' : unread}</span> : null}
-                      {result.hint && !isMessage ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-[11px] text-zinc-500">{result.hint}</span> : null}
-                    </button>
+                      {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 text-center text-[10px] font-bold leading-4 text-accent-fg">{unread > 99 ? '99+' : unread}</span> : null}
+                      {result.hint && !isMessage ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-[11px] text-muted">{result.hint}</span> : null}
+                    </div>
                   );
                 })}
               </div>
@@ -423,7 +493,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
               data-debug-id="command-palette-load-more"
               onClick={loadMore}
               disabled={loadingMore}
-              className="mt-1 w-full rounded-lg px-3 py-2 text-center text-[12px] text-zinc-400 hover:bg-white/[0.04] disabled:opacity-50"
+              className="mt-1 w-full rounded-lg px-3 py-2 text-center text-[12px] text-muted hover:bg-white/[0.04] focus-visible:shadow-focus focus-visible:outline-none disabled:opacity-50"
             >
               {loadingMore ? 'Loading…' : 'Load more results'}
             </button>
@@ -432,10 +502,10 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
         {/* Keyboard-hint footer is desktop-only: on mobile it wastes vertical
             space the on-screen keyboard already claims, and the hints are
             keyboard-only anyway. */}
-        <div className="hidden items-center justify-between border-t border-white/10 px-4 py-2 text-[11px] text-zinc-600 sm:flex">
+        <div className="hidden items-center justify-between border-t border-subtle px-4 py-2 text-[11px] text-faint sm:flex">
           <span className="flex items-center gap-2">
-            <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5">↑↓</kbd> navigate
-            <kbd className="ml-2 rounded border border-white/10 bg-white/5 px-1.5 py-0.5">↵</kbd> select
+            <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5">↑↓</kbd> navigate
+            <kbd className="ml-2 rounded border border-subtle bg-white/5 px-1.5 py-0.5">↵</kbd> select
           </span>
           <span data-debug-id="command-palette-search-source">{trimmed ? 'Entity results: /api/v1/search' : 'Heimdall'}</span>
         </div>
@@ -444,16 +514,4 @@ export default function CommandPalette({ open, onClose, onNavigate, onAction, ac
   );
 }
 
-const ENTITY_GROUP_LABEL: Record<string, string> = {
-  conversation: 'Conversations',
-  agent: 'Agents',
-  agent_instance: 'Agents',
-  'task-chain': 'Task Chains',
-  task: 'Tasks',
-  comment: 'Comments',
-  message: 'Messages',
-  project: 'Projects',
-  artifact: 'Artifacts',
-  memory: 'Memory',
-  skill: 'Skills',
-};
+export default CommandPalette;

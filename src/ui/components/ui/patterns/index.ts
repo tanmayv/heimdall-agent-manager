@@ -13,3 +13,12 @@ export {
 export type { RuntimeChipProps, RuntimeState } from './RuntimeChip';
 
 export * from './ScopeField';
+
+export { CommandPalette } from './CommandPalette';
+export type {
+  CommandPaletteProps,
+  PaletteAction,
+  PaletteConversation,
+  PaletteConversationGroup,
+  PaletteResult,
+} from './CommandPalette';
