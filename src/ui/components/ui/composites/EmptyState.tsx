@@ -51,7 +51,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 }) => {
   const rootClassName = [
     'flex flex-col items-center justify-center gap-2 rounded-[var(--radius-lg)] border border-dashed',
-    'border-subtle bg-surface/50 px-6 py-12 text-center',
+    'border-subtle bg-neutral-soft px-6 py-12 text-center',
     className ?? '',
   ]
     .filter(Boolean)
