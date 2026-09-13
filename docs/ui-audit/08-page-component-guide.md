@@ -143,3 +143,23 @@ On every new page: reach for `PageShell` first, put content in `Panel`s with `Se
 pick each control by the **intent table at the top** — never copy a className from another file. If an
 intent isn't in the table, it's either a one-off (document it) or a missing component (propose it) —
 not a new inline style.
+
+## Definition of Done for UI tasks
+
+*A UI/visual task is not `in_validation`-ready until every box below is true. Workers self-check; the reviewer enforces and will `ngtm` on any miss. "UI task" = anything that changes rendered markup, styling, tokens, or a page/component's structure.*
+
+**Proof (attach to the handoff comment):**
+- [ ] **Screenshot(s) attached** — an *after* shot of each changed surface; *before/after* when altering existing UI. Interactive states (menus, modals, palettes, drawers, empty/loading/error) shown in the state that changed. Sent as file cards, not described in prose. (Capture path for the Heimdall dashboard: vite `:5173` → dev-proxy `:8110`, headless Firefox over WebDriver-BiDi so the SPA renders past auth.)
+- [ ] **`npm run typecheck` + `npm run build` green** at the committed HEAD (paste the result).
+
+**Conformance to the system (04 catalogue / 05 vocabulary / this guide):**
+- [ ] **One `PageShell` frame per route** — the single `<h1>` comes from `title`; no hand-built page headers, no second `<h1>`, no ad-hoc `max-w-*` page roots (width via the ramp). Deliberate divergences are documented in 07 §0.1.
+- [ ] **@ui primitives only** — no bespoke twin of an existing `@ui` component (Button/IconButton/Select/Modal/Menu/Popover/Drawer/StatusDot/Badge/Kbd/…). If a primitive is missing a capability, extend the primitive (data-driven, backward-compatible) rather than hand-rolling at the call site.
+- [ ] **Intent → component defaults respected** — primary action = `Button variant="primary"` (one per region); count/tag = `Badge` (`tone="info"` for counts); status = `StatusPill`; liveness = `StatusDot` + non-color label; icon-only = `IconButton` with a `label`; dialog = `Modal`; menu = `Menu`; anchored panel = `Popover`; edge/bottom sheet = `Drawer`.
+- [ ] **Tokens, not literals** — color/space/radius/shadow/z from tokens (`text-*`/`bg-*`/`border-subtle`/`z-modal`/`shadow-overlay`); no raw hex, no arbitrary `z-[..]`. The app's white-opacity hover idiom is allowed.
+- [ ] **A11y intact** — labelled controls, focus-visible, roles/keyboard for interactive widgets; dialogs/overlays use `useDialogA11y` (or a primitive that does).
+- [ ] **Guardrails green** — native-`<select>` allowlist stays **empty** (and any future guardrail test passes); `data-debug-id`s preserved on migrated controls.
+
+**Scope discipline:**
+- [ ] **No behavior/logic change** unless it's the task's stated goal — header/shell/style refactors keep handlers, data flow, and routes identical.
+- [ ] **Twins deleted** — when a call site moves to `@ui`, the old local component/shim is removed once it has no other consumers (grep to confirm zero importers).
