@@ -29,3 +29,6 @@ export type { TabsProps, TabProps, TabsPanelProps, TabsVariant } from './Tabs';
 
 export { Accordion, AccordionItem } from './Accordion';
 export type { AccordionProps, AccordionItemProps } from './Accordion';
+
+export { Alert } from './Alert';
+export type { AlertProps } from './Alert';

@@ -9,7 +9,7 @@ import {
   useSetBridgeProviderDefaultsMutation,
   useUpsertBridgeProviderMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, Checkbox, Input, Radio, Select, Textarea } from '@ui';
+import { Alert, Button, Checkbox, Input, Radio, Select, Textarea } from '@ui';
 
 type AutoEnterPair = { pattern: string; preKey: string };
 type ReasonMapping = { key: string; reason: string };
@@ -167,12 +167,12 @@ export function ProvidersPanel() {
           </Select>
         </label>
         {bridges.length === 0 ? <div className="mt-3 rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No bridges connected yet. Add a Bridge first.</div> : null}
-        {selectedBridge && offline ? <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">bridge_offline: provider edit/test is disabled until this Bridge reconnects.</div> : null}
+        {selectedBridge && offline ? <Alert tone="warning" className="mt-3">bridge_offline: provider edit/test is disabled until this Bridge reconnects.</Alert> : null}
         {capabilities.length > 0 ? <div className="mt-3 text-xs text-zinc-500">Capability matrix: <span className="text-zinc-300">{capabilities.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : cap.defaultTier ? ` (${cap.defaultTier})` : ''}`).join(', ')}</span></div> : null}
         {providers.length > 0 ? <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-zinc-400">Bridge default: <span className="text-zinc-100">{currentDefaults.provider || '—'} / {currentDefaults.tier || '—'}</span>. Use the radio buttons in provider rows to change it.{defaultBusy ? <span className="ml-2 text-sky-300">Saving…</span> : null}</div> : null}
       </div>
 
-      {actionError ? <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{actionError}</div> : null}
+      {actionError ? <Alert tone="danger">{actionError}</Alert> : null}
 
       <div className="flex justify-end">
         <a data-debug-id="providers-add-btn" href={shellHash(`/settings/providers/new?bridge=${encodeURIComponent(selectedId)}`)} aria-disabled={!selectedId || offline} className={`inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 sm:w-auto ${!selectedId || offline ? 'pointer-events-none opacity-50' : ''}`}>＋ Add provider</a>
@@ -251,8 +251,8 @@ export function ProviderEditorPage({ providerName = '' }: { providerName?: strin
       <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
         <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-start"><div><h2 className="text-2xl font-semibold text-white">{isEdit ? `Edit provider ${providerName}` : 'New provider'}</h2><p className="mt-1 max-w-3xl text-sm text-zinc-400">Add values with controls and chips; no JSON, comma lists, or array syntax is typed by users.</p></div><a data-debug-id="providers-editor-header-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</a></div>
         <label className="mt-5 block text-xs uppercase tracking-wide text-zinc-500">Bridge<Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="mt-1 min-h-[44px]">{bridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)} · {bridge.status || 'offline'}</option>)}</Select></label>
-        {offline ? <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">This Bridge is offline; saving is disabled until it reconnects.</div> : null}
-        {error ? <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}
+        {offline ? <Alert tone="warning" className="mt-3">This Bridge is offline; saving is disabled until it reconnects.</Alert> : null}
+        {error ? <Alert tone="danger" className="mt-3">{error}</Alert> : null}
       </div>
       <ProviderFormFields form={form} setForm={setForm} nameLocked={isEdit} />
       <div className="z-10 flex flex-col-reverse gap-2 rounded-2xl border border-white/10 bg-[#0d0f14]/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:sticky md:bottom-0 sm:flex-row sm:justify-end"><a data-debug-id="providers-editor-footer-cancel-btn" href={shellHash('/settings/providers')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</a><Button variant="primary" data-debug-id="providers-editor-save-btn" onClick={() => void saveProvider()} disabled={saving || offline || !form.name.trim()} className="min-h-[44px]">{saving ? 'Saving…' : 'Save provider'}</Button></div>
