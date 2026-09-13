@@ -14,7 +14,7 @@ import {
   timeZoneLabel,
   type PresetType,
 } from './scheduleUtils';
-import { Button, Input, Select } from '@ui';
+import { Button, Checkbox, Input, Select } from '@ui';
 
 export type ScheduleEditorValue = {
   cron_expr: string;
@@ -445,21 +445,17 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
 
       {/* Active Window (Optional) */}
       <div className="space-y-2 border-t border-white/10 pt-3">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={enableWindow}
-            onChange={(e) => {
-              const checked = e.target.checked;
-              setEnableWindow(checked);
-              if (!checked) {
-                onChange({ ...value, active_from: undefined, active_until: undefined });
-              }
-            }}
-            className="rounded border-white/20 bg-zinc-900 text-sky-500 focus:ring-0"
-          />
+        <Checkbox
+          checked={enableWindow}
+          onChange={(checked) => {
+            setEnableWindow(checked);
+            if (!checked) {
+              onChange({ ...value, active_from: undefined, active_until: undefined });
+            }
+          }}
+        >
           <span className="text-xs font-semibold text-zinc-300">Set Active Date/Time Window</span>
-        </label>
+        </Checkbox>
 
         {enableWindow && (
           <div className="grid gap-3 sm:grid-cols-2 rounded-lg border border-white/10 bg-black/20 p-3">

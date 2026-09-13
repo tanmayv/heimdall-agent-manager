@@ -24,47 +24,12 @@ import {
   resubscribeWithCurrentKey,
 } from '../../services/pushSubscriptionService';
 import { showToast } from '../../store/toastSlice';
-import { Button } from '@ui';
+import { Button, Toggle } from '@ui';
 
 const CATEGORY_LABELS: Array<{ key: NotificationCategory; label: string; description: string }> = [
   { key: 'chat', label: 'Chat messages', description: 'New messages directed to you, nudges, and mentions.' },
   { key: 'attention', label: 'Needs attention', description: 'Agent questions/approvals and pending merge decisions.' },
 ];
-
-function Toggle({
-  checked,
-  onChange,
-  disabled,
-  debugId,
-  label,
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled?: boolean;
-  debugId: string;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      data-debug-id={debugId}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
-        checked ? 'bg-sky-400' : 'bg-white/15'
-      } ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}
-    >
-      <span
-        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-0.5'
-        }`}
-      />
-    </button>
-  );
-}
 
 // H11: the sample plan the Send-test-notification button fires through the real
 // native path. Exported so tests can assert exactly what is shown.
@@ -282,8 +247,8 @@ export default function NotificationsPanel() {
             checked={state.enabled}
             onChange={onMasterToggle}
             disabled={masterDisabled}
-            debugId="settings-notifications-master-toggle"
-            label="Enable browser notifications"
+            data-debug-id="settings-notifications-master-toggle"
+            aria-label="Enable browser notifications"
           />
         </div>
       </div>
@@ -301,8 +266,8 @@ export default function NotificationsPanel() {
                 checked={categoryEnabled(state, cat.key)}
                 onChange={(next) => dispatch(notificationCategorySet({ category: cat.key, enabled: next }))}
                 disabled={!state.enabled}
-                debugId={`settings-notifications-category-${cat.key}`}
-                label={cat.label}
+                data-debug-id={`settings-notifications-category-${cat.key}`}
+                aria-label={cat.label}
               />
             </div>
           ))}

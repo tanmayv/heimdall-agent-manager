@@ -6,7 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import Icon from '../Icon';
-import { PageShell } from '@ui';
+import { Checkbox, PageShell } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -1878,17 +1878,15 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                             isSelected ? 'bg-sky-950/60 border border-sky-500/30 text-white' : 'hover:bg-white/5 text-zinc-300'
                           }`}
                         >
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             checked={isSelected}
-                            onChange={(e) => {
-                              if (e.target.checked) {
+                            onChange={(checked) => {
+                              if (checked) {
                                 setNewTaskDependsOnIds((prev) => [...prev, tid]);
                               } else {
                                 setNewTaskDependsOnIds((prev) => prev.filter((id) => id !== tid));
                               }
                             }}
-                            className="rounded border-zinc-700 bg-zinc-900 text-sky-500 focus:ring-0 focus:ring-offset-0"
                           />
                           <span className="font-mono text-zinc-400 text-[11px]">{tid}</span>
                           <span className="truncate flex-1 font-medium">{t.title}</span>
@@ -2524,17 +2522,15 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                             isSelected ? 'bg-sky-950/60 border border-sky-500/30 text-white' : 'hover:bg-white/5 text-zinc-300'
                           }`}
                         >
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             checked={isSelected}
-                            onChange={(e) => {
-                              if (e.target.checked) {
+                            onChange={(checked) => {
+                              if (checked) {
                                 setStagedDependsOnIds((prev) => [...prev, tid]);
                               } else {
                                 setStagedDependsOnIds((prev) => prev.filter((id) => id !== tid));
                               }
                             }}
-                            className="rounded border-zinc-700 bg-zinc-900 text-sky-500 focus:ring-0 focus:ring-offset-0"
                           />
                           <span className="font-mono text-zinc-400 text-[11px]">{tid}</span>
                           <span className="truncate flex-1 font-medium">{t.title}</span>

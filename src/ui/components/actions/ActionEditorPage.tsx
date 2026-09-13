@@ -10,7 +10,7 @@ import {
 } from '../../api/endpoints/actions';
 import ScheduleEditor, { type ScheduleEditorValue } from './ScheduleEditor';
 import { getLocalTimezone, validateCronExpression } from './scheduleUtils';
-import { Button, Combobox, Textarea, type ComboboxOption } from '@ui';
+import { Button, Combobox, Textarea, Toggle, type ComboboxOption } from '@ui';
 
 export type ActionEditorPageProps = {
   // When present the page edits an existing action; otherwise it creates a new one.
@@ -288,16 +288,12 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                   : 'On-demand only — runs when triggered via "Run now".'}
               </p>
             </div>
-            <label className="relative inline-flex cursor-pointer items-center">
-              <input
-                type="checkbox"
-                data-debug-id="action-editor-scheduled-toggle"
-                checked={isScheduled}
-                onChange={(e) => setIsScheduled(e.target.checked)}
-                className="peer sr-only"
-              />
-              <div className="peer h-6 w-11 rounded-full bg-zinc-800 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-sky-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none" />
-            </label>
+            <Toggle
+              data-debug-id="action-editor-scheduled-toggle"
+              checked={isScheduled}
+              onChange={setIsScheduled}
+              aria-label="Scheduled recurring execution"
+            />
           </div>
 
           {isScheduled && <ScheduleEditor value={schedule} onChange={setSchedule} />}

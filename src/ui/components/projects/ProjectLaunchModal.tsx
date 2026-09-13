@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import Icon from '../Icon';
 import Modal from '../Modal';
-import { Button, Select } from '@ui';
+import { Button, Checkbox, Select } from '@ui';
 import {
   useListTaskChainsQuery,
   useFetchTaskChainDetailQuery,
@@ -641,13 +641,11 @@ export default function ProjectLaunchModal({
                                     : 'border-transparent hover:bg-white/[0.03] cursor-pointer'
                                 }`}
                               >
-                                <input
-                                  type="checkbox"
+                                <Checkbox
                                   data-debug-id={`project-launch-chain-agent-checkbox-${memberInstanceId}`}
                                   checked={isChecked}
                                   disabled={isActive}
                                   onChange={() => toggleChainAgent(memberInstanceId, isActive)}
-                                  className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
                                 />
                                 <div className="min-w-0 flex-1 flex items-center gap-2">
                                   <span
@@ -765,12 +763,10 @@ export default function ProjectLaunchModal({
                             : 'border-transparent hover:bg-white/[0.03]'
                         }`}
                       >
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           data-debug-id={`project-launch-new-agent-checkbox-${agent.agentId}`}
                           checked={isChecked}
                           onChange={() => toggleNewAgent(agent.agentId)}
-                          className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-xs font-medium text-zinc-200">
@@ -889,12 +885,10 @@ export default function ProjectLaunchModal({
                             : 'border-transparent hover:bg-white/[0.03]'
                         }`}
                       >
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           data-debug-id={`project-launch-existing-instance-checkbox-${instanceId}`}
                           checked={isChecked}
                           onChange={() => toggleExistingInstance(instanceId)}
-                          className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-xs font-medium text-zinc-200">
