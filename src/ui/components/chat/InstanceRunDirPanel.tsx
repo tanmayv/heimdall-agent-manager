@@ -25,7 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
-import { Icon } from '@ui';
+import { Icon, IconButton } from '@ui';
 import {
   useLazyListInstanceDirQuery,
   useLazyReadInstanceFileQuery,
@@ -398,26 +398,9 @@ export default function InstanceRunDirPanel({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <button
-            data-debug-id={`${debugPrefix}-refresh-btn`}
-            type="button"
-            onClick={refresh}
-            title="Refresh current directory"
-            aria-label="Refresh"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-300 hover:bg-white/10"
-          >
-            <Icon name="refresh" size={14} />
-          </button>
+          <IconButton icon="refresh" label="Refresh" variant="solid" size="sm" data-debug-id={`${debugPrefix}-refresh-btn`} onClick={refresh} />
           {onClose ? (
-            <button
-              data-debug-id={`${debugPrefix}-close-btn`}
-              type="button"
-              onClick={onClose}
-              aria-label="Close files panel"
-              className="grid h-8 w-8 place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-white"
-            >
-              <Icon name="close" size={15} />
-            </button>
+            <IconButton icon="close" label="Close files panel" size="sm" data-debug-id={`${debugPrefix}-close-btn`} onClick={onClose} />
           ) : null}
         </div>
       </div>
