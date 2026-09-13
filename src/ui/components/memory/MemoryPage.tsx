@@ -9,12 +9,12 @@
 
 import { useMemo, useState } from 'react';
 import { buildRouteHash } from '../../utils/appLocation';
-import Icon from '../Icon';
+
 import Markdown from '../Markdown';
 import Badge from '../Badge';
 import EmptyState from '../EmptyState';
 import Modal from '../Modal';
-import { Button, Input, Select, Text, Textarea } from '@ui';
+import { Button, Icon, Input, Select, Text, Textarea } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,

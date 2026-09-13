@@ -1,3 +1,4 @@
+import { Icon } from '@ui';
 // Runtime primitives for the conversations-first UI rework.
 //
 // A coordinator conversation runs on a concrete agent instance. Users kept asking
@@ -7,8 +8,6 @@
 // Backed entirely by existing data: instance `runtime_status`, `bridge_id`,
 // `provider`, `tier` (agents.ts useFetchAgentInstanceQuery) and bridge labels from
 // listBridges. No new backend.
-
-import Icon from '../Icon';
 
 export type RuntimeState = 'live' | 'starting' | 'stopped';
 

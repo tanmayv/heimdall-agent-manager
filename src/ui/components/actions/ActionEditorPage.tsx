@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import Icon from '../Icon';
+
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   parseBlackoutDates,
@@ -10,8 +10,7 @@ import {
 } from '../../api/endpoints/actions';
 import ScheduleEditor, { type ScheduleEditorValue } from './ScheduleEditor';
 import { getLocalTimezone, validateCronExpression } from './scheduleUtils';
-import { Button, Combobox, Textarea, Toggle, type ComboboxOption } from '@ui';
-
+import { Button, Combobox, Icon, Textarea, Toggle, type ComboboxOption } from '@ui';
 export type ActionEditorPageProps = {
   // When present the page edits an existing action; otherwise it creates a new one.
   actionId?: string;

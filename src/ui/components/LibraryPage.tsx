@@ -8,9 +8,8 @@ import { useListAgentsQuery } from '../api/endpoints/agents';
 import ArtifactUploadButton, { useArtifactUpload } from './ArtifactUpload';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
-import Icon from './Icon';
-import { Button, Input, Select } from '@ui';
 
+import { Button, Icon, Input, Select } from '@ui';
 export type LibraryPageProps = {
   session: any;
   projects?: Record<string, any> | any[];

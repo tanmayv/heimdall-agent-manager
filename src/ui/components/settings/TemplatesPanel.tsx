@@ -13,9 +13,8 @@ import {
   useUpdateAgentTemplateMutation,
   useDeleteAgentTemplateMutation,
 } from '../../api/endpoints/agents';
-import Icon from '../Icon';
-import { Button, Input, Textarea } from '@ui';
 
+import { Button, Icon, Input, Textarea } from '@ui';
 function str(v: any): string { return String(v ?? '').trim(); }
 function errMsg(e: any, fallback: string): string {
   if (!e) return fallback;

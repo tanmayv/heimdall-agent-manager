@@ -19,9 +19,10 @@
 // compatible virtualizer or a React bump. Tracked as a Phase-4 follow-up.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Icon from '../Icon';
+
 import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
+import { Icon } from '@ui';
 import {
   useLazyListProjectDirQuery,
   useLazyReadProjectFileQuery,

@@ -29,3 +29,6 @@ export type { ToggleProps } from './Toggle';
 
 export { Text } from './Text';
 export type { TextProps, TextRole, TextTone, TextElement } from './Text';
+
+export { Icon } from './Icon';
+export type { IconProps, IconName, IconSize } from './Icon';

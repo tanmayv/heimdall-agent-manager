@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import Icon from '../Icon';
+
 import {
   COMMON_TIMEZONES,
   getLocalTimezone,
@@ -14,8 +14,7 @@ import {
   timeZoneLabel,
   type PresetType,
 } from './scheduleUtils';
-import { Button, Checkbox, Input, Select } from '@ui';
-
+import { Button, Checkbox, Icon, Input, Select } from '@ui';
 export type ScheduleEditorValue = {
   cron_expr: string;
   timezone: string;

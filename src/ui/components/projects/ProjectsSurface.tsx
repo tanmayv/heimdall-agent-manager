@@ -26,10 +26,9 @@ import { useListMemoriesQuery } from '../../api/endpoints/memory';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../api/endpoints/bridgeFs';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
-import Icon from '../Icon';
-import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
-import { Button, Input, Textarea } from '@ui';
 
+import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
+import { Button, Icon, Input, Textarea } from '@ui';
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema

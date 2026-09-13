@@ -7,9 +7,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useLazyListBridgeDirQuery, useMkdirBridgePathMutation, type BridgeFsEntry } from '../api/endpoints/bridgeFs';
-import Icon from './Icon';
-import { Button, Input } from '@ui';
 
+import { Button, Icon, Input } from '@ui';
 function str(v: any): string { return String(v ?? '').trim(); }
 
 export default function BridgeDirectoryPicker({

@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useListConversationInboxQuery, useLazyListConversationInboxQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { buildRouteHash } from '../../utils/appLocation';
-import Icon from '../Icon';
-import { Button } from '@ui';
 
+import { Button, Icon } from '@ui';
 const PAGE_SIZE = 40;
 
 function looksLikeInternalId(value: string): boolean {

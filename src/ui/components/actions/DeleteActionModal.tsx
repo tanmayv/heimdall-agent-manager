@@ -1,6 +1,6 @@
-import Icon from '../Icon';
+
 import Modal from '../Modal';
-import { Button } from '@ui';
+import { Button, Icon } from '@ui';
 import { Action } from '../../api/endpoints/actions';
 
 export type DeleteActionModalProps = {

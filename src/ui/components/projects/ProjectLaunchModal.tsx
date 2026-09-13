@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
-import Icon from '../Icon';
+
 import Modal from '../Modal';
-import { Button, Checkbox, Select } from '@ui';
+import { Button, Checkbox, Icon, Select } from '@ui';
 import {
   useListTaskChainsQuery,
   useFetchTaskChainDetailQuery,

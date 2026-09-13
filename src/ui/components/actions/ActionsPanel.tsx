@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
-import Icon from '../Icon';
-import { Input } from '@ui';
+
+import { Icon, Input } from '@ui';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   Action,

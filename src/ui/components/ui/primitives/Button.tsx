@@ -28,7 +28,7 @@
  * cost (it can break the token guarantees), not a styling API.
  */
 import React from 'react';
-import Icon from '../../Icon';
+import { Icon } from './Icon';
 import type {
   ButtonVariant,
   ContentProps,

@@ -5,8 +5,8 @@ import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
-import Icon from '../Icon';
-import { Checkbox, PageShell, Text } from '@ui';
+
+import { Checkbox, Icon, PageShell, Text } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,

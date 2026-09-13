@@ -63,7 +63,7 @@
  *     `ScopeField` pattern will absorb. Prefer NOT to use it.
  */
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import Icon from '../../Icon';
+import { Icon } from './Icon';
 import type {
   DisableableProps,
   InvalidatableProps,

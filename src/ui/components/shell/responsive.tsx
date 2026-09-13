@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import Icon, { type IconName } from '../Icon';
-import { Text } from '@ui';
 
+import { Icon, Text, type IconName } from '@ui';
 // UI-13: responsive/mobile primitives shared across the shell.
 // Breakpoints (approx, per arch doc §6D): <768px mobile, 768–1024px tablet,
 // >1024px desktop. The desktop "two panes side-by-side" collapses to mobile
