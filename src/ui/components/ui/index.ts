@@ -21,4 +21,4 @@ export * from './types';
 
 export * from './primitives';
 export * from './composites';
-// export * from './patterns';
+export * from './patterns';
