@@ -45,6 +45,15 @@
 
   --color-focus-ring: color-mix(in oklab, var(--color-accent), transparent 65%);
 
+  /* Soft tint fills — the `emphasis="soft"` surface for Badge/StatusPill/Alert.
+   * Derived from the semantic tones (same color-mix mechanism as the glows), so
+   * they replace the ad-hoc `/10`,`/15`,`/20` opacity forks with one token each. */
+  --color-neutral-soft: color-mix(in oklab, var(--color-text-primary), transparent 92%);
+  --color-info-soft: color-mix(in oklab, var(--color-info), transparent 86%);
+  --color-success-soft: color-mix(in oklab, var(--color-success), transparent 86%);
+  --color-warning-soft: color-mix(in oklab, var(--color-warning), transparent 86%);
+  --color-danger-soft: color-mix(in oklab, var(--color-danger), transparent 86%);
+
   /* ---------------------------------------------------------------- *
    * 2. Typography — roles bind size + weight + line-height + track.  *
    * ---------------------------------------------------------------- */

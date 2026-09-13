@@ -44,10 +44,14 @@ export default {
           DEFAULT: 'var(--color-accent)',
           fg: 'var(--color-accent-fg)',
         },
-        success: 'var(--color-success)',
-        warning: 'var(--color-warning)',
-        danger: 'var(--color-danger)',
-        info: 'var(--color-info)',
+        // Semantic tones. `DEFAULT` = solid tone (bg-success / text-success /
+        // border-success); `soft` = the `emphasis="soft"` tint (bg-success-soft).
+        success: { DEFAULT: 'var(--color-success)', soft: 'var(--color-success-soft)' },
+        warning: { DEFAULT: 'var(--color-warning)', soft: 'var(--color-warning-soft)' },
+        danger: { DEFAULT: 'var(--color-danger)', soft: 'var(--color-danger-soft)' },
+        info: { DEFAULT: 'var(--color-info)', soft: 'var(--color-info-soft)' },
+        // Neutral: no solid base (neutral text uses `text-muted`), only the soft tint.
+        neutral: { soft: 'var(--color-neutral-soft)' },
         focus: 'var(--color-focus-ring)',
       },
       fontFamily: {

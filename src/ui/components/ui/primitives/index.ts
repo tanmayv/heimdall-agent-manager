@@ -35,3 +35,6 @@ export type { TextProps, TextRole, TextTone, TextElement } from './Text';
 
 export { Icon } from './Icon';
 export type { IconProps, IconName, IconSize } from './Icon';
+
+export { Badge } from './Badge';
+export type { BadgeProps } from './Badge';

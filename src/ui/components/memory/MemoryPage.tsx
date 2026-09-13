@@ -11,10 +11,9 @@ import { useMemo, useState } from 'react';
 import { buildRouteHash } from '../../utils/appLocation';
 
 import Markdown from '../Markdown';
-import Badge from '../Badge';
 import EmptyState from '../EmptyState';
 import Modal from '../Modal';
-import { Button, Icon, IconButton, Input, Select, Text, Textarea } from '@ui';
+import { Badge, Button, Icon, IconButton, Input, Select, Text, Textarea } from '@ui';
 import {
   useListMemoriesQuery,
   useArchiveMemoryMutation,
@@ -100,7 +99,7 @@ export default function MemoryPage() {
           <Text as="div" role="overline" tone="muted">Memory</Text>
           <div className="mt-1 flex items-center gap-2">
             <h1 className="truncate text-2xl font-semibold tracking-[-0.01em] text-zinc-100">Memory</h1>
-            <span data-debug-id="memory-active-count-pill" className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-zinc-400">{activeItems.length}</span>
+            <Badge data-debug-id="memory-active-count-pill">{activeItems.length}</Badge>
           </div>
           <p className="mt-1 text-[13px] text-zinc-500">Durable facts, habits &amp; skills for your agents. Empty scope = applies to all.</p>
         </div>

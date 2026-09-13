@@ -10,9 +10,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 
 import Markdown from '../Markdown';
-import Badge from '../Badge';
 import Modal from '../Modal';
-import { Button, Icon, Input, Select, Textarea } from '@ui';
+import { Badge, Button, Icon, Input, Select, Textarea } from '@ui';
 import {
   useGetMemoryQuery,
   useUpdateMemoryMutation,
