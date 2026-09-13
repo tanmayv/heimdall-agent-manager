@@ -95,12 +95,20 @@
   color: var(--color-text-primary);
   font-size: var(--text-label-size);
   font-weight: var(--text-label-weight);
-  /* Hidden off-screen until focused; no display:none so it stays focusable. */
+  /* Hidden until keyboard focus. `opacity` + `pointer-events` do the hiding
+   * (layout-independent — a translateY alone stays visible when no ancestor
+   * clips it); `transform` only carries the slide-in. No display:none, so it
+   * remains focusable and in the tab order. */
+  opacity: 0;
+  pointer-events: none;
   transform: translateY(calc(-100% - var(--space-4)));
-  transition: transform var(--duration-fast) var(--ease-standard);
+  transition: transform var(--duration-fast) var(--ease-standard),
+    opacity var(--duration-fast) var(--ease-standard);
 }
 
 .ui-pageshell-skip:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
   transform: translateY(0);
   outline: none;
   box-shadow: var(--shadow-focus);
