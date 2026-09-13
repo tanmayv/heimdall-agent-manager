@@ -53,3 +53,6 @@ export type { SpinnerProps } from './Spinner';
 
 export { Kbd } from './Kbd';
 export type { KbdProps } from './Kbd';
+
+export { Avatar } from './Avatar';
+export type { AvatarProps, AvatarShape } from './Avatar';
