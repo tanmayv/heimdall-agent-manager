@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { PageShell } from '@ui';
 import Icon from '../Icon';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
@@ -250,20 +251,18 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   }
 
   return (
-    <div data-debug-id="task-chains-page" className="w-full max-w-4xl text-left">
-      {/* Header: title + count pill + description (mirrors the Actions page) */}
-      <div className="mb-5">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold text-white">Task Chains</h1>
-          <span data-debug-id="task-chains-total-count" className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-xs text-zinc-400">
+    <PageShell
+      title={
+        <span className="inline-flex items-center gap-3">
+          Task Chains
+          <span data-debug-id="task-chains-total-count" className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-xs font-normal text-zinc-400">
             {totalChains} {totalChains === 1 ? 'chain' : 'chains'}
           </span>
-        </div>
-        <p className="mt-1.5 text-sm text-zinc-400">
-          Multi-agent workflows grouped by project. Open a chain's coordinator conversation to follow its tasks, dependencies, and reviews.
-        </p>
-      </div>
-
+        </span>
+      }
+      description="Multi-agent workflows grouped by project. Open a chain's coordinator conversation to follow its tasks, dependencies, and reviews."
+    >
+      <div data-debug-id="task-chains-page" className="text-left">
       {/* Project filter */}
       <div className="mb-5 flex items-center gap-2">
         <label htmlFor="task-chains-project-filter" className="text-xs text-zinc-500">
@@ -350,7 +349,8 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           })}
         </div>
       )}
-    </div>
+      </div>
+    </PageShell>
   );
 };
 
