@@ -63,6 +63,39 @@ interface OptionItem {
   group?: string;
 }
 
+/**
+ * Data-driven option, an alternative to authoring `<option>` children. Use it
+ * when the caller can't express options as literal `<option>` elements — e.g.
+ * labels resolved from data or fetches, where a per-option wrapper component
+ * would otherwise be needed (the custom listbox can't parse component children,
+ * only literal `<option>`/`<optgroup>`). See CommandPalette/TaskChainOverview.
+ */
+export interface SelectOption {
+  value: string;
+  /** Rich label; falls back to `text`, then `value`. */
+  label?: React.ReactNode;
+  /** Plain-text label for type-ahead + trigger display; falls back to a text
+   *  extraction of `label`, then `value`. */
+  text?: string;
+  disabled?: boolean;
+  /** Optional group heading (renders a presentational separator, like optgroup). */
+  group?: string;
+}
+
+/** Normalize the `options` data prop into internal OptionItems. */
+function normalizeOptions(options: SelectOption[]): OptionItem[] {
+  return options.map((o) => {
+    const label = o.label ?? o.text ?? o.value;
+    return {
+      value: String(o.value ?? ''),
+      label,
+      text: o.text ?? nodeText(label),
+      disabled: Boolean(o.disabled),
+      group: o.group,
+    };
+  });
+}
+
 /** Best-effort plain text of an option's children (for type-ahead + trigger). */
 function nodeText(node: React.ReactNode): string {
   if (node == null || node === false || node === true) return '';
@@ -131,8 +164,17 @@ export interface SelectProps
   value: string;
   /** Fired with the new string value. */
   onChange: ChangeHandler<string>;
-  /** The `<option>` / `<optgroup>` elements to choose from. */
-  children: React.ReactNode;
+  /**
+   * The `<option>` / `<optgroup>` elements to choose from. Optional when
+   * `options` (the data prop) is supplied instead; provide exactly one.
+   */
+  children?: React.ReactNode;
+  /**
+   * Data-driven options, an alternative to `<option>` children — for labels that
+   * come from data/fetches and can't be authored as literal `<option>`s. When
+   * present, it takes precedence over `children`.
+   */
+  options?: SelectOption[];
   /** Maps to spacing + type tokens. Default `md`. */
   size?: Size;
   /** `full` = stretches to the container. Default `content`. */
@@ -148,6 +190,7 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
     value,
     onChange,
     children,
+    options: optionsProp,
     size = 'md',
     width = 'content',
     invalid = false,
@@ -159,7 +202,10 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
   },
   ref,
 ) {
-  const options = useMemo(() => parseOptions(children), [children]);
+  const options = useMemo(
+    () => (optionsProp ? normalizeOptions(optionsProp) : parseOptions(children)),
+    [optionsProp, children],
+  );
   const enabledIndexes = useMemo(
     () => options.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0),
     [options],

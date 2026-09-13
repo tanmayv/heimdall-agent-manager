@@ -14,14 +14,11 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 UI = ROOT / "src" / "ui" / "components"
 
-# Pre-existing, tracked for migration (do not extend):
-ALLOWLIST = {
-    # 18 native selects that use custom option-components (MemberInstanceOption /
-    # AgentInstanceOption); needs @ui Select option-parsing work — tracked follow-up.
-    "taskchain/TaskChainOverview.tsx",
-    # In-flight search-v2 file; migrates to @ui Select once search-v2 lands.
-    "taskchain/TaskChainsPage.tsx",
-}
+# Pre-existing, tracked for migration (do not extend). Now EMPTY: every native
+# <select> has been migrated to the @ui Select (TaskChainOverview's 18 selects
+# and TaskChainsPage's project filter moved to Select's data `options` prop /
+# `<option>` children in EL-025). Keep this empty — new code must use @ui Select.
+ALLOWLIST: set[str] = set()
 
 _SELECT = re.compile(r"<select[\s>]")
 

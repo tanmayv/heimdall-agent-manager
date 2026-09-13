@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { PageShell } from '@ui';
+import { PageShell, Select } from '@ui';
 import Icon from '../Icon';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
@@ -268,12 +268,12 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
         <label htmlFor="task-chains-project-filter" className="text-xs text-zinc-500">
           Project
         </label>
-        <select
+        <Select
           id="task-chains-project-filter"
           data-debug-id="task-chains-project-filter"
+          size="sm"
           value={filterProjectId}
-          onChange={(e) => setFilterProjectId(e.target.value)}
-          className="rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-zinc-200 outline-none focus:border-sky-400"
+          onChange={setFilterProjectId}
         >
           <option value="">All projects</option>
           {projects.map((p) => (
@@ -281,7 +281,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
               {p.name || p.project_id}
             </option>
           ))}
-        </select>
+        </Select>
 
         <label
           htmlFor="task-chains-has-tasks-filter"

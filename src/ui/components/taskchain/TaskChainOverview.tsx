@@ -6,7 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 
-import { Checkbox, Icon, PageShell, StatusDot, Text, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { Checkbox, Icon, PageShell, Select, StatusDot, Text, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -41,6 +41,7 @@ import {
   useListAgentInstancesQuery,
 } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
+import { useListAllAgentInstancesQuery } from '../../api/endpoints/actions';
 import {
   bridgeLabel,
   launchProvidersFor,
@@ -57,80 +58,21 @@ interface TaskChainOverviewProps {
   isMobile?: boolean;
 }
 
-// Resolves and displays durable agent name for an instance in a select option
-export function AgentInstanceOption({
-  value,
-  instanceId,
-  defaultAgentName,
-  runtimeStatus,
-  disabled,
-  suffix = '',
-}: {
-  value: string;
-  instanceId: string;
-  defaultAgentName?: string;
-  runtimeStatus?: string;
-  disabled?: boolean;
-  suffix?: string;
-}) {
+// Label formatters for instance / member <Select> options (EL-025). Names are
+// resolved upfront by the caller (from the selected agent, or the batched
+// instance-name map) and passed in, so these stay pure — the custom @ui Select
+// builds its listbox from option DATA, not from option-returning components.
+export function agentInstanceOptionLabel(name: string, instanceId: string, suffix = '', runtimeStatus?: string): string {
   const trimmed = String(instanceId || '').trim();
-  const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed || Boolean(defaultAgentName) });
-  const inst = data?.instance || null;
-  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  const agentId = String(inst?.agent_id || inst?.agentId || '');
-  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  const instName = inst?.display_name || inst?.displayName || '';
-
-  // The instance already carries display_name; only fall back to a per-agent
-  // identity fetch when it is genuinely missing (avoids a redundant /agents/<id>
-  // call per member in the common case).
-  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(defaultAgentName) || Boolean(instName) });
-  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  const agentName = defaultAgentName || instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
-
-  const label = agentName !== trimmed
-    ? `${agentName} (${trimmed})${suffix}${runtimeStatus ? ` · ${runtimeStatus}` : ''}`
-    : `${trimmed}${suffix}${runtimeStatus ? ` · ${runtimeStatus}` : ''}`;
-
-  return (
-    <option value={value} disabled={disabled}>
-      {label}
-    </option>
-  );
+  const resolved = name || trimmed;
+  const base = resolved !== trimmed ? `${resolved} (${trimmed})${suffix}` : `${trimmed}${suffix}`;
+  return runtimeStatus ? `${base} · ${runtimeStatus}` : base;
 }
 
-export function MemberInstanceOption({
-  value,
-  role,
-  instanceId,
-  disabled,
-}: {
-  value: string;
-  role: string;
-  instanceId: string;
-  disabled?: boolean;
-}) {
+export function memberInstanceOptionLabel(role: string, name: string, instanceId: string): string {
   const trimmed = String(instanceId || '').trim();
-  const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed });
-  const inst = data?.instance || null;
-  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  const agentId = String(inst?.agent_id || inst?.agentId || '');
-  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  const instName = inst?.display_name || inst?.displayName || '';
-
-  const { data: agentData } = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId || Boolean(instName) });
-  // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  const agentName = instName || agentData?.agent?.name || agentData?.agent?.display_name || agentData?.agent?.agent_id || agentId || trimmed;
-
-  const label = agentName !== trimmed
-    ? `${role}: ${agentName} (${trimmed})`
-    : `${role}: ${trimmed}`;
-
-  return (
-    <option value={value} disabled={disabled}>
-      {label}
-    </option>
-  );
+  const resolved = name || trimmed;
+  return resolved !== trimmed ? `${role}: ${resolved} (${trimmed})` : `${role}: ${trimmed}`;
 }
 
 type CommentAttachmentStatus = 'uploading' | 'uploaded' | 'error';
@@ -180,6 +122,21 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     { chainId },
     { skip: !chainId }
   );
+
+  // Batched instance-name lookup for member/instance <Select> options — one list
+  // fetch instead of a per-option identity fetch (replaces the old per-<option>
+  // AgentInstanceOption/MemberInstanceOption components; EL-025).
+  const allInstancesQuery = useListAllAgentInstancesQuery();
+  const instanceNameById = React.useMemo(() => {
+    const map = new Map<string, string>();
+    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+    for (const inst of (allInstancesQuery.data?.instances || []) as any[]) {
+      const id = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+      const name = String(inst.display_name || inst.displayName || inst.agent_id || inst.agentId || '');
+      if (id) map.set(id, name);
+    }
+    return map;
+  }, [allInstancesQuery.data]);
 
   const [createTask] = useCreateTaskMutation();
   const [updateTask] = useUpdateTaskDetailMutation();
@@ -1634,20 +1591,20 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
                 {newTaskAssigneeMode === 'member' && (
                   <div>
-                    <select
+                    <Select
                       data-debug-id="taskchain-new-task-assignee-member-select"
+                      width="full"
                       value={newTaskAssigneeMemberInstanceId}
-                      onChange={(e) => setNewTaskAssigneeMemberInstanceId(e.target.value)}
-                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
-                    >
-                      <option value="">Select member…</option>
-                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                      {members.map((m: any) => {
-                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                        const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                        return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
-                      })}
-                    </select>
+                      onChange={setNewTaskAssigneeMemberInstanceId}
+                      options={[
+                        { value: '', label: 'Select member…' },
+                        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                        ...members.map((m: any) => {
+                          const id = String(m.agentInstanceId || m.agent_instance_id || '');
+                          return { value: id, label: memberInstanceOptionLabel(m.role, instanceNameById.get(id) || '', id) };
+                        }),
+                      ]}
+                    />
                     {members.length === 0 && (
                       <p className="mt-1 text-[11px] text-amber-300/80">No members in this task chain.</p>
                     )}
@@ -1656,11 +1613,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
                 {newTaskAssigneeMode === 'existing' && (
                   <div className="space-y-2">
-                    <select
+                    <Select
                       data-debug-id="taskchain-new-task-assignee-agentid-select"
+                      width="full"
                       value={newTaskAssigneeAgentId}
-                      onChange={(e) => { setNewTaskAssigneeAgentId(e.target.value); setNewTaskAssigneeInstanceId(''); }}
-                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                      onChange={(v) => { setNewTaskAssigneeAgentId(v); setNewTaskAssigneeInstanceId(''); }}
                     >
                       <option value="">Choose agent…</option>
                       {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
@@ -1669,31 +1626,23 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         const id = String(a.agent_id || a.agentId || a.id || '');
                         return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                       })}
-                    </select>
-                    <select
+                    </Select>
+                    <Select
                       data-debug-id="taskchain-new-task-assignee-existing-instance-select"
+                      width="full"
                       value={newTaskAssigneeInstanceId}
-                      onChange={(e) => setNewTaskAssigneeInstanceId(e.target.value)}
+                      onChange={setNewTaskAssigneeInstanceId}
                       disabled={!newTaskAssigneeAgentId || newTaskAssigneeInstancesQuery.isFetching}
-                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
-                    >
-                      <option value="">{!newTaskAssigneeAgentId ? 'Choose an agent first…' : newTaskAssigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
-                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                      {newTaskAssigneeExistingInstances.map((inst: any) => {
-                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                        const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                        return (
-                          <AgentInstanceOption
-                            key={iid}
-                            value={iid}
-                            instanceId={iid}
-                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                            defaultAgentName={selectedNewTaskAssigneeAgent?.name || selectedNewTaskAssigneeAgent?.display_name || selectedNewTaskAssigneeAgent?.agent_id}
-                            runtimeStatus={inst.runtime_status}
-                          />
-                        );
-                      })}
-                    </select>
+                      options={[
+                        { value: '', label: !newTaskAssigneeAgentId ? 'Choose an agent first…' : newTaskAssigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…' },
+                        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                        ...newTaskAssigneeExistingInstances.map((inst: any) => {
+                          const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                          const name = selectedNewTaskAssigneeAgent?.name || selectedNewTaskAssigneeAgent?.display_name || selectedNewTaskAssigneeAgent?.agent_id || '';
+                          return { value: iid, label: agentInstanceOptionLabel(name, iid, '', inst.runtime_status) };
+                        }),
+                      ]}
+                    />
                   </div>
                 )}
 
@@ -1768,30 +1717,30 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
                   {newTaskAddReviewerMode === 'member' && (
                     <div>
-                      <select
+                      <Select
                         data-debug-id="taskchain-new-task-add-reviewer-member-select"
+                        width="full"
                         value={newTaskAddReviewerMemberInstanceId}
-                        onChange={(e) => setNewTaskAddReviewerMemberInstanceId(e.target.value)}
-                        className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
-                      >
-                        <option value="">Select member…</option>
-                        {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                        {members.map((m: any) => {
-                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                          const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                          return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
-                        })}
-                      </select>
+                        onChange={setNewTaskAddReviewerMemberInstanceId}
+                        options={[
+                          { value: '', label: 'Select member…' },
+                          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                          ...members.map((m: any) => {
+                            const id = String(m.agentInstanceId || m.agent_instance_id || '');
+                            return { value: id, label: memberInstanceOptionLabel(m.role, instanceNameById.get(id) || '', id) };
+                          }),
+                        ]}
+                      />
                     </div>
                   )}
 
                   {newTaskAddReviewerMode === 'existing' && (
                     <div className="space-y-2">
-                      <select
+                      <Select
                         data-debug-id="taskchain-new-task-add-reviewer-agentid-select"
+                        width="full"
                         value={newTaskAddReviewerAgentId}
-                        onChange={(e) => { setNewTaskAddReviewerAgentId(e.target.value); setNewTaskAddReviewerInstanceId(''); }}
-                        className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                        onChange={(v) => { setNewTaskAddReviewerAgentId(v); setNewTaskAddReviewerInstanceId(''); }}
                       >
                         <option value="">Choose agent…</option>
                         {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
@@ -1800,31 +1749,23 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           const id = String(a.agent_id || a.agentId || a.id || '');
                           return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                         })}
-                      </select>
-                      <select
+                      </Select>
+                      <Select
                         data-debug-id="taskchain-new-task-add-reviewer-existing-instance-select"
+                        width="full"
                         value={newTaskAddReviewerInstanceId}
-                        onChange={(e) => setNewTaskAddReviewerInstanceId(e.target.value)}
+                        onChange={setNewTaskAddReviewerInstanceId}
                         disabled={!newTaskAddReviewerAgentId || newTaskReviewerInstancesQuery.isFetching}
-                        className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
-                      >
-                        <option value="">{!newTaskAddReviewerAgentId ? 'Choose an agent first…' : newTaskReviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
-                        {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                        {newTaskReviewerExistingInstances.map((inst: any) => {
-                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                          const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                          return (
-                            <AgentInstanceOption
-                              key={iid}
-                              value={iid}
-                              instanceId={iid}
-                              // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                              defaultAgentName={selectedNewTaskReviewerAgent?.name || selectedNewTaskReviewerAgent?.display_name || selectedNewTaskReviewerAgent?.agent_id}
-                              runtimeStatus={inst.runtime_status}
-                            />
-                          );
-                        })}
-                      </select>
+                        options={[
+                          { value: '', label: !newTaskAddReviewerAgentId ? 'Choose an agent first…' : newTaskReviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…' },
+                          // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                          ...newTaskReviewerExistingInstances.map((inst: any) => {
+                            const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                            const name = selectedNewTaskReviewerAgent?.name || selectedNewTaskReviewerAgent?.display_name || selectedNewTaskReviewerAgent?.agent_id || '';
+                            return { value: iid, label: agentInstanceOptionLabel(name, iid, '', inst.runtime_status) };
+                          }),
+                        ]}
+                      />
                     </div>
                   )}
 
@@ -1956,12 +1897,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             <div className="mt-4 space-y-3">
               <div>
                 <label className="block text-zinc-400">Agent identity</label>
-                <select
+                <Select
                   data-debug-id="taskchain-add-agent-agentid-select"
-                  required
+                  className="mt-1"
+                  width="full"
                   value={addAgentId}
-                  onChange={(e) => { setAddAgentId(e.target.value); setAddExistingInstanceId(''); }}
-                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                  onChange={(v) => { setAddAgentId(v); setAddExistingInstanceId(''); }}
                 >
                   <option value="">Choose agent…</option>
                   {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
@@ -1970,39 +1911,34 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     const id = String(a.agent_id || a.agentId || a.id || '');
                     return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                   })}
-                </select>
+                </Select>
               </div>
               {/* H14: existing-instance picker (only in 'existing' mode). */}
               {addMode === 'existing' && (
                 <div>
                   <label className="block text-zinc-400">Existing instance</label>
-                  <select
+                  <Select
                     data-debug-id="taskchain-add-member-existing-instance-select"
+                    className="mt-1"
+                    width="full"
                     value={addExistingInstanceId}
-                    onChange={(e) => setAddExistingInstanceId(e.target.value)}
+                    onChange={setAddExistingInstanceId}
                     disabled={!addAgentId || existingInstancesQuery.isFetching}
-                    className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
-                  >
-                    <option value="">{!addAgentId ? 'Choose an agent first…' : existingInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
-                    {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                    {existingInstances.map((inst: any) => {
-                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                      const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                      const already = memberInstanceIds.has(iid);
-                      return (
-                        <AgentInstanceOption
-                          key={iid}
-                          value={iid}
-                          instanceId={iid}
-                          // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                          defaultAgentName={selectedAddAgent?.name || selectedAddAgent?.display_name || selectedAddAgent?.agent_id}
-                          disabled={already}
-                          suffix={already ? ' (already a member)' : ''}
-                          runtimeStatus={inst.runtime_status}
-                        />
-                      );
-                    })}
-                  </select>
+                    options={[
+                      { value: '', label: !addAgentId ? 'Choose an agent first…' : existingInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…' },
+                      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                      ...existingInstances.map((inst: any) => {
+                        const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                        const already = memberInstanceIds.has(iid);
+                        const name = selectedAddAgent?.name || selectedAddAgent?.display_name || selectedAddAgent?.agent_id || '';
+                        return {
+                          value: iid,
+                          label: agentInstanceOptionLabel(name, iid, already ? ' (already a member)' : '', inst.runtime_status),
+                          disabled: already,
+                        };
+                      }),
+                    ]}
+                  />
                   {addAgentId && !existingInstancesQuery.isFetching && existingInstances.length === 0 && (
                     <p className="mt-1 text-[11px] text-amber-300/80">No existing instances for this agent. Switch to “Launch new” to create one.</p>
                   )}
@@ -2012,57 +1948,61 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <>
               <div>
                 <label className="block text-zinc-400">Bridge</label>
-                <select
+                <Select
                   data-debug-id="taskchain-add-agent-bridge-select"
+                  className="mt-1"
+                  width="full"
                   value={addBridgeId}
-                  onChange={(e) => { setAddBridgeId(e.target.value); setAddProvider(''); setAddTier(''); }}
-                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                  onChange={(v) => { setAddBridgeId(v); setAddProvider(''); setAddTier(''); }}
                 >
                   <option value="">Choose bridge…</option>
                   {addBridgeRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{bridgeLabel(row.bridge)}</option>)}
-                </select>
+                </Select>
                 {addBridgeRows.length === 0 && <p className="mt-1 text-[11px] text-amber-300/80">No online bridge with provider capabilities is available.</p>}
               </div>
               <div>
                 <label className="block text-zinc-400">Provider</label>
-                <select
+                <Select
                   data-debug-id="taskchain-add-agent-provider-select"
+                  className="mt-1"
+                  width="full"
                   value={addProvider}
-                  onChange={(e) => { setAddProvider(e.target.value); setAddTier(''); }}
+                  onChange={(v) => { setAddProvider(v); setAddTier(''); }}
                   disabled={!selectedAddBridge}
-                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
                 >
                   <option value="">Use bridge default provider</option>
                   {addProviderOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-                </select>
+                </Select>
               </div>
               <div>
                 <label className="block text-zinc-400">Tier</label>
-                <select
+                <Select
                   data-debug-id="taskchain-add-agent-tier-select"
+                  className="mt-1"
+                  width="full"
                   value={addTier}
-                  onChange={(e) => setAddTier(e.target.value)}
+                  onChange={setAddTier}
                   disabled={!selectedAddBridge}
-                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
                 >
                   <option value="">Use bridge default tier</option>
                   {addTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}
-                </select>
+                </Select>
               </div>
               </>
               )}
               <div>
                 <label className="block text-zinc-400">Role</label>
-                <select
+                <Select
                   data-debug-id="taskchain-add-agent-role-select"
+                  className="mt-1"
+                  width="full"
                   value={newMemberRole}
-                  onChange={(e) => setNewMemberRole(e.target.value)}
-                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                  onChange={setNewMemberRole}
                 >
                   <option value="worker">worker</option>
                   <option value="reviewer">reviewer</option>
                   <option value="coordinator">coordinator</option>
-                </select>
+                </Select>
               </div>
               {addAgentError && <p data-debug-id="taskchain-add-agent-error" className="text-[11px] text-red-300">{addAgentError}</p>}
             </div>
@@ -2155,20 +2095,21 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               {editAssigneeMode === 'member' && (
                 <div>
                   <label className="block text-zinc-400">Choose chain member</label>
-                  <select
+                  <Select
                     data-debug-id="taskchain-edit-assignee-member-select"
+                    className="mt-1"
+                    width="full"
                     value={editAssigneeMemberInstanceId}
-                    onChange={(e) => setEditAssigneeMemberInstanceId(e.target.value)}
-                    className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
-                  >
-                    <option value="">Select member…</option>
-                    {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                    {members.map((m: any) => {
-                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                      const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                      return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
-                    })}
-                  </select>
+                    onChange={setEditAssigneeMemberInstanceId}
+                    options={[
+                      { value: '', label: 'Select member…' },
+                      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                      ...members.map((m: any) => {
+                        const id = String(m.agentInstanceId || m.agent_instance_id || '');
+                        return { value: id, label: memberInstanceOptionLabel(m.role, instanceNameById.get(id) || '', id) };
+                      }),
+                    ]}
+                  />
                   {members.length === 0 && (
                     <p className="mt-1 text-[11px] text-amber-300/80">No members in this task chain.</p>
                   )}
@@ -2179,11 +2120,12 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 <>
                   <div>
                     <label className="block text-zinc-400">Agent identity</label>
-                    <select
+                    <Select
                       data-debug-id="taskchain-edit-assignee-agentid-select"
+                      className="mt-1"
+                      width="full"
                       value={editAssigneeAgentId}
-                      onChange={(e) => { setEditAssigneeAgentId(e.target.value); setEditAssigneeInstanceId(''); }}
-                      className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                      onChange={(v) => { setEditAssigneeAgentId(v); setEditAssigneeInstanceId(''); }}
                     >
                       <option value="">Choose agent…</option>
                       {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
@@ -2192,34 +2134,27 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         const id = String(a.agent_id || a.agentId || a.id || '');
                         return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                       })}
-                    </select>
+                    </Select>
                   </div>
                   <div>
                     <label className="block text-zinc-400">Existing instance</label>
-                    <select
+                    <Select
                       data-debug-id="taskchain-edit-assignee-existing-instance-select"
+                      className="mt-1"
+                      width="full"
                       value={editAssigneeInstanceId}
-                      onChange={(e) => setEditAssigneeInstanceId(e.target.value)}
+                      onChange={setEditAssigneeInstanceId}
                       disabled={!editAssigneeAgentId || assigneeInstancesQuery.isFetching}
-                      className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
-                    >
-                      <option value="">{!editAssigneeAgentId ? 'Choose an agent first…' : assigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
-                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                      {assigneeExistingInstances.map((inst: any) => {
-                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                        const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                        return (
-                          <AgentInstanceOption
-                            key={iid}
-                            value={iid}
-                            instanceId={iid}
-                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                            defaultAgentName={selectedAssigneeAgent?.name || selectedAssigneeAgent?.display_name || selectedAssigneeAgent?.agent_id}
-                            runtimeStatus={inst.runtime_status}
-                          />
-                        );
-                      })}
-                    </select>
+                      options={[
+                        { value: '', label: !editAssigneeAgentId ? 'Choose an agent first…' : assigneeInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…' },
+                        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                        ...assigneeExistingInstances.map((inst: any) => {
+                          const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                          const name = selectedAssigneeAgent?.name || selectedAssigneeAgent?.display_name || selectedAssigneeAgent?.agent_id || '';
+                          return { value: iid, label: agentInstanceOptionLabel(name, iid, '', inst.runtime_status) };
+                        }),
+                      ]}
+                    />
                   </div>
                 </>
               )}
@@ -2352,30 +2287,30 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <div className="mt-3 space-y-2">
                 {addReviewerMode === 'member' && (
                   <div>
-                    <select
+                    <Select
                       data-debug-id="taskchain-add-reviewer-member-select"
+                      width="full"
                       value={addReviewerMemberInstanceId}
-                      onChange={(e) => setAddReviewerMemberInstanceId(e.target.value)}
-                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
-                    >
-                      <option value="">Select member…</option>
-                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                      {members.map((m: any) => {
-                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                        const id = String(m.agentInstanceId || m.agent_instance_id || '');
-                        return <MemberInstanceOption key={id} value={id} role={m.role} instanceId={id} />;
-                      })}
-                    </select>
+                      onChange={setAddReviewerMemberInstanceId}
+                      options={[
+                        { value: '', label: 'Select member…' },
+                        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                        ...members.map((m: any) => {
+                          const id = String(m.agentInstanceId || m.agent_instance_id || '');
+                          return { value: id, label: memberInstanceOptionLabel(m.role, instanceNameById.get(id) || '', id) };
+                        }),
+                      ]}
+                    />
                   </div>
                 )}
 
                 {addReviewerMode === 'existing' && (
                   <div className="space-y-2">
-                    <select
+                    <Select
                       data-debug-id="taskchain-add-reviewer-agentid-select"
+                      width="full"
                       value={addReviewerAgentId}
-                      onChange={(e) => { setAddReviewerAgentId(e.target.value); setAddReviewerInstanceId(''); }}
-                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                      onChange={(v) => { setAddReviewerAgentId(v); setAddReviewerInstanceId(''); }}
                     >
                       <option value="">Choose agent…</option>
                       {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
@@ -2384,31 +2319,23 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         const id = String(a.agent_id || a.agentId || a.id || '');
                         return <option key={id} value={id}>{a.name || a.display_name || id}</option>;
                       })}
-                    </select>
-                    <select
+                    </Select>
+                    <Select
                       data-debug-id="taskchain-add-reviewer-existing-instance-select"
+                      width="full"
                       value={addReviewerInstanceId}
-                      onChange={(e) => setAddReviewerInstanceId(e.target.value)}
+                      onChange={setAddReviewerInstanceId}
                       disabled={!addReviewerAgentId || reviewerInstancesQuery.isFetching}
-                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500 disabled:opacity-50"
-                    >
-                      <option value="">{!addReviewerAgentId ? 'Choose an agent first…' : reviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…'}</option>
-                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                      {reviewerExistingInstances.map((inst: any) => {
-                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                        const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
-                        return (
-                          <AgentInstanceOption
-                            key={iid}
-                            value={iid}
-                            instanceId={iid}
-                            // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                            defaultAgentName={selectedReviewerAgent?.name || selectedReviewerAgent?.display_name || selectedReviewerAgent?.agent_id}
-                            runtimeStatus={inst.runtime_status}
-                          />
-                        );
-                      })}
-                    </select>
+                      options={[
+                        { value: '', label: !addReviewerAgentId ? 'Choose an agent first…' : reviewerInstancesQuery.isFetching ? 'Loading instances…' : 'Choose an instance…' },
+                        // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+                        ...reviewerExistingInstances.map((inst: any) => {
+                          const iid = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+                          const name = selectedReviewerAgent?.name || selectedReviewerAgent?.display_name || selectedReviewerAgent?.agent_id || '';
+                          return { value: iid, label: agentInstanceOptionLabel(name, iid, '', inst.runtime_status) };
+                        }),
+                      ]}
+                    />
                   </div>
                 )}
 
