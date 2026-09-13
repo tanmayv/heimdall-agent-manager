@@ -8,6 +8,7 @@ package push
 // send_to_user is BLOCKING; callers on the request path must run it on a
 // background thread (see send_to_user_async) so it never stalls the response.
 
+import "base:runtime"
 import "core:crypto/ecdsa"
 import "core:fmt"
 import "core:strings"
@@ -21,27 +22,62 @@ import http_client "odin_test:lib/http_client"
 // to deliver if the device is offline. One day matches the design doc.
 WEBPUSH_TTL_SECONDS :: 86400
 
-// Async_Send_Job carries an owned copy of the send arguments to a background
-// thread. Owned strings are freed by the worker after send_to_user returns.
-@(private = "file")
+// Async_Send_Job carries an OWNED copy of the send arguments to a background
+// thread. Both the job struct and its strings live on the PERSISTENT heap
+// (runtime.heap_allocator), never the ambient allocator: send_to_user_async is
+// called from an HTTP handler whose context.allocator is the per-request
+// virtual.Arena (MEM-4), which is destroyed the instant the handler returns —
+// long before the spawned worker reads these fields. The worker releases them
+// with async_send_job_destroy on exit.
+@(private)
 Async_Send_Job :: struct {
 	service:       ^Push_Service,
 	owner_user_id: domain.User_ID,
 	payload_json:  string,
 }
 
+// async_send_job_make allocates an Async_Send_Job and deep-copies the caller's
+// owner id + payload onto the persistent heap so they outlive the caller's
+// per-request arena. Returns nil if allocation fails.
+@(private)
+async_send_job_make :: proc(service: ^Push_Service, owner_user_id: domain.User_ID, payload_json: string) -> ^Async_Send_Job {
+	job := new(Async_Send_Job, runtime.heap_allocator())
+	if job == nil {
+		return nil
+	}
+	job.service = service
+	job.owner_user_id = domain.User_ID(strings.clone(string(owner_user_id), runtime.heap_allocator()))
+	job.payload_json = strings.clone(payload_json, runtime.heap_allocator())
+	return job
+}
+
+// async_send_job_destroy frees everything async_send_job_make allocated, using
+// the same persistent heap allocator so alloc/free stay paired no matter which
+// thread runs (the worker's context.allocator is the default heap, not the
+// caller's request arena).
+@(private)
+async_send_job_destroy :: proc(job: ^Async_Send_Job) {
+	if job == nil {
+		return
+	}
+	delete(job.payload_json, runtime.heap_allocator())
+	delete(string(job.owner_user_id), runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+}
+
 // send_to_user_async runs send_to_user on a background thread so the request
-// path is never blocked by network I/O to push endpoints. It clones payload_json
-// (the caller keeps ownership of the original). Best-effort: delivery failures
-// are swallowed. No-op when push is disabled.
+// path is never blocked by network I/O to push endpoints. It deep-copies the
+// owner id + payload onto the persistent heap (the caller keeps ownership of the
+// originals, which on the request path live on the per-request arena). Best-
+// effort: delivery failures are swallowed. No-op when push is disabled.
 send_to_user_async :: proc(service: ^Push_Service, owner_user_id: domain.User_ID, payload_json: string) {
 	if !push_send_enabled(service) {
 		return
 	}
-	job := new(Async_Send_Job)
-	job.service = service
-	job.owner_user_id = owner_user_id
-	job.payload_json = strings.clone(payload_json)
+	job := async_send_job_make(service, owner_user_id, payload_json)
+	if job == nil {
+		return
+	}
 	thread.run_with_data(rawptr(job), async_send_entry)
 }
 
@@ -49,10 +85,7 @@ send_to_user_async :: proc(service: ^Push_Service, owner_user_id: domain.User_ID
 async_send_entry :: proc(data: rawptr) {
 	job := (^Async_Send_Job)(data)
 	if job == nil do return
-	defer {
-		delete(job.payload_json)
-		free(job)
-	}
+	defer async_send_job_destroy(job)
 	_ = send_to_user(job.service, job.owner_user_id, job.payload_json)
 }
 

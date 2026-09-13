@@ -1,5 +1,7 @@
 package push
 
+import "base:runtime"
+import "core:mem/virtual"
 import "core:strings"
 import "core:testing"
 import domain "odin_test:hub/domain"
@@ -124,6 +126,54 @@ split_endpoint_parses_base_and_path :: proc(t: ^testing.T) {
 
 	_, _, bad := split_endpoint("not-a-url")
 	testing.expect(t, !bad)
+}
+
+// --- WP-SEND-1: async job ownership (P0 SIGSEGV regression) ------------------
+
+@(private = "file")
+ptr_in_arena :: proc(arena: ^virtual.Arena, p: rawptr) -> bool {
+	addr := uintptr(p)
+	for block := arena.curr_block; block != nil; block = block.prev {
+		base := uintptr(rawptr(block.base))
+		if addr >= base && addr < base + uintptr(block.committed) do return true
+	}
+	return false
+}
+
+@(test)
+async_send_job_owns_copies_off_request_arena :: proc(t: ^testing.T) {
+	// P0 REGRESSION (hub SIGSEGV in webpush_encrypt_with copy_slice):
+	// send_to_user_async is called from an HTTP handler whose context.allocator is
+	// the per-request virtual.Arena (MEM-4). That arena is destroyed the moment the
+	// handler returns — but async_send_entry runs LATER on a spawned thread and
+	// reads job.payload_json (the memmove in webpush_encrypt copies from it). If the
+	// job/payload were cloned with the ambient (arena) allocator they dangle once
+	// the request returns, so the worker copies from freed/unmapped pages -> SEGV.
+	// The owned copies MUST live on the persistent heap, not the request arena.
+	arena: virtual.Arena
+	testing.expect(t, virtual.arena_init_growing(&arena, 64 * 1024) == nil)
+	defer virtual.arena_destroy(&arena)
+
+	// Build the args the way the handler does: on the request arena. Then make the
+	// job while the arena is the ambient allocator — exactly the production path.
+	prev := context.allocator
+	context.allocator = virtual.arena_allocator(&arena)
+	payload := strings.clone("{\"title\":\"hi\",\"body\":\"world\"}")
+	owner := domain.User_ID(strings.clone("usr_arena"))
+	job := async_send_job_make(nil, owner, payload)
+	context.allocator = prev
+
+	testing.expect(t, job != nil)
+	// The retained copies must NOT point into the per-request arena.
+	testing.expect(t, !ptr_in_arena(&arena, rawptr(raw_data(job.payload_json))),
+		"async job payload retained per-request arena memory (use-after-free)")
+	testing.expect(t, !ptr_in_arena(&arena, rawptr(raw_data(string(job.owner_user_id)))),
+		"async job owner id retained per-request arena memory (use-after-free)")
+	// And they must be independent, intact copies of the originals.
+	testing.expect_value(t, job.payload_json, "{\"title\":\"hi\",\"body\":\"world\"}")
+	testing.expect_value(t, string(job.owner_user_id), "usr_arena")
+
+	async_send_job_destroy(job)
 }
 
 @(test)
