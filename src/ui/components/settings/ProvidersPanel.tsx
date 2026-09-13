@@ -9,7 +9,7 @@ import {
   useSetBridgeProviderDefaultsMutation,
   useUpsertBridgeProviderMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Alert, Button, Checkbox, Input, Radio, Select, Textarea } from '@ui';
+import { Alert, Button, Checkbox, FormField, Input, Radio, Select, Textarea } from '@ui';
 
 type AutoEnterPair = { pattern: string; preKey: string };
 type ReasonMapping = { key: string; reason: string };
@@ -161,11 +161,11 @@ export function ProvidersPanel() {
       </div>
 
       <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-        <label className="block text-xs uppercase tracking-wide text-zinc-500">Bridge
-          <Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="mt-1 min-h-[44px]">
+        <FormField label="Bridge">
+          <Select data-debug-id="providers-bridge-select" value={selectedId} onChange={setSelectedBridgeId} width="full" className="min-h-[44px]">
             {bridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)} · {bridge.status || 'offline'}</option>)}
           </Select>
-        </label>
+        </FormField>
         {bridges.length === 0 ? <div className="mt-3 rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No bridges connected yet. Add a Bridge first.</div> : null}
         {selectedBridge && offline ? <Alert tone="warning" className="mt-3">bridge_offline: provider edit/test is disabled until this Bridge reconnects.</Alert> : null}
         {capabilities.length > 0 ? <div className="mt-3 text-xs text-zinc-500">Capability matrix: <span className="text-zinc-300">{capabilities.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : cap.defaultTier ? ` (${cap.defaultTier})` : ''}`).join(', ')}</span></div> : null}

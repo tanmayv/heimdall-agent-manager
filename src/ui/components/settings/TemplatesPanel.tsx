@@ -14,7 +14,7 @@ import {
   useDeleteAgentTemplateMutation,
 } from '../../api/endpoints/agents';
 
-import { Button, Icon, Input, Textarea } from '@ui';
+import { Button, FormField, Icon, Input, Textarea } from '@ui';
 function str(v: any): string { return String(v ?? '').trim(); }
 function errMsg(e: any, fallback: string): string {
   if (!e) return fallback;
@@ -139,18 +139,18 @@ function TemplateEditor({ form, setForm, onSave, onCancel, saving, error, title 
     <div data-debug-id="settings-template-editor" className="mb-4 rounded-2xl border border-sky-400/25 bg-sky-400/[0.04] p-4">
       <h3 className="mb-3 text-sm font-semibold text-white">{title}</h3>
       <div className="grid gap-3">
-        <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-          <Input data-debug-id="settings-template-name-input" value={form.name} onChange={(value) => set({ name: value })} width="full" className="mt-1" placeholder="e.g. Researcher" />
-        </label>
-        <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
-          <Input data-debug-id="settings-template-description-input" value={form.description} onChange={(value) => set({ description: value })} width="full" className="mt-1" placeholder="Short summary shown in the picker" />
-        </label>
-        <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Persona
-          <Textarea data-debug-id="settings-template-persona-input" value={form.persona} onChange={(v) => set({ persona: v })} rows={3} width="full" className="mt-1" placeholder="Who the agent is (identity/voice)." />
-        </label>
-        <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Instructions
-          <Textarea data-debug-id="settings-template-instructions-input" value={form.instructions} onChange={(v) => set({ instructions: v })} rows={4} width="full" className="mt-1" placeholder="How the agent should work (defaults layered under per-agent instructions)." />
-        </label>
+        <FormField label="Name">
+          <Input data-debug-id="settings-template-name-input" value={form.name} onChange={(value) => set({ name: value })} width="full" placeholder="e.g. Researcher" />
+        </FormField>
+        <FormField label="Description">
+          <Input data-debug-id="settings-template-description-input" value={form.description} onChange={(value) => set({ description: value })} width="full" placeholder="Short summary shown in the picker" />
+        </FormField>
+        <FormField label="Persona">
+          <Textarea data-debug-id="settings-template-persona-input" value={form.persona} onChange={(v) => set({ persona: v })} rows={3} width="full" placeholder="Who the agent is (identity/voice)." />
+        </FormField>
+        <FormField label="Instructions">
+          <Textarea data-debug-id="settings-template-instructions-input" value={form.instructions} onChange={(v) => set({ instructions: v })} rows={4} width="full" placeholder="How the agent should work (defaults layered under per-agent instructions)." />
+        </FormField>
       </div>
       {error ? <p data-debug-id="settings-template-editor-error" className="mt-2 text-xs text-red-300">{error}</p> : null}
       <div className="mt-3 flex gap-2">
