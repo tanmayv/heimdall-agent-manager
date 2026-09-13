@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Input, Select, Textarea } from '@ui';
+import { Input, Select, Spinner, Textarea } from '@ui';
 import {
   useArtifactContentState,
   useCreateArtifactAnnotationMutation,
@@ -1189,7 +1189,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   {loadingContent ? (
                     <div data-debug-id="artifact-viewer-content-loading" className="grid min-h-[40vh] place-items-center rounded-2xl border border-white/10 bg-black/30 px-6 py-10 text-center">
                       <div>
-                        <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-sky-300/30 border-t-sky-300" />
+                        <Spinner size="lg" label="Downloading artifact…" className="mx-auto mb-3 text-accent" />
                         <div className="text-sm font-medium text-zinc-200">Downloading artifact…</div>
                         <div className="mt-1 text-xs text-zinc-500">{selectedArtifactMeta.size_bytes ? formatBytes(Number(selectedArtifactMeta.size_bytes)) : 'Preparing preview'}</div>
                       </div>

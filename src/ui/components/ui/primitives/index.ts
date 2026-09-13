@@ -47,3 +47,6 @@ export type { StatusDotProps } from './StatusDot';
 
 export { Link } from './Link';
 export type { LinkProps, LinkVariant, LinkTone } from './Link';
+
+export { Spinner } from './Spinner';
+export type { SpinnerProps } from './Spinner';
