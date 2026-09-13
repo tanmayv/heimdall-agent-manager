@@ -6,7 +6,7 @@ import {
   useListCurrentUserTokensQuery,
   useRevokeCurrentUserTokenMutation,
 } from '../../api/endpoints/userTokens';
-import { Button, Input } from '@ui';
+import { Button, Input, Text } from '@ui';
 
 function tokenRowId(token: any): string { return String(token?.token_id || token?.tokenId || ''); }
 function tokenDate(value: any): string {
@@ -70,7 +70,7 @@ export default function UserTokensPanel() {
       </div>
 
       <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-        <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">Current identity</div>
+        <Text as="div" role="overline" tone="muted">Current identity</Text>
         <div data-debug-id="settings-user-tokens-current-user" className="mt-2 text-sm text-zinc-200">
           <span className="font-semibold text-white">{user.display_name || user.displayName || user.name || user.user_id || 'Unknown user'}</span>
           <span className="ml-2 font-mono text-xs text-zinc-500">{user.user_id || user.userId || ''}</span>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import Icon, { type IconName } from '../Icon';
+import { Text } from '@ui';
 
 // UI-13: responsive/mobile primitives shared across the shell.
 // Breakpoints (approx, per arch doc §6D): <768px mobile, 768–1024px tablet,
@@ -248,7 +249,7 @@ export function MobileInspectorSheet({ open, onClose, title, subtitle, headerAct
         <div data-debug-id="shell-mobile-inspector-sheet-grab" className="mx-auto mt-2 h-1.5 w-10 shrink-0 rounded-full bg-white/20" aria-hidden="true" />
         <div className="flex items-start justify-between gap-3 px-4 pb-2 pt-3">
           <div className="min-w-0">
-            <div className="text-[10.5px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Inspector</div>
+            <Text as="div" role="overline" tone="muted">Inspector</Text>
             {title ? <div className="mt-0.5 truncate text-[15px] font-semibold text-zinc-100">{title}</div> : null}
             {subtitle ? <div className="truncate text-[11.5px] text-zinc-500">{subtitle}</div> : null}
           </div>

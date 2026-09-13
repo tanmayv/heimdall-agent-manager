@@ -8,7 +8,7 @@ import {
   useCreateBridgeEnrollmentMutation,
   useRevokeBridgeEnrollmentMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, Input } from '@ui';
+import { Button, Input, Text } from '@ui';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
@@ -203,7 +203,7 @@ export default function BridgesPanel() {
       {/* Pending enrollments */}
       {pendingEnrollments.length > 0 ? (
         <div data-debug-id="settings-bridges-pending" className="mt-4">
-          <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Pending enrollments</div>
+          <Text as="div" role="overline" tone="muted" className="mb-2">Pending enrollments</Text>
           <div className="space-y-2">
             {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
             {pendingEnrollments.map((enr: any) => {
@@ -225,7 +225,7 @@ export default function BridgesPanel() {
 
       {/* Bridge list */}
       <div data-debug-id="settings-bridges-list" className="mt-4">
-        <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Bridges ({bridges.length})</div>
+        <Text as="div" role="overline" tone="muted" className="mb-2">Bridges ({bridges.length})</Text>
         {bridgesQuery.isFetching && bridges.length === 0 ? <div className="text-sm text-zinc-500">Loading bridges…</div> : null}
         {bridges.length === 0 && !bridgesQuery.isFetching ? (
           <div data-debug-id="settings-bridges-empty" className="rounded-xl border border-dashed border-white/10 bg-black/20 p-4 text-center text-sm text-zinc-500">No bridges yet. Add one to connect a machine.</div>

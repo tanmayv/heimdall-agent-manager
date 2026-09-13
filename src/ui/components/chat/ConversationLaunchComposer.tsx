@@ -5,7 +5,7 @@ import { normalizeBridgeCapabilities, useListAgentBridgeSupportQuery, useListBri
 import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
-import { Button, Combobox, Select, type ComboboxOption } from '@ui';
+import { Button, Combobox, Select, Text, type ComboboxOption } from '@ui';
 
 type AgentOption = {
   agent_id: string;
@@ -390,7 +390,7 @@ export default function ConversationLaunchComposer() {
 
       <div data-debug-id="launch-required-agent-control" className="mt-5 grid gap-4 md:grid-cols-2">
         <div className="block">
-          <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Agent required</span>
+          <Text role="overline" tone="muted">Agent required</Text>
           <Combobox
             debugId="new-convo-agent-select"
             options={agentSelectOptions}
@@ -405,7 +405,7 @@ export default function ConversationLaunchComposer() {
           />
         </div>
         <div data-debug-id="launch-project-default-control" className="block">
-          <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Project</span>
+          <Text role="overline" tone="muted">Project</Text>
           <Combobox
             debugId="new-convo-project-select"
             options={projectSelectOptions}

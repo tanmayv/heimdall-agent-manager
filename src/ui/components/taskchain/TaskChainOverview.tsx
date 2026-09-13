@@ -6,7 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import Icon from '../Icon';
-import { Checkbox, PageShell } from '@ui';
+import { Checkbox, PageShell, Text } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -1263,7 +1263,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           >
             ← Back to Chat
           </button>
-          <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">Task Chain</span>
+          <Text role="overline" tone="muted">Task Chain</Text>
         </div>
       )}
 

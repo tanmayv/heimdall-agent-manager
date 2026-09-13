@@ -26,3 +26,6 @@ export type { RadioProps } from './Radio';
 
 export { Toggle } from './Toggle';
 export type { ToggleProps } from './Toggle';
+
+export { Text } from './Text';
+export type { TextProps, TextRole, TextTone, TextElement } from './Text';
