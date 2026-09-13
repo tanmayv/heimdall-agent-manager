@@ -345,7 +345,7 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
 
 // H9 U2/U3: dropdown listing the task chains THIS agent instance coordinates
 // (single canonical source on the hub). Selecting a chain navigates to it. An
-// agent can coordinate multiple chains, so this <select> is the switcher; the
+// agent can coordinate multiple chains, so this Select is the switcher; the
 // default selection is the chain currently in view (if any). Handles the empty
 // (coordinates 0 chains) and loading states without crashing.
 function CoordinatorChainsDropdown({ agentInstanceId, currentChainId }: { agentInstanceId: string; currentChainId: string }) {
