@@ -76,7 +76,15 @@ task_save_sqlite :: proc(ctx: rawptr, task: domain.Task) -> (domain.Task, bool, 
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Task{}, false, domain.domain_error(.Internal_Error, "failed to prepare task save")
 	defer sqlite3_finalize(stmt)
 	bind_task(stmt, task)
-	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Task{}, false, domain.domain_error(.Conflict, "task could not be saved")
+	// UPSERT: the DO UPDATE branch fires the tasks_fts AFTER UPDATE trigger, which
+	// can hit SQLITE_CORRUPT if the fts index drifted (see fts_repair.odin).
+	// step_write_healing re-syncs the index and retries once; report an accurate
+	// error rather than a misleading save conflict if it still fails.
+	rc := step_write_healing(impl.conn, stmt)
+	if rc != SQLITE_DONE {
+		if rc == SQLITE_CORRUPT do return domain.Task{}, false, domain.domain_error(.Internal_Error, "task save failed: search index drift (SQLITE_CORRUPT) — run the FTS reconcile/repair")
+		return domain.Task{}, false, domain.domain_error(.Conflict, "task could not be saved")
+	}
 	return task, true, domain.Domain_Error{}
 }
 
@@ -110,7 +118,13 @@ task_comment_save_sqlite :: proc(ctx: rawptr, comment: domain.Task_Comment) -> (
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Task_Comment{}, false, domain.domain_error(.Internal_Error, "failed to prepare task comment save")
 	defer sqlite3_finalize(stmt)
 	bind_comment(stmt, comment)
-	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Task_Comment{}, false, domain.domain_error(.Conflict, "task comment could not be saved")
+	// Editing an existing comment takes the DO UPDATE branch (task_comments_fts AU
+	// trigger); self-heal fts drift + retry once, else surface an accurate error.
+	rc := step_write_healing(impl.conn, stmt)
+	if rc != SQLITE_DONE {
+		if rc == SQLITE_CORRUPT do return domain.Task_Comment{}, false, domain.domain_error(.Internal_Error, "task comment save failed: search index drift (SQLITE_CORRUPT) — run the FTS reconcile/repair")
+		return domain.Task_Comment{}, false, domain.domain_error(.Conflict, "task comment could not be saved")
+	}
 	return comment, true, domain.Domain_Error{}
 }
 

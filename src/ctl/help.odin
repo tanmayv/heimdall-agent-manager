@@ -11,6 +11,7 @@ ctl_help :: proc(cmd: []string) {
 		fmt.println(strings.trim_space(#load("../prompts/bootstrap_profile_guidance.md", string)))
 		return
 	}
+	if len(cmd) >= 2 && cmd[1] == "search" { print_search_help(); return }
 	if len(cmd) >= 2 && cmd[1] == "hub" { print_hub_help(cmd[2:]); return }
 	// `help agent` and any group name render the skill-style agent help.
 	if len(cmd) >= 2 && cmd[1] == "agent" { print_agent_help(cmd[2:]); return }
@@ -34,6 +35,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	print_help_overview()
 	fmt.println("")
 	fmt.println("OTHER")
+	fmt.println("  search Global entity search across the Hub (needs --hub-url + --user-token)")
 	fmt.println("  hub    Hub /api/v1 user commands (needs --hub-url + --user-token)")
 	fmt.println("  help   ham-ctl <group> --help | ham-ctl help hub | ham-ctl help work-guide")
 }

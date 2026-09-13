@@ -28,3 +28,6 @@ hub.db-wal
 /bridge
 /ctl
 /wrapper
+
+# Local-only VPS deployment runbook (not for the repo)
+/deployment.md

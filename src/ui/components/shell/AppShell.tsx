@@ -15,7 +15,7 @@ import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListSidebarConversationsQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { useGetAgentsLiveQuery, type LiveProject } from '../../api/endpoints/agentsLive';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
-import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
+import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
@@ -31,6 +31,7 @@ import UserTokensPanel from '../settings/UserTokensPanel';
 import MemoryPanel from '../settings/MemoryPanel';
 import MemoryPage from '../memory/MemoryPage';
 import MemoryDetailPage from '../memory/MemoryDetailPage';
+import SkillViewerPage from '../skills/SkillViewerPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
 import LibraryPage from '../LibraryPage';
 import ArtifactViewer from '../ArtifactViewer';
@@ -126,12 +127,42 @@ function routeFromLocation(): string {
   return path;
 }
 
+// Deep-link focus target for a conversation message: parse `?msg=<message_id>` from
+// the hash search so a `message` search hit (/conversations/:id?msg=:mid) can scroll
+// to + highlight that message. Empty when absent. Tracked as its own state because
+// routeFromLocation() strips the query, so a msg-only change would not re-render.
+function focusMessageFromLocation(): string {
+  const search = getRouteSearch();
+  if (!search) return '';
+  try {
+    return new URLSearchParams(search.startsWith('?') ? search.slice(1) : search).get('msg') || '';
+  } catch {
+    return '';
+  }
+}
+
 function isRouteActive(currentPath: string, itemPath: string): boolean {
   if (itemPath === '/conversations') return currentPath === '/conversations' || currentPath.startsWith('/conversations/');
   if (itemPath === '/actions') return currentPath === '/actions' || currentPath.startsWith('/actions/');
   if (itemPath === '/settings/bridges') return currentPath.startsWith('/settings');
   if (itemPath === '/memory') return currentPath === '/memory' || currentPath.startsWith('/memory/');
   return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
+}
+
+// Parse '/chains/:chainId(/tasks/:taskId)?' into its decoded parts. taskId is
+// undefined for the plain '/chains/:chainId' route. Centralised so the content
+// switch, breadcrumb, and any future consumer agree — a naive slice would pass the
+// whole 'chain.../tasks/task...' string as the chainId and break the chain lookup.
+function parseChainRoute(path: string): { chainId: string; taskId?: string } {
+  const rest = path.slice('/chains/'.length);
+  const tasksAt = rest.indexOf('/tasks/');
+  if (tasksAt >= 0) {
+    return {
+      chainId: decodeURIComponent(rest.slice(0, tasksAt)),
+      taskId: decodeURIComponent(rest.slice(tasksAt + '/tasks/'.length)),
+    };
+  }
+  return { chainId: decodeURIComponent(rest) };
 }
 
 function routeTitle(path: string): string {
@@ -149,6 +180,7 @@ function routeTitle(path: string): string {
   if (path.startsWith('/library')) return 'Library';
   if (path.startsWith('/memory/')) return 'Memory detail';
   if (path.startsWith('/memory')) return 'Memory';
+  if (path.startsWith('/skills/')) return 'Skill';
   if (path.startsWith('/settings/bridges')) return 'Bridge settings';
   if (path.startsWith('/settings/user-tokens')) return 'User token settings';
   if (path.startsWith('/settings/projects')) return 'Project settings';
@@ -213,7 +245,7 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
     const match = SETTINGS_NAV.find((item) => item.path.endsWith(`/${key}`));
     return [{ label: 'Settings', href: '/settings/bridges' }, { label: match?.label || decodeSegment(key) }];
   }
-  if (path.startsWith('/chains/')) return [{ label: 'Task Chains', href: '/chains' }, { label: decodeSegment(path.split('/')[2] || 'Chain') }];
+  if (path.startsWith('/chains/')) return [{ label: 'Task Chains', href: '/chains' }, { label: parseChainRoute(path).chainId || 'Chain' }];
   if (path === '/actions/new') return [{ label: 'Actions', href: '/actions' }, { label: 'New Action' }];
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return [{ label: 'Actions', href: '/actions' }, { label: 'Edit Action' }];
   if (path.startsWith('/actions')) return [{ label: 'Actions' }];
@@ -912,7 +944,7 @@ function DefaultsSettingsPanel() {
   );
 }
 
-function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: { path: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
+function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, conversations = [] }: { path: string; focusMessageId?: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
   const description = routeDescription(path);
@@ -942,7 +974,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
             position, menus) resets synchronously instead of the previous
             conversation's content painting for a frame and then swapping +
             re-scrolling. The RTK Query cache still makes revisits fast. */}
-        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} />
+        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
       </main>
     );
   }
@@ -986,7 +1018,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
         ) : path === '/chains' ? (
           <TaskChainsPage isMobile={isMobile} />
         ) : path.startsWith('/chains/') ? (
-          <TaskChainsPage chainId={decodeURIComponent(path.slice('/chains/'.length))} isMobile={isMobile} />
+          <TaskChainsPage {...parseChainRoute(path)} isMobile={isMobile} />
         ) : path === '/agents' ? (
           <AgentsPanel />
         ) : path === '/agents/new' ? (
@@ -997,6 +1029,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <MemoryPage />
         ) : path.startsWith('/memory/') ? (
           <MemoryDetailPage memoryId={decodeURIComponent(path.slice('/memory/'.length))} />
+        ) : path.startsWith('/skills/') ? (
+          <SkillViewerPage slug={decodeURIComponent(path.slice('/skills/'.length))} />
         ) : path === '/library' ? (
           <LibraryPage session={{ clientToken: 'v1', daemonUrl: '' }} />
         ) : path.startsWith('/library/artifacts/') ? (
@@ -1018,6 +1052,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
 function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: string }) {
   const [collapsed, setCollapsed] = useState(false);
   const [path, setPath] = useState(routeFromLocation);
+  const [focusMessageId, setFocusMessageId] = useState(focusMessageFromLocation);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
@@ -1128,7 +1163,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   };
 
   useEffect(() => {
-    const update = () => setPath(routeFromLocation());
+    const update = () => { setPath(routeFromLocation()); setFocusMessageId(focusMessageFromLocation()); };
     window.addEventListener('hashchange', update);
     window.addEventListener('popstate', update);
     update();
@@ -1224,7 +1259,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <RouteOutlet path={path} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
+        <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
       </div>
 
       {/* UI-12/UI-13: mobile bottom tab bar with a command-palette center button.

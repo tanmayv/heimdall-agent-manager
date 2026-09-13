@@ -13,6 +13,7 @@ import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import content_service "odin_test:hub/service/content"
 import taskchain_service "odin_test:hub/service/taskchain"
+import search_service "odin_test:hub/service/search"
 import events "odin_test:hub/service/events"
 import push_service "odin_test:hub/service/push"
 
@@ -22,6 +23,7 @@ Agent_Action_Handlers :: struct {
 	bridges: ^bridge_service.Bridge_Service,
 	content: ^content_service.Content_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
+	search: ^search_service.Search_Service,
 	event_bus: ^events.User_Event_Bus,
 	// Web Push (WP-SEND): background delivery of OS notifications when the user's
 	// PWA is closed/backgrounded. public_app_origin builds the absolute click href.
@@ -718,6 +720,51 @@ agent_action_artifact_content_handler :: proc(ctx: rawptr, req: Request) -> Resp
 	strings.write_string(&b, ",\"content\":\""); write_handler_json_string(&b, artifact.content)
 	strings.write_string(&b, "\"}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// agent_action_search_handler is the agent.search RPC (SEARCH-7): the same global
+// search as the REST GET /api/v1/search, over an instance token. Owner scoping is
+// derived from the instance auth (ownership.owner_from_auth in the service), so an
+// agent can only ever search its owner's data. Uses the typed SEARCH-8 contract
+// (scopes + task/chain/project/conversation ids + negations + exclude) and returns
+// the identical grouped hit shape as REST.
+agent_action_search_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	input := search_service.Search_Input{
+		q = json_string(params, "query"),
+		types_csv = agent_action_csv_field(params, "scopes"),
+		limit = json_int(params, "limit", 0),
+		cursor = json_string(params, "cursor"),
+		task_ids = agent_action_csv_field(params, "task_ids"),
+		chain_ids = agent_action_csv_field(params, "chain_ids"),
+		project_ids = agent_action_csv_field(params, "project_ids"),
+		conversation_ids = agent_action_csv_field(params, "conversation_ids"),
+		not_in_task_ids = agent_action_csv_field(params, "not_in_task_ids"),
+		not_in_chain_ids = agent_action_csv_field(params, "not_in_chain_ids"),
+		not_in_project_ids = agent_action_csv_field(params, "not_in_project_ids"),
+		not_in_conversation_ids = agent_action_csv_field(params, "not_in_conversation_ids"),
+		exclude = json_string(params, "exclude"),
+	}
+	result, searched, err := search_service.search_resources(h.search, auth, input)
+	if !searched do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "search", "searched")
+	page_limit := input.limit
+	if page_limit <= 0 do page_limit = search_service.DEFAULT_SEARCH_LIMIT
+	if page_limit > search_service.MAX_SEARCH_LIMIT do page_limit = search_service.MAX_SEARCH_LIMIT
+	data_json := search_groups_json(result.hits)
+	return respond_search(data_json, contracts.API_Page{limit = page_limit, next_cursor = result.next_cursor, has_more = result.has_more}, req.request_id, auth_ctx_server_time(req))
+}
+
+// agent_action_csv_field reads a params field as either a JSON string array
+// (joined to CSV) or a plain CSV string, so agents can send arrays naturally
+// while the service consumes the same CSV shape as the REST query params.
+agent_action_csv_field :: proc(params, key: string) -> string {
+	arr := json_string_array(params, key)
+	if len(arr) > 0 do return strings.join(arr, ",")
+	return json_string(params, key)
 }
 
 agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Response {

@@ -9,6 +9,14 @@ Search_Hit :: struct {
 	sublabel: string,
 	route: string,
 	score: int,
+	// Additive fields (SEARCH-2). For the id/name entity providers parent_id/
+	// parent_type are empty (emitted as JSON null) and preview is empty; matched_field
+	// records which column matched. Child providers (comments/skills, SEARCH-3) set
+	// parent_* to the owning entity and preview to a snippet.
+	parent_id: string,
+	parent_type: string,
+	preview: string,
+	matched_field: string,
 }
 
 Search_Query :: struct {
@@ -18,6 +26,24 @@ Search_Query :: struct {
 	response_limit: int,
 	hard_scan_cap: int,
 	cursor: string,
+	// Typed per-parent id filters (SEARCH-8). Each is a CSV of ids; empty = no
+	// constraint for that dimension. A positive filter keeps only rows whose
+	// matching parent column is in the set; a not_in_* filter drops rows whose
+	// column is in the set. Bounded to the 4 containment parents
+	// (task/chain/project/conversation). Every typed filter is AND-ed with
+	// owner_user_id in the repository, so a caller can never read another owner's
+	// rows by naming their ids.
+	task_ids: string,
+	chain_ids: string,
+	project_ids: string,
+	conversation_ids: string,
+	not_in_task_ids: string,
+	not_in_chain_ids: string,
+	not_in_project_ids: string,
+	not_in_conversation_ids: string,
+	// exclude drops any hit whose display text contains this substring
+	// (case-insensitive). Empty = no exclusion.
+	exclude: string,
 }
 
 Search_Result :: struct {

@@ -390,7 +390,7 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
     .map(({ chatMessage }) => chatMessage);
 }
 
-export default function ConversationThreadPage({ agentInstanceId: routeInstanceId }: { agentInstanceId: string }) {
+export default function ConversationThreadPage({ agentInstanceId: routeInstanceId, focusMessageId }: { agentInstanceId: string; focusMessageId?: string }) {
   // The route is instance-id-only (#/conversations/{agentInstanceId}); an instance
   // maps 1:1 to a conversation, which we resolve via the O(1) by-instance endpoint.
   // New messages, read receipts and delivery status arrive live over the user WS
@@ -1334,6 +1334,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               conversationKey={conversationId}
               messages={chatMessages}
               debugPrefix="conversation-thread"
+              focusMessageId={focusMessageId}
               hasMore={olderHasMore && Boolean(olderCursor)}
               loadingOlder={olderMessagesState.isFetching}
               onLoadOlder={loadOlderMessages}

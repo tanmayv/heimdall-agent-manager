@@ -18,5 +18,6 @@ STATIC_SKILLS := []Static_Skill{
 	{"heimdall-ctl-communication", #load("../../../prompts/skills/heimdall-ctl-communication/SKILL.md", string)},
 	{"memory-management-workflow", #load("../../../prompts/skills/memory-management-workflow/SKILL.md", string)},
 	{"odin-style-guide", #load("../../../prompts/skills/odin-style-guide/SKILL.md", string)},
+	{"search-command", #load("../../../prompts/skills/search-command/SKILL.md", string)},
 	{"worker-task-management", #load("../../../prompts/skills/worker-task-management/SKILL.md", string)},
 }

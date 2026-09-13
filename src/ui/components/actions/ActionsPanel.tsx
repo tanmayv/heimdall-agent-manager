@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 
-import { Icon, IconButton, Input, StatusPill } from '@ui';
+import { Badge, Icon, IconButton, Input, PageShell, StatusPill } from '@ui';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   Action,
@@ -188,35 +188,29 @@ export default function ActionsPanel() {
   const isLoading = actionsLoading || instancesLoading || projectsLoading;
 
   return (
-    <div data-debug-id="actions-page" className="w-full space-y-6 text-left">
-      {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-white/10 pb-5">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold tracking-tight text-white">Actions</h1>
-            <span
-              data-debug-id="actions-total-count"
-              className="rounded-full bg-sky-500/10 border border-sky-500/20 px-2.5 py-0.5 text-xs font-semibold text-sky-400"
-            >
-              {totalActionsCount} {totalActionsCount === 1 ? 'action' : 'actions'}
-            </span>
-          </div>
-          <p className="mt-1 text-sm text-zinc-400">
-            Automated recurring prompts and on-demand tasks executed against your agent instances.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <a
-            data-debug-id="actions-create-btn"
-            href={shellHash('/actions/new')}
-            className="flex items-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-black transition-colors shadow-sm"
-          >
-            <Icon name="plus" size={16} />
-            <span>New Action</span>
-          </a>
-        </div>
-      </div>
+    <PageShell
+      width="full"
+      title={
+        <span className="inline-flex items-center gap-2.5">
+          Actions
+          <Badge data-debug-id="actions-total-count" tone="info">
+            {totalActionsCount} {totalActionsCount === 1 ? 'action' : 'actions'}
+          </Badge>
+        </span>
+      }
+      description="Automated recurring prompts and on-demand tasks executed against your agent instances."
+      actions={
+        <a
+          data-debug-id="actions-create-btn"
+          href={shellHash('/actions/new')}
+          className="flex items-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-black transition-colors shadow-sm"
+        >
+          <Icon name="plus" size={16} />
+          <span>New Action</span>
+        </a>
+      }
+    >
+      <div data-debug-id="actions-page" className="space-y-6">
 
       {/* Feedback Banner */}
       {feedback && (
@@ -376,7 +370,8 @@ export default function ActionsPanel() {
         onClose={() => setDeletingAction(null)}
         onConfirm={handleDeleteConfirm}
       />
-    </div>
+      </div>
+    </PageShell>
   );
 }
 

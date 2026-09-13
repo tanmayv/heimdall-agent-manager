@@ -32,6 +32,12 @@ main :: proc() {
 		return
 	}
 
+	if cmd[0] == "search" {
+		if has_flag(os.args, "--help") || has_flag(os.args, "-h") { print_search_help(); return }
+		ctl_search_command(cmd[:], os.args)
+		return
+	}
+
 	if cmd[0] == "setup" || cmd[0] == "doctor" {
 		ctl_setup_command(os.args)
 		return

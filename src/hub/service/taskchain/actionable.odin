@@ -1,5 +1,6 @@
 package taskchain
 
+import "base:runtime"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -155,10 +156,17 @@ replay_should_run :: proc(service: ^Taskchain_Service, bridge_id: string, now_ms
 	if service == nil do return false
 	sync.mutex_lock(&service.replay_mutex)
 	defer sync.mutex_unlock(&service.replay_mutex)
-	if service.replay_last_unix_ms == nil do service.replay_last_unix_ms = make(map[string]i64)
+	if service.replay_last_unix_ms == nil do service.replay_last_unix_ms = make(map[string]i64, runtime.heap_allocator())
 	last, has := service.replay_last_unix_ms[bridge_id]
-	if has && now_ms - last < REPLAY_MIN_INTERVAL_MS do return false
-	service.replay_last_unix_ms[bridge_id] = now_ms
+	if has {
+		if now_ms - last < REPLAY_MIN_INTERVAL_MS do return false
+		service.replay_last_unix_ms[bridge_id] = now_ms
+		return true
+	}
+	// First insert for this bridge: own the key on the persistent heap. The caller
+	// passes bridge.bridge_id, which on the request/arena path (MEM-4) would be
+	// freed after the response and leave this long-lived map key dangling.
+	service.replay_last_unix_ms[strings.clone(bridge_id, runtime.heap_allocator())] = now_ms
 	return true
 }
 
