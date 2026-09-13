@@ -14,3 +14,6 @@ export type { PanelProps, PanelPadding, PanelTone } from './Panel';
 
 export { FormField } from './FormField';
 export type { FormFieldProps } from './FormField';
+
+export { Modal, ModalBody, ModalFooter } from './Modal';
+export type { ModalProps, ModalSize } from './Modal';
