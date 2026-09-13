@@ -26,7 +26,9 @@
  *   - Trigger is `role="combobox"` `aria-haspopup="listbox"` `aria-expanded`
  *     `aria-controls`, with `aria-activedescendant` tracking the highlighted
  *     option while open; the popup is `role="listbox"`, each row `role="option"`
- *     with `aria-selected`, groups are `role="group"` with an `aria-label`.
+ *     with `aria-selected`. `<optgroup>` labels render as presentational
+ *     separator rows (no call site uses optgroups today; add real `role="group"`
+ *     if grouped options ever appear).
  *   - Full keyboard: Up/Down/Home/End move, Enter/Space select, Esc closes and
  *     restores focus to the trigger, type-ahead jumps by first letter; disabled
  *     options are skipped. Click-outside closes.
@@ -357,6 +359,7 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
   return (
     <div ref={rootRef} className={wrapperClassName}>
       <button
+        {...rest}
         ref={setButtonRef}
         type="button"
         role="combobox"
@@ -369,7 +372,6 @@ export const Select = React.forwardRef<HTMLButtonElement, SelectProps>(function 
         onClick={() => (open ? closeList(false) : openList())}
         onKeyDown={onKeyDown}
         className={triggerClassName}
-        {...rest}
       >
         <span className={['block truncate', selected ? '' : 'text-muted'].join(' ')}>
           {selected ? selected.label : placeholder ?? ''}
