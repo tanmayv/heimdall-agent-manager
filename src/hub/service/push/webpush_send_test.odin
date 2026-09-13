@@ -3,7 +3,9 @@ package push
 import "base:runtime"
 import "core:mem/virtual"
 import "core:strings"
+import "core:sync"
 import "core:testing"
+import "core:thread"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
@@ -174,6 +176,57 @@ async_send_job_owns_copies_off_request_arena :: proc(t: ^testing.T) {
 	testing.expect_value(t, string(job.owner_user_id), "usr_arena")
 
 	async_send_job_destroy(job)
+}
+
+// The gate lets the spawned worker stay alive until the test has destroyed the
+// request arena, so the test reproduces the exact prod ordering (arena freed
+// while the thread is still running) before the worker returns and the trampoline
+// writes t.flags.
+@(private = "file")
+async_thread_gate: sync.Sema
+
+@(private = "file")
+async_thread_gate_entry :: proc(data: rawptr) {
+	sync.sema_wait(&async_thread_gate)
+}
+
+@(test)
+async_push_thread_struct_off_request_arena :: proc(t: ^testing.T) {
+	// P0 part-2 REGRESSION (hub SIGSEGV in the thread-entry trampoline after sends):
+	// send_to_user_async spawns the push worker from an HTTP handler whose
+	// context.allocator is the per-request virtual.Arena (MEM-4). thread.create
+	// allocates the Thread struct with context.allocator and stores it as
+	// t.creation_allocator (thread_unix.odin). An arena-backed Thread is freed the
+	// instant the handler returns and the arena is destroyed — while the OS thread is
+	// still running its ~9s of sends. The trampoline's post-proc `lock orb t.flags`
+	// store (and self-cleanup's free(t, creation_allocator)) then hit freed memory ->
+	// SIGSEGV. The Thread MUST be created on the persistent heap. This test mirrors
+	// send_to_user_async's spawn discipline (context.allocator = heap before create)
+	// and asserts the Thread does not live in the request arena.
+	arena: virtual.Arena
+	testing.expect(t, virtual.arena_init_growing(&arena, 64 * 1024) == nil)
+
+	prev := context.allocator
+	// Enter the request-arena context, exactly like an HTTP handler...
+	context.allocator = virtual.arena_allocator(&arena)
+	// ...then force the heap allocator before spawning, exactly like send_to_user_async.
+	context.allocator = runtime.heap_allocator()
+	th := thread.create_and_start_with_data(nil, async_thread_gate_entry, self_cleanup = false)
+	context.allocator = prev
+
+	testing.expect(t, th != nil)
+	if th != nil {
+		testing.expect(t, !ptr_in_arena(&arena, rawptr(th)),
+			"async push Thread struct was allocated on the per-request arena (freed before the worker finishes -> UAF t.flags store)")
+	}
+
+	// Reproduce prod ordering: destroy the request arena while the worker is still
+	// alive, THEN release it so the trampoline runs its post-proc bookkeeping.
+	virtual.arena_destroy(&arena)
+	sync.sema_post(&async_thread_gate)
+	if th != nil {
+		thread.destroy(th) // joins, then free(t, heap) — no leak, no double free
+	}
 }
 
 @(test)

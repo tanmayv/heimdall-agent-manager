@@ -78,6 +78,17 @@ send_to_user_async :: proc(service: ^Push_Service, owner_user_id: domain.User_ID
 	if job == nil {
 		return
 	}
+	// The spawned Thread struct + thread.create's internal allocations must ALSO
+	// live on the persistent heap, not the caller's per-request arena (MEM-4). This
+	// worker outlives the handler by seconds (11 sequential push sends), but the
+	// handler's arena is destroyed the instant it returns. thread.create allocates
+	// the Thread with the ambient context.allocator and stores it as
+	// t.creation_allocator; an arena-backed Thread is therefore freed while the OS
+	// thread is still running, so the trampoline's post-proc `t.flags` store (and
+	// self-cleanup's free(t, creation_allocator)) touch freed memory -> SIGSEGV
+	// (P0 part 2). Creating under the heap allocator makes t.creation_allocator the
+	// heap, so self-cleanup frees the Thread correctly when the worker exits.
+	context.allocator = runtime.heap_allocator()
 	thread.run_with_data(rawptr(job), async_send_entry)
 }
 
