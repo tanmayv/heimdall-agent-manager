@@ -13,12 +13,15 @@
  * Layer: composite. Spec: `docs/ui-audit/04-component-catalogue.md` › PageShell.
  *
  * Accessibility contract:
- *   - Renders a `<main id="main-content" tabIndex={-1}>` region — the page's one
- *     landmark — labelled by its `<h1>` (the single top-level heading; callers
- *     must not render another `<h1>`).
+ *   - Renders a `<section id="main-content" tabIndex={-1} aria-labelledby={h1}>`
+ *     region — labelled by its `<h1>` (the single top-level heading; callers must
+ *     not render another `<h1>`). It is a labelled region, NOT a `<main>`: the app
+ *     shell owns the single `<main>` landmark, so PageShell nests inside it
+ *     without creating a second `<main>` (avoids the double-landmark defect,
+ *     regardless of how many pages have adopted PageShell yet).
  *   - Ships a keyboard-only "Skip to content" link (visible on focus-visible)
- *     that targets the main region, plus a visible focus ring from the
- *     `--shadow-focus` token.
+ *     that targets the region (`#main-content`), plus a visible focus ring from
+ *     the `--shadow-focus` token.
  *   Callers supply only the title/labels; focus and roles are built in.
  *
  * Tokens only: spacing/typography/color come from the Tailwind token utilities
@@ -26,7 +29,7 @@
  * `text-primary`/`text-muted`, `border-subtle`); layout + the content-width ramp
  * live in `./PageShell.css`. No raw hex/px in this component.
  *
- * Escape hatch: `className` passes through to the `<main>` root only.
+ * Escape hatch: `className` passes through to the `<section>` root only.
  */
 import React from 'react';
 import './PageShell.css';
@@ -70,6 +73,7 @@ export const PageShell: React.FC<PageShellProps> = ({
   children,
 }) => {
   const rootClassName = ['ui-pageshell', className].filter(Boolean).join(' ');
+  const titleId = React.useId();
 
   let body: React.ReactNode;
   if (loading) {
@@ -89,7 +93,13 @@ export const PageShell: React.FC<PageShellProps> = ({
   }
 
   return (
-    <main id="main-content" tabIndex={-1} data-width={width} className={rootClassName}>
+    <section
+      id="main-content"
+      tabIndex={-1}
+      aria-labelledby={titleId}
+      data-width={width}
+      className={rootClassName}
+    >
       <a className="ui-pageshell-skip" href="#main-content">
         Skip to content
       </a>
@@ -100,7 +110,7 @@ export const PageShell: React.FC<PageShellProps> = ({
           ) : null}
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h1 className="text-display text-primary">{title}</h1>
+              <h1 id={titleId} className="text-display text-primary">{title}</h1>
               {description ? <p className="mt-1 text-body text-muted">{description}</p> : null}
             </div>
             {actions ? (
@@ -110,7 +120,7 @@ export const PageShell: React.FC<PageShellProps> = ({
         </header>
         <div className="ui-pageshell-body">{body}</div>
       </div>
-    </main>
+    </section>
   );
 };
 
