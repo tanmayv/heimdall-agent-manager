@@ -14,6 +14,22 @@ const EMPTY_DELIVERY: ChatDeliveryStatus = { glyph: '', label: '', tone: '' };
 // always scrolls to the bottom regardless of this flag.
 const SCROLL_TO_BOTTOM_ON_INBOUND = true;
 
+// Deep-link scroll-to-match tuning. HIGHLIGHT_MS is how long the matched message
+// stays tinted; MAX_FOCUS_PAGE_LOADS caps how many "load older" pages we auto-fetch
+// while hunting for a not-yet-loaded match, so a bad/old id can never loop forever.
+const HIGHLIGHT_MS = 1500;
+const MAX_FOCUS_PAGE_LOADS = 25;
+
+// prefersReducedMotion reads the user's OS setting (mirrors AgentActivityBubbles):
+// when true we skip smooth scrolling and the highlight fade so nothing animates.
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
 export default function ChatMessageList({
   conversationKey,
   messages,
@@ -62,6 +78,13 @@ export default function ChatMessageList({
   const [showJump, setShowJump] = useState(false);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const focusedRef = useRef<string | null>(null);
+  // Scroll-to-match bookkeeping: how many "load older" pages we've auto-fetched for
+  // the current focus id, the id we've already given up on (so we announce "not
+  // found" once), and a polite aria-live message for screen readers.
+  const focusPageLoadsRef = useRef(0);
+  const gaveUpRef = useRef<string | null>(null);
+  const [focusAnnouncement, setFocusAnnouncement] = useState('');
+  const reduceMotion = prefersReducedMotion();
   const reply = useMemo(() => onReply || (() => undefined), [onReply]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
@@ -109,29 +132,61 @@ export default function ChatMessageList({
     }
   }, [conversationKey, messages.length, scrollToBottom]);
 
-  // Deep-link focus: scroll to + highlight the target message once it is present in
-  // the loaded set. Runs after the initial bottom-scroll layout effect so it wins,
-  // and fires at most once per focusMessageId (a background poll/new message must not
-  // yank the reader back). If the id isn't loaded yet, do nothing (stay at the
-  // conversation); it will resolve if the row appears later (e.g. after Load older).
+  // Reset the scroll-to-match bookkeeping whenever the target id changes, so a new
+  // search result re-runs the hunt (and re-announces) rather than being suppressed by
+  // the once-per-id guards below.
+  useEffect(() => {
+    focusPageLoadsRef.current = 0;
+    gaveUpRef.current = null;
+    setFocusAnnouncement('');
+  }, [focusMessageId]);
+
+  // Deep-link scroll-to-match: bring the target message into view + briefly highlight
+  // it, and move focus/announce for a11y. Runs after the initial bottom-scroll layout
+  // effect so it wins, and succeeds at most once per focusMessageId (a background
+  // poll/new message must not yank the reader back). If the message is NOT on a loaded
+  // page yet, auto-fetch older pages (capped) until it appears; if it never does, give
+  // up gracefully with a non-blocking announcement (no error, reader stays put).
   useEffect(() => {
     if (!focusMessageId) return;
     if (focusedRef.current === focusMessageId) return;
+    if (gaveUpRef.current === focusMessageId) return;
     if (messages.length === 0) return;
     const node = scrollRef.current;
     if (!node) return;
+
     const el = node.querySelector<HTMLElement>(`[data-debug-id="${debugPrefix}-message-${focusMessageId}"]`);
-    if (!el) return;
-    focusedRef.current = focusMessageId;
-    requestAnimationFrame(() => {
-      el.scrollIntoView({ block: 'center' });
-      stickyRef.current = false; // we intentionally moved off the bottom
-      setShowJump(true);
-    });
-    setHighlightId(focusMessageId);
-    const timer = window.setTimeout(() => setHighlightId((cur) => (cur === focusMessageId ? null : cur)), 2000);
-    return () => window.clearTimeout(timer);
-  }, [focusMessageId, messages, debugPrefix]);
+    if (el) {
+      focusedRef.current = focusMessageId;
+      requestAnimationFrame(() => {
+        el.scrollIntoView({ block: 'center', behavior: reduceMotion ? 'auto' : 'smooth' });
+        // Move keyboard/AT focus to the matched message (non-tab-stop) so keyboard and
+        // screen-reader users land on it; preventScroll keeps scrollIntoView in charge.
+        el.tabIndex = -1;
+        el.focus({ preventScroll: true });
+        stickyRef.current = false; // we intentionally moved off the bottom
+        setShowJump(true);
+      });
+      setHighlightId(focusMessageId);
+      setFocusAnnouncement('Jumped to the matching message.');
+      const timer = window.setTimeout(() => setHighlightId((cur) => (cur === focusMessageId ? null : cur)), HIGHLIGHT_MS);
+      return () => window.clearTimeout(timer);
+    }
+
+    // Not loaded yet: walk older pages until the row appears or we exhaust/limit.
+    if (hasMore && onLoadOlder && !loadingOlder && focusPageLoadsRef.current < MAX_FOCUS_PAGE_LOADS) {
+      focusPageLoadsRef.current += 1;
+      setFocusAnnouncement('Loading earlier messages to reach the matching message…');
+      onLoadOlder(); // messages grows → this effect re-runs and re-checks
+      return;
+    }
+
+    // No more pages (or hit the cap) and still not found: stop, announce once.
+    if (!loadingOlder) {
+      gaveUpRef.current = focusMessageId;
+      setFocusAnnouncement('Could not find the matching message in this conversation.');
+    }
+  }, [focusMessageId, messages, debugPrefix, hasMore, loadingOlder, onLoadOlder, reduceMotion]);
 
   const onScroll = useCallback(() => {
     const node = scrollRef.current;
@@ -144,6 +199,9 @@ export default function ChatMessageList({
 
   return (
     <div className={wrapperClassName}>
+      {/* Polite live region for scroll-to-match: announces the jump / paging / not-found
+          to screen readers without stealing focus or blocking. */}
+      <div data-debug-id={`${debugPrefix}-focus-status`} role="status" aria-live="polite" className="sr-only">{focusAnnouncement}</div>
       <div ref={scrollRef} data-debug-id={`${debugPrefix}-scroll`} onScroll={onScroll} className={scrollClassName}>
         {hasMore ? (
           <div className="flex justify-center">
@@ -158,7 +216,7 @@ export default function ChatMessageList({
           const timestamp = formatTimestamp(message.createdUnixMs);
           const delivery = getDeliveryStatus(message);
           return (
-            <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-full rounded-xl transition-colors duration-500 ${message.messageId === highlightId ? 'bg-amber-400/10 ring-1 ring-amber-400/40' : ''} ${message.isUser ? 'justify-end' : 'justify-start'}`}>
+            <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-full rounded-xl outline-none focus-visible:shadow-focus ${reduceMotion ? '' : 'transition-colors duration-500'} ${message.messageId === highlightId ? 'bg-warning-soft ring-1 ring-warning' : ''} ${message.isUser ? 'justify-end' : 'justify-start'}`}>
               <div className={`flex min-w-0 max-w-full ${message.isUser ? 'max-w-[86%] items-end sm:max-w-[78%]' : 'w-full items-start'} flex-col text-sm`}>
                 {renderMessageTop ? renderMessageTop({ message, index, messages }) : null}
                 <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'text-zinc-200'}`}>
