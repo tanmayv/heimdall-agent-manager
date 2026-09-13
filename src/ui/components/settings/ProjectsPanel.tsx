@@ -11,7 +11,7 @@ import {
   type ProjectBridgePath,
 } from "../../api/endpoints/projects";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
-import { Badge, Button, Input, PageShell, SectionHeader, Select, Text } from "@ui";
+import { Badge, Button, Input, PageShell, SectionHeader, Select, StatusDot, Text } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -466,7 +466,7 @@ export default function ProjectsPanel() {
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
-                              <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-emerald-400" : "bg-zinc-600"}`} />
+                              <StatusDot tone={isOnline ? "success" : "neutral"} label={isOnline ? "Online" : "Offline"} />
                               <span className="text-sm font-medium text-zinc-200">{bridgeName}</span>
                               <span className="text-xs text-zinc-500">({bridgeId})</span>
                             </div>

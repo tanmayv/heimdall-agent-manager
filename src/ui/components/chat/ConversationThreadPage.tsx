@@ -29,7 +29,7 @@ import {
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
-import { runtimeStateFromStatus } from '../runtime/RuntimeChip';
+import { StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
 import CurrentTaskStrip from './CurrentTaskStrip';
@@ -1199,7 +1199,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             ) : null}
             <div className="relative ml-auto shrink-0" ref={statusMenuRef}>
               <button type="button" data-debug-id="conversation-runtime-status-chip" aria-haspopup="menu" aria-expanded={statusMenuOpen ? 'true' : 'false'} onClick={() => setStatusMenuOpen((open) => !open)} title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10">
-                <span className={`h-1.5 w-1.5 rounded-full ${runtimeStateFromStatus(runtimeStatus) === 'live' ? 'bg-emerald-400' : runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'bg-amber-400' : 'bg-zinc-500'}`} />
+                <StatusDot size="sm" tone={runtimeStatusToTone(runtimeStatus)} label={needsStart ? 'Stopped' : runtimeStopping ? 'Stopping' : runtimeStateLabel(runtimeStateFromStatus(runtimeStatus))} />
                 {needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}
               </button>
               {statusMenuOpen ? (

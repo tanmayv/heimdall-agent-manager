@@ -8,7 +8,8 @@ import {
   useArchiveMemoryMutation,
   memoryErrorText,
 } from "../../api/endpoints/memory";
-import { Button, Input, PageShell, Select, Textarea } from "@ui";
+import { Button, Input, PageShell, Select, StatusPill, Textarea } from "@ui";
+import type { Tone } from "@ui";
 import {
   MEMORY_TYPES,
   ScopeEditor,
@@ -519,14 +520,14 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
     } catch (_e) {}
   };
 
-  const statusColor =
+  const statusTone: Tone =
     memory.status === "active"
-      ? "bg-emerald-400/20 text-emerald-300"
+      ? "success"
       : memory.status === "pending"
-      ? "bg-amber-400/20 text-amber-300"
+      ? "pending"
       : memory.status === "archived"
-      ? "bg-zinc-500/20 text-zinc-400"
-      : "bg-red-400/20 text-red-300";
+      ? "neutral"
+      : "danger";
 
   return (
     <div
@@ -538,9 +539,9 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="font-bold text-white text-base">{memory.title || memoryId}</h4>
-            <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase ${statusColor}`}>
+            <StatusPill tone={statusTone} className="uppercase">
               {memory.status}
-            </span>
+            </StatusPill>
             <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-medium text-zinc-300">
               {memory.type}
             </span>

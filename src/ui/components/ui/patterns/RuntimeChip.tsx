@@ -31,11 +31,24 @@ export function runtimeStateLabel(state: RuntimeState): string {
   return state === 'live' ? 'Running' : state === 'starting' ? 'Starting' : 'Stopped';
 }
 
-const STATE_TONE: Record<RuntimeState, Tone> = {
+/**
+ * THE canonical runtime-liveness tone map. Every status DOT that means
+ * "is this running?" resolves its color through here (via `runtimeStatusToTone`)
+ * so live/starting/stopped read identically everywhere — no more per-file
+ * emerald/amber/zinc ladders. (EL-050 status-dot consolidation.)
+ */
+export const RUNTIME_STATE_TONE: Record<RuntimeState, Tone> = {
   live: 'success',
   starting: 'pending',
   stopped: 'neutral',
 };
+
+/** Raw `runtime_status` string → semantic `Tone`, in one hop. */
+export function runtimeStatusToTone(status: string): Tone {
+  return RUNTIME_STATE_TONE[runtimeStateFromStatus(status)];
+}
+
+const STATE_TONE = RUNTIME_STATE_TONE;
 
 const STATE_TEXT: Record<RuntimeState, string> = {
   live: 'text-success',

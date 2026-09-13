@@ -8,7 +8,8 @@ import {
   useCreateBridgeEnrollmentMutation,
   useRevokeBridgeEnrollmentMutation,
 } from '../../api/endpoints/bridgeSupport';
-import { Button, FormField, Input, PageShell, Text } from '@ui';
+import { Button, FormField, Input, PageShell, StatusDot, Text } from '@ui';
+import type { Tone } from '@ui';
 
 // UI-11: Settings → Bridges. The user's machines (arch doc §6A).
 // List shows status dot, label, hostname/OS/arch, capabilities, instance count.
@@ -54,12 +55,12 @@ export default function BridgesPanel() {
   }
 
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  function statusTone(bridge: any): string {
+  function statusTone(bridge: any): Tone {
     // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
-    if (status === 'revoked') return 'bg-rose-400';
-    if (status === 'online' || status === 'connected') return 'bg-emerald-400';
-    return 'bg-zinc-600';
+    if (status === 'revoked') return 'danger';
+    if (status === 'online' || status === 'connected') return 'success';
+    return 'neutral';
   }
 
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -241,7 +242,7 @@ export default function BridgesPanel() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span data-debug-id={`settings-bridge-status-${id}`} className={`h-2 w-2 shrink-0 rounded-full ${statusTone(bridge)}`} />
+                        <StatusDot data-debug-id={`settings-bridge-status-${id}`} tone={statusTone(bridge)} label={statusLabel(bridge)} />
                         {isRenaming ? (
                           <Input data-debug-id={`settings-bridge-rename-input-${id}`} value={renameValue} onChange={setRenameValue} size="sm" className="min-w-0 flex-1" autoFocus />
                         ) : (

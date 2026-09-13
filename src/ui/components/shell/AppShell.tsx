@@ -6,7 +6,7 @@ import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import CommandPalette from '../command-palette/CommandPalette';
 import Icon, { type IconName } from '../Icon';
-import { PageShell } from '@ui';
+import { PageShell, StatusDot } from '@ui';
 import { useViewport, MobileTabBar } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
@@ -561,7 +561,18 @@ const DOT_COLOR_CLASSES: Record<string, { solid: string; half: string }> = {
   zinc: { solid: 'bg-zinc-500', half: 'bg-zinc-500/60' },
 };
 
-function StatusDot({
+/**
+ * BridgeLiveDot — the sidebar rail's per-conversation liveness dot.
+ * ------------------------------------------------------------------
+ * DELIBERATE EXCEPTION to the @ui `StatusDot` primitive (EL-050): its color
+ * encodes WHICH bridge a running session is on (bridgeColorSlot's identity
+ * palette), not a health tone, and it carries a running/working animation
+ * (bounce) the primitive intentionally doesn't. Health-tone dots elsewhere use
+ * `@ui` StatusDot + `runtimeStatusToTone`; this one stays bespoke because the
+ * bridge-identity coloring is load-bearing in the rail. Renamed off "StatusDot"
+ * to remove the name collision with the primitive.
+ */
+function BridgeLiveDot({
   bridgeId,
   runtimeStatus,
   activityStatus,
@@ -699,7 +710,7 @@ function ProjectGroupItem({
                     href={shellHash(`/conversations/${encodeURIComponent(conversation.agentInstanceId)}`)}
                     className={`flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] transition ${isSelected ? 'bg-white/[0.06] text-white' : 'text-zinc-400 hover:bg-white/[0.06] hover:text-white'}`}
                   >
-                    <StatusDot
+                    <BridgeLiveDot
                       bridgeId={conversation.bridgeId}
                       runtimeStatus={conversation.runtimeStatus}
                       activityStatus={conversation.activityStatus}
@@ -1245,7 +1256,14 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${collapsed ? 'justify-center' : ''}`}>
             <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-[11px] font-bold text-zinc-300`}>
               {(displayName || 'U').slice(0, 1).toUpperCase()}
-              <span className={`absolute ml-5 mt-5 h-2 w-2 rounded-full ring-2 ring-[#101010] ${wsConnected ? 'bg-emerald-400' : wsStatus === 'error' ? 'bg-red-400' : 'bg-amber-400 animate-pulse'}`} />
+              <span className="absolute ml-5 mt-5">
+                <StatusDot
+                  className="ring-2 ring-[#101010]"
+                  tone={wsConnected ? 'success' : wsStatus === 'error' ? 'danger' : 'pending'}
+                  pulse={!wsConnected && wsStatus !== 'error'}
+                  label={wsConnected ? 'User WS live' : wsStatus === 'error' ? 'User WS error' : 'User WS connecting'}
+                />
+              </span>
             </span>
             {!collapsed && (
               <div className="min-w-0 flex-1">

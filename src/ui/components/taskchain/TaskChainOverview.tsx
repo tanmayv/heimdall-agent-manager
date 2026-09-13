@@ -6,7 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 
-import { Checkbox, Icon, PageShell, Text } from '@ui';
+import { Checkbox, Icon, PageShell, StatusDot, Text, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -1375,7 +1375,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 data-debug-id={`taskchain-overview-member-${memberId}`}
                 className="flex items-center gap-1 rounded bg-zinc-800 px-2 py-0.5"
               >
-                <span className={`h-1.5 w-1.5 rounded-full ${(() => { const s = String(m.runtimeStatus || '').toLowerCase(); if (s === 'running' || s === 'ready' || s === 'live') return 'bg-emerald-400'; if (s === 'starting' || s === 'launching') return 'bg-amber-400'; if (s === '') return 'bg-emerald-400'; return 'bg-zinc-500'; })()}`}></span>
+                <StatusDot size="sm" tone={runtimeStatusToTone(m.runtimeStatus || 'running')} label={runtimeStateLabel(runtimeStateFromStatus(m.runtimeStatus || 'running'))} />
                 <span className="font-mono text-zinc-300">
                   {m.role}: <InstanceIdLink instanceId={memberId} displayName={m.displayName} />
                 </span>
