@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 
-import Modal from '../Modal';
-import { Button, Checkbox, Icon, Select } from '@ui';
+import { Button, Checkbox, Icon, Modal, Select } from '@ui';
 import {
   useListTaskChainsQuery,
   useFetchTaskChainDetailQuery,
@@ -410,32 +409,16 @@ export default function ProjectLaunchModal({
   return (
     <Modal
       open={isOpen}
-      onClose={onClose}
+      onOpenChange={(next) => { if (!next) onClose(); }}
       size="lg"
-      panelClassName="flex flex-col max-h-[85vh] h-[640px] p-6 text-white"
-      debugId="project-launch-modal-overlay"
-      panelDebugId="project-launch-modal"
+      className="h-[640px] text-white"
+      data-debug-id="project-launch-modal"
+      title={<>Launch Agent — <span className="text-sky-400">{project.name}</span></>}
     >
-        {/* Modal Header */}
-        <div className="shrink-0 flex items-center justify-between pb-3">
-          <div>
-            <h2 className="text-base font-semibold text-white">
-              Launch Agent — <span className="text-sky-400">{project.name}</span>
-            </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Start or launch agents scoped to this project
-            </p>
-          </div>
-          <button
-            type="button"
-            data-debug-id="project-launch-modal-close-btn"
-            aria-label="Close"
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white transition-colors"
-          >
-            <Icon name="close" size={16} />
-          </button>
-        </div>
+      <div className="flex h-full flex-col px-6 pb-2">
+        <p className="shrink-0 -mt-1 mb-3 text-xs text-zinc-400">
+          Start or launch agents scoped to this project
+        </p>
 
         {/* Tab Navigation */}
         <div className="shrink-0 flex items-center gap-2 border-b border-white/10 pb-2.5 mb-3">
@@ -940,8 +923,11 @@ export default function ProjectLaunchModal({
           )}
         </div>
 
-        {/* Modal Footer with Action Buttons */}
-        <div className="shrink-0 flex items-center justify-between border-t border-white/10 pt-3">
+      </div>
+
+      {/* Modal Footer with Action Buttons */}
+      <Modal.Footer className="px-6">
+        <div className="flex w-full items-center justify-between">
           <Button
             variant="secondary"
             data-debug-id="project-launch-cancel-btn"
@@ -984,6 +970,7 @@ export default function ProjectLaunchModal({
             </Button>
           )}
         </div>
+      </Modal.Footer>
     </Modal>
   );
 }

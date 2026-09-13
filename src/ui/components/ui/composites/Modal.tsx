@@ -101,6 +101,13 @@ const ModalBase: React.FC<ModalProps> = ({
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   useDialogA11y(open, close, panelRef);
 
+  // Pin Modal.Footer to the panel bottom: split it out of the scrolling body so
+  // the action row stays visible while the body scrolls (tall dialogs like the
+  // project launcher). Non-footer children scroll; footer(s) render below.
+  const kids = React.Children.toArray(children);
+  const footer = kids.filter((k) => React.isValidElement(k) && k.type === ModalFooter);
+  const body = kids.filter((k) => !(React.isValidElement(k) && k.type === ModalFooter));
+
   if (!open) return null;
 
   return createPortal(
@@ -132,7 +139,8 @@ const ModalBase: React.FC<ModalProps> = ({
           </h2>
           <IconButton icon="close" label="Close dialog" size="sm" onClick={close} className="-mr-1.5 -mt-0.5" />
         </div>
-        <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+        <div className="min-h-0 flex-1 overflow-auto">{body}</div>
+        {footer.length ? <div className="shrink-0">{footer}</div> : null}
       </div>
     </div>,
     document.body,
