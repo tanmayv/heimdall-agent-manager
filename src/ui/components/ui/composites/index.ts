@@ -26,3 +26,6 @@ export type { MenuProps, MenuItemProps } from './Menu';
 
 export { Tabs, TabsList, Tab, TabsPanel } from './Tabs';
 export type { TabsProps, TabProps, TabsPanelProps, TabsVariant } from './Tabs';
+
+export { Accordion, AccordionItem } from './Accordion';
+export type { AccordionProps, AccordionItemProps } from './Accordion';
