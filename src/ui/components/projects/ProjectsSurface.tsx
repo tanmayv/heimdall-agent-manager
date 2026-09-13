@@ -28,7 +28,7 @@ import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../ap
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
-import { Button, Icon, Input, Textarea } from '@ui';
+import { Button, Icon, Input, Text, Textarea } from '@ui';
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -99,7 +99,7 @@ function ProjectList() {
     <div data-debug-id="projects-surface" className="w-full">
       <header className="mb-5 flex items-center justify-between gap-3">
         <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75">Projects</p>
+          <Text as="p" role="overline" tone="accent">Projects</Text>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white">Projects</h1>
           <p className="mt-1 text-sm text-zinc-500">Group work by project — agents, memory and per-device paths.</p>
         </div>
@@ -187,7 +187,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
       </a>
 
       <header className="mb-5">
-        <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75">Project</p>
+        <Text as="p" role="overline" tone="accent">Project</Text>
         <h1 data-debug-id="project-detail-title" className="mt-1 text-2xl font-semibold tracking-tight text-white">{project?.name || projectId}</h1>
       </header>
 

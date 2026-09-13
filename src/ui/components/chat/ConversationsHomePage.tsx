@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useListConversationInboxQuery, useLazyListConversationInboxQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { buildRouteHash } from '../../utils/appLocation';
 
-import { Button, Icon } from '@ui';
+import { Button, Icon, Text } from '@ui';
 const PAGE_SIZE = 40;
 
 function looksLikeInternalId(value: string): boolean {
@@ -89,7 +89,7 @@ export default function ConversationsHomePage() {
       <header data-debug-id="conversations-home-header" className="sticky top-0 z-10 -mx-3 border-b border-white/10 bg-[#090909]/95 px-3 py-2 backdrop-blur sm:-mx-4 sm:px-4 sm:pb-3 sm:pt-2 lg:-mx-5 lg:px-5">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="hidden text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75 sm:block">Conversations</p>
+            <Text as="p" role="overline" tone="accent" className="hidden sm:block">Conversations</Text>
             <h1 className="hidden text-2xl font-semibold tracking-tight text-white sm:mt-1 sm:block">Inbox</h1>
             <p data-debug-id="conversations-home-subtitle" className="text-[13px] text-zinc-500 sm:mt-1 sm:text-sm">{conversations.length} loaded{unreadTotal ? ` · ${unreadTotal} unread` : ''}</p>
           </div>

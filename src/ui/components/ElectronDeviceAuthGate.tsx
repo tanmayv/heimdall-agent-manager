@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { Input } from '@ui';
+import { Input, Text } from '@ui';
 
 const API_PREFIX = '/api/v1';
 
@@ -201,7 +201,7 @@ function DeviceAuthShell({ title, body, children }: { title: string; body: strin
   return (
     <main data-debug-id="electron-device-auth" className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
       <section className="w-full max-w-xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-8 text-center shadow-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Device authorization</p>
+        <Text as="p" role="overline" tone="accent">Device authorization</Text>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">{title}</h1>
         <p className="mt-3 text-sm leading-6 text-zinc-400">{body}</p>
         {children}
@@ -367,7 +367,7 @@ function ElectronDeviceAuthScreen({ onAuthenticated }: { onAuthenticated: () => 
       {flow ? (
         <div className="mt-8 space-y-5">
           <div className="rounded-3xl border border-sky-400/30 bg-sky-400/10 p-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-sky-200/80">Your code</p>
+            <Text as="p" role="overline" tone="accent">Your code</Text>
             <button data-debug-id="electron-device-auth-copy-code" onClick={copyCode} className="mt-3 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-4 font-mono text-4xl font-black tracking-[0.18em] text-white hover:bg-black/40">
               {flow.userCode}
             </button>

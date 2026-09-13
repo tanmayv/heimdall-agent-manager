@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Input, Select, Spinner, Textarea } from '@ui';
+import { Input, Select, Spinner, Text, Textarea } from '@ui';
 import {
   useArtifactContentState,
   useCreateArtifactAnnotationMutation,
@@ -1129,7 +1129,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   {selectedArtifactMeta.description && <div className="text-sm text-zinc-300">{selectedArtifactMeta.description}</div>}
                   {previewKind === 'markdown' && annotationMode ? (
                     <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
-                      <div className="text-xs font-medium uppercase tracking-wide text-emerald-200">Text annotation capture</div>
+                      <Text as="div" role="overline" tone="success">Text annotation capture</Text>
                       <div data-debug-id="artifact-viewer-text-selection-summary" className="mt-2 text-sm text-zinc-100 whitespace-pre-wrap">
                         {summarizePendingTextAnnotation(pendingTextSelection)}
                       </div>
@@ -1161,7 +1161,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   ) : null}
                   {previewKind === 'png' && annotationMode ? (
                     <div data-debug-id="artifact-viewer-png-annotation-panel" className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
-                      <div className="text-xs font-medium uppercase tracking-wide text-emerald-200">Image annotation capture</div>
+                      <Text as="div" role="overline" tone="success">Image annotation capture</Text>
                       {pendingImageRegion ? (
                         <>
                           <div data-debug-id="artifact-viewer-png-region-summary" className="mt-2 text-sm text-zinc-100">

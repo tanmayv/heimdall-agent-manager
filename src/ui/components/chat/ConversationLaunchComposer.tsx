@@ -381,7 +381,7 @@ export default function ConversationLaunchComposer() {
     <form data-debug-id="new-convo-composer-shell" onSubmit={submitFirstSend} className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left shadow-2xl">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Composer launch</p>
+          <Text as="p" role="overline" tone="accent">Composer launch</Text>
           <h2 className="mt-2 text-2xl font-semibold text-white">Start a conversation</h2>
           <p className="mt-2 text-sm leading-6 text-zinc-400">Choose an agent in the composer, keep the default Conversations project unless needed, then start to create the bound AgentInstance, ChatConversation, and TaskChain through <code>POST /api/v1/chats</code>. Once it opens, type your first message inside the thread.</p>
         </div>

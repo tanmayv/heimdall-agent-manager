@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ChainLike, TaskLike } from './chainTaskInference';
 import { taskStatusOf, taskReviewerOf, isUserEffectiveReviewer } from './chainTaskInference';
+import { Text } from '@ui';
 
 export type CurrentTaskStripProps = {
   task: TaskLike;
@@ -140,7 +141,7 @@ export default function CurrentTaskStrip({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="shrink-0 text-[10px] uppercase tracking-wide text-teal-300/70">Current task</span>
+            <Text role="overline" tone="accent" className="shrink-0">Current task</Text>
             {onOpenTask ? (
               <a
                 data-debug-id={`${debugPrefix}-current-task-link`}
