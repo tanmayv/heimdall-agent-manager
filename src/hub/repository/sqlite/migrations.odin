@@ -621,7 +621,11 @@ MIGRATION_032_AI_NATIVE_TEMPLATES :: #load("migrations/032_ai_native_templates.s
 // agents (coordinator, worker, reviewer) and the dedicated Conversation project for all users.
 MIGRATION_033_DEFAULT_AGENTS_AND_CONVERSATION_PROJECT :: #load("migrations/033_default_agents_and_conversation_project.sql", string)
 
-migration_order :: [33]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql"}
+// MIGRATION_034_CARDS creates the cards table, indexes, and owner-immutable trigger
+// for Curator action cards (REQ-CARD-1).
+MIGRATION_034_CARDS :: #load("migrations/034_cards.sql", string)
+
+migration_order :: [34]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -687,6 +691,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "034_cards.sql" && table_column_exists(conn, "cards", "card_id") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -711,6 +719,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_actions_schema(conn) do return false, domain.domain_error(.Internal_Error, "actions schema upgrade failed")
 	if !upgrade_push_subscriptions_schema(conn) do return false, domain.domain_error(.Internal_Error, "push subscriptions schema upgrade failed")
 	if !upgrade_memory_description_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory description schema upgrade failed")
+	if !upgrade_cards_schema(conn) do return false, domain.domain_error(.Internal_Error, "cards schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -753,6 +762,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "031_search_fts_messages.sql" do return strings.clone(MIGRATION_031_SEARCH_FTS_MESSAGES)
 	if name == "032_ai_native_templates.sql" do return strings.clone(MIGRATION_032_AI_NATIVE_TEMPLATES)
 	if name == "033_default_agents_and_conversation_project.sql" do return strings.clone(MIGRATION_033_DEFAULT_AGENTS_AND_CONVERSATION_PROJECT)
+	if name == "034_cards.sql" do return strings.clone(MIGRATION_034_CARDS)
 	return ""
 }
 
@@ -985,6 +995,34 @@ upgrade_memory_description_schema :: proc(conn: ^Conn) -> bool {
 	}
 	exec(conn, "DELETE FROM memories WHERE owner_user_id = 'system' AND (type = 'skill' OR memory_id LIKE 'mem_system_%');")
 	return true
+}
+
+// upgrade_cards_schema idempotently ensures the cards table, its indexes,
+// and the owner-immutable trigger exist (REQ-CARD-1).
+upgrade_cards_schema :: proc(conn: ^Conn) -> bool {
+	return exec(conn, `CREATE TABLE IF NOT EXISTS cards (
+  card_id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  rationale TEXT NOT NULL DEFAULT '',
+  scope TEXT NOT NULL DEFAULT 'project',
+  provider TEXT NOT NULL DEFAULT '',
+  confidence REAL NOT NULL DEFAULT 1.0,
+  source_refs_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending',
+  operations_json TEXT NOT NULL DEFAULT '[]',
+  guard_json TEXT NOT NULL DEFAULT '{}',
+  snooze_until TEXT NOT NULL DEFAULT '',
+  ttl_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cards_owner ON cards(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_cards_project ON cards(project_id);
+CREATE INDEX IF NOT EXISTS idx_cards_status ON cards(status);
+CREATE INDEX IF NOT EXISTS idx_cards_owner_status ON cards(owner_user_id, status);
+CREATE TRIGGER IF NOT EXISTS cards_owner_immutable BEFORE UPDATE OF owner_user_id ON cards BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`)
 }
 
 

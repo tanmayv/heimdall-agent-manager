@@ -11,4 +11,5 @@ Repositories :: struct {
 	actions: Action_Repository,
 	scheduled_prompts: Scheduled_Prompt_Repository,
 	push_subscriptions: Push_Repository,
+	cards: Card_Repository,
 }
