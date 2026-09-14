@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:net"
 import "core:os"
 import base64 "core:encoding/base64"
+import json "core:encoding/json"
 import "core:strings"
 import "core:sys/posix"
 
@@ -173,6 +174,14 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("description", desc))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_description", json_object_from_slice(fields[:]))
+	case "set-status", "status":
+		status := option_value(args, "--status", pos(tokens, 1))
+		if status == "" { print_agent_help([]string{"task-chain"}); return }
+		fields := make([dynamic]string)
+		defer delete(fields)
+		append(&fields, json_kv("status", status))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
 	case "reconcile":
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
@@ -539,7 +548,13 @@ ctl_v2_cards :: proc(endpoint, token: string, tokens, args: []string) {
 		card_id := pos(tokens, 1)
 		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
 		if card_id == "" { print_agent_help([]string{"cards"}); return }
-		ctl_agent_call(endpoint, token, "agent.cards.show", json_object(json_kv("card_id", card_id)))
+		if has_flag(args, "--json") || has_flag(args, "--raw") {
+			ctl_agent_call(endpoint, token, "agent.cards.show", json_object(json_kv("card_id", card_id)))
+			return
+		}
+		response, ok := ctl_agent_local_call(endpoint, token, "agent.cards.show", json_object(json_kv("card_id", card_id)))
+		if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+		render_human_card(response)
 	case "create":
 		title := option_value(args, "--title", pos(tokens, 1))
 		if title == "" {
@@ -589,6 +604,112 @@ ctl_agentmode_cards_create_params :: proc(title: string, args: []string) -> stri
 	if su := option_value(args, "--snooze-until", ""); su != "" do append(&fields, json_kv("snooze_until", su))
 	if ttl := option_value(args, "--ttl-at", ""); ttl != "" do append(&fields, json_kv("ttl_at", ttl))
 	return json_object_from_slice(fields[:])
+}
+
+render_human_card :: proc(body: string) {
+	val, err := json.parse(transmute([]byte)body)
+	if err != .None {
+		fmt.println(body)
+		return
+	}
+	defer json.destroy_value(val)
+
+	root, is_obj := val.(json.Object)
+	if !is_obj {
+		fmt.println(body)
+		return
+	}
+
+	if ok_val, has_ok := root["ok"].(json.Boolean); has_ok && !bool(ok_val) {
+		fmt.println(body)
+		return
+	}
+
+	card_obj := root
+	if data_obj, has_data := root["data"].(json.Object); has_data {
+		card_obj = data_obj
+	}
+
+	card_id := ""
+	if s, ok := card_obj["card_id"].(json.String); ok do card_id = string(s)
+	if card_id == "" {
+		if s, ok := card_obj["id"].(json.String); ok do card_id = string(s)
+	}
+	if card_id == "" {
+		fmt.println(body)
+		return
+	}
+
+	title := ""
+	if s, ok := card_obj["title"].(json.String); ok do title = string(s)
+
+	status := ""
+	if s, ok := card_obj["status"].(json.String); ok do status = string(s)
+
+	scope := ""
+	if s, ok := card_obj["scope"].(json.String); ok do scope = string(s)
+
+	provider := ""
+	if s, ok := card_obj["provider"].(json.String); ok do provider = string(s)
+
+	rationale := ""
+	if s, ok := card_obj["rationale"].(json.String); ok do rationale = string(s)
+
+	project_id := ""
+	if s, ok := card_obj["project_id"].(json.String); ok do project_id = string(s)
+
+	snooze_until := ""
+	if s, ok := card_obj["snooze_until"].(json.String); ok do snooze_until = string(s)
+
+	ttl_at := ""
+	if s, ok := card_obj["ttl_at"].(json.String); ok do ttl_at = string(s)
+
+	confidence: f64 = 1.0
+	if f, ok := card_obj["confidence"].(json.Float); ok do confidence = f
+	else if i, ok := card_obj["confidence"].(json.Integer); ok do confidence = f64(i)
+
+	fmt.printfln("Card:       %s", card_id)
+	fmt.printfln("Title:      %s", title)
+	fmt.printfln("Status:     %s", status)
+	if scope != "" do fmt.printfln("Scope:      %s", scope)
+	if provider != "" do fmt.printfln("Provider:   %s", provider)
+	if confidence < 0.9999 || confidence > 1.0001 {
+		fmt.printfln("Confidence: %.2f", confidence)
+	}
+	if project_id != "" do fmt.printfln("Project:    %s", project_id)
+	if snooze_until != "" do fmt.printfln("Snoozed:    %s", snooze_until)
+	if ttl_at != "" do fmt.printfln("TTL:        %s", ttl_at)
+	if rationale != "" do fmt.printfln("Rationale:  %s", rationale)
+
+	ops, has_ops := card_obj["operations"].(json.Array)
+	if has_ops && len(ops) > 0 {
+		fmt.println("")
+		fmt.printfln("Operations (%d):", len(ops))
+		for op_val, idx in ops {
+			op_item, ok := op_val.(json.Object)
+			if !ok do continue
+			op_name := ""
+			if s, ok2 := op_item["op"].(json.String); ok2 do op_name = string(s)
+			if op_name == "" {
+				if s, ok2 := op_item["type"].(json.String); ok2 do op_name = string(s)
+			}
+			label := ""
+			if s, ok2 := op_item["label"].(json.String); ok2 do label = string(s)
+
+			if label != "" && op_name != "" {
+				fmt.printfln("  %d. %s [%s]", idx + 1, label, op_name)
+			} else if label != "" {
+				fmt.printfln("  %d. %s", idx + 1, label)
+			} else if op_name != "" {
+				fmt.printfln("  %d. %s", idx + 1, op_name)
+			} else {
+				fmt.printfln("  %d. (unnamed operation)", idx + 1)
+			}
+		}
+	} else {
+		fmt.println("")
+		fmt.println("Operations: (none)")
+	}
 }
 
 ctl_agentmode_memory :: proc(endpoint, token: string, tokens, args: []string) {
@@ -975,6 +1096,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
 	fmt.println("                                      (coordinator only; pass \"\" to clear).")
+	fmt.println("  set-status <active|completed> [--chain <id>]    Change chain status (coordinator only).")
 	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
 	fmt.println("                                      actionable tasks, set current-tasks, nudge agents.")
 	fmt.println("                                      Coordinator/owner only. Run after staging tasks/deps.")
@@ -1091,17 +1213,18 @@ print_help_cards :: proc() {
 	fmt.println("VERBS")
 	fmt.println("  list [--status <s>] [--scope <s>] [--provider <p>] [--project <id>] [--limit <n>]")
 	fmt.println("                                      List cards matching filters.")
-	fmt.println("  show    <card-id>                   Show card detail.")
+	fmt.println("  show    <card-id> [--json|--raw]    Show card detail (formatted or raw JSON).")
 	fmt.println("  create  --title <title>             Create a new action card.")
 	fmt.println("      [--rationale <t>] [--scope <project|global>] [--provider <p>]")
 	fmt.println("      [--confidence <float>] [--project <id>] [--source-refs <json>]")
 	fmt.println("      [--operations <json>] [--guard <json>]")
-	fmt.println("  discard <card-id>                   Discard a card.")
-	fmt.println("  accept  <card-id>                   Accept and execute card operations.")
+	fmt.println("  discard <card-id>                   Discard a card without executing operations.")
+	fmt.println("  accept  <card-id>                   Accept card and atomically execute all operations.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl cards list")
-	fmt.println("  ham-ctl cards create --title \"Run tests\" --operations '[{\"type\":\"task.create\",\"params\":{\"title\":\"Run tests\"}}]'")
+	fmt.println("  ham-ctl cards create --title \"Run tests\" --operations '[{\"op\":\"task.vote\",\"label\":\"Approve task\",\"args\":{\"task_id\":\"task_1\"}}]'")
 	fmt.println("  ham-ctl cards show crd_123")
+	fmt.println("  ham-ctl cards accept crd_123")
 	fmt.println("  ham-ctl cards discard crd_123")
 }

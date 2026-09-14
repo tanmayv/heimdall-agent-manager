@@ -146,7 +146,13 @@ ctl_hub_task_chains :: proc(base, token, action: string, args: []string) {
 	}
 	if action == "publish" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/publish", safe_path_part(chain_id)), "{}"); return }
 	if action == "complete" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/complete", safe_path_part(chain_id)), "{}"); return }
-	fmt.println("usage: ham-ctl hub task-chains <list|create|show|update|members|add-agent|publish|complete>")
+	if action == "set-status" || action == "status" {
+		status := option_value(args, "--status", "")
+		if status == "" || chain_id == "" { fmt.println("usage: ham-ctl hub task-chains set-status --chain-id <id> --status <active|completed>"); return }
+		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", status)))
+		return
+	}
+	fmt.println("usage: ham-ctl hub task-chains <list|create|show|update|members|add-agent|publish|complete|set-status>")
 }
 
 ctl_hub_tasks :: proc(base, token, action: string, args: []string) {
@@ -400,7 +406,15 @@ ctl_hub_cards :: proc(base, token: string, tokens, args: []string) {
 		card_id := pos(tokens, 1)
 		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
 		if card_id == "" { fmt.println("usage: ham-ctl hub cards show <card-id>"); return }
-		ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/cards/%s", safe_path_part(card_id)), "")
+		if has_flag(args, "--json") || has_flag(args, "--raw") {
+			ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/cards/%s", safe_path_part(card_id)), "")
+			return
+		}
+		full_path := hub_url_path_prefix_join(base, fmt.tprintf("/api/v1/cards/%s", safe_path_part(card_id)))
+		headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
+		response, ok := http.request_with_headers_timeout("GET", base, full_path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
+		if !ok { fmt.println(`{"ok":false,"message":"Hub request failed"}`); return }
+		render_human_card(response.body)
 		return
 	}
 	if action == "create" {

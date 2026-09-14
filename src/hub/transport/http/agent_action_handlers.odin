@@ -180,6 +180,29 @@ agent_action_chain_set_description_handler :: proc(ctx: rawptr, req: Request) ->
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
+// agent_action_chain_set_status_handler lets a chain coordinator mutate status (REQ-CHAIN-1).
+agent_action_chain_set_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := strings.trim_space(json_string(params, "chain_id"))
+	if chain_id == "" do chain_id = inst.chain_id
+	if chain_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	status_str := strings.trim_space(json_string(params, "status"))
+	if status_str == "" do return respond_error(domain.domain_error(.Validation_Failed, "status is required"), req.request_id)
+	if status_str != "active" && status_str != "completed" && status_str != "cancelled" {
+		return respond_error(domain.domain_error(.Validation_Failed, "invalid chain status; must be active, completed, or cancelled"), req.request_id)
+	}
+	status := taskchain_service.chain_status_from_string(status_str)
+	chain, saved, err := taskchain_service.change_chain_status(h.taskchains, auth, domain.Task_Chain_ID(chain_id), status)
+	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "chain_status", fmt.tprintf("changed chain status to %s", status_str))
+	b := strings.builder_make()
+	write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 // agent_action_chain_show_handler returns the full chain (incl. description).
 // chain_id is optional: defaults to the caller instance's own chain.
 agent_action_chain_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -955,8 +978,7 @@ agent_action_card_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	if project_id == "" do project_id = domain.Project_ID(inst.project_id)
 
 	provider := json_string(params, "provider")
-	if provider == "" do provider = inst.provider
-	if provider == "" do provider = "curator"
+	if provider == "" do provider = domain.CARD_PROVIDER_CURATOR_LLM
 
 	raw_refs, _ := json_raw_field(params, "source_refs")
 	raw_ops, _ := json_raw_field(params, "operations")
