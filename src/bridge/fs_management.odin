@@ -150,13 +150,18 @@ Bridge_Fs_Mkdir_Result :: struct {
 BRIDGE_FS_MAX_ENTRIES :: 2000
 BRIDGE_FS_DEFAULT_LIMIT :: 200
 BRIDGE_FS_MAX_VIEW_BYTES :: 1_000_000 // 1 MB read-file total-size view cap
-// Default per-request byte window for paginated text reads. Kept well below the
-// WS relay's practical single-frame budget (empirically frames around ~64KB+
-// stall/time out on the hub relay, while ~48KB and below are instant), so the
-// JSON-escaped result frame always fits with wide margin. Smaller pages also
-// give snappier first-paint + smoother scroll-to-load. The UI pages by
-// requesting offset += bytes_returned until eof.
-BRIDGE_FS_READ_PAGE_BYTES :: 16_000
+// Default per-request byte window for paginated text reads. Capped at 8000 as a
+// hotfix for the openssl-s_client TLS transport: the bridge streams a hub-runtime
+// result larger than 6000B as multiple ~8KB WS "chunk" frames, and `openssl
+// s_client` (used for the wss:// hub link) reads its stdin in 16384-byte chunks and
+// SHUTS DOWN the TLS connection on any burst that needs a second read — so a result
+// whose frames total >16KB (an ~16000B page → 3+ chunk frames) tears down the link
+// and 409-times-out. An 8000B page fits in ≤2 chunk frames (~11.6KB on the wire, one
+// s_client read), so it always survives. Proper fix is a binary-safe TLS transport
+// (socat / in-process libssl); until then keep this ≤~11000. Smaller pages also give
+// snappier first-paint + smoother scroll-to-load. The UI pages by requesting
+// offset += bytes_returned until eof.
+BRIDGE_FS_READ_PAGE_BYTES :: 8_000
 
 // --- helpers -------------------------------------------------------------
 

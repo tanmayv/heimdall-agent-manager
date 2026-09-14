@@ -32,7 +32,10 @@ runtime_command_cached :: proc(registry: ^project_service.Bridge_Runtime_Registr
 	if registry == nil || command_id == "" do return "", false
 	project_service.bridge_runtime_registry_command_lock(registry)
 	defer project_service.bridge_runtime_registry_command_unlock(registry)
-	for i in 0..<registry.command_count { if registry.command_ids[i] == command_id do return registry.command_results_json[i], true }
+	// command_count is a monotonic counter; live slots are min(count, cap) because
+	// the cache is a ring (see runtime_command_result_idempotent).
+	live := min(registry.command_count, len(registry.command_ids))
+	for i in 0..<live { if registry.command_ids[i] == command_id do return registry.command_results_json[i], true }
 	return "", false
 }
 
@@ -41,12 +44,20 @@ runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runt
 	if registry == nil || command_id == "" do return "", false
 	project_service.bridge_runtime_registry_command_lock(registry)
 	defer project_service.bridge_runtime_registry_command_unlock(registry)
-	for i in 0..<registry.command_count { if registry.command_ids[i] == command_id do return registry.command_results_json[i], true }
-	if registry.command_count < len(registry.command_ids) {
-		registry.command_ids[registry.command_count] = command_id
-		registry.command_results_json[registry.command_count] = result_json
-		registry.command_count += 1
-	}
+	// Idempotent: first result for an id wins (the bridge sends e.g. a providers_report
+	// then a command_result under one command_id — keep the informative first one).
+	live := min(registry.command_count, len(registry.command_ids))
+	for i in 0..<live { if registry.command_ids[i] == command_id do return registry.command_results_json[i], true }
+	// Ring buffer: overwrite the oldest slot once the array is full so a busy hub
+	// never STOPS caching. The previous fixed-array-with-no-eviction dropped every
+	// result past the 256th, which made send_runtime_command_wait miss the reply and
+	// 409-timeout every bridge relay (fs/providers/path-validation) hub-wide until a
+	// restart. command_count is a monotonic counter; slot = count % cap points at the
+	// oldest live entry (each slot s was last written at count values s, s+cap, ...).
+	slot := registry.command_count % len(registry.command_ids)
+	registry.command_ids[slot] = command_id
+	registry.command_results_json[slot] = result_json
+	registry.command_count += 1
 	return result_json, false
 }
 
