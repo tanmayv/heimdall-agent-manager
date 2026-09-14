@@ -612,9 +612,128 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 	}
 }
 
+// Bridge_Chunk_Reassembly buffers the fragments of one in-flight chunk stream on
+// the hub-runtime read path, keyed by chunk_id (which equals the frame's
+// stream_id on the wire).
+Bridge_Chunk_Reassembly :: struct {
+	chunk_id:        string,
+	chunk_count:     int,
+	total_bytes:     int,
+	received_chunks: int,
+	received_bytes:  int,
+	fragments:       []string,
+}
+
+// bridge_ws_reassemble_chunk ingests one kind:"chunk" frame and, once its stream
+// is complete, returns the reassembled original frame text. Mirrors the bridge's
+// own inbound reassembly (bridge_ws_handle_chunk_skeleton): key by chunk_id;
+// validate metadata; enforce the contract caps; ignore duplicate/retransmitted
+// fills; concat fragments in index order. ACK-LESS — the bridge does not wait for
+// an ack on this channel (single ordered connection), so none is sent.
+//
+// Returns (assembled, complete, ok):
+//   ok=false       -> malformed or over-cap: caller drops the frame (no dispatch)
+//   complete=false -> buffered, awaiting more chunks: caller continues
+//   complete=true  -> assembled is the full original frame text to dispatch
+bridge_ws_reassemble_chunk :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, text: string) -> (assembled: string, complete: bool, ok: bool) {
+	// json_string returns freshly-allocated strings; free the two transient lookups
+	// here (chunk_id is cloned into the buffer, the fragment is decoded) so chunking
+	// a large read does not leak per chunk on this hot path.
+	chunk_id := json_string(text, "chunk_id")
+	defer delete(chunk_id)
+	fragment_b64 := json_string(text, "payload_fragment")
+	defer delete(fragment_b64)
+	chunk_index := json_int(text, "chunk_index", -1)
+	chunk_count := json_int(text, "chunk_count", 0)
+	total_bytes := json_int(text, "total_bytes", 0)
+	if chunk_id == "" || chunk_index < 0 || chunk_count <= 0 || chunk_index >= chunk_count || total_bytes <= 0 || fragment_b64 == "" {
+		return "", false, false
+	}
+	// Contract caps: reject impossible/oversized streams before allocating.
+	if chunk_count > contracts.BRIDGE_WS_MAX_CHUNK_COUNT || chunk_count > total_bytes || total_bytes > contracts.BRIDGE_WS_MAX_REASSEMBLY_BYTES {
+		return "", false, false
+	}
+	decoded, derr := base64.decode(fragment_b64)
+	if derr != nil || len(decoded) == 0 {
+		return "", false, false
+	}
+	defer delete(decoded)
+	decoded_text := string(decoded)
+
+	idx := -1
+	for i in 0 ..< len(reassemblies) {
+		if reassemblies[i].chunk_id == chunk_id { idx = i; break }
+	}
+	if idx < 0 {
+		// Bound concurrent reassemblies per connection.
+		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES do return "", false, false
+		append(reassemblies, Bridge_Chunk_Reassembly{
+			chunk_id    = strings.clone(chunk_id),
+			chunk_count = chunk_count,
+			total_bytes = total_bytes,
+			fragments   = make([]string, chunk_count),
+		})
+		idx = len(reassemblies) - 1
+	}
+	// Conflicting metadata for the same chunk_id: drop this frame, keep the stream.
+	if reassemblies[idx].chunk_count != chunk_count || reassemblies[idx].total_bytes != total_bytes {
+		return "", false, false
+	}
+	// Duplicate/retransmit: only fill an empty slot; never exceed declared total.
+	if reassemblies[idx].fragments[chunk_index] == "" {
+		if reassemblies[idx].received_bytes + len(decoded_text) > reassemblies[idx].total_bytes {
+			return "", false, false
+		}
+		reassemblies[idx].fragments[chunk_index] = strings.clone(decoded_text)
+		reassemblies[idx].received_chunks += 1
+		reassemblies[idx].received_bytes += len(decoded_text)
+	}
+	if reassemblies[idx].received_chunks == reassemblies[idx].chunk_count {
+		if reassemblies[idx].received_bytes != reassemblies[idx].total_bytes {
+			bridge_chunk_reassembly_remove(reassemblies, idx)
+			return "", false, false
+		}
+		b := strings.builder_make()
+		for frag in reassemblies[idx].fragments {
+			strings.write_string(&b, frag)
+		}
+		out := strings.to_string(b)
+		bridge_chunk_reassembly_remove(reassemblies, idx)
+		return out, true, true
+	}
+	return "", false, true
+}
+
+// bridge_chunk_reassembly_remove frees one reassembly's owned strings and removes
+// it from the buffer (order among the remaining streams is irrelevant).
+bridge_chunk_reassembly_remove :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, idx: int) {
+	for frag in reassemblies[idx].fragments do delete(frag)
+	delete(reassemblies[idx].fragments)
+	delete(reassemblies[idx].chunk_id)
+	unordered_remove(reassemblies, idx)
+}
+
+// bridge_chunk_reassemblies_free drops every buffered (incomplete) stream when the
+// connection ends, so a bridge that disconnects mid-stream leaks nothing.
+bridge_chunk_reassemblies_free :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly) {
+	for i in 0 ..< len(reassemblies) {
+		for frag in reassemblies[i].fragments do delete(frag)
+		delete(reassemblies[i].fragments)
+		delete(reassemblies[i].chunk_id)
+	}
+	delete(reassemblies^)
+}
+
 bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, reader: ^Bridge_WS_Reader) {
 	client := reader.socket
 	defer bridge_ws_disconnect(h, bridge_id, connection_generation)
+	// Per-connection chunk reassembly buffer. The bridge (bridge_hub_send) splits
+	// any bridge->hub frame larger than the edge proxy's ~16KB per-message cap into
+	// ordered kind:"chunk" frames; we rebuild the original frame here before it is
+	// dispatched. Reads for one connection are single-threaded (this loop), so the
+	// buffer needs no lock; it is freed on loop return / disconnect.
+	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
+	defer bridge_chunk_reassemblies_free(&reassemblies)
 	for {
 		// 120s read deadline decoupled from the bridge's idle heartbeat cadence
 		// (BRIDGE_HUB_HEARTBEAT_INTERVAL = 45s): a single delayed/dropped heartbeat
@@ -627,6 +746,19 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			return
 		}
 		type := json_string(text, "type")
+		// Chunk reassembly. A real chunk frame has kind:"chunk" and NO top-level
+		// "type" (its payload_fragment is base64, so it can never contain a "type"
+		// key) — that is what distinguishes it from a normal frame whose file
+		// CONTENT merely embeds "kind":"chunk". Buffer until the stream completes,
+		// then dispatch the reassembled original frame by its real type. Non-chunk
+		// frames — including heartbeats interleaved between chunks — fall straight
+		// through untouched. Ack-less: see the bridge's bridge_hub_send.
+		if type == "" && json_string(text, "kind") == contracts.BRIDGE_WS_FRAME_KIND_CHUNK {
+			assembled, complete, cok := bridge_ws_reassemble_chunk(&reassemblies, text)
+			if !cok || !complete do continue
+			text = assembled
+			type = json_string(text, "type")
+		}
 		switch type {
 		case "bridge_heartbeat":
 			if strings.contains(text, "\"capabilities\"") { _, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text) }
@@ -1145,6 +1277,10 @@ bridge_ws_reader_destroy :: proc(reader: ^Bridge_WS_Reader) {
 // for the next call. ok=false with fatal=false means "need more bytes"; fatal=true
 // means the stream is unusable (non-text opcode, or an unsupported 64-bit length) —
 // preserving the previous reader's behavior of ending the connection on those.
+// NOTE: the bridge<->hub chunk protocol (kind:"chunk", reassembled in
+// bridge_ws_runtime_loop) is APPLICATION-LEVEL — each chunk is a self-contained
+// opcode-0x1 JSON text frame under 65535 bytes, NOT a WS continuation/fragmentation
+// frame — so this reader needs no WS-fragmentation path.
 bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bool, fatal: bool) {
 	b := reader.pending[:]
 	if len(b) < 2 do return "", false, false

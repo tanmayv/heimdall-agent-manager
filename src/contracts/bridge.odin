@@ -286,6 +286,13 @@ BRIDGE_WS_FRAME_KIND_ERROR :: "error"
 
 BRIDGE_WS_DEFAULT_CHUNK_BYTES :: 65536
 BRIDGE_WS_MAX_CHUNK_PAYLOAD_BYTES :: 45000 // Base64 + JSON wrapper stays below the 65 KiB WS frame cap.
+// Raw bytes per chunk on the bridge<->hub RUNTIME channel. That connection
+// traverses the edge proxy (nginx -> Caddy) which enforces a ~16 KiB PER-MESSAGE
+// WS cap: a single frame at/above it is silently dropped in transit (the >16KB fs
+// read timeout). This is far smaller than the federation cap above because the
+// wire frame is base64(fragment) (~1.37x) + the JSON wrapper, so a 6000-byte raw
+// slice yields a ~8.2 KiB frame — safely under the proxy cap with margin.
+BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES :: 6000
 BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES :: 10 * 1024 * 1024
 BRIDGE_WS_MAX_TRANSIT_QUEUE_FRAMES :: 1024
 BRIDGE_WS_MAX_TRANSIT_QUEUE_BYTES :: 16 * 1024 * 1024

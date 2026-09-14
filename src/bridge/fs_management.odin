@@ -730,7 +730,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 	switch type {
 	case "fs_list_dir":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		path := extract_json_string(text, "path", "")
 		// include_hidden defaults to true when the key is absent (back-compat with the
 		// existing picker which never sent it and expects hidden entries returned).
@@ -742,31 +742,31 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		result := bridge_fs_list_dir(path, include_hidden, cursor, limit, root)
 		out := bridge_fs_list_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_stat":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		path := extract_json_string(text, "path", "")
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_stat(path, root)
 		out := bridge_fs_stat_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_make_dir":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		path := extract_json_string(text, "path", "")
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_make_dir(path, root)
 		out := bridge_fs_mkdir_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_read_file":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		path := extract_json_string(text, "path", "")
 		root := extract_json_string(text, "root", "")
 		offset := i64(extract_json_int(text, "offset", 0))
@@ -774,13 +774,13 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		result := bridge_fs_read_file(path, root, offset, limit)
 		out := bridge_fs_read_file_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "agent_run_dir_list":
 		// READ-ONLY listing of an agent instance's run dir (the context materialized
 		// for the agent). include_hidden defaults true so dotfiles/.heimdall are shown.
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		instance_id := extract_json_string(text, "instance_id", "")
 		path := extract_json_string(text, "path", "")
 		include_hidden := true
@@ -796,12 +796,12 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		}
 		out := bridge_fs_list_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "agent_run_dir_read":
 		// READ-ONLY bounded view of a single file inside an agent instance's run dir.
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		instance_id := extract_json_string(text, "instance_id", "")
 		path := extract_json_string(text, "path", "")
 		offset := i64(extract_json_int(text, "offset", 0))
@@ -815,39 +815,39 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		}
 		out := bridge_fs_read_file_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_create_file":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		path := extract_json_string(text, "path", "")
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_create_file(path, root)
 		out := bridge_fs_create_file_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_move":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		from := extract_json_string(text, "from", "")
 		to := extract_json_string(text, "to", "")
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_move(from, to, root)
 		out := bridge_fs_move_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	case "fs_delete":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		path := extract_json_string(text, "path", "")
 		recursive := bridge_fs_extract_json_bool(text, "recursive", false)
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_delete(path, recursive, root)
 		out := bridge_fs_delete_result_json(command_id, result)
 		bridge_runtime_cache_command(command_id, out)
-		_ = ws.send_text(conn, out)
+		_ = bridge_hub_send(conn, out)
 		return true
 	}
 	return false

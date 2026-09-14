@@ -1617,6 +1617,58 @@ bridge_ws_send_frame :: proc(socket: net.TCP_Socket, frame_text: string) -> bool
 	return true
 }
 
+// bridge_hub_chunk_frames returns the ordered kind:"chunk" wire frames for `text`
+// when it exceeds the bridge<->hub runtime per-message cap, or nil when `text`
+// already fits in one frame (send it whole). Pure and socket-free so it can be
+// unit-tested: base64-decoding each frame's payload_fragment and concatenating in
+// index order reconstructs `text` exactly. Reuses the same frame shape as the
+// federation sender (bridge_ws_chunk_json).
+bridge_hub_chunk_frames :: proc(text: string) -> []string {
+	payload := contracts.BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES
+	if len(text) <= payload do return nil
+	chunk_count := bridge_ws_chunk_count(len(text), payload)
+	chunk_id := bridge_next_id("hubchunk")
+	frames := make([]string, chunk_count)
+	for i := 0; i < chunk_count; i += 1 {
+		start := i * payload
+		end := start + payload
+		if end > len(text) do end = len(text)
+		fragment := base64.encode(transmute([]byte)text[start:end])
+		frames[i] = bridge_ws_chunk_json(chunk_id, i, chunk_count, len(text), fragment)
+	}
+	return frames
+}
+
+// bridge_hub_send writes one outbound frame to the hub-runtime WS, transparently
+// chunking any frame larger than the ~16 KiB edge-proxy per-message cap into
+// ordered kind:"chunk" frames the hub reassembles by chunk_id (see the hub's
+// bridge_ws_reassemble_chunk). Small frames pass through unchanged.
+//
+// ACK-LESS by design: this is a single persistent connection driven by exactly
+// one loop thread (bridge_hub_runtime_loop), so TCP ordering plus that single-
+// writer invariant guarantee the hub sees the chunks in order with no other
+// frame's bytes interleaved within a chunk. (Whole frames — a heartbeat between
+// chunks — are fine: the hub passes non-chunk frames straight through while a
+// reassembly is in flight.) Unlike the federation sender we do NOT wait for a
+// chunk_ack; the hub-runtime channel has no ack path and the ordering guarantee
+// makes per-chunk acks pure latency. INVARIANT: all hub-runtime writes happen on
+// the loop thread — if a background thread is ever handed `conn`, add a send
+// mutex here first, or chunk frames could be byte-interleaved.
+bridge_hub_send :: proc(conn: ^ws.Connection, text: string) -> bool {
+	frames := bridge_hub_chunk_frames(text)
+	if frames == nil do return ws.send_text(conn, text)
+	defer delete(frames)
+	// Send in order, stopping on the first failed write, but always free every
+	// frame string (bridge_ws_chunk_json allocates each) so a large read never
+	// leaks on this hot path.
+	all_sent := true
+	for f in frames {
+		if all_sent && !ws.send_text(conn, f) do all_sent = false
+		delete(f)
+	}
+	return all_sent
+}
+
 bridge_ws_chunk_json :: proc(chunk_id: string, chunk_index, chunk_count, total_bytes: int, fragment: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"version":`); strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_WS_FRAME_VERSION))
