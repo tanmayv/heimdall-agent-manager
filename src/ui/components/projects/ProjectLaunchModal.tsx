@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
-import Icon from '../Icon';
+
+import { Button, Checkbox, Icon, Modal, Select } from '@ui';
 import {
   useListTaskChainsQuery,
   useFetchTaskChainDetailQuery,
@@ -406,37 +407,18 @@ export default function ProjectLaunchModal({
   };
 
   return (
-    <div
-      data-debug-id="project-launch-modal-overlay"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Modal
+      open={isOpen}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      size="lg"
+      className="h-[640px] text-white"
+      data-debug-id="project-launch-modal"
+      title={<>Launch Agent — <span className="text-sky-400">{project.name}</span></>}
     >
-      <div
-        data-debug-id="project-launch-modal"
-        className="flex flex-col w-full max-w-2xl max-h-[85vh] h-[640px] rounded-2xl border border-white/10 bg-[#121212] p-6 shadow-2xl text-white"
-      >
-        {/* Modal Header */}
-        <div className="shrink-0 flex items-center justify-between pb-3">
-          <div>
-            <h2 className="text-base font-semibold text-white">
-              Launch Agent — <span className="text-sky-400">{project.name}</span>
-            </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Start or launch agents scoped to this project
-            </p>
-          </div>
-          <button
-            type="button"
-            data-debug-id="project-launch-modal-close-btn"
-            aria-label="Close"
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white transition-colors"
-          >
-            <Icon name="close" size={16} />
-          </button>
-        </div>
+      <div className="flex h-full flex-col px-6 pb-2">
+        <p className="shrink-0 -mt-1 mb-3 text-xs text-zinc-400">
+          Start or launch agents scoped to this project
+        </p>
 
         {/* Tab Navigation */}
         <div className="shrink-0 flex items-center gap-2 border-b border-white/10 pb-2.5 mb-3">
@@ -521,13 +503,14 @@ export default function ProjectLaunchModal({
                   {/* Task chains list section */}
                   <div className="shrink-0 space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                      <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">
                         Select Task Chain
                       </span>
                       {(chainHasMore || chainCursorHistory.length > 0) && (
                         <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
+                          <Button
+                            variant="secondary"
+                            size="sm"
                             disabled={chainCursorHistory.length === 0 || isActionRunning}
                             onClick={() => {
                               const newHistory = [...chainCursorHistory];
@@ -535,21 +518,20 @@ export default function ProjectLaunchModal({
                               setChainCursorHistory(newHistory);
                               setChainCursor(prev);
                             }}
-                            className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10.5px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                           >
                             Previous
-                          </button>
-                          <button
-                            type="button"
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
                             disabled={!chainHasMore || !chainNextCursor || isActionRunning}
                             onClick={() => {
                               setChainCursorHistory((prev) => [...prev, chainCursor]);
                               setChainCursor(chainNextCursor);
                             }}
-                            className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10.5px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                           >
                             Next
-                          </button>
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -589,7 +571,7 @@ export default function ProjectLaunchModal({
                   {selectedChainId && (
                     <div className="flex-1 min-h-0 flex flex-col rounded-xl border border-white/10 bg-black/20 p-3 overflow-hidden">
                       <div className="shrink-0 flex items-center justify-between pb-2">
-                        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                        <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
                           Chain Agents
                         </span>
                         {chainMembers.length > 0 && (
@@ -642,13 +624,11 @@ export default function ProjectLaunchModal({
                                     : 'border-transparent hover:bg-white/[0.03] cursor-pointer'
                                 }`}
                               >
-                                <input
-                                  type="checkbox"
+                                <Checkbox
                                   data-debug-id={`project-launch-chain-agent-checkbox-${memberInstanceId}`}
                                   checked={isChecked}
                                   disabled={isActive}
                                   onChange={() => toggleChainAgent(memberInstanceId, isActive)}
-                                  className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
                                 />
                                 <div className="min-w-0 flex-1 flex items-center gap-2">
                                   <span
@@ -713,29 +693,31 @@ export default function ProjectLaunchModal({
                   ) : availableBridges.length === 0 ? (
                     <span className="text-xs text-amber-400">No bridges available</span>
                   ) : (
-                    <select
+                    <Select
                       id="project-launch-bridge-select"
                       data-debug-id="project-launch-bridge-select"
                       value={selectedBridgeId}
-                      onChange={(e) => setSelectedBridgeId(e.target.value)}
-                      className="w-full max-w-xs rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 text-xs text-zinc-100 outline-none focus:border-sky-400 cursor-pointer"
+                      onChange={setSelectedBridgeId}
+                      size="sm"
+                      width="full"
+                      className="max-w-xs"
                     >
                       {availableBridges.map((b) => (
                         <option key={b.bridgeId} value={b.bridgeId}>
                           {b.label} ({b.status})
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   )}
                 </div>
               </div>
 
               <div className="shrink-0 flex items-center justify-between pb-1 pt-1">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Durable Agents Catalog
                 </span>
                 {durableAgents.length > 0 && (
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-caption text-zinc-500">
                     Showing {agentsPage * AGENTS_PAGE_SIZE + 1}–{Math.min((agentsPage + 1) * AGENTS_PAGE_SIZE, durableAgents.length)} of {durableAgents.length}
                   </span>
                 )}
@@ -764,12 +746,10 @@ export default function ProjectLaunchModal({
                             : 'border-transparent hover:bg-white/[0.03]'
                         }`}
                       >
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           data-debug-id={`project-launch-new-agent-checkbox-${agent.agentId}`}
                           checked={isChecked}
                           onChange={() => toggleNewAgent(agent.agentId)}
-                          className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-xs font-medium text-zinc-200">
@@ -798,29 +778,29 @@ export default function ProjectLaunchModal({
               {/* Pagination Controls */}
               {totalAgentPages > 1 && (
                 <div className="shrink-0 flex items-center justify-between border-t border-white/5 pt-2">
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-caption text-zinc-500">
                     {selectedNewAgentIds.size} agent(s) selected
                   </span>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={agentsPage === 0 || isActionRunning}
                       onClick={() => setAgentsPage(Math.max(0, agentsPage - 1))}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Previous
-                    </button>
-                    <span className="text-[11px] text-zinc-400">
+                    </Button>
+                    <span className="text-caption text-zinc-400">
                       {agentsPage + 1} / {totalAgentPages}
                     </span>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={agentsPage >= totalAgentPages - 1 || isActionRunning}
                       onClick={() => setAgentsPage(agentsPage + 1)}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Next
-                    </button>
+                    </Button>
                   </div>
                 </div>
               )}
@@ -831,11 +811,11 @@ export default function ProjectLaunchModal({
           {activeTab === 'existing' && (
             <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
               <div className="shrink-0 flex items-center justify-between pb-1">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
                   Project Instances
                 </span>
                 {stoppedInstances.length > 0 && (
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-caption text-zinc-500">
                     Showing {existingPage * EXISTING_PAGE_SIZE + 1}–{Math.min((existingPage + 1) * EXISTING_PAGE_SIZE, stoppedInstances.length)} of {stoppedInstances.length} ({stoppedInstances.length} stopped instance{stoppedInstances.length === 1 ? '' : 's'})
                   </span>
                 )}
@@ -888,12 +868,10 @@ export default function ProjectLaunchModal({
                             : 'border-transparent hover:bg-white/[0.03]'
                         }`}
                       >
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           data-debug-id={`project-launch-existing-instance-checkbox-${instanceId}`}
                           checked={isChecked}
                           onChange={() => toggleExistingInstance(instanceId)}
-                          className="h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-xs font-medium text-zinc-200">
@@ -915,29 +893,29 @@ export default function ProjectLaunchModal({
               {/* Pagination Controls */}
               {totalExistingPages > 1 && (
                 <div className="shrink-0 flex items-center justify-between border-t border-white/5 pt-2">
-                  <span className="text-[11px] text-zinc-500">
+                  <span className="text-caption text-zinc-500">
                     {selectedExistingInstanceIds.size} instance(s) selected
                   </span>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={existingPage === 0 || isActionRunning}
                       onClick={() => setExistingPage(Math.max(0, existingPage - 1))}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Previous
-                    </button>
-                    <span className="text-[11px] text-zinc-400">
+                    </Button>
+                    <span className="text-caption text-zinc-400">
                       {existingPage + 1} / {totalExistingPages}
                     </span>
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={existingPage >= totalExistingPages - 1 || isActionRunning}
                       onClick={() => setExistingPage(existingPage + 1)}
-                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-40"
                     >
                       Next
-                    </button>
+                    </Button>
                   </div>
                 </div>
               )}
@@ -945,55 +923,54 @@ export default function ProjectLaunchModal({
           )}
         </div>
 
-        {/* Modal Footer with Action Buttons */}
-        <div className="shrink-0 flex items-center justify-between border-t border-white/10 pt-3">
-          <button
-            type="button"
+      </div>
+
+      {/* Modal Footer with Action Buttons */}
+      <Modal.Footer className="px-6">
+        <div className="flex w-full items-center justify-between">
+          <Button
+            variant="secondary"
             data-debug-id="project-launch-cancel-btn"
             disabled={isActionRunning}
             onClick={onClose}
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-zinc-300 hover:bg-white/10 transition-colors"
           >
             Cancel
-          </button>
+          </Button>
 
           {activeTab === 'chain' && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
               data-debug-id="project-launch-start-chain-agents-btn"
               disabled={selectedChainAgentIds.size === 0 || isActionRunning}
               onClick={handleStartChainAgents}
-              className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-black hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isActionRunning ? 'Starting…' : 'Start Selected Agents'}
-            </button>
+            </Button>
           )}
 
           {activeTab === 'new' && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
               data-debug-id="project-launch-launch-new-agents-btn"
               disabled={selectedNewAgentIds.size === 0 || !selectedBridgeId || isActionRunning}
               onClick={handleLaunchNewAgents}
-              className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-black hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isActionRunning ? 'Launching…' : 'Launch Selected Agents'}
-            </button>
+            </Button>
           )}
 
           {activeTab === 'existing' && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
               data-debug-id="project-launch-start-existing-instances-btn"
               disabled={selectedExistingInstanceIds.size === 0 || isActionRunning}
               onClick={handleStartExistingInstances}
-              className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-black hover:bg-sky-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isActionRunning ? 'Starting…' : 'Start Selected Instances'}
-            </button>
+            </Button>
           )}
         </div>
-      </div>
-    </div>
+      </Modal.Footer>
+    </Modal>
   );
 }

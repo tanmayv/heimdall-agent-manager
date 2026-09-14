@@ -699,7 +699,11 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	key := header_value(req.headers, "Sec-WebSocket-Key")
 	if key == "" { write_upgrade_error(client, respond_error(domain.domain_error(.Validation_Failed, "missing websocket key"), req.request_id)); return }
 	if !write_ws_upgrade_response(client, ws_accept_key(key)) do return
-	hello_text, hello_frame_ok := read_ws_text_blocking(client, 3 * time.Second)
+	// One reader for the whole connection so a hello coalesced with the first frame
+	// (or any later coalescing) is never dropped.
+	reader := bridge_ws_reader_make(client)
+	defer bridge_ws_reader_destroy(&reader)
+	hello_text, hello_frame_ok := read_ws_text_blocking(&reader, 3 * time.Second)
 	if !hello_frame_ok do return
 	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, json_string(hello_text, "hostname"), json_string(hello_text, "os"), json_string(hello_text, "arch"), hello_text)
 	if !connect_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(err.message)); return }
@@ -708,7 +712,9 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	hello, hello_ok, hello_err := bridge_runtime_service.runtime_accept_hello(h.bridge_runtime_registry, bridge.bridge_id, json_int(hello_text, "protocol_version", 1), json_string(hello_text, "validation_ws_url"))
 	if !hello_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(hello_err.message)); return }
 	project_service.bridge_runtime_registry_set_command_socket(h.bridge_runtime_registry, bridge.bridge_id, client)
-	_ = write_ws_text_frame(client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing))
+	// From here the socket is registered, so other threads (fs/file commands) may
+	// write it — serialize this and every subsequent write.
+	_ = write_ws_text_frame_locked(h, client, bridge_ready_payload(bridge.bridge_id, hello.generation, hello.replaced_existing))
 	// Orphan recovery: replay actionable-task notifications for this bridge's
 	// instances. A cross-bridge cascade (or any status change) that fanned out to
 	// this bridge while it was offline was dropped (fire-and-forget); on reconnect
@@ -717,7 +723,7 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	if h.taskchains != nil {
 		_ = taskchain_service.replay_bridge_actionable_notifications(h.taskchains, domain.User_ID(bridge.owner_user_id), bridge.bridge_id)
 	}
-	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, client)
+	bridge_ws_runtime_loop(h, bridge.bridge_id, hello.generation, &reader)
 }
 
 // BRIDGE_INSTANCE_STALE_MS: an instance still in an active runtime state whose
@@ -754,20 +760,153 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 	}
 }
 
-bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, client: net.TCP_Socket) {
+// Bridge_Chunk_Reassembly buffers the fragments of one in-flight chunk stream on
+// the hub-runtime read path, keyed by chunk_id (which equals the frame's
+// stream_id on the wire).
+Bridge_Chunk_Reassembly :: struct {
+	chunk_id:        string,
+	chunk_count:     int,
+	total_bytes:     int,
+	received_chunks: int,
+	received_bytes:  int,
+	fragments:       []string,
+}
+
+// bridge_ws_reassemble_chunk ingests one kind:"chunk" frame and, once its stream
+// is complete, returns the reassembled original frame text. Mirrors the bridge's
+// own inbound reassembly (bridge_ws_handle_chunk_skeleton): key by chunk_id;
+// validate metadata; enforce the contract caps; ignore duplicate/retransmitted
+// fills; concat fragments in index order. ACK-LESS — the bridge does not wait for
+// an ack on this channel (single ordered connection), so none is sent.
+//
+// Returns (assembled, complete, ok):
+//   ok=false       -> malformed or over-cap: caller drops the frame (no dispatch)
+//   complete=false -> buffered, awaiting more chunks: caller continues
+//   complete=true  -> assembled is the full original frame text to dispatch
+bridge_ws_reassemble_chunk :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, text: string) -> (assembled: string, complete: bool, ok: bool) {
+	// json_string returns freshly-allocated strings; free the two transient lookups
+	// here (chunk_id is cloned into the buffer, the fragment is decoded) so chunking
+	// a large read does not leak per chunk on this hot path.
+	chunk_id := json_string(text, "chunk_id")
+	defer delete(chunk_id)
+	fragment_b64 := json_string(text, "payload_fragment")
+	defer delete(fragment_b64)
+	chunk_index := json_int(text, "chunk_index", -1)
+	chunk_count := json_int(text, "chunk_count", 0)
+	total_bytes := json_int(text, "total_bytes", 0)
+	if chunk_id == "" || chunk_index < 0 || chunk_count <= 0 || chunk_index >= chunk_count || total_bytes <= 0 || fragment_b64 == "" {
+		return "", false, false
+	}
+	// Contract caps: reject impossible/oversized streams before allocating.
+	if chunk_count > contracts.BRIDGE_WS_MAX_CHUNK_COUNT || chunk_count > total_bytes || total_bytes > contracts.BRIDGE_WS_MAX_REASSEMBLY_BYTES {
+		return "", false, false
+	}
+	decoded, derr := base64.decode(fragment_b64)
+	if derr != nil || len(decoded) == 0 {
+		return "", false, false
+	}
+	defer delete(decoded)
+	decoded_text := string(decoded)
+
+	idx := -1
+	for i in 0 ..< len(reassemblies) {
+		if reassemblies[i].chunk_id == chunk_id { idx = i; break }
+	}
+	if idx < 0 {
+		// Bound concurrent reassemblies per connection.
+		if len(reassemblies) >= contracts.BRIDGE_WS_MAX_REASSEMBLIES do return "", false, false
+		append(reassemblies, Bridge_Chunk_Reassembly{
+			chunk_id    = strings.clone(chunk_id),
+			chunk_count = chunk_count,
+			total_bytes = total_bytes,
+			fragments   = make([]string, chunk_count),
+		})
+		idx = len(reassemblies) - 1
+	}
+	// Conflicting metadata for the same chunk_id: drop this frame, keep the stream.
+	if reassemblies[idx].chunk_count != chunk_count || reassemblies[idx].total_bytes != total_bytes {
+		return "", false, false
+	}
+	// Duplicate/retransmit: only fill an empty slot; never exceed declared total.
+	if reassemblies[idx].fragments[chunk_index] == "" {
+		if reassemblies[idx].received_bytes + len(decoded_text) > reassemblies[idx].total_bytes {
+			return "", false, false
+		}
+		reassemblies[idx].fragments[chunk_index] = strings.clone(decoded_text)
+		reassemblies[idx].received_chunks += 1
+		reassemblies[idx].received_bytes += len(decoded_text)
+	}
+	if reassemblies[idx].received_chunks == reassemblies[idx].chunk_count {
+		if reassemblies[idx].received_bytes != reassemblies[idx].total_bytes {
+			bridge_chunk_reassembly_remove(reassemblies, idx)
+			return "", false, false
+		}
+		b := strings.builder_make()
+		for frag in reassemblies[idx].fragments {
+			strings.write_string(&b, frag)
+		}
+		out := strings.to_string(b)
+		bridge_chunk_reassembly_remove(reassemblies, idx)
+		return out, true, true
+	}
+	return "", false, true
+}
+
+// bridge_chunk_reassembly_remove frees one reassembly's owned strings and removes
+// it from the buffer (order among the remaining streams is irrelevant).
+bridge_chunk_reassembly_remove :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, idx: int) {
+	for frag in reassemblies[idx].fragments do delete(frag)
+	delete(reassemblies[idx].fragments)
+	delete(reassemblies[idx].chunk_id)
+	unordered_remove(reassemblies, idx)
+}
+
+// bridge_chunk_reassemblies_free drops every buffered (incomplete) stream when the
+// connection ends, so a bridge that disconnects mid-stream leaks nothing.
+bridge_chunk_reassemblies_free :: proc(reassemblies: ^[dynamic]Bridge_Chunk_Reassembly) {
+	for i in 0 ..< len(reassemblies) {
+		for frag in reassemblies[i].fragments do delete(frag)
+		delete(reassemblies[i].fragments)
+		delete(reassemblies[i].chunk_id)
+	}
+	delete(reassemblies^)
+}
+
+bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, reader: ^Bridge_WS_Reader) {
+	client := reader.socket
 	defer bridge_ws_disconnect(h, bridge_id, connection_generation)
+	// Per-connection chunk reassembly buffer. The bridge (bridge_hub_send) splits
+	// any bridge->hub frame larger than the edge proxy's ~16KB per-message cap into
+	// ordered kind:"chunk" frames; we rebuild the original frame here before it is
+	// dispatched. Reads for one connection are single-threaded (this loop), so the
+	// buffer needs no lock; it is freed on loop return / disconnect.
+	reassemblies := make([dynamic]Bridge_Chunk_Reassembly)
+	defer bridge_chunk_reassemblies_free(&reassemblies)
 	for {
 		// 120s read deadline decoupled from the bridge's idle heartbeat cadence
 		// (BRIDGE_HUB_HEARTBEAT_INTERVAL = 45s): a single delayed/dropped heartbeat
 		// still leaves a full extra beat of margin before we treat the bridge as
 		// gone, so we never tear down a healthy connection at the cadence edge.
-		text, ok := read_ws_text_blocking(client, 120 * time.Second)
+		text, ok := read_ws_text_blocking(reader, 120 * time.Second)
 		if !ok do return
 		if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation {
-			_ = write_ws_text_frame(client, bridge_connection_replaced_payload())
+			_ = write_ws_text_frame_locked(h, client, bridge_connection_replaced_payload())
 			return
 		}
 		type := json_string(text, "type")
+		// Chunk reassembly. A real chunk frame has kind:"chunk" and NO top-level
+		// "type" (its payload_fragment is base64, so it can never contain a "type"
+		// key) — that is what distinguishes it from a normal frame whose file
+		// CONTENT merely embeds "kind":"chunk". Buffer until the stream completes,
+		// then dispatch the reassembled original frame by its real type. Non-chunk
+		// frames — including heartbeats interleaved between chunks — fall straight
+		// through untouched. Ack-less: see the bridge's bridge_hub_send.
+		if type == "" && json_string(text, "kind") == contracts.BRIDGE_WS_FRAME_KIND_CHUNK {
+			assembled, complete, cok := bridge_ws_reassemble_chunk(&reassemblies, text)
+			if !cok || !complete do continue
+			text = assembled
+			type = json_string(text, "type")
+		}
 		switch type {
 		case "bridge_heartbeat":
 			if strings.contains(text, "\"capabilities\"") { _, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text) }
@@ -797,7 +936,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			} else if h.scheduled_prompts != nil {
 				schedules_version = get_scheduled_prompts_bridge_version(h.scheduled_prompts, bridge_id)
 			}
-			_ = write_ws_text_frame(client, bridge_heartbeat_ack_payload(reconciled, superseded, schedules_version))
+			_ = write_ws_text_frame_locked(h, client, bridge_heartbeat_ack_payload(reconciled, superseded, schedules_version))
 		case "agent_instance_status":
 			instance_id := json_string(text, "agent_instance_id")
 			state_seq := json_int(text, "state_seq", 0)
@@ -812,7 +951,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			current_runtime, _, current_seq, got := bridge_runtime_service.runtime_instance_status(h.bridge_runtime_registry, instance_id)
 			_ = got
 			applied := current_seq == state_seq && current_runtime == runtime_status
-			_ = write_ws_text_frame(client, bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime))
+			_ = write_ws_text_frame_locked(h, client, bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime))
 		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result", "fig_list_workspaces_result", "fig_create_workspace_result", "fig_list_dir_result":
 			command_id := json_string(text, "command_id")
 			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
@@ -1261,38 +1400,87 @@ ws_accept_key :: proc(key: string) -> string {
 	return base64.encode(digest[:])
 }
 
-read_ws_text_blocking :: proc(client: net.TCP_Socket, timeout: time.Duration) -> (string, bool) {
-	_ = net.set_option(client, .Receive_Timeout, timeout)
-	data := make([dynamic]byte)
+// Bridge_WS_Reader holds the bridge command socket and a DURABLE receive buffer
+// that persists across read_ws_text_blocking calls. The kernel can deliver several
+// WS frames in one recv (e.g. a heartbeat/state frame coalesced with an fs_read_
+// file_result); the previous per-call buffer returned the first frame and threw the
+// rest away, so the coalesced result was permanently lost and the fs request timed
+// out (the size-correlated >16KB failure). Keeping leftover bytes here — mirroring
+// the bridge side's ws.Connection.pending_bytes — means every frame is delivered.
+Bridge_WS_Reader :: struct {
+	socket:  net.TCP_Socket,
+	pending: [dynamic]byte,
+}
+
+bridge_ws_reader_make :: proc(socket: net.TCP_Socket) -> Bridge_WS_Reader {
+	return Bridge_WS_Reader{socket = socket}
+}
+
+bridge_ws_reader_destroy :: proc(reader: ^Bridge_WS_Reader) {
+	if reader != nil do delete(reader.pending)
+}
+
+// bridge_ws_take_frame extracts ONE complete masked text frame from the front of
+// reader.pending, consuming its bytes and leaving any trailing (coalesced) bytes
+// for the next call. ok=false with fatal=false means "need more bytes"; fatal=true
+// means the stream is unusable (non-text opcode, or an unsupported 64-bit length) —
+// preserving the previous reader's behavior of ending the connection on those.
+// NOTE: the bridge<->hub chunk protocol (kind:"chunk", reassembled in
+// bridge_ws_runtime_loop) is APPLICATION-LEVEL — each chunk is a self-contained
+// opcode-0x1 JSON text frame under 65535 bytes, NOT a WS continuation/fragmentation
+// frame — so this reader needs no WS-fragmentation path.
+bridge_ws_take_frame :: proc(reader: ^Bridge_WS_Reader) -> (text: string, ok: bool, fatal: bool) {
+	b := reader.pending[:]
+	if len(b) < 2 do return "", false, false
+	if b[0] & 0x0f != 0x1 do return "", false, true // only text frames are expected
+	masked := (b[1] & 0x80) != 0
+	payload_len := int(b[1] & 0x7f)
+	header_len := 2
+	if payload_len == 126 {
+		if len(b) < 4 do return "", false, false
+		payload_len = int(b[2]) << 8 | int(b[3])
+		header_len = 4
+	} else if payload_len == 127 {
+		return "", false, true // 64-bit lengths are not used on this control channel
+	}
+	data_off := header_len
+	mask_key: [4]byte
+	if masked {
+		if len(b) < header_len + 4 do return "", false, false
+		mask_key = {b[header_len], b[header_len + 1], b[header_len + 2], b[header_len + 3]}
+		data_off = header_len + 4
+	}
+	frame_end := data_off + payload_len
+	if len(b) < frame_end do return "", false, false
+	payload := make([]byte, payload_len)
+	copy(payload, b[data_off:frame_end])
+	if masked { for i in 0..<payload_len { payload[i] = payload[i] ~ mask_key[i % 4] } }
+	// Consume this frame, compacting any trailing coalesced bytes to the front.
+	remaining := len(reader.pending) - frame_end
+	if remaining > 0 do copy(reader.pending[:], reader.pending[frame_end:])
+	resize(&reader.pending, remaining)
+	return string(payload), true, false
+}
+
+read_ws_text_blocking :: proc(reader: ^Bridge_WS_Reader, timeout: time.Duration) -> (string, bool) {
+	// A frame may already be buffered from a previous coalesced recv — return it
+	// without blocking on the socket.
+	if text, ok, fatal := bridge_ws_take_frame(reader); fatal {
+		return "", false
+	} else if ok {
+		return text, true
+	}
+	_ = net.set_option(reader.socket, .Receive_Timeout, timeout)
 	buf: [8192]byte
 	for {
-		n, err := net.recv_tcp(client, buf[:])
+		n, err := net.recv_tcp(reader.socket, buf[:])
 		if err != nil || n <= 0 do return "", false
-		append(&data, ..buf[:n])
-		if len(data) < 2 do continue
-		opcode := data[0] & 0x0f
-		if opcode != 0x1 do return "", false
-		masked := (data[1] & 0x80) != 0
-		payload_len := int(data[1] & 0x7f)
-		offset := 2
-		if payload_len == 126 {
-			if len(data) < 4 do continue
-			payload_len = int(data[2]) << 8 | int(data[3])
-			offset = 4
-		} else if payload_len == 127 {
+		append(&reader.pending, ..buf[:n])
+		if text, ok, fatal := bridge_ws_take_frame(reader); fatal {
 			return "", false
+		} else if ok {
+			return text, true
 		}
-		mask_key: [4]byte
-		if masked {
-			if len(data) < offset + 4 do continue
-			mask_key = {data[offset], data[offset + 1], data[offset + 2], data[offset + 3]}
-			offset += 4
-		}
-		if len(data) < offset + payload_len do continue
-		payload := make([]byte, payload_len)
-		copy(payload, data[offset:offset + payload_len])
-		if masked { for i in 0..<payload_len { payload[i] = payload[i] ~ mask_key[i % 4] } }
-		return string(payload), true
 	}
 }
 
@@ -1307,6 +1495,17 @@ write_ws_text_frame :: proc(client: net.TCP_Socket, text: string) -> bool {
 	copy(frame[header_len:], transmute([]byte)text)
 	_, err := net.send_tcp(client, frame)
 	return err == nil
+}
+
+// write_ws_text_frame_locked serializes a write to the bridge command socket with
+// every other write to it (the runtime loop's acks AND concurrent fs/file command
+// sends on other threads), holding the registry command lock only for the write so
+// bytes never interleave into a corrupt frame. Use this for any write AFTER the
+// command socket is registered.
+write_ws_text_frame_locked :: proc(h: ^Bridge_Handlers, client: net.TCP_Socket, text: string) -> bool {
+	project_service.bridge_runtime_registry_command_lock(h.bridge_runtime_registry)
+	defer project_service.bridge_runtime_registry_command_unlock(h.bridge_runtime_registry)
+	return write_ws_text_frame(client, text)
 }
 
 json_string_array :: proc(body, key: string) -> []string {

@@ -33,3 +33,6 @@ hub.db-wal
 # Python bytecode and caches
 __pycache__/
 *.pyc
+
+# Local-only VPS deployment runbook (not for the repo)
+/deployment.md

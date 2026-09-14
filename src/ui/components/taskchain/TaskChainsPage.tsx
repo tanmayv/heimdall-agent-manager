@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Badge, PageShell, Select } from '@ui';
 import Icon from '../Icon';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
@@ -57,20 +58,20 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
     <>
       <span
         data-debug-id={`task-chains-row-status-${chain.chainId}`}
-        className={`shrink-0 rounded-md border px-2 py-0.5 text-[11px] font-semibold capitalize ${statusBadgeClass(chain.status)}`}
+        className={`shrink-0 rounded-md border px-2 py-0.5 text-caption font-semibold capitalize ${statusBadgeClass(chain.status)}`}
       >
         {chain.status || 'unknown'}
       </span>
       <span className="min-w-0 flex-1 truncate text-sm text-zinc-100">{chain.title || chain.chainId}</span>
       <span
         data-debug-id={`task-chains-row-task-count-${chain.chainId}`}
-        className="shrink-0 rounded-md border border-white/10 bg-black/40 px-1.5 py-0.5 text-[11px] text-zinc-400"
+        className="shrink-0 rounded-md border border-white/10 bg-black/40 px-1.5 py-0.5 text-caption text-zinc-400"
         title={`${chain.taskCount} ${chain.taskCount === 1 ? 'task' : 'tasks'}`}
       >
         {chain.taskCount}
       </span>
       {chain.updatedAt ? (
-        <span className="shrink-0 text-[11px] text-zinc-500">{formatUpdatedAt(chain.updatedAt)}</span>
+        <span className="shrink-0 text-caption text-zinc-500">{formatUpdatedAt(chain.updatedAt)}</span>
       ) : null}
     </>
   );
@@ -250,31 +251,29 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   }
 
   return (
-    <div data-debug-id="task-chains-page" className="w-full max-w-4xl text-left">
-      {/* Header: title + count pill + description (mirrors the Actions page) */}
-      <div className="mb-5">
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold text-white">Task Chains</h1>
-          <span data-debug-id="task-chains-total-count" className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-xs text-zinc-400">
+    <PageShell
+      title={
+        <span className="inline-flex items-center gap-2.5">
+          Task Chains
+          <Badge data-debug-id="task-chains-total-count" tone="info">
             {totalChains} {totalChains === 1 ? 'chain' : 'chains'}
-          </span>
-        </div>
-        <p className="mt-1.5 text-sm text-zinc-400">
-          Multi-agent workflows grouped by project. Open a chain's coordinator conversation to follow its tasks, dependencies, and reviews.
-        </p>
-      </div>
-
+          </Badge>
+        </span>
+      }
+      description="Multi-agent workflows grouped by project. Open a chain's coordinator conversation to follow its tasks, dependencies, and reviews."
+    >
+      <div data-debug-id="task-chains-page" className="text-left">
       {/* Project filter */}
       <div className="mb-5 flex items-center gap-2">
         <label htmlFor="task-chains-project-filter" className="text-xs text-zinc-500">
           Project
         </label>
-        <select
+        <Select
           id="task-chains-project-filter"
           data-debug-id="task-chains-project-filter"
+          size="sm"
           value={filterProjectId}
-          onChange={(e) => setFilterProjectId(e.target.value)}
-          className="rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-zinc-200 outline-none focus:border-sky-400"
+          onChange={setFilterProjectId}
         >
           <option value="">All projects</option>
           {projects.map((p) => (
@@ -282,7 +281,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
               {p.name || p.project_id}
             </option>
           ))}
-        </select>
+        </Select>
 
         <label
           htmlFor="task-chains-has-tasks-filter"
@@ -350,7 +349,8 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
           })}
         </div>
       )}
-    </div>
+      </div>
+    </PageShell>
   );
 };
 

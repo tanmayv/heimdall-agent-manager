@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useListConversationInboxQuery, useLazyListConversationInboxQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { buildRouteHash } from '../../utils/appLocation';
-import Icon from '../Icon';
 
+import { Button, Icon, Text } from '@ui';
 const PAGE_SIZE = 40;
 
 function looksLikeInternalId(value: string): boolean {
@@ -89,7 +89,7 @@ export default function ConversationsHomePage() {
       <header data-debug-id="conversations-home-header" className="sticky top-0 z-10 -mx-3 border-b border-white/10 bg-[#090909]/95 px-3 py-2 backdrop-blur sm:-mx-4 sm:px-4 sm:pb-3 sm:pt-2 lg:-mx-5 lg:px-5">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="hidden text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75 sm:block">Conversations</p>
+            <Text as="p" role="overline" tone="accent" className="hidden sm:block">Conversations</Text>
             <h1 className="hidden text-2xl font-semibold tracking-tight text-white sm:mt-1 sm:block">Inbox</h1>
             <p data-debug-id="conversations-home-subtitle" className="text-[13px] text-zinc-500 sm:mt-1 sm:text-sm">{conversations.length} loaded{unreadTotal ? ` · ${unreadTotal} unread` : ''}</p>
           </div>
@@ -128,7 +128,7 @@ export default function ConversationsHomePage() {
                 </p>
               </div>
               <div className="flex h-full shrink-0 flex-col items-end justify-start gap-2 pt-1">
-                {ts ? <time data-debug-id={`conversation-inbox-timestamp-${conversation.conversationId}`} className="text-[11px] font-medium text-zinc-500">{ts}</time> : null}
+                {ts ? <time data-debug-id={`conversation-inbox-timestamp-${conversation.conversationId}`} className="text-caption font-medium text-zinc-500">{ts}</time> : null}
                 <span aria-hidden="true" className="text-lg text-zinc-700 group-hover:text-zinc-400">›</span>
               </div>
             </a>
@@ -138,9 +138,9 @@ export default function ConversationsHomePage() {
 
       {loadError ? <div data-debug-id="conversation-inbox-load-error" className="mt-3 rounded-2xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-100">{loadError}</div> : null}
       {hasMore ? (
-        <button data-debug-id="conversation-inbox-load-more-btn" type="button" onClick={loadMore} disabled={fetchPageResult.isFetching} className="mx-auto mt-4 min-h-11 rounded-2xl border border-white/10 px-5 py-2 text-sm font-semibold text-zinc-300 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60">
+        <Button data-debug-id="conversation-inbox-load-more-btn" variant="secondary" onClick={loadMore} disabled={fetchPageResult.isFetching} className="mx-auto mt-4 min-h-11 disabled:cursor-wait">
           {fetchPageResult.isFetching ? 'Loading…' : 'Load more conversations'}
-        </button>
+        </Button>
       ) : null}
     </div>
   );

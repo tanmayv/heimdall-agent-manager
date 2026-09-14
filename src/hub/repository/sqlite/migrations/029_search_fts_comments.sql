@@ -18,6 +18,4 @@ CREATE TRIGGER IF NOT EXISTS task_comments_au AFTER UPDATE ON task_comments BEGI
   INSERT INTO task_comments_fts(rowid, body) VALUES (new.rowid, new.body);
 END;
 
-INSERT INTO task_comments_fts(rowid, body)
-  SELECT rowid, body FROM task_comments
-  WHERE rowid NOT IN (SELECT rowid FROM task_comments_fts);
+INSERT INTO task_comments_fts(task_comments_fts) VALUES('rebuild');

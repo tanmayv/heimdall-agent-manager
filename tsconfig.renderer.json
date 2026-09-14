@@ -15,7 +15,11 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "paths": {
+      "@ui": ["./src/ui/components/ui/index.ts"],
+      "@ui/*": ["./src/ui/components/ui/*"]
+    }
   },
   "include": ["src/ui", "src/vite-env.d.ts"],
   "exclude": ["src/ui/electron"]

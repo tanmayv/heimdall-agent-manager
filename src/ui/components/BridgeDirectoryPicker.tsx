@@ -7,8 +7,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useLazyListBridgeDirQuery, useMkdirBridgePathMutation, type BridgeFsEntry } from '../api/endpoints/bridgeFs';
-import Icon from './Icon';
 
+import { Button, Icon, IconButton, Input } from '@ui';
 function str(v: any): string { return String(v ?? '').trim(); }
 
 export default function BridgeDirectoryPicker({
@@ -123,11 +123,11 @@ export default function BridgeDirectoryPicker({
             <Icon name="folder" size={14} className="text-sky-400" />
             <span>Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</span>
           </div>
-          {root ? <div className="mt-0.5 truncate font-mono text-xs text-zinc-500" title={`Allowed root: ${root}`}>root: {root}</div> : null}
+          {root ? <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-600" title={`Allowed root: ${root}`}>root: {root}</div> : null}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <button data-debug-id={`${debugId}-home-btn`} type="button" onClick={() => void load('')} title="Go to root" className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10 transition">Root</button>
-          {onClose ? <button data-debug-id={`${debugId}-close-btn`} type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white transition"><Icon name="close" size={15} /></button> : null}
+        <div className="flex shrink-0 items-center gap-1">
+          <Button data-debug-id={`${debugId}-home-btn`} variant="secondary" size="sm" onClick={() => void load('')} title="Go to root">Root</Button>
+          {onClose ? <IconButton icon="close" label="Close" size="sm" data-debug-id={`${debugId}-close-btn`} onClick={onClose} /> : null}
         </div>
       </div>
 
@@ -169,25 +169,25 @@ export default function BridgeDirectoryPicker({
       </div>
 
       {/* controls row */}
-      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        <button data-debug-id={`${debugId}-hidden-toggle`} type="button" onClick={() => setShowHidden((v) => !v)} className="rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-white/[0.1] transition">{showHidden ? 'Hide hidden' : 'Show hidden'}</button>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button data-debug-id={`${debugId}-hidden-toggle`} variant="secondary" size="sm" onClick={() => setShowHidden((v) => !v)}>{showHidden ? 'Hide hidden' : 'Show hidden'}</Button>
         {showNewFolder ? (
           <div className="flex items-center gap-1.5">
-            <input data-debug-id={`${debugId}-new-folder-input`} value={newFolder} onChange={(e) => setNewFolder(e.target.value)} placeholder="folder name" className="w-36 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 outline-none focus:border-sky-500 transition" />
-            <button data-debug-id={`${debugId}-new-folder-create-btn`} type="button" disabled={mkdirState.isLoading} onClick={createFolder} className="rounded-lg bg-sky-600 hover:bg-sky-500 px-3 py-1 text-xs font-semibold text-white transition disabled:opacity-50">Create</button>
-            <button type="button" onClick={() => { setShowNewFolder(false); setNewFolder(''); }} className="rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2.5 py-1 text-xs font-medium transition">Cancel</button>
+            <Input data-debug-id={`${debugId}-new-folder-input`} value={newFolder} onChange={setNewFolder} placeholder="folder name" size="sm" className="w-32" />
+            <Button data-debug-id={`${debugId}-new-folder-create-btn`} variant="primary" size="sm" disabled={mkdirState.isLoading} onClick={createFolder}>Create</Button>
+            <Button variant="ghost" size="sm" onClick={() => { setShowNewFolder(false); setNewFolder(''); }}>Cancel</Button>
           </div>
         ) : (
-          <button data-debug-id={`${debugId}-new-folder-btn`} type="button" onClick={() => setShowNewFolder(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-medium text-zinc-300 hover:bg-white/[0.1] transition"><Icon name="plus" size={12} /> New folder</button>
+          <Button data-debug-id={`${debugId}-new-folder-btn`} variant="secondary" size="sm" onClick={() => setShowNewFolder(true)} leading={<Icon name="plus" size={12} />}>New folder</Button>
         )}
       </div>
 
       {/* path input + actions */}
-      <div className="mt-2.5">
-        <input
+      <div className="mt-2">
+        <Input
           data-debug-id={`${debugId}-path-input`}
           value={pathInput}
-          onChange={(e) => setPathInput(e.target.value)}
+          onChange={setPathInput}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -195,15 +195,16 @@ export default function BridgeDirectoryPicker({
             }
           }}
           placeholder="~/path/on/this/device"
-          className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 outline-none focus:border-sky-500 transition"
+          width="full"
+          className="font-mono"
         />
       </div>
 
-      {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-xs text-red-400">{error}</p> : null}
+      {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-caption text-red-300">{error}</p> : null}
 
-      <div className="mt-3 flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-        <button data-debug-id={`${debugId}-create-typed-btn`} type="button" onClick={createTypedPath} className="rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3.5 py-2 text-xs font-semibold transition">Create typed path</button>
-        <button data-debug-id={`${debugId}-pick-btn`} type="button" onClick={() => onPick(str(pathInput) || cwd)} className="rounded-lg bg-sky-600 hover:bg-sky-500 text-white px-4 py-2 text-xs font-semibold transition">Use this folder</button>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <Button data-debug-id={`${debugId}-create-typed-btn`} variant="secondary" onClick={createTypedPath}>Create typed path</Button>
+        <Button data-debug-id={`${debugId}-pick-btn`} variant="primary" onClick={() => onPick(str(pathInput) || cwd)}>Use this folder</Button>
       </div>
     </div>
   );

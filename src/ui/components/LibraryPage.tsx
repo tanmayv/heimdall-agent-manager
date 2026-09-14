@@ -8,8 +8,8 @@ import { useListAgentsQuery } from '../api/endpoints/agents';
 import ArtifactUploadButton, { useArtifactUpload } from './ArtifactUpload';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
-import Icon from './Icon';
 
+import { Button, Icon, Input, Select } from '@ui';
 export type LibraryPageProps = {
   session: any;
   projects?: Record<string, any> | any[];
@@ -186,7 +186,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
             <div className="flex items-center gap-2">
               {onBack ? <button type="button" data-debug-id="library-back-btn" onClick={onBack} className="text-zinc-500 hover:text-zinc-200">←</button> : null}
               <h1 data-debug-id="library-title" className="truncate text-lg font-semibold tracking-[-0.01em]">Library</h1>
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[11px] text-zinc-400">{filtered.length}{filtered.length !== artifacts.length ? ` / ${artifacts.length}` : ''}</span>
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-caption text-zinc-400">{filtered.length}{filtered.length !== artifacts.length ? ` / ${artifacts.length}` : ''}</span>
             </div>
             <p data-debug-id="library-subtitle" className="mt-0.5 text-[11.5px] text-zinc-500">All artifacts across conversations, chains, and projects.</p>
           </div>
@@ -194,7 +194,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
             {/* grid | list toggle */}
             <div data-debug-id="library-view-toggle" className="flex rounded-lg border border-white/10 bg-black/30 p-0.5">
               {(['grid', 'list'] as const).map((mode) => (
-                <button key={mode} type="button" data-debug-id={`library-view-${mode}`} onClick={() => setViewMode(mode)} className={`rounded-md px-2.5 py-1 text-[11px] ${viewMode === mode ? 'bg-white/[0.08] text-zinc-100' : 'text-zinc-500 hover:text-zinc-200'}`}>{mode}</button>
+                <button key={mode} type="button" data-debug-id={`library-view-${mode}`} onClick={() => setViewMode(mode)} className={`rounded-md px-2.5 py-1 text-caption ${viewMode === mode ? 'bg-white/[0.08] text-zinc-100' : 'text-zinc-500 hover:text-zinc-200'}`}>{mode}</button>
               ))}
             </div>
             {session?.clientToken ? (
@@ -211,33 +211,33 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
 
         {/* Filters */}
         <div data-debug-id="library-filters" className="mt-3 flex flex-wrap items-center gap-2">
-          <input data-debug-id="library-filter-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name / description…" className="min-w-[12rem] flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-400" />
-          <label className="text-[11px] uppercase tracking-wide text-zinc-500">Kind
-            <select data-debug-id="library-filter-kind" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+          <Input type="search" data-debug-id="library-filter-search" value={search} onChange={setSearch} placeholder="Search name / description…" size="sm" className="min-w-[12rem] flex-1" />
+          <label className="text-caption uppercase tracking-wide text-zinc-500">Kind
+            <Select data-debug-id="library-filter-kind" value={kindFilter} onChange={setKindFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {kindOptions.map((k) => <option key={k} value={k}>{k}</option>)}
-            </select>
+            </Select>
           </label>
-          <label className="text-[11px] uppercase tracking-wide text-zinc-500">Agent
-            <select data-debug-id="library-filter-agent" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+          <label className="text-caption uppercase tracking-wide text-zinc-500">Agent
+            <Select data-debug-id="library-filter-agent" value={agentFilter} onChange={setAgentFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {agentsArray.map((ag: any) => <option key={ag.id || ag.agent_id} value={ag.id || ag.agent_id}>{ag.display_name || ag.displayName || ag.id || ag.agent_id}</option>)}
-            </select>
+            </Select>
           </label>
-          <label className="text-[11px] uppercase tracking-wide text-zinc-500">Project
-            <select data-debug-id="library-filter-project" value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+          <label className="text-caption uppercase tracking-wide text-zinc-500">Project
+            <Select data-debug-id="library-filter-project" value={projectFilter} onChange={setProjectFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {projectsList.map((p: any) => <option key={p.project_id || p.id} value={p.project_id || p.id}>{p.name || p.project_id || p.id}</option>)}
-            </select>
+            </Select>
           </label>
-          <label className="text-[11px] uppercase tracking-wide text-zinc-500">Chain
-            <select data-debug-id="library-filter-chain" value={chainFilter} onChange={(e) => setChainFilter(e.target.value)} className="ml-1 rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-sm text-zinc-100 outline-none">
+          <label className="text-caption uppercase tracking-wide text-zinc-500">Chain
+            <Select data-debug-id="library-filter-chain" value={chainFilter} onChange={setChainFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {chainsArray.map((c: any) => <option key={c.chainId || c.chain_id} value={c.chainId || c.chain_id}>{c.title || c.chainId || c.chain_id}</option>)}
-            </select>
+            </Select>
           </label>
           {(search || kindFilter || agentFilter || projectFilter || chainFilter) ? (
-            <button type="button" data-debug-id="library-filter-clear" onClick={() => { setSearch(''); setKindFilter(''); setAgentFilter(''); setProjectFilter(''); setChainFilter(''); }} className="text-[11px] text-zinc-500 hover:text-zinc-200">clear</button>
+            <button type="button" data-debug-id="library-filter-clear" onClick={() => { setSearch(''); setKindFilter(''); setAgentFilter(''); setProjectFilter(''); setChainFilter(''); }} className="text-caption text-zinc-500 hover:text-zinc-200">clear</button>
           ) : null}
         </div>
       </div>
@@ -266,7 +266,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                       )}
                     </div>
                     <div className="truncate text-sm font-medium text-zinc-100">{a?.name || id}</div>
-                    <div className="mt-0.5 flex items-center gap-2 text-[11px] text-zinc-500">
+                    <div className="mt-0.5 flex items-center gap-2 text-caption text-zinc-500">
                       <span className="rounded-full border border-white/10 bg-black/20 px-1.5 py-0.5 uppercase tracking-wide">{kindLabel(a)}</span>
                       <span>{formatBytes(Number(a?.size_bytes) || 0)}</span>
                       <span className="ml-auto">{timeAgo(Number(a?.updated_unix_ms || a?.created_unix_ms))}</span>
@@ -280,10 +280,10 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                   </div>
                   {renamingId === id ? (
                     <div data-debug-id={`library-card-rename-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl bg-[#0b0d12]/95 p-3">
-                      <input data-debug-id={`library-rename-input-${id}`} value={renameName} onChange={(e) => setRenameName(e.target.value)} className="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                      <Input data-debug-id={`library-rename-input-${id}`} value={renameName} onChange={setRenameName} size="sm" width="full" />
                       <div className="flex justify-end gap-1">
-                        <button type="button" data-debug-id={`library-rename-save-${id}`} onClick={() => void handleRename(id)} className="rounded-md bg-sky-400 px-2 py-0.5 text-[11px] font-semibold text-black hover:bg-sky-300">Save</button>
-                        <button type="button" data-debug-id={`library-rename-cancel-${id}`} onClick={() => setRenamingId('')} className="rounded-md bg-white/10 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-white/15">Cancel</button>
+                        <Button variant="primary" size="sm" data-debug-id={`library-rename-save-${id}`} onClick={() => void handleRename(id)}>Save</Button>
+                        <Button variant="secondary" size="sm" data-debug-id={`library-rename-cancel-${id}`} onClick={() => setRenamingId('')}>Cancel</Button>
                       </div>
                     </div>
                   ) : null}
@@ -291,8 +291,8 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                     <div data-debug-id={`library-card-delete-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl bg-[#0b0d12]/95 p-3 text-center">
                       <div className="text-xs text-rose-100">Delete this artifact? References become unavailable placeholders.</div>
                       <div className="flex justify-center gap-1">
-                        <button type="button" data-debug-id={`library-delete-confirm-${id}`} onClick={() => void handleDelete(id)} className="rounded-md bg-rose-400 px-2 py-0.5 text-[11px] font-semibold text-black hover:bg-rose-300">Delete</button>
-                        <button type="button" data-debug-id={`library-delete-cancel-${id}`} onClick={() => setDeleteConfirmId('')} className="rounded-md bg-white/10 px-2 py-0.5 text-[11px] text-zinc-200 hover:bg-white/15">Cancel</button>
+                        <Button variant="danger" size="sm" data-debug-id={`library-delete-confirm-${id}`} onClick={() => void handleDelete(id)}>Delete</Button>
+                        <Button variant="secondary" size="sm" data-debug-id={`library-delete-cancel-${id}`} onClick={() => setDeleteConfirmId('')}>Cancel</Button>
                       </div>
                     </div>
                   ) : null}

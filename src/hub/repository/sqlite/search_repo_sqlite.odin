@@ -41,7 +41,8 @@ search_resources_sqlite :: proc(ctx: rawptr, query: iface.Search_Query) -> (ifac
 	// Comment search uses the FTS5 index when migration 029 created it; otherwise it
 	// falls back to the indexed-LIKE path. Probed once per request (cheap).
 	comments_fts_ready := sqlite_object_exists(impl.conn, "task_comments_fts")
-	entity_fts_ready := sqlite_object_exists(impl.conn, "memories_fts") // proxy for the migration-029 vtable set
+	entity_fts_ready := sqlite_object_exists(impl.conn, "memories_fts") // proxy for the migration-030 vtable set
+	messages_fts_ready := sqlite_object_exists(impl.conn, "chat_messages_fts") // migration 031 (MSG-1)
 	all_hits := make([dynamic]iface.Search_Hit)
 	defer delete(all_hits)
 	for resource_type in SEARCH_TYPE_ORDER {
@@ -54,6 +55,13 @@ search_resources_sqlite :: proc(ctx: rawptr, query: iface.Search_Query) -> (ifac
 				rows, _, err = run_comment_fts_search(impl, query, scope_clause, scope_values[:])
 			} else {
 				rows, _, err = run_comment_search(impl, query, scope_clause, scope_values[:])
+			}
+		case "message":
+			// MSG-1: chat message bodies via the fts5 index (migration 031). No LIKE
+			// fallback — skip until the index exists (it always does post-migrate).
+			if !messages_fts_ready do continue
+			if desc, has_fts := fts_provider_for("message"); has_fts {
+				rows, _, err = run_fts_search(impl, desc, query, scope_clause, scope_values[:])
 			}
 		case "skill":
 			// Skills are parentless (no task/chain/project/conversation column). Per the
@@ -245,7 +253,7 @@ write_collapsed :: proc(b: ^strings.Builder, s: string) {
 	}
 }
 
-SEARCH_TYPE_ORDER :: [?]string{"conversation", "agent", "agent_instance", "task-chain", "task", "comment", "project", "artifact", "memory", "skill"}
+SEARCH_TYPE_ORDER :: [?]string{"conversation", "message", "agent", "agent_instance", "task-chain", "task", "comment", "project", "artifact", "memory", "skill"}
 
 search_type_enabled :: proc(types_csv, resource_type: string) -> bool {
 	trimmed := strings.trim_space(types_csv)
@@ -275,6 +283,7 @@ normalize_search_type :: proc(t: string) -> string {
 	case "memories": return "memory"
 	case "comments": return "comment"
 	case "skills": return "skill"
+	case "messages", "msg": return "message"
 	}
 	return t
 }

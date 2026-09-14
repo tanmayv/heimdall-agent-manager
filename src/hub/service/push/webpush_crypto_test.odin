@@ -122,6 +122,99 @@ vapid_jwt_verifies_and_has_three_segments :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(claims_str, "MISSING"))
 }
 
+// P-256 n/2, big-endian — the canonical (low-S) upper bound. Kept local to the
+// test so the assertion is independent of the implementation's own constant.
+@(private = "file")
+TEST_P256_N_HALF := [32]byte{
+	0x7F, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00,
+	0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+	0xDE, 0x73, 0x7D, 0x56, 0xD3, 0x8B, 0xCF, 0x42,
+	0x79, 0xDC, 0xE5, 0x61, 0x7E, 0x31, 0x92, 0xA8,
+}
+
+@(private = "file")
+be_gt_32 :: proc(a, b: []byte) -> bool {
+	for i in 0 ..< len(a) {
+		if a[i] != b[i] do return a[i] > b[i]
+	}
+	return false
+}
+
+@(test)
+vapid_jwt_signature_is_low_s :: proc(t: ^testing.T) {
+	// APPLE BadJwtToken REGRESSION: web.push.apple.com rejects a VAPID JWT whose
+	// ECDSA S is in the upper half of the curve order (S > n/2), even though the
+	// signature is otherwise valid and FCM/Mozilla accept it. vapid_sign_jwt must
+	// normalize S to its low form. Without normalization the raw signer emits
+	// high-S ~half the time (a fresh random k per signature), so signing many
+	// tokens and asserting EVERY S <= n/2 reliably catches a regression; each must
+	// also still verify against the public key.
+	priv: ecdsa.Private_Key
+	defer ecdsa.private_key_clear(&priv)
+	testing.expect(t, ecdsa.private_key_generate(&priv, .SECP256R1))
+	pub: ecdsa.Public_Key
+	ecdsa.public_key_set_priv(&pub, &priv)
+
+	for i in 0 ..< 64 {
+		claims := Vapid_Claims {
+			audience = "https://web.push.apple.com",
+			subject  = "mailto:test@example.com",
+			// Vary exp so each token has distinct signing input (fresh k -> fresh S).
+			expiry   = i64(1_800_000_000 + i),
+		}
+		jwt, ok := vapid_sign_jwt(&priv, claims)
+		defer delete(jwt)
+		testing.expect(t, ok)
+
+		last_dot := strings.last_index_byte(jwt, '.')
+		testing.expect(t, last_dot > 0)
+		signing_input := transmute([]byte)jwt[:last_dot]
+		sig, sig_ok := base64url_decode(jwt[last_dot + 1:])
+		defer delete(sig)
+		testing.expect(t, sig_ok)
+		testing.expect_value(t, len(sig), ES256_SIGNATURE_SIZE)
+		// Still a valid signature...
+		testing.expect(t, ecdsa.verify_raw(&pub, hash.Algorithm.SHA256, signing_input, sig))
+		// ...and always canonical low-S.
+		testing.expect(t, !be_gt_32(sig[32:], TEST_P256_N_HALF[:]),
+			"VAPID JWT signature has high S (> n/2) -> Apple BadJwtToken")
+	}
+}
+
+@(private = "file")
+TEST_P256_N := [32]byte{
+	0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+	0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84,
+	0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+}
+
+@(test)
+es256_normalize_low_s_known_answers :: proc(t: ^testing.T) {
+	// High S = n-1 must map to n-(n-1) = 1; the R half must be left untouched.
+	sig: [ES256_SIGNATURE_SIZE]byte
+	for i in 0 ..< 32 do sig[i] = 0xAB // R half sentinel
+	copy(sig[32:], TEST_P256_N[:])
+	sig[63] -= 1 // S = n - 1 (> n/2)
+	es256_normalize_low_s(sig[:])
+	for i in 0 ..< 32 do testing.expect_value(t, sig[i], 0xAB) // R untouched
+	for i in 32 ..< 63 do testing.expect_value(t, sig[i], 0)
+	testing.expect_value(t, sig[63], 1)
+
+	// Low S = 2 must be left unchanged (no-op branch).
+	sig2: [ES256_SIGNATURE_SIZE]byte
+	sig2[63] = 2
+	es256_normalize_low_s(sig2[:])
+	for i in 32 ..< 63 do testing.expect_value(t, sig2[i], 0)
+	testing.expect_value(t, sig2[63], 2)
+
+	// S exactly n/2 is canonical (boundary) and must be left unchanged.
+	sig3: [ES256_SIGNATURE_SIZE]byte
+	copy(sig3[32:], TEST_P256_N_HALF[:])
+	es256_normalize_low_s(sig3[:])
+	for i in 0 ..< 32 do testing.expect_value(t, sig3[32 + i], TEST_P256_N_HALF[i])
+}
+
 @(test)
 vapid_claims_for_sets_expiry :: proc(t: ^testing.T) {
 	claims := vapid_claims_for("https://web.push.apple.com", "mailto:test@example.com", 1_000_000)

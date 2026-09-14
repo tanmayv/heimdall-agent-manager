@@ -44,18 +44,21 @@ request_with_timeout :: proc(method, base_url, path, body: string, timeout_ms: i
 	return request_blocking(method, base_url, path, body, timeout_ms)
 }
 
-request_with_headers_timeout :: proc(method, base_url, path, body: string, headers: []Header, timeout_ms: int) -> (Response, bool) {
-	return request_blocking_with_headers(method, base_url, path, body, headers, timeout_ms)
+request_with_headers_timeout :: proc(method, base_url, path, body: string, headers: []Header, timeout_ms: int, omit_default_port := false) -> (Response, bool) {
+	return request_blocking_with_headers(method, base_url, path, body, headers, timeout_ms, omit_default_port)
 }
 
 request_blocking :: proc(method, base_url, path, body: string, timeout_ms := 0) -> (Response, bool) {
 	return request_blocking_with_headers(method, base_url, path, body, nil, timeout_ms)
 }
 
-request_blocking_with_headers :: proc(method, base_url, path, body: string, extra_headers: []Header, timeout_ms := 0) -> (Response, bool) {
+request_blocking_with_headers :: proc(method, base_url, path, body: string, extra_headers: []Header, timeout_ms := 0, omit_default_port := false) -> (Response, bool) {
 	host, port, secure, ok := parse_base_url(base_url)
 	if !ok do return {}, false
-	if secure do return request_tls_with_headers(method, host, port, path, body, extra_headers, timeout_ms)
+	// Drop the port from the Host header only when the caller opted in AND it is the
+	// scheme default (443 https / 80 http); a non-default port is always kept.
+	include_port_in_host := !(omit_default_port && ((secure && port == 443) || (!secure && port == 80)))
+	if secure do return request_tls_with_headers(method, host, port, path, body, extra_headers, timeout_ms, include_port_in_host)
 
 	socket, dial_ok := dial_tcp_with_timeout(host, int(port), timeout_ms)
 	if !dial_ok do return {}, false
@@ -66,7 +69,8 @@ request_blocking_with_headers :: proc(method, base_url, path, body: string, extr
 		if net.set_option(socket, .Receive_Timeout, timeout) != nil do return {}, false
 	}
 
-	req := build_http_request(method, host, port, path, body, extra_headers)
+	req := build_http_request(method, host, port, path, body, extra_headers, include_port_in_host)
+	defer delete(req)
 	_, send_err := net.send_tcp(socket, transmute([]byte)req)
 	if send_err != nil do return {}, false
 
@@ -83,7 +87,7 @@ request_blocking_with_headers :: proc(method, base_url, path, body: string, extr
 	return parse_response_bytes(data[:])
 }
 
-request_tls_with_headers :: proc(method, host: string, port: u16, path, body: string, extra_headers: []Header, timeout_ms := 0) -> (Response, bool) {
+request_tls_with_headers :: proc(method, host: string, port: u16, path, body: string, extra_headers: []Header, timeout_ms := 0, include_port_in_host := true) -> (Response, bool) {
 	stdin_r, stdin_w, stdin_err := os.pipe()
 	if stdin_err != nil do return {}, false
 	defer os.close(stdin_r)
@@ -96,7 +100,8 @@ request_tls_with_headers :: proc(method, host: string, port: u16, path, body: st
 	_ = os.close(stdout_w)
 	if start_err != nil { _ = os.close(stdin_w); return {}, false }
 
-	req := build_http_request(method, host, port, path, body, extra_headers)
+	req := build_http_request(method, host, port, path, body, extra_headers, include_port_in_host)
+	defer delete(req)
 	_, write_err := os.write(stdin_w, transmute([]byte)req)
 	_ = os.close(stdin_w)
 	if write_err != nil {
@@ -130,9 +135,15 @@ request_tls_with_headers :: proc(method, host: string, port: u16, path, body: st
 	return parse_response_bytes(data[:])
 }
 
-build_http_request :: proc(method, host: string, port: u16, path, body: string, extra_headers: []Header) -> string {
+build_http_request :: proc(method, host: string, port: u16, path, body: string, extra_headers: []Header, include_port_in_host := true) -> string {
 	req_b := strings.builder_make()
-	strings.write_string(&req_b, fmt.tprintf("%s %s HTTP/1.1\r\nHost: %s:%d\r\n", method, path, host, port))
+	// The Host header is the request authority. Per RFC 7230 the port is omitted
+	// when it is the scheme default; browsers and reference push libraries (e.g.
+	// web-push) send a bare "Host: <host>". Callers that must match that wire form
+	// (the Web Push client, whose endpoints are strict) pass include_port_in_host
+	// = false; everyone else keeps the historical "host:port" form unchanged.
+	host_header := fmt.tprintf("%s:%d", host, port) if include_port_in_host else host
+	strings.write_string(&req_b, fmt.tprintf("%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, host_header))
 	// Default to JSON unless the caller supplies its own Content-Type (e.g. Web
 	// Push sends a binary aes128gcm body). This keeps existing JSON callers
 	// unchanged while allowing binary/other content types.

@@ -21,6 +21,26 @@ VAPID_JWT_TTL_SECONDS :: 12 * 60 * 60
 // ES256_SIGNATURE_SIZE is the raw `R || S` signature length for P-256.
 ES256_SIGNATURE_SIZE :: 64
 
+// P256_N is the order n of the P-256 (secp256r1) base point, big-endian.
+// P256_N_HALF is floor(n/2). A canonical ("low-S") ECDSA signature has
+// S <= n/2. RFC 7515 accepts either S, and FCM/Mozilla do too, but Apple's
+// web.push.apple.com rejects a high-S VAPID JWT as `BadJwtToken`, so we MUST
+// normalize S to its low form before sending.
+@(private = "file")
+P256_N := [32]byte{
+	0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00,
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+	0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84,
+	0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+}
+@(private = "file")
+P256_N_HALF := [32]byte{
+	0x7F, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00,
+	0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+	0xDE, 0x73, 0x7D, 0x56, 0xD3, 0x8B, 0xCF, 0x42,
+	0x79, 0xDC, 0xE5, 0x61, 0x7E, 0x31, 0x92, 0xA8,
+}
+
 // Vapid_Claims are the RFC 8292 JWT claims. `audience` is the origin
 // (`<scheme>://<host>`) of the push endpoint; `subject` is a contact URI
 // (`mailto:` or `https:`).
@@ -111,6 +131,9 @@ vapid_sign_jwt :: proc(
 	if !ecdsa.sign_raw(priv_key, hash.Algorithm.SHA256, transmute([]byte)signing_input, sig[:]) {
 		return "", false
 	}
+	// Apple's web.push.apple.com rejects high-S ECDSA signatures as
+	// `BadJwtToken`; normalize S to its canonical low form (S <= n/2).
+	es256_normalize_low_s(sig[:])
 	sig_b64 := base64url_encode(sig[:], allocator)
 	defer delete(sig_b64, allocator)
 
@@ -123,4 +146,48 @@ vapid_sign_jwt :: proc(
 // point. The returned string is owned by the caller.
 vapid_authorization_header :: proc(jwt: string, public_key_b64: string, allocator := context.allocator) -> string {
 	return fmt.aprintf("vapid t=%s, k=%s", jwt, public_key_b64, allocator = allocator)
+}
+
+// es256_normalize_low_s rewrites the S half of a raw `R || S` P-256 signature to
+// its canonical low form: if S > n/2 it is replaced with n - S (which is an
+// equally valid signature). `sig` is the 64-byte raw signature; S is sig[32:64],
+// big-endian. This is required for Apple Web Push (high-S -> `BadJwtToken`); it
+// is a no-op for signatures that are already low-S.
+es256_normalize_low_s :: proc(sig: []byte) {
+	assert(len(sig) == ES256_SIGNATURE_SIZE)
+	s := sig[32:]
+	if be_greater_32(s, P256_N_HALF[:]) {
+		// s = n - s (n > s always holds for a valid signature, so no borrow out).
+		be_sub_32(P256_N[:], s, s)
+	}
+}
+
+// be_greater_32 reports whether big-endian unsigned `a` > `b` (equal lengths).
+@(private = "file")
+be_greater_32 :: proc(a, b: []byte) -> bool {
+	for i in 0 ..< len(a) {
+		if a[i] != b[i] {
+			return a[i] > b[i]
+		}
+	}
+	return false
+}
+
+// be_sub_32 computes dst = minuend - subtrahend for equal-length big-endian
+// unsigned integers, assuming minuend >= subtrahend. dst may alias subtrahend
+// (each index is read before it is written), which es256_normalize_low_s relies
+// on to compute n - S in place.
+@(private = "file")
+be_sub_32 :: proc(minuend, subtrahend, dst: []byte) {
+	borrow := 0
+	for i := len(dst) - 1; i >= 0; i -= 1 {
+		d := int(minuend[i]) - int(subtrahend[i]) - borrow
+		if d < 0 {
+			d += 256
+			borrow = 1
+		} else {
+			borrow = 0
+		}
+		dst[i] = byte(d)
+	}
 }

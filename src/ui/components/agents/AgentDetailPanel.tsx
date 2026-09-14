@@ -17,6 +17,7 @@ import {
 } from '../../api/endpoints/bridgeSupport';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { useListChainsByCoordinatorQuery } from '../../api/endpoints/tasks';
+import { Button, Input, Link, PageShell, Select, Textarea } from '@ui';
 
 type ProviderScope = 'bridge_default' | 'same_provider';
 type BridgeRowDraft = { enabled: boolean; providerScope: ProviderScope; provider: string; tier: string };
@@ -244,19 +245,19 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
   if (!agent) return <div className="w-full rounded-2xl border border-red-400/20 bg-red-500/10 p-6 text-sm text-red-100">Agent not found.</div>;
 
   return (
-    <div data-debug-id="agent-detail-page" className="w-full max-w-5xl space-y-5 text-left">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <a data-debug-id="agent-detail-back-btn" href={shellHash('/agents')} className="text-xs text-zinc-500 hover:text-zinc-200">← Back to agents</a>
-          <h2 data-debug-id="agent-detail-title" className="mt-2 text-2xl font-semibold text-white">{agent.name || agent.agent_id || agentId}</h2>
-          <p className="mt-1 text-sm text-zinc-500">{agent.agent_id || agentId} · template {agent.template_id || '—'} · state {agent.state || 'active'}</p>
-        </div>
+    <PageShell
+      eyebrow="Agent"
+      title={<span data-debug-id="agent-detail-title">{agent.name || agent.agent_id || agentId}</span>}
+      description={`${agent.agent_id || agentId} · template ${agent.template_id || '—'} · state ${agent.state || 'active'}`}
+      actions={
         <div className="flex items-center gap-2">
-          <button data-debug-id="agents-detail-edit-btn" type="button" onClick={openEdit} className="rounded-xl border border-white/10 px-4 py-2 text-sm font-semibold text-zinc-100 hover:bg-white/10">Edit</button>
-          <button data-debug-id="agent-detail-launch-instance-header-btn" type="button" onClick={() => setLaunchOpen(!launchOpen)} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Launch instance</button>
+          <Link variant="standalone" tone="muted" data-debug-id="agent-detail-back-btn" href={shellHash('/agents')} className="text-xs">← Back</Link>
+          <Button variant="secondary" data-debug-id="agents-detail-edit-btn" onClick={openEdit}>Edit</Button>
+          <Button variant="primary" data-debug-id="agent-detail-launch-instance-header-btn" onClick={() => setLaunchOpen(!launchOpen)}>Launch instance</Button>
         </div>
-      </div>
-
+      }
+    >
+      <div data-debug-id="agent-detail-page" className="space-y-5 text-left">
       {message ? <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-100">{message}</div> : null}
       {error ? <div data-debug-id="agent-detail-action-error" className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}
 
@@ -266,15 +267,15 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
           <p className="mt-1 text-xs text-zinc-500">Update this agent's identity. The agent id is permanent and cannot be changed.</p>
           {editError ? <div data-debug-id="agents-detail-edit-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{editError}</div> : null}
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="block text-sm text-zinc-300">Name<input data-debug-id="agents-detail-edit-name" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Agent name" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
-            <label className="block text-sm text-zinc-300">Template / persona<select data-debug-id="agents-detail-edit-template" value={editTemplate} onChange={(e) => setEditTemplate(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Choose template</option>{templates.map((tmpl: { id: string; name: string }) => <option key={tmpl.id} value={tmpl.id}>{tmpl.name || tmpl.id}</option>)}</select></label>
-            <label className="block text-sm text-zinc-300">Default provider<select data-debug-id="agents-detail-edit-provider" value={editProvider} onChange={(e) => setEditProvider(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use Bridge default</option>{editProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
-            <label className="block text-sm text-zinc-300">Default tier<select data-debug-id="agents-detail-edit-tier" value={editTier} onChange={(e) => setEditTier(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use Bridge default tier</option>{editTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}</select></label>
-            <label className="block text-sm text-zinc-300 sm:col-span-2">Instructions<textarea data-debug-id="agents-detail-edit-instructions" value={editInstructions} onChange={(e) => setEditInstructions(e.target.value)} placeholder="Optional additions layered on the selected template." className="mt-1 h-28 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
+            <label className="block text-sm text-zinc-300">Name<Input data-debug-id="agents-detail-edit-name" value={editName} onChange={setEditName} placeholder="Agent name" width="full" className="mt-1" /></label>
+            <label className="block text-sm text-zinc-300">Template / persona<Select data-debug-id="agents-detail-edit-template" value={editTemplate} onChange={setEditTemplate} width="full" className="mt-1"><option value="">Choose template</option>{templates.map((tmpl: { id: string; name: string }) => <option key={tmpl.id} value={tmpl.id}>{tmpl.name || tmpl.id}</option>)}</Select></label>
+            <label className="block text-sm text-zinc-300">Default provider<Select data-debug-id="agents-detail-edit-provider" value={editProvider} onChange={setEditProvider} width="full" className="mt-1"><option value="">Use Bridge default</option>{editProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</Select></label>
+            <label className="block text-sm text-zinc-300">Default tier<Select data-debug-id="agents-detail-edit-tier" value={editTier} onChange={setEditTier} width="full" className="mt-1"><option value="">Use Bridge default tier</option>{editTierOptions.map((tier) => <option key={tier} value={tier}>{tier}</option>)}</Select></label>
+            <label className="block text-sm text-zinc-300 sm:col-span-2">Instructions<Textarea data-debug-id="agents-detail-edit-instructions" value={editInstructions} onChange={setEditInstructions} placeholder="Optional additions layered on the selected template." width="full" className="mt-1 h-28" /></label>
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <button data-debug-id="agents-detail-edit-cancel" type="button" onClick={() => setEditOpen(false)} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</button>
-            <button data-debug-id="agents-detail-edit-save" type="button" onClick={() => void saveEdit()} disabled={editBusy || !editName.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:opacity-50">{editBusy ? 'Saving…' : 'Save'}</button>
+            <Button variant="secondary" data-debug-id="agents-detail-edit-cancel" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button variant="primary" data-debug-id="agents-detail-edit-save" onClick={() => void saveEdit()} disabled={editBusy || !editName.trim()}>{editBusy ? 'Saving…' : 'Save'}</Button>
           </div>
         </section>
       ) : null}
@@ -283,10 +284,10 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
         <h3 className="font-semibold text-white">Default provider/tier</h3>
         <p className="mt-1 text-xs text-zinc-500">The agent can prefer a tier. Provider comes from each Bridge by default, or from a per-Bridge override below.</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <label className="block text-sm text-zinc-300">Default tier<select data-debug-id="agent-detail-default-tier-select" value={defaultTier} onChange={(e) => setDefaultTier(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use Bridge default tier</option>{(defaultTierOptions.length ? defaultTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</select></label>
+          <label className="block text-sm text-zinc-300">Default tier<Select data-debug-id="agent-detail-default-tier-select" value={defaultTier} onChange={setDefaultTier} width="full" className="mt-1"><option value="">Use Bridge default tier</option>{(defaultTierOptions.length ? defaultTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</Select></label>
         </div>
         {defaultWarning ? <div data-debug-id="agent-detail-default-warning" className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">{defaultWarning}</div> : null}
-        <div className="mt-4 flex justify-end"><button data-debug-id="agent-detail-default-save-btn" type="button" onClick={() => void saveDefaults()} disabled={updatingAgent} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-zinc-100 hover:bg-white/15 disabled:opacity-50">Save defaults</button></div>
+        <div className="mt-4 flex justify-end"><Button variant="secondary" data-debug-id="agent-detail-default-save-btn" onClick={() => void saveDefaults()} disabled={updatingAgent}>Save defaults</Button></div>
       </section>
 
       <section className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
@@ -305,9 +306,9 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
                   <div data-debug-id={`agent-detail-bridge-effective-${id}`} className={`rounded-xl px-3 py-2 text-xs ${capSupports(bridge, effective.provider, effective.tier) ? 'bg-emerald-400/10 text-emerald-100' : 'bg-amber-400/10 text-amber-100'}`}>launch default<br /><span className="text-zinc-100">{effective.provider || '—'} / {effective.tier || '—'}</span></div>
                 </div>
                 <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                  <label className="block text-sm text-zinc-300">Provider override<select data-debug-id={`agent-detail-bridge-provider-select-${id}`} value={draft.provider} onChange={(e) => setRowDrafts({ ...rowDrafts, [id]: { ...draft, provider: e.target.value, providerScope: e.target.value ? 'same_provider' : 'bridge_default' } })} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use Bridge default provider</option>{caps.map((cap) => <option key={cap.provider} value={cap.provider}>{cap.provider}</option>)}</select></label>
-                  <label className="block text-sm text-zinc-300">Tier override<select data-debug-id={`agent-detail-bridge-tier-select-${id}`} value={draft.tier} onChange={(e) => setRowDrafts({ ...rowDrafts, [id]: { ...draft, tier: e.target.value } })} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Use agent/Bridge default tier</option>{(rowTierOptions.length ? rowTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</select></label>
-                  <div className="flex items-end justify-end"><button data-debug-id={`agent-detail-bridge-save-btn-${id}`} type="button" onClick={() => void saveBridge(bridge)} disabled={patchingSupport} className="rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-200 hover:bg-white/10 disabled:opacity-50">Save overrides</button></div>
+                  <label className="block text-sm text-zinc-300">Provider override<Select data-debug-id={`agent-detail-bridge-provider-select-${id}`} value={draft.provider} onChange={(value) => setRowDrafts({ ...rowDrafts, [id]: { ...draft, provider: value, providerScope: value ? 'same_provider' : 'bridge_default' } })} width="full" className="mt-1"><option value="">Use Bridge default provider</option>{caps.map((cap) => <option key={cap.provider} value={cap.provider}>{cap.provider}</option>)}</Select></label>
+                  <label className="block text-sm text-zinc-300">Tier override<Select data-debug-id={`agent-detail-bridge-tier-select-${id}`} value={draft.tier} onChange={(value) => setRowDrafts({ ...rowDrafts, [id]: { ...draft, tier: value } })} width="full" className="mt-1"><option value="">Use agent/Bridge default tier</option>{(rowTierOptions.length ? rowTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</Select></label>
+                  <div className="flex items-end justify-end"><Button variant="secondary" size="sm" data-debug-id={`agent-detail-bridge-save-btn-${id}`} onClick={() => void saveBridge(bridge)} disabled={patchingSupport}>Save overrides</Button></div>
                 </div>
               </div>
             );
@@ -321,12 +322,12 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
         {launchOpen ? (
           <div className="mt-3 grid gap-3 rounded-xl border border-white/10 bg-black/20 p-3 sm:grid-cols-4">
             {launchWarning ? <div data-debug-id="agent-detail-launch-warning" className="sm:col-span-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">{launchWarning}</div> : null}
-            <label className="block text-sm text-zinc-300">Bridge<select data-debug-id="agent-detail-launch-bridge-select" value={launchBridge} onChange={(e) => { setLaunchBridge(e.target.value); setLaunchProvider(''); setLaunchTier(''); }} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Choose Bridge…</option>{launchRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{row.bridge.label || row.bridge.machine_hostname || row.bridgeId}</option>)}</select></label>
-            <label className="block text-sm text-zinc-300">Provider<select data-debug-id="agent-detail-launch-provider-select" value={launchProvider} onChange={(e) => setLaunchProvider(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Resolved default</option>{launchProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
-            <label className="block text-sm text-zinc-300">Tier<select data-debug-id="agent-detail-launch-tier-select" value={launchTier} onChange={(e) => setLaunchTier(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Resolved default</option>{(launchTierOptions.length ? launchTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</select></label>
-            <label className="block text-sm text-zinc-300">Project<select data-debug-id="agent-detail-launch-project-select" value={launchProject} onChange={(e) => setLaunchProject(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Conversations default</option>{projects.map((project: any) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}</select></label>
+            <label className="block text-sm text-zinc-300">Bridge<Select data-debug-id="agent-detail-launch-bridge-select" value={launchBridge} onChange={(value) => { setLaunchBridge(value); setLaunchProvider(''); setLaunchTier(''); }} width="full" className="mt-1"><option value="">Choose Bridge…</option>{launchRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{row.bridge.label || row.bridge.machine_hostname || row.bridgeId}</option>)}</Select></label>
+            <label className="block text-sm text-zinc-300">Provider<Select data-debug-id="agent-detail-launch-provider-select" value={launchProvider} onChange={setLaunchProvider} width="full" className="mt-1"><option value="">Resolved default</option>{launchProviderOptions.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</Select></label>
+            <label className="block text-sm text-zinc-300">Tier<Select data-debug-id="agent-detail-launch-tier-select" value={launchTier} onChange={setLaunchTier} width="full" className="mt-1"><option value="">Resolved default</option>{(launchTierOptions.length ? launchTierOptions : tierOrder).map((tier) => <option key={tier} value={tier}>{tier}</option>)}</Select></label>
+            <label className="block text-sm text-zinc-300">Project<Select data-debug-id="agent-detail-launch-project-select" value={launchProject} onChange={setLaunchProject} width="full" className="mt-1"><option value="">Conversations default</option>{projects.map((project: any) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}</Select></label>
             {launchBridge ? <div className="sm:col-span-4 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-500">Will launch on <span className="text-zinc-200">{launchBridge}</span> with <span className="text-zinc-200">{launchEffective.provider || '—'} / {launchEffective.tier || '—'}</span>. Override provider/tier above for this instance only.</div> : null}
-            <div className="sm:col-span-4 flex justify-end"><button data-debug-id="agent-detail-launch-submit-btn" type="button" onClick={() => void launch()} disabled={launching || Boolean(launchWarning) || !launchBridge || (launchProvider !== '' && !launchProviderOptions.includes(launchProvider)) || (launchTier !== '' && !launchTierOptions.includes(launchTier))} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:opacity-50">{launching ? 'Launching…' : 'Launch'}</button></div>
+            <div className="sm:col-span-4 flex justify-end"><Button variant="primary" data-debug-id="agent-detail-launch-submit-btn" onClick={() => void launch()} disabled={launching || Boolean(launchWarning) || !launchBridge || (launchProvider !== '' && !launchProviderOptions.includes(launchProvider)) || (launchTier !== '' && !launchTierOptions.includes(launchTier))}>{launching ? 'Launching…' : 'Launch'}</Button></div>
           </div>
         ) : null}
         <div className="mt-3 space-y-2">
@@ -338,13 +339,14 @@ export function AgentDetailPanel({ agentId }: { agentId: string }) {
           {!instances.length ? <div className="rounded-xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No instances yet. Launch one to create a private chain and conversation.</div> : null}
         </div>
       </section>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
 // H9 U2/U3: dropdown listing the task chains THIS agent instance coordinates
 // (single canonical source on the hub). Selecting a chain navigates to it. An
-// agent can coordinate multiple chains, so this <select> is the switcher; the
+// agent can coordinate multiple chains, so this Select is the switcher; the
 // default selection is the chain currently in view (if any). Handles the empty
 // (coordinates 0 chains) and loading states without crashing.
 function CoordinatorChainsDropdown({ agentInstanceId, currentChainId }: { agentInstanceId: string; currentChainId: string }) {
@@ -358,25 +360,22 @@ function CoordinatorChainsDropdown({ agentInstanceId, currentChainId }: { agentI
   }
   if (!chains.length) {
     // Empty/disabled state: this agent coordinates no chains.
-    return <select data-debug-id="coordinator-chains-select" disabled aria-label="Coordinated chains (none)" className="rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-zinc-500"><option>No coordinated chains</option></select>;
+    return <Select data-debug-id="coordinator-chains-select" disabled aria-label="Coordinated chains (none)" value="" onChange={() => {}}><option>No coordinated chains</option></Select>;
   }
   const selected = chains.some((c) => c.chainId === currentChainId) ? currentChainId : chains[0].chainId;
   return (
-    <select
+    <Select
       data-debug-id="coordinator-chains-select"
       aria-label="Coordinated chains"
       title="Task chains this agent coordinates"
       value={selected}
-      onChange={(e) => {
-        const target = e.target.value;
-        if (target) window.location.hash = shellHash(`/chains/${target}`).slice(1);
-      }}
-      className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-2 py-1 text-xs text-sky-100 outline-none focus:border-sky-400"
+      onChange={(target) => { if (target) window.location.hash = shellHash(`/chains/${target}`).slice(1); }}
+      size="sm"
     >
       {chains.map((c) => (
         <option key={c.chainId} value={c.chainId}>{(c.title || c.chainId)} · {c.status}</option>
       ))}
-    </select>
+    </Select>
   );
 }
 

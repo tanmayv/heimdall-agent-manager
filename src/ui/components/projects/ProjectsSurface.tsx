@@ -31,10 +31,9 @@ import {
   type FigWorkspace,
 } from '../../api/endpoints/bridgeFig';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
-import Icon from '../Icon';
-import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
 import FigDirectoryPicker from '../FigDirectoryPicker';
-
+import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
+import { Button, Icon, Input, Link, PageShell, Text, Textarea } from '@ui';
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -190,27 +189,28 @@ function ProjectList() {
   }
 
   return (
-    <div data-debug-id="projects-surface" className="w-full">
-      <header className="mb-5 flex items-center justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75">Projects</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white">Projects</h1>
-          <p className="mt-1 text-sm text-zinc-500">Group work by project — agents, memory and per-device paths.</p>
-        </div>
-        <button data-debug-id="projects-new-btn" type="button" onClick={() => setShowCreate((v) => !v)} className="inline-flex min-h-10 items-center gap-2 rounded-2xl bg-sky-400 px-4 py-2 text-sm font-black text-black hover:bg-sky-300">
+    <PageShell
+      width="full"
+      title="Projects"
+      description="Group work by project — agents, memory and per-device paths."
+      actions={
+        <Button variant="primary" size="md" data-debug-id="projects-new-btn" onClick={() => setShowCreate((v) => !v)}>
           <Icon name="plus" size={16} /> New project
-        </button>
-      </header>
+        </Button>
+      }
+    >
+      <div data-debug-id="projects-surface">
 
       {showCreate ? (
         <div data-debug-id="projects-create-form" className="mb-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name *
-              <input
+            <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Name *
+              <Input
                 data-debug-id="projects-create-name-input"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white outline-none focus:border-sky-400"
+                onChange={setName}
+                width="full"
+                className="mt-1"
                 placeholder="e.g. website-rewrite or cloudtop-agent"
               />
             </label>
@@ -308,26 +308,26 @@ function ProjectList() {
 
           {createError ? <p data-debug-id="projects-create-error" className="mt-2 text-xs text-red-300">{createError}</p> : null}
           <div className="mt-3 flex gap-2">
-            <button
+            <Button
+              variant="primary"
+              size="md"
               data-debug-id="projects-create-submit-btn"
-              type="button"
               disabled={createState.isLoading || !name.trim() || (projectType === 'local' ? !defaultPath.trim() : !workspaceName.trim())}
               onClick={submitCreate}
-              className="rounded-xl bg-sky-400 hover:bg-sky-300 px-4 py-2 text-sm font-bold text-black disabled:opacity-50 transition"
             >
               {createState.isLoading ? 'Creating…' : 'Create'}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
               data-debug-id="projects-create-cancel-btn"
-              type="button"
               onClick={() => {
                 setShowCreate(false);
                 setShowLocationModal(false);
               }}
-              className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
@@ -535,10 +535,16 @@ function ProjectList() {
         </div>
       ) : null}
 
-      <div className="mb-3 flex items-center gap-2 rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-zinc-500">
-        <Icon name="search" size={15} />
-        <input data-debug-id="projects-search-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${projects.length} projects…`} className="w-full bg-transparent text-sm text-white outline-none placeholder:text-zinc-600" />
-      </div>
+      <Input
+        type="search"
+        data-debug-id="projects-search-input"
+        value={query}
+        onChange={setQuery}
+        placeholder={`Search ${projects.length} projects…`}
+        width="full"
+        className="mb-3"
+        leading={<Icon name="search" size={15} />}
+      />
 
       <div data-debug-id="projects-list" className="divide-y divide-white/[0.06] overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02]">
         {projectsQuery.isLoading ? (
@@ -581,7 +587,8 @@ function ProjectList() {
           );
         })}
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
@@ -604,16 +611,17 @@ function ProjectDetail({ projectId }: { projectId: string }) {
   const bridges: any[] = (bridgesQuery.data?.bridges || []).filter((b: any) => str(b?.status || b?.state || 'online').toLowerCase() !== 'revoked');
 
   return (
-    <div data-debug-id="project-detail" className="w-full">
-      <a data-debug-id="project-detail-back-btn" href={buildRouteHash('/projects', '')} className="mb-4 inline-flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white">
-        <Icon name="chevron-left" size={16} /> All projects
-      </a>
-
-      <header className="mb-5">
-        <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75">Project</p>
-        <h1 data-debug-id="project-detail-title" className="mt-1 text-2xl font-semibold tracking-tight text-white">{project?.name || projectId}</h1>
-      </header>
-
+    <PageShell
+      width="full"
+      eyebrow="Project"
+      title={<span data-debug-id="project-detail-title">{project?.name || projectId}</span>}
+      actions={
+        <Link variant="standalone" tone="muted" data-debug-id="project-detail-back-btn" href={buildRouteHash('/projects', '')} className="inline-flex items-center gap-1.5 text-sm">
+          <Icon name="chevron-left" size={16} /> All projects
+        </Link>
+      }
+    >
+      <div data-debug-id="project-detail">
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="lg:col-span-2">
           <AboutPanel projectId={projectId} project={project} bridges={bridges} />
@@ -624,7 +632,8 @@ function ProjectDetail({ projectId }: { projectId: string }) {
           <BridgePathsPanel projectId={projectId} project={project} bridges={bridges} />
         </div>
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
@@ -696,7 +705,7 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
   return (
     <Card title="About" debugId="project-detail-about"
       action={!editing ? (
-        <button data-debug-id="project-detail-edit-btn" type="button" onClick={() => setEditing(true)} className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:bg-white/10">Edit</button>
+        <Button variant="secondary" size="sm" data-debug-id="project-detail-edit-btn" onClick={() => setEditing(true)}>Edit</Button>
       ) : null}>
       {!editing ? (
         <div className="space-y-2">
@@ -726,37 +735,36 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
         </div>
       ) : (
         <div className="space-y-3">
-          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-            <input data-debug-id="project-detail-name-input" value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm text-white" />
+          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
+            <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" className="mt-1" />
           </label>
           {isFig ? (
             <div className="grid gap-3 sm:grid-cols-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
               <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">CitC Workspace
-                <input value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-white" />
+                <Input value={workspaceName} onChange={setWorkspaceName} width="full" className="mt-1 font-mono" />
               </label>
               <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">Relative google3 Path
-                <input value={relativePath} onChange={(e) => setRelativePath(e.target.value)} placeholder="e.g. cloud/security" className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-white" />
+                <Input value={relativePath} onChange={setRelativePath} placeholder="e.g. cloud/security" width="full" className="mt-1 font-mono" />
               </label>
             </div>
           ) : null}
-          <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
-            <textarea data-debug-id="project-detail-description-input" value={description} onChange={(e) => setDescription(e.target.value)} rows={4} placeholder="What is this project about?" className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-sm leading-6 text-white placeholder:text-zinc-600" />
+          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
+            <Textarea data-debug-id="project-detail-description-input" value={description} onChange={setDescription} rows={4} placeholder="What is this project about?" width="full" className="mt-1" />
           </label>
           <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500 mb-1">Default path</label>
+            <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500 mb-1">Default path</label>
             <div className="flex items-center gap-2">
-              <input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={(e) => setDefaultPath(e.target.value)} className="flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" placeholder="~/path/to/repo" />
+              <Input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="flex-1 font-mono" placeholder="~/path/to/repo" />
               {!isFig ? (
-                <button
+                <Button
                   data-debug-id="project-detail-edit-local-browse-btn"
-                  type="button"
+                  variant="secondary"
                   disabled={!selectedBridgeId}
                   onClick={() => setShowLocalPicker((v) => !v)}
-                  className="min-h-[42px] shrink-0 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 disabled:opacity-40 flex items-center gap-1.5"
+                  leading={<Icon name="folder" size={14} />}
                 >
-                  <Icon name="folder" size={14} />
-                  <span>{showLocalPicker ? 'Hide Browser' : 'Browse…'}</span>
-                </button>
+                  {showLocalPicker ? 'Hide Browser' : 'Browse…'}
+                </Button>
               ) : null}
             </div>
           </div>
@@ -776,8 +784,8 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
           ) : null}
           {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-red-300">{err}</p> : null}
           <div className="flex gap-2">
-            <button data-debug-id="project-detail-save-btn" type="button" disabled={updateState.isLoading} onClick={save} className={`rounded-xl px-4 py-2 text-sm font-bold text-black disabled:opacity-50 ${isFig ? 'bg-amber-400 hover:bg-amber-300' : 'bg-sky-400 hover:bg-sky-300'}`}>{updateState.isLoading ? 'Saving…' : 'Save'}</button>
-            <button data-debug-id="project-detail-cancel-btn" type="button" onClick={() => { setEditing(false); setShowLocalPicker(false); setErr(''); }} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-zinc-300 hover:bg-white/10">Cancel</button>
+            <Button data-debug-id="project-detail-save-btn" variant="primary" size="md" disabled={updateState.isLoading} onClick={save}>{updateState.isLoading ? 'Saving…' : 'Save'}</Button>
+            <Button data-debug-id="project-detail-cancel-btn" variant="secondary" size="md" onClick={() => { setEditing(false); setShowLocalPicker(false); setErr(''); }}>Cancel</Button>
           </div>
         </div>
       )}
@@ -807,10 +815,10 @@ function AgentsPanel({ agents, loading, projectId }: { agents: any[]; loading: b
             const instances = Number(a?.activeInstanceCount ?? a?.active_instance_count ?? 0);
             return (
               <a key={id} data-debug-id={`project-detail-agent-${id}`} href={buildRouteHash('/agents', `agentId=${encodeURIComponent(id)}`)} className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-white/[0.05]">
-                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-[11px] font-bold text-zinc-300">{(name || '?').slice(0, 1).toUpperCase()}</span>
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-caption font-bold text-zinc-300">{(name || '?').slice(0, 1).toUpperCase()}</span>
                 <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">{name}</span>
                 {instances > 0 ? <span className="shrink-0 rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">{instances} live</span> : null}
-                {tier ? <span className="shrink-0 text-[11px] text-zinc-500">{tier}</span> : null}
+                {tier ? <span className="shrink-0 text-caption text-zinc-500">{tier}</span> : null}
               </a>
             );
           })}
@@ -923,17 +931,17 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
     <Card title="Working directory" debugId="project-detail-bridge-paths">
       {/* Default path — not tied to any bridge. */}
       <div className="mb-4">
-        <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path (all devices)</label>
+        <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path (all devices)</label>
         <p className="mt-1 text-xs text-zinc-500">Used on every device unless overridden below. e.g. <span className="font-mono text-zinc-400">~/projects/my-app</span></p>
         <div className="mt-2 flex gap-2">
-          <input data-debug-id="project-detail-default-path-input" value={defaultDraft} onChange={(e) => setDefaultDraft(e.target.value)} placeholder="~/path/to/project" className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-sm text-white" />
-          <button data-debug-id="project-detail-default-path-save-btn" type="button" disabled={updateState.isLoading || defaultDraft.trim() === defaultPath} onClick={saveDefault} className="shrink-0 rounded-xl bg-sky-400 px-4 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-40">Save</button>
+          <Input data-debug-id="project-detail-default-path-input" value={defaultDraft} onChange={setDefaultDraft} placeholder="~/path/to/project" className="min-w-0 flex-1 font-mono" />
+          <Button variant="primary" size="md" data-debug-id="project-detail-default-path-save-btn" disabled={updateState.isLoading || defaultDraft.trim() === defaultPath} onClick={saveDefault} className="shrink-0">Save</Button>
         </div>
         {defaultErr ? <p data-debug-id="project-detail-default-path-error" className="mt-1 text-xs text-red-300">{defaultErr}</p> : null}
       </div>
 
       {/* Per-device presence + overrides. */}
-      <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Devices</label>
+      <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Devices</label>
       <p className="mt-1 mb-2 text-xs text-zinc-500">Whether the effective path is present on each online device.</p>
       {onlineBridges.length === 0 ? (
         <div data-debug-id="project-detail-bridge-paths-empty" className="text-sm text-zinc-500">No online devices to check.</div>
@@ -953,11 +961,11 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
                     aria-hidden="true"
                     className={`h-2 w-2 shrink-0 rounded-full ${st.loading ? 'bg-zinc-500 animate-pulse' : st.error ? 'bg-amber-400' : st.exists ? 'bg-emerald-400' : 'bg-red-400'}`}
                   />
-                  <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-zinc-300">{bridgeLabel(b)}</span>
+                  <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-caption font-semibold text-zinc-300">{bridgeLabel(b)}</span>
                   <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold ${overridden ? 'bg-sky-400/15 text-sky-300' : 'bg-white/[0.06] text-zinc-500'}`}>{overridden ? 'override' : 'default'}</span>
                   <span className="min-w-0 flex-1 basis-full truncate font-mono text-[12px] text-zinc-400 sm:basis-0" title={path}>{path || <span className="text-zinc-600">no path set</span>}</span>
                   {/* presence label */}
-                  <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className={`shrink-0 text-[11px] font-semibold ${st.loading ? 'text-zinc-500' : st.error ? 'text-amber-400' : st.exists ? 'text-emerald-400' : 'text-red-400'}`}>
+                  <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className={`shrink-0 text-caption font-semibold ${st.loading ? 'text-zinc-500' : st.error ? 'text-amber-400' : st.exists ? 'text-emerald-400' : 'text-red-400'}`}>
                     {st.loading ? 'checking…' : st.error ? st.error : st.exists ? (st.hasGit ? 'present · git' : 'present') : 'not present'}
                   </span>
                   {/* actions */}
@@ -965,7 +973,7 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
                     <CreateOnBridgeButton bridgeId={bid} path={path} onDone={() => void probe(bid)} />
                   ) : null}
                   <button data-debug-id={`project-detail-bridge-path-recheck-${bid}`} type="button" onClick={() => void probe(bid)} title="Re-check" aria-label="Re-check" className="shrink-0 rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="refresh" size={13} /></button>
-                  <button data-debug-id={`project-detail-bridge-path-override-${bid}`} type="button" onClick={() => setPickerBridge(isOpen ? '' : bid)} className="shrink-0 rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">{isOpen ? 'Close' : 'Override'}</button>
+                  <Button variant="secondary" size="sm" data-debug-id={`project-detail-bridge-path-override-${bid}`} onClick={() => setPickerBridge(isOpen ? '' : bid)} className="shrink-0">{isOpen ? 'Close' : 'Override'}</Button>
                   {overridden ? <button data-debug-id={`project-detail-bridge-path-reset-${bid}`} type="button" onClick={() => resetToDefault(bid)} className="shrink-0 rounded-md p-1 text-zinc-500 hover:bg-white/10 hover:text-red-300" title="Reset to default"><Icon name="close" size={14} /></button> : null}
                 </div>
                 {isOpen ? (
@@ -998,7 +1006,7 @@ function CreateOnBridgeButton({ bridgeId, path, onDone }: { bridgeId: string; pa
       type="button"
       disabled={state.isLoading}
       onClick={async () => { try { await mkdir({ bridgeId, path }).unwrap(); } catch { /* ignore */ } onDone(); }}
-      className="shrink-0 rounded-md border border-emerald-400/30 px-2 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-400/10 disabled:opacity-50"
+      className="shrink-0 rounded-md border border-emerald-400/30 px-2 py-1 text-caption font-semibold text-emerald-200 hover:bg-emerald-400/10 disabled:opacity-50"
     >
       {state.isLoading ? 'Creating…' : 'Create'}
     </button>

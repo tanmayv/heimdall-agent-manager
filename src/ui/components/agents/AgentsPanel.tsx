@@ -8,6 +8,7 @@ import {
   useListAgentTemplatesQuery,
 } from '../../api/endpoints/agents';
 import { normalizeBridgeCapabilities, useListBridgesQuery, type BridgeCapability } from '../../api/endpoints/bridgeSupport';
+import { Button, Icon, Input, PageShell, Select, StatusPill, Textarea } from '@ui';
 
 type ProviderScope = 'bridge_default' | 'same_provider' | 'per_bridge';
 type BridgeScope = 'all' | string;
@@ -66,19 +67,23 @@ export function AgentsPanel() {
   }
 
   return (
-    <div className="w-full max-w-5xl space-y-6 text-left">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><h2 className="text-xl font-semibold text-white">Agents</h2><p className="mt-1 max-w-2xl text-sm text-zinc-400">Create durable agent identities from templates, choose where they run, and optionally pin a provider while keeping Bridge defaults as the normal path.</p></div>
-        <a data-debug-id="agents-add-agent-btn" href={shellHash('/agents/new')} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">＋ Add agent</a>
-      </div>
+    <PageShell
+      title="Agents"
+      description="Create durable agent identities from templates, choose where they run, and optionally pin a provider while keeping Bridge defaults as the normal path."
+      actions={
+        <Button variant="primary" data-debug-id="agents-add-agent-btn" onClick={() => { window.location.hash = shellHash('/agents/new'); }} leading={<Icon name="plus" size={16} />}>Add agent</Button>
+      }
+    >
+      <div className="space-y-6 text-left">
       {errorMsg ? <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{errorMsg}</div> : null}
       {agentsQuery.isLoading ? <div className="animate-pulse space-y-4"><div className="h-24 rounded-xl bg-white/5" /><div className="h-24 rounded-xl bg-white/5" /></div> : agents.length === 0 ? <div className="rounded-xl border border-dashed border-white/20 p-8 text-center"><p className="text-zinc-400">No agents found.</p></div> : (
         <div className="space-y-3">{agents.map((agent: any) => {
           const id = agentIdOf(agent); const supported = Number(agent.supported_bridge_count ?? agent.supportedBridgeCount ?? 0); const active = Number(agent.active_instance_count ?? agent.activeInstanceCount ?? 0);
-          return <div key={id} data-debug-id={`agents-agent-row-${id}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 transition-colors hover:bg-white/[0.07]"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold text-white">{agent.name || agent.slug || id}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${agent.state === 'archived' ? 'bg-zinc-500/10 text-zinc-500' : 'bg-emerald-400/10 text-emerald-300'}`}>{agent.state || 'active'}</span></div><p className="mt-1 text-xs text-zinc-500">{id} · template {agent.template_id || agent.templateId || '—'} · provider {agent.default_provider || 'Bridge default'} · tier {agent.default_tier || 'Bridge default'}</p><p className="mt-1 text-xs text-zinc-500">supported Bridges <span className="text-zinc-300">{supported}</span> · running instances <span className="text-zinc-300">{active}</span></p>{agent.instructions ? <p className="mt-2 line-clamp-2 text-sm text-zinc-300">{agent.instructions}</p> : null}</div><div className="flex shrink-0 flex-wrap gap-2"><a data-debug-id={`agents-agent-open-btn-${id}`} href={shellHash(`/agents/${encodeURIComponent(id)}`)} className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10">Open</a><a data-debug-id={`agents-agent-launch-btn-${id}`} href={shellHash(`/agents/${encodeURIComponent(id)}`)} className={`rounded-lg border border-sky-400/30 px-2.5 py-1 text-xs text-sky-100 hover:bg-sky-400/10 ${agent.state === 'archived' ? 'pointer-events-none opacity-50' : ''}`}>Launch…</a><button data-debug-id={`agents-agent-archive-btn-${id}`} type="button" onClick={() => void handleArchive(id)} disabled={agent.state === 'archived'} className="rounded-lg border border-rose-400/20 px-2.5 py-1 text-xs text-rose-200 hover:bg-rose-400/10 disabled:opacity-40">Archive</button></div></div></div>;
+          return <div key={id} data-debug-id={`agents-agent-row-${id}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 transition-colors hover:bg-white/[0.07]"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold text-white">{agent.name || agent.slug || id}</h3><StatusPill tone={agent.state === 'archived' ? 'neutral' : 'success'} className="uppercase">{agent.state || 'active'}</StatusPill></div><p className="mt-1 text-xs text-zinc-500">{id} · template {agent.template_id || agent.templateId || '—'} · provider {agent.default_provider || 'Bridge default'} · tier {agent.default_tier || 'Bridge default'}</p><p className="mt-1 text-xs text-zinc-500">supported Bridges <span className="text-zinc-300">{supported}</span> · running instances <span className="text-zinc-300">{active}</span></p>{agent.instructions ? <p className="mt-2 line-clamp-2 text-sm text-zinc-300">{agent.instructions}</p> : null}</div><div className="flex shrink-0 flex-wrap gap-2"><a data-debug-id={`agents-agent-open-btn-${id}`} href={shellHash(`/agents/${encodeURIComponent(id)}`)} className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10">Open</a><a data-debug-id={`agents-agent-launch-btn-${id}`} href={shellHash(`/agents/${encodeURIComponent(id)}`)} className={`rounded-lg border border-sky-400/30 px-2.5 py-1 text-xs text-sky-100 hover:bg-sky-400/10 ${agent.state === 'archived' ? 'pointer-events-none opacity-50' : ''}`}>Launch…</a><button data-debug-id={`agents-agent-archive-btn-${id}`} type="button" onClick={() => void handleArchive(id)} disabled={agent.state === 'archived'} className="rounded-lg border border-rose-400/20 px-2.5 py-1 text-xs text-rose-200 hover:bg-rose-400/10 disabled:opacity-40">Archive</button></div></div></div>;
         })}</div>
       )}
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
@@ -106,35 +111,34 @@ export function NewAgentPage() {
     } catch (err: any) { state.setErrorMsg(String(err?.message || err || 'Failed to create agent')); }
   }
   return (
-    <div className="w-full max-w-5xl space-y-6 text-left">
-      <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:p-5">
-        <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-start">
-          <div>
-            <h2 className="text-2xl font-semibold text-white">Create agent</h2>
-            <p className="mt-1 text-sm text-zinc-500">Pick a name, persona, Bridge scope, and preferred tier. Provider can stay on Bridge default.</p>
-          </div>
-          <a data-debug-id="agents-create-header-cancel-btn" href={shellHash('/agents')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</a>
-        </div>
-        {state.noCapabilities ? <div data-debug-id="agents-no-capabilities-warning" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">No online Bridge reports provider capabilities. Open <a data-debug-id="agents-no-capabilities-bridges-link" className="underline" href={shellHash('/settings/bridges')}>Bridges</a> or <a data-debug-id="agents-no-capabilities-providers-link" className="underline" href={shellHash('/settings/providers')}>Providers</a> to connect/configure one before creating agents.</div> : null}
-        {state.errorMsg ? <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{state.errorMsg}</div> : null}
-      </div>
+    <PageShell
+      title="Create agent"
+      description="Pick a name, persona, Bridge scope, and preferred tier. Provider can stay on Bridge default."
+      actions={
+        <a data-debug-id="agents-create-header-cancel-btn" href={shellHash('/agents')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</a>
+      }
+    >
+      <div className="space-y-6 text-left">
+      {state.noCapabilities ? <div data-debug-id="agents-no-capabilities-warning" className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">No online Bridge reports provider capabilities. Open <a data-debug-id="agents-no-capabilities-bridges-link" className="underline" href={shellHash('/settings/bridges')}>Bridges</a> or <a data-debug-id="agents-no-capabilities-providers-link" className="underline" href={shellHash('/settings/providers')}>Providers</a> to connect/configure one before creating agents.</div> : null}
+      {state.errorMsg ? <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{state.errorMsg}</div> : null}
       <form onSubmit={handleSubmit} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 sm:p-5">
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block text-sm text-zinc-300">Name (agent id)<input data-debug-id="agents-create-name-input" value={state.name} onChange={(e) => state.setName(e.target.value)} placeholder="Code Reviewer" className="mt-1 min-h-[44px] w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
-          <label className="block text-sm text-zinc-300">Template / persona<select data-debug-id="agents-create-template-select" value={state.templateId} onChange={(e) => state.setTemplateId(e.target.value)} className="mt-1 min-h-[44px] w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Choose template</option>{state.templates.map((template: any) => <option key={template.id} value={template.id}>{template.name || template.id}</option>)}</select></label>
-          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 sm:col-span-2"><button data-debug-id="agents-create-instructions-toggle-btn" type="button" onClick={() => state.setShowInstructions(!state.showInstructions)} className="min-h-[44px] rounded-xl px-2 text-sm font-medium text-zinc-200 hover:bg-white/10 hover:text-white">{state.showInstructions ? 'Hide' : 'Customize'} instructions</button>{state.showInstructions ? <textarea data-debug-id="agents-create-instructions-input" value={state.instructions} onChange={(e) => state.setInstructions(e.target.value)} placeholder="Optional additions layered on the selected template." className="mt-2 h-28 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /> : null}</div>
-          <label className="block text-sm text-zinc-300">Where it runs<select data-debug-id="agents-create-bridge-scope" value={state.bridgeScope} onChange={(e) => state.setBridgeScope(e.target.value)} className="mt-1 min-h-[44px] w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="all">All online Bridges with capabilities</option>{state.capableOnlineBridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)}</option>)}</select></label>
-          <label className="block text-sm text-zinc-300">Provider<select data-debug-id="agents-create-provider-scope" value={state.providerScope} onChange={(e) => state.setProviderScope(e.target.value as ProviderScope)} className="mt-1 min-h-[44px] w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="bridge_default">Use Bridge default</option><option value="same_provider">Same provider on selected Bridges</option><option value="per_bridge">Per-Bridge (configure after create)</option></select></label>
-          {state.providerScope === 'same_provider' ? <label className="block text-sm text-zinc-300">Provider profile<select data-debug-id="agents-create-provider-select" value={state.provider} onChange={(e) => state.setProvider(e.target.value)} className="mt-1 min-h-[44px] w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Choose provider</option>{state.providerOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></label> : <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-sm text-zinc-500">{state.providerScope === 'per_bridge' ? 'Per-Bridge provider overrides can be set on the agent detail page after create.' : 'No provider is stored; each Bridge resolves its configured default.'}</div>}
-          <label className="block text-sm text-zinc-300">Preferred tier<select data-debug-id="agents-create-tier-select" value={state.tier} onChange={(e) => state.setTier(e.target.value)} className="mt-1 min-h-[44px] w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{(state.tierOptions.length ? state.tierOptions : tierOrder).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+          <label className="block text-sm text-zinc-300">Name (agent id)<Input data-debug-id="agents-create-name-input" value={state.name} onChange={state.setName} placeholder="Code Reviewer" width="full" className="mt-1 min-h-[44px]" /></label>
+          <label className="block text-sm text-zinc-300">Template / persona<Select data-debug-id="agents-create-template-select" value={state.templateId} onChange={state.setTemplateId} width="full" className="mt-1 min-h-[44px]"><option value="">Choose template</option>{state.templates.map((template: any) => <option key={template.id} value={template.id}>{template.name || template.id}</option>)}</Select></label>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 sm:col-span-2"><Button variant="ghost" data-debug-id="agents-create-instructions-toggle-btn" onClick={() => state.setShowInstructions(!state.showInstructions)} className="min-h-[44px]">{state.showInstructions ? 'Hide' : 'Customize'} instructions</Button>{state.showInstructions ? <Textarea data-debug-id="agents-create-instructions-input" value={state.instructions} onChange={state.setInstructions} placeholder="Optional additions layered on the selected template." width="full" className="mt-2 h-28" /> : null}</div>
+          <label className="block text-sm text-zinc-300">Where it runs<Select data-debug-id="agents-create-bridge-scope" value={state.bridgeScope} onChange={state.setBridgeScope} width="full" className="mt-1 min-h-[44px]"><option value="all">All online Bridges with capabilities</option>{state.capableOnlineBridges.map((bridge: any) => <option key={bridgeId(bridge)} value={bridgeId(bridge)}>{bridge.label || bridge.machine_hostname || bridgeId(bridge)}</option>)}</Select></label>
+          <label className="block text-sm text-zinc-300">Provider<Select data-debug-id="agents-create-provider-scope" value={state.providerScope} onChange={(value) => state.setProviderScope(value as ProviderScope)} width="full" className="mt-1 min-h-[44px]"><option value="bridge_default">Use Bridge default</option><option value="same_provider">Same provider on selected Bridges</option><option value="per_bridge">Per-Bridge (configure after create)</option></Select></label>
+          {state.providerScope === 'same_provider' ? <label className="block text-sm text-zinc-300">Provider profile<Select data-debug-id="agents-create-provider-select" value={state.provider} onChange={state.setProvider} width="full" className="mt-1 min-h-[44px]"><option value="">Choose provider</option>{state.providerOptions.map((item) => <option key={item} value={item}>{item}</option>)}</Select></label> : <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-sm text-zinc-500">{state.providerScope === 'per_bridge' ? 'Per-Bridge provider overrides can be set on the agent detail page after create.' : 'No provider is stored; each Bridge resolves its configured default.'}</div>}
+          <label className="block text-sm text-zinc-300">Preferred tier<Select data-debug-id="agents-create-tier-select" value={state.tier} onChange={state.setTier} width="full" className="mt-1 min-h-[44px]">{(state.tierOptions.length ? state.tierOptions : tierOrder).map((item) => <option key={item} value={item}>{item}</option>)}</Select></label>
         </div>
         <div className="mt-4 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-500">Will enable <span className="text-zinc-200">{state.supportPreviewCount}</span> Bridge{state.supportPreviewCount === 1 ? '' : 's'} that support the selected provider. Tier remains a preferred default; each Bridge can run any configured tier for its providers.</div>
         <div className="z-10 mt-5 flex flex-col-reverse gap-2 rounded-2xl border border-white/10 bg-[#0d0f14]/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:sticky md:bottom-0 sm:flex-row sm:justify-end">
           <a data-debug-id="agents-create-footer-cancel-btn" href={shellHash('/agents')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</a>
-          <button data-debug-id="agents-create-submit-btn" type="submit" disabled={isCreating || isEnabling || !state.name.trim() || !state.templateId || state.noCapabilities || state.supportPreviewCount === 0} className="min-h-[44px] rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:opacity-50">{isCreating || isEnabling ? 'Creating…' : 'Create agent'}</button>
+          <Button variant="primary" data-debug-id="agents-create-submit-btn" type="submit" disabled={isCreating || isEnabling || !state.name.trim() || !state.templateId || state.noCapabilities || state.supportPreviewCount === 0} className="min-h-[44px]">{isCreating || isEnabling ? 'Creating…' : 'Create agent'}</Button>
         </div>
       </form>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 

@@ -24,46 +24,12 @@ import {
   resubscribeWithCurrentKey,
 } from '../../services/pushSubscriptionService';
 import { showToast } from '../../store/toastSlice';
+import { Button, Panel, PageShell, Toggle } from '@ui';
 
 const CATEGORY_LABELS: Array<{ key: NotificationCategory; label: string; description: string }> = [
   { key: 'chat', label: 'Chat messages', description: 'New messages directed to you, nudges, and mentions.' },
   { key: 'attention', label: 'Needs attention', description: 'Agent questions/approvals and pending merge decisions.' },
 ];
-
-function Toggle({
-  checked,
-  onChange,
-  disabled,
-  debugId,
-  label,
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled?: boolean;
-  debugId: string;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      data-debug-id={debugId}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
-        checked ? 'bg-sky-400' : 'bg-white/15'
-      } ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}
-    >
-      <span
-        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-0.5'
-        }`}
-      />
-    </button>
-  );
-}
 
 // H11: the sample plan the Send-test-notification button fires through the real
 // native path. Exported so tests can assert exactly what is shown.
@@ -262,16 +228,12 @@ export default function NotificationsPanel() {
           : 'Permission not requested yet. Turn on notifications to grant permission.';
 
   return (
-    <div data-debug-id="settings-notifications-panel" className="w-full max-w-3xl space-y-5 text-left">
-      <div>
-        <h2 className="text-xl font-semibold text-white">Notifications</h2>
-        <p className="mt-1 text-sm text-zinc-400">
-          Get a native browser notification for important events while this tab is open but not focused. When the tab is
-          focused you will keep seeing in-app toasts instead.
-        </p>
-      </div>
-
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+    <PageShell
+      title="Notifications"
+      description="Get a native browser notification for important events while this tab is open but not focused. When the tab is focused you will keep seeing in-app toasts instead."
+    >
+      <div data-debug-id="settings-notifications-panel" className="space-y-5 text-left">
+      <Panel>
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="font-semibold text-zinc-100">Enable browser notifications</div>
@@ -281,13 +243,13 @@ export default function NotificationsPanel() {
             checked={state.enabled}
             onChange={onMasterToggle}
             disabled={masterDisabled}
-            debugId="settings-notifications-master-toggle"
-            label="Enable browser notifications"
+            data-debug-id="settings-notifications-master-toggle"
+            aria-label="Enable browser notifications"
           />
         </div>
-      </div>
+      </Panel>
 
-      <div className={`rounded-2xl border border-white/10 bg-black/20 p-4 ${state.enabled ? '' : 'opacity-50'}`}>
+      <Panel className={state.enabled ? '' : 'opacity-50'}>
         <div className="mb-3 text-sm font-semibold text-zinc-200">Categories</div>
         <div className="space-y-3">
           {CATEGORY_LABELS.map((cat) => (
@@ -300,15 +262,15 @@ export default function NotificationsPanel() {
                 checked={categoryEnabled(state, cat.key)}
                 onChange={(next) => dispatch(notificationCategorySet({ category: cat.key, enabled: next }))}
                 disabled={!state.enabled}
-                debugId={`settings-notifications-category-${cat.key}`}
-                label={cat.label}
+                data-debug-id={`settings-notifications-category-${cat.key}`}
+                aria-label={cat.label}
               />
             </div>
           ))}
         </div>
-      </div>
+      </Panel>
 
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+      <Panel>
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="font-semibold text-zinc-100">Test notifications</div>
@@ -317,18 +279,18 @@ export default function NotificationsPanel() {
               granted (and your tab is in the background), plus an in-app toast every time so you always see a result.
             </p>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="primary"
             data-debug-id="settings-notifications-test-btn"
             onClick={() => void onSendTest()}
-            className="shrink-0 rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300"
+            className="shrink-0"
           >
             Send test notification
-          </button>
+          </Button>
         </div>
-      </div>
+      </Panel>
 
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+      <Panel>
         <div className="mb-3">
           <div className="font-semibold text-zinc-100">Web Push diagnostics</div>
           <p className="mt-1 text-sm text-zinc-400">
@@ -392,23 +354,20 @@ export default function NotificationsPanel() {
             </div>
 
             <div className="flex justify-end pt-1">
-              <button
-                type="button"
+              <Button
+                variant="primary"
                 data-debug-id="settings-push-resubscribe-btn"
                 onClick={() => void onResubscribe()}
                 disabled={resubscribing}
-                className={`shrink-0 rounded-xl px-4 py-2 text-sm font-semibold ${
-                  resubscribing
-                    ? 'cursor-not-allowed bg-white/10 text-zinc-400'
-                    : 'bg-sky-400 text-black hover:bg-sky-300'
-                }`}
+                className="shrink-0"
               >
                 {resubscribing ? 'Re-subscribing…' : 'Re-subscribe with current key'}
-              </button>
+              </Button>
             </div>
           </div>
         )}
+      </Panel>
       </div>
-    </div>
+    </PageShell>
   );
 }

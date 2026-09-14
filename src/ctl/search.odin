@@ -219,7 +219,7 @@ json_field_string :: proc(obj: json.Object, key: string) -> string {
 }
 
 // SEARCH_GROUP_ORDER mirrors the server's group ordering so the CLI is stable.
-SEARCH_GROUP_ORDER :: [?]string{"conversation", "agent", "agent_instance", "task-chain", "task", "comment", "project", "artifact", "memory", "skill"}
+SEARCH_GROUP_ORDER :: [?]string{"conversation", "message", "agent", "agent_instance", "task-chain", "task", "comment", "project", "artifact", "memory", "skill"}
 
 ctl_print_search_rows :: proc(rows: []Search_Row, query: string) {
 	if len(rows) == 0 {
@@ -266,6 +266,7 @@ search_type_in_order :: proc(t: string) -> bool {
 search_group_label :: proc(t: string) -> string {
 	switch t {
 	case "conversation":   return "Conversations"
+	case "message":        return "Messages"
 	case "agent":          return "Agents"
 	case "agent_instance": return "Agent instances"
 	case "task-chain":     return "Task chains"

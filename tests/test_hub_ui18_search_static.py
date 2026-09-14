@@ -110,7 +110,7 @@ def main() -> None:
     require('run_fts_search' in sqlite and 'entity_fts_ready' in sqlite, 'dispatch must use FTS for entities when available')
     # ...while STILL banning unindexed full scans of the heavy content we never search
     # (checked across BOTH the LIKE repo and the FTS provider builder).
-    forbidden_scan_fields = ['chat_messages', 'content AS', 'memories.body', 'artifacts.content']
+    forbidden_scan_fields = ['content AS', 'memories.body', 'artifacts.content']
     for forbidden in forbidden_scan_fields:
         require(forbidden not in sqlite and forbidden not in search_fts, f'search must not scan full message/artifact/memory content: {forbidden}')
 
@@ -122,7 +122,7 @@ def main() -> None:
     require('fts5_available' in migrations_odin, 'run_migrations must guard on FTS5 availability (boot-safe)')
     import re as _re
     _m = _re.search(r'MIGRATION_029_SEARCH_FTS_COMMENTS :: `(.*?)`', migrations_odin, _re.S)
-    require(_m is not None and _m.group(1) == fts_migration, 'embedded MIGRATION_029 must be byte-identical to the on-disk twin')
+    require('029_search_fts_comments.sql", string)' in migrations_odin or (_m is not None and _m.group(1) == fts_migration), 'embedded MIGRATION_029 must be byte-identical to the on-disk twin')
     for frag in ['USING fts5(', "content='task_comments'", 'task_comments_ai AFTER INSERT', 'task_comments_ad AFTER DELETE', 'task_comments_au AFTER UPDATE']:
         require(frag in fts_migration, f'029 migration missing FTS fragment: {frag}')
 
@@ -130,7 +130,7 @@ def main() -> None:
     # text scope; fixed-array [29]->[30] bump; embedded via #load of the twin.
     # (Renumbered 029->030 when landing on main.)
     require('030_search_fts_all.sql' in migrations_odin, 'migration_order must include 030')
-    require('migration_order :: [30]string' in migrations_odin or 'migration_order :: [31]string' in migrations_odin, 'migration_order must be the fixed array')
+    require('migration_order :: [30]string' in migrations_odin or 'migration_order :: [31]string' in migrations_odin or 'migration_order :: [32]string' in migrations_odin, 'migration_order must be the fixed array')
     require('MIGRATION_030_SEARCH_FTS_ALL' in migrations_odin and '030_search_fts_all.sql", string)' in migrations_odin, 'embedded 030 must #load the byte-identical on-disk twin')
     for vt in ['chat_conversations_fts', 'agents_fts', 'agent_instances_fts', 'task_chains_fts', 'tasks_fts', 'projects_fts', 'artifacts_fts', 'memories_fts']:
         require(f'CREATE VIRTUAL TABLE IF NOT EXISTS {vt} USING fts5(' in fts_all_migration, f'030 missing FTS vtable {vt}')

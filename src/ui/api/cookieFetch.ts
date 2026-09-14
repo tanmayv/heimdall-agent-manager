@@ -27,6 +27,24 @@ export async function cookieJsonFetch(path: string): Promise<any> {
   return body?.data !== undefined ? body.data : body;
 }
 
+// Like cookieJsonFetch but returns the FULL response envelope ({data, page, meta})
+// instead of unwrapping `data`. Needed by paginated endpoints (e.g. search) whose
+// cursor/has_more live in the `page` sibling of `data`, which unwrapping strips.
+export async function cookieJsonFetchEnvelope(path: string): Promise<any> {
+  const res = await fetch(apiUrl(path), { credentials: 'include' });
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try {
+      const text = await res.text();
+      const errBody = JSON.parse(text);
+      if (errBody?.error?.message) msg = errBody.error.message;
+      else if (errBody?.message) msg = errBody.message;
+    } catch (e) {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 export async function cookieMutation(path: string, method: string = 'POST', data?: any): Promise<any> {
   const res = await fetch(apiUrl(path), {
     method,

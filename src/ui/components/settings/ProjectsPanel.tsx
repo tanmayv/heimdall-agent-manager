@@ -18,7 +18,7 @@ import {
 } from "../../api/endpoints/bridgeFig";
 import BridgeDirectoryPicker from "../BridgeDirectoryPicker";
 import FigDirectoryPicker from "../FigDirectoryPicker";
-import Icon from "../Icon";
+import { Badge, Button, Icon, Input, PageShell, SectionHeader, Select, StatusDot, Text } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -317,29 +317,26 @@ export default function ProjectsPanel() {
   }
 
   return (
-    <div data-debug-id="settings-projects-panel" className="w-full max-w-4xl space-y-6 text-left">
-      <div>
-        <h2 className="text-xl font-semibold text-white">Projects</h2>
-        <p className="mt-1 text-sm text-zinc-400">Manage projects, default workspace paths, and bridge path overrides.</p>
-      </div>
-
+    <PageShell
+      title="Projects"
+      description="Manage projects, default workspace paths, and bridge path overrides."
+    >
+      <div data-debug-id="settings-projects-panel" className="space-y-6 text-left">
       {/* Project Creation Form */}
       <div data-debug-id="settings-project-create-form" className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-zinc-200 uppercase tracking-wide">Create New Project</h3>
-        </div>
-
+        <Text as="h3" role="overline" tone="primary">Create New Project</Text>
         <form onSubmit={handleCreateProject} className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1">Project Name *</label>
-              <input
+              <Input
                 data-debug-id="settings-project-name-input"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={setName}
                 placeholder={projectType === "fig" ? "e.g. Fig Workspace Project" : "Website Rewrite"}
                 required
-                className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                width="full"
+                className="min-h-[44px]"
               />
             </div>
 
@@ -436,39 +433,42 @@ export default function ProjectsPanel() {
 
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
-            <input
+            <Input
               data-debug-id="settings-project-description-input"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={setDescription}
               placeholder="Frontend migration and backend refactoring project"
-              className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+              width="full"
+              className="min-h-[44px]"
             />
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1">Repository URL</label>
-              <input
+              <Input
                 data-debug-id="settings-project-repo-input"
                 value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
+                onChange={setRepoUrl}
                 placeholder={projectType === "fig" ? "//depot/google3" : "https://github.com/org/repo"}
-                className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                width="full"
+                className="min-h-[44px]"
               />
             </div>
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1">VCS Kind</label>
-              <select
+              <Select
                 data-debug-id="settings-project-vcs-select"
                 value={vcsKind}
-                onChange={(e) => setVcsKind(e.target.value)}
-                className="w-full min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                onChange={setVcsKind}
+                width="full"
+                className="min-h-[44px]"
               >
                 <option value="none">none</option>
                 <option value="git">git</option>
                 <option value="jj">jj</option>
                 <option value="piper">piper</option>
-              </select>
+              </Select>
             </div>
           </div>
 
@@ -478,14 +478,15 @@ export default function ProjectsPanel() {
             </div>
           ) : null}
 
-          <button
+          <Button
+            variant="primary"
             data-debug-id="settings-project-create-btn"
             type="submit"
             disabled={!name.trim() || (projectType === "local" ? !defaultPath.trim() : !workspaceName.trim()) || creating}
-            className="min-h-[44px] w-full rounded-xl bg-sky-400 hover:bg-sky-300 px-4 py-2 text-sm font-semibold text-black disabled:opacity-50 sm:w-auto transition"
+            className="min-h-[44px] w-full sm:w-auto"
           >
             {creating ? "Creating…" : "Create project"}
-          </button>
+          </Button>
         </form>
       </div>
 
@@ -711,17 +712,17 @@ export default function ProjectsPanel() {
               ← Back to all projects
             </button>
             <div className="flex items-center gap-2">
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 data-debug-id={`settings-project-edit-btn-${selectedProjectId}`}
-                type="button"
                 onClick={() => {
                   setIsEditing((prev) => !prev);
                   setShowEditLocalPicker(false);
                 }}
-                className="rounded-xl border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/10"
               >
                 {isEditing ? "Cancel Edit" : "Edit Project"}
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -731,46 +732,48 @@ export default function ProjectsPanel() {
             <div className="space-y-6">
               {/* Project Main Details Form / Viewer */}
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4 space-y-4">
-                <h3 className="text-base font-semibold text-white flex items-center justify-between">
-                  <span>{selectedProject.name}</span>
-                  {selectedProject.is_default_conversations ? (
-                    <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[10px] text-sky-300">
-                      Default Project
-                    </span>
-                  ) : null}
-                </h3>
+                <SectionHeader
+                  level="h3"
+                  title={selectedProject.name}
+                  actions={
+                    selectedProject.is_default_conversations ? (
+                      <Badge tone="info">Default Project</Badge>
+                    ) : undefined
+                  }
+                />
 
                 {isEditing ? (
                   <div className="space-y-3">
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">Project Name</label>
-                        <input
+                        <Input
                           value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                          onChange={setEditName}
+                          width="full"
                         />
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path</label>
                         <div className="flex items-center gap-2">
-                          <input
+                          <Input
                             data-debug-id={`settings-project-edit-default-path-input-${selectedProjectId}`}
                             value={editDefaultPath}
-                            onChange={(e) => setEditDefaultPath(e.target.value)}
-                            className="flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400 font-mono"
+                            onChange={setEditDefaultPath}
+                            width="full"
+                            className="flex-1 font-mono"
                           />
                           {editProjectType === "local" ? (
-                            <button
+                            <Button
                               data-debug-id="settings-project-edit-local-browse-btn"
-                              type="button"
+                              variant="secondary"
+                              size="sm"
                               disabled={!selectedBridgeId}
                               onClick={() => setShowEditLocalPicker((v) => !v)}
-                              className="shrink-0 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 disabled:opacity-40 flex items-center gap-1.5"
+                              leading={<Icon name="folder" size={14} />}
                             >
-                              <Icon name="folder" size={14} />
-                              <span>{showEditLocalPicker ? "Hide Browser" : "Browse…"}</span>
-                            </button>
+                              {showEditLocalPicker ? "Hide Browser" : "Browse…"}
+                            </Button>
                           ) : null}
                         </div>
                       </div>
@@ -816,34 +819,34 @@ export default function ProjectsPanel() {
 
                     <div>
                       <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
-                      <input
+                      <Input
                         value={editDescription}
-                        onChange={(e) => setEditDescription(e.target.value)}
-                        className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                        onChange={setEditDescription}
+                        width="full"
                       />
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">Repo URL</label>
-                        <input
+                        <Input
                           value={editRepoUrl}
-                          onChange={(e) => setEditRepoUrl(e.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                          onChange={setEditRepoUrl}
+                          width="full"
                         />
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">VCS Kind</label>
-                        <select
+                        <Select
                           value={editVcsKind}
-                          onChange={(e) => setEditVcsKind(e.target.value)}
-                          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+                          onChange={setEditVcsKind}
+                          width="full"
                         >
                           <option value="none">none</option>
                           <option value="git">git</option>
                           <option value="jj">jj</option>
                           <option value="piper">piper</option>
-                        </select>
+                        </Select>
                       </div>
                     </div>
 
@@ -852,22 +855,22 @@ export default function ProjectsPanel() {
                     ) : null}
 
                     <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         onClick={() => { setIsEditing(false); setShowEditLocalPicker(false); }}
-                        className="rounded-xl border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/10"
                       >
                         Cancel
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
                         data-debug-id={`settings-project-save-btn-${selectedProjectId}`}
-                        type="button"
                         onClick={() => void handleSaveProject()}
                         disabled={editSaving || !editName.trim() || (editProjectType === "local" && !editDefaultPath.trim()) || (editProjectType === "fig" && !editWorkspaceName.trim())}
-                        className="rounded-xl bg-sky-400 hover:bg-sky-300 px-4 py-1.5 text-xs font-semibold text-black disabled:opacity-50 transition"
                       >
                         {editSaving ? "Saving…" : "Save project"}
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ) : (
@@ -898,7 +901,7 @@ export default function ProjectsPanel() {
               {/* Per-Bridge Paths Editor */}
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
                 <div>
-                  <h4 className="text-sm font-semibold text-zinc-200 uppercase tracking-wide">Per-Bridge Paths Override</h4>
+                  <Text as="h4" role="overline" tone="primary">Per-Bridge Paths Override</Text>
                   <p className="text-xs text-zinc-500 mt-0.5">Configure custom filesystem paths for specific bridges when they differ from the default path.</p>
                 </div>
 
@@ -935,7 +938,7 @@ export default function ProjectsPanel() {
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
-                              <span className={`h-2 w-2 rounded-full ${isOnline ? "bg-emerald-400" : "bg-zinc-600"}`} />
+                              <StatusDot tone={isOnline ? "success" : "neutral"} label={isOnline ? "Online" : "Offline"} />
                               <span className="text-sm font-medium text-zinc-200">{bridgeName}</span>
                               <span className="text-xs text-zinc-500">({bridgeId})</span>
                             </div>
@@ -946,87 +949,85 @@ export default function ProjectsPanel() {
                                 {isOnline ? "online" : "offline"}
                               </span>
                               {existingOverride?.is_validated ? (
-                                <span className="text-emerald-400 text-[11px] font-medium">✓ Validated</span>
+                                <span className="text-emerald-400 text-caption font-medium">✓ Validated</span>
                               ) : existingOverride?.validation_error ? (
-                                <span className="text-red-400 text-[11px] font-medium" title={existingOverride.validation_error}>⚠ Validation failed</span>
+                                <span className="text-red-400 text-caption font-medium" title={existingOverride.validation_error}>⚠ Validation failed</span>
                               ) : existingOverride ? (
-                                <span className="text-amber-300 text-[11px]">Not validated</span>
+                                <span className="text-amber-300 text-caption">Not validated</span>
                               ) : (
-                                <span className="text-zinc-500 text-[11px]">Using default path</span>
+                                <span className="text-zinc-500 text-caption">Using default path</span>
                               )}
                             </div>
                           </div>
 
                           {/* Path Input */}
                           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                            <input
+                            <Input
+                              size="sm"
                               data-debug-id={`settings-project-bridge-path-input-${bridgeId}`}
                               value={currentInputValue}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setBridgePathInputs((prev) => ({ ...prev, [bridgeId]: val }));
-                              }}
+                              onChange={(val) => setBridgePathInputs((prev) => ({ ...prev, [bridgeId]: val }))}
                               placeholder={`Default: ${selectedProject.default_path}`}
-                              className="flex-1 rounded-xl border border-white/10 bg-black/40 px-3 py-1.5 text-xs text-zinc-100 outline-none focus:border-sky-400 font-mono"
+                              className="flex-1 font-mono"
                             />
 
                             <div className="flex items-center gap-1.5 shrink-0">
                               {existingOverride ? (
                                 <>
-                                  <button
+                                  <Button
+                                    variant="primary"
+                                    size="sm"
                                     data-debug-id={`settings-project-bridge-path-save-btn-${bridgeId}`}
-                                    type="button"
                                     onClick={() => void handleSaveBridgePath(bridgeId, selectedProject.default_path, existingOverride?.path)}
                                     disabled={Boolean(busyState)}
-                                    className="rounded-lg bg-sky-400/10 border border-sky-400/30 px-2.5 py-1 text-xs text-sky-200 hover:bg-sky-400/20 disabled:opacity-50 font-medium"
                                   >
                                     {busyState === "save" ? "Saving…" : "Save"}
-                                  </button>
+                                  </Button>
 
-                                  <button
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
                                     data-debug-id={`settings-project-bridge-path-validate-btn-${bridgeId}`}
-                                    type="button"
                                     onClick={() => void handleValidateBridgePath(bridgeId)}
                                     disabled={!isOnline || Boolean(busyState)}
                                     title={!isOnline ? "Bridge is offline" : "Validate path on bridge"}
-                                    className="rounded-lg bg-white/10 border border-white/10 px-2.5 py-1 text-xs text-zinc-200 hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
                                   >
                                     {busyState === "validate" ? "Validating…" : "Validate"}
-                                  </button>
+                                  </Button>
 
-                                  <button
+                                  <Button
+                                    variant="danger"
+                                    size="sm"
                                     data-debug-id={`settings-project-bridge-path-remove-btn-${bridgeId}`}
-                                    type="button"
                                     onClick={() => void handleRemoveBridgePath(bridgeId)}
                                     disabled={Boolean(busyState)}
-                                    className="rounded-lg border border-red-400/20 bg-red-400/5 px-2.5 py-1 text-xs text-red-300 hover:bg-red-400/10 disabled:opacity-50 font-medium"
                                   >
                                     {busyState === "remove" ? "Removing…" : "Remove"}
-                                  </button>
+                                  </Button>
                                 </>
                               ) : (
-                                <button
+                                <Button
+                                  variant="primary"
+                                  size="sm"
                                   data-debug-id={`settings-project-bridge-path-set-btn-${bridgeId}`}
-                                  type="button"
                                   onClick={() => void handleSetBridgePath(bridgeId, selectedProject.default_path)}
                                   disabled={Boolean(busyState) || !selectedProject.default_path}
                                   title="Set an override seeded with the project's default path"
-                                  className="rounded-lg bg-sky-400/10 border border-sky-400/30 px-2.5 py-1 text-xs text-sky-200 hover:bg-sky-400/20 disabled:opacity-50 font-medium"
                                 >
                                   {busyState === "set" ? "Setting…" : "Set"}
-                                </button>
+                                </Button>
                               )}
                             </div>
                           </div>
 
                           {!isOnline ? (
-                            <div className="text-[11px] text-amber-300/80 flex items-center gap-1">
+                            <div className="text-caption text-amber-300/80 flex items-center gap-1">
                               ⚠ Bridge is offline. Cannot validate path until bridge connects.
                             </div>
                           ) : null}
 
                           {actionError ? (
-                            <div className="text-[11px] text-red-300">{actionError}</div>
+                            <div className="text-caption text-red-300">{actionError}</div>
                           ) : null}
                         </div>
                       );
@@ -1106,17 +1107,18 @@ export default function ProjectsPanel() {
                       ) : null}
                     </div>
 
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       data-debug-id={`settings-project-open-btn-${projectId}`}
-                      type="button"
                       onClick={() => {
                         setSelectedProjectId(projectId);
                         setIsEditing(false);
                       }}
-                      className="shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-sky-400 hover:bg-sky-400 hover:text-black transition"
+                      className="shrink-0"
                     >
                       Open &gt;
-                    </button>
+                    </Button>
                   </div>
                 );
               })}
@@ -1124,6 +1126,7 @@ export default function ProjectsPanel() {
           )}
         </div>
       )}
-    </div>
+      </div>
+    </PageShell>
   );
 }

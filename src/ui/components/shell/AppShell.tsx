@@ -4,8 +4,8 @@ import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
-import CommandPalette from '../command-palette/CommandPalette';
 import Icon, { type IconName } from '../Icon';
+import { CommandPalette, PageShell, StatusDot } from '@ui';
 import { useViewport, MobileTabBar } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
@@ -15,7 +15,7 @@ import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListSidebarConversationsQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { useGetAgentsLiveQuery, type LiveProject } from '../../api/endpoints/agentsLive';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
-import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
+import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
@@ -127,6 +127,20 @@ function routeFromLocation(): string {
   const path = getRoutePathname();
   if (!path || path === '/' || path === '/index.html') return '/conversations';
   return path;
+}
+
+// Deep-link focus target for a conversation message: parse `?msg=<message_id>` from
+// the hash search so a `message` search hit (/conversations/:id?msg=:mid) can scroll
+// to + highlight that message. Empty when absent. Tracked as its own state because
+// routeFromLocation() strips the query, so a msg-only change would not re-render.
+function focusMessageFromLocation(): string {
+  const search = getRouteSearch();
+  if (!search) return '';
+  try {
+    return new URLSearchParams(search.startsWith('?') ? search.slice(1) : search).get('msg') || '';
+  } catch {
+    return '';
+  }
 }
 
 function isRouteActive(currentPath: string, itemPath: string): boolean {
@@ -556,7 +570,18 @@ const DOT_COLOR_CLASSES: Record<string, { solid: string; half: string }> = {
   zinc: { solid: 'bg-zinc-500', half: 'bg-zinc-500/60' },
 };
 
-function StatusDot({
+/**
+ * BridgeLiveDot — the sidebar rail's per-conversation liveness dot.
+ * ------------------------------------------------------------------
+ * DELIBERATE EXCEPTION to the @ui `StatusDot` primitive (EL-050): its color
+ * encodes WHICH bridge a running session is on (bridgeColorSlot's identity
+ * palette), not a health tone, and it carries a running/working animation
+ * (bounce) the primitive intentionally doesn't. Health-tone dots elsewhere use
+ * `@ui` StatusDot + `runtimeStatusToTone`; this one stays bespoke because the
+ * bridge-identity coloring is load-bearing in the rail. Renamed off "StatusDot"
+ * to remove the name collision with the primitive.
+ */
+function BridgeLiveDot({
   bridgeId,
   runtimeStatus,
   activityStatus,
@@ -708,7 +733,7 @@ function ProjectGroupItem({
                     href={shellHash(`/conversations/${encodeURIComponent(conversation.agentInstanceId)}`)}
                     className={`flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] transition ${isSelected ? 'bg-white/[0.06] text-white' : 'text-zinc-400 hover:bg-white/[0.06] hover:text-white'}`}
                   >
-                    <StatusDot
+                    <BridgeLiveDot
                       bridgeId={conversation.bridgeId}
                       runtimeStatus={conversation.runtimeStatus}
                       activityStatus={conversation.activityStatus}
@@ -755,7 +780,7 @@ function ProjectConversationTree({
         <span>Active</span>
         {loading ? <span data-debug-id="sidebar-project-agent-session-loading" className="normal-case tracking-normal text-zinc-600">Loading…</span> : null}
       </div>
-      {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-[11px] leading-4 text-red-100">{error}</div> : null}
+      {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-caption leading-4 text-red-100">{error}</div> : null}
       {!loading && !error && groups.length === 0 ? (
         <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-zinc-600">No running agents. Start one with New chat.</div>
       ) : null}
@@ -928,9 +953,11 @@ function DefaultsSettingsPanel() {
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const agents = agentsQuery.data?.agents || [];
   return (
-    <div data-debug-id="settings-defaults-panel" className="w-full max-w-4xl space-y-4 text-left">
-      <h2 className="text-xl font-semibold text-white">Defaults</h2>
-      <p className="text-sm text-zinc-400">Default-agent choices are managed from available durable identities.</p>
+    <PageShell
+      title="Defaults"
+      description="Default-agent choices are managed from available durable identities."
+    >
+      <div data-debug-id="settings-defaults-panel" className="space-y-4 text-left">
       {agentsQuery.isLoading ? (
         <div className="text-sm text-zinc-500">Loading agents…</div>
       ) : (
@@ -950,11 +977,12 @@ function DefaultsSettingsPanel() {
           })}
         </div>
       )}
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
-function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: { path: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
+function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, conversations = [] }: { path: string; focusMessageId?: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
   const description = routeDescription(path);
@@ -984,7 +1012,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
             position, menus) resets synchronously instead of the previous
             conversation's content painting for a frame and then swapping +
             re-scrolling. The RTK Query cache still makes revisits fast. */}
-        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} />
+        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
       </main>
     );
   }
@@ -1062,6 +1090,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
 function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: string }) {
   const [collapsed, setCollapsed] = useState(false);
   const [path, setPath] = useState(routeFromLocation);
+  const [focusMessageId, setFocusMessageId] = useState(focusMessageFromLocation);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
@@ -1172,7 +1201,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   };
 
   useEffect(() => {
-    const update = () => setPath(routeFromLocation());
+    const update = () => { setPath(routeFromLocation()); setFocusMessageId(focusMessageFromLocation()); };
     window.addEventListener('hashchange', update);
     window.addEventListener('popstate', update);
     update();
@@ -1248,9 +1277,16 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             {secondary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} />)}
           </nav>
           <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${collapsed ? 'justify-center' : ''}`}>
-            <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-[11px] font-bold text-zinc-300`}>
+            <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-caption font-bold text-zinc-300`}>
               {(displayName || 'U').slice(0, 1).toUpperCase()}
-              <span className={`absolute ml-5 mt-5 h-2 w-2 rounded-full ring-2 ring-[#101010] ${wsConnected ? 'bg-emerald-400' : wsStatus === 'error' ? 'bg-red-400' : 'bg-amber-400 animate-pulse'}`} />
+              <span className="absolute ml-5 mt-5">
+                <StatusDot
+                  className="ring-2 ring-[#101010]"
+                  tone={wsConnected ? 'success' : wsStatus === 'error' ? 'danger' : 'pending'}
+                  pulse={!wsConnected && wsStatus !== 'error'}
+                  label={wsConnected ? 'User WS live' : wsStatus === 'error' ? 'User WS error' : 'User WS connecting'}
+                />
+              </span>
             </span>
             {!collapsed && (
               <div className="min-w-0 flex-1">
@@ -1268,7 +1304,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <RouteOutlet path={path} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
+        <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
       </div>
 
       {/* UI-12/UI-13: mobile bottom tab bar with a command-palette center button.

@@ -5,7 +5,7 @@ import { normalizeBridgeCapabilities, useListAgentBridgeSupportQuery, useListBri
 import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
-import SearchableSelect, { type SearchableOption } from '../SearchableSelect';
+import { Button, Combobox, Select, Text, type ComboboxOption } from '@ui';
 
 type AgentOption = {
   agent_id: string;
@@ -217,14 +217,14 @@ export default function ConversationLaunchComposer() {
   const bridges = useMemo<BridgeOption[]>(() => bridgesQuery.data?.bridges || [], [bridgesQuery.data?.bridges]);
 
   // Searchable-select option lists (scale to 10–50 with search + descriptions).
-  const agentSelectOptions = useMemo<SearchableOption[]>(() => runnableAgents.map((agent: AgentOption) => ({
+  const agentSelectOptions = useMemo<ComboboxOption[]>(() => runnableAgents.map((agent: AgentOption) => ({
     value: agent.agent_id,
     title: agent.name || agent.agent_id,
     tag: agent.role || undefined,
     subtitle: agent.description || (agent.default_provider || agent.default_tier ? `defaults to ${[agent.default_provider, agent.default_tier].filter(Boolean).join(' · ')}` : undefined),
     id: agent.agent_id,
   })), [runnableAgents]);
-  const projectSelectOptions = useMemo<SearchableOption[]>(() => projects.map((project: ProjectOption) => ({
+  const projectSelectOptions = useMemo<ComboboxOption[]>(() => projects.map((project: ProjectOption) => ({
     value: project.project_id,
     title: project.name + (isDefaultProject(project) ? '' : ''),
     tag: isDefaultProject(project) ? 'default' : undefined,
@@ -381,7 +381,7 @@ export default function ConversationLaunchComposer() {
     <form data-debug-id="new-convo-composer-shell" onSubmit={submitFirstSend} className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left shadow-2xl">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Composer launch</p>
+          <Text as="p" role="overline" tone="accent">Composer launch</Text>
           <h2 className="mt-2 text-2xl font-semibold text-white">Start a conversation</h2>
           <p className="mt-2 text-sm leading-6 text-zinc-400">Choose an agent in the composer, keep the default Conversations project unless needed, then start to create the bound AgentInstance, ChatConversation, and TaskChain through <code>POST /api/v1/chats</code>. Once it opens, type your first message inside the thread.</p>
         </div>
@@ -390,29 +390,33 @@ export default function ConversationLaunchComposer() {
 
       <div data-debug-id="launch-required-agent-control" className="mt-5 grid gap-4 md:grid-cols-2">
         <div className="block">
-          <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Agent required</span>
-          <SearchableSelect
+          <Text role="overline" tone="muted">Agent required</Text>
+          <Combobox
             debugId="new-convo-agent-select"
             options={agentSelectOptions}
             value={agentId}
             onChange={setAgentId}
-            buttonPlaceholder="Choose an agent before sending…"
-            placeholder="Search agents by name, id or role…"
+            placeholder="Choose an agent before sending…"
+            searchPlaceholder="Search agents by name, id or role…"
             emptyLabel="No agents match your search."
             loading={agentsQuery.isLoading}
+            width="full"
+            className="mt-2"
           />
         </div>
         <div data-debug-id="launch-project-default-control" className="block">
-          <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Project</span>
-          <SearchableSelect
+          <Text role="overline" tone="muted">Project</Text>
+          <Combobox
             debugId="new-convo-project-select"
             options={projectSelectOptions}
             value={projectId}
             onChange={setProjectId}
-            buttonPlaceholder="Choose a project…"
-            placeholder="Search projects…"
+            placeholder="Choose a project…"
+            searchPlaceholder="Search projects…"
             emptyLabel="No projects match your search."
             loading={projectsQuery.isLoading}
+            width="full"
+            className="mt-2"
           />
         </div>
       </div>
@@ -422,22 +426,22 @@ export default function ConversationLaunchComposer() {
         <div className="grid gap-4 md:grid-cols-3">
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Bridge / machine</span>
-            <select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(event) => { setBridgeId(event.target.value); setProvider(''); setTier(''); }} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
+            <Select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(value) => { setBridgeId(value); setProvider(''); setTier(''); }} disabled={!agentId} width="full" className="mt-2">
               <option value="">Choose Bridge…</option>
               {bridgeOptions.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{bridgeLabel(row)}</option>) }
-            </select>
+            </Select>
           </label>
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Provider for this launch</span>
-            <select data-debug-id="new-convo-provider-select" value={provider} onChange={(event) => { setProvider(event.target.value); setTier(''); }} disabled={!agentId || !selectedBridge} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
+            <Select data-debug-id="new-convo-provider-select" value={provider} onChange={(value) => { setProvider(value); setTier(''); }} disabled={!agentId || !selectedBridge} width="full" className="mt-2">
               {providerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
+            </Select>
           </label>
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Tier for this launch</span>
-            <select data-debug-id="new-convo-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} disabled={!agentId || !selectedBridge} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
+            <Select data-debug-id="new-convo-tier-select" value={tier} onChange={setTier} disabled={!agentId || !selectedBridge} width="full" className="mt-2">
               {tierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
+            </Select>
           </label>
         </div>
         {effectiveBridgePathInfo && effectiveBridgePathInfo.effectivePath ? (
@@ -466,7 +470,7 @@ export default function ConversationLaunchComposer() {
 
       <div className="mt-5 flex items-center justify-between gap-4">
         <p data-debug-id="launch-send-guard" className="text-xs text-zinc-500">{!agentId ? 'Agent selection is required before starting.' : !selectedBridge ? 'Choose the Bridge to run on.' : launchPairSupported ? 'Ready to start — type your first message inside the thread once it opens.' : 'Choose a provider/tier supported by the selected Bridge.'}</p>
-        <button data-debug-id="new-convo-send-btn" type="submit" disabled={!canSend} className="rounded-2xl bg-sky-400 px-5 py-3 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{status === 'sending' ? 'Starting…' : 'Start conversation'}</button>
+        <Button data-debug-id="new-convo-send-btn" type="submit" variant="primary" size="lg" disabled={!canSend}>{status === 'sending' ? 'Starting…' : 'Start conversation'}</Button>
       </div>
     </form>
   );

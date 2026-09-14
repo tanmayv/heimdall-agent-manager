@@ -16,7 +16,11 @@ send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime_Comma
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
 	socket, socket_ok := project_service.bridge_runtime_registry_command_socket(registry, command.bridge_id)
 	if !socket_ok do return false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
-	if !write_ws_text_frame(socket, command.body_json) do return false, domain.domain_error(.Bridge_Offline, "bridge websocket command send failed")
+	// Serialize with the runtime loop's ack writes so the frame isn't interleaved.
+	project_service.bridge_runtime_registry_command_lock(registry)
+	wrote := write_ws_text_frame(socket, command.body_json)
+	project_service.bridge_runtime_registry_command_unlock(registry)
+	if !wrote do return false, domain.domain_error(.Bridge_Offline, "bridge websocket command send failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -25,9 +29,18 @@ send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
 	socket, socket_ok := project_service.bridge_runtime_registry_command_socket(registry, command.bridge_id)
 	if !socket_ok do return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
-	if !write_ws_text_frame(socket, command.body_json) do return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command send failed")
+	// Serialize ONLY the frame write with the runtime loop's ack writes (so bytes
+	// can't interleave on the shared socket). The lock is released before the poll
+	// below — holding it across the wait would stall the loop's heartbeat/state acks
+	// and could deadlock command delivery.
+	project_service.bridge_runtime_registry_command_lock(registry)
+	wrote := write_ws_text_frame(socket, command.body_json)
+	project_service.bridge_runtime_registry_command_unlock(registry)
+	if !wrote do return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command send failed")
 	deadline := time.to_unix_nanoseconds(time.now()) + i64(time.Duration(timeout_ms) * time.Millisecond)
 	for time.to_unix_nanoseconds(time.now()) < deadline {
+		// runtime_command_cached takes the command lock internally (brief), then we
+		// sleep OUTSIDE the lock.
 		if cached, ok := runtime_command_cached(registry, command.command_id); ok do return cached, true, domain.Domain_Error{}
 		time.sleep(25 * time.Millisecond)
 	}

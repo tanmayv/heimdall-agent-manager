@@ -260,34 +260,34 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if type == "launch_agent" {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		bridge_runtime_cache_command(command_id, accepted)
-		_ = ws.send_text(conn, accepted)
+		_ = bridge_hub_send(conn, accepted)
 		ok, detail := bridge_runtime_launch_agent(command_id, text)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
-		_ = ws.send_text(conn, bridge_instance_status_json(instance_id))
+		_ = bridge_hub_send(conn, bridge_instance_status_json(instance_id))
 		final_status := "succeeded" if ok else "failed"
 		final_runtime := "starting" if ok else "failed"
 		final := bridge_command_result_json(command_id, final_status, final_runtime)
 		if !ok do fmt.println("bridge launch_agent failed", detail)
 		bridge_runtime_cache_command(command_id, final)
-		_ = ws.send_text(conn, final)
+		_ = bridge_hub_send(conn, final)
 		return
 	}
 	if type == "stop_agent" {
 		fmt.println("bridge hub runtime command stop_agent")
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		bridge_runtime_cache_command(command_id, accepted)
-		_ = ws.send_text(conn, accepted)
+		_ = bridge_hub_send(conn, accepted)
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		ok := bridge_runtime_stop_agent(instance_id)
-		_ = ws.send_text(conn, bridge_instance_status_json(instance_id))
+		_ = bridge_hub_send(conn, bridge_instance_status_json(instance_id))
 		final := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "stopped" if ok else "failed")
 		bridge_runtime_cache_command(command_id, final)
-		_ = ws.send_text(conn, final)
+		_ = bridge_hub_send(conn, final)
 		return
 	}
 	if type == "notify_agent_message" {
@@ -297,7 +297,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		sender := extract_json_string(text, "sender_agent_instance_id", extract_json_string(text, "sender", "user"))
 		ok := bridge_pty_host_deliver_to_agent(instance_id, "message", sender, "", "")
 		if !ok do fmt.println("bridge notification pending/no-agent-subscription", instance_id, command_id)
-		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
 	if type == "notify_task_nudge" {
@@ -305,7 +305,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		instance_id := extract_json_string(text, "agent_instance_id", "")
 		task_id := extract_json_string(text, "task_id", "")
 		if bridge_should_debounce_nudge(instance_id, task_id) {
-			if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded", ""))
+			if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
 			return
 		}
 		// Deliver the task-nudge notice straight to the agent via the daemon.
@@ -314,7 +314,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		human_message := extract_json_string(text, "human_message", "")
 		ok := bridge_pty_host_deliver_to_agent(instance_id, "task_nudge", "", task_id, target_role, human_message)
 		if !ok do fmt.println("bridge notify_task_nudge pending/no-agent-subscription", instance_id, command_id)
-		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
 	if type == "notify_title_nudge" {
@@ -328,13 +328,13 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		defer delete(notice)
 		if socket, sok := bridge_pty_host_ensure_daemon(); sok {
 			ok := bridge_pty_host_deliver_notice(socket, instance_id, notice)
-			if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+			if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 			return
 		}
 		// Daemon unavailable: wake the local agent so it picks up the nudge on boot.
 		ok := bridge_task_status_notify_wake_local(instance_id)
 		if !ok do fmt.println("bridge notify_title_nudge pending/no-daemon", instance_id, command_id)
-		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
 	if type == "task_status_changed_notify" {
@@ -416,11 +416,11 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		
 		if command_id != "" {
 			if delivered > 0 || len(targets) == 0 {
-				_ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded", ""))
+				_ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
 			} else if failed > 0 {
-				_ = ws.send_text(conn, bridge_command_result_json(command_id, "failed", ""))
+				_ = bridge_hub_send(conn, bridge_command_result_json(command_id, "failed", ""))
 			} else {
-				_ = ws.send_text(conn, bridge_command_result_json(command_id, "accepted", ""))
+				_ = bridge_hub_send(conn, bridge_command_result_json(command_id, "accepted", ""))
 			}
 		}
 		return
@@ -436,11 +436,11 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 
 bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: string) {
 	command_id := extract_json_string(text, "command_id", "")
-	if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return }
+	if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return }
 	if extract_json_int(text, "protocol_version", 0) != 1 {
 		failed := bridge_command_result_payload_json(command_id, "failed", "{\"error_code\":\"unsupported_capture_agent_pane\"}")
 		bridge_runtime_cache_command(command_id, failed)
-		_ = ws.send_text(conn, failed)
+		_ = bridge_hub_send(conn, failed)
 		return
 	}
 	instance_id := extract_json_string(text, "agent_instance_id", "")
@@ -451,25 +451,25 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 	_ = instance_id
 	accepted := bridge_command_result_json(command_id, "accepted", "")
 	bridge_runtime_cache_command(command_id, accepted)
-	_ = ws.send_text(conn, accepted)
+	_ = bridge_hub_send(conn, accepted)
 	result := bridge_pty_host_capture_result(pending)
-	_ = ws.send_text(conn, result)
+	_ = bridge_hub_send(conn, result)
 }
 
 bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
 	switch type {
 	case "list_providers":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		result := bridge_provider_profiles_report_json(bridge_config.daemon_id)
 		report := bridge_providers_report_json(command_id, result)
 		bridge_runtime_cache_command(command_id, report)
-		_ = ws.send_text(conn, report)
-		_ = ws.send_text(conn, bridge_command_result_payload_json(command_id, "succeeded", "{}"))
+		_ = bridge_hub_send(conn, report)
+		_ = bridge_hub_send(conn, bridge_command_result_payload_json(command_id, "succeeded", "{}"))
 		return true
 	case "upsert_provider":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		payload := bridge_provider_payload_object(text)
 		name := bridge_provider_json_extract_string(payload, "name", "")
 		profile_json, profile_ok := bridge_provider_json_extract_object(payload, "profile")
@@ -479,22 +479,22 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 		if ok { strings.write_string(&result_b, "{\"provider\":"); bridge_provider_write_profile_json(&result_b, profile); strings.write_byte(&result_b, '}') } else { strings.write_string(&result_b, "{\"error\":\""); bridge_runtime_write_json_string(&result_b, message); strings.write_string(&result_b, "\"}") }
 		final := bridge_command_result_payload_json(command_id, "succeeded" if ok else "failed", strings.to_string(result_b))
 		bridge_runtime_cache_command(command_id, final)
-		_ = ws.send_text(conn, final)
+		_ = bridge_hub_send(conn, final)
 		return true
 	case "delete_provider":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		payload := bridge_provider_payload_object(text)
 		name := bridge_provider_json_extract_string(payload, "name", "")
 		deleted, message := bridge_provider_delete_override(name)
 		result := "{\"deleted\":true}" if deleted else strings.concatenate({"{\"deleted\":false,\"error\":\"", bridge_runtime_json_escaped(message), "\"}"})
 		final := bridge_command_result_payload_json(command_id, "succeeded" if deleted else "failed", result)
 		bridge_runtime_cache_command(command_id, final)
-		_ = ws.send_text(conn, final)
+		_ = bridge_hub_send(conn, final)
 		return true
 	case "set_provider_defaults":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		payload := bridge_provider_payload_object(text)
 		provider := bridge_provider_json_extract_string(payload, "provider", "")
 		tier := bridge_provider_json_extract_string(payload, "tier", "")
@@ -503,17 +503,17 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 		if !ok do result = strings.concatenate({"{\"error\":\"", bridge_runtime_json_escaped(message), "\"}"})
 		final := bridge_command_result_payload_json(command_id, "succeeded" if ok else "failed", result)
 		bridge_runtime_cache_command(command_id, final)
-		_ = ws.send_text(conn, strings.concatenate({"{\"type\":\"capability_report\",\"protocol_version\":1,\"capabilities\":", bridge_provider_capabilities_json(), "}"}))
-		_ = ws.send_text(conn, final)
+		_ = bridge_hub_send(conn, strings.concatenate({"{\"type\":\"capability_report\",\"protocol_version\":1,\"capabilities\":", bridge_provider_capabilities_json(), "}"}))
+		_ = bridge_hub_send(conn, final)
 		return true
 	case "refresh_capabilities":
 		command_id := extract_json_string(text, "command_id", "")
-		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
 		result := strings.concatenate({"{\"capabilities\":", bridge_provider_capabilities_json(), "}"})
 		final := bridge_command_result_payload_json(command_id, "succeeded", result)
 		bridge_runtime_cache_command(command_id, final)
-		_ = ws.send_text(conn, strings.concatenate({"{\"type\":\"capability_report\",\"protocol_version\":1,\"capabilities\":", bridge_provider_capabilities_json(), "}"}))
-		_ = ws.send_text(conn, final)
+		_ = bridge_hub_send(conn, strings.concatenate({"{\"type\":\"capability_report\",\"protocol_version\":1,\"capabilities\":", bridge_provider_capabilities_json(), "}"}))
+		_ = bridge_hub_send(conn, final)
 		return true
 	}
 	return false
@@ -1237,7 +1237,7 @@ bridge_runtime_drain_status_pushes :: proc(conn: ^ws.Connection) {
 		if id == "" do return
 		payload := bridge_instance_status_json(id)
 		if payload == "" || payload == "{}" { delete(id); continue }
-		if !ws.send_text(conn, payload) {
+		if !bridge_hub_send(conn, payload) {
 			sync.mutex_lock(&bridge_runtime_mutex)
 			inject_at(&bridge_runtime_status_outgoing, 0, id)
 			sync.mutex_unlock(&bridge_runtime_mutex)
@@ -1256,7 +1256,7 @@ bridge_pane_capture_drain_outgoing :: proc(conn: ^ws.Connection) {
 		if len(bridge_pane_capture_outgoing) > 0 { item = bridge_pane_capture_outgoing[0]; ordered_remove(&bridge_pane_capture_outgoing, 0); have = true }
 		sync.mutex_unlock(&bridge_runtime_mutex)
 		if !have do return
-		if !ws.send_text(conn, item.result_json) {
+		if !bridge_hub_send(conn, item.result_json) {
 			sync.mutex_lock(&bridge_runtime_mutex)
 			append(&bridge_pane_capture_outgoing, item)
 			sync.mutex_unlock(&bridge_runtime_mutex)

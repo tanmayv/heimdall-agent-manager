@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import Icon, { type IconName } from '../Icon';
 
+import { Drawer, Icon, Text, type IconName } from '@ui';
 // UI-13: responsive/mobile primitives shared across the shell.
 // Breakpoints (approx, per arch doc §6D): <768px mobile, 768–1024px tablet,
 // >1024px desktop. The desktop "two panes side-by-side" collapses to mobile
@@ -235,39 +235,32 @@ export type MobileInspectorSheetProps = {
 };
 
 export function MobileInspectorSheet({ open, onClose, title, subtitle, headerActions, keyboardInset = 0, children }: MobileInspectorSheetProps) {
-  if (!open) return null;
+  // A bottom slide-up sheet built on @ui Drawer (portal, focus trap, Esc, scroll
+  // lock, backdrop close — the a11y contract the bespoke sheet lacked). Drawer's
+  // header renders the title + close; the "Inspector" eyebrow, subtitle and any
+  // headerActions sit in a compact sub-header above the body.
   return (
-    <div data-debug-id="shell-mobile-inspector-sheet-root" className="fixed inset-0 z-50 flex items-end justify-center md:hidden" role="dialog" aria-modal="true" aria-label="Inspector">
-      <div data-debug-id="shell-mobile-inspector-sheet-scrim" onClick={onClose} className="absolute inset-0 bg-black/60 backdrop-blur-sm" aria-hidden="true" />
-      <div
-        data-debug-id="workspace-inspector"
-        data-mobile-sheet="true"
-        className="ui-safe-bottom relative flex max-h-[80vh] w-full flex-col rounded-t-3xl border-t border-white/12 bg-[#0d0d0d] shadow-2xl shadow-black/60"
-        style={{ paddingBottom: keyboardInset || undefined }}
-      >
-        <div data-debug-id="shell-mobile-inspector-sheet-grab" className="mx-auto mt-2 h-1.5 w-10 shrink-0 rounded-full bg-white/20" aria-hidden="true" />
-        <div className="flex items-start justify-between gap-3 px-4 pb-2 pt-3">
+    <Drawer
+      side="bottom"
+      open={open}
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title={title || 'Inspector'}
+      aria-label="Inspector"
+      data-debug-id="workspace-inspector"
+      data-mobile-sheet="true"
+      className="ui-safe-bottom md:hidden"
+      style={{ paddingBottom: keyboardInset || undefined }}
+    >
+      {(subtitle || headerActions) ? (
+        <div className="flex items-start justify-between gap-3 px-5 pb-1">
           <div className="min-w-0">
-            <div className="text-[10.5px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Inspector</div>
-            {title ? <div className="mt-0.5 truncate text-[15px] font-semibold text-zinc-100">{title}</div> : null}
+            <Text as="div" role="overline" tone="muted">Inspector</Text>
             {subtitle ? <div className="truncate text-[11.5px] text-zinc-500">{subtitle}</div> : null}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {headerActions}
-            <button
-              type="button"
-              data-debug-id="workspace-inspector-toggle-btn"
-              onClick={onClose}
-              aria-label="Close inspector"
-              title="Close inspector"
-              className={`grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100 ${TOUCH_TARGET_CLASS}`}
-            >
-              <Icon name="close" size={16} />
-            </button>
-          </div>
+          {headerActions ? <div className="flex shrink-0 items-center gap-2">{headerActions}</div> : null}
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">{children}</div>
-      </div>
-    </div>
+      ) : null}
+      <Drawer.Body>{children}</Drawer.Body>
+    </Drawer>
   );
 }

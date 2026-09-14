@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import Icon from '../Icon';
+
 import {
   COMMON_TIMEZONES,
   getLocalTimezone,
@@ -14,7 +14,7 @@ import {
   timeZoneLabel,
   type PresetType,
 } from './scheduleUtils';
-
+import { Button, Checkbox, Icon, Input, Select } from '@ui';
 export type ScheduleEditorValue = {
   cron_expr: string;
   timezone: string;
@@ -205,11 +205,11 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
           {presetType === 'every_n_hours' && (
             <div className="rounded-lg border border-white/10 bg-black/20 p-3 flex items-center gap-3">
               <span className="text-xs text-zinc-300">Run every:</span>
-              <select
+              <Select
                 data-debug-id="schedule-preset-hours-select"
-                value={presetHours}
-                onChange={(e) => handleHoursChange(parseInt(e.target.value, 10))}
-                className="rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 outline-none focus:border-sky-400"
+                size="sm"
+                value={String(presetHours)}
+                onChange={(next) => handleHoursChange(parseInt(next, 10))}
               >
                 <option value={1}>1 hour (every hour)</option>
                 <option value={2}>2 hours</option>
@@ -218,7 +218,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
                 <option value={8}>8 hours</option>
                 <option value={12}>12 hours</option>
                 <option value={24}>24 hours</option>
-              </select>
+              </Select>
               <span className="text-xs text-zinc-500">at minute 0</span>
             </div>
           )}
@@ -253,7 +253,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="text-xs text-zinc-400 font-medium">On days:</span>
-                  <div className="flex gap-2 text-[11px] text-sky-400">
+                  <div className="flex gap-2 text-caption text-sky-400">
                     <button type="button" onClick={() => handleQuickDays('weekdays')} className="hover:underline">
                       Weekdays
                     </button>
@@ -300,15 +300,14 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
           <label className="block text-xs font-medium text-zinc-400">
             Raw 5-Field Cron Expression <span className="text-zinc-600">(minute hour dom month dow)</span>
           </label>
-          <input
-            type="text"
+          <Input
             data-debug-id="schedule-cron-input"
             value={value.cron_expr}
-            onChange={(e) => onChange({ ...value, cron_expr: e.target.value })}
+            onChange={(cron_expr) => onChange({ ...value, cron_expr })}
             placeholder="0 9 * * 1-5"
-            className={`w-full font-mono text-sm rounded-lg border bg-black/40 px-3 py-2 outline-none transition-colors ${
-              validation.valid ? 'border-white/10 text-zinc-100 focus:border-sky-400' : 'border-red-500/60 text-red-200 focus:border-red-500'
-            }`}
+            invalid={!validation.valid}
+            width="full"
+            className="font-mono"
           />
           {!validation.valid && (
             <p data-debug-id="schedule-cron-error" className="text-xs text-red-400">
@@ -330,7 +329,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
         <Icon name="clock" size={13} className="mt-0.5 shrink-0" />
         <div>
           <span className="font-semibold">{description}</span>
-          <span className="ml-2 font-mono text-zinc-500 text-[11px]">({value.cron_expr || '* * * * *'})</span>
+          <span className="ml-2 font-mono text-zinc-500 text-caption">({value.cron_expr || '* * * * *'})</span>
         </div>
       </div>
 
@@ -342,16 +341,17 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
             type="button"
             data-debug-id="schedule-tz-local-btn"
             onClick={() => onChange({ ...value, timezone: getLocalTimezone() })}
-            className="text-[11px] text-sky-400 hover:underline"
+            className="text-caption text-sky-400 hover:underline"
           >
             Use Local ({getLocalTimezone()})
           </button>
         </div>
-        <select
+        <Select
           data-debug-id="schedule-timezone-select"
+          size="sm"
+          width="full"
           value={value.timezone || 'UTC'}
-          onChange={(e) => onChange({ ...value, timezone: e.target.value })}
-          className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-sky-400"
+          onChange={(timezone) => onChange({ ...value, timezone })}
         >
           {COMMON_TIMEZONES.map((tz) => (
             <option key={tz} value={tz}>
@@ -361,7 +361,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
           {!COMMON_TIMEZONES.includes(value.timezone || '') && value.timezone && (
             <option value={value.timezone}>{value.timezone}</option>
           )}
-        </select>
+        </Select>
       </div>
 
       {/* Next 3 Runs Preview */}
@@ -376,7 +376,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
                 <li key={i} className="flex items-center gap-2 text-xs text-zinc-300 font-mono">
                   <span className="text-zinc-500">#{i + 1}</span>
                   <span>{formatInTimeZone(runDate, value.timezone)}</span>
-                  <span className="text-zinc-500 text-[11px]">({timeZoneLabel(runDate, value.timezone)})</span>
+                  <span className="text-zinc-500 text-caption">({timeZoneLabel(runDate, value.timezone)})</span>
                 </li>
               ))}
             </ul>
@@ -391,7 +391,7 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
         <div className="flex items-center justify-between">
           <div>
             <label className="text-xs font-semibold text-zinc-300">Blackout Dates</label>
-            <p className="text-[11px] text-zinc-500">Dates on which execution is suppressed</p>
+            <p className="text-caption text-zinc-500">Dates on which execution is suppressed</p>
           </div>
         </div>
 
@@ -430,35 +430,31 @@ export default function ScheduleEditor({ value, onChange }: ScheduleEditorProps)
             onChange={(e) => setNewBlackoutDate(e.target.value)}
             className="rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 outline-none focus:border-sky-400"
           />
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             data-debug-id="schedule-add-blackout-btn"
             onClick={handleAddBlackoutDate}
-            className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-xs font-medium text-white transition-colors"
           >
             Add Date
-          </button>
+          </Button>
         </div>
         {blackoutError && <p className="text-xs text-red-400">{blackoutError}</p>}
       </div>
 
       {/* Active Window (Optional) */}
       <div className="space-y-2 border-t border-white/10 pt-3">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={enableWindow}
-            onChange={(e) => {
-              const checked = e.target.checked;
-              setEnableWindow(checked);
-              if (!checked) {
-                onChange({ ...value, active_from: undefined, active_until: undefined });
-              }
-            }}
-            className="rounded border-white/20 bg-zinc-900 text-sky-500 focus:ring-0"
-          />
+        <Checkbox
+          checked={enableWindow}
+          onChange={(checked) => {
+            setEnableWindow(checked);
+            if (!checked) {
+              onChange({ ...value, active_from: undefined, active_until: undefined });
+            }
+          }}
+        >
           <span className="text-xs font-semibold text-zinc-300">Set Active Date/Time Window</span>
-        </label>
+        </Checkbox>
 
         {enableWindow && (
           <div className="grid gap-3 sm:grid-cols-2 rounded-lg border border-white/10 bg-black/20 p-3">

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Input, Select, Spinner, Text, Textarea } from '@ui';
 import {
   useArtifactContentState,
   useCreateArtifactAnnotationMutation,
@@ -501,7 +502,7 @@ function ArtifactCodePreview({ artifactId, versionNo, kind, daemonUrl, clientTok
   if (textQuery.error) return <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">Failed to load artifact content.</div>;
   return (
     <div data-debug-id={`artifact-viewer-${kind}-preview`} className="relative">
-      <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg bg-black/60 px-2 py-1 text-[11px] text-zinc-200 hover:bg-black/80">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
+      <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg bg-black/60 px-2 py-1 text-caption text-zinc-200 hover:bg-black/80">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
       <pre data-debug-id={`artifact-viewer-${kind}-body`} className="max-h-[70vh] overflow-auto rounded-2xl border border-white/10 bg-black/40 p-4 text-[12.5px] leading-5 text-zinc-200">
         <code>{display || '(empty)'}</code>
       </pre>
@@ -558,12 +559,12 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
       <div className="mt-1 text-sm text-zinc-300">{summarizeAnnotationContext(annotation)}</div>
       {isEditing ? (
         <div className="mt-3 space-y-2">
-          <textarea
+          <Textarea
             data-debug-id="artifact-viewer-annotation-comment-input"
             value={draftComment}
-            onChange={(event) => setDraftComment(event.target.value)}
+            onChange={setDraftComment}
             rows={4}
-            className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+            width="full"
             placeholder="Annotation comment"
           />
           <div className="flex flex-wrap gap-2">
@@ -983,22 +984,20 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <label className="text-xs uppercase tracking-wide text-zinc-500">Versions</label>
-              <select
+              <Select
                 data-debug-id="artifact-viewer-version-select"
                 value={versionSelectValue}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
+                onChange={(nextValue) => {
                   setSelectedVersionNo(nextValue === 'HEAD' ? null : Number(nextValue));
                   setRollbackConfirmOpen(false);
                   setActionMessage('');
                 }}
-                className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
               >
                 <option value="HEAD">Head v{currentHeadVersionNo || '?'}</option>
                 {versions.filter((version) => Number(version.version_no) !== currentHeadVersionNo).map((version) => (
                   <option key={version.version_no} value={String(version.version_no)}>v{version.version_no}</option>
                 ))}
-              </select>
+              </Select>
               <button
                 type="button"
                 data-debug-id="artifact-viewer-rollback-btn"
@@ -1059,11 +1058,11 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                 <div data-debug-id="artifact-viewer-edit-meta-panel" className="rounded-2xl border border-sky-400/30 bg-sky-400/10 p-4 text-sm text-sky-100">
                   <div className="font-semibold">Rename / edit description</div>
                   <div className="mt-1 text-sky-50/80">`name` is a human display label (non-unique); `artifact_id` is the identity. `description` is an optional longer note.</div>
-                  <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Name
-                    <input data-debug-id="artifact-viewer-edit-name-input" value={editName} onChange={(e) => setEditName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                  <label className="mt-3 block text-caption uppercase tracking-wide text-zinc-400">Name
+                    <Input data-debug-id="artifact-viewer-edit-name-input" value={editName} onChange={setEditName} width="full" className="mt-1" />
                   </label>
-                  <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Description
-                    <textarea data-debug-id="artifact-viewer-edit-description-input" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                  <label className="mt-3 block text-caption uppercase tracking-wide text-zinc-400">Description
+                    <Textarea data-debug-id="artifact-viewer-edit-description-input" value={editDescription} onChange={setEditDescription} rows={3} width="full" className="mt-1" />
                   </label>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button type="button" data-debug-id="artifact-viewer-edit-save-btn" onClick={handleSaveMeta} disabled={editBusy || !editName.trim()} className="rounded-xl bg-sky-300 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-200 disabled:cursor-not-allowed disabled:opacity-60">{editBusy ? 'Saving…' : 'Save'}</button>
@@ -1130,7 +1129,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   {selectedArtifactMeta.description && <div className="text-sm text-zinc-300">{selectedArtifactMeta.description}</div>}
                   {previewKind === 'markdown' && annotationMode ? (
                     <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
-                      <div className="text-xs font-medium uppercase tracking-wide text-emerald-200">Text annotation capture</div>
+                      <Text as="div" role="overline" tone="success">Text annotation capture</Text>
                       <div data-debug-id="artifact-viewer-text-selection-summary" className="mt-2 text-sm text-zinc-100 whitespace-pre-wrap">
                         {summarizePendingTextAnnotation(pendingTextSelection)}
                       </div>
@@ -1162,7 +1161,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   ) : null}
                   {previewKind === 'png' && annotationMode ? (
                     <div data-debug-id="artifact-viewer-png-annotation-panel" className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
-                      <div className="text-xs font-medium uppercase tracking-wide text-emerald-200">Image annotation capture</div>
+                      <Text as="div" role="overline" tone="success">Image annotation capture</Text>
                       {pendingImageRegion ? (
                         <>
                           <div data-debug-id="artifact-viewer-png-region-summary" className="mt-2 text-sm text-zinc-100">
@@ -1190,7 +1189,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   {loadingContent ? (
                     <div data-debug-id="artifact-viewer-content-loading" className="grid min-h-[40vh] place-items-center rounded-2xl border border-white/10 bg-black/30 px-6 py-10 text-center">
                       <div>
-                        <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-sky-300/30 border-t-sky-300" />
+                        <Spinner size="lg" label="Downloading artifact…" className="mx-auto mb-3 text-accent" />
                         <div className="text-sm font-medium text-zinc-200">Downloading artifact…</div>
                         <div className="mt-1 text-xs text-zinc-500">{selectedArtifactMeta.size_bytes ? formatBytes(Number(selectedArtifactMeta.size_bytes)) : 'Preparing preview'}</div>
                       </div>

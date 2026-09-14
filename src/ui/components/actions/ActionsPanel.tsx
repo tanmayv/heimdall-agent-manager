@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import Icon from '../Icon';
+
+import { Badge, Button, Icon, IconButton, Input, PageShell, StatusPill } from '@ui';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   Action,
@@ -187,35 +188,24 @@ export default function ActionsPanel() {
   const isLoading = actionsLoading || instancesLoading || projectsLoading;
 
   return (
-    <div data-debug-id="actions-page" className="w-full space-y-6 text-left">
-      {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-white/10 pb-5">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold tracking-tight text-white">Actions</h1>
-            <span
-              data-debug-id="actions-total-count"
-              className="rounded-full bg-sky-500/10 border border-sky-500/20 px-2.5 py-0.5 text-xs font-semibold text-sky-400"
-            >
-              {totalActionsCount} {totalActionsCount === 1 ? 'action' : 'actions'}
-            </span>
-          </div>
-          <p className="mt-1 text-sm text-zinc-400">
-            Automated recurring prompts and on-demand tasks executed against your agent instances.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <a
-            data-debug-id="actions-create-btn"
-            href={shellHash('/actions/new')}
-            className="flex items-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-black transition-colors shadow-sm"
-          >
-            <Icon name="plus" size={16} />
-            <span>New Action</span>
-          </a>
-        </div>
-      </div>
+    <PageShell
+      width="full"
+      title={
+        <span className="inline-flex items-center gap-2.5">
+          Actions
+          <Badge data-debug-id="actions-total-count" tone="info">
+            {totalActionsCount} {totalActionsCount === 1 ? 'action' : 'actions'}
+          </Badge>
+        </span>
+      }
+      description="Automated recurring prompts and on-demand tasks executed against your agent instances."
+      actions={
+        <Button variant="primary" data-debug-id="actions-create-btn" onClick={() => navigateTo('/actions/new')} leading={<Icon name="plus" size={16} />}>
+          New Action
+        </Button>
+      }
+    >
+      <div data-debug-id="actions-page" className="space-y-6">
 
       {/* Feedback Banner */}
       {feedback && (
@@ -231,43 +221,28 @@ export default function ActionsPanel() {
             <Icon name={feedback.type === 'success' ? 'check' : 'alert'} size={14} />
             <span>{feedback.message}</span>
           </div>
-          <button
-            type="button"
-            aria-label="Dismiss"
-            onClick={() => setFeedback(null)}
-            className="text-zinc-400 hover:text-white transition-colors"
-          >
-            <Icon name="close" size={14} />
-          </button>
+          <IconButton icon="close" label="Dismiss" size="sm" onClick={() => setFeedback(null)} />
         </div>
       )}
 
       {/* Filter / Search Bar */}
       {totalActionsCount > 0 && (
         <div className="flex items-center gap-3">
-          <div className="relative flex-1">
-            <input
-              type="text"
-              data-debug-id="actions-search-input"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter actions by prompt, agent, or cron expression..."
-              className="w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2 pl-9 text-xs text-zinc-100 placeholder-zinc-500 outline-none focus:border-sky-400"
-            />
-            <div className="absolute left-3 top-2.5 text-zinc-500">
-              <Icon name="search" size={14} />
-            </div>
-            {searchQuery && (
-              <button
-                type="button"
-                aria-label="Clear search"
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-2.5 text-zinc-500 hover:text-white"
-              >
-                <Icon name="close" size={14} />
-              </button>
-            )}
-          </div>
+          <Input
+            type="search"
+            data-debug-id="actions-search-input"
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder="Filter actions by prompt, agent, or cron expression..."
+            width="full"
+            className="flex-1"
+            leading={<Icon name="search" size={14} />}
+            trailing={
+              searchQuery ? (
+                <IconButton icon="close" label="Clear search" size="sm" onClick={() => setSearchQuery('')} />
+              ) : undefined
+            }
+          />
         </div>
       )}
 
@@ -301,14 +276,9 @@ export default function ActionsPanel() {
           <p className="mt-1 max-w-md text-xs leading-relaxed text-zinc-400">
             Actions allow you to schedule recurring prompts or trigger on-demand automation routines for any running agent instance.
           </p>
-          <a
-            data-debug-id="actions-empty-create-btn"
-            href={shellHash('/actions/new')}
-            className="mt-5 flex items-center gap-2 rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-black transition-colors"
-          >
-            <Icon name="plus" size={16} />
-            <span>Create Your First Action</span>
-          </a>
+          <Button variant="primary" data-debug-id="actions-empty-create-btn" className="mt-5" onClick={() => navigateTo('/actions/new')} leading={<Icon name="plus" size={16} />}>
+            Create Your First Action
+          </Button>
         </div>
       )}
 
@@ -390,7 +360,8 @@ export default function ActionsPanel() {
         onClose={() => setDeletingAction(null)}
         onConfirm={handleDeleteConfirm}
       />
-    </div>
+      </div>
+    </PageShell>
   );
 }
 
@@ -458,36 +429,30 @@ function ActionCard({
               }`}
             />
             <span className="font-semibold text-white">{targetName}</span>
-            <span className="text-[11px] text-zinc-500 font-mono">({action.target_instance_id})</span>
+            <span className="text-caption text-zinc-500 font-mono">({action.target_instance_id})</span>
           </div>
 
           {/* Action State badge */}
-          <span
+          <StatusPill
             data-debug-id={`action-state-badge-${action.id}`}
-            className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-semibold border ${
-              action.state === 'in_flight'
-                ? 'border-amber-500/40 bg-amber-950/20 text-amber-300'
-                : action.state === 'completed'
-                ? 'border-zinc-700 bg-zinc-800 text-zinc-400'
-                : 'border-emerald-500/30 bg-emerald-950/20 text-emerald-400'
-            }`}
+            tone={action.state === 'in_flight' ? 'warning' : action.state === 'completed' ? 'neutral' : 'success'}
           >
             {action.state === 'in_flight' ? (
               <>
-                <Icon name="zap" size={11} />
+                <Icon name="zap" size="sm" />
                 <span>In Flight</span>
               </>
             ) : action.state === 'completed' ? (
-              <span>Completed</span>
+              'Completed'
             ) : (
-              <span>Active</span>
+              'Active'
             )}
-          </span>
+          </StatusPill>
 
           {/* Schedule status badge */}
           <span
             data-debug-id={`action-schedule-badge-${action.id}`}
-            className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] border ${
+            className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-caption border ${
               isScheduled
                 ? 'border-sky-500/30 bg-sky-500/10 text-sky-300'
                 : 'border-zinc-800 bg-black/40 text-zinc-400'
@@ -540,26 +505,10 @@ function ActionCard({
           </button>
 
           {/* Edit Button */}
-          <button
-            type="button"
-            data-debug-id={`action-edit-btn-${action.id}`}
-            onClick={onEdit}
-            className="rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 p-1.5 text-zinc-400 hover:text-white transition-colors"
-            title="Edit action"
-          >
-            <Icon name="pencil" size={14} />
-          </button>
+          <IconButton icon="pencil" label="Edit action" variant="solid" size="sm" data-debug-id={`action-edit-btn-${action.id}`} onClick={onEdit} />
 
           {/* Delete Button */}
-          <button
-            type="button"
-            data-debug-id={`action-delete-btn-${action.id}`}
-            onClick={onDelete}
-            className="rounded-lg border border-white/10 bg-white/5 hover:bg-red-500/20 hover:border-red-500/40 p-1.5 text-zinc-400 hover:text-red-400 transition-colors"
-            title="Delete action"
-          >
-            <Icon name="trash" size={14} />
-          </button>
+          <IconButton icon="trash" label="Delete action" variant="danger" size="sm" data-debug-id={`action-delete-btn-${action.id}`} onClick={onDelete} />
         </div>
       </div>
 
@@ -577,7 +526,7 @@ function ActionCard({
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
-            className="mt-1 text-[11px] text-sky-400 hover:underline"
+            className="mt-1 text-caption text-sky-400 hover:underline"
           >
             {expanded ? 'Show less' : 'Show full prompt'}
           </button>
@@ -586,7 +535,7 @@ function ActionCard({
 
       {/* Next Execution Info Footer */}
       {isScheduled && (
-        <div className="flex flex-wrap items-center justify-between text-[11px] text-zinc-500 border-t border-white/5 pt-2">
+        <div className="flex flex-wrap items-center justify-between text-caption text-zinc-500 border-t border-white/5 pt-2">
           <div className="flex items-center gap-1.5">
             <span>Next run:</span>
             {nextRuns.length > 0 ? (

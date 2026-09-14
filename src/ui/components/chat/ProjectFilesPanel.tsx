@@ -19,9 +19,10 @@
 // compatible virtualizer or a React bump. Tracked as a Phase-4 follow-up.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Icon from '../Icon';
+
 import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
+import { Icon, IconButton } from '@ui';
 import {
   useLazyListProjectDirQuery,
   useLazyReadProjectFileQuery,
@@ -480,26 +481,9 @@ export default function ProjectFilesPanel({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <button
-            data-debug-id={`${debugPrefix}-refresh-btn`}
-            type="button"
-            onClick={refresh}
-            title="Refresh current directory"
-            aria-label="Refresh"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-300 hover:bg-white/10"
-          >
-            <Icon name="refresh" size={14} />
-          </button>
+          <IconButton icon="refresh" label="Refresh" variant="solid" size="sm" data-debug-id={`${debugPrefix}-refresh-btn`} onClick={refresh} />
           {onClose ? (
-            <button
-              data-debug-id={`${debugPrefix}-close-btn`}
-              type="button"
-              onClick={onClose}
-              aria-label="Close files panel"
-              className="grid h-8 w-8 place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-white"
-            >
-              <Icon name="close" size={15} />
-            </button>
+            <IconButton icon="close" label="Close files panel" size="sm" data-debug-id={`${debugPrefix}-close-btn`} onClick={onClose} />
           ) : null}
         </div>
       </div>
@@ -516,7 +500,7 @@ export default function ProjectFilesPanel({
             type="button"
             onClick={() => { setComments([]); setPublishError(''); }}
             disabled={publishing}
-            className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+            className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-caption text-zinc-300 hover:bg-white/10 disabled:opacity-50"
           >
             Clear
           </button>
@@ -525,7 +509,7 @@ export default function ProjectFilesPanel({
             type="button"
             onClick={() => void publishComments()}
             disabled={publishing || !onPublishComments}
-            className="shrink-0 rounded-lg bg-sky-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+            className="shrink-0 rounded-lg bg-sky-600 px-2.5 py-1 text-caption font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
             title={onPublishComments ? 'Send all comments to the agent' : 'Sending is unavailable here'}
           >
             {publishing ? 'Sending…' : 'Send to agent'}
@@ -595,7 +579,7 @@ export default function ProjectFilesPanel({
               data-debug-id={`${debugPrefix}-new-file-btn`}
               type="button"
               onClick={() => beginAction({ kind: 'new-file' })}
-              className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10"
+              className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-caption text-zinc-300 hover:bg-white/10"
             >
               <Icon name="file" size={12} /> New file
             </button>
@@ -603,7 +587,7 @@ export default function ProjectFilesPanel({
               data-debug-id={`${debugPrefix}-new-dir-btn`}
               type="button"
               onClick={() => beginAction({ kind: 'new-dir' })}
-              className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10"
+              className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-caption text-zinc-300 hover:bg-white/10"
             >
               <Icon name="folder" size={12} /> New folder
             </button>
@@ -613,7 +597,7 @@ export default function ProjectFilesPanel({
               onClick={() => setIncludeHidden((v) => !v)}
               aria-pressed={includeHidden ? 'true' : 'false'}
               title={includeHidden ? 'Hide dotfiles (names starting with ".")' : 'Show hidden dotfiles (names starting with ".")'}
-              className={`ml-auto rounded-lg border px-2 py-1 text-[11px] ${includeHidden ? 'border-sky-400/40 bg-sky-400/10 text-sky-200' : 'border-white/10 text-zinc-400 hover:bg-white/10'}`}
+              className={`ml-auto rounded-lg border px-2 py-1 text-caption ${includeHidden ? 'border-sky-400/40 bg-sky-400/10 text-sky-200' : 'border-white/10 text-zinc-400 hover:bg-white/10'}`}
             >
               {includeHidden ? 'Hide hidden' : 'Show hidden'}
             </button>
@@ -640,14 +624,14 @@ export default function ProjectFilesPanel({
                 type="button"
                 disabled={mutating || !nameDraft.trim()}
                 onClick={() => void submitPending()}
-                className="rounded-lg bg-sky-400 px-2 py-1 text-[11px] font-bold text-black hover:bg-sky-300 disabled:opacity-50"
+                className="rounded-lg bg-sky-400 px-2 py-1 text-caption font-bold text-black hover:bg-sky-300 disabled:opacity-50"
               >
                 {pending.kind === 'rename' ? 'Rename' : 'Create'}
               </button>
               <button
                 type="button"
                 onClick={() => { setPending(null); setNameDraft(''); }}
-                className="rounded-lg px-1.5 py-1 text-[11px] text-zinc-500 hover:text-white"
+                className="rounded-lg px-1.5 py-1 text-caption text-zinc-500 hover:text-white"
               >
                 Cancel
               </button>
@@ -691,16 +675,7 @@ export default function ProjectFilesPanel({
                     </button>
                     {/* Row actions (rename / delete) — visible on hover/focus. */}
                     <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                      <button
-                        data-debug-id={`${debugPrefix}-rename-${e.name}`}
-                        type="button"
-                        onClick={() => beginAction({ kind: 'rename', entry: e })}
-                        title={`Rename ${e.name}`}
-                        aria-label={`Rename ${e.name}`}
-                        className="grid h-7 w-7 place-items-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-white"
-                      >
-                        <Icon name="pencil" size={13} />
-                      </button>
+                      <IconButton icon="pencil" label={`Rename ${e.name}`} size="sm" data-debug-id={`${debugPrefix}-rename-${e.name}`} onClick={() => beginAction({ kind: 'rename', entry: e })} />
                       <button
                         data-debug-id={`${debugPrefix}-delete-${e.name}`}
                         type="button"
@@ -727,7 +702,7 @@ export default function ProjectFilesPanel({
                   type="button"
                   disabled={loadingMore}
                   onClick={() => void load(cwd, { cursor: nextCursor, append: true })}
-                  className="rounded-lg border border-white/10 px-3 py-1.5 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+                  className="rounded-lg border border-white/10 px-3 py-1.5 text-caption text-zinc-300 hover:bg-white/10 disabled:opacity-50"
                 >
                   {loadingMore ? 'Loading…' : 'Load more'}
                 </button>
@@ -746,7 +721,7 @@ export default function ProjectFilesPanel({
       {pathCommentFor ? (
         <div className="absolute inset-x-0 bottom-0 z-10 border-t border-sky-400/20 bg-[#0b0d11] p-3 shadow-[0_-8px_24px_rgba(0,0,0,0.5)]">
           <div data-debug-id={`${debugPrefix}-path-composer`} className="mx-auto max-w-2xl">
-            <div className="mb-1 text-[11px] text-zinc-400">Comment on {pathCommentFor.label}</div>
+            <div className="mb-1 text-caption text-zinc-400">Comment on {pathCommentFor.label}</div>
             <textarea
               data-debug-id={`${debugPrefix}-path-composer-input`}
               autoFocus
@@ -765,13 +740,13 @@ export default function ProjectFilesPanel({
               className="w-full resize-y rounded border border-white/10 bg-black/30 p-2 text-[12px] text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
             />
             <div className="mt-1.5 flex justify-end gap-1.5">
-              <button data-debug-id={`${debugPrefix}-path-composer-cancel`} type="button" onClick={() => setPathCommentFor(null)} className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Cancel</button>
+              <button data-debug-id={`${debugPrefix}-path-composer-cancel`} type="button" onClick={() => setPathCommentFor(null)} className="rounded-lg border border-white/10 px-2.5 py-1 text-caption text-zinc-300 hover:bg-white/10">Cancel</button>
               <button
                 data-debug-id={`${debugPrefix}-path-composer-save`}
                 type="button"
                 disabled={!pathCommentDraft.trim()}
                 onClick={() => { addComment(pathCommentFor.path, 0, pathCommentFor.label, pathCommentDraft); setPathCommentFor(null); }}
-                className="rounded-lg bg-sky-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="rounded-lg bg-sky-600 px-2.5 py-1 text-caption font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
               >
                 Comment
               </button>
@@ -781,7 +756,7 @@ export default function ProjectFilesPanel({
       ) : null}
 
       {error ? (
-        <div data-debug-id={`${debugPrefix}-error`} className="border-t border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-[11px] text-red-300">
+        <div data-debug-id={`${debugPrefix}-error`} className="border-t border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-caption text-red-300">
           {error}
         </div>
       ) : null}
@@ -865,7 +840,7 @@ function FileView({
           data-debug-id={`${debugPrefix}-file-back-btn`}
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10"
+          className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-caption text-zinc-300 hover:bg-white/10"
         >
           <Icon name="chevron-left" size={13} /> Back
         </button>
@@ -895,7 +870,7 @@ function FileView({
             data-debug-id={`${debugPrefix}-file-md-toggle-btn`}
             type="button"
             onClick={() => setMdRendered((v) => !v)}
-            className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10"
+            className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-caption text-zinc-300 hover:bg-white/10"
             title={mdRendered ? 'View source' : 'View rendered'}
           >
             {mdRendered ? 'Source' : 'Rendered'}
@@ -907,7 +882,7 @@ function FileView({
             type="button"
             onClick={() => setWrap((v) => !v)}
             aria-pressed={wrap ? 'true' : 'false'}
-            className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] ${wrap ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-300 hover:bg-white/10'}`}
+            className={`shrink-0 rounded-lg border px-2 py-1 text-caption ${wrap ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-300 hover:bg-white/10'}`}
             title={wrap ? 'Disable soft wrap' : 'Enable soft wrap'}
           >
             Wrap
@@ -970,7 +945,7 @@ function FileView({
                   type="button"
                   onClick={onLoadMore}
                   disabled={loadingMore}
-                  className="rounded-lg border border-white/10 px-3 py-1.5 text-[11px] text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+                  className="rounded-lg border border-white/10 px-3 py-1.5 text-caption text-zinc-300 hover:bg-white/10 disabled:opacity-50"
                 >
                   {loadingMore ? 'Loading…' : 'Load more of this file'}
                 </button>
@@ -1167,8 +1142,8 @@ function LineComment({
               className="w-full resize-y rounded border border-white/10 bg-black/30 p-1.5 text-[12px] text-zinc-100 focus:border-sky-500 focus:outline-none"
             />
             <div className="mt-1 flex justify-end gap-1.5">
-              <button type="button" onClick={() => { setDraft(comment.body); setEditing(false); }} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-white/10">Cancel</button>
-              <button data-debug-id={`${debugPrefix}-line-comment-edit-save-${comment.id}`} type="button" onClick={() => { onEdit(comment.id, draft); setEditing(false); }} className="rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-sky-500">Save</button>
+              <button type="button" onClick={() => { setDraft(comment.body); setEditing(false); }} className="rounded border border-white/10 px-2 py-0.5 text-caption text-zinc-300 hover:bg-white/10">Cancel</button>
+              <button data-debug-id={`${debugPrefix}-line-comment-edit-save-${comment.id}`} type="button" onClick={() => { onEdit(comment.id, draft); setEditing(false); }} className="rounded bg-sky-600 px-2 py-0.5 text-caption font-semibold text-white hover:bg-sky-500">Save</button>
             </div>
           </div>
         ) : (
@@ -1219,8 +1194,8 @@ function LineComposer({
           className="w-full resize-y rounded border border-white/10 bg-black/30 p-1.5 text-[12px] text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
         />
         <div className="mt-1 flex justify-end gap-1.5">
-          <button data-debug-id={`${debugPrefix}-line-composer-cancel-${lineNo}`} type="button" onClick={onCancel} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-white/10">Cancel</button>
-          <button data-debug-id={`${debugPrefix}-line-composer-save-${lineNo}`} type="button" onClick={() => { if (draft.trim()) onSave(draft); }} disabled={!draft.trim()} className="rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-sky-500 disabled:opacity-50">Comment</button>
+          <button data-debug-id={`${debugPrefix}-line-composer-cancel-${lineNo}`} type="button" onClick={onCancel} className="rounded border border-white/10 px-2 py-0.5 text-caption text-zinc-300 hover:bg-white/10">Cancel</button>
+          <button data-debug-id={`${debugPrefix}-line-composer-save-${lineNo}`} type="button" onClick={() => { if (draft.trim()) onSave(draft); }} disabled={!draft.trim()} className="rounded bg-sky-600 px-2 py-0.5 text-caption font-semibold text-white hover:bg-sky-500 disabled:opacity-50">Comment</button>
         </div>
       </div>
     </div>

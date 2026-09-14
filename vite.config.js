@@ -1,3 +1,4 @@
+import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -17,6 +18,14 @@ const LONG_PROXY_TIMEOUT_MS = 16 * 60 * 1000;
 export default defineConfig({
   plugins: [react()],
   base: './',
+  resolve: {
+    alias: {
+      // `@ui/*` -> the shared component library (src/ui/components/ui/*).
+      // Mirrors the tsconfig.renderer.json path alias so imports resolve at
+      // typecheck, dev, and build.
+      '@ui': fileURLToPath(new URL('./src/ui/components/ui', import.meta.url)),
+    },
+  },
   server: {
     // Allow Google Cloudtop and ÜberProxy PEN domains
     allowedHosts: ['.proxy.googlers.com', '.c.googlers.com', '.corp.google.com', 'localhost'],

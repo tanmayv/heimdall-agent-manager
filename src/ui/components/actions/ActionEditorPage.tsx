@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import Icon from '../Icon';
-import SearchableSelect, { type SearchableOption } from '../SearchableSelect';
+
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   parseBlackoutDates,
@@ -11,7 +10,7 @@ import {
 } from '../../api/endpoints/actions';
 import ScheduleEditor, { type ScheduleEditorValue } from './ScheduleEditor';
 import { getLocalTimezone, validateCronExpression } from './scheduleUtils';
-
+import { Button, Combobox, Icon, PageShell, Textarea, Toggle, type ComboboxOption } from '@ui';
 export type ActionEditorPageProps = {
   // When present the page edits an existing action; otherwise it creates a new one.
   actionId?: string;
@@ -42,7 +41,7 @@ function instanceRuntimeStatus(inst: any): string {
 // ACT-1..ACT-7: dedicated full-page create/edit surface for Actions, replacing the
 // former ActionModal popup. Layout mirrors NewAgentPage (header card + form card +
 // sticky footer) so Actions matches Agents/Templates/Bridges. The target instance
-// is chosen through SearchableSelect (never typed by hand) and display names are the
+// is chosen through the Combobox picker (never typed by hand) and display names are the
 // primary label while raw ids are demoted to a monospace secondary line.
 export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   const isEdit = Boolean(actionId);
@@ -95,7 +94,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   // ACT-3: fold display name, instance id, and agent id into the picker search
   // index so any of the three finds the instance. ACT-4: display name is the
   // primary title, the instance id is the demoted monospace secondary line.
-  const instanceOptions = useMemo<SearchableOption[]>(() => {
+  const instanceOptions = useMemo<ComboboxOption[]>(() => {
     return instances
       .filter((inst) => instanceInstanceId(inst))
       .map((inst) => {
@@ -160,55 +159,56 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   // flash empty then repopulate.
   if (isEdit && actionLoading) {
     return (
-      <div data-debug-id="action-editor-loading" className="w-full max-w-4xl space-y-4 text-left">
-        <div className="h-24 animate-pulse rounded-2xl bg-white/5" />
-        <div className="h-64 animate-pulse rounded-2xl bg-white/5" />
-      </div>
+      <PageShell width="full" title="Edit action">
+        <div data-debug-id="action-editor-loading" className="space-y-4 text-left">
+          <div className="h-24 animate-pulse rounded-2xl bg-white/5" />
+          <div className="h-64 animate-pulse rounded-2xl bg-white/5" />
+        </div>
+      </PageShell>
     );
   }
 
   if (isEdit && (actionError || !action)) {
     return (
-      <div data-debug-id="action-editor-not-found" className="w-full max-w-4xl space-y-4 text-left">
-        <div className="rounded-2xl border border-red-500/40 bg-red-950/20 p-5 text-sm text-red-300">
-          {actionError
-            ? `Failed to load action: ${String((actionError as any)?.error || (actionError as any)?.message || actionError)}`
-            : 'This action could not be found. It may have been deleted.'}
+      <PageShell width="full" title="Edit action">
+        <div data-debug-id="action-editor-not-found" className="space-y-4 text-left">
+          <div className="rounded-2xl border border-red-500/40 bg-red-950/20 p-5 text-sm text-red-300">
+            {actionError
+              ? `Failed to load action: ${String((actionError as any)?.error || (actionError as any)?.message || actionError)}`
+              : 'This action could not be found. It may have been deleted.'}
+          </div>
+          <a
+            data-debug-id="action-editor-back-link"
+            href={shellHash('/actions')}
+            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+          >
+            Back to Actions
+          </a>
         </div>
-        <a
-          data-debug-id="action-editor-back-link"
-          href={shellHash('/actions')}
-          className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-        >
-          Back to Actions
-        </a>
-      </div>
+      </PageShell>
     );
   }
 
   return (
-    <div data-debug-id="action-editor-page" className="w-full max-w-4xl space-y-6 text-left">
-      {/* Header card */}
-      <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:p-5">
-        <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-start">
-          <div>
-            <h1 className="text-2xl font-semibold text-white">{isEdit ? 'Edit action' : 'Create action'}</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              {isEdit
-                ? 'Update the prompt or schedule for this action. The target instance is fixed once the action exists.'
-                : 'Target an agent instance, write the prompt, and choose whether it runs on a schedule or on demand.'}
-            </p>
-          </div>
-          <a
-            data-debug-id="action-editor-header-cancel-btn"
-            href={shellHash('/actions')}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-          >
-            Cancel
-          </a>
-        </div>
-      </div>
-
+    <PageShell
+      width="full"
+      title={isEdit ? 'Edit action' : 'Create action'}
+      description={
+        isEdit
+          ? 'Update the prompt or schedule for this action. The target instance is fixed once the action exists.'
+          : 'Target an agent instance, write the prompt, and choose whether it runs on a schedule or on demand.'
+      }
+      actions={
+        <a
+          data-debug-id="action-editor-header-cancel-btn"
+          href={shellHash('/actions')}
+          className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+        >
+          Cancel
+        </a>
+      }
+    >
+      <div data-debug-id="action-editor-page" className="space-y-6 text-left">
       {/* Form card */}
       <form onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-white/10 bg-white/[0.035] p-4 sm:p-5">
         {/* Target section */}
@@ -236,21 +236,22 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                   <div className="text-sm font-semibold text-white">
                     {selectedInstance ? instanceDisplayName(selectedInstance) : targetInstanceId}
                   </div>
-                  <div className="font-mono text-[11px] text-zinc-500">{targetInstanceId}</div>
+                  <div className="font-mono text-caption text-zinc-500">{targetInstanceId}</div>
                 </div>
               </div>
-              <span className="text-[11px] text-zinc-500">Target instance cannot be changed after creation</span>
+              <span className="text-caption text-zinc-500">Target instance cannot be changed after creation</span>
             </div>
           ) : (
-            <SearchableSelect
+            <Combobox
               debugId="action-editor-agent-select"
               options={instanceOptions}
               value={targetInstanceId}
               onChange={setTargetInstanceId}
-              buttonPlaceholder="Choose a target agent instance…"
-              placeholder="Search by name, instance id, or agent id…"
+              placeholder="Choose a target agent instance…"
+              searchPlaceholder="Search by name, instance id, or agent id…"
               emptyLabel="No agent instances match your search."
               loading={instancesLoading}
+              width="full"
             />
           )}
         </section>
@@ -261,13 +262,13 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
             <h2 className="text-sm font-semibold text-white">Prompt</h2>
             <p className="mt-0.5 text-xs text-zinc-500">The message dispatched to the agent when this action runs.</p>
           </div>
-          <textarea
+          <Textarea
             data-debug-id="action-editor-prompt-input"
             rows={4}
             value={promptText}
-            onChange={(e) => setPromptText(e.target.value)}
+            onChange={setPromptText}
             placeholder="e.g. Check test failures, inspect ongoing branch status, and deliver a summary of pending items."
-            className="w-full resize-y rounded-xl border border-white/10 bg-black/40 p-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-sky-400"
+            width="full"
           />
         </section>
 
@@ -281,22 +282,18 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3">
             <div>
               <span className="text-xs font-semibold text-zinc-200">Scheduled recurring execution</span>
-              <p className="text-[11px] text-zinc-500">
+              <p className="text-caption text-zinc-500">
                 {isScheduled
                   ? 'Will execute automatically according to the cron/preset schedule below.'
                   : 'On-demand only — runs when triggered via "Run now".'}
               </p>
             </div>
-            <label className="relative inline-flex cursor-pointer items-center">
-              <input
-                type="checkbox"
-                data-debug-id="action-editor-scheduled-toggle"
-                checked={isScheduled}
-                onChange={(e) => setIsScheduled(e.target.checked)}
-                className="peer sr-only"
-              />
-              <div className="peer h-6 w-11 rounded-full bg-zinc-800 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-sky-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none" />
-            </label>
+            <Toggle
+              data-debug-id="action-editor-scheduled-toggle"
+              checked={isScheduled}
+              onChange={setIsScheduled}
+              aria-label="Scheduled recurring execution"
+            />
           </div>
 
           {isScheduled && <ScheduleEditor value={schedule} onChange={setSchedule} />}
@@ -317,16 +314,18 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           >
             Cancel
           </a>
-          <button
+          <Button
+            variant="primary"
             data-debug-id="action-editor-submit-btn"
             type="submit"
             disabled={saving || !targetInstanceId || !promptText.trim()}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:opacity-50"
+            className="min-h-[44px]"
           >
             {saving ? 'Saving…' : isEdit ? 'Save changes' : 'Create action'}
-          </button>
+          </Button>
         </div>
       </form>
-    </div>
+      </div>
+    </PageShell>
   );
 }

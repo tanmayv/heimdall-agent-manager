@@ -175,7 +175,7 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
             key={bubble.id}
             data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
             title={bubble.summary}
-            className={`inline-flex max-w-[240px] shrink-0 items-center overflow-hidden rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] leading-none text-zinc-400 ${animClass}`}
+            className={`inline-flex max-w-[240px] shrink-0 items-center overflow-hidden rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-caption leading-none text-zinc-400 ${animClass}`}
           >
             {bubble.phase === 'dots' ? (
               <span data-debug-id="conversation-activity-bubble-dots" className="inline-flex items-center gap-0.5">
