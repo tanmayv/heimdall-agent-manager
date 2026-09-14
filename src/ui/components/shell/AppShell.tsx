@@ -23,6 +23,7 @@ import TemplatesPanel from '../settings/TemplatesPanel';
 import ProjectsSurface from '../projects/ProjectsSurface';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import ActionsPanel from '../actions/ActionsPanel';
+import CardsPanel from '../cards/CardsPanel';
 import ActionEditorPage from '../actions/ActionEditorPage';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
@@ -111,6 +112,7 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
   isDefaultConversations: true,
 };
 const NAV_ROUTES: ShellRoute[] = [
+  { path: '/cards', label: 'Cards', icon: 'spark', description: 'Activity-driven Action Cards feed', group: 'primary' },
   { path: '/conversations', label: 'Conversations', icon: 'chat', description: 'Chat sessions grouped by project and agent', group: 'primary' },
   { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts grouped by project', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
@@ -123,7 +125,7 @@ const NAV_ROUTES: ShellRoute[] = [
 
 function routeFromLocation(): string {
   const path = getRoutePathname();
-  if (!path || path === '/' || path === '/index.html') return '/conversations';
+  if (!path || path === '/' || path === '/index.html') return '/cards';
   return path;
 }
 
@@ -142,6 +144,7 @@ function focusMessageFromLocation(): string {
 }
 
 function isRouteActive(currentPath: string, itemPath: string): boolean {
+  if (itemPath === '/cards') return currentPath === '/cards' || currentPath.startsWith('/cards/');
   if (itemPath === '/conversations') return currentPath === '/conversations' || currentPath.startsWith('/conversations/');
   if (itemPath === '/actions') return currentPath === '/actions' || currentPath.startsWith('/actions/');
   if (itemPath === '/settings/bridges') return currentPath.startsWith('/settings');
@@ -166,6 +169,7 @@ function parseChainRoute(path: string): { chainId: string; taskId?: string } {
 }
 
 function routeTitle(path: string): string {
+  if (path === '/cards' || path.startsWith('/cards')) return 'Action Cards';
   if (path === '/conversations/new') return 'New conversation';
   if (path.startsWith('/conversations/')) return 'Conversation';
   if (path === '/actions/new') return 'New action';
@@ -195,6 +199,7 @@ function routeTitle(path: string): string {
 }
 
 function routeDescription(path: string): string {
+  if (path === '/cards' || path.startsWith('/cards')) return 'Activity-driven recommendations from Heimdall Curator. Review, accept, or reject maintenance proposals.';
   if (path === '/conversations/new') return 'Composer-first launch surface. Agent, project, Bridge, provider, and tier controls belong here in later UI tasks.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
   if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
@@ -226,6 +231,7 @@ function decodeSegment(value: string): string {
 }
 
 function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = []): BreadcrumbCrumb[] {
+  if (path === '/cards' || path.startsWith('/cards')) return [{ label: 'Cards' }];
   if (path === '/conversations/new') return [{ label: 'Conversations', href: '/conversations' }, { label: 'New Conversation' }];
   if (path.startsWith('/conversations/')) {
     const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
@@ -912,7 +918,7 @@ function AccessDenied() {
         <p className="text-xs font-semibold uppercase tracking-[0.22em] text-red-200">403 forbidden</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Access denied</h1>
         <p className="mt-3 text-sm leading-6 text-red-100/80">You are authenticated, but this resource is not available to your account. Heimdall will not redirect to login for 403 responses.</p>
-        <a data-debug-id="access-denied-home-link" href={shellHash('/conversations')} className="mt-6 inline-flex rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/15">Back to conversations</a>
+        <a data-debug-id="access-denied-home-link" href={shellHash('/cards')} className="mt-6 inline-flex rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/15">Back to home</a>
       </section>
     </main>
   );
@@ -966,7 +972,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
   const isKnownRoute = useMemo(() => {
     return [
-      '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
+      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/user-tokens') ||
@@ -997,7 +1003,9 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
     <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto overflow-x-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
       <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
-        {path === '/conversations' ? (
+        {path === '/cards' || path.startsWith('/cards') ? (
+          <CardsPanel />
+        ) : path === '/conversations' ? (
           <ConversationsHomePage />
         ) : path === '/actions/new' ? (
           <ActionEditorPage />
@@ -1213,7 +1221,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       >
         <div className={`flex items-center gap-3 p-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
           {!collapsed && (
-            <a href={shellHash('/conversations')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-white/5">
+            <a href={shellHash('/cards')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-white/5">
               <span className="block truncate text-sm font-black tracking-tight text-white">Heimdall</span>
             </a>
           )}
