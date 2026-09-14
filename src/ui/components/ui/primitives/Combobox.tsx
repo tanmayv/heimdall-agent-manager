@@ -322,7 +322,12 @@ export function Combobox(props: ComboboxProps) {
       ? optionDomId(activeIndex)
       : undefined;
 
-  const rootClassName = cx('relative', width === 'full' ? 'w-full' : 'inline-block', className ?? '');
+  const rootClassName = cx(
+    'relative',
+    open ? 'z-20' : 'z-auto',
+    width === 'full' ? 'w-full' : 'inline-block',
+    className ?? '',
+  );
 
   return (
     <div ref={rootRef} className={rootClassName}>
@@ -366,7 +371,10 @@ export function Combobox(props: ComboboxProps) {
                       type="button"
                       aria-label={`Remove ${option?.title || v}`}
                       data-debug-id={debugId ? `${debugId}-chip-remove-${v}` : undefined}
-                      onClick={() => removeValue(v)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeValue(v);
+                      }}
                       className="shrink-0 rounded-[var(--radius-sm)] opacity-70 outline-none hover:opacity-100 focus-visible:opacity-100 focus-visible:shadow-focus"
                     >
                       <Icon name="close" size={12} />
@@ -429,6 +437,7 @@ export function Combobox(props: ComboboxProps) {
       {open ? (
         <div
           data-debug-id={debugId ? `${debugId}-popover` : undefined}
+          onClick={(e) => e.stopPropagation()}
           className="absolute left-0 right-0 z-dropdown mt-2 overflow-hidden rounded-[var(--radius-lg)] border border-subtle bg-surface-overlay shadow-overlay"
         >
           <div className="flex items-center gap-2 border-b border-subtle px-3 py-2 text-muted">
@@ -444,6 +453,7 @@ export function Combobox(props: ComboboxProps) {
               data-debug-id={debugId ? `${debugId}-search-input` : undefined}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
+              onClick={(e) => e.stopPropagation()}
               onKeyDown={onInputKeyDown}
               placeholder={searchPlaceholder}
               className="w-full bg-transparent text-[length:var(--text-body-sm-size)] text-primary outline-none placeholder:text-faint"
@@ -482,7 +492,10 @@ export function Combobox(props: ComboboxProps) {
                     aria-selected={isSelected}
                     data-debug-id={debugId ? `${debugId}-option-${option.value}` : undefined}
                     onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => selectOption(option)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      selectOption(option);
+                    }}
                     className={cx(
                       'flex w-full cursor-pointer items-center gap-3 border-b border-subtle px-3 py-2.5 text-left last:border-b-0',
                       isActive ? 'bg-surface-raised' : '',
@@ -545,7 +558,10 @@ export function Combobox(props: ComboboxProps) {
               <button
                 type="button"
                 data-debug-id={debugId ? `${debugId}-clear` : undefined}
-                onClick={() => (onChange as (values: string[]) => void)([])}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  (onChange as (values: string[]) => void)([]);
+                }}
                 className="rounded-[var(--radius-sm)] text-muted outline-none hover:text-primary focus-visible:shadow-focus"
               >
                 Clear

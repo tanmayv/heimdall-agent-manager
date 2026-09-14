@@ -366,9 +366,9 @@ function ModalShell({ debugId, title, onClose, maxWidth = 'max-w-2xl', children 
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="block">
+    <div className="block">
       <div className="mb-1 text-caption uppercase tracking-wide text-zinc-500">{label}</div>
       {children}
-    </label>
+    </div>
   );
 }
