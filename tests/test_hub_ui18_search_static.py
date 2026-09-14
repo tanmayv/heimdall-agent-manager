@@ -130,7 +130,7 @@ def main() -> None:
     # text scope; fixed-array [29]->[30] bump; embedded via #load of the twin.
     # (Renumbered 029->030 when landing on main.)
     require('030_search_fts_all.sql' in migrations_odin, 'migration_order must include 030')
-    require('migration_order :: [30]string' in migrations_odin or 'migration_order :: [31]string' in migrations_odin or 'migration_order :: [32]string' in migrations_odin, 'migration_order must be the fixed array')
+    require('migration_order :: [30]string' in migrations_odin or 'migration_order :: [31]string' in migrations_odin or 'migration_order :: [32]string' in migrations_odin or 'migration_order :: [33]string' in migrations_odin or 'migration_order :: [34]string' in migrations_odin, 'migration_order must be the fixed array')
     require('MIGRATION_030_SEARCH_FTS_ALL' in migrations_odin and '030_search_fts_all.sql", string)' in migrations_odin, 'embedded 030 must #load the byte-identical on-disk twin')
     for vt in ['chat_conversations_fts', 'agents_fts', 'agent_instances_fts', 'task_chains_fts', 'tasks_fts', 'projects_fts', 'artifacts_fts', 'memories_fts']:
         require(f'CREATE VIRTUAL TABLE IF NOT EXISTS {vt} USING fts5(' in fts_all_migration, f'030 missing FTS vtable {vt}')

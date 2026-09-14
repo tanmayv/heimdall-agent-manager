@@ -170,7 +170,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
-	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.clock, &graph.ids)
+	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
 	// CT-2 / CT-10: Pre-seed the loopback local bridge for zero-ceremony single-node Cloudtop operation
 	default_owner := os.get_env("HAM_CLOUDTOP_OWNER", context.allocator)

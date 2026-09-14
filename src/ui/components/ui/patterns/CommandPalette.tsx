@@ -31,6 +31,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGlobalSearchQuery, useLazyGlobalSearchQuery, type SearchHit } from '../../../api/endpoints/search';
+import { hitRoute, renderPreview } from '../../../utils/searchHit';
 import { Icon, Spinner, StatusDot, type IconName } from '../primitives';
 import { runtimeStatusToTone } from './RuntimeChip';
 import { useDialogA11y } from '../composites/useDialogA11y';
@@ -54,6 +55,18 @@ export type PaletteConversationGroup = {
   conversations: PaletteConversation[];
 };
 
+// Optional search scope. When provided (e.g. the palette is opened from a
+// conversation's top bar), the palette becomes a scoped search: Navigate/Actions
+// groups are hidden, entity search is constrained to the chain/conversation, and
+// a scope selector lets the user widen to "Everywhere". chainId takes precedence
+// over conversationId (chain scope already covers the conversation's messages).
+export type PaletteScope = {
+  chainId?: string;
+  conversationId?: string;
+  // Short human label for the scope chip, e.g. the conversation/chain title.
+  label?: string;
+};
+
 export type CommandPaletteProps = {
   open: boolean;
   onClose: () => void;
@@ -66,6 +79,8 @@ export type CommandPaletteProps = {
   conversationGroups?: PaletteConversationGroup[];
   // Current active route path for persistent selected highlight.
   currentPath?: string;
+  // Present → open in scoped-search mode (see PaletteScope).
+  scope?: PaletteScope;
 };
 
 export type PaletteAction = {
@@ -118,59 +133,6 @@ function matches(haystack: string, q: string): boolean {
   return haystack.toLowerCase().includes(q.toLowerCase());
 }
 
-function hitRoute(hit: SearchHit): string {
-  const type = String(hit.type || '').toLowerCase();
-  const id = hit.id;
-  // Message hits carry the conversation route but the hit id is the MESSAGE id, so
-  // thread it as `?msg=<message_id>` (parsed by AppShell into a focus target that
-  // the conversation view scrolls to). Base route is the backend route, else the
-  // parent conversation/instance id.
-  if (type === 'message') {
-    const base = hit.route || (hit.parent?.id ? `/conversations/${hit.parent.id}` : '');
-    if (!base) return '';
-    if (!id) return base;
-    const sep = base.includes('?') ? '&' : '?';
-    return base.includes('msg=') ? base : `${base}${sep}msg=${encodeURIComponent(id)}`;
-  }
-  // Prefer the backend-provided route; fall back to type-based routes.
-  if (hit.route) return hit.route;
-  switch (type) {
-    case 'conversation':
-      return `/conversations/${id}`;
-    case 'agent':
-    case 'agent_instance':
-      return `/agents/${id}`;
-    case 'task-chain':
-    case 'chain':
-      return `/chains/${id}`;
-    case 'task':
-      return `/chains`;
-    case 'skill':
-      return `/skills/${id}`;
-    case 'project':
-      return `/library`;
-    case 'artifact':
-      return `/library`;
-    // Comments always carry a backend route (to their task); no id-only fallback.
-    default:
-      return '';
-  }
-}
-
-// renderPreview highlights the matched token, which the backend brackets as
-// "…text [match] text…". Falls back to the plain string if no bracket is present.
-function renderPreview(preview: string) {
-  const open = preview.indexOf('[');
-  const close = open >= 0 ? preview.indexOf(']', open + 1) : -1;
-  if (open < 0 || close < 0) return preview;
-  return (
-    <>
-      {preview.slice(0, open)}
-      <span className="rounded bg-warning-soft px-0.5 text-warning">{preview.slice(open + 1, close)}</span>
-      {preview.slice(close + 1)}
-    </>
-  );
-}
 
 function hitIcon(type: string): IconName {
   switch (String(type || '').toLowerCase()) {
@@ -207,7 +169,7 @@ const ENTITY_GROUP_LABEL: Record<string, string> = {
 /** Stable id for the option at flat index `i` (target of aria-activedescendant). */
 const optionId = (i: number) => `command-palette-option-${i}`;
 
-export function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [], currentPath = '' }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [], currentPath = '', scope }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -215,6 +177,19 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
   const listRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const listboxId = 'command-palette-listbox';
+
+  // Scoped-search mode. `hasScope` = the palette was opened with a scope context;
+  // `scoped` (user-toggleable via the scope selector) = that scope is currently
+  // applied. When scoped, entity search is constrained and the scope's parent id
+  // is forwarded to the backend; when the user switches to "Everywhere" the same
+  // palette behaves like a plain global search (Navigate/Actions stay hidden —
+  // this instance is a search entry point, not the full command palette).
+  const hasScope = Boolean(scope && (scope.chainId || scope.conversationId));
+  const [scoped, setScoped] = useState(true);
+  const scopeActive = hasScope && scoped;
+  const scopeFilter = scopeActive
+    ? (scope!.chainId ? { chainIds: scope!.chainId } : { conversationIds: scope!.conversationId })
+    : {};
 
   // Shared dialog contract: focus trap, Esc-to-close, body scroll-lock, and
   // focus restore on close — the same infrastructure Modal/Drawer use.
@@ -233,7 +208,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
   // Require >=2 chars before calling /search — 1-char queries are the broadest and
   // least useful, and local nav/actions already answer single keystrokes.
   const searchQuery = useGlobalSearchQuery(
-    { q: trimmed, limit: 12 },
+    { q: trimmed, limit: 12, ...scopeFilter },
     { skip: !open || trimmed.length < MIN_BACKEND_QUERY_LEN },
   );
 
@@ -256,7 +231,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
     if (!cursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const res = await fetchMore({ q: trimmed, limit: 12, cursor }).unwrap();
+      const res = await fetchMore({ q: trimmed, limit: 12, cursor, ...scopeFilter }).unwrap();
       setExtraHits((prev) => [...prev, ...res.hits]);
       setCursor(res.nextCursor ?? null);
       setHasMore(Boolean(res.hasMore));
@@ -265,7 +240,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
     } finally {
       setLoadingMore(false);
     }
-  }, [cursor, loadingMore, trimmed, fetchMore]);
+  }, [cursor, loadingMore, trimmed, fetchMore, scopeActive, scope?.chainId, scope?.conversationId]);
 
   // First page + all loaded pages, de-duped by type+id so paging never dupes.
   const entityHits = useMemo<SearchHit[]>(() => {
@@ -286,6 +261,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
       setQuery('');
       setDebounced('');
       setActiveIndex(0);
+      setScoped(true);
       window.setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [open]);
@@ -298,31 +274,39 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
     // Navigate + Actions FIRST (local, instant primary quick-jumps) so they are
     // always reachable at the top of the list — crucial on mobile where a long
     // Conversations list + the on-screen keyboard would otherwise push Actions
-    // out of reach at the bottom.
-    const navItems = q ? DEFAULT_NAV.filter((item) => matches(item.label, q)) : DEFAULT_NAV;
-    if (navItems.length) {
-      navItems.forEach((item) => out.push({ kind: 'navigate', label: item.label, icon: item.icon, route: item.route, group: 'Navigate' }));
-    }
+    // out of reach at the bottom. Hidden entirely in scoped-search mode: this
+    // instance is a search entry point, not the global command palette.
+    if (!hasScope) {
+      const navItems = q ? DEFAULT_NAV.filter((item) => matches(item.label, q)) : DEFAULT_NAV;
+      if (navItems.length) {
+        navItems.forEach((item) => out.push({ kind: 'navigate', label: item.label, icon: item.icon, route: item.route, group: 'Navigate' }));
+      }
 
-    const actionItems = q ? actions.filter((a) => matches(a.label, q)) : actions;
-    if (actionItems.length) {
-      actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, icon: a.icon, actionId: a.id, group: 'Actions' }));
+      const actionItems = q ? actions.filter((a) => matches(a.label, q)) : actions;
+      if (actionItems.length) {
+        actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, icon: a.icon, actionId: a.id, group: 'Actions' }));
+      }
     }
 
     // Live conversations grouped by project — mirrors the sidebar rail. Each
     // project becomes its own palette group; filtered by query when typing.
-    for (const group of conversationGroups) {
-      const items = q
-        ? group.conversations.filter((c) => matches(`${c.title} ${c.agentName || ''} ${group.projectName}`, q))
-        : group.conversations;
-      items.forEach((c) => out.push({
-        kind: 'conversation',
-        label: c.title || c.agentName || c.conversationId,
-        hint: c.agentName && c.agentName !== c.title ? c.agentName : undefined,
-        route: `/conversations/${encodeURIComponent(c.agentInstanceId)}`,
-        group: group.projectName || 'Conversations',
-        convo: c,
-      }));
+    // In scoped mode the caller passes only the in-scope (chain) conversations,
+    // so show them when the scope is applied; hide them under "Everywhere"
+    // (that widening relies on the global entity search below instead).
+    if (!hasScope || scopeActive) {
+      for (const group of conversationGroups) {
+        const items = q
+          ? group.conversations.filter((c) => matches(`${c.title} ${c.agentName || ''} ${group.projectName}`, q))
+          : group.conversations;
+        items.forEach((c) => out.push({
+          kind: 'conversation',
+          label: c.title || c.agentName || c.conversationId,
+          hint: c.agentName && c.agentName !== c.title ? c.agentName : undefined,
+          route: `/conversations/${encodeURIComponent(c.agentInstanceId)}`,
+          group: group.projectName || 'Conversations',
+          convo: c,
+        }));
+      }
     }
 
     // Entities from backend search (first page + loaded pages), grouped by type.
@@ -334,11 +318,15 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
     if (entitiesFresh) {
       for (const hit of entityHits) {
         const t = hit.type || '';
+        // Under chain scope the local "Agents in this chain" group already lists
+        // the chain's conversations, so drop conversation-type entity hits to
+        // avoid showing the same thread twice.
+        if (scopeActive && t.toLowerCase() === 'conversation') continue;
         out.push({ kind: 'entity', label: hit.label || hit.id, hint: hit.sublabel, hit, route: hitRoute(hit), group: ENTITY_GROUP_LABEL[t] || t || 'Entities' });
       }
     }
     return out;
-  }, [query, trimmed, searchQuery.isFetching, entityHits, actions, conversationGroups]);
+  }, [query, trimmed, searchQuery.isFetching, entityHits, actions, conversationGroups, hasScope, scopeActive]);
 
   // Reset active index when results change.
   useEffect(() => {
@@ -441,6 +429,32 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
           {searching ? <span data-debug-id="command-palette-loading" className="text-caption text-muted">searching…</span> : null}
           <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5 text-[10px] text-muted">esc</kbd>
         </div>
+        {hasScope ? (
+          <div data-debug-id="command-palette-scope" className="flex min-w-0 items-center gap-2 border-b border-subtle px-4 py-1.5 text-[11px] text-muted">
+            <span className="shrink-0 text-faint">Scope</span>
+            <div role="group" aria-label="Search scope" className="inline-flex min-w-0 items-center overflow-hidden rounded-md border border-subtle">
+              <button
+                type="button"
+                data-debug-id="command-palette-scope-chain"
+                aria-pressed={scoped}
+                onClick={() => setScoped(true)}
+                title={scope?.label || 'This chain'}
+                className={`max-w-[200px] truncate px-2 py-0.5 ${scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-white/[0.06]'}`}
+              >
+                {scope?.label || 'This chain'}
+              </button>
+              <button
+                type="button"
+                data-debug-id="command-palette-scope-all"
+                aria-pressed={!scoped}
+                onClick={() => setScoped(false)}
+                className={`shrink-0 px-2 py-0.5 ${!scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-white/[0.06]'}`}
+              >
+                All
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div
           ref={listRef}
           id={listboxId}
@@ -452,10 +466,10 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
           {!searching && results.length === 0 ? (
             <div data-debug-id="command-palette-empty" role="presentation" className="px-3 py-8 text-center text-sm text-muted">
               {qTrim.length === 0
-                ? 'Start typing to search or jump.'
+                ? (scopeActive ? 'Type to search this conversation & its task chain.' : 'Start typing to search or jump.')
                 : qTrim.length < MIN_BACKEND_QUERY_LEN
                   ? 'Keep typing to search…'
-                  : `No results for “${qTrim}”.`}
+                  : `No results for “${qTrim}”${scopeActive ? ' in this chain' : ''}.`}
             </div>
           ) : (
             Array.from(grouped.entries()).map(([groupLabel, { results: groupResults, indices }]) => (

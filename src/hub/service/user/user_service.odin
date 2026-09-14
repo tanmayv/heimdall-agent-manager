@@ -6,47 +6,131 @@ import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 
 User_Service :: struct {
-	users:  ^iface.User_Repository,
-	// agents lets provisioning seed a durable 'coordinator' agent for new users so
-	// first-time users always have an agent to start. Optional (nil in tests that
+	users:    ^iface.User_Repository,
+	// agents lets provisioning seed canonical durable agents ('coordinator', 'worker', 'reviewer')
+	// for new users so first-time users always have agents to start. Optional (nil in tests that
 	// only exercise user CRUD); seeding is skipped when nil.
-	agents: ^iface.Agent_Repository,
-	clock:  ^platform.Clock,
-	ids:    ^platform.ID_Generator,
+	agents:   ^iface.Agent_Repository,
+	// projects lets provisioning seed the dedicated 'Conversation' project for new users.
+	// Optional (nil in tests); seeding is skipped when nil.
+	projects: ^iface.Project_Repository,
+	clock:    ^platform.Clock,
+	ids:      ^platform.ID_Generator,
 }
 
-new_user_service :: proc(users: ^iface.User_Repository, agents: ^iface.Agent_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> User_Service {
+new_user_service_full :: proc(users: ^iface.User_Repository, agents: ^iface.Agent_Repository, projects: ^iface.Project_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> User_Service {
+	return User_Service{users = users, agents = agents, projects = projects, clock = clock, ids = ids}
+}
+
+new_user_service_compat :: proc(users: ^iface.User_Repository, agents: ^iface.Agent_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> User_Service {
 	return User_Service{users = users, agents = agents, clock = clock, ids = ids}
 }
 
-// COORDINATOR_AGENT_SLUG is the slug of the durable agent seeded for every user
-// so first-time users always have an agent to start.
-COORDINATOR_AGENT_SLUG :: "coordinator"
+new_user_service_basic :: proc(users: ^iface.User_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> User_Service {
+	return User_Service{users = users, clock = clock, ids = ids}
+}
 
-// ensure_coordinator_agent seeds a durable 'coordinator' agent for owner if none
-// exists yet. Idempotent (guarded by the existing-slug check) and best-effort:
-// provisioning a user must never fail because agent seeding did. No-op when the
-// agent repository is not wired.
-ensure_coordinator_agent :: proc(service: ^User_Service, owner: domain.User_ID) {
-	if service == nil || service.agents == nil || service.clock == nil || service.ids == nil do return
+new_user_service :: proc{new_user_service_full, new_user_service_compat, new_user_service_basic}
+
+// COORDINATOR_AGENT_SLUG is the slug of the durable coordinator agent seeded for every user.
+COORDINATOR_AGENT_SLUG :: "coordinator"
+WORKER_AGENT_SLUG      :: "worker"
+REVIEWER_AGENT_SLUG    :: "reviewer"
+
+CONVERSATION_PROJECT_SLUG :: "conversation"
+CONVERSATION_PROJECT_NAME :: "Conversation"
+CONVERSATION_PROJECT_DESCRIPTION :: `Dedicated environment for open-ended conversation, brainstorming, and ad-hoc reasoning.
+
+- Purpose: Dedicated environment for open-ended conversation and brainstorming.
+- Project Transition: If user queries or goals involve a specific software project, repository, or multi-step engineering task, proactively recommend creating or switching to a dedicated project and launching a coordinator agent to orchestrate the work.
+- User Primacy: All recommendations require explicit user approval; user requests always trump best practices.`
+
+Canonical_Agent_Spec :: struct {
+	name:        string,
+	slug:        string,
+	template_id: string,
+}
+
+CANONICAL_AGENTS :: [3]Canonical_Agent_Spec{
+	{name = COORDINATOR_AGENT_SLUG, slug = COORDINATOR_AGENT_SLUG, template_id = domain.TEMPLATE_COORDINATOR_ID},
+	{name = WORKER_AGENT_SLUG,      slug = WORKER_AGENT_SLUG,      template_id = domain.TEMPLATE_WORKER_ID},
+	{name = REVIEWER_AGENT_SLUG,    slug = REVIEWER_AGENT_SLUG,    template_id = domain.TEMPLATE_REVIEWER_ID},
+}
+
+// ensure_canonical_resources seeds the 3 canonical durable agents (coordinator,
+// worker, reviewer) and the dedicated Conversation project for owner if they do
+// not exist yet. Idempotent and best-effort: provisioning a user must never fail
+// because resource seeding did. No-op when the respective repositories are not wired.
+ensure_canonical_resources :: proc(service: ^User_Service, owner: domain.User_ID) {
+	if service == nil || service.clock == nil || service.ids == nil do return
 	if string(owner) == "" do return
-	existing, list_err := iface.agent_list_by_owner(service.agents, owner, 200, "")
-	if list_err.code != .None do return
-	for a in existing {
-		if a.slug == COORDINATOR_AGENT_SLUG do return
-	}
+
 	now := platform.clock_now(service.clock)
-	agent := domain.Agent{
-		agent_id = platform.generate_id(service.ids, "agt_"),
-		owner_user_id = owner,
-		name = COORDINATOR_AGENT_SLUG,
-		slug = COORDINATOR_AGENT_SLUG,
-		template_id = domain.TEMPLATE_EMPTY_ID,
-		state = .Active,
-		created_at = now,
-		updated_at = now,
+
+	// 1. Seed canonical durable agents (coordinator, worker, reviewer)
+	if service.agents != nil {
+		existing, list_err := iface.agent_list_by_owner(service.agents, owner, 200, "")
+		if list_err.code == .None {
+			defer delete(existing)
+			for spec in CANONICAL_AGENTS {
+				found := false
+				for a in existing {
+					if a.slug == spec.slug {
+						found = true
+						break
+					}
+				}
+				if !found {
+					agent := domain.Agent{
+						agent_id = platform.generate_id(service.ids, "agt_"),
+						owner_user_id = owner,
+						name = spec.name,
+						slug = spec.slug,
+						template_id = spec.template_id,
+						state = .Active,
+						created_at = now,
+						updated_at = now,
+					}
+					iface.agent_save(service.agents, agent)
+				}
+			}
+		}
 	}
-	iface.agent_save(service.agents, agent)
+
+	// 2. Seed dedicated Conversation project
+	if service.projects != nil {
+		existing_projects, proj_err := iface.project_list_by_owner(service.projects, owner, 200, "")
+		if proj_err.code == .None {
+			defer delete(existing_projects)
+			found_conversation := false
+			for p in existing_projects {
+				if p.slug == CONVERSATION_PROJECT_SLUG {
+					found_conversation = true
+					break
+				}
+			}
+			if !found_conversation {
+				project := domain.Project{
+					project_id = domain.Project_ID(platform.generate_id(service.ids, "proj_")),
+					owner_user_id = owner,
+					name = CONVERSATION_PROJECT_NAME,
+					slug = CONVERSATION_PROJECT_SLUG,
+					description = CONVERSATION_PROJECT_DESCRIPTION,
+					repo_url = "",
+					vcs_kind = "",
+					default_path = "",
+					created_at = now,
+					updated_at = now,
+				}
+				iface.project_save(service.projects, project)
+			}
+		}
+	}
+}
+
+// ensure_coordinator_agent seeds canonical resources for owner. Kept for backwards compatibility.
+ensure_coordinator_agent :: proc(service: ^User_Service, owner: domain.User_ID) {
+	ensure_canonical_resources(service, owner)
 }
 
 get_user :: proc(service: ^User_Service, user_id: domain.User_ID) -> (domain.User, bool, domain.Domain_Error) {
@@ -116,7 +200,7 @@ create_user :: proc(service: ^User_Service, input: Create_User_Input) -> (domain
 	}
 	saved, ok, save_err := iface.user_save(service.users, created)
 	if !ok do return saved, ok, save_err
-	ensure_coordinator_agent(service, saved.user_id)
+	ensure_canonical_resources(service, saved.user_id)
 	return saved, ok, save_err
 }
 
@@ -156,7 +240,7 @@ ensure_user_from_auth :: proc(service: ^User_Service, user_id, display_name, ema
 	}
 	saved, saved_ok, save_err := iface.user_save(service.users, created)
 	if !saved_ok do return saved, saved_ok, save_err
-	ensure_coordinator_agent(service, saved.user_id)
+	ensure_canonical_resources(service, saved.user_id)
 	return saved, saved_ok, save_err
 }
 

@@ -145,8 +145,8 @@ function renderTable(lines: string[], start: number): { html: string; nextIndex:
     rows.push(splitTableRow(lines[i]));
     i += 1;
   }
-  const head = headers.map((cell, idx) => `<th class="border-b border-white/10 px-3 py-2 ${aligns[idx] || 'text-left'} font-semibold text-zinc-100">${renderInline(cell)}</th>`).join('');
-  const body = rows.map((row) => `<tr>${headers.map((_h, idx) => `<td class="border-b border-white/5 px-3 py-2 align-top ${aligns[idx] || 'text-left'}">${renderInline(row[idx] || '')}</td>`).join('')}</tr>`).join('');
+  const head = headers.map((cell, idx) => `<th class="whitespace-nowrap border-b border-white/10 px-3 py-2 ${aligns[idx] || 'text-left'} font-semibold text-zinc-100">${renderInline(cell)}</th>`).join('');
+  const body = rows.map((row) => `<tr>${headers.map((_h, idx) => `<td class="whitespace-nowrap border-b border-white/5 px-3 py-2 align-top ${aligns[idx] || 'text-left'}">${renderInline(row[idx] || '')}</td>`).join('')}</tr>`).join('');
   return {
     html: `<div class="markdown-table my-2 overflow-hidden rounded-xl border border-white/10"><div class="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-3 py-1.5 text-caption text-zinc-500"><span>table</span><button type="button" data-markdown-copy-table="true" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy CSV</button></div><div class="overflow-x-auto"><table class="min-w-full border-collapse text-left text-sm"><thead class="bg-white/[0.04]"><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`,
     nextIndex: i,

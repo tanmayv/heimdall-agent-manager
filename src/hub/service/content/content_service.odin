@@ -13,11 +13,56 @@ import project_service "odin_test:hub/service/project"
 
 ARTIFACT_MAX_BYTES :: 50 * 1024 * 1024
 
+TEMPLATE_MD_COORDINATOR :: #load("../../../templates/coordinator.md", string)
+TEMPLATE_MD_WORKER :: #load("../../../templates/worker.md", string)
+TEMPLATE_MD_REVIEWER :: #load("../../../templates/reviewer.md", string)
+TEMPLATE_MD_EMPTY :: #load("../../../templates/empty.md", string)
+
+coordinator_template :: proc() -> domain.Template {
+	return domain.Template{
+		template_id = domain.TEMPLATE_COORDINATOR_ID,
+		is_system = true,
+		name = "coordinator",
+		description = "AI-native coordinator template for planning, delegation, and orchestration",
+		persona = "You are an expert technical coordinator and orchestrator. You plan, delegate to specialized worker agents, track progress, enforce review gates, and synthesize outcomes.",
+		instructions = TEMPLATE_MD_COORDINATOR,
+	}
+}
+
+worker_template :: proc() -> domain.Template {
+	return domain.Template{
+		template_id = domain.TEMPLATE_WORKER_ID,
+		is_system = true,
+		name = "worker",
+		description = "AI-native worker template for focused implementation and task execution",
+		persona = "You are a meticulous senior software engineer. You implement assigned tasks with clean, well-tested code following repository conventions and report step-by-step progress.",
+		instructions = TEMPLATE_MD_WORKER,
+	}
+}
+
+reviewer_template :: proc() -> domain.Template {
+	return domain.Template{
+		template_id = domain.TEMPLATE_REVIEWER_ID,
+		is_system = true,
+		name = "reviewer",
+		description = "AI-native reviewer template for independent verification and quality gatekeeping",
+		persona = "You are a rigorous code reviewer and quality gatekeeper. You independently inspect diffs, verify acceptance criteria and test evidence, and enforce architectural integrity.",
+		instructions = TEMPLATE_MD_REVIEWER,
+	}
+}
+
 // empty_template returns the built-in 'empty' template value (see
 // domain.TEMPLATE_EMPTY_ID). Centralized so get_template, list_templates, and
 // template_available stay in sync.
 empty_template :: proc() -> domain.Template {
-	return domain.Template{template_id=domain.TEMPLATE_EMPTY_ID, is_system=true, name="empty", description="Default empty template", persona="", instructions=""}
+	return domain.Template{
+		template_id = domain.TEMPLATE_EMPTY_ID,
+		is_system = true,
+		name = "empty",
+		description = "Default empty template",
+		persona = "",
+		instructions = TEMPLATE_MD_EMPTY,
+	}
 }
 
 Content_Service :: struct { content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator, title_nudge_cooldown_seconds: int, audit_mode: bool }
@@ -217,16 +262,80 @@ update_artifact :: proc(s:^Content_Service, auth:contracts.Auth_Context,id,name,
 delete_artifact :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(bool,domain.Domain_Error){ a,ok,err:=get_artifact(s,auth,id); if !ok do return false,err; return iface.content_delete_artifact(s.content,a.artifact_id,a.owner_user_id) }
 
 create_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,input:Template_Input)->(domain.Template,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if input.name=="" do return {},false,domain.domain_error(.Validation_Failed,"template name is required"); now:=platform.clock_now(s.clock); t:=domain.Template{template_id=platform.generate_id(s.ids,"tmpl_"),owner_user_id=owner,name=input.name,description=input.description,persona=input.persona,instructions=input.instructions,created_at=now,updated_at=now}; return iface.content_save_template(s.content,t) }
-get_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(domain.Template,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if id==domain.TEMPLATE_EMPTY_ID do return empty_template(),true,{}; t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return {},false,err2; if !t.is_system && t.owner_user_id!=owner do return {},false,domain.domain_error(.Not_Found,"template not found"); return t,true,{} }
-update_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string,input:Template_Input)->(domain.Template,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return {},false,err2; if t.is_system do return {},false,domain.domain_error(.Validation_Failed,"built-in templates cannot be edited"); if t.owner_user_id!=owner do return {},false,domain.domain_error(.Not_Found,"template not found"); if input.name!="" do t.name=input.name; t.description=input.description; t.persona=input.persona; t.instructions=input.instructions; t.updated_at=platform.clock_now(s.clock); return iface.content_save_template(s.content,t) }
-delete_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return false,err; t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return false,err2; if t.is_system do return false,domain.domain_error(.Validation_Failed,"built-in templates cannot be deleted"); if t.owner_user_id!=owner do return false,domain.domain_error(.Not_Found,"template not found"); return iface.content_delete_template(s.content,id,owner) }
+get_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(domain.Template,bool,domain.Domain_Error){
+	owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err;
+	switch id {
+	case domain.TEMPLATE_EMPTY_ID:
+		return empty_template(), true, {}
+	case domain.TEMPLATE_COORDINATOR_ID:
+		return coordinator_template(), true, {}
+	case domain.TEMPLATE_WORKER_ID:
+		return worker_template(), true, {}
+	case domain.TEMPLATE_REVIEWER_ID:
+		return reviewer_template(), true, {}
+	}
+	t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return {},false,err2;
+	if !t.is_system && t.owner_user_id!=owner do return {},false,domain.domain_error(.Not_Found,"template not found");
+	return t,true,{}
+}
+update_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string,input:Template_Input)->(domain.Template,bool,domain.Domain_Error){
+	owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err;
+	switch id {
+	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID:
+		return {}, false, domain.domain_error(.Validation_Failed, "built-in templates cannot be edited")
+	}
+	t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return {},false,err2;
+	if t.is_system do return {},false,domain.domain_error(.Validation_Failed,"built-in templates cannot be edited");
+	if t.owner_user_id!=owner do return {},false,domain.domain_error(.Not_Found,"template not found");
+	if input.name!="" do t.name=input.name;
+	t.description=input.description;
+	t.persona=input.persona;
+	t.instructions=input.instructions;
+	t.updated_at=platform.clock_now(s.clock);
+	return iface.content_save_template(s.content,t)
+}
+delete_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(bool,domain.Domain_Error){
+	owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return false,err;
+	switch id {
+	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID:
+		return false, domain.domain_error(.Validation_Failed, "built-in templates cannot be deleted")
+	}
+	t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return false,err2;
+	if t.is_system do return false,domain.domain_error(.Validation_Failed,"built-in templates cannot be deleted");
+	if t.owner_user_id!=owner do return false,domain.domain_error(.Not_Found,"template not found");
+	return iface.content_delete_template(s.content,id,owner)
+}
 list_templates :: proc(s:^Content_Service, auth:contracts.Auth_Context)->([]domain.Template,domain.Domain_Error){
 	owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return nil,err
 	rows, list_err := iface.content_list_templates(s.content,owner)
 	if list_err.code != .None do return nil, list_err
+	defer delete(rows)
 	out := make([dynamic]domain.Template)
 	append(&out, ..rows)
-	append(&out, empty_template())
+
+	has_empty := false
+	has_coordinator := false
+	has_worker := false
+	has_reviewer := false
+
+	for tmpl in out {
+		switch tmpl.template_id {
+		case domain.TEMPLATE_EMPTY_ID:
+			has_empty = true
+		case domain.TEMPLATE_COORDINATOR_ID:
+			has_coordinator = true
+		case domain.TEMPLATE_WORKER_ID:
+			has_worker = true
+		case domain.TEMPLATE_REVIEWER_ID:
+			has_reviewer = true
+		}
+	}
+
+	if !has_coordinator do append(&out, coordinator_template())
+	if !has_worker do append(&out, worker_template())
+	if !has_reviewer do append(&out, reviewer_template())
+	if !has_empty do append(&out, empty_template())
+
 	return out[:], {}
 }
 
@@ -234,7 +343,15 @@ validate_initial_message :: proc(s:^Content_Service, auth:contracts.Auth_Context
 validate_initial_message_for_owner :: proc(s:^Content_Service, owner:domain.User_ID, input:Message_Input)->(bool,domain.Domain_Error){ if strings.trim_space(input.body)=="" do return false,domain.domain_error(.Validation_Failed,"message body is required"); if !artifacts_owned_json(s,owner,input.artifact_ids_json) do return false,domain.domain_error(.Not_Found,"artifact not found"); return true,{} }
 agent_owned :: proc(s:^Content_Service, owner:domain.User_ID, agent_id:string)->bool{ if s.agents==nil || agent_id=="" do return false; a,ok,_:=iface.agent_get(s.agents,agent_id); return ok && a.owner_user_id==owner }
 project_owned :: proc(s:^Content_Service, owner:domain.User_ID, project_id:domain.Project_ID)->bool{ if s.projects==nil || string(project_id)=="" do return false; p,ok,_:=iface.project_get(s.projects,project_id); return ok && p.owner_user_id==owner }
-template_available :: proc(s:^Content_Service, owner:domain.User_ID, template_id:string)->bool{ if s.content==nil || template_id=="" do return false; if template_id==domain.TEMPLATE_EMPTY_ID do return true; t,ok,_:=iface.content_get_template(s.content,template_id); return ok && (t.is_system || t.owner_user_id==owner) }
+template_available :: proc(s:^Content_Service, owner:domain.User_ID, template_id:string)->bool{
+	if s.content==nil || template_id=="" do return false;
+	switch template_id {
+	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID:
+		return true
+	}
+	t,ok,_:=iface.content_get_template(s.content,template_id);
+	return ok && (t.is_system || t.owner_user_id==owner)
+}
 bridge_owned :: proc(s:^Content_Service, owner:domain.User_ID, bridge_id:string)->bool{ if s.bridges==nil || bridge_id=="" do return false; b,ok,_:=iface.bridge_get_bridge(s.bridges,bridge_id); return ok && b.owner_user_id==owner }
 bridge_supports_pane_capture :: proc(s:^Content_Service, bridge_id:string)->bool{ if s.bridges==nil || bridge_id=="" do return false; b,ok,_:=iface.bridge_get_bridge(s.bridges,bridge_id); return ok && strings.contains(b.capabilities_json,"\"capture_agent_pane\"") }
 conversation_instance_binding_valid :: proc(s:^Content_Service, owner:domain.User_ID, input:Chat_Input)->(bool,domain.Domain_Error){

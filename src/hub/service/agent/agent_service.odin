@@ -138,7 +138,10 @@ update_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agen
 // agent service already holds (avoiding a cross-service dependency).
 agent_template_available :: proc(service: ^Agent_Service, owner: domain.User_ID, template_id: string) -> bool {
 	if template_id == "" do return false
-	if template_id == domain.TEMPLATE_EMPTY_ID do return true
+	switch template_id {
+	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID:
+		return true
+	}
 	if service.content == nil do return false
 	t, ok, _ := iface.content_get_template(service.content, template_id)
 	return ok && (t.is_system || t.owner_user_id == owner)

@@ -33,6 +33,9 @@ main :: proc() {
 	check(sqlite.table_column_exists(&conn, "agent_instances", "current_task_id"), "agent_instances.current_task_id column must exist")
 	check(sqlite.table_column_exists(&conn, "agent_instances", "current_task_role"), "agent_instances.current_task_role column must exist")
 	check(sqlite.table_column_exists(&conn, "tasks", "priority"), "tasks.priority column must exist")
+	check(sqlite.table_column_exists(&conn, "projects", "project_type"), "projects.project_type column must exist")
+	check(sqlite.table_column_exists(&conn, "projects", "workspace_name"), "projects.workspace_name column must exist")
+	check(sqlite.table_column_exists(&conn, "projects", "relative_path"), "projects.relative_path column must exist")
 
 	// Migration is idempotent: running again is a no-op.
 	mig_ok2, mig_err2 := sqlite.run_migrations(&conn, "src/hub/repository/sqlite/migrations")

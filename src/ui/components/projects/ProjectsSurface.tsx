@@ -42,6 +42,10 @@ function bridgeId(b: any): string { return str(b?.bridge_id || b?.bridgeId || b?
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 // TODO(FIX): Replace loose fallback chain with canonical typed schema property
 function bridgeLabel(b: any): string { return str(b?.label || b?.machine_hostname || bridgeId(b)); }
+function bridgeIsOnline(b: any): boolean {
+  const status = str(b?.status || b?.runtime_status || b?.state || 'online').toLowerCase();
+  return status === 'online' || status === 'connected';
+}
 
 function projectIdFromRoute(): string {
   try {
@@ -132,6 +136,7 @@ function ProjectList() {
   }, [figWorkspacesQuery.isError, figWorkspacesQuery.error, isSelectedBridgeOffline, selectedBridge, selectedBridgeId]);
 
   const projects: Project[] = useMemo(() => (projectsQuery.data?.projects || projectsQuery.data || []) as Project[], [projectsQuery.data]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projects;
@@ -683,6 +688,7 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
   }
 
   const isFig = project?.project_type === 'fig';
+  const selectedBridge = bridges.find((b) => bridgeId(b) === selectedBridgeId);
 
   return (
     <Card title="About" debugId="project-detail-about"
@@ -708,9 +714,9 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
           ) : null}
           {project?.default_path ? <p data-debug-id="project-detail-path" className="font-mono text-xs text-muted">{project.default_path}</p> : null}
           {str(project?.description) ? (
-            <p data-debug-id="project-detail-description" className="max-w-2xl whitespace-pre-wrap text-sm leading-6 text-zinc-300">{project?.description}</p>
+            <p data-debug-id="project-detail-description" className="max-w-2xl whitespace-pre-wrap text-sm leading-6 text-primary">{project?.description}</p>
           ) : (
-            <p data-debug-id="project-detail-description-empty" className="text-sm text-zinc-500">No description yet. <button type="button" onClick={() => setEditing(true)} className="text-sky-300 hover:underline">Add one</button>.</p>
+            <p data-debug-id="project-detail-description-empty" className="text-sm text-muted">No description yet. <button type="button" onClick={() => setEditing(true)} className="text-accent hover:underline">Add one</button>.</p>
           )}
         </div>
       ) : (
@@ -749,10 +755,26 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
             </div>
           </FormField>
           {!isFig && showLocalPicker && selectedBridgeId ? (
-            <div className="mt-2">
+            <div className="space-y-2 rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3">
+              {bridges.length > 1 ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-zinc-400">Bridge host:</span>
+                  <Select
+                    value={selectedBridgeId}
+                    onChange={(val) => setSelectedBridgeId(val)}
+                  >
+                    {bridges.map((b) => (
+                      <option key={bridgeId(b)} value={bridgeId(b)}>
+                        {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              ) : null}
               <BridgeDirectoryPicker
                 debugId="project-detail-edit-local-picker"
                 bridgeId={selectedBridgeId}
+                bridgeLabel={selectedBridge ? bridgeLabel(selectedBridge) : undefined}
                 initialPath={defaultPath}
                 onPick={(p) => {
                   setDefaultPath(p);
@@ -840,10 +862,6 @@ function MemoryPanel({ memories, loading, projectId }: { memories: any[]; loadin
     </Card>
   );
 }
-
-// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-// TODO(FIX): Replace loose fallback chain with canonical typed schema property
-function bridgeIsOnline(b: any): boolean { return str(b?.status || b?.state || 'online').toLowerCase() === 'online'; }
 
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; project: Project | null; bridges: any[] }) {
