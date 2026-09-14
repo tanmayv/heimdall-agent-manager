@@ -1682,8 +1682,11 @@ bootstrap_manifest_render_count :: proc() -> u64 {
 	return sync.atomic_load(&manifest_render_count)
 }
 
-bootstrap_manifest_cache_key :: proc(agent_id, role, provider, project: string) -> string {
-	return strings.concatenate({agent_id, "|", role, "|", provider, "|", project})
+bootstrap_manifest_cache_key :: proc(agent_id, role, provider, project, bridge_id: string) -> string {
+	// bridge_id is part of the key so two bridges requesting the same agent's
+	// manifest get separate cache entries — a bridge-scoped skill materialized for
+	// one bridge must never be served to instances on another bridge.
+	return strings.concatenate({agent_id, "|", role, "|", provider, "|", project, "|", bridge_id})
 }
 
 // Bootstrap_Manifest_Result carries everything the transport layer needs to emit
@@ -1702,7 +1705,7 @@ Bootstrap_Manifest_Result :: struct {
 // otherwise it returns the cached 200 body (still no render). When the epoch has
 // advanced (some memory/agent/project write) or nothing is cached, it renders
 // once, recomputes the version, and then compares.
-bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.User_ID, agent_id, role, provider, project, if_none_match: string) -> (Bootstrap_Manifest_Result, bool, domain.Domain_Error) {
+bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.User_ID, agent_id, role, provider, project, bridge_id, if_none_match: string) -> (Bootstrap_Manifest_Result, bool, domain.Domain_Error) {
 	if service == nil || service.agents == nil do return {}, false, domain.domain_error(.Internal_Error, "agent service is not configured")
 	agent, agent_ok, agent_err := iface.agent_get(service.agents, agent_id)
 	if !agent_ok do return {}, false, agent_err
@@ -1713,7 +1716,7 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 	is_coordinator := norm_role == "coordinator"
 
 	current_epoch := bootcache.content_epoch()
-	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project)
+	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project, bridge_id)
 	defer delete(key)
 
 	sync.mutex_lock(&global_bootstrap_manifest_cache.lock)
@@ -1730,7 +1733,7 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 	if !have || entry.epoch != current_epoch {
 		// MISS: (re)render the manifest and recompute the version. This is the
 		// only path that scans memories / hashes fragments.
-		manifest_json, version := render_agent_manifest(service, owner, agent, is_coordinator, provider, project)
+		manifest_json, version := render_agent_manifest(service, owner, agent, is_coordinator, provider, project, bridge_id)
 		etag := strings.concatenate({agent_id, ":", norm_role, ":", provider, ":", project, ":", version})
 		// The cache outlives this request. render_agent_manifest and the concatenate
 		// above build these strings on the caller's per-request arena (MEM-4), which is
@@ -1779,7 +1782,7 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 // served without another render. The version is sha256 over the ordered set of
 // input fragment hashes (identity, project, tasks, role, memories, skills) so it
 // changes iff any input changes (HUB-1).
-render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, is_coordinator: bool, provider, project_id: string) -> (string, string) {
+render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, is_coordinator: bool, provider, project_id, bridge_id: string) -> (string, string) {
 	project_name := ""
 	project_repo := ""
 	project_vcs := ""
@@ -1806,7 +1809,7 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 		memories, err := iface.content_list_memories(service.content, owner)
 		if err.code == .None {
 			for m in memories {
-				if !bootstrap_memory_applies_agent(m, agent, owner, domain.Project_ID(project_id)) || m.type != .Skill do continue
+				if !bootstrap_memory_applies_agent(m, agent, owner, domain.Project_ID(project_id), bridge_id) || m.type != .Skill do continue
 				name, content := render_skill(m)
 				skill_hash := bootstrap_fragment_hash(content)
 				hub_fragment_cache_put(skill_hash, content)
@@ -1871,18 +1874,21 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 
 // bootstrap_memory_applies_agent is the agent-keyed (instance-free) variant of
 // bootstrap_memory_applies used by the manifest render. It resolves scope from
-// the agent + selected project only; bridge-scoped memories are excluded because
-// the manifest is not per-instance and no bridge is bound at render time.
-bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, owner: domain.User_ID, project_id: domain.Project_ID) -> bool {
+// the agent + selected project + the REQUESTING bridge. The manifest is not
+// per-instance, but the hub authenticates the calling bridge, so bridge_id is
+// known at render time and bridge scope is honored the same way as every other
+// dimension (empty list = applies to all; non-empty = the requesting bridge must
+// be a member). bridge_id is threaded into the cache key so a bridge-scoped skill
+// cannot bleed across bridges. An empty bridge_id (an unattributable request)
+// safely excludes any bridge-scoped memory.
+bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, owner: domain.User_ID, project_id: domain.Project_ID, bridge_id: string) -> bool {
 	if m.status != "active" do return false
 	if !memory_list_matches(m.agent_ids, agent.agent_id) do return false
 	if !memory_project_list_matches(m.project_ids, project_id) do return false
 	if len(m.template_ids) > 0 {
 		if agent.owner_user_id != owner || !memory_list_contains(m.template_ids, agent.template_id) do return false
 	}
-	// Bridge-scoped memories cannot be resolved for an agent-keyed manifest:
-	// no bridge is bound at render time, so any bridge targeting excludes them.
-	if len(m.bridge_ids) > 0 do return false
+	if !memory_list_matches(m.bridge_ids, bridge_id) do return false
 	return true
 }
 

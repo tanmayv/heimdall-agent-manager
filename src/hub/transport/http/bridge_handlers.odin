@@ -894,7 +894,7 @@ bridge_agent_manifest_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	// against the raw ETag value, so strip the surrounding quotes first.
 	if_none_match := etag_unquote(strings.trim_space(header_value(req.headers, "If-None-Match")))
 
-	result, ok, err := agent_service.bootstrap_manifest_conditional(h.agents, domain.User_ID(bridge_auth.user_id), agent_id, role, provider, project, if_none_match)
+	result, ok, err := agent_service.bootstrap_manifest_conditional(h.agents, domain.User_ID(bridge_auth.user_id), agent_id, role, provider, project, bridge_auth.bridge_id, if_none_match)
 	if !ok do return respond_error(err, req.request_id)
 
 	if result.status == 304 {
