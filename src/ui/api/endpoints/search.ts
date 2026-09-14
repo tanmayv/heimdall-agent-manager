@@ -1,5 +1,5 @@
 import { heimdallApi } from '../heimdallApi';
-import { cookieJsonFetch } from '../cookieFetch';
+import { cookieJsonFetchEnvelope } from '../cookieFetch';
 
 // UI-12 / UI-18 / SEARCH-5 / SEARCH-13: global entity search via GET /api/v1/search.
 // The rewrite/web shell is served behind the trusted proxy and authenticates with
@@ -77,7 +77,14 @@ function normalizeHit(raw: any, type: string): SearchHit {
   };
 }
 
-function normalizeSearch(data: any): SearchResponse {
+// `body` is the FULL response envelope: { data: { groups }, page: { has_more,
+// next_cursor }, meta }. The groups live under `data`, and the pagination cursor
+// under the SIBLING `page` — reading it off `data` (the pre-unwrap bug) left
+// hasMore/nextCursor always empty, so "Load more" never fired. Tolerates a
+// pre-unwrapped `data` object too (page then absent → no more pages).
+function normalizeSearch(body: any): SearchResponse {
+  const data = body?.data ?? body;
+  const page = body?.page ?? data?.page ?? {};
   const groupsRaw = data?.groups || [];
   const groups: SearchGroup[] = Array.isArray(groupsRaw)
     ? groupsRaw.map((g: any) => ({
@@ -90,8 +97,8 @@ function normalizeSearch(data: any): SearchResponse {
   return {
     groups,
     hits,
-    hasMore: Boolean(data?.has_more ?? data?.page?.has_more),
-    nextCursor: data?.next_cursor ?? data?.page?.next_cursor ?? null,
+    hasMore: Boolean(page?.has_more ?? data?.has_more),
+    nextCursor: page?.next_cursor ?? data?.next_cursor ?? null,
   };
 }
 
@@ -111,10 +118,11 @@ export const searchApi = heimdallApi.injectEndpoints({
           if (types) params.set('types', types);
           if (exclude) params.set('exclude', exclude);
           if (cursor) params.set('cursor', cursor);
-          // cookieJsonFetch => GET apiUrl('/search?…') with credentials:'include',
-          // throwing on non-2xx and unwrapping `body.data` (the {groups,page} object).
-          const data = await cookieJsonFetch(`/search?${params.toString()}`);
-          return { data: normalizeSearch(data) };
+          // Fetch the FULL envelope ({data:{groups}, page:{has_more,next_cursor}}):
+          // normalizeSearch needs the `page` sibling for cursor pagination, which the
+          // data-unwrapping fetch would strip.
+          const body = await cookieJsonFetchEnvelope(`/search?${params.toString()}`);
+          return { data: normalizeSearch(body) };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Search failed') } as any };
         }

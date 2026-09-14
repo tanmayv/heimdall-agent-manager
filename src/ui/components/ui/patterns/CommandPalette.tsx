@@ -31,7 +31,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGlobalSearchQuery, useLazyGlobalSearchQuery, type SearchHit } from '../../../api/endpoints/search';
-import { Icon, StatusDot, type IconName } from '../primitives';
+import { Icon, Spinner, StatusDot, type IconName } from '../primitives';
 import { runtimeStatusToTone } from './RuntimeChip';
 import { useDialogA11y } from '../composites/useDialogA11y';
 
@@ -316,14 +316,19 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
     }
 
     // Entities from backend search (first page + loaded pages), grouped by type.
-    if (q) {
+    // These hits belong to the DEBOUNCED, last-RESOLVED query (`trimmed`) — only show
+    // them when that still matches the CURRENT input AND the fetch has settled.
+    // Otherwise a new keystroke would keep rendering the PREVIOUS query's results
+    // through the debounce+fetch window; gating here clears stale hits immediately.
+    const entitiesFresh = trimmed.length > 0 && trimmed === query.trim() && !searchQuery.isFetching;
+    if (entitiesFresh) {
       for (const hit of entityHits) {
         const t = hit.type || '';
         out.push({ kind: 'entity', label: hit.label || hit.id, hint: hit.sublabel, hit, route: hitRoute(hit), group: ENTITY_GROUP_LABEL[t] || t || 'Entities' });
       }
     }
     return out;
-  }, [query, entityHits, actions, conversationGroups]);
+  }, [query, trimmed, searchQuery.isFetching, entityHits, actions, conversationGroups]);
 
   // Reset active index when results change.
   useEffect(() => {
@@ -377,7 +382,13 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
     flatIndex += 1;
   }
 
-  const loading = trimmed.length >= 1 && searchQuery.isFetching;
+  // "Searching" spans the whole in-flight window — the debounce wait (input typed but
+  // not yet mirrored into the debounced `trimmed`) AND the network fetch — so the
+  // affordance appears immediately on a keystroke and the empty-state never flashes
+  // mid-type. `searchFailed` is a settled request that errored (distinct from empty).
+  const qTrim = query.trim();
+  const searching = qTrim.length > 0 && (qTrim !== trimmed || searchQuery.isFetching);
+  const searchFailed = qTrim.length > 0 && !searching && searchQuery.isError;
 
   return (
     <div
@@ -415,7 +426,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
             autoComplete="off"
             spellCheck={false}
           />
-          {loading ? <span data-debug-id="command-palette-loading" className="text-caption text-muted">searching…</span> : null}
+          {searching ? <span data-debug-id="command-palette-loading" className="text-caption text-muted">searching…</span> : null}
           <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5 text-[10px] text-muted">esc</kbd>
         </div>
         <div
@@ -423,11 +434,12 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
           id={listboxId}
           role="listbox"
           aria-label="Results"
+          aria-busy={searching}
           className="flex-1 overflow-y-auto p-2"
         >
-          {results.length === 0 ? (
+          {!searching && results.length === 0 ? (
             <div data-debug-id="command-palette-empty" role="presentation" className="px-3 py-8 text-center text-sm text-muted">
-              {trimmed ? `No results for “${trimmed}”.` : 'Start typing to search or jump.'}
+              {qTrim ? `No results for “${qTrim}”.` : 'Start typing to search or jump.'}
             </div>
           ) : (
             Array.from(grouped.entries()).map(([groupLabel, { results: groupResults, indices }]) => (
@@ -487,7 +499,22 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
               </div>
             ))
           )}
-          {trimmed && hasMore ? (
+          {searching ? (
+            // Progress affordance for in-flight entity search. The Spinner is a
+            // role="status" live region, so screen readers announce it (the visible
+            // label is aria-hidden to avoid a double announcement); the listbox's
+            // aria-busy above marks the results region as updating.
+            <div data-debug-id="command-palette-searching" className="flex items-center gap-2 px-3 py-2 text-caption text-muted">
+              <Spinner size="sm" label="Searching" />
+              <span aria-hidden="true">Searching…</span>
+            </div>
+          ) : null}
+          {searchFailed ? (
+            <div data-debug-id="command-palette-error" role="status" className="px-3 py-2 text-caption text-danger">
+              Search failed — check your connection and try again.
+            </div>
+          ) : null}
+          {!searching && qTrim && hasMore ? (
             <button
               type="button"
               data-debug-id="command-palette-load-more"
