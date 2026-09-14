@@ -29,8 +29,8 @@ import {
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
-import ConversationSearchPopover from './ConversationSearchPopover';
-import { Drawer, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { CommandPalette, Drawer, Icon as UiIcon, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { buildRouteHash } from '../../utils/appLocation';
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
 import CurrentTaskStrip from './CurrentTaskStrip';
@@ -549,6 +549,33 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // The chain's agents, shaped as a single palette conversation group so the
+  // scoped search modal (opened from the header) lists them even before typing.
+  // Sourced from the chain detail we already fetch — no extra request.
+  const chainAgentGroups = useMemo(() => {
+    const chain = chainDetailQuery.data?.chain;
+    const members = (chain?.members || []) as any[];
+    if (!chainId || members.length === 0) return [];
+    const coordinator = String(chain?.coordinatorAgentInstanceId || '');
+    return [{
+      projectId: chainId,
+      projectName: 'Agents in this chain',
+      conversations: members
+        .filter((m) => m?.agentInstanceId)
+        .map((m) => ({
+          conversationId: String(m.agentInstanceId),
+          agentInstanceId: String(m.agentInstanceId),
+          title: String(m.displayName || m.agentInstanceId),
+          agentName: m.displayName ? String(m.displayName) : undefined,
+          isCoordinator: String(m.agentInstanceId) === coordinator,
+          runtimeStatus: m.runtimeStatus || undefined,
+          activityStatus: m.activityStatus || undefined,
+          unreadCount: 0,
+        })),
+    }];
+  }, [chainDetailQuery.data, chainId]);
 
   // status / runtime / header-actions overlays are @ui Menu / Popover / Drawer —
   // they own their own outside-click / Esc / focus handling (no bespoke refs).
@@ -1243,7 +1270,16 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
         </div>
 
-        <ConversationSearchPopover conversationId={conversationId} chainId={chainId} />
+        <button
+          type="button"
+          data-debug-id="conversation-search-btn"
+          aria-label="Search this conversation and its task chain"
+          title="Search this conversation & chain"
+          onClick={() => setSearchOpen(true)}
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+        >
+          <UiIcon name="search" size={16} />
+        </button>
 
         <div className="shrink-0">
           <Menu
@@ -1275,6 +1311,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           </button>
         ) : null}
       </header>
+
+      <CommandPalette
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); setSearchOpen(false); }}
+        actions={[]}
+        conversationGroups={chainAgentGroups}
+        scope={{ chainId, conversationId, label: title }}
+      />
 
       {(() => {
         const transcript = (
