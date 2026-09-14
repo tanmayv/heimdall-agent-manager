@@ -33,7 +33,7 @@ import {
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import FigDirectoryPicker from '../FigDirectoryPicker';
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
-import { Button, Icon, Input, Link, PageShell, Text, Textarea } from '@ui';
+import { Button, Icon, Input, Link, PageShell, Select, Text, Textarea } from '@ui';
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -279,12 +279,11 @@ function ProjectList() {
             data-debug-id="projects-create-fig-relative-path-input"
             value={relativePath}
           />
-          <select
+          <Select
             data-debug-id="projects-create-fig-workspace-select"
             value={workspaceName}
             disabled={Boolean(figWorkspacesError && figWorkspaces.length === 0)}
-            onChange={(e) => {
-              const ws = e.target.value;
+            onChange={(ws) => {
               setWorkspaceName(ws);
               if (!name.trim() && ws) setName(ws);
             }}
@@ -304,7 +303,7 @@ function ProjectList() {
                 {ws.name} {ws.has_google3 ? '✓ (google3)' : ''}
               </option>
             ))}
-          </select>
+          </Select>
 
           {createError ? <p data-debug-id="projects-create-error" className="mt-2 text-xs text-red-300">{createError}</p> : null}
           <div className="mt-3 flex gap-2">
@@ -390,18 +389,19 @@ function ProjectList() {
             {bridges.length > 1 ? (
               <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-black/30 border border-white/5">
                 <span className="text-xs text-zinc-400">Bridge Host:</span>
-                <select
+                <Select
                   data-debug-id="projects-create-fig-bridge-select projects-create-local-bridge-select"
                   value={selectedBridgeId}
-                  onChange={(e) => setSelectedBridgeId(e.target.value)}
-                  className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"
+                  onChange={setSelectedBridgeId}
+                  size="sm"
+                  className="w-48"
                 >
                   {bridges.map((b) => (
                     <option key={bridgeId(b)} value={bridgeId(b)}>
                       {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
             ) : null}
 

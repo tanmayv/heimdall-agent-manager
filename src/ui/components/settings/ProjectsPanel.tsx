@@ -404,12 +404,11 @@ export default function ProjectsPanel() {
             data-debug-id="settings-project-fig-relative-path-input"
             value={relativePath}
           />
-          <select
+          <Select
             data-debug-id="settings-project-fig-workspace-select"
             value={workspaceName}
             disabled={Boolean(figWorkspacesError && figWorkspaces.length === 0)}
-            onChange={(e) => {
-              const ws = e.target.value;
+            onChange={(ws) => {
               setWorkspaceName(ws);
               if (!name.trim() && ws) setName(ws);
             }}
@@ -429,7 +428,7 @@ export default function ProjectsPanel() {
                 {ws.name} {ws.has_google3 ? "✓ (google3)" : ""}
               </option>
             ))}
-          </select>
+          </Select>
 
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
@@ -548,11 +547,12 @@ export default function ProjectsPanel() {
             {bridges.length > 1 ? (
               <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-black/30 border border-white/5">
                 <span className="text-xs text-zinc-400">Bridge Host:</span>
-                <select
+                <Select
                   data-debug-id="settings-project-fig-bridge-select settings-project-local-bridge-select"
                   value={selectedBridgeId}
-                  onChange={(e) => setSelectedBridgeId(e.target.value)}
-                  className="rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-xs text-zinc-200 outline-none"
+                  onChange={setSelectedBridgeId}
+                  size="sm"
+                  className="w-48"
                 >
                   {bridges.map((b) => {
                     const id = String(b?.bridge_id || b?.bridgeId || b?.id || "");
@@ -564,7 +564,7 @@ export default function ProjectsPanel() {
                       </option>
                     );
                   })}
-                </select>
+                </Select>
               </div>
             ) : null}
 
