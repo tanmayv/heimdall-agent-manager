@@ -430,26 +430,27 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
           <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5 text-[10px] text-muted">esc</kbd>
         </div>
         {hasScope ? (
-          <div data-debug-id="command-palette-scope" className="flex items-center gap-2 border-b border-subtle px-4 py-2 text-caption text-muted">
-            <span className="text-faint">Scope</span>
-            <div role="group" aria-label="Search scope" className="inline-flex overflow-hidden rounded-lg border border-subtle">
+          <div data-debug-id="command-palette-scope" className="flex min-w-0 items-center gap-2 border-b border-subtle px-4 py-1.5 text-[11px] text-muted">
+            <span className="shrink-0 text-faint">Scope</span>
+            <div role="group" aria-label="Search scope" className="inline-flex min-w-0 items-center overflow-hidden rounded-md border border-subtle">
               <button
                 type="button"
                 data-debug-id="command-palette-scope-chain"
                 aria-pressed={scoped}
                 onClick={() => setScoped(true)}
-                className={`px-2.5 py-1 text-[12px] ${scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-white/[0.06]'}`}
+                title={scope?.label || 'This chain'}
+                className={`max-w-[200px] truncate px-2 py-0.5 ${scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-white/[0.06]'}`}
               >
-                {scope?.label ? `This chain · ${scope.label}` : 'This chain'}
+                {scope?.label || 'This chain'}
               </button>
               <button
                 type="button"
                 data-debug-id="command-palette-scope-all"
                 aria-pressed={!scoped}
                 onClick={() => setScoped(false)}
-                className={`px-2.5 py-1 text-[12px] ${!scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-white/[0.06]'}`}
+                className={`shrink-0 px-2 py-0.5 ${!scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-white/[0.06]'}`}
               >
-                Everywhere
+                All
               </button>
             </div>
           </div>

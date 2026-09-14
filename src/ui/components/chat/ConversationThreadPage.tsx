@@ -1318,7 +1318,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); setSearchOpen(false); }}
         actions={[]}
         conversationGroups={chainAgentGroups}
-        scope={{ chainId, conversationId, label: title }}
+        scope={{ chainId, conversationId, label: chainDetailQuery.data?.chain?.title || title }}
       />
 
       {(() => {
