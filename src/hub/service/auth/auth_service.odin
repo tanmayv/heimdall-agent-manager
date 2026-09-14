@@ -81,6 +81,9 @@ resolve_bridge_instance_auth :: proc(service: ^Auth_Service, req: Auth_Request) 
 		instance_id = json_key_value(req.body, "agent_instance_id")
 	}
 	if instance_id == "" {
+		if relay_token == "" {
+			return bridge_auth, true, domain.Domain_Error{}
+		}
 		return contracts.Auth_Context{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
 	}
 

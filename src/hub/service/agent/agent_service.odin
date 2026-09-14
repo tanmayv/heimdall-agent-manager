@@ -225,6 +225,9 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	agent, agent_ok, agent_err := get_agent(service, auth, input.agent_id)
 	if !agent_ok do return domain.Agent_Instance{}, false, agent_err
 	bridge_id := strings.trim_space(input.bridge_id)
+	if bridge_id == "" && auth.bridge_id != "" {
+		bridge_id = auth.bridge_id
+	}
 	if bridge_id == "" do return domain.Agent_Instance{}, false, domain.domain_error(.Validation_Failed, "bridge_id is required; choose the bridge to run this agent on")
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
 	if !bridge_ok do return domain.Agent_Instance{}, false, bridge_err

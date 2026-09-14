@@ -6,7 +6,12 @@ export type ActionState = 'active' | 'in_flight' | 'completed';
 export type Action = {
   id: string;
   owner_user_id: string;
-  target_instance_id: string;
+  target_instance_id?: string;
+  target_agent_id?: string;
+  target_bridge_id?: string;
+  target_provider?: string;
+  target_tier?: string;
+  target_project_id?: string;
   prompt_text: string;
   cron_expr?: string;
   timezone?: string;
@@ -23,7 +28,12 @@ export type Action = {
 };
 
 export type CreateActionInput = {
-  target_instance_id: string;
+  target_instance_id?: string;
+  target_agent_id?: string;
+  target_bridge_id?: string;
+  target_provider?: string;
+  target_tier?: string;
+  target_project_id?: string;
   prompt_text: string;
   cron_expr?: string;
   timezone?: string;
@@ -35,6 +45,12 @@ export type CreateActionInput = {
 };
 
 export type PatchActionInput = {
+  target_instance_id?: string;
+  target_agent_id?: string;
+  target_bridge_id?: string;
+  target_provider?: string;
+  target_tier?: string;
+  target_project_id?: string;
   prompt_text?: string;
   cron_expr?: string;
   timezone?: string;

@@ -194,6 +194,16 @@ write_action_json :: proc(b: ^strings.Builder, a: domain.Action) {
 	write_handler_json_string(b, a.created_at)
 	strings.write_string(b, "\",\"updated_at\":\"")
 	write_handler_json_string(b, a.updated_at)
+	strings.write_string(b, "\",\"target_agent_id\":\"")
+	write_handler_json_string(b, string(a.target_agent_id))
+	strings.write_string(b, "\",\"target_bridge_id\":\"")
+	write_handler_json_string(b, string(a.target_bridge_id))
+	strings.write_string(b, "\",\"target_provider\":\"")
+	write_handler_json_string(b, a.target_provider)
+	strings.write_string(b, "\",\"target_tier\":\"")
+	write_handler_json_string(b, a.target_tier)
+	strings.write_string(b, "\",\"target_project_id\":\"")
+	write_handler_json_string(b, string(a.target_project_id))
 	strings.write_string(b, "\"}")
 }
 
@@ -224,8 +234,28 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
 	if !ok do return auth_resp
 
-	target_instance_id := json_string(req.body, "target_instance_id")
+	target_instance_id := strings.trim_space(json_string(req.body, "target_instance_id"))
+	target_agent_id := strings.trim_space(json_string(req.body, "target_agent_id"))
+	target_bridge_id := strings.trim_space(json_string(req.body, "target_bridge_id"))
+	target_provider := strings.trim_space(json_string(req.body, "target_provider"))
+	target_tier := strings.trim_space(json_string(req.body, "target_tier"))
+	target_project_id := strings.trim_space(json_string(req.body, "target_project_id"))
+
+	has_instance_target := target_instance_id != ""
+	has_agent_target := target_agent_id != "" || target_bridge_id != ""
+
+	if has_instance_target && has_agent_target {
+		return respond_error(domain.domain_error(.Validation_Failed, "cannot specify both target_instance_id and target_agent_id/target_bridge_id"), req.request_id)
+	}
+	if !has_instance_target && !has_agent_target {
+		return respond_error(domain.domain_error(.Validation_Failed, "either target_instance_id OR (target_agent_id and target_bridge_id) is required"), req.request_id)
+	}
+	if !has_instance_target && (target_agent_id == "" || target_bridge_id == "") {
+		return respond_error(domain.domain_error(.Validation_Failed, "both target_agent_id and target_bridge_id are required for agent targeting"), req.request_id)
+	}
+
 	prompt_text := json_string(req.body, "prompt_text")
+	if prompt_text == "" do prompt_text = json_string(req.body, "prompt")
 	cron_expr := strings.trim_space(json_string(req.body, "cron_expr"))
 	timezone := strings.trim_space(json_string(req.body, "timezone"))
 	blackout_dates := strings.trim_space(json_string(req.body, "blackout_dates"))
@@ -234,7 +264,6 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	target_run_at := strings.trim_space(json_string(req.body, "target_run_at"))
 	interval := strings.trim_space(json_string(req.body, "interval"))
 
-	if target_instance_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "target_instance_id is required"), req.request_id)
 	if prompt_text == "" do return respond_error(domain.domain_error(.Validation_Failed, "prompt_text is required"), req.request_id)
 
 	if cron_expr != "" {
@@ -261,8 +290,22 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 	if timezone == "" do timezone = "UTC"
 
-	inst, inst_ok, inst_err := agent_service.get_instance(h.agents, auth_ctx, target_instance_id)
-	if !inst_ok do return respond_error(inst_err, req.request_id)
+	bridge_to_bump := ""
+	if has_instance_target {
+		inst, inst_ok, inst_err := agent_service.get_instance(h.agents, auth_ctx, target_instance_id)
+		if !inst_ok do return respond_error(inst_err, req.request_id)
+		bridge_to_bump = inst.bridge_id
+	} else {
+		_, agt_ok, agt_err := agent_service.get_agent(h.agents, auth_ctx, target_agent_id)
+		if !agt_ok do return respond_error(agt_err, req.request_id)
+
+		bridge, brg_ok, brg_err := iface.bridge_get_bridge(h.bridges.repo, target_bridge_id)
+		if !brg_ok do return respond_error(brg_err, req.request_id)
+		if string(bridge.owner_user_id) != auth_ctx.user_id {
+			return respond_error(domain.domain_error(.Not_Found, "bridge not found"), req.request_id)
+		}
+		bridge_to_bump = target_bridge_id
+	}
 
 	now := platform.clock_now(h.clock)
 	// For cron actions we must NOT seed target_run_at = now, or the action fires
@@ -291,12 +334,17 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		in_flight = false,
 		created_at = now,
 		updated_at = now,
+		target_agent_id = domain.Agent_ID(target_agent_id),
+		target_bridge_id = domain.Bridge_ID(target_bridge_id),
+		target_provider = target_provider,
+		target_tier = target_tier,
+		target_project_id = domain.Project_ID(target_project_id),
 	}
 
 	saved, save_ok, save_err := h.repo.save(h.repo.ctx, act)
 	if !save_ok do return respond_error(save_err, req.request_id)
 
-	bump_bridge_version(h, inst.bridge_id)
+	bump_bridge_version(h, bridge_to_bump)
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"data\":")
@@ -387,8 +435,12 @@ patch_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	saved, save_ok, save_err := h.repo.save(h.repo.ctx, act)
 	if !save_ok do return respond_error(save_err, req.request_id)
 
-	inst, inst_ok, _ := iface.agent_get_instance(h.agents.agents, string(act.target_instance_id))
-	if inst_ok do bump_bridge_version(h, inst.bridge_id)
+	if act.target_instance_id != "" {
+		inst, inst_ok, _ := iface.agent_get_instance(h.agents.agents, string(act.target_instance_id))
+		if inst_ok do bump_bridge_version(h, inst.bridge_id)
+	} else if act.target_bridge_id != "" {
+		bump_bridge_version(h, string(act.target_bridge_id))
+	}
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"data\":")
@@ -412,8 +464,12 @@ delete_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	del_ok, del_err := h.repo.delete_action(h.repo.ctx, id)
 	if !del_ok do return respond_error(del_err, req.request_id)
 
-	inst, inst_ok, _ := iface.agent_get_instance(h.agents.agents, string(act.target_instance_id))
-	if inst_ok do bump_bridge_version(h, inst.bridge_id)
+	if act.target_instance_id != "" {
+		inst, inst_ok, _ := iface.agent_get_instance(h.agents.agents, string(act.target_instance_id))
+		if inst_ok do bump_bridge_version(h, inst.bridge_id)
+	} else if act.target_bridge_id != "" {
+		bump_bridge_version(h, string(act.target_bridge_id))
+	}
 
 	return Response{status = 200, content_type = "application/json", body = "{\"deleted\":true}"}
 }
@@ -430,12 +486,41 @@ run_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !act_ok do return respond_error(domain.domain_error(.Not_Found, "action not found"), req.request_id)
 	if string(act.owner_user_id) != auth_ctx.user_id do return respond_error(domain.domain_error(.Not_Found, "action not found"), req.request_id)
 
-	inst, inst_ok, inst_err := agent_service.get_instance(h.agents, auth_ctx, string(act.target_instance_id))
+	target_instance_id := string(act.target_instance_id)
+	if target_instance_id == "" {
+		instances, _ := agent_service.list_instances_filtered(h.agents, auth_ctx, agent_service.List_Instances_Filter{
+			agent_id = string(act.target_agent_id),
+			bridge_id = string(act.target_bridge_id),
+		}, 50, "")
+		for cand in instances {
+			if cand.runtime_status == "running" || cand.runtime_status == "idle" {
+				target_instance_id = cand.agent_instance_id
+				break
+			}
+		}
+		if target_instance_id == "" {
+			if len(instances) > 0 {
+				target_instance_id = instances[0].agent_instance_id
+			} else {
+				new_inst, created, create_err := agent_service.create_instance(h.agents, auth_ctx, agent_service.Create_Instance_Input{
+					agent_id = string(act.target_agent_id),
+					bridge_id = string(act.target_bridge_id),
+					provider = act.target_provider,
+					tier = act.target_tier,
+					project_id = act.target_project_id,
+				})
+				if !created do return respond_error(create_err, req.request_id)
+				target_instance_id = new_inst.agent_instance_id
+			}
+		}
+	}
+
+	inst, inst_ok, inst_err := agent_service.get_instance(h.agents, auth_ctx, target_instance_id)
 	if !inst_ok do return respond_error(inst_err, req.request_id)
 
 	// Ensure target instance is running (wake/relaunch via existing plumbing if stopped/failed/unreachable)
 	if inst.runtime_status == "stopped" || inst.runtime_status == "failed" || inst.runtime_status == "unreachable" {
-		_, restarted, restart_err := agent_service.restart_instance(h.agents, auth_ctx, string(act.target_instance_id))
+		_, restarted, restart_err := agent_service.restart_instance(h.agents, auth_ctx, target_instance_id)
 		if !restarted do return respond_error(restart_err, req.request_id)
 	}
 
@@ -488,16 +573,7 @@ bridge_list_actions_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		return Response{status = 304, content_type = "application/json", body = "", headers = headers}
 	}
 
-	instances, inst_err := iface.agent_list_instances_by_bridge(h.agents.agents, bridge_id)
-	actions := make([dynamic]domain.Action)
-	if inst_err.code == .None {
-		for inst in instances {
-			list, _ := h.repo.list_by_instance(h.repo.ctx, domain.Agent_Instance_ID(inst.agent_instance_id))
-			for item in list {
-				append(&actions, item)
-			}
-		}
-	}
+	actions, _ := h.repo.list_by_bridge(h.repo.ctx, domain.Bridge_ID(bridge_id))
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"data\":[")
@@ -526,9 +602,23 @@ bridge_execute_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	act, act_ok, _ := h.repo.get(h.repo.ctx, id)
 	if !act_ok do return respond_error(domain.domain_error(.Not_Found, "action not found"), req.request_id)
 
-	inst, inst_ok, _ := iface.agent_get_instance(h.agents.agents, string(act.target_instance_id))
+	target_instance_id := string(act.target_instance_id)
+	if target_instance_id == "" {
+		target_instance_id = json_string(req.body, "instance_id")
+		if target_instance_id == "" {
+			target_instance_id = json_string(req.body, "target_instance_id")
+		}
+	}
+	if target_instance_id == "" {
+		return respond_error(domain.domain_error(.Validation_Failed, "instance_id is required"), req.request_id)
+	}
+
+	inst, inst_ok, _ := iface.agent_get_instance(h.agents.agents, target_instance_id)
 	if !inst_ok || inst.bridge_id != bridge_auth.bridge_id {
 		return respond_error(domain.domain_error(.Forbidden, "action target instance does not belong to this bridge"), req.request_id)
+	}
+	if act.target_agent_id != "" && inst.agent_id != string(act.target_agent_id) {
+		return respond_error(domain.domain_error(.Validation_Failed, "target instance agent does not match action target_agent_id"), req.request_id)
 	}
 
 	now := platform.clock_now(h.clock)

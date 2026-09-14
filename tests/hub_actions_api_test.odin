@@ -390,5 +390,126 @@ main :: proc() {
 	check(sp_list.status == 200, fmt.tprintf("backward compat list failed: %s", sp_list.body))
 	check(strings.contains(sp_list.body, act1_id), "backward compat list contains act1")
 
+	// ==========================================
+	// Test 9: Agent-targeted actions (REQ-SCHED-1)
+	// ==========================================
+	// 9a. Target validation
+	// Neither target specified
+	resp_no_target := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = "{\"prompt_text\":\"no target\"}",
+		request_id = "req_no_target",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_no_target.status == 400, fmt.tprintf("expected 400 for no target, got %d: %s", resp_no_target.status, resp_no_target.body))
+
+	// Both instance and agent target specified
+	both_targets_body := strings.concatenate({"{\"target_instance_id\":\"inst_ac_1\",\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"both targets\"}"})
+	defer delete(both_targets_body)
+	resp_both_target := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = both_targets_body,
+		request_id = "req_both_targets",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_both_target.status == 400, fmt.tprintf("expected 400 for both targets, got %d: %s", resp_both_target.status, resp_both_target.body))
+
+	// Incomplete agent target: agent_id without bridge_id
+	resp_no_bridge := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = "{\"target_agent_id\":\"agt_ac_1\",\"prompt_text\":\"no bridge\"}",
+		request_id = "req_no_bridge",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_no_bridge.status == 400, fmt.tprintf("expected 400 for missing bridge_id, got %d: %s", resp_no_bridge.status, resp_no_bridge.body))
+
+	// Incomplete agent target: bridge_id without agent_id
+	no_agent_body := strings.concatenate({"{\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"no agent\"}"})
+	defer delete(no_agent_body)
+	resp_no_agent := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = no_agent_body,
+		request_id = "req_no_agent",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_no_agent.status == 400, fmt.tprintf("expected 400 for missing agent_id, got %d: %s", resp_no_agent.status, resp_no_agent.body))
+
+	// 9b. Create valid agent-targeted action
+	create_agent_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"target_provider\":\"claude\",\"target_tier\":\"normal\",\"prompt_text\":\"Curator recurring prompt\",\"cron_expr\":\"0 9 * * 1-5\"}"})
+	defer delete(create_agent_body)
+	create_agent_action_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = create_agent_body,
+		request_id = "req_create_agent_act",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(create_agent_action_resp.status == 201, fmt.tprintf("create agent-targeted action failed: %s", create_agent_action_resp.body))
+	agent_act_id := extract_json_string(create_agent_action_resp.body, "id")
+	check(agent_act_id != "", "agent action id must not be empty")
+	check(strings.contains(create_agent_action_resp.body, "\"target_agent_id\":\"agt_ac_1\""), "target_agent_id in response")
+	check(strings.contains(create_agent_action_resp.body, bridge1_id), "target_bridge_id in response")
+	check(strings.contains(create_agent_action_resp.body, "\"target_provider\":\"claude\""), "target_provider in response")
+	check(strings.contains(create_agent_action_resp.body, "\"target_tier\":\"normal\""), "target_tier in response")
+
+	// 9c. Bridge actions sync includes agent-targeted action
+	bridge_sync_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/bridge/actions",
+		request_id = "req_bridge_sync_agent_act",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_sync_resp.status == 200, fmt.tprintf("bridge sync failed: %s", bridge_sync_resp.body))
+	check(strings.contains(bridge_sync_resp.body, agent_act_id), "bridge actions sync returned agent-targeted action")
+	check(strings.contains(bridge_sync_resp.body, "Curator recurring prompt"), "prompt text in bridge sync")
+
+	// 9d. Bridge execute with dynamically resolved instance_id in body
+	// Set target_run_at to past so it's eligible
+	agent_act_rec, _, _ := graph.repos.actions.get(graph.repos.actions.ctx, domain.Action_ID(agent_act_id))
+	agent_act_rec.target_run_at = "2020-01-01T00:00:00Z"
+	agent_act_rec.in_flight = false
+	agent_act_rec.state = .Active
+	_, _, _ = graph.repos.actions.save(graph.repos.actions.ctx, agent_act_rec)
+
+	bridge_exec_agent_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", agent_act_id),
+		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
+		request_id = "req_bridge_exec_agent",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_exec_agent_resp.status == 200, fmt.tprintf("bridge execute agent action failed: %s", bridge_exec_agent_resp.body))
+	agent_act_msg_id := extract_json_string(bridge_exec_agent_resp.body, "message_id")
+	check(agent_act_msg_id != "", "message_id in bridge execute agent response")
+
+	delivered_agent_msg, got_agent_msg, _ := graph.repos.content.get_message(graph.repos.content.ctx, agent_act_msg_id)
+	check(got_agent_msg, "chat message found for executed agent action")
+	check(delivered_agent_msg.body == "Curator recurring prompt", "message body mismatch")
+	check(delivered_agent_msg.message_type == "action", "message_type mismatch")
+
+	// 9e. Run-Now resolves existing live instance of that agent
+	run_agent_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/actions/%s/run", agent_act_id),
+		body = "{}",
+		request_id = "req_run_agent_act",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(run_agent_resp.status == 200, fmt.tprintf("run-now agent action failed: %s", run_agent_resp.body))
+	run_agent_msg_id := extract_json_string(run_agent_resp.body, "message_id")
+	check(run_agent_msg_id != "", "message_id in run-now agent response")
+
 	fmt.println("ALL ACTIONS API TESTS PASSED")
 }

@@ -8,6 +8,11 @@ Action_State :: enum {
 
 Scheduled_Prompt_State :: Action_State
 
+Action_Target_Mode :: enum {
+	Instance,
+	Agent,
+}
+
 Action :: struct {
 	id:                 Action_ID,
 	owner_user_id:      User_ID,
@@ -27,6 +32,20 @@ Action :: struct {
 	deleted_at:         string,
 	created_at:         string,
 	updated_at:         string,
+	// Agent targeting fields (REQ-SCHED-1):
+	target_agent_id:    Agent_ID,
+	target_bridge_id:   Bridge_ID,
+	target_provider:    string,
+	target_tier:        string,
+	target_project_id:  Project_ID,
+}
+
+action_target_mode :: proc(action: Action) -> Action_Target_Mode {
+	if action.target_instance_id != "" {
+		return .Instance
+	}
+	return .Agent
 }
 
 Scheduled_Prompt :: Action
+

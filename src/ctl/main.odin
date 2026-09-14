@@ -88,6 +88,17 @@ main :: proc() {
 		return
 	}
 
+	if cmd[0] == "actions" || cmd[0] == "action" || cmd[0] == "scheduled-prompts" || cmd[0] == "scheduled-prompt" {
+		url := hub_user_mode_url(os.args)
+		tok := hub_user_mode_token(os.args)
+		if url == "" || tok == "" {
+			fmt.println(`{"ok":false,"message":"actions requires --hub-url and --user-token (or HAM_HUB_URL/HEIMDALL_HUB_URL and HAM_HUB_USER_TOKEN/HEIMDALL_USER_TOKEN)"}`)
+			return
+		}
+		ctl_hub_actions(strings.trim_right(url, "/"), tok, cmd[1:], os.args)
+		return
+	}
+
 	if cmd[0] == "start-success" {
 		if agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != "" {
 			agent_cmd := [?]string{"agent", "start-success"}
