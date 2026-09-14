@@ -758,7 +758,7 @@ function ProjectConversationTree({
       </div>
       {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-caption leading-4 text-red-100">{error}</div> : null}
       {!loading && !error && groups.length === 0 ? (
-        <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-zinc-600">No running agents. Start one with New chat.</div>
+        <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-zinc-600">No running agents. Open Search (⌘K) to start one.</div>
       ) : null}
       <div className="space-y-0.5">
         {groups.map((projectGroup) => (
@@ -1230,18 +1230,26 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         </div>
 
         <div className="flex-1 overflow-y-auto p-3">
-          {/* Primary action: start a new conversation. Prominent, always first. */}
-          <a
-            data-debug-id="shell-new-chat-button"
-            href={shellHash('/conversations/new')}
-            title="New chat"
-            className={`mb-2 flex min-h-11 items-center gap-2 rounded-2xl bg-sky-400 px-3 py-2 text-sm font-black text-black shadow-lg shadow-sky-950/30 hover:bg-sky-300 ${collapsed ? 'justify-center' : ''}`}
+          {/* Primary action: open the command palette (search + jump + new chat).
+              Replaces the old direct "New chat" link — the palette is the canonical
+              entry point (also Cmd/Ctrl-K on desktop, the mobile tab bar center). */}
+          <button
+            data-debug-id="shell-sidebar-search-button"
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            title="Search (⌘K)"
+            aria-label="Search"
+            aria-keyshortcuts="Meta+K Control+K"
+            className={`mb-2 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 hover:text-white ${collapsed ? 'justify-center' : ''}`}
           >
-            <Icon name="plus" size={18} />
-            {!collapsed && <span>New chat</span>}
-          </a>
-          {/* Command palette is keyboard-only on desktop (Cmd/Ctrl-K, wired globally).
-              On mobile it lives in the bottom tab bar's center button. No rail button. */}
+            <Icon name="search" size={18} />
+            {!collapsed && (
+              <>
+                <span className="flex-1 text-left">Search</span>
+                <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500">⌘K</kbd>
+              </>
+            )}
+          </button>
           <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
