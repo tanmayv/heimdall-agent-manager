@@ -37,3 +37,8 @@ def test_no_native_select_outside_ui_library():
         "Native <select> is banned outside @ui — use the @ui Select component. "
         f"Offending files: {sorted(offenders)}"
     )
+
+
+if __name__ == "__main__":
+    test_no_native_select_outside_ui_library()
+    print("PASS: ui_no_native_select_test")

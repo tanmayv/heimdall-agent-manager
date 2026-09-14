@@ -670,8 +670,8 @@ function ProjectGroupItem({
           aria-controls={`sidebar-project-body-${projectId}`}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[13px] font-semibold text-zinc-200 hover:text-white"
         >
-          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-flex w-4 items-center justify-center text-zinc-400">
-            <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
+          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-flex w-4 items-center justify-center text-sky-400">
+            <Icon name={collapsed ? 'folder' : 'folder-open'} size={15} />
           </span>
           <span className="truncate">{projectGroup.project.name}</span>
         </button>

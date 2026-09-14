@@ -7,8 +7,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useLazyListBridgeDirQuery, useMkdirBridgePathMutation, type BridgeFsEntry } from '../api/endpoints/bridgeFs';
-
-import { Button, Icon, IconButton, Input } from '@ui';
+import { Badge, Button, Icon, IconButton, Input, Panel } from '@ui';
 function str(v: any): string { return String(v ?? '').trim(); }
 
 export default function BridgeDirectoryPicker({
@@ -70,12 +69,17 @@ export default function BridgeDirectoryPicker({
     return dirs.sort((a, b) => a.name.localeCompare(b.name));
   }, [entries, showHidden]);
 
+  function joinPath(base: string, name: string): string {
+    if (!base || base === '/') return `/${name}`;
+    return `${base.replace(/\/+$/, '')}/${name}`;
+  }
+
   async function createFolder() {
     const name = newFolder.trim();
     if (!name) return;
     setError('');
     try {
-      const target = cwd ? `${cwd}/${name}` : name;
+      const target = cwd ? joinPath(cwd, name) : name;
       const res = await mkdir({ bridgeId, path: target }).unwrap();
       if (!res.ok) { setError(str(res.error?.message) || 'Could not create folder'); return; }
       setNewFolder(''); setShowNewFolder(false);
@@ -104,17 +108,20 @@ export default function BridgeDirectoryPicker({
     const out: { label: string; path: string }[] = [{ label: root.split('/').filter(Boolean).slice(-1)[0] || '/', path: root }];
     if (cwd !== root && cwd.startsWith(root)) {
       const rest = cwd.slice(root.length).split('/').filter(Boolean);
-      let acc = root;
+      let acc = root === '/' ? '' : root;
       for (const seg of rest) { acc = `${acc}/${seg}`; out.push({ label: seg, path: acc }); }
     }
     return out;
   }, [cwd, root]);
 
   return (
-    <div data-debug-id={debugId} className="w-full rounded-2xl border border-white/12 bg-[#0f1115] p-3 shadow-2xl">
-      <div className="mb-2 flex items-center justify-between gap-2">
+    <Panel data-debug-id={debugId} tone="raised" padding="md" className="w-full shadow-2xl">
+      <div className="mb-3 flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</div>
+          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">
+            <Icon name="folder" size={14} className="text-sky-400" />
+            <span>Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</span>
+          </div>
           {root ? <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-600" title={`Allowed root: ${root}`}>root: {root}</div> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -124,17 +131,17 @@ export default function BridgeDirectoryPicker({
       </div>
 
       {/* breadcrumb */}
-      <div data-debug-id={`${debugId}-breadcrumb`} className="mb-2 flex flex-wrap items-center gap-1 text-[12px] text-zinc-400">
+      <div data-debug-id={`${debugId}-breadcrumb`} className="mb-2.5 flex flex-wrap items-center gap-1 text-xs text-zinc-400">
         {crumbs.map((c, i) => (
           <span key={c.path} className="flex items-center gap-1">
             {i > 0 ? <Icon name="chevron-right" size={12} className="text-zinc-600" /> : null}
-            <button data-debug-id={`${debugId}-crumb-${i}`} type="button" onClick={() => void load(c.path)} className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-white/10 hover:text-white">{c.label}</button>
+            <button data-debug-id={`${debugId}-crumb-${i}`} type="button" onClick={() => void load(c.path)} className="max-w-[160px] truncate rounded px-1.5 py-0.5 font-mono text-xs font-medium text-zinc-200 hover:bg-white/10 hover:text-white transition">{c.label}</button>
           </span>
         ))}
       </div>
 
       {/* directory list */}
-      <div data-debug-id={`${debugId}-list`} className="max-h-[240px] overflow-y-auto rounded-xl border border-white/8 bg-black/20">
+      <div data-debug-id={`${debugId}-list`} className="max-h-[240px] overflow-y-auto rounded-xl border border-white/10 bg-black/20 p-1 space-y-0.5">
         {listState.isFetching ? (
           <div data-debug-id={`${debugId}-loading`} className="p-4 text-center text-xs text-zinc-500">Loading…</div>
         ) : visibleEntries.length === 0 ? (
@@ -144,14 +151,18 @@ export default function BridgeDirectoryPicker({
             key={e.name}
             data-debug-id={`${debugId}-entry-${e.name}`}
             type="button"
-            onClick={() => void load(cwd ? `${cwd}/${e.name}` : e.name)}
-            className="flex w-full items-center gap-2 border-b border-white/[0.04] px-3 py-2 text-left text-[13px] text-zinc-200 last:border-b-0 hover:bg-white/[0.06]"
+            onClick={() => void load(cwd ? joinPath(cwd, e.name) : e.name)}
+            className="flex w-full items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-white/[0.04] transition cursor-pointer text-left group"
           >
-            <Icon name="folder" size={15} className="shrink-0 text-sky-300/70" />
-            <span className="min-w-0 flex-1 truncate">{e.name}</span>
-            {e.has_git ? <span className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">git</span> : null}
-            {e.hidden ? <span className="shrink-0 text-[10px] text-zinc-600">hidden</span> : null}
-            <Icon name="chevron-right" size={13} className="shrink-0 text-zinc-600" />
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Icon name="folder" size={15} className="shrink-0 text-sky-400 group-hover:scale-105 transition-transform" />
+              <span className="text-zinc-200 text-xs font-mono truncate group-hover:text-white transition-colors">{e.name}</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {e.has_git ? <Badge tone="success" emphasis="soft" className="font-mono text-[10px]">git</Badge> : null}
+              {e.hidden ? <Badge tone="neutral" emphasis="soft" className="font-mono text-[10px]">hidden</Badge> : null}
+              <Icon name="chevron-right" size={14} className="shrink-0 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+            </div>
           </button>
         ))}
       </div>
@@ -172,7 +183,20 @@ export default function BridgeDirectoryPicker({
 
       {/* path input + actions */}
       <div className="mt-2">
-        <Input data-debug-id={`${debugId}-path-input`} value={pathInput} onChange={setPathInput} placeholder="~/path/on/this/device" width="full" className="font-mono" />
+        <Input
+          data-debug-id={`${debugId}-path-input`}
+          value={pathInput}
+          onChange={setPathInput}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (pathInput.trim()) void load(pathInput.trim());
+            }
+          }}
+          placeholder="~/path/on/this/device"
+          width="full"
+          className="font-mono"
+        />
       </div>
 
       {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-caption text-red-300">{error}</p> : null}
@@ -181,6 +205,6 @@ export default function BridgeDirectoryPicker({
         <Button data-debug-id={`${debugId}-create-typed-btn`} variant="secondary" onClick={createTypedPath}>Create typed path</Button>
         <Button data-debug-id={`${debugId}-pick-btn`} variant="primary" onClick={() => onPick(str(pathInput) || cwd)}>Use this folder</Button>
       </div>
-    </div>
+    </Panel>
   );
 }

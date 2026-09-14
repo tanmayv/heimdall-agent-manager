@@ -28,7 +28,7 @@ import { useLazyStatBridgePathQuery, useMkdirBridgePathMutation } from '../../ap
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
-import { Button, Icon, Input, Link, PageShell, Text, Textarea } from '@ui';
+import { Badge, Button, FormField, Icon, Input, Link, PageShell, Panel, Select, StatusDot, Text, Textarea } from '@ui';
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -37,6 +37,10 @@ function bridgeId(b: any): string { return str(b?.bridge_id || b?.bridgeId || b?
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 // TODO(FIX): Replace loose fallback chain with canonical typed schema property
 function bridgeLabel(b: any): string { return str(b?.label || b?.machine_hostname || bridgeId(b)); }
+function bridgeIsOnline(b: any): boolean {
+  const status = str(b?.status || b?.runtime_status || b?.state || 'online').toLowerCase();
+  return status === 'online' || status === 'connected';
+}
 
 function projectIdFromRoute(): string {
   try {
@@ -70,14 +74,26 @@ export default function ProjectsSurface() {
 // ---------------------------------------------------------------------------
 function ProjectList() {
   const projectsQuery = useListProjectsQuery();
+  const bridgesQuery = useListBridgesQuery();
   const [createProject, createState] = useCreateProjectMutation();
   const [query, setQuery] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState('');
   const [defaultPath, setDefaultPath] = useState('');
+  const [showLocalPicker, setShowLocalPicker] = useState(false);
+  const [selectedBridgeId, setSelectedBridgeId] = useState('');
   const [createError, setCreateError] = useState('');
 
   const projects: Project[] = useMemo(() => (projectsQuery.data?.projects || projectsQuery.data || []) as Project[], [projectsQuery.data]);
+  const bridges: any[] = useMemo(() => (bridgesQuery.data?.bridges || []).filter((b: any) => str(b?.status || b?.state || 'online').toLowerCase() !== 'revoked'), [bridgesQuery.data]);
+
+  useEffect(() => {
+    if (!selectedBridgeId && bridges.length > 0) {
+      const online = bridges.find(bridgeIsOnline);
+      setSelectedBridgeId(bridgeId(online || bridges[0]));
+    }
+  }, [bridges, selectedBridgeId]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return projects;
@@ -89,11 +105,13 @@ function ProjectList() {
     if (!name.trim()) { setCreateError('Name is required.'); return; }
     try {
       await createProject({ name: name.trim(), default_path: defaultPath.trim() }).unwrap();
-      setName(''); setDefaultPath(''); setShowCreate(false);
+      setName(''); setDefaultPath(''); setShowCreate(false); setShowLocalPicker(false);
     } catch (e: any) {
       setCreateError(str(e?.data?.error?.message || e?.error || e?.message) || 'Create failed');
     }
   }
+
+  const selectedBridge = bridges.find((b) => bridgeId(b) === selectedBridgeId);
 
   return (
     <PageShell
@@ -109,21 +127,83 @@ function ProjectList() {
       <div data-debug-id="projects-surface">
 
       {showCreate ? (
-        <div data-debug-id="projects-create-form" className="mb-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <Panel data-debug-id="projects-create-form" tone="raised" padding="md" className="mb-5 space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-              <Input data-debug-id="projects-create-name-input" value={name} onChange={setName} width="full" className="mt-1" placeholder="e.g. heimdall agent manager" />
-            </label>
-            <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
-              <Input data-debug-id="projects-create-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="mt-1 font-mono" placeholder="~/path/to/repo" />
-            </label>
+            <FormField label="Name" required>
+              <Input
+                data-debug-id="projects-create-name-input"
+                value={name}
+                onChange={setName}
+                width="full"
+                placeholder="e.g. heimdall agent manager"
+              />
+            </FormField>
+            <FormField label="Default path">
+              <div className="flex items-center gap-2">
+                <Input
+                  data-debug-id="projects-create-path-input"
+                  value={defaultPath}
+                  onChange={setDefaultPath}
+                  width="full"
+                  className="flex-1 font-mono"
+                  placeholder="~/path/to/repo"
+                />
+                <Button
+                  data-debug-id="projects-create-local-browse-btn"
+                  variant="secondary"
+                  size="sm"
+                  disabled={!selectedBridgeId}
+                  onClick={() => setShowLocalPicker((v) => !v)}
+                  leading={<Icon name="folder" size={14} />}
+                >
+                  {showLocalPicker ? 'Hide Browser' : 'Browse…'}
+                </Button>
+              </div>
+            </FormField>
           </div>
-          {createError ? <p data-debug-id="projects-create-error" className="mt-2 text-xs text-red-300">{createError}</p> : null}
-          <div className="mt-3 flex gap-2">
+
+          {showLocalPicker && selectedBridgeId ? (
+            <div className="space-y-2 rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3">
+              {bridges.length > 1 ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-zinc-400">Bridge host:</span>
+                  <Select
+                    data-debug-id="projects-create-local-bridge-select"
+                    value={selectedBridgeId}
+                    onChange={(val) => setSelectedBridgeId(val)}
+                  >
+                    {bridges.map((b) => (
+                      <option key={bridgeId(b)} value={bridgeId(b)}>
+                        {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              ) : null}
+              <BridgeDirectoryPicker
+                debugId="projects-create-local-picker"
+                bridgeId={selectedBridgeId}
+                bridgeLabel={selectedBridge ? bridgeLabel(selectedBridge) : undefined}
+                initialPath={defaultPath}
+                onPick={(p) => {
+                  setDefaultPath(p);
+                  if (!name.trim()) {
+                    const base = p.split('/').filter(Boolean).pop();
+                    if (base) setName(base);
+                  }
+                  setShowLocalPicker(false);
+                }}
+                onClose={() => setShowLocalPicker(false)}
+              />
+            </div>
+          ) : null}
+
+          {createError ? <p data-debug-id="projects-create-error" className="text-xs text-red-300">{createError}</p> : null}
+          <div className="flex gap-2">
             <Button variant="primary" size="md" data-debug-id="projects-create-submit-btn" disabled={createState.isLoading} onClick={submitCreate}>{createState.isLoading ? 'Creating…' : 'Create'}</Button>
-            <Button variant="secondary" size="md" data-debug-id="projects-create-cancel-btn" onClick={() => setShowCreate(false)}>Cancel</Button>
+            <Button variant="secondary" size="md" data-debug-id="projects-create-cancel-btn" onClick={() => { setShowCreate(false); setShowLocalPicker(false); }}>Cancel</Button>
           </div>
-        </div>
+        </Panel>
       ) : null}
 
       <Input
@@ -195,7 +275,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
       <div data-debug-id="project-detail">
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="lg:col-span-2">
-          <AboutPanel projectId={projectId} project={project} />
+          <AboutPanel projectId={projectId} project={project} bridges={bridges} />
         </div>
         <AgentsPanel agents={agents} loading={agentsQuery.isLoading} projectId={projectId} />
         <MemoryPanel memories={memories} loading={memoryQuery.isLoading} projectId={projectId} />
@@ -209,24 +289,35 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 }
 
 function Card({ title, count, children, debugId, action }: { title: string; count?: number; children: React.ReactNode; debugId: string; action?: React.ReactNode }) {
+  const headerTitle = (
+    <span>
+      {title}
+      {typeof count === 'number' ? <span className="ml-2 text-caption font-normal text-muted">{count}</span> : null}
+    </span>
+  );
   return (
-    <section data-debug-id={debugId} className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-200">{title}{typeof count === 'number' ? <span className="ml-2 text-xs font-normal text-zinc-500">{count}</span> : null}</h2>
-        {action}
-      </div>
+    <Panel data-debug-id={debugId} title={headerTitle} actions={action} tone="raised" padding="md">
       {children}
-    </section>
+    </Panel>
   );
 }
 
-function AboutPanel({ projectId, project }: { projectId: string; project: Project | null }) {
+function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; project: Project | null; bridges?: any[] }) {
   const [updateProject, updateState] = useUpdateProjectMutation();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [defaultPath, setDefaultPath] = useState('');
+  const [showLocalPicker, setShowLocalPicker] = useState(false);
+  const [selectedBridgeId, setSelectedBridgeId] = useState('');
   const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (!selectedBridgeId && bridges.length > 0) {
+      const online = bridges.find(bridgeIsOnline);
+      setSelectedBridgeId(bridgeId(online || bridges[0]));
+    }
+  }, [bridges, selectedBridgeId]);
 
   // Seed the edit form from the loaded project whenever it (re)loads.
   useEffect(() => {
@@ -234,17 +325,21 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
     setName(str(project.name));
     setDescription(str(project.description));
     setDefaultPath(str(project.default_path));
+    setShowLocalPicker(false);
   }, [project?.project_id, project?.name, project?.description, project?.default_path]);
 
   async function save() {
     setErr('');
     try {
       await updateProject({ projectId, name: name.trim(), description: description.trim(), default_path: defaultPath.trim() }).unwrap();
+      setShowLocalPicker(false);
       setEditing(false);
     } catch (e: any) {
       setErr(str(e?.data?.error?.message || e?.error || e?.message) || 'Save failed');
     }
   }
+
+  const selectedBridge = bridges.find((b) => bridgeId(b) === selectedBridgeId);
 
   return (
     <Card title="About" debugId="project-detail-about"
@@ -253,28 +348,74 @@ function AboutPanel({ projectId, project }: { projectId: string; project: Projec
       ) : null}>
       {!editing ? (
         <div className="space-y-2">
-          {project?.default_path ? <p data-debug-id="project-detail-path" className="font-mono text-xs text-zinc-500">{project.default_path}</p> : null}
+          {project?.default_path ? <p data-debug-id="project-detail-path" className="font-mono text-xs text-muted">{project.default_path}</p> : null}
           {str(project?.description) ? (
-            <p data-debug-id="project-detail-description" className="max-w-2xl whitespace-pre-wrap text-sm leading-6 text-zinc-300">{project?.description}</p>
+            <p data-debug-id="project-detail-description" className="max-w-2xl whitespace-pre-wrap text-sm leading-6 text-primary">{project?.description}</p>
           ) : (
-            <p data-debug-id="project-detail-description-empty" className="text-sm text-zinc-500">No description yet. <button type="button" onClick={() => setEditing(true)} className="text-sky-300 hover:underline">Add one</button>.</p>
+            <p data-debug-id="project-detail-description-empty" className="text-sm text-muted">No description yet. <button type="button" onClick={() => setEditing(true)} className="text-accent hover:underline">Add one</button>.</p>
           )}
         </div>
       ) : (
         <div className="space-y-3">
-          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-            <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" className="mt-1" />
-          </label>
-          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
-            <Textarea data-debug-id="project-detail-description-input" value={description} onChange={setDescription} rows={4} placeholder="What is this project about?" width="full" className="mt-1" />
-          </label>
-          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Default path
-            <Input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="mt-1 font-mono" placeholder="~/path/to/repo" />
-          </label>
-          {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-red-300">{err}</p> : null}
+          <FormField label="Name">
+            <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" />
+          </FormField>
+          <FormField label="Description">
+            <Textarea data-debug-id="project-detail-description-input" value={description} onChange={setDescription} rows={4} placeholder="What is this project about?" width="full" />
+          </FormField>
+          <FormField label="Default path">
+            <div className="flex items-center gap-2">
+              <Input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="flex-1 font-mono" placeholder="~/path/to/repo" />
+              <Button
+                data-debug-id="project-detail-edit-local-browse-btn"
+                variant="secondary"
+                size="sm"
+                disabled={!selectedBridgeId}
+                onClick={() => setShowLocalPicker((v) => !v)}
+                leading={<Icon name="folder" size={14} />}
+              >
+                {showLocalPicker ? 'Hide Browser' : 'Browse…'}
+              </Button>
+            </div>
+          </FormField>
+          {showLocalPicker && selectedBridgeId ? (
+            <div className="space-y-2 rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3">
+              {bridges.length > 1 ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-zinc-400">Bridge host:</span>
+                  <Select
+                    value={selectedBridgeId}
+                    onChange={(val) => setSelectedBridgeId(val)}
+                  >
+                    {bridges.map((b) => (
+                      <option key={bridgeId(b)} value={bridgeId(b)}>
+                        {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              ) : null}
+              <BridgeDirectoryPicker
+                debugId="project-detail-edit-local-picker"
+                bridgeId={selectedBridgeId}
+                bridgeLabel={selectedBridge ? bridgeLabel(selectedBridge) : undefined}
+                initialPath={defaultPath}
+                onPick={(p) => {
+                  setDefaultPath(p);
+                  if (!name.trim()) {
+                    const base = p.split('/').filter(Boolean).pop();
+                    if (base) setName(base);
+                  }
+                  setShowLocalPicker(false);
+                }}
+                onClose={() => setShowLocalPicker(false)}
+              />
+            </div>
+          ) : null}
+          {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-danger">{err}</p> : null}
           <div className="flex gap-2">
-            <Button variant="primary" size="md" data-debug-id="project-detail-save-btn" disabled={updateState.isLoading} onClick={save}>{updateState.isLoading ? 'Saving…' : 'Save'}</Button>
-            <Button variant="secondary" size="md" data-debug-id="project-detail-cancel-btn" onClick={() => { setEditing(false); setErr(''); }}>Cancel</Button>
+            <Button data-debug-id="project-detail-save-btn" variant="primary" size="md" disabled={updateState.isLoading} onClick={save}>{updateState.isLoading ? 'Saving…' : 'Save'}</Button>
+            <Button data-debug-id="project-detail-cancel-btn" variant="secondary" size="md" onClick={() => { setEditing(false); setShowLocalPicker(false); setErr(''); }}>Cancel</Button>
           </div>
         </div>
       )}
@@ -349,10 +490,6 @@ function MemoryPanel({ memories, loading, projectId }: { memories: any[]; loadin
     </Card>
   );
 }
-
-// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-// TODO(FIX): Replace loose fallback chain with canonical typed schema property
-function bridgeIsOnline(b: any): boolean { return str(b?.status || b?.state || 'online').toLowerCase() === 'online'; }
 
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; project: Project | null; bridges: any[] }) {
@@ -446,9 +583,10 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
               <div key={bid} data-debug-id={`project-detail-bridge-path-row-${bid}`} className="rounded-lg border border-white/[0.06] bg-black/20">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
                   {/* status dot */}
-                  <span
-                    aria-hidden="true"
-                    className={`h-2 w-2 shrink-0 rounded-full ${st.loading ? 'bg-zinc-500 animate-pulse' : st.error ? 'bg-amber-400' : st.exists ? 'bg-emerald-400' : 'bg-red-400'}`}
+                  <StatusDot
+                    tone={st.loading ? 'pending' : st.exists ? 'success' : st.error ? 'warning' : 'neutral'}
+                    pulse={st.loading}
+                    label={st.loading ? 'Probing…' : st.exists ? 'Directory exists' : st.error ? 'Directory error' : 'Not found'}
                   />
                   <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-caption font-semibold text-zinc-300">{bridgeLabel(b)}</span>
                   <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold ${overridden ? 'bg-sky-400/15 text-sky-300' : 'bg-white/[0.06] text-zinc-500'}`}>{overridden ? 'override' : 'default'}</span>
