@@ -341,6 +341,11 @@ send_to_subscription :: proc(
 	defer delete(enc.body)
 
 	claims := vapid_claims_for(audience, service.vapid.subject, now_unix)
+	// DEBUG: the exact signed VAPID claims. This is public JWT content (no key, no
+	// signature — not a secret) and lets ops confirm the real prod subject/aud/exp,
+	// which is otherwise invisible in the logs. A malformed/unexpected `sub` (or an
+	// out-of-range `exp`) is a prime Apple `BadJwtToken` cause that FCM tolerates.
+	fmt.eprintfln("ham-push DEBUG vapid-claims: aud=%q sub=%q exp=%d", claims.audience, claims.subject, claims.expiry)
 	jwt, jwt_ok := vapid_sign_jwt(vapid_priv, claims)
 	if !jwt_ok {
 		fmt.eprintfln("ham-push DEBUG send: vapid_sign_jwt FAILED aud=%s", audience)
@@ -371,6 +376,10 @@ send_to_subscription :: proc(
 		string(enc.body),
 		headers,
 		http_client.DEFAULT_TIMEOUT_MS,
+		// Web Push endpoints (notably Apple's web.push.apple.com) are strict; send an
+		// RFC 7230 Host header with the default :443 port omitted, matching reference
+		// clients (web-push/curl/browsers). Scoped to push; other callers unchanged.
+		omit_default_port = true,
 	)
 	if !ok {
 		fmt.eprintfln("ham-push DEBUG send: transport FAILED (dial/tls/timeout) aud=%s", audience)
