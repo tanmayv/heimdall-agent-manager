@@ -105,6 +105,10 @@ function normalizeSearch(body: any): SearchResponse {
 export const searchApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     globalSearch: build.query<SearchResponse, GlobalSearchArg>({
+      // Keep resolved pages cached for 45s — a bump above this API's base default of
+      // 30s (heimdallApi.ts) so the type→backspace pattern re-uses a just-fetched query
+      // from cache instead of refetching. RTK already keys/dedupes by args.
+      keepUnusedDataFor: 45,
       queryFn: async ({ q, types, exclude, limit = 20, cursor }) => {
         // Empty/whitespace q returns empty (per UI-BE-5); skip the network call so
         // an empty box never hits the endpoint. The palette only sends q/limit/cursor

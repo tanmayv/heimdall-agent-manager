@@ -107,6 +107,13 @@ const DEFAULT_ACTIONS: PaletteAction[] = [
   { id: 'new-project', label: 'New project', icon: 'grid', hint: 'Grouping + paths' },
 ];
 
+// Search-call tuning (user-approved): a slightly longer debounce and a 2-char
+// minimum before hitting the BACKEND cut /api/v1/search calls >50% for typical
+// typing, with no perceived slowdown. LOCAL palette content (nav/actions) still
+// filters from the 1st character — only the network entity search is gated.
+const SEARCH_DEBOUNCE_MS = 250;
+const MIN_BACKEND_QUERY_LEN = 2;
+
 function matches(haystack: string, q: string): boolean {
   return haystack.toLowerCase().includes(q.toLowerCase());
 }
@@ -213,18 +220,21 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
   // focus restore on close — the same infrastructure Modal/Drawer use.
   useDialogA11y(open, onClose, panelRef);
 
-  // Debounce the search query (120–200ms per arch doc) to limit requests.
+  // Debounce the search query to limit requests: only the settled value drives the
+  // backend hook, so mid-typing keystrokes never each fire a call.
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(query), 150);
+    const timer = window.setTimeout(() => setDebounced(query), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [query]);
 
   // Entity search via the backend global endpoint. RTK Query keeps only the
   // latest arg and aborts superseded requests, so results never jitter.
   const trimmed = debounced.trim();
+  // Require >=2 chars before calling /search — 1-char queries are the broadest and
+  // least useful, and local nav/actions already answer single keystrokes.
   const searchQuery = useGlobalSearchQuery(
     { q: trimmed, limit: 12 },
-    { skip: !open || trimmed.length < 1 },
+    { skip: !open || trimmed.length < MIN_BACKEND_QUERY_LEN },
   );
 
   // Real load-more (SEARCH-5): the first page comes from useGlobalSearchQuery;
@@ -320,7 +330,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
     // them when that still matches the CURRENT input AND the fetch has settled.
     // Otherwise a new keystroke would keep rendering the PREVIOUS query's results
     // through the debounce+fetch window; gating here clears stale hits immediately.
-    const entitiesFresh = trimmed.length > 0 && trimmed === query.trim() && !searchQuery.isFetching;
+    const entitiesFresh = trimmed.length >= MIN_BACKEND_QUERY_LEN && trimmed === query.trim() && !searchQuery.isFetching;
     if (entitiesFresh) {
       for (const hit of entityHits) {
         const t = hit.type || '';
@@ -386,9 +396,11 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
   // not yet mirrored into the debounced `trimmed`) AND the network fetch — so the
   // affordance appears immediately on a keystroke and the empty-state never flashes
   // mid-type. `searchFailed` is a settled request that errored (distinct from empty).
+  // Only treat the query as "searching" once it's long enough to hit the backend —
+  // a 1-char query never calls /search, so it must not show the Searching spinner.
   const qTrim = query.trim();
-  const searching = qTrim.length > 0 && (qTrim !== trimmed || searchQuery.isFetching);
-  const searchFailed = qTrim.length > 0 && !searching && searchQuery.isError;
+  const searching = qTrim.length >= MIN_BACKEND_QUERY_LEN && (qTrim !== trimmed || searchQuery.isFetching);
+  const searchFailed = qTrim.length >= MIN_BACKEND_QUERY_LEN && !searching && searchQuery.isError;
 
   return (
     <div
@@ -439,7 +451,11 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
         >
           {!searching && results.length === 0 ? (
             <div data-debug-id="command-palette-empty" role="presentation" className="px-3 py-8 text-center text-sm text-muted">
-              {qTrim ? `No results for “${qTrim}”.` : 'Start typing to search or jump.'}
+              {qTrim.length === 0
+                ? 'Start typing to search or jump.'
+                : qTrim.length < MIN_BACKEND_QUERY_LEN
+                  ? 'Keep typing to search…'
+                  : `No results for “${qTrim}”.`}
             </div>
           ) : (
             Array.from(grouped.entries()).map(([groupLabel, { results: groupResults, indices }]) => (
@@ -514,7 +530,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
               Search failed — check your connection and try again.
             </div>
           ) : null}
-          {!searching && qTrim && hasMore ? (
+          {!searching && qTrim.length >= MIN_BACKEND_QUERY_LEN && hasMore ? (
             <button
               type="button"
               data-debug-id="command-palette-load-more"
