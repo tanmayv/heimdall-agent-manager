@@ -39,20 +39,6 @@ export type MergeDecision = {
   };
 };
 
-export type FederationPeerBlock = {
-  key: string;
-  kind: string;
-  taskId: string;
-  chainId: string;
-  taskTitle: string;
-  chainTitle: string;
-  peerId: string;
-  peerDaemonId: string;
-  peerStatus: string;
-  proxyAgentInstanceId: string;
-  reviewerRole: string;
-};
-
 function optionText(item: any): string {
   if (typeof item === 'string') return item;
   if (item && typeof item === 'object') return String(item.label || item.value || item.text || item.title || JSON.stringify(item));
@@ -128,22 +114,6 @@ export function normalizeMergeDecision(record: any): MergeDecision {
       conflicts: preview.conflicts || [],
       commands: preview.commands || [],
     },
-  };
-}
-
-export function normalizeFederationPeerBlock(record: any): FederationPeerBlock {
-  return {
-    key: `${record.task_id || record.taskId || ''}:${record.proxy_agent_instance_id || record.proxyAgentInstanceId || ''}:${record.peer_id || record.peerId || ''}`,
-    kind: String(record.kind || 'federation_peer_block'),
-    taskId: String(record.task_id || record.taskId || ''),
-    chainId: String(record.chain_id || record.chainId || ''),
-    taskTitle: String(record.task_title || record.taskTitle || ''),
-    chainTitle: String(record.chain_title || record.chainTitle || ''),
-    peerId: String(record.peer_id || record.peerId || ''),
-    peerDaemonId: String(record.peer_daemon_id || record.peerDaemonId || ''),
-    peerStatus: String(record.peer_status || record.peerStatus || ''),
-    proxyAgentInstanceId: String(record.proxy_agent_instance_id || record.proxyAgentInstanceId || ''),
-    reviewerRole: String(record.reviewer_role || record.reviewerRole || ''),
   };
 }
 

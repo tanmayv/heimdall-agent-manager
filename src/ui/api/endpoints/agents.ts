@@ -482,35 +482,6 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
-    // Remote role content for a local-proxy agent-id. Cached aggressively
-    // (keepUnusedDataFor long) since remote templates change rarely; keyed by
-    // peer + remote agent-id so it is fetched once per mapping.
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    fetchPeerAgentTemplate: build.query<any, { peerId: string; remoteAgentId: string }>({
-      queryFn: withSessionQuery(async ({ peerId, remoteAgentId }, { session }) => {
-        if (!session?.daemonUrl || !session?.clientToken || !peerId || !remoteAgentId) return { template: null, agentId: remoteAgentId };
-        return daemonApi.fetchPeerAgentTemplate({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, peerId, remoteAgentId });
-      }),
-      keepUnusedDataFor: 600,
-      providesTags: (_result, _error, { peerId, remoteAgentId }) => [{ type: 'AgentTemplate' as const, id: `remote:${peerId}:${remoteAgentId}` }],
-    }),
-    // Advertised remote agent-ids for a peer, used to pick a new remap target.
-    listPeerAdvertisedAgents: build.query<any, { peerId: string }>({
-      queryFn: withSessionQuery(async ({ peerId }, { session }) => {
-        if (!session?.daemonUrl || !session?.clientToken || !peerId) return { daemonId: '', agents: [] };
-        return daemonApi.listPeerAdvertisedAgents({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, peerId });
-      }),
-      keepUnusedDataFor: 120,
-      providesTags: (_result, _error, { peerId }) => [{ type: 'Agents' as const, id: `peer-advertised:${peerId}` }],
-    }),
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    remapRemoteProxy: build.mutation<any, { localAgentId: string; remoteAgentId: string; peerId?: string; originDaemonId?: string; displayName?: string; templateId?: string }>({
-      queryFn: withSessionQuery(async (arg, { session }) => {
-        if (!session?.daemonUrl || !session?.clientToken) return { ok: false, message: 'No session' };
-        return daemonApi.remapRemoteProxy({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, ...arg });
-      }),
-      invalidatesTags: () => [{ type: 'Agents' as const, id: 'LIST' }],
-    }),
   }),
 });
 
@@ -629,4 +600,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }]));
 }
 
-export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
+export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation } = agentsApi;
