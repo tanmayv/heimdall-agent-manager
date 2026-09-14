@@ -30,7 +30,20 @@ import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import { CommandPalette, Drawer, Icon as UiIcon, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
-import { buildRouteHash } from '../../utils/appLocation';
+import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
+import {
+  CHAT_VIEW_MIN_WIDTH,
+  RIGHT_SIDEBAR_DEFAULT_WIDTH,
+  RIGHT_SIDEBAR_MIN_WIDTH,
+  clampRightSidebarWidth,
+  readRightSidebarOpen,
+  readRightSidebarTab,
+  readRightSidebarWidth,
+  writeRightSidebarOpen,
+  writeRightSidebarTab,
+  writeRightSidebarWidth,
+  type RightSidebarTab,
+} from '../../utils/clientPersistence';
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
 import CurrentTaskStrip from './CurrentTaskStrip';
@@ -543,9 +556,79 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
-  // panel itself has Tasks / Files tabs. 'closed' hides it entirely. Tasks and
-  // Files are the two tabs (not mutually-exclusive split peers anymore).
-  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files' | 'rundir'>('closed');
+  // panel itself has Tasks / Files / RunDir tabs. 'closed' hides it entirely.
+  // Initialized from ?panel= / ?sidebar= query param, falling back to UI storage.
+  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files' | 'rundir'>(() => {
+    const search = getRouteSearch();
+    const params = new URLSearchParams(search.replace(/^\?/, ''));
+    const param = params.get('panel') || params.get('sidebar');
+    if (param) {
+      const norm = param.trim().toLowerCase();
+      if (norm === 'tasks') return 'tasks';
+      if (norm === 'files') return 'files';
+      if (norm === 'rundir') return 'rundir';
+      if (norm === 'closed' || norm === 'false' || norm === '0') return 'closed';
+      if (norm === 'open' || norm === 'true' || norm === '1') {
+        return readRightSidebarTab() || 'tasks';
+      }
+    }
+    const open = readRightSidebarOpen();
+    if (open) {
+      return readRightSidebarTab() || 'tasks';
+    }
+    return 'closed';
+  });
+
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readRightSidebarWidth());
+  const [isDragging, setIsDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Sync state if hash/search changes while mounted (e.g. clicking internal link with ?panel=tasks)
+  useEffect(() => {
+    const handleHashChange = () => {
+      const search = getRouteSearch();
+      const params = new URLSearchParams(search.replace(/^\?/, ''));
+      const param = params.get('panel') || params.get('sidebar');
+      if (param) {
+        const norm = param.trim().toLowerCase();
+        if (norm === 'tasks') {
+          setRightPanel('tasks');
+          writeRightSidebarOpen(true);
+          writeRightSidebarTab('tasks');
+        } else if (norm === 'files') {
+          setRightPanel('files');
+          writeRightSidebarOpen(true);
+          writeRightSidebarTab('files');
+        } else if (norm === 'rundir') {
+          setRightPanel('rundir');
+          writeRightSidebarOpen(true);
+          writeRightSidebarTab('rundir');
+        } else if (norm === 'closed' || norm === 'false' || norm === '0') {
+          setRightPanel('closed');
+          writeRightSidebarOpen(false);
+        }
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  // Guardrail: adjust sidebar width on window resize so chat view never violates CHAT_VIEW_MIN_WIDTH
+  useEffect(() => {
+    const handleWindowResize = () => {
+      if (!containerRef.current) return;
+      const containerWidth = containerRef.current.getBoundingClientRect().width;
+      const maxAllowedWidth = Math.max(RIGHT_SIDEBAR_MIN_WIDTH, containerWidth - CHAT_VIEW_MIN_WIDTH);
+      setSidebarWidth((prev) => {
+        if (prev > maxAllowedWidth) {
+          return maxAllowedWidth;
+        }
+        return prev;
+      });
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, []);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
@@ -820,16 +903,111 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // Top-right toggle: open to the default tab, or close if already open.
   function toggleRightPanel() {
     setHeaderActionsOpen(false);
-    setRightPanel((cur) => (cur === 'closed' ? defaultPanelTab() : 'closed'));
+    setRightPanel((cur) => {
+      if (cur === 'closed') {
+        const targetTab = readRightSidebarTab() || defaultPanelTab();
+        writeRightSidebarOpen(true);
+        writeRightSidebarTab(targetTab);
+        return targetTab;
+      } else {
+        writeRightSidebarOpen(false);
+        return 'closed';
+      }
+    });
   }
 
   // Open the panel focused on a specific tab (e.g. the composer project chip
   // opens Files; a current-task link opens Tasks).
   function openRightPanel(tab: 'tasks' | 'files' | 'rundir') {
     setHeaderActionsOpen(false);
+    writeRightSidebarOpen(true);
+    writeRightSidebarTab(tab);
     setRightPanel(tab);
   }
-  function closeRightPanel() { setRightPanel('closed'); }
+
+  function closeRightPanel() {
+    writeRightSidebarOpen(false);
+    setRightPanel('closed');
+  }
+
+  function selectRightPanelTab(tab: 'tasks' | 'files' | 'rundir') {
+    writeRightSidebarOpen(true);
+    writeRightSidebarTab(tab);
+    setRightPanel(tab);
+  }
+
+  const handleResizerPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    const container = containerRef.current;
+    const containerWidth = container ? container.getBoundingClientRect().width : window.innerWidth;
+    const maxAllowedWidth = Math.max(RIGHT_SIDEBAR_MIN_WIDTH, containerWidth - CHAT_VIEW_MIN_WIDTH);
+
+    let latestWidth = startWidth;
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      moveEvent.preventDefault();
+      const deltaX = startX - moveEvent.clientX;
+      const rawWidth = startWidth + deltaX;
+      const clampedWidth = clampRightSidebarWidth(rawWidth, maxAllowedWidth);
+      latestWidth = clampedWidth;
+      setSidebarWidth(clampedWidth);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      upEvent.preventDefault();
+      setIsDragging(false);
+      writeRightSidebarWidth(latestWidth);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+  };
+
+  const handleResizerDoubleClick = () => {
+    setSidebarWidth(RIGHT_SIDEBAR_DEFAULT_WIDTH);
+    writeRightSidebarWidth(RIGHT_SIDEBAR_DEFAULT_WIDTH);
+  };
+
+  const handleResizerKeyDown = (event: React.KeyboardEvent) => {
+    const step = event.shiftKey ? 40 : 10;
+    const containerWidth = containerRef.current?.getBoundingClientRect().width || window.innerWidth;
+    const maxAllowedWidth = Math.max(RIGHT_SIDEBAR_MIN_WIDTH, containerWidth - CHAT_VIEW_MIN_WIDTH);
+
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setSidebarWidth((prev) => {
+        const next = clampRightSidebarWidth(prev + step, maxAllowedWidth);
+        writeRightSidebarWidth(next);
+        return next;
+      });
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setSidebarWidth((prev) => {
+        const next = clampRightSidebarWidth(prev - step, maxAllowedWidth);
+        writeRightSidebarWidth(next);
+        return next;
+      });
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setSidebarWidth(RIGHT_SIDEBAR_MIN_WIDTH);
+      writeRightSidebarWidth(RIGHT_SIDEBAR_MIN_WIDTH);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setSidebarWidth(maxAllowedWidth);
+      writeRightSidebarWidth(maxAllowedWidth);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      handleResizerDoubleClick();
+    }
+  };
 
   function renderConversationMessageBody(message: ChatMessage) {
     if (message.messageType === 'pane_capture') {
@@ -1029,6 +1207,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const active: 'tasks' | 'files' | 'rundir' =
       rightPanel === 'files' && hasFiles ? 'files'
       : rightPanel === 'rundir' && hasRunDir ? 'rundir'
+      : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
       : hasTasks ? 'tasks'
       : hasFiles ? 'files'
       : 'rundir';
@@ -1037,20 +1216,20 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c]">
         <div data-debug-id="conversation-right-panel-tabs" className="flex shrink-0 items-center gap-1 border-b border-white/10 px-2 py-2">
           {hasTasks ? (
-            <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => setRightPanel('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => selectRightPanelTab('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
               <Icon name="tasks" size={15} />
               <span>Tasks</span>
               {chainProgress.total > 0 ? <span className="rounded-full bg-black/30 px-1.5 py-0.5 text-[10px] font-bold text-sky-100">{chainProgress.done}/{chainProgress.total}</span> : null}
             </button>
           ) : null}
           {hasFiles ? (
-            <button type="button" title={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => setRightPanel('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" title={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => selectRightPanelTab('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
               <Icon name="folder" size={15} className="shrink-0" />
               <span className="truncate">{filesLabel}</span>
             </button>
           ) : null}
           {hasRunDir ? (
-            <button type="button" title={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => setRightPanel('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" title={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
               <Icon name="folder" size={15} className="shrink-0" />
               <span className="truncate">{instanceDisplayName}</span>
             </button>
@@ -1076,12 +1255,16 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
             />
-          ) : hasTasks ? (
-            <TaskChainOverview
-              chainId={chainId}
-              onClose={closeRightPanel}
-              isMobile={isMobilePanel}
-            />
+          ) : active === 'tasks' ? (
+            chainId ? (
+              <TaskChainOverview
+                chainId={chainId}
+                onClose={closeRightPanel}
+                isMobile={isMobilePanel}
+              />
+            ) : (
+              <div className="grid h-full place-items-center text-sm text-zinc-500">Loading tasks…</div>
+            )
           ) : null}
         </div>
       </div>
@@ -1304,7 +1487,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           </Menu>
         </div>
 
-        {(chainId || projectId) ? (
+        {(chainId || projectId || agentInstanceId) ? (
           <button type="button" data-debug-id="conversation-right-panel-toggle-btn" aria-label={rightPanel !== 'closed' ? 'Close side panel' : 'Open side panel'} title={rightPanel !== 'closed' ? 'Close panel' : 'Open panel'} aria-pressed={rightPanel !== 'closed' ? 'true' : 'false'} onClick={toggleRightPanel} className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-xl ${rightPanel !== 'closed' ? 'text-sky-300' : 'text-zinc-400 hover:bg-white/10 hover:text-zinc-200'}`}>
             <Icon name="panel-right" size={18} />
             {rightPanel === 'closed' && chainId && chainProgress.total > 0 ? <span data-debug-id="conversation-right-panel-toggle-progress" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black">{chainProgress.done}/{chainProgress.total}</span> : null}
@@ -1357,24 +1540,54 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           </div>
         );
 
-        const panelOpen = rightPanel !== 'closed' && (chainId || projectId || agentInstanceId);
-        if (!panelOpen) {
-          return (<>{transcript}{renderComposer()}</>);
-        }
+        const panelOpen = rightPanel !== 'closed' && Boolean(chainId || projectId || agentInstanceId);
 
         return (
-          <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
-            {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it. */}
-            <div className="flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden sm:hidden">
-              {renderRightPanel(true)}
-            </div>
-            {/* Desktop (>= 768px): chat on the left, sidebar (~40%) on the right. */}
-            <div className="hidden h-full min-h-0 w-full max-w-full flex-row overflow-x-hidden sm:flex">
-              <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col border-r border-white/10">
-                {transcript}
-                {renderComposer()}
+          <div ref={containerRef} className="relative flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
+            {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
+            {panelOpen ? (
+              <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c] sm:hidden">
+                {renderRightPanel(true)}
               </div>
-              <div className="flex h-full min-h-0 w-1/2 min-w-[360px] flex-col overflow-x-hidden">
+            ) : null}
+
+            {/* Chat pane on the left: expands to full width when sidebar is closed or on mobile */}
+            <div
+              className="flex h-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px]"
+            >
+              {transcript}
+              {renderComposer()}
+            </div>
+
+            {/* Desktop (>= 768px) vertical resizer divider between chat view and right sidebar */}
+            {panelOpen ? (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize right sidebar"
+                aria-valuenow={sidebarWidth}
+                aria-valuemin={RIGHT_SIDEBAR_MIN_WIDTH}
+                tabIndex={0}
+                data-debug-id="conversation-right-panel-resizer"
+                onPointerDown={handleResizerPointerDown}
+                onDoubleClick={handleResizerDoubleClick}
+                onKeyDown={handleResizerKeyDown}
+                className={`hidden sm:flex group relative w-1.5 cursor-col-resize shrink-0 select-none items-center justify-center border-l border-white/10 hover:border-sky-400/50 hover:bg-sky-400/10 active:bg-sky-400/20 z-10 ${isDragging ? 'bg-sky-400/20 border-sky-400' : ''}`}
+              >
+                <div className={`h-8 w-0.5 rounded-full ${isDragging ? 'bg-sky-400' : 'bg-white/20 group-hover:bg-sky-300'}`} />
+              </div>
+            ) : null}
+
+            {/* Desktop (>= 768px) right sidebar with smooth 200ms open/close transition & overflow clipping */}
+            <div
+              data-debug-id="conversation-right-panel-resizable-container"
+              style={{ width: panelOpen ? `${sidebarWidth}px` : '0px' }}
+              className={`hidden sm:flex overflow-hidden shrink-0 flex-col ${isDragging ? 'transition-none' : 'transition-[width] duration-200 ease-in-out'}`}
+            >
+              <div
+                style={{ width: `${sidebarWidth}px` }}
+                className="h-full flex flex-col min-w-[360px]"
+              >
                 {renderRightPanel(false)}
               </div>
             </div>

@@ -87,7 +87,7 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
   return (
     <a
       data-debug-id={`task-chains-row-${chain.chainId}`}
-      href={shellHash(`/conversations/${encodeURIComponent(coordinator)}`)}
+      href={shellHash(`/conversations/${encodeURIComponent(coordinator)}?panel=tasks`)}
       title={`Open coordinator conversation (${coordinator})`}
       className={`${className} hover:bg-white/[0.06]`}
     >
