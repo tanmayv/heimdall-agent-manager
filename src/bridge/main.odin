@@ -1617,6 +1617,18 @@ bridge_ws_send_frame :: proc(socket: net.TCP_Socket, frame_text: string) -> bool
 	return true
 }
 
+// bridge_hub_runtime_chunk_payload_bytes returns the raw bytes-per-chunk for the
+// bridge->hub runtime WS channel, gated on the TLS backend (REQ-4): the larger
+// socat payload is only safe when socat is the transport (it does not tear down on
+// multi-read bursts); the legacy s_client fallback keeps the conservative 6000-byte
+// cap. Mirrors bridge_tls_backend_is_socat / the HAM_TLS_BACKEND toggle.
+bridge_hub_runtime_chunk_payload_bytes :: proc() -> int {
+	if bridge_tls_backend_is_socat() {
+		return contracts.BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES_SOCAT
+	}
+	return contracts.BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES
+}
+
 // bridge_hub_chunk_frames returns the ordered kind:"chunk" wire frames for `text`
 // when it exceeds the bridge<->hub runtime per-message cap, or nil when `text`
 // already fits in one frame (send it whole). Pure and socket-free so it can be
@@ -1624,7 +1636,15 @@ bridge_ws_send_frame :: proc(socket: net.TCP_Socket, frame_text: string) -> bool
 // index order reconstructs `text` exactly. Reuses the same frame shape as the
 // federation sender (bridge_ws_chunk_json).
 bridge_hub_chunk_frames :: proc(text: string) -> []string {
-	payload := contracts.BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES
+	return bridge_hub_chunk_frames_with_payload(text, bridge_hub_runtime_chunk_payload_bytes())
+}
+
+// bridge_hub_chunk_frames_with_payload is the pure core of bridge_hub_chunk_frames
+// with the per-chunk raw byte size passed in explicitly. Splitting it out lets unit
+// tests exercise a specific payload deterministically WITHOUT mutating the global
+// HAM_TLS_BACKEND env (the Odin test runner executes tests concurrently, so env
+// mutation would race other tests' TLS transport selection).
+bridge_hub_chunk_frames_with_payload :: proc(text: string, payload: int) -> []string {
 	if len(text) <= payload do return nil
 	chunk_count := bridge_ws_chunk_count(len(text), payload)
 	chunk_id := bridge_next_id("hubchunk")

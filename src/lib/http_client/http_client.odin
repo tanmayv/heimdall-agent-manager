@@ -388,22 +388,61 @@ endpoint_from_resolution_output :: proc(output: string, port: int) -> (net.Endpo
 	return net.Endpoint{}, false
 }
 
+// tls_client_command builds the argv for the subprocess that terminates TLS for
+// the bridge->hub https:// REST/artifact relay. The transport is selected by the
+// HAM_TLS_BACKEND env toggle:
+//   - "s_client"      -> legacy `openssl s_client` (fallback; 16 KB teardown).
+//   - anything else   -> `socat OPENSSL-CONNECT` (DEFAULT; full-duplex, no teardown).
+// SHARED CONTRACT: identical rule to src/lib/ws/ws.odin and the bridge's
+// bridge_tls_backend_is_socat (src/bridge/fs_management.odin) — keep in sync.
 tls_client_command :: proc(host: string, port: u16) -> []string {
+	clean_host := host_trim_brackets(host)
+	ca_file := strings.trim_space(os.get_env("HAM_TLS_CA_FILE", context.temp_allocator))
+	backend := strings.to_lower(strings.trim_space(os.get_env("HAM_TLS_BACKEND", context.temp_allocator)))
+	if backend == "s_client" {
+		return openssl_s_client_command(clean_host, port, ca_file)
+	}
+	return socat_openssl_command(clean_host, port, ca_file)
+}
+
+// openssl_s_client_command is the legacy fallback transport (HAM_TLS_BACKEND=s_client).
+openssl_s_client_command :: proc(clean_host: string, port: u16, ca_file: string) -> []string {
 	cmd := make([dynamic]string)
 	append(&cmd, "openssl")
 	append(&cmd, "s_client")
 	append(&cmd, "-quiet")
 	append(&cmd, "-verify_return_error")
 	append(&cmd, "-servername")
-	append(&cmd, host_trim_brackets(host))
+	append(&cmd, clean_host)
 	append(&cmd, "-verify_hostname")
-	append(&cmd, host_trim_brackets(host))
-	if ca_file := strings.trim_space(os.get_env("HAM_TLS_CA_FILE", context.temp_allocator)); ca_file != "" {
+	append(&cmd, clean_host)
+	if ca_file != "" {
 		append(&cmd, "-CAfile")
 		append(&cmd, ca_file)
 	}
 	append(&cmd, "-connect")
-	append(&cmd, fmt.tprintf("%s:%d", host_trim_brackets(host), port))
+	append(&cmd, fmt.tprintf("%s:%d", clean_host, port))
+	return cmd[:]
+}
+
+// socat_openssl_command is the default transport. TLS verification is EQUIVALENT to
+// the s_client path and MUST NOT be weakened: verify=1 (require+verify chain),
+// commonname=<h> (hostname check, mirrors -verify_hostname), snihost=<h> (SNI,
+// mirrors -servername), cafile=<ca> when HAM_TLS_CA_FILE is set (else OpenSSL's
+// default CA store, like s_client with no -CAfile). NEVER emit verify=0.
+socat_openssl_command :: proc(clean_host: string, port: u16, ca_file: string) -> []string {
+	opts := strings.builder_make()
+	fmt.sbprintf(&opts, "OPENSSL-CONNECT:%s:%d", clean_host, port)
+	fmt.sbprintf(&opts, ",snihost=%s", clean_host)
+	strings.write_string(&opts, ",verify=1")
+	fmt.sbprintf(&opts, ",commonname=%s", clean_host)
+	if ca_file != "" {
+		fmt.sbprintf(&opts, ",cafile=%s", ca_file)
+	}
+	cmd := make([dynamic]string)
+	append(&cmd, "socat")
+	append(&cmd, "STDIO")
+	append(&cmd, strings.to_string(opts))
 	return cmd[:]
 }
 

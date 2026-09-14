@@ -71,8 +71,11 @@ model_tier = "smart"
 # directory picker for per-bridge project paths). All browse/stat/mkdir operations
 # are confined to this root. Defaults to $HOME. ~-expanded + symlink-resolved.
 # fs_root = "~"
-# Per-request chunk size in bytes for paginated file reads in the UI (default: 16000).
-# fs_read_page_bytes = 16000
+# Per-request chunk size in bytes for paginated file reads in the UI. Default 131072
+# (128 KiB) matches the socat TLS backend (HAM_TLS_BACKEND=socat, the default). The
+# legacy s_client fallback clamps the effective page down to 8000 internally (its
+# ~16 KB multi-read TLS teardown ceiling), so this value is only fully used on socat.
+# fs_read_page_bytes = 131072
 # Agents stuck in "starting" past this many seconds are marked startup_failed.
 # startup_stale_after_seconds = 120
 # Artifact uploads are limited to 10 MiB by default.

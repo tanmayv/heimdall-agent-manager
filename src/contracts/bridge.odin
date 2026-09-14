@@ -293,6 +293,19 @@ BRIDGE_WS_MAX_CHUNK_PAYLOAD_BYTES :: 45000 // Base64 + JSON wrapper stays below 
 // wire frame is base64(fragment) (~1.37x) + the JSON wrapper, so a 6000-byte raw
 // slice yields a ~8.2 KiB frame — safely under the proxy cap with margin.
 BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES :: 6000
+// Raw bytes per hub-runtime chunk when the bridge->hub TLS transport is socat
+// (HAM_TLS_BACKEND=socat, the default; selected at runtime by
+// bridge_hub_runtime_chunk_payload_bytes). socat is a full-duplex relay that does
+// NOT tear down on multi-read bursts, so the ~16 KB s_client ceiling above no
+// longer applies. This is raised to match the proven federation cap
+// (BRIDGE_WS_MAX_CHUNK_PAYLOAD_BYTES): a 45000-byte raw slice base64s to ~60000
+// chars which, plus the JSON wrapper, stays under the 65535-byte single-WS-frame
+// limit enforced by ws.send_text. Larger chunks mean far fewer frames per large FS
+// read/artifact, cutting framing overhead. The legacy s_client fallback keeps the
+// 6000 cap above. NOTE: a prod deployment behind the nginx->Caddy edge proxy still
+// has that hop's own per-message WS ceiling; lifting it there is a separate,
+// explicit rollout step (this constant governs the bridge's own framing).
+BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES_SOCAT :: 45000
 BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES :: 10 * 1024 * 1024
 BRIDGE_WS_MAX_TRANSIT_QUEUE_FRAMES :: 1024
 BRIDGE_WS_MAX_TRANSIT_QUEUE_BYTES :: 16 * 1024 * 1024

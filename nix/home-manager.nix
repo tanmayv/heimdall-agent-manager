@@ -59,7 +59,7 @@ let
       enable = lib.mkOption { type = lib.types.bool; default = true; description = "Enable this named ham-bridge service."; };
       ptyHostRuntime = lib.mkOption { type = lib.types.bool; default = true; description = "Run agents directly via ham-pty-host (replacing wrapper/tmux)."; };
       hubUrl = lib.mkOption { type = lib.types.str; default = "http://127.0.0.1:8081"; example = "https://hub.mundus.in"; description = "Hub base URL used by ham-bridge (--hub)."; };
-      fsReadPageBytes = lib.mkOption { type = lib.types.int; default = 16000; description = "Per-request byte chunk size for paginated fs_read_file reads."; };
+      fsReadPageBytes = lib.mkOption { type = lib.types.int; default = 131072; description = "Per-request byte chunk size for paginated fs_read_file reads. 128 KiB matches the socat TLS backend (the default); the legacy s_client fallback clamps the effective page down to 8000 internally (its ~16 KB multi-read teardown ceiling)."; };
       tokenFile = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; description = "Path to a file containing this bridge's enrolled hbr_ token."; };
       bindHost = lib.mkOption { type = lib.types.str; default = "127.0.0.1"; description = "Loopback host for this bridge HTTP server."; };
       port = lib.mkOption { type = lib.types.port; default = 49323; description = "Loopback TCP port for this bridge HTTP server. Must be unique per local bridge."; };
@@ -228,8 +228,8 @@ in
       };
       fsReadPageBytes = lib.mkOption {
         type        = lib.types.int;
-        default     = 16000;
-        description = "Per-request byte chunk size for paginated fs_read_file reads.";
+        default     = 131072;
+        description = "Per-request byte chunk size for paginated fs_read_file reads. 128 KiB matches the socat TLS backend (the default); the legacy s_client fallback clamps the effective page down to 8000 internally (its ~16 KB multi-read teardown ceiling).";
       };
       tokenFile = lib.mkOption {
         type        = lib.types.nullOr lib.types.str;
