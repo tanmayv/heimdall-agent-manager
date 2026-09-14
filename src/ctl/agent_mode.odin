@@ -44,6 +44,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "chat", "chats": ctl_v2_chat(endpoint, token, rest, args); return
 	case "memory":        ctl_v2_memory(endpoint, token, rest, args); return
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
+	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
 	}
 	print_agent_help(cmd[idx:])
 }
@@ -529,6 +530,67 @@ ctl_v2_memory :: proc(endpoint, token: string, tokens, args: []string) {
 	}
 }
 
+ctl_v2_cards :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "", "list":
+		ctl_agent_call(endpoint, token, "agent.cards.list", ctl_agentmode_cards_list_params(args))
+	case "show", "get":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
+		if card_id == "" { print_agent_help([]string{"cards"}); return }
+		ctl_agent_call(endpoint, token, "agent.cards.show", json_object(json_kv("card_id", card_id)))
+	case "create":
+		title := option_value(args, "--title", pos(tokens, 1))
+		if title == "" {
+			fmt.println("usage: ham-ctl cards create --title <title> [--rationale <text>] [--scope <project|global>] [--provider <provider>] [--confidence <float>] [--project <id>] [--source-refs <json>] [--operations <json>] [--guard <json>]")
+			return
+		}
+		ctl_agent_call(endpoint, token, "agent.cards.create", ctl_agentmode_cards_create_params(title, args))
+	case "discard":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
+		if card_id == "" { print_agent_help([]string{"cards"}); return }
+		ctl_agent_call(endpoint, token, "agent.cards.discard", json_object(json_kv("card_id", card_id)))
+	case "accept":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
+		if card_id == "" { print_agent_help([]string{"cards"}); return }
+		ctl_agent_call(endpoint, token, "agent.cards.accept", json_object(json_kv("card_id", card_id)))
+	case:
+		print_agent_help([]string{"cards"})
+	}
+}
+
+ctl_agentmode_cards_list_params :: proc(args: []string) -> string {
+	fields := make([dynamic]string)
+	defer delete(fields)
+	if s := option_value(args, "--status", ""); s != "" do append(&fields, json_kv("status", s))
+	if sc := option_value(args, "--scope", ""); sc != "" do append(&fields, json_kv("scope", sc))
+	if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
+	if pid := option_value(args, "--project", option_value(args, "--project-id", "")); pid != "" do append(&fields, json_kv("project_id", pid))
+	if l := option_value(args, "--limit", ""); l != "" do append(&fields, json_kv_raw("limit", l))
+	return json_object_from_slice(fields[:])
+}
+
+ctl_agentmode_cards_create_params :: proc(title: string, args: []string) -> string {
+	fields := make([dynamic]string)
+	defer delete(fields)
+	append(&fields, json_kv("title", title))
+	if r := option_value(args, "--rationale", ""); r != "" do append(&fields, json_kv("rationale", r))
+	if sc := option_value(args, "--scope", ""); sc != "" do append(&fields, json_kv("scope", sc))
+	if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
+	if c := option_value(args, "--confidence", ""); c != "" do append(&fields, json_kv_raw("confidence", c))
+	if pid := option_value(args, "--project", option_value(args, "--project-id", "")); pid != "" do append(&fields, json_kv("project_id", pid))
+	if sr := option_value(args, "--source-refs", ""); sr != "" do append(&fields, json_kv_raw("source_refs", sr))
+	if ops := option_value(args, "--operations", ""); ops != "" do append(&fields, json_kv_raw("operations", ops))
+	if g := option_value(args, "--guard", ""); g != "" do append(&fields, json_kv_raw("guard", g))
+	if s := option_value(args, "--status", ""); s != "" do append(&fields, json_kv("status", s))
+	if su := option_value(args, "--snooze-until", ""); su != "" do append(&fields, json_kv("snooze_until", su))
+	if ttl := option_value(args, "--ttl-at", ""); ttl != "" do append(&fields, json_kv("ttl_at", ttl))
+	return json_object_from_slice(fields[:])
+}
+
 ctl_agentmode_memory :: proc(endpoint, token: string, tokens, args: []string) {
 	ctl_v2_memory(endpoint, token, tokens, args)
 }
@@ -822,6 +884,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "chat", "chats": print_help_chat(); return
 	case "artifact", "artifacts": print_help_artifact(); return
 	case "memory": print_help_memory(); return
+	case "cards", "card": print_help_cards(); return
 	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
 	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
 	}
@@ -844,6 +907,7 @@ print_help_overview :: proc() {
 	fmt.println("  chat        Read your inbox / send to the user or another agent")
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")
+	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")
 	fmt.println("")
@@ -1019,4 +1083,25 @@ print_help_memory :: proc() {
 	fmt.println("  ham-ctl memory propose --type habit --title 'Reviewer checklist' --body '...' --template-ids tmpl_reviewer")
 	fmt.println("  ham-ctl memory propose --type fact --title 'Two agents' --body '...' --agent-ids agt_a,agt_b")
 	fmt.println("  ham-ctl memory propose --type fact --title 'Repeated' --body '...' --project-ids proj_1 --project-ids proj_2")
+}
+
+print_help_cards :: proc() {
+	fmt.println("ham-ctl cards — Curator action cards")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  list [--status <s>] [--scope <s>] [--provider <p>] [--project <id>] [--limit <n>]")
+	fmt.println("                                      List cards matching filters.")
+	fmt.println("  show    <card-id>                   Show card detail.")
+	fmt.println("  create  --title <title>             Create a new action card.")
+	fmt.println("      [--rationale <t>] [--scope <project|global>] [--provider <p>]")
+	fmt.println("      [--confidence <float>] [--project <id>] [--source-refs <json>]")
+	fmt.println("      [--operations <json>] [--guard <json>]")
+	fmt.println("  discard <card-id>                   Discard a card.")
+	fmt.println("  accept  <card-id>                   Accept and execute card operations.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl cards list")
+	fmt.println("  ham-ctl cards create --title \"Run tests\" --operations '[{\"type\":\"task.create\",\"params\":{\"title\":\"Run tests\"}}]'")
+	fmt.println("  ham-ctl cards show crd_123")
+	fmt.println("  ham-ctl cards discard crd_123")
 }

@@ -16,6 +16,7 @@ import taskchain_service "odin_test:hub/service/taskchain"
 import search_service "odin_test:hub/service/search"
 import events "odin_test:hub/service/events"
 import push_service "odin_test:hub/service/push"
+import card_service "odin_test:hub/service/card"
 
 Agent_Action_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
@@ -24,6 +25,7 @@ Agent_Action_Handlers :: struct {
 	content: ^content_service.Content_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
 	search: ^search_service.Search_Service,
+	cards: ^card_service.Card_Service,
 	event_bus: ^events.User_Event_Bus,
 	// Web Push (WP-SEND): background delivery of OS notifications when the user's
 	// PWA is closed/backgrounded. public_app_origin builds the absolute click href.
@@ -939,6 +941,147 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	strings.write_string(&b, ",\"startup_message\":")
 	if note_saved { write_message_json(&b, startup_note, h.content) } else { strings.write_string(&b, "null") }
 	strings.write_byte(&b, '}')
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_card_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+
+	project_id := domain.Project_ID(json_string(params, "project_id"))
+	if project_id == "" do project_id = domain.Project_ID(inst.project_id)
+
+	provider := json_string(params, "provider")
+	if provider == "" do provider = inst.provider
+	if provider == "" do provider = "curator"
+
+	raw_refs, _ := json_raw_field(params, "source_refs")
+	raw_ops, _ := json_raw_field(params, "operations")
+	raw_guard, _ := json_raw_field(params, "guard")
+
+	input := card_service.Card_Input{
+		project_id       = project_id,
+		title            = json_string(params, "title"),
+		rationale        = json_string(params, "rationale"),
+		scope            = json_string(params, "scope"),
+		provider         = provider,
+		confidence       = json_f32(params, "confidence", 1.0),
+		source_refs_json = raw_refs,
+		status           = json_string(params, "status"),
+		operations_json  = raw_ops,
+		guard_json       = raw_guard,
+		snooze_until     = json_string(params, "snooze_until"),
+		ttl_at           = json_string(params, "ttl_at"),
+	}
+
+	card, saved, err := card_service.create_card(h.cards, auth, input)
+	if !saved do return respond_error(err, req.request_id)
+
+	publish_agent_action(h, inst, "card_create", fmt.tprintf("created card \"%s\"", card.title))
+
+	b := strings.builder_make()
+	write_card_json(&b, card)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+agent_action_card_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	limit := json_int(params, "limit", 50)
+	if limit <= 0 do limit = 50
+	if limit > 200 do limit = 200
+
+	project_id := json_string(params, "project_id")
+	filter := card_service.Card_Filter{
+		status     = json_string(params, "status"),
+		scope      = json_string(params, "scope"),
+		provider   = json_string(params, "provider"),
+		project_id = domain.Project_ID(project_id),
+	}
+
+	cards, err := card_service.list_cards(h.cards, auth, filter, limit)
+	if err.code != .None do return respond_error(err, req.request_id)
+	defer delete(cards)
+
+	publish_agent_action(h, inst, "card_list", "listed cards")
+
+	b := strings.builder_make()
+	strings.write_byte(&b, '[')
+	for c, i in cards {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_card_json(&b, c)
+	}
+	strings.write_byte(&b, ']')
+
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = limit, has_more = len(cards) >= limit}, req.request_id, auth_ctx_server_time(req))
+}
+
+agent_action_card_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "card")
+	if card_id == "" do card_id = json_string(params, "id")
+	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)
+
+	card, got, err := card_service.get_card(h.cards, auth, domain.Card_ID(card_id))
+	if !got do return respond_error(err, req.request_id)
+
+	publish_agent_action(h, inst, "card_show", fmt.tprintf("opened card \"%s\"", card.title))
+
+	b := strings.builder_make()
+	write_card_json(&b, card)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_card_discard_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "card")
+	if card_id == "" do card_id = json_string(params, "id")
+	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)
+
+	card, discarded, err := card_service.discard_card(h.cards, auth, domain.Card_ID(card_id))
+	if !discarded do return respond_error(err, req.request_id)
+
+	publish_agent_action(h, inst, "card_discard", fmt.tprintf("discarded card \"%s\"", card.title))
+
+	b := strings.builder_make()
+	write_card_json(&b, card)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_card_accept_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "card")
+	if card_id == "" do card_id = json_string(params, "id")
+	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)
+
+	card, accepted, err := card_service.accept_card(h.cards, auth, domain.Card_ID(card_id))
+	if !accepted do return respond_error(err, req.request_id)
+
+	publish_agent_action(h, inst, "card_accept", fmt.tprintf("accepted card \"%s\"", card.title))
+
+	b := strings.builder_make()
+	write_card_json(&b, card)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 

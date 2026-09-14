@@ -190,6 +190,18 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/artifacts/show"}
 	case "agent.artifact.content":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/artifacts/content"}
+
+	// ---- cards ------------------------------------------------------------
+	case "agent.cards.create":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/create"}
+	case "agent.cards.list":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/list"}
+	case "agent.cards.show":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/show"}
+	case "agent.cards.discard":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/discard"}
+	case "agent.cards.accept":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/accept"}
 	}
 	return Bridge_Agent_Route{kind = .Unknown}
 }
@@ -224,7 +236,10 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.memory.propose", "agent.memory.list", "agent.memory.show", "agent.memory.content",
 	     "agent.search",
 	     "agent.artifact.create", "agent.artifact.list", "agent.artifact.show",
-	     "agent.artifact.content":
+	     "agent.artifact.content",
+	     // cards
+	     "agent.cards.create", "agent.cards.list", "agent.cards.show",
+	     "agent.cards.discard", "agent.cards.accept":
 		return true
 	}
 	return false

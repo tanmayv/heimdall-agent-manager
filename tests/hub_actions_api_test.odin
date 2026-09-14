@@ -271,7 +271,7 @@ main :: proc() {
 	exec_resp := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
 		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", act1_id),
-		body = "{\"target_run_at\":\"2026-09-04T12:00:00Z\"}",
+		body = "{\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
 		request_id = "req_exec",
 		remote_addr = "127.0.0.1",
 		headers = bridge1_headers[:],

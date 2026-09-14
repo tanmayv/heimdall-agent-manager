@@ -36,7 +36,8 @@ ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
 	if resource == "projects" { ctl_hub_projects(base, user_token, action, args); return }
 	if resource == "artifacts" { ctl_hub_artifacts(base, user_token, action, args); return }
 	if resource == "memories" || resource == "memory" { ctl_hub_memories(base, user_token, cmd[idx + 1:], args); return }
-	fmt.println("usage: ham-ctl hub <me|health|agents|launch|chats|tasks|task-chains|projects|artifacts|memories> ...")
+	if resource == "cards" || resource == "card" { ctl_hub_cards(base, user_token, cmd[idx + 1:], args); return }
+	fmt.println("usage: ham-ctl hub <me|health|agents|launch|chats|tasks|task-chains|projects|artifacts|memories|cards> ...")
 }
 
 ctl_hub_agents :: proc(base, token, action: string, args: []string) {
@@ -377,6 +378,66 @@ ctl_hub_memory_content :: proc(base, user_token, memory_id: string) {
 	fmt.print(body)
 }
 
+ctl_hub_cards :: proc(base, token: string, tokens, args: []string) {
+	action := pos(tokens, 0)
+	if action == "" || action == "list" {
+		query := make([dynamic]string)
+		defer delete(query)
+		if s := option_value(args, "--status", ""); s != "" do append(&query, fmt.tprintf("status=%s", s))
+		if sc := option_value(args, "--scope", ""); sc != "" do append(&query, fmt.tprintf("scope=%s", sc))
+		if p := option_value(args, "--provider", ""); p != "" do append(&query, fmt.tprintf("provider=%s", p))
+		if pid := option_value(args, "--project", option_value(args, "--project-id", "")); pid != "" do append(&query, fmt.tprintf("project_id=%s", pid))
+		if l := option_value(args, "--limit", ""); l != "" do append(&query, fmt.tprintf("limit=%s", l))
+
+		path := "/api/v1/cards"
+		if len(query) > 0 {
+			path = fmt.tprintf("/api/v1/cards?%s", strings.join(query[:], "&"))
+		}
+		ctl_hub_request(base, token, "GET", path, "")
+		return
+	}
+	if action == "show" || action == "get" {
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
+		if card_id == "" { fmt.println("usage: ham-ctl hub cards show <card-id>"); return }
+		ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/cards/%s", safe_path_part(card_id)), "")
+		return
+	}
+	if action == "create" {
+		title := option_value(args, "--title", pos(tokens, 1))
+		if title == "" { fmt.println("usage: ham-ctl hub cards create --title <title> [--rationale <text>] [--scope <project|global>] [--provider <provider>] [--confidence <float>] [--project <id>] [--source-refs <json>] [--operations <json>] [--guard <json>]"); return }
+		fields := make([dynamic]string)
+		defer delete(fields)
+		append(&fields, json_kv("title", title))
+		if r := option_value(args, "--rationale", ""); r != "" do append(&fields, json_kv("rationale", r))
+		if sc := option_value(args, "--scope", ""); sc != "" do append(&fields, json_kv("scope", sc))
+		if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
+		if c := option_value(args, "--confidence", ""); c != "" do append(&fields, json_kv_raw("confidence", c))
+		if pid := option_value(args, "--project", option_value(args, "--project-id", "")); pid != "" do append(&fields, json_kv("project_id", pid))
+		if sr := option_value(args, "--source-refs", ""); sr != "" do append(&fields, json_kv_raw("source_refs", sr))
+		if ops := option_value(args, "--operations", ""); ops != "" do append(&fields, json_kv_raw("operations", ops))
+		if g := option_value(args, "--guard", ""); g != "" do append(&fields, json_kv_raw("guard", g))
+		if s := option_value(args, "--status", ""); s != "" do append(&fields, json_kv("status", s))
+		if su := option_value(args, "--snooze-until", ""); su != "" do append(&fields, json_kv("snooze_until", su))
+		if ttl := option_value(args, "--ttl-at", ""); ttl != "" do append(&fields, json_kv("ttl_at", ttl))
+		ctl_hub_request(base, token, "POST", "/api/v1/cards", json_object_from_slice(fields[:]))
+		return
+	}
+	if action == "discard" || action == "accept" || action == "reject" || action == "snooze" {
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
+		if card_id == "" { fmt.printf("usage: ham-ctl hub cards %s <card-id>\n", action); return }
+		body := "{}"
+		if action == "snooze" {
+			su := option_value(args, "--snooze-until", "")
+			body = json_object(json_kv("snooze_until", su))
+		}
+		ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/cards/%s/%s", safe_path_part(card_id), action), body)
+		return
+	}
+	fmt.println("usage: ham-ctl hub cards <list|show|create|discard|accept|reject|snooze> ...")
+}
+
 hub_user_mode_url :: proc(args: []string) -> string {
 	if v := option_value(args, "--hub-url", ""); v != "" do return v
 	if v := option_value(args, "--daemon-url", ""); v != "" do return v
@@ -445,6 +506,7 @@ print_hub_help :: proc(cmd: []string) {
 	if resource == "projects" { fmt.println("ham-ctl hub projects <list|create|show|update>\nPurpose: manage Hub projects.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... projects list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... projects create --name demo --repo-url https://example/repo.git"); return }
 	if resource == "artifacts" { fmt.println("ham-ctl hub artifacts <list|create|show|content|update|delete>\nPurpose: manage Hub artifacts.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... artifacts list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... artifacts create --name notes --content 'hello'"); return }
 	if resource == "memories" || resource == "memory" { fmt.println("ham-ctl hub memories <list|create|show|content|approve|reject|archive>\nPurpose: manage Hub memories.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories show mem_123\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories content mem_123\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories create --body 'Use nix check.' --title 'Test command'"); return }
+	if resource == "cards" || resource == "card" { fmt.println("ham-ctl hub cards <list|show|create|discard|accept|reject|snooze>\nPurpose: manage action cards.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards show crd_123"); return }
 	fmt.println("ham-ctl hub — Hub /api/v1 user mode; uses Authorization: Bearer only")
 	fmt.println("commands:")
 	fmt.println("  me           Show authenticated user")
@@ -457,9 +519,10 @@ print_hub_help :: proc(cmd: []string) {
 	fmt.println("  projects     List/create/show/update projects")
 	fmt.println("  artifacts    List/create/show/update artifacts")
 	fmt.println("  memories     List/create/show/content/approve/reject/archive memories")
+	fmt.println("  cards        List/create/show/discard/accept cards")
 	fmt.println("examples:")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... me")
-	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... launch --agent-id reviewer")
+	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards list")
 }
 
 // ctl_ref_json builds a single actor ref, choosing agent_id vs agent_instance based

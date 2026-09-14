@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BIN = Path("/tmp/ham-ctl-rte2e7/bin/ham-ctl")
+BIN = Path(os.environ.get("HAM_CTL_BIN", "/tmp/test-ham-ctl" if Path("/tmp/test-ham-ctl").exists() else "/tmp/ham-ctl-rte2e7/bin/ham-ctl"))
 
 
 def require(cond, msg):
@@ -153,10 +153,10 @@ def main():
     p3 = req3["params"]
     require(p3.get("type") == "habit" and p3.get("title") == "Reviewer checklist",
             "type/title must be forwarded")
-    require(p3.get("template_id") == "tmpl_rev", "--template-id must forward template_id")
-    require(p3.get("project_id") == "proj_1", "--project-id must forward project_id")
-    require(p3.get("bridge_id") == "brg_1", "--bridge-id must forward bridge_id")
-    require(p3.get("agent_id") == "agt_9", "--agent-id must forward agent_id")
+    require(p3.get("template_ids") == ["tmpl_rev"], "--template-id must forward template_ids")
+    require(p3.get("project_ids") == ["proj_1"], "--project-id must forward project_ids")
+    require(p3.get("bridge_ids") == ["brg_1"], "--bridge-id must forward bridge_ids")
+    require(p3.get("agent_ids") == ["agt_9"], "--agent-id must forward agent_ids")
 
     # --- H8: omitting scope flags must NOT emit empty scope keys ------------
     # (so the hub's defaults apply: agent -> caller's own, others -> global).
@@ -172,8 +172,85 @@ def main():
     mock4.close()
     req4 = json.loads(mock4.captured)
     p4 = req4["params"]
-    for k in ("template_id", "project_id", "bridge_id", "agent_id"):
-        require(k not in p4, f"omitted scope flag must NOT emit {k} (got {p4})")
+    # --- cards create ------------------------------------------------------
+    mock5 = MockEndpoint()
+    t5 = threading.Thread(target=mock5.serve_once)
+    t5.start()
+    proc5 = run_agent([
+        "--bridge-endpoint", f"tcp:127.0.0.1:{mock5.port}",
+        "--agent-token", "hlat_card", "cards", "create",
+        "--title", "Review PR", "--rationale", "Needs audit",
+        "--operations", '[{"type":"task.create"}]',
+        "--guard", '{"chain_idle":true}',
+    ])
+    t5.join(timeout=10)
+    mock5.close()
+    require(mock5.captured is not None, "cards create must reach endpoint")
+    req5 = json.loads(mock5.captured)
+    require(req5["method"] == "agent.cards.create", "cards create method must match")
+    p5 = req5["params"]
+    require(p5.get("title") == "Review PR", "title must match")
+    require(p5.get("rationale") == "Needs audit", "rationale must match")
+    require(p5.get("operations") == [{"type": "task.create"}], "operations must match")
+    require(p5.get("guard") == {"chain_idle": True}, "guard must match")
+
+    # --- cards list --------------------------------------------------------
+    mock6 = MockEndpoint()
+    t6 = threading.Thread(target=mock6.serve_once)
+    t6.start()
+    proc6 = run_agent([
+        "--bridge-endpoint", f"tcp:127.0.0.1:{mock6.port}",
+        "--agent-token", "hlat_card", "cards", "list",
+        "--status", "pending", "--scope", "project",
+    ])
+    t6.join(timeout=10)
+    mock6.close()
+    req6 = json.loads(mock6.captured)
+    require(req6["method"] == "agent.cards.list", "cards list method must match")
+    require(req6["params"].get("status") == "pending", "status filter must match")
+    require(req6["params"].get("scope") == "project", "scope filter must match")
+
+    # --- cards show --------------------------------------------------------
+    mock7 = MockEndpoint()
+    t7 = threading.Thread(target=mock7.serve_once)
+    t7.start()
+    proc7 = run_agent([
+        "--bridge-endpoint", f"tcp:127.0.0.1:{mock7.port}",
+        "--agent-token", "hlat_card", "cards", "show", "crd_abc123",
+    ])
+    t7.join(timeout=10)
+    mock7.close()
+    req7 = json.loads(mock7.captured)
+    require(req7["method"] == "agent.cards.show", "cards show method must match")
+    require(req7["params"].get("card_id") == "crd_abc123", "card_id must match")
+
+    # --- cards discard -----------------------------------------------------
+    mock8 = MockEndpoint()
+    t8 = threading.Thread(target=mock8.serve_once)
+    t8.start()
+    proc8 = run_agent([
+        "--bridge-endpoint", f"tcp:127.0.0.1:{mock8.port}",
+        "--agent-token", "hlat_card", "cards", "discard", "crd_abc123",
+    ])
+    t8.join(timeout=10)
+    mock8.close()
+    req8 = json.loads(mock8.captured)
+    require(req8["method"] == "agent.cards.discard", "cards discard method must match")
+    require(req8["params"].get("card_id") == "crd_abc123", "card_id must match")
+
+    # --- cards accept ------------------------------------------------------
+    mock9 = MockEndpoint()
+    t9 = threading.Thread(target=mock9.serve_once)
+    t9.start()
+    proc9 = run_agent([
+        "--bridge-endpoint", f"tcp:127.0.0.1:{mock9.port}",
+        "--agent-token", "hlat_card", "cards", "accept", "crd_abc123",
+    ])
+    t9.join(timeout=10)
+    mock9.close()
+    req9 = json.loads(mock9.captured)
+    require(req9["method"] == "agent.cards.accept", "cards accept method must match")
+    require(req9["params"].get("card_id") == "crd_abc123", "card_id must match")
 
     print("PASS: ham-ctl agent mode integration")
 

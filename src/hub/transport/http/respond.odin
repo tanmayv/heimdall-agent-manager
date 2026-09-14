@@ -50,6 +50,7 @@ status_for_error :: proc(code: domain.Error_Code) -> int {
 	case .Bridge_Revoked: return 403
 	case .Instance_Not_Running: return 409
 	case .Rate_Limited: return 429
+	case .Not_Implemented: return 501
 	case .Internal_Error: return 500
 	case .None: return 200
 	}

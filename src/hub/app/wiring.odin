@@ -17,6 +17,7 @@ import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
+import card_service "odin_test:hub/service/card"
 import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
@@ -66,6 +67,8 @@ App_Graph :: struct {
 	agent_action_handlers: http.Agent_Action_Handlers,
 	action_handlers: http.Action_Handlers,
 	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
+	cards: card_service.Card_Service,
+	card_handlers: http.Card_Handlers,
 	action_mutex: sync.Mutex,
 	action_bridge_versions: map[string]int,
 	router: http.Router,
@@ -177,6 +180,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.scheduled_prompt_handlers = graph.action_handlers
 	graph.bridge_handlers.actions = rawptr(&graph.action_handlers)
 	graph.bridge_handlers.scheduled_prompts = rawptr(&graph.action_handlers)
+	graph.cards = card_service.new_card_service(&graph.repos.cards, &graph.repos.projects, &graph.clock, &graph.ids)
+	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
+	graph.agent_action_handlers.cards = &graph.cards
 	graph.router = http.new_router()
 	register_routes(graph)
 	// Log the Web Push send status ONCE at startup. Never log the private key.
@@ -333,6 +339,11 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/list", rawptr(&graph.agent_action_handlers), http.agent_action_memory_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/show", rawptr(&graph.agent_action_handlers), http.agent_action_memory_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/content", rawptr(&graph.agent_action_handlers), http.agent_action_memory_content_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/create", rawptr(&graph.agent_action_handlers), http.agent_action_card_create_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/list", rawptr(&graph.agent_action_handlers), http.agent_action_card_list_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/show", rawptr(&graph.agent_action_handlers), http.agent_action_card_show_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/discard", rawptr(&graph.agent_action_handlers), http.agent_action_card_discard_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/accept", rawptr(&graph.agent_action_handlers), http.agent_action_card_accept_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/start-success", rawptr(&graph.agent_action_handlers), http.agent_action_start_success_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.create_bridge_enrollment_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.list_bridge_enrollments_handler)
@@ -374,6 +385,14 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "DELETE", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.delete_scheduled_prompt_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/scheduled-prompts", rawptr(&graph.action_handlers), http.bridge_list_scheduled_prompts_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/scheduled-prompts/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_scheduled_prompt_handler)
+
+	// Cards API
+	http.router_add(&graph.router, "GET", "/api/v1/cards", rawptr(&graph.card_handlers), http.list_cards_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/cards", rawptr(&graph.card_handlers), http.create_card_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.get_card_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.patch_card_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.delete_card_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/cards/*/*", rawptr(&graph.card_handlers), http.card_action_handler)
 }
 
 health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {
