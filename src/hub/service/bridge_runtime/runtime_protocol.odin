@@ -4,6 +4,12 @@ import "core:strings"
 import domain "odin_test:hub/domain"
 import project_service "odin_test:hub/service/project"
 
+// The command cache is shared across threads (the runtime loop writes results;
+// fs/file HTTP requests poll for them), so every access takes the registry command
+// lock. The lock is NOT reentrant, so these helpers must not be called while the
+// caller already holds it (socket-write sites lock separately and never nest a
+// cache call inside that section).
+
 PROTOCOL_VERSION :: 1
 
 Hello_Result :: struct {
@@ -24,6 +30,8 @@ runtime_accept_hello :: proc(registry: ^project_service.Bridge_Runtime_Registry,
 
 runtime_command_cached :: proc(registry: ^project_service.Bridge_Runtime_Registry, command_id: string) -> (string, bool) {
 	if registry == nil || command_id == "" do return "", false
+	project_service.bridge_runtime_registry_command_lock(registry)
+	defer project_service.bridge_runtime_registry_command_unlock(registry)
 	for i in 0..<registry.command_count { if registry.command_ids[i] == command_id do return registry.command_results_json[i], true }
 	return "", false
 }
@@ -31,6 +39,8 @@ runtime_command_cached :: proc(registry: ^project_service.Bridge_Runtime_Registr
 runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runtime_Registry, bridge_id, command_id, result_json: string) -> (string, bool) {
 	_ = bridge_id
 	if registry == nil || command_id == "" do return "", false
+	project_service.bridge_runtime_registry_command_lock(registry)
+	defer project_service.bridge_runtime_registry_command_unlock(registry)
 	for i in 0..<registry.command_count { if registry.command_ids[i] == command_id do return registry.command_results_json[i], true }
 	if registry.command_count < len(registry.command_ids) {
 		registry.command_ids[registry.command_count] = command_id

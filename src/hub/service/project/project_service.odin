@@ -2,6 +2,7 @@ package project
 
 import "core:net"
 import "core:strings"
+import "core:sync"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
@@ -44,6 +45,27 @@ Bridge_Runtime_Registry :: struct {
 	instance_activity_status: [256]string,
 	instance_count: int,
 	edge_event_count: int,
+	// command_mutex serializes (a) every write to a bridge command socket and (b)
+	// all access to the shared command result cache (command_ids/
+	// command_results_json/command_count). The hub is thread-per-connection: the
+	// bridge runtime loop (heartbeat/state/replaced acks) and each fs/file HTTP
+	// request write the SAME socket, and both touch the cache — without this lock
+	// their bytes interleave on the wire (corrupt frame -> silent drop -> command
+	// times out) and the cache tears. One registry-wide lock (not per-bridge)
+	// because the cache is a single shared array; it is held ONLY around the brief
+	// socket write / cache access, never across a command's blocking poll.
+	command_mutex: sync.Mutex,
+}
+
+// bridge_runtime_registry_command_lock/unlock guard the command socket + cache.
+// Hold ONLY around the actual socket write or the brief cache read/write — never
+// across a blocking poll/sleep, or a pending command would stall the runtime loop.
+bridge_runtime_registry_command_lock :: proc(registry: ^Bridge_Runtime_Registry) {
+	if registry != nil do sync.lock(&registry.command_mutex)
+}
+
+bridge_runtime_registry_command_unlock :: proc(registry: ^Bridge_Runtime_Registry) {
+	if registry != nil do sync.unlock(&registry.command_mutex)
 }
 
 bridge_runtime_registry_mark_live :: proc(registry: ^Bridge_Runtime_Registry, bridge_id: string, path_validation_adapter_registered: bool, path_validation_url: string) {
