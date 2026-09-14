@@ -30,7 +30,7 @@ import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import { CommandPalette, Drawer, Icon as UiIcon, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
-import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
+import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import {
   CHAT_VIEW_MIN_WIDTH,
   RIGHT_SIDEBAR_DEFAULT_WIDTH,
@@ -583,9 +583,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Sync state if hash/search changes while mounted (e.g. clicking internal link with ?panel=tasks)
+  // Sync state if hash/search changes while mounted (e.g. browser back/forward or internal navigation)
   useEffect(() => {
-    const handleHashChange = () => {
+    const handleLocationChange = () => {
       const search = getRouteSearch();
       const params = new URLSearchParams(search.replace(/^\?/, ''));
       const param = params.get('panel') || params.get('sidebar');
@@ -607,10 +607,17 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           setRightPanel('closed');
           writeRightSidebarOpen(false);
         }
+      } else {
+        setRightPanel('closed');
+        writeRightSidebarOpen(false);
       }
     };
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('hashchange', handleLocationChange);
+    window.addEventListener('popstate', handleLocationChange);
+    return () => {
+      window.removeEventListener('hashchange', handleLocationChange);
+      window.removeEventListener('popstate', handleLocationChange);
+    };
   }, []);
 
   // Guardrail: adjust sidebar width on window resize so chat view never violates CHAT_VIEW_MIN_WIDTH
@@ -900,6 +907,29 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     return 'tasks';
   }
 
+  // Sync ?panel=<tab> to route hash search on panel open/tab switch, or clean it up on close
+  function syncUrlPanel(tab: 'tasks' | 'files' | 'rundir' | null) {
+    if (typeof window === 'undefined') return;
+    try {
+      const search = getRouteSearch();
+      const params = new URLSearchParams(search.replace(/^\?/, ''));
+      if (tab) {
+        params.set('panel', tab);
+        params.delete('sidebar');
+      } else {
+        params.delete('panel');
+        params.delete('sidebar');
+      }
+      const nextSearch = params.toString();
+      const nextHash = buildRouteHash(getRoutePathname(), nextSearch);
+      if (window.location.hash !== nextHash) {
+        window.history.replaceState(window.history.state || {}, '', nextHash);
+      }
+    } catch {
+      // Best-effort URL query parameter synchronization
+    }
+  }
+
   // Top-right toggle: open to the default tab, or close if already open.
   function toggleRightPanel() {
     setHeaderActionsOpen(false);
@@ -908,9 +938,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         const targetTab = readRightSidebarTab() || defaultPanelTab();
         writeRightSidebarOpen(true);
         writeRightSidebarTab(targetTab);
+        syncUrlPanel(targetTab);
         return targetTab;
       } else {
         writeRightSidebarOpen(false);
+        syncUrlPanel(null);
         return 'closed';
       }
     });
@@ -922,17 +954,20 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setHeaderActionsOpen(false);
     writeRightSidebarOpen(true);
     writeRightSidebarTab(tab);
+    syncUrlPanel(tab);
     setRightPanel(tab);
   }
 
   function closeRightPanel() {
     writeRightSidebarOpen(false);
+    syncUrlPanel(null);
     setRightPanel('closed');
   }
 
   function selectRightPanelTab(tab: 'tasks' | 'files' | 'rundir') {
     writeRightSidebarOpen(true);
     writeRightSidebarTab(tab);
+    syncUrlPanel(tab);
     setRightPanel(tab);
   }
 

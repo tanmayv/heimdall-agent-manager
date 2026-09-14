@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Static verification guard for CT-55: Resizable right sidebar with smooth
-animation, min-width guardrails, UI storage persistence, and task view navigation
-state.
+"""Static verification guard for CT-55 and CT-56:
+- Resizable right sidebar with smooth animation, min-width guardrails, UI storage persistence,
+  and task view navigation state (CT-55).
+- Dynamic URL query param synchronization on right sidebar toggle, tab selection, and close (CT-56).
 
 Locks in the following invariants:
 1. REQ-RESIZE-1: Draggable vertical divider (role="separator", cursor-col-resize)
@@ -9,11 +10,16 @@ Locks in the following invariants:
    chat min-width never violated), double-click reset to default 480px.
 2. REQ-ANIM-1: Smooth 200ms open/close transition (transition-[width] duration-200 ease-in-out),
    transition-none during dragging for zero lag, overflow-hidden for smooth clipping.
-3. REQ-STORAGE-1: UI storage persistence keys (heimdall.rightSidebar.width,
+3. REQ-STORAGE-1 & REQ-STORAGE-SYNC-1: UI storage persistence keys (heimdall.rightSidebar.width,
    heimdall.rightSidebar.open, heimdall.rightSidebar.tab) and clamping in clientPersistence.ts.
 4. REQ-NAV-1: Navigation links from task views preserve ?panel=tasks query param in
    TaskChainOverview.tsx, TaskCommentsThread.tsx, and TaskChainsPage.tsx;
    route search (?panel= / ?sidebar=) parsed in ConversationThreadPage.tsx.
+5. REQ-QUERY-SYNC-1 & REQ-QUERY-SYNC-2: Dynamic URL query parameter synchronization using
+   window.history.replaceState and buildRouteHash(getRoutePathname(), nextSearch) on toggle,
+   open, tab switch, and close (with panel/sidebar parameter deletion on close).
+6. REQ-QUERY-SYNC-3: ConversationThreadPage listens to both hashchange and popstate events
+   for browser back/forward navigation.
 """
 from pathlib import Path
 
@@ -131,10 +137,39 @@ def test_navigation_state_preservation() -> None:
             "TaskChainsPage coordinator href must include ?panel=tasks")
 
 
+def test_dynamic_query_sync() -> None:
+    conv_src = CONVERSATION_FILE.read_text(encoding="utf-8")
+
+    # REQ-QUERY-SYNC-1 & REQ-QUERY-SYNC-2: syncUrlPanel helper
+    require("syncUrlPanel" in conv_src,
+            "ConversationThreadPage must define syncUrlPanel helper")
+    require("buildRouteHash(getRoutePathname()" in conv_src or ("buildRouteHash" in conv_src and "getRoutePathname" in conv_src),
+            "ConversationThreadPage must construct route hash using buildRouteHash and getRoutePathname()")
+    require("window.history.replaceState" in conv_src,
+            "ConversationThreadPage must synchronize URL via window.history.replaceState")
+    require("params.delete('panel')" in conv_src and "params.delete('sidebar')" in conv_src,
+            "ConversationThreadPage must clean up panel and sidebar query parameters on close")
+
+    # Called on toggle, open, close, and tab selection
+    require("syncUrlPanel(targetTab)" in conv_src,
+            "toggleRightPanel must call syncUrlPanel(targetTab) on open")
+    require("syncUrlPanel(tab)" in conv_src,
+            "openRightPanel and selectRightPanelTab must call syncUrlPanel(tab)")
+    require("syncUrlPanel(null)" in conv_src,
+            "closeRightPanel and toggleRightPanel must call syncUrlPanel(null) on close")
+
+    # REQ-QUERY-SYNC-3: Listen to both hashchange and popstate events
+    require("window.addEventListener('hashchange'" in conv_src or 'addEventListener("hashchange"' in conv_src,
+            "ConversationThreadPage must listen to hashchange events")
+    require("window.addEventListener('popstate'" in conv_src or 'addEventListener("popstate"' in conv_src,
+            "ConversationThreadPage must listen to popstate events")
+
+
 def main() -> None:
     test_storage_persistence()
     test_resizer_and_animation()
     test_navigation_state_preservation()
+    test_dynamic_query_sync()
     print("PASS: test_ui_resizable_sidebar_static")
 
 
