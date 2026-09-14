@@ -8,6 +8,8 @@ import app "odin_test:hub/app"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import project_service "odin_test:hub/service/project"
+import content_service "odin_test:hub/service/content"
+import agent_service "odin_test:hub/service/agent"
 import api_http "odin_test:hub/transport/http"
 
 check :: proc(ok: bool, msg: string) {
@@ -935,6 +937,30 @@ main :: proc() {
 	})
 	check(resp_bob_list.status == 200, "bob list cards must return 200")
 	check(!strings.contains(resp_bob_list.body, multi_card_id), "bob list must not contain alice's card")
+
+	// 23. T4 / REQ-AGENT-1: Verify tmpl_curator seeded via migration 035
+	resp_tmpl_list := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/templates",
+		request_id = "req_tmpl_list",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_tmpl_list.status == 200, "GET /api/v1/templates must return 200")
+	check(strings.contains(resp_tmpl_list.body, "\"template_id\":\"tmpl_curator\""), "templates list must include tmpl_curator")
+	check(strings.contains(resp_tmpl_list.body, "\"is_system\":true") || strings.contains(resp_tmpl_list.body, "\"is_system\": true"), "tmpl_curator must be system template")
+
+	curator_tmpl, c_ok, c_err := content_service.get_template(&graph.content, contracts.Auth_Context{user_id = "alice", kind = .User_Token}, domain.TEMPLATE_CURATOR_ID)
+	check(c_ok, "content_service.get_template for tmpl_curator must succeed")
+	check(curator_tmpl.template_id == domain.TEMPLATE_CURATOR_ID, "curator template_id must match domain.TEMPLATE_CURATOR_ID")
+	check(curator_tmpl.is_system, "curator is_system must be true")
+	check(curator_tmpl.name == "curator", "curator name must be curator")
+	check(strings.contains(curator_tmpl.instructions, "Role: Curator"), "curator instructions must contain Role: Curator")
+	check(strings.contains(curator_tmpl.instructions, "agent.cards.create"), "curator instructions must cite agent.cards.create")
+	check(strings.contains(curator_tmpl.instructions, "REQ-UX-1") || strings.contains(curator_tmpl.instructions, "label"), "curator instructions must enforce REQ-UX-1 label")
+	check(strings.contains(curator_tmpl.instructions, "Confidence Calculation Matrix"), "curator instructions must include confidence matrix")
+	check(content_service.template_available(&graph.content, "alice", domain.TEMPLATE_CURATOR_ID), "tmpl_curator must be template_available for alice")
+	check(agent_service.agent_template_available(&graph.agents, "alice", domain.TEMPLATE_CURATOR_ID), "tmpl_curator must be agent_template_available for alice")
 
 	fmt.println("PASS: hub cards API test (REST + agent-actions)")
 }

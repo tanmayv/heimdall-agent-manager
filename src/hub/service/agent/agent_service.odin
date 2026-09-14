@@ -133,7 +133,7 @@ update_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agen
 agent_template_available :: proc(service: ^Agent_Service, owner: domain.User_ID, template_id: string) -> bool {
 	if template_id == "" do return false
 	switch template_id {
-	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID:
+	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_CURATOR_ID:
 		return true
 	}
 	if service.content == nil do return false
