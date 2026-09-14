@@ -7,8 +7,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useLazyListBridgeDirQuery, useMkdirBridgePathMutation, type BridgeFsEntry } from '../api/endpoints/bridgeFs';
-
-import { Button, Icon, IconButton, Input } from '@ui';
+import { Badge, Button, Icon, IconButton, Input, Panel } from '@ui';
 function str(v: any): string { return String(v ?? '').trim(); }
 
 export default function BridgeDirectoryPicker({
@@ -116,7 +115,7 @@ export default function BridgeDirectoryPicker({
   }, [cwd, root]);
 
   return (
-    <div data-debug-id={debugId} className="w-full rounded-xl border border-white/10 bg-[#121214] p-4 shadow-2xl">
+    <Panel data-debug-id={debugId} tone="raised" padding="md" className="w-full shadow-2xl">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">
@@ -160,8 +159,8 @@ export default function BridgeDirectoryPicker({
               <span className="text-zinc-200 text-xs font-mono truncate group-hover:text-white transition-colors">{e.name}</span>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              {e.has_git ? <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-mono font-medium text-emerald-400">git</span> : null}
-              {e.hidden ? <span className="text-[10px] font-mono text-zinc-500">hidden</span> : null}
+              {e.has_git ? <Badge tone="success" emphasis="soft" className="font-mono text-[10px]">git</Badge> : null}
+              {e.hidden ? <Badge tone="neutral" emphasis="soft" className="font-mono text-[10px]">hidden</Badge> : null}
               <Icon name="chevron-right" size={14} className="shrink-0 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
             </div>
           </button>
@@ -206,6 +205,6 @@ export default function BridgeDirectoryPicker({
         <Button data-debug-id={`${debugId}-create-typed-btn`} variant="secondary" onClick={createTypedPath}>Create typed path</Button>
         <Button data-debug-id={`${debugId}-pick-btn`} variant="primary" onClick={() => onPick(str(pathInput) || cwd)}>Use this folder</Button>
       </div>
-    </div>
+    </Panel>
   );
 }

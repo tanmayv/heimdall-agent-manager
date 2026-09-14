@@ -13,7 +13,7 @@ import {
   useLazyListBridgeFigFsQuery,
   type FigFsEntry,
 } from '../api/endpoints/bridgeFig';
-import Icon from './Icon';
+import { Badge, Button, Icon, IconButton, Input, Panel, StatusPill } from '@ui';
 
 function str(v: any): string { return String(v ?? '').trim(); }
 
@@ -258,7 +258,7 @@ export default function FigDirectoryPicker({
   const workspaces = wsData?.workspaces || [];
 
   return (
-    <div data-debug-id={debugId} className="w-full rounded-xl border border-white/10 bg-[#121214] p-4 shadow-2xl">
+    <Panel data-debug-id={debugId} tone="raised" padding="md" className="w-full shadow-2xl">
       {/* ========================================================================= */}
       {/* STAGE 1: WORKSPACE SELECTION (when no active workspace or switcher active) */}
       {/* ========================================================================= */}
@@ -270,33 +270,33 @@ export default function FigDirectoryPicker({
               <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
                 <Icon name="folder" size={14} className="text-amber-400" />
                 <span>CitC Workspaces · Select Workspace</span>
+                <StatusPill tone="warning" emphasis="soft">CitC</StatusPill>
               </div>
               <div className="mt-0.5 truncate text-xs text-zinc-500">
                 Choose a Client in the Cloud workspace on this bridge machine
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              <button
+              <Button
                 data-debug-id={`${debugId}-new-workspace-btn`}
-                type="button"
+                variant="secondary"
+                size="sm"
                 onClick={() => {
                   setShowNewWs((v) => !v);
                   setCreateWsError('');
                 }}
-                className="rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/[0.1] transition"
+                leading={<Icon name="plus" size={12} />}
               >
-                + New CitC Workspace
-              </button>
+                New CitC Workspace
+              </Button>
               {onClose ? (
-                <button
+                <IconButton
                   data-debug-id={`${debugId}-close-btn`}
-                  type="button"
+                  icon="close"
+                  label="Close"
+                  size="sm"
                   onClick={onClose}
-                  aria-label="Close"
-                  className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white transition"
-                >
-                  <Icon name="close" size={15} />
-                </button>
+                />
               ) : null}
             </div>
           </div>
@@ -306,28 +306,31 @@ export default function FigDirectoryPicker({
             <form onSubmit={handleCreateWorkspaceSubmit} className="mb-3 rounded-xl border border-white/10 bg-black/40 p-3">
               <div className="text-xs font-semibold text-zinc-300 mb-2">Create New CitC Workspace (<code>g4 citc</code>)</div>
               <div className="flex items-center gap-2">
-                <input
+                <Input
                   data-debug-id={`${debugId}-new-ws-input`}
                   value={newWsInput}
-                  onChange={(e) => setNewWsInput(e.target.value)}
+                  onChange={setNewWsInput}
                   placeholder="e.g. bugfix-cloudtop-agent"
-                  className="flex-1 rounded-lg border border-white/10 bg-black/40 px-3 py-1.5 font-mono text-xs text-zinc-100 placeholder:text-zinc-500 outline-none focus:border-sky-500"
+                  size="sm"
+                  className="flex-1 font-mono"
                 />
-                <button
+                <Button
                   data-debug-id={`${debugId}-create-ws-btn`}
                   type="submit"
+                  variant="primary"
+                  size="sm"
                   disabled={createWsState.isLoading || !newWsInput.trim()}
-                  className="rounded-lg bg-sky-600 hover:bg-sky-500 px-3.5 py-1.5 text-xs font-semibold text-white transition disabled:opacity-50"
+                  loading={createWsState.isLoading}
                 >
                   {createWsState.isLoading ? 'Creating…' : 'Create'}
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setShowNewWs(false)}
-                  className="rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 text-xs font-semibold transition"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
               {createWsError ? (
                 <p className="mt-1.5 text-xs text-red-400">{createWsError}</p>
@@ -337,12 +340,13 @@ export default function FigDirectoryPicker({
 
           {/* Search-as-you-type input */}
           <div className="mb-2 relative">
-            <input
+            <Input
               data-debug-id={`${debugId}-workspace-filter`}
               value={wsSearch}
-              onChange={(e) => setWsSearch(e.target.value)}
+              onChange={setWsSearch}
               placeholder="Search workspaces by name (e.g. heimdall, bob-agent)…"
-              className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 outline-none font-mono transition"
+              width="full"
+              className="font-mono text-xs"
             />
             {isWsFetching ? (
               <span className="absolute right-3 top-2.5 text-[10px] text-zinc-400 animate-pulse font-mono">
@@ -360,13 +364,14 @@ export default function FigDirectoryPicker({
             ) : wsQueryError ? (
               <div className="p-4 text-center text-xs text-zinc-400">
                 CitC workspace discovery failed.
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => refetchWs()}
-                  className="ml-2 text-sky-400 underline hover:text-sky-300"
+                  className="ml-2 text-sky-400"
                 >
                   Retry
-                </button>
+                </Button>
               </div>
             ) : workspaces.length === 0 ? (
               <div data-debug-id={`${debugId}-workspaces-empty`} className="p-6 text-center text-xs text-zinc-500">
@@ -393,14 +398,14 @@ export default function FigDirectoryPicker({
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
                     {ws.last_sync_head_change ? (
-                      <span className="text-zinc-500 font-mono text-xs">
+                      <Badge tone="neutral" emphasis="soft" className="font-mono text-xs">
                         CL {ws.last_sync_head_change}
-                      </span>
+                      </Badge>
                     ) : null}
                     {ws.age_text ? (
-                      <span className="text-zinc-500 text-xs font-mono">
+                      <Badge tone="neutral" emphasis="soft" className="font-mono text-xs">
                         {ws.age_text}
-                      </span>
+                      </Badge>
                     ) : null}
                     <Icon name="chevron-right" size={14} className="text-zinc-600 group-hover:text-zinc-400 transition-colors" />
                   </div>
@@ -419,41 +424,40 @@ export default function FigDirectoryPicker({
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
                 <Icon name="folder" size={14} className="text-amber-400" />
-                <span>CitC Browse · {activeWorkspace}</span>
+                <span>CitC Browse</span>
+                <StatusPill tone="warning" emphasis="soft">{activeWorkspace}</StatusPill>
               </div>
               <div className="mt-0.5 truncate font-mono text-xs text-zinc-500">
                 /google/src/cloud/…/{activeWorkspace}/google3{cwd ? `/${cwd}` : ''}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              <button
+              <Button
                 data-debug-id={`${debugId}-root-btn`}
-                type="button"
+                variant="secondary"
+                size="sm"
                 onClick={() => void load('')}
                 title="Go to google3 root"
-                className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/10 transition"
               >
                 google3
-              </button>
-              <button
+              </Button>
+              <Button
                 data-debug-id={`${debugId}-switch-ws-btn`}
-                type="button"
+                variant="secondary"
+                size="sm"
                 onClick={() => setActiveWorkspace('')}
                 title="Switch CitC Workspace"
-                className="rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-semibold text-zinc-300 hover:bg-white/[0.1] transition"
               >
                 Switch Workspace
-              </button>
+              </Button>
               {onClose ? (
-                <button
+                <IconButton
                   data-debug-id={`${debugId}-close-btn`}
-                  type="button"
+                  icon="close"
+                  label="Close"
+                  size="sm"
                   onClick={onClose}
-                  aria-label="Close"
-                  className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white transition"
-                >
-                  <Icon name="close" size={15} />
-                </button>
+                />
               ) : null}
             </div>
           </div>
@@ -496,10 +500,10 @@ export default function FigDirectoryPicker({
 
           {/* Single clean search / filter input */}
           <div className="mb-2.5">
-            <input
+            <Input
               data-debug-id={`${debugId}-filter-input`}
               value={dirFilterText}
-              onChange={(e) => setDirFilterText(e.target.value)}
+              onChange={setDirFilterText}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
@@ -507,7 +511,8 @@ export default function FigDirectoryPicker({
                 }
               }}
               placeholder="Search or jump to path (e.g. cloud/security)…"
-              className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 outline-none transition font-mono"
+              width="full"
+              className="font-mono text-xs"
             />
           </div>
 
@@ -548,9 +553,9 @@ export default function FigDirectoryPicker({
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                       {e.modified_at ? (
-                        <span className="text-zinc-500 text-xs font-mono">
+                        <Badge tone="neutral" emphasis="soft" className="font-mono text-xs">
                           {formatRelativeAge(e.modified_at)}
-                        </span>
+                        </Badge>
                       ) : null}
                       {e.is_dir && <Icon name="chevron-right" size={14} className="shrink-0 text-zinc-600 group-hover:text-zinc-400 transition-colors" />}
                     </div>
@@ -560,15 +565,16 @@ export default function FigDirectoryPicker({
                 {/* Pagination: Load More */}
                 {hasMore ? (
                   <div className="p-2 text-center border-t border-white/[0.06]">
-                    <button
+                    <Button
                       data-debug-id={`${debugId}-load-more-btn`}
-                      type="button"
+                      variant="secondary"
+                      size="sm"
                       disabled={isLoadingMore}
+                      loading={isLoadingMore}
                       onClick={loadMore}
-                      className="rounded-lg bg-white/[0.08] px-3.5 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/[0.14] disabled:opacity-50 transition"
                     >
                       {isLoadingMore ? 'Loading more…' : `Load more entries (${entries.length} loaded)`}
-                    </button>
+                    </Button>
                   </div>
                 ) : null}
               </div>
@@ -583,26 +589,26 @@ export default function FigDirectoryPicker({
               Selected: <span className="font-mono text-zinc-200">/{activeWorkspace}/google3{cwd ? `/${cwd}` : ''}</span>
             </div>
             <div className="flex items-center gap-2">
-              <button
+              <Button
                 data-debug-id={`${debugId}-pick-root-btn`}
-                type="button"
+                variant="secondary"
+                size="md"
                 onClick={() => onPick('', activeWorkspace)}
-                className="rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3.5 py-2 text-xs font-semibold transition"
               >
                 Select google3 Root
-              </button>
-              <button
+              </Button>
+              <Button
                 data-debug-id={`${debugId}-pick-btn`}
-                type="button"
+                variant="primary"
+                size="md"
                 onClick={() => onPick(cwd, activeWorkspace)}
-                className="rounded-lg bg-sky-600 hover:bg-sky-500 text-white px-4 py-2 text-xs font-semibold transition"
               >
                 Select This Folder
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </Panel>
   );
 }
