@@ -44,14 +44,7 @@ Config :: struct {
 	ctl: Ctl_Config,
 }
 
-Peer_Config :: struct {
-	name: string,
-	endpoint: string,
-	token: string,
-}
-
 Bridge_Config :: struct {
-	peers: [dynamic]Peer_Config,
 	// Nudge/scheduler knobs owned by the bridge (it runs the sweep loop). Parsed
 	// from the [bridge] section. nudge_configured is set when any [bridge] nudge
 	// key is present, so consumers can prefer these over the legacy [daemon]
@@ -222,7 +215,6 @@ Section :: enum {
 	None,
 	Daemon,
 	Bridge,
-	Peer,
 	Wrapper,
 	Wrapper_Agent_Command,
 	Wrapper_Agent_Bootstrap,
@@ -277,7 +269,6 @@ parse_config :: proc(content: string, cfg: ^Config) {
 	section := Section.None
 	current_agent_command := ""
 	current_bootstrap_feature := ""
-	current_peer_index := -1
 	legacy_warned := make([dynamic]string)
 	lines := strings.split(content, "\n")
 
@@ -297,11 +288,6 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		}
 		if line == "[bridge]" {
 			section = .Bridge
-			continue
-		}
-		if line == "[[peer]]" {
-			section = .Peer
-			current_peer_index = ensure_peer(&cfg.bridge)
 			continue
 		}
 		if line == "[guide_agent]" {
@@ -377,8 +363,6 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			parse_daemon_key(key, value, &cfg.daemon)
 		case .Bridge:
 			parse_bridge_key(key, value, &cfg.bridge)
-		case .Peer:
-			parse_peer_key(current_peer_index, key, value, &cfg.bridge)
 		case .Wrapper:
 			parse_wrapper_key(key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Command:
@@ -517,11 +501,6 @@ daemon_default_agent_id_set :: proc(cfg: ^Daemon_Config, default_use, agent_id: 
 	append(&cfg.default_agent_ids, Role_Default_Agent_Config{use = strings.clone(use_key), agent_id = strings.clone(strings.trim_space(agent_id))})
 }
 
-ensure_peer :: proc(cfg: ^Bridge_Config) -> int {
-	append(&cfg.peers, Peer_Config{})
-	return len(cfg.peers) - 1
-}
-
 // parse_bridge_key parses the [bridge] section. Currently the bridge-owned
 // nudge/scheduler knobs live here. Any recognized key marks nudge_configured so
 // consumers prefer these over the legacy [daemon] nudge_* fallback.
@@ -547,19 +526,6 @@ parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
 		if n, ok := strconv.parse_int(value); ok do cfg.fs_read_page_bytes = int(n)
 	case "pty_host_runtime":
 		cfg.pty_host_runtime = parse_bool(value)
-	case:
-	}
-}
-
-parse_peer_key :: proc(idx: int, key, value: string, cfg: ^Bridge_Config) {
-	if idx < 0 || idx >= len(cfg.peers) do return
-	switch key {
-	case "name":
-		cfg.peers[idx].name = parse_string(value)
-	case "endpoint":
-		cfg.peers[idx].endpoint = parse_string(value)
-	case "token":
-		cfg.peers[idx].token = parse_string(value)
 	case:
 	}
 }
@@ -890,7 +856,6 @@ default_config :: proc() -> Config {
 	cfg.daemon.federation_poll_interval_seconds = 10
 	cfg.daemon.federation_advertised_agent_instance_ids = nil
 	cfg.bridge.fs_read_page_bytes = 16_000
-	cfg.bridge.peers = make([dynamic]Peer_Config)
 
 	cfg.guide_agent.enabled = false
 	cfg.guide_agent.autostart = false

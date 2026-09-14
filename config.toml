@@ -29,16 +29,6 @@ default_agent_id_reviewer = "reviewer"
 # ids with custom durable/system agents without changing code.
 system_agent_ids = ["guide", "memory-auditor", "memory-reviewer"]
 
-# Federation peer: the home Mac daemon (daemon_id = "home-mac"), reached back over
-# the SSH reverse tunnel. Connect from the Mac with:
-#   ssh -L 49323:127.0.0.1:49322 -R 49323:127.0.0.1:49322 cloudtop
-# so on cloudtop, 127.0.0.1:49323 forwards to the Mac's daemon. The token must be
-# identical to the Mac's [[peer]] token for this link.
-[[peer]]
-name     = "home-mac"
-endpoint = "http://127.0.0.1:49323"
-token    = "plk_3b4afbe5089462d2618fd6f566b640fa35b7688c77797e1ece12f6187afa0b86"
-
 [guide_agent]
 enabled = false
 autostart = false

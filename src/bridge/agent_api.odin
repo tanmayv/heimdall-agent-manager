@@ -12,8 +12,8 @@ package main
 //              params} (the hub reads the caller from the instance token).
 //   .Raw       direct REST call (method+path) with the instance token header;
 //              params become the body for writes, query already baked into path.
-//   .Local     served by the bridge itself with NO hub round-trip (e.g. listing
-//              locally-configured peer bridges).
+//   .Local     served by the bridge itself with NO hub round-trip (e.g. the
+//              bridge.list self row).
 //
 // Auth invariant (unchanged): agent token in -> bridge authenticates + strips ->
 // forwards to hub with the bridge token + X-Heimdall-Instance-Token. Agents
@@ -273,8 +273,8 @@ bridge_agent_rewrite_params :: proc(method, params: string) -> string {
 // ---- local op handlers (bridge-served, no hub) --------------------------
 
 // bridge_local_handle_agent_local_op fulfils .Local routes. Currently only
-// bridge.list, which merges Hub-registered bridges + locally-configured peers +
-// self, per docs/agent-api-redesign.md §2.1.
+// bridge.list, which merges Hub-registered bridges + this bridge's self row
+// (direct bridge<->bridge peers were removed in favor of the star topology).
 bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
 	if op == "bridge.list" {
 		scope := strings.trim_space(bridge_local_extract_json_string(params, "scope", "all"))
@@ -301,7 +301,9 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 			}
 		}
 
-		// Self + configured peers (scope configured|all): served locally.
+		// Self (scope configured|all): served locally. Direct bridge<->bridge
+		// peering was removed (star topology), so "configured" now returns just
+		// this bridge's self row; hub-registered bridges come from the hub above.
 		if scope == "configured" || scope == "all" {
 			// self row
 			if !first do strings.write_byte(&b, ',')
@@ -311,25 +313,6 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 			strings.write_string(&b, "\",\"local_endpoint_port\":")
 			strings.write_string(&b, bridge_agent_itoa(int(bridge_config.local_endpoint_port)))
 			strings.write_string(&b, "}")
-			// configured peers
-			for i in 0..<len(bridge_peer_states) {
-				p := &bridge_peer_states[i]
-				if !first do strings.write_byte(&b, ',')
-				first = false
-				strings.write_string(&b, "{\"origin\":\"configured\",\"name\":\"")
-				bridge_local_write_json_string(&b, p.name)
-				strings.write_string(&b, "\",\"daemon_id\":\"")
-				bridge_local_write_json_string(&b, string(p.daemon_id))
-				strings.write_string(&b, "\",\"endpoint\":\"")
-				bridge_local_write_json_string(&b, p.endpoint)
-				strings.write_string(&b, "\",\"reachability\":\"")
-				strings.write_string(&b, "linked" if p.status == .Linked else "unreachable")
-				strings.write_string(&b, "\",\"active_sessions\":")
-				strings.write_string(&b, bridge_agent_itoa(p.active_sessions))
-				strings.write_string(&b, ",\"last_error\":\"")
-				bridge_local_write_json_string(&b, p.last_error)
-				strings.write_string(&b, "\"}")
-			}
 		}
 
 		strings.write_string(&b, "]}")
