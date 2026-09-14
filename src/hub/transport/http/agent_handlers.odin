@@ -133,16 +133,24 @@ delete_agent_support_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	// Accept user tokens AND bridge-relayed instance tokens so a running agent can
-	// list instances it owns (agent API v2 `agents instance list`). Same-owner
-	// scoping is enforced by list_instances_filtered via the auth context.
-	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	// Accept user tokens, bridge-relayed instance tokens, and bare bridge tokens
+	// (for the action scheduler). When called with a bare bridge token, instances
+	// are strictly scoped to the calling bridge.
+	auth_ctx, ok, auth_resp := require_auth_or_bridge_token(h.auth, req)
 	if !ok do return auth_resp
 	limit := query_int(req.query, "limit", 50)
 	if limit <= 0 do limit = 50
 	if limit > 200 do limit = 200
 	cursor := query_value(req.query, "cursor")
-	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status"), project_id = query_value(req.query, "project_id")}, limit, cursor)
+	filter := agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status"), project_id = query_value(req.query, "project_id")}
+	if auth_ctx.kind == .Bridge_Token {
+		req_bridge := query_value(req.query, "bridge_id")
+		if req_bridge != "" && req_bridge != auth_ctx.bridge_id {
+			return respond_error(domain.domain_error(.Forbidden, "bridge cannot list instances of another bridge"), req.request_id)
+		}
+		filter.bridge_id = auth_ctx.bridge_id
+	}
+	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, filter, limit, cursor)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
 	next_cursor := ""
@@ -154,15 +162,19 @@ list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 create_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	// Accept both human user tokens and bridge-relayed instance tokens so a running
-	// agent (e.g. a chain coordinator) can add/launch another agent into its chain.
-	// require_auth_any resolves the hbr_ bridge token + hit_ instance assertion into
-	// an Auth_Context carrying the owning user_id; create_instance then scopes the
-	// new instance to that same owner (bridge/agent owner-match is enforced there),
-	// so an agent can only spawn agents it already owns.
-	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	// Accept human user tokens, bridge-relayed instance tokens, and bare bridge tokens
+	// (for the action scheduler). When called with a bare bridge token, the instance
+	// MUST be created on that calling bridge.
+	auth_ctx, ok, auth_resp := require_auth_or_bridge_token(h.auth, req)
 	if !ok do return auth_resp
-	inst, created, err := agent_service.create_instance(h.agents, auth_ctx, instance_input_from_body(req.body))
+	input := instance_input_from_body(req.body)
+	if auth_ctx.kind == .Bridge_Token {
+		if input.bridge_id != "" && input.bridge_id != auth_ctx.bridge_id {
+			return respond_error(domain.domain_error(.Forbidden, "bridge cannot create instances on another bridge"), req.request_id)
+		}
+		input.bridge_id = auth_ctx.bridge_id
+	}
+	inst, created, err := agent_service.create_instance(h.agents, auth_ctx, input)
 	if !created do return respond_error(err, req.request_id)
 	events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "created", agent_instance_summary_json(inst))
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)

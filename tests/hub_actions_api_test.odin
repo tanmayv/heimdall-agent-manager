@@ -511,5 +511,116 @@ main :: proc() {
 	run_agent_msg_id := extract_json_string(run_agent_resp.body, "message_id")
 	check(run_agent_msg_id != "", "message_id in run-now agent response")
 
+	// 10. Security & Bridge Auth Isolation Tests
+	// 10a. Negative Test: Bare hbr_ token REJECTED on user endpoint (GET /api/v1/task-chains)
+	bare_bridge_tc_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/task-chains",
+		request_id = "req_bare_bridge_tc",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bare_bridge_tc_resp.status != 200, fmt.tprintf("bare bridge token must NOT access task-chains; got status: %d body: %s", bare_bridge_tc_resp.status, bare_bridge_tc_resp.body))
+
+	// 10b. Negative Test: Bare hbr_ token REJECTED on task-chains mutation (POST /api/v1/task-chains)
+	bare_bridge_tc_post_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/task-chains",
+		body = "{\"title\":\"Rogue Chain\"}",
+		request_id = "req_bare_bridge_tc_post",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bare_bridge_tc_post_resp.status != 200 && bare_bridge_tc_post_resp.status != 201, fmt.tprintf("bare bridge token must NOT create task-chains; got status: %d body: %s", bare_bridge_tc_post_resp.status, bare_bridge_tc_post_resp.body))
+
+	// 10c. Positive Test: Bare hbr_ token SUCCEEDS on GET /api/v1/agent-instances (scoped to calling bridge)
+	bridge_list_inst_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/agent-instances",
+		query = fmt.tprintf("agent_id=%s", agt1.agent_id),
+		request_id = "req_bridge_list_inst",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_list_inst_resp.status == 200, fmt.tprintf("bridge token should list agent instances: %s", bridge_list_inst_resp.body))
+	check(strings.contains(bridge_list_inst_resp.body, "inst_ac_1"), "bridge list instances contains inst_ac_1")
+
+	// 10d. Scoping Test: Bare hbr_ token querying another bridge_id is REJECTED (403 Forbidden)
+	bridge_list_other_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/agent-instances",
+		query = "bridge_id=brg_other",
+		request_id = "req_bridge_list_other",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_list_other_resp.status == 403, fmt.tprintf("bridge listing other bridge instances must be 403: %d %s", bridge_list_other_resp.status, bridge_list_other_resp.body))
+
+	// 10e. Positive Test: Bare hbr_ token SUCCEEDS on POST /api/v1/agent-instances
+	bridge_create_body := strings.concatenate({"{\"agent_id\":\"", agt1.agent_id, "\"}"})
+	defer delete(bridge_create_body)
+	bridge_create_inst_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/agent-instances",
+		body = bridge_create_body,
+		request_id = "req_bridge_create_inst",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_create_inst_resp.status == 201, fmt.tprintf("bridge token create agent instance failed: %s", bridge_create_inst_resp.body))
+	created_inst_bridge := extract_json_string(bridge_create_inst_resp.body, "bridge_id")
+	check(created_inst_bridge == bridge1_id, fmt.tprintf("created instance bridge_id (%s) must match caller bridge_id (%s)", created_inst_bridge, bridge1_id))
+
+	// 10f. Scoping Test: Bare hbr_ token creating instance on another bridge is REJECTED (403 Forbidden)
+	bridge_create_other_body := strings.concatenate({"{\"agent_id\":\"", agt1.agent_id, "\",\"bridge_id\":\"brg_other\"}"})
+	defer delete(bridge_create_other_body)
+	bridge_create_other_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/agent-instances",
+		body = bridge_create_other_body,
+		request_id = "req_bridge_create_other",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_create_other_resp.status == 403, fmt.tprintf("bridge creating instance on other bridge must be 403: %d %s", bridge_create_other_resp.status, bridge_create_other_resp.body))
+
+	// 10g. Defense-in-depth: Bridge execute on action owned by another user is REJECTED (403 Forbidden)
+	bob := [?]contracts.HTTP_Header{
+		{name = "X-authentik-username", value = "bob"},
+		{name = "X-authentik-name", value = "Bob"},
+	}
+	enr2 := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/bridge-enrollments",
+		body = "{\"label\":\"Bridge 2 Bob\"}",
+		request_id = "req_enr2",
+		remote_addr = "127.0.0.1",
+		headers = bob[:],
+	})
+	check(enr2.status == 201, fmt.tprintf("enroll 2 failed: %s", enr2.body))
+	tok2 := extract_json_string(enr2.body, "enrollment_token")
+	enroll2_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", tok2})}}
+	b2_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/bridges/enroll",
+		body = "{\"machine\":{\"hostname\":\"host2\"}}",
+		request_id = "req_b2",
+		remote_addr = "127.0.0.1",
+		headers = enroll2_headers[:],
+	})
+	check(b2_resp.status == 201, fmt.tprintf("bridge 2 exchange token failed: %s", b2_resp.body))
+	bridge2_token := extract_json_string(b2_resp.body, "bridge_token")
+	bridge2_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge2_token})}}
+
+	cross_exec_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", agent_act_id),
+		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
+		request_id = "req_cross_exec",
+		remote_addr = "127.0.0.1",
+		headers = bridge2_headers[:],
+	})
+	check(cross_exec_resp.status == 403, fmt.tprintf("cross-owner bridge execute must be 403: %d %s", cross_exec_resp.status, cross_exec_resp.body))
+
 	fmt.println("ALL ACTIONS API TESTS PASSED")
 }

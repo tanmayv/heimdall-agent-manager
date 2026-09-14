@@ -602,6 +602,10 @@ bridge_execute_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	act, act_ok, _ := h.repo.get(h.repo.ctx, id)
 	if !act_ok do return respond_error(domain.domain_error(.Not_Found, "action not found"), req.request_id)
 
+	if string(act.owner_user_id) != bridge_auth.user_id {
+		return respond_error(domain.domain_error(.Forbidden, "action does not belong to bridge owner"), req.request_id)
+	}
+
 	target_instance_id := string(act.target_instance_id)
 	if target_instance_id == "" {
 		target_instance_id = json_string(req.body, "instance_id")

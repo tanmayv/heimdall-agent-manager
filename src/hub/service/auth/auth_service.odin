@@ -81,9 +81,6 @@ resolve_bridge_instance_auth :: proc(service: ^Auth_Service, req: Auth_Request) 
 		instance_id = json_key_value(req.body, "agent_instance_id")
 	}
 	if instance_id == "" {
-		if relay_token == "" {
-			return bridge_auth, true, domain.Domain_Error{}
-		}
 		return contracts.Auth_Context{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
 	}
 
@@ -115,6 +112,34 @@ resolve_auth_any :: proc(service: ^Auth_Service, req: Auth_Request) -> (contract
 		token := strings.trim_space(authz[len("Bearer "):])
 		if strings.has_prefix(token, "hbr_") {
 			return resolve_bridge_instance_auth(service, req)
+		}
+	}
+	return resolve_auth(service, req)
+}
+
+resolve_auth_or_bridge_token :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
+	authz := header_value(req.headers, "Authorization")
+	if authz != "" && strings.has_prefix(authz, "Bearer ") {
+		token := strings.trim_space(authz[len("Bearer "):])
+		if strings.has_prefix(token, "hbr_") {
+			instance_id := ""
+			relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
+			if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
+				instance_id = relay_token[len("hit_"):]
+			}
+			if instance_id == "" {
+				instance_id = json_key_value(req.body, "agent_instance_id")
+			}
+			if instance_id != "" {
+				return resolve_bridge_instance_auth(service, req)
+			}
+			if service == nil || service.bridges == nil {
+				return contracts.Auth_Context{}, false, domain.domain_error(.Internal_Error, "bridge auth service is not configured")
+			}
+			if token_in_query_or_body(req.query, req.body) {
+				return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bearer tokens must use the Authorization header")
+			}
+			return bridge_service.verify_bridge_token(service.bridges, token)
 		}
 	}
 	return resolve_auth(service, req)
