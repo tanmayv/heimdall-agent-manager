@@ -50,6 +50,15 @@ export type GlobalSearchArg = {
   exclude?: string;
   limit?: number;
   cursor?: string;
+  // Optional typed parent-id scopes (CSV of ids). Forwarded to the backend's
+  // allowlisted scope filters so a caller can constrain results to e.g. one
+  // task chain or one conversation. Multiple positive scopes are AND-ed by the
+  // backend, so pass the single dimension that yields the desired union — a
+  // chain id already covers that chain's messages, tasks and comments.
+  chainIds?: string;
+  conversationIds?: string;
+  taskIds?: string;
+  projectIds?: string;
 };
 
 function normalizeParent(raw: any): SearchParent | null {
@@ -109,10 +118,10 @@ export const searchApi = heimdallApi.injectEndpoints({
       // 30s (heimdallApi.ts) so the type→backspace pattern re-uses a just-fetched query
       // from cache instead of refetching. RTK already keys/dedupes by args.
       keepUnusedDataFor: 45,
-      queryFn: async ({ q, types, exclude, limit = 20, cursor }) => {
+      queryFn: async ({ q, types, exclude, limit = 20, cursor, chainIds, conversationIds, taskIds, projectIds }) => {
         // Empty/whitespace q returns empty (per UI-BE-5); skip the network call so
-        // an empty box never hits the endpoint. The palette only sends q/limit/cursor
-        // today; types/exclude are forwarded when present (scope_ids dropped, SEARCH-8).
+        // an empty box never hits the endpoint. types/exclude and the typed
+        // parent-id scopes are forwarded only when present.
         const query = String(q || '').trim();
         if (!query) {
           return { data: { groups: [], hits: [], hasMore: false, nextCursor: null } };
@@ -122,6 +131,10 @@ export const searchApi = heimdallApi.injectEndpoints({
           if (types) params.set('types', types);
           if (exclude) params.set('exclude', exclude);
           if (cursor) params.set('cursor', cursor);
+          if (chainIds) params.set('chain_ids', chainIds);
+          if (conversationIds) params.set('conversation_ids', conversationIds);
+          if (taskIds) params.set('task_ids', taskIds);
+          if (projectIds) params.set('project_ids', projectIds);
           // Fetch the FULL envelope ({data:{groups}, page:{has_more,next_cursor}}):
           // normalizeSearch needs the `page` sibling for cursor pagination, which the
           // data-unwrapping fetch would strip.

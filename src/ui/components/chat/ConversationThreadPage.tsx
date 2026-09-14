@@ -29,6 +29,7 @@ import {
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
+import ConversationSearchPopover from './ConversationSearchPopover';
 import { Drawer, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
@@ -1241,6 +1242,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           )}
           {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
         </div>
+
+        <ConversationSearchPopover conversationId={conversationId} chainId={chainId} />
 
         <div className="shrink-0">
           <Menu
