@@ -18,7 +18,7 @@ import {
 } from "../../api/endpoints/bridgeFig";
 import BridgeDirectoryPicker from "../BridgeDirectoryPicker";
 import FigDirectoryPicker from "../FigDirectoryPicker";
-import { Badge, Button, Icon, Input, PageShell, SectionHeader, Select, StatusDot, Text } from "@ui";
+import { Badge, Button, FormField, Icon, Input, Modal, PageShell, Panel, SectionHeader, Select, StatusDot, Tabs, Text } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -323,12 +323,11 @@ export default function ProjectsPanel() {
     >
       <div data-debug-id="settings-projects-panel" className="space-y-6 text-left">
       {/* Project Creation Form */}
-      <div data-debug-id="settings-project-create-form" className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 space-y-4">
+      <Panel data-debug-id="settings-project-create-form" tone="raised" padding="md" className="space-y-4">
         <Text as="h3" role="overline" tone="primary">Create New Project</Text>
         <form onSubmit={handleCreateProject} className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">Project Name *</label>
+            <FormField label="Project Name" required>
               <Input
                 data-debug-id="settings-project-name-input"
                 value={name}
@@ -338,13 +337,10 @@ export default function ProjectsPanel() {
                 width="full"
                 className="min-h-[44px]"
               />
-            </div>
+            </FormField>
 
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">
-                Project Location / Path *
-              </label>
-              <div className="rounded-xl border border-white/10 bg-[#121214] p-2.5 flex items-center justify-between gap-3 min-h-[44px]">
+            <FormField label="Project Location / Path" required>
+              <div className="rounded-[var(--radius-md)] border border-subtle bg-surface p-2.5 flex items-center justify-between gap-3 min-h-[44px]">
                 <div className="min-w-0 flex-1">
                   {(projectType === "local" && defaultPath) || (projectType === "fig" && workspaceName) ? (
                     <div>
@@ -354,43 +350,44 @@ export default function ProjectsPanel() {
                           size={14}
                           className={projectType === "fig" ? "text-amber-400 shrink-0" : "text-sky-400 shrink-0"}
                         />
-                        <span className="font-mono text-xs font-semibold text-zinc-200 truncate">
+                        <span className="font-mono text-xs font-semibold text-primary truncate">
                           {projectType === "fig" ? workspaceName : defaultPath}
                         </span>
-                        <span className="rounded bg-white/[0.08] px-1.5 py-0.5 text-[10px] font-semibold text-zinc-300 border border-white/10">
+                        <Badge tone={projectType === "fig" ? "warning" : "neutral"} emphasis="soft">
                           {projectType === "fig" ? "CitC" : "Local"}
-                        </span>
+                        </Badge>
                       </div>
                       {projectType === "fig" ? (
-                        <div className="mt-0.5 text-[11px] font-mono text-zinc-400 truncate">
+                        <div className="mt-0.5 text-caption font-mono text-muted truncate">
                           /google/src/cloud/…/{workspaceName}/google3{relativePath ? `/${relativePath}` : ""}
                         </div>
                       ) : null}
                     </div>
                   ) : (
                     <div>
-                      <div className="text-xs font-semibold text-zinc-300">No Location Selected</div>
-                      <div className="text-[11px] text-zinc-500">Pick a local directory or CitC workspace</div>
+                      <div className="text-xs font-semibold text-primary">No Location Selected</div>
+                      <div className="text-caption text-muted">Pick a local directory or CitC workspace</div>
                     </div>
                   )}
                 </div>
-                <button
+                <Button
                   data-debug-id="settings-project-browse-btn settings-project-local-browse-btn settings-project-fig-browse-btn"
                   id="settings-project-fig-browse-btn"
-                  type="button"
+                  variant="secondary"
+                  size="sm"
                   disabled={!selectedBridgeId}
                   onClick={() => {
                     setPickerTab(projectType === "fig" ? "fig" : "local");
                     setShowLocationModal(true);
                   }}
-                  className="shrink-0 rounded-lg border border-white/10 bg-white/[0.05] hover:bg-white/[0.1] px-3.5 py-1.5 text-xs font-semibold text-zinc-200 transition disabled:opacity-40"
+                  className="shrink-0"
                 >
                   {(projectType === "local" && defaultPath) || (projectType === "fig" && workspaceName)
                     ? "Change Location…"
                     : "Browse…"}
-                </button>
+                </Button>
               </div>
-            </div>
+            </FormField>
           </div>
 
           {/* Preserved form fields for compatibility */}
@@ -430,8 +427,7 @@ export default function ProjectsPanel() {
             ))}
           </Select>
 
-          <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
+          <FormField label="Description">
             <Input
               data-debug-id="settings-project-description-input"
               value={description}
@@ -440,11 +436,10 @@ export default function ProjectsPanel() {
               width="full"
               className="min-h-[44px]"
             />
-          </div>
+          </FormField>
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">Repository URL</label>
+            <FormField label="Repository URL">
               <Input
                 data-debug-id="settings-project-repo-input"
                 value={repoUrl}
@@ -453,9 +448,8 @@ export default function ProjectsPanel() {
                 width="full"
                 className="min-h-[44px]"
               />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">VCS Kind</label>
+            </FormField>
+            <FormField label="VCS Kind">
               <Select
                 data-debug-id="settings-project-vcs-select"
                 value={vcsKind}
@@ -468,11 +462,11 @@ export default function ProjectsPanel() {
                 <option value="jj">jj</option>
                 <option value="piper">piper</option>
               </Select>
-            </div>
+            </FormField>
           </div>
 
           {createError ? (
-            <div data-debug-id="settings-project-create-error" className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+            <div data-debug-id="settings-project-create-error" className="rounded-[var(--radius-md)] border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
               {createError}
             </div>
           ) : null}
@@ -482,223 +476,207 @@ export default function ProjectsPanel() {
             data-debug-id="settings-project-create-btn"
             type="submit"
             disabled={!name.trim() || (projectType === "local" ? !defaultPath.trim() : !workspaceName.trim()) || creating}
+            loading={creating}
             className="min-h-[44px] w-full sm:w-auto"
           >
-            {creating ? "Creating…" : "Create project"}
+            Create project
           </Button>
         </form>
-      </div>
+      </Panel>
 
       {/* Unified Location Modal Popup: Local / Fig Tabs */}
-      {showLocationModal ? (
-        <div data-debug-id="settings-project-location-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-[#121214] p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                  <Icon name="folder" size={16} className="text-sky-400" />
-                  <span>Choose Project Location</span>
-                </h3>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  Select a local directory or CitC workspace on your bridge host
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowLocationModal(false)}
-                aria-label="Close"
-                className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white transition"
+      <Modal
+        open={showLocationModal}
+        onOpenChange={setShowLocationModal}
+        title={
+          <span className="flex items-center gap-2">
+            <Icon name="folder" size={16} className="text-sky-400" />
+            <span>Choose Project Location</span>
+          </span>
+        }
+        size="lg"
+        data-debug-id="settings-project-location-modal"
+      >
+        <Modal.Body className="space-y-4">
+          <p className="text-xs text-muted">
+            Select a local directory or CitC workspace on your bridge host
+          </p>
+
+          {/* Tab switch */}
+          <div data-debug-id="settings-project-type-toggle">
+            <Tabs variant="segmented" value={pickerTab} onChange={(v) => setPickerTab(v as 'local' | 'fig')}>
+              <Tabs.List>
+                <Tabs.Tab value="local" data-debug-id="settings-project-type-local-btn" className="flex items-center gap-1.5">
+                  <Icon name="folder" size={13} className="text-sky-400" />
+                  <span>Local Directory</span>
+                </Tabs.Tab>
+                <Tabs.Tab value="fig" data-debug-id="settings-project-type-fig-btn" className="flex items-center gap-1.5">
+                  <Icon name="folder" size={13} className="text-amber-400" />
+                  <span>Fig (CitC)</span>
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs>
+          </div>
+
+          {/* Optional Bridge Select when multiple bridges exist */}
+          {bridges.length > 1 ? (
+            <div className="flex items-center justify-between gap-2 p-2 rounded-[var(--radius-md)] bg-surface border border-subtle">
+              <span className="text-xs text-muted">Bridge Host:</span>
+              <Select
+                data-debug-id="settings-project-fig-bridge-select settings-project-local-bridge-select"
+                value={selectedBridgeId}
+                onChange={setSelectedBridgeId}
+                size="sm"
+                className="w-48"
               >
-                <Icon name="close" size={16} />
-              </button>
+                {bridges.map((b) => {
+                  const id = String(b?.bridge_id || b?.bridgeId || b?.id || "");
+                  const label = String(b?.label || b?.machine_hostname || b?.hostname || id);
+                  const online = isBridgeOnline(b);
+                  return (
+                    <option key={id} value={id}>
+                      {label} ({online ? "● Online" : "○ Offline"})
+                    </option>
+                  );
+                })}
+              </Select>
             </div>
+          ) : null}
 
-            {/* Tab switch */}
-            <div data-debug-id="settings-project-type-toggle" className="inline-flex rounded-xl bg-black/40 p-1 border border-white/10">
-              <button
-                data-debug-id="settings-project-type-local-btn"
-                type="button"
-                onClick={() => setPickerTab("local")}
-                className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition flex items-center gap-1.5 ${
-                  pickerTab === "local"
-                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
-                    : "text-zinc-400 hover:text-white border border-transparent"
-                }`}
-              >
-                <Icon name="folder" size={13} className="text-sky-400" />
-                <span>Local Directory</span>
-              </button>
-              <button
-                data-debug-id="settings-project-type-fig-btn"
-                type="button"
-                onClick={() => setPickerTab("fig")}
-                className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition flex items-center gap-1.5 ${
-                  pickerTab === "fig"
-                    ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
-                    : "text-zinc-400 hover:text-white border border-transparent"
-                }`}
-              >
-                <Icon name="folder" size={13} className="text-amber-400" />
-                <span>Fig (CitC)</span>
-              </button>
-            </div>
-
-            {/* Optional Bridge Select when multiple bridges exist */}
-            {bridges.length > 1 ? (
-              <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-black/30 border border-white/5">
-                <span className="text-xs text-zinc-400">Bridge Host:</span>
-                <Select
-                  data-debug-id="settings-project-fig-bridge-select settings-project-local-bridge-select"
-                  value={selectedBridgeId}
-                  onChange={setSelectedBridgeId}
-                  size="sm"
-                  className="w-48"
-                >
-                  {bridges.map((b) => {
-                    const id = String(b?.bridge_id || b?.bridgeId || b?.id || "");
-                    const label = String(b?.label || b?.machine_hostname || b?.hostname || id);
-                    const online = isBridgeOnline(b);
-                    return (
-                      <option key={id} value={id}>
-                        {label} ({online ? "● Online" : "○ Offline"})
-                      </option>
-                    );
-                  })}
-                </Select>
-              </div>
-            ) : null}
-
-            {/* Offline warning if CitC tab is active and error */}
-            {pickerTab === "fig" && figWorkspacesError ? (
-              <div
-                data-debug-id="settings-project-fig-offline-warning"
-                className="flex items-start gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"
-              >
-                <Icon name="alert" size={16} className="shrink-0 text-amber-400 mt-0.5" />
-                <div className="flex-1 space-y-1">
-                  <div className="font-semibold text-amber-300">
-                    CitC Bridge Offline (409 Conflict)
-                  </div>
-                  <div>{figWorkspacesError}</div>
+          {/* Offline warning if CitC tab is active and error */}
+          {pickerTab === "fig" && figWorkspacesError ? (
+            <div
+              data-debug-id="settings-project-fig-offline-warning"
+              className="flex items-start gap-2.5 rounded-[var(--radius-md)] border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"
+            >
+              <Icon name="alert" size={16} className="shrink-0 text-amber-400 mt-0.5" />
+              <div className="flex-1 space-y-1">
+                <div className="font-semibold text-amber-300">
+                  CitC Bridge Offline (409 Conflict)
                 </div>
-                <button
-                  data-debug-id="settings-project-fig-retry-btn"
-                  type="button"
-                  onClick={() => figWorkspacesQuery.refetch()}
-                  className="shrink-0 px-2.5 py-1 text-[11px] rounded-lg border border-white/10 bg-white/[0.05] hover:bg-white/[0.1] font-medium text-zinc-200 transition"
-                >
-                  Retry
-                </button>
+                <div>{figWorkspacesError}</div>
               </div>
-            ) : null}
+              <Button
+                data-debug-id="settings-project-fig-retry-btn"
+                variant="secondary"
+                size="sm"
+                onClick={() => figWorkspacesQuery.refetch()}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : null}
 
-            {/* Tab content */}
-            {pickerTab === "local" && selectedBridgeId ? (
-              <BridgeDirectoryPicker
-                debugId="settings-project-local-picker"
+          {/* Tab content */}
+          {pickerTab === "local" && selectedBridgeId ? (
+            <BridgeDirectoryPicker
+              debugId="settings-project-local-picker"
+              bridgeId={selectedBridgeId}
+              bridgeLabel={selectedBridge?.label}
+              initialPath={defaultPath}
+              onPick={(p) => {
+                setProjectType("local");
+                setVcsKind("git");
+                setDefaultPath(p);
+                if (!name.trim()) {
+                  const base = p.split("/").filter(Boolean).pop();
+                  if (base) setName(base);
+                }
+                setShowLocationModal(false);
+              }}
+              onClose={() => setShowLocationModal(false)}
+            />
+          ) : null}
+
+          {pickerTab === "fig" && selectedBridgeId ? (
+            <div data-debug-id="settings-project-fig-picker" className="space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-xs text-muted">CitC Workspaces</span>
+                <Button
+                  data-debug-id="settings-project-fig-new-workspace-btn"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => { setShowNewWorkspaceModal(true); setNewWorkspaceError(""); }}
+                  leading={<Icon name="plus" size={12} />}
+                >
+                  New CitC Workspace
+                </Button>
+              </div>
+              <FigDirectoryPicker
+                debugId="settings-project-fig-picker-inner"
                 bridgeId={selectedBridgeId}
-                bridgeLabel={selectedBridge?.label}
-                initialPath={defaultPath}
-                onPick={(p) => {
-                  setProjectType("local");
-                  setVcsKind("git");
-                  setDefaultPath(p);
-                  if (!name.trim()) {
-                    const base = p.split("/").filter(Boolean).pop();
-                    if (base) setName(base);
+                workspace={workspaceName}
+                initialPath={relativePath}
+                onPick={(p, ws) => {
+                  setProjectType("fig");
+                  setVcsKind("piper");
+                  if (ws) {
+                    setWorkspaceName(ws);
+                    if (!name.trim()) setName(ws);
                   }
+                  setRelativePath(p);
                   setShowLocationModal(false);
+                }}
+                onSelectWorkspace={(ws) => {
+                  setWorkspaceName(ws);
+                  if (!name.trim()) setName(ws);
                 }}
                 onClose={() => setShowLocationModal(false)}
               />
-            ) : null}
-
-            {pickerTab === "fig" && selectedBridgeId ? (
-              <div data-debug-id="settings-project-fig-picker" className="space-y-2">
-                <div className="flex items-center justify-between px-1">
-                  <span className="text-xs text-zinc-400">CitC Workspaces</span>
-                  <button
-                    data-debug-id="settings-project-fig-new-workspace-btn"
-                    type="button"
-                    onClick={() => { setShowNewWorkspaceModal(true); setNewWorkspaceError(""); }}
-                    className="text-xs text-sky-400 hover:text-sky-300 flex items-center gap-1 font-semibold transition"
-                  >
-                    <Icon name="plus" size={12} /> + New CitC Workspace
-                  </button>
-                </div>
-                <FigDirectoryPicker
-                  debugId="settings-project-fig-picker-inner"
-                  bridgeId={selectedBridgeId}
-                  workspace={workspaceName}
-                  initialPath={relativePath}
-                  onPick={(p, ws) => {
-                    setProjectType("fig");
-                    setVcsKind("piper");
-                    if (ws) {
-                      setWorkspaceName(ws);
-                      if (!name.trim()) setName(ws);
-                    }
-                    setRelativePath(p);
-                    setShowLocationModal(false);
-                  }}
-                  onSelectWorkspace={(ws) => {
-                    setWorkspaceName(ws);
-                    if (!name.trim()) setName(ws);
-                  }}
-                  onClose={() => setShowLocationModal(false)}
-                />
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
+            </div>
+          ) : null}
+        </Modal.Body>
+      </Modal>
 
       {/* New CitC Workspace Modal */}
-      {showNewWorkspaceModal ? (
-        <div data-debug-id="settings-project-fig-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#121214] p-5 shadow-2xl space-y-4">
-            <h3 className="text-base font-semibold text-white flex items-center gap-2">
-              <Icon name="folder" size={16} className="text-amber-400" />
-              <span>Create New CitC Workspace</span>
-            </h3>
-            <p className="text-xs text-zinc-400">
-              Runs <code className="font-mono text-zinc-300">g4 citc -q --head &lt;name&gt;</code> on the bridge host to create a fresh CitC client.
-            </p>
-            <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Workspace Name *</label>
-              <input
-                data-debug-id="settings-project-fig-modal-name-input"
-                value={newWorkspaceName}
-                onChange={(e) => setNewWorkspaceName(e.target.value)}
-                placeholder="e.g. feat-mobile-sync"
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-sky-500 font-mono"
-              />
-            </div>
-            {newWorkspaceError ? (
-              <p className="text-xs text-red-400">{newWorkspaceError}</p>
-            ) : null}
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                data-debug-id="settings-project-fig-modal-cancel-btn"
-                type="button"
-                onClick={() => { setShowNewWorkspaceModal(false); setNewWorkspaceError(""); }}
-                className="rounded-xl bg-zinc-800 hover:bg-zinc-700 px-4 py-2 text-xs font-medium text-zinc-300 transition"
-              >
-                Cancel
-              </button>
-              <button
-                data-debug-id="settings-project-fig-modal-submit-btn"
-                type="button"
-                disabled={!newWorkspaceName.trim() || creatingWorkspace}
-                onClick={handleCreateWorkspace}
-                className="rounded-xl bg-sky-600 hover:bg-sky-500 px-4 py-2 text-xs font-bold text-white transition disabled:opacity-50"
-              >
-                {creatingWorkspace ? "Creating…" : "Create Workspace"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <Modal
+        open={showNewWorkspaceModal}
+        onOpenChange={setShowNewWorkspaceModal}
+        title={
+          <span className="flex items-center gap-2">
+            <Icon name="folder" size={16} className="text-amber-400" />
+            <span>Create New CitC Workspace</span>
+          </span>
+        }
+        size="sm"
+        data-debug-id="settings-project-fig-modal"
+      >
+        <Modal.Body className="space-y-3">
+          <p className="text-xs text-muted">
+            Runs <code className="font-mono text-zinc-300">g4 citc -q --head &lt;name&gt;</code> on the bridge host to create a fresh CitC client.
+          </p>
+          <FormField label="Workspace Name" required error={newWorkspaceError || undefined}>
+            <Input
+              data-debug-id="settings-project-fig-modal-name-input"
+              value={newWorkspaceName}
+              onChange={setNewWorkspaceName}
+              placeholder="e.g. feat-mobile-sync"
+              width="full"
+              className="font-mono"
+            />
+          </FormField>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            data-debug-id="settings-project-fig-modal-cancel-btn"
+            variant="secondary"
+            size="sm"
+            onClick={() => { setShowNewWorkspaceModal(false); setNewWorkspaceError(""); }}
+          >
+            Cancel
+          </Button>
+          <Button
+            data-debug-id="settings-project-fig-modal-submit-btn"
+            variant="primary"
+            size="sm"
+            disabled={!newWorkspaceName.trim() || creatingWorkspace}
+            loading={creatingWorkspace}
+            onClick={handleCreateWorkspace}
+          >
+            Create Workspace
+          </Button>
+        </Modal.Footer>
+      </Modal>
 
       {/* Project Detail View or Project List */}
       {selectedProjectId ? (
@@ -745,16 +723,14 @@ export default function ProjectsPanel() {
                 {isEditing ? (
                   <div className="space-y-3">
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">Project Name</label>
+                      <FormField label="Project Name" required>
                         <Input
                           value={editName}
                           onChange={setEditName}
                           width="full"
                         />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path</label>
+                      </FormField>
+                      <FormField label="Default Path" required>
                         <div className="flex items-center gap-2">
                           <Input
                             data-debug-id={`settings-project-edit-default-path-input-${selectedProjectId}`}
@@ -776,7 +752,7 @@ export default function ProjectsPanel() {
                             </Button>
                           ) : null}
                         </div>
-                      </div>
+                      </FormField>
                     </div>
 
                     {editProjectType === "local" && showEditLocalPicker && selectedBridgeId ? (
@@ -797,46 +773,43 @@ export default function ProjectsPanel() {
 
                     {editProjectType === "fig" ? (
                       <div className="grid gap-3 sm:grid-cols-2 rounded-xl border border-white/10 bg-white/[0.02] p-3">
-                        <div>
-                          <label className="block text-xs font-medium text-zinc-400 mb-1">CitC Workspace</label>
-                          <input
+                        <FormField label="CitC Workspace" required>
+                          <Input
                             value={editWorkspaceName}
-                            onChange={(e) => setEditWorkspaceName(e.target.value)}
-                            className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400 font-mono"
+                            onChange={setEditWorkspaceName}
+                            width="full"
+                            className="font-mono"
                           />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-zinc-400 mb-1">Relative google3 Path</label>
-                          <input
+                        </FormField>
+                        <FormField label="Relative google3 Path">
+                          <Input
                             value={editRelativePath}
-                            onChange={(e) => setEditRelativePath(e.target.value)}
+                            onChange={setEditRelativePath}
                             placeholder="e.g. cloud/security"
-                            className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400 font-mono"
+                            width="full"
+                            className="font-mono"
                           />
-                        </div>
+                        </FormField>
                       </div>
                     ) : null}
 
-                    <div>
-                      <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
+                    <FormField label="Description">
                       <Input
                         value={editDescription}
                         onChange={setEditDescription}
                         width="full"
                       />
-                    </div>
+                    </FormField>
 
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">Repo URL</label>
+                      <FormField label="Repo URL">
                         <Input
                           value={editRepoUrl}
                           onChange={setEditRepoUrl}
                           width="full"
                         />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">VCS Kind</label>
+                      </FormField>
+                      <FormField label="VCS Kind">
                         <Select
                           value={editVcsKind}
                           onChange={setEditVcsKind}
@@ -847,7 +820,7 @@ export default function ProjectsPanel() {
                           <option value="jj">jj</option>
                           <option value="piper">piper</option>
                         </Select>
-                      </div>
+                      </FormField>
                     </div>
 
                     {editSaveError ? (
@@ -876,11 +849,21 @@ export default function ProjectsPanel() {
                 ) : (
                   <div className="space-y-2 text-sm">
                     <div className="grid gap-2 sm:grid-cols-2 text-xs text-zinc-400">
-                      <div>
-                        <strong className="text-zinc-300">Type:</strong>{" "}
-                        <span className={selectedProject.project_type === "fig" ? "text-amber-400 font-semibold" : "text-zinc-300"}>
-                          {selectedProject.project_type === "fig" ? "Fig (CitC)" : "Local"}
-                        </span>
+                      <div className="flex items-center gap-2">
+                        <strong className="text-zinc-300">Type:</strong>
+                        <Badge
+                          tone={selectedProject.project_type === "fig" ? "warning" : "neutral"}
+                          emphasis="soft"
+                        >
+                          {selectedProject.project_type === "fig" ? (
+                            <span className="flex items-center gap-1">
+                              <Icon name="folder" size={10} className="text-amber-400" />
+                              Fig (CitC)
+                            </span>
+                          ) : (
+                            "Local"
+                          )}
+                        </Badge>
                       </div>
                       <div><strong className="text-zinc-300">Default Path:</strong> <span className="font-mono text-zinc-200">{selectedProject.default_path || "—"}</span></div>
                       {selectedProject.project_type === "fig" ? (
@@ -899,7 +882,7 @@ export default function ProjectsPanel() {
               </div>
 
               {/* Per-Bridge Paths Editor */}
-              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
+              <Panel tone="raised" padding="md" className="space-y-4">
                 <div>
                   <Text as="h4" role="overline" tone="primary">Per-Bridge Paths Override</Text>
                   <p className="text-xs text-zinc-500 mt-0.5">Configure custom filesystem paths for specific bridges when they differ from the default path.</p>
@@ -945,15 +928,18 @@ export default function ProjectsPanel() {
 
                             {/* Status Indicator */}
                             <div data-debug-id={`settings-project-bridge-path-status-${bridgeId}`} className="flex items-center gap-2 text-xs">
-                              <span className={`px-2 py-0.5 rounded-full border text-[10px] ${isOnline ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-amber-400/20 bg-amber-400/5 text-amber-300"}`}>
+                              <Badge
+                                tone={isOnline ? "success" : "warning"}
+                                emphasis="soft"
+                              >
                                 {isOnline ? "online" : "offline"}
-                              </span>
+                              </Badge>
                               {existingOverride?.is_validated ? (
-                                <span className="text-emerald-400 text-caption font-medium">✓ Validated</span>
+                                <Badge tone="success" emphasis="soft">✓ Validated</Badge>
                               ) : existingOverride?.validation_error ? (
-                                <span className="text-red-400 text-caption font-medium" title={existingOverride.validation_error}>⚠ Validation failed</span>
+                                <Badge tone="danger" emphasis="soft" title={existingOverride.validation_error}>⚠ Validation failed</Badge>
                               ) : existingOverride ? (
-                                <span className="text-amber-300 text-caption">Not validated</span>
+                                <Badge tone="warning" emphasis="soft">Not validated</Badge>
                               ) : (
                                 <span className="text-zinc-500 text-caption">Using default path</span>
                               )}
@@ -1034,7 +1020,7 @@ export default function ProjectsPanel() {
                     })}
                   </div>
                 )}
-              </div>
+              </Panel>
             </div>
           ) : (
             <div className="text-sm text-zinc-500">Project not found.</div>
@@ -1067,19 +1053,19 @@ export default function ProjectsPanel() {
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-zinc-100 truncate">{project.name}</span>
                         {project.project_type === "fig" ? (
-                          <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-300 flex items-center gap-1">
+                          <Badge tone="warning" emphasis="soft" className="flex items-center gap-1">
                             <Icon name="folder" size={10} className="text-amber-400" />
                             CitC
-                          </span>
+                          </Badge>
                         ) : (
-                          <span className="rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
+                          <Badge tone="neutral" emphasis="soft">
                             Local
-                          </span>
+                          </Badge>
                         )}
                         {project.is_default_conversations ? (
-                          <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[10px] font-medium text-sky-300">
+                          <Badge tone="info" emphasis="soft">
                             Default
-                          </span>
+                          </Badge>
                         ) : null}
                       </div>
 

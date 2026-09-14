@@ -5,7 +5,7 @@ import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import Icon, { type IconName } from '../Icon';
-import { CommandPalette, PageShell, StatusDot } from '@ui';
+import { Badge, CommandPalette, PageShell, StatusDot } from '@ui';
 import { useViewport, MobileTabBar } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
@@ -516,7 +516,16 @@ function buildProjectConversationTree(conversations: ConversationSummary[], live
 
 function UnreadBadge({ count, debugId }: { count: number; debugId: string }) {
   if (count <= 0) return null;
-  return <span data-debug-id={debugId} className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-black text-black">{count > 99 ? '99+' : count}</span>;
+  return (
+    <Badge
+      data-debug-id={debugId}
+      tone="info"
+      emphasis="solid"
+      className="ml-auto min-w-5 justify-center font-bold"
+    >
+      {count > 99 ? '99+' : count}
+    </Badge>
+  );
 }
 
 const BRIDGE_PALETTE = ['emerald', 'sky', 'violet', 'amber', 'rose', 'teal', 'fuchsia', 'lime'] as const;
@@ -690,13 +699,15 @@ function ProjectGroupItem({
           </span>
           <span className="truncate">{projectGroup.project.name}</span>
           {projectGroup.project.projectType === 'fig' && projectGroup.project.workspaceName ? (
-            <span
+            <Badge
               data-debug-id={`sidebar-project-workspace-${projectId}`}
-              className="shrink-0 font-normal text-zinc-400 font-mono text-xs truncate"
+              tone="warning"
+              emphasis="soft"
+              className="shrink-0 font-mono text-[10px] truncate"
               title={`CitC Workspace: ${projectGroup.project.workspaceName}`}
             >
-              · {projectGroup.project.workspaceName}
-            </span>
+              {projectGroup.project.workspaceName}
+            </Badge>
           ) : null}
         </button>
         <button
@@ -807,7 +818,7 @@ function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; act
       data-debug-id={`shell-nav-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
       href={shellHash(item.path)}
       aria-label={collapsed ? item.label : undefined}
-      title={item.description}
+      title={collapsed ? item.label : item.description}
       className={`group flex min-h-9 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
     >
       <span aria-hidden="true" className={`grid h-5 w-5 shrink-0 place-items-center ${active ? 'text-sky-300' : ''}`}><Icon name={item.icon} size={17} /></span>

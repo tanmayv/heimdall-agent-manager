@@ -33,7 +33,7 @@ import {
 import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 import FigDirectoryPicker from '../FigDirectoryPicker';
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
-import { Button, Icon, Input, Link, PageShell, Select, Text, Textarea } from '@ui';
+import { Badge, Button, FormField, Icon, Input, Link, Modal, PageShell, Panel, Select, StatusDot, Tabs, Text, Textarea } from '@ui';
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function str(v: any): string { return String(v ?? '').trim(); }
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -202,24 +202,20 @@ function ProjectList() {
       <div data-debug-id="projects-surface">
 
       {showCreate ? (
-        <div data-debug-id="projects-create-form" className="mb-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <Panel data-debug-id="projects-create-form" tone="raised" padding="md" className="mb-5 space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Name *
+            <FormField label="Name" required>
               <Input
                 data-debug-id="projects-create-name-input"
                 value={name}
                 onChange={setName}
                 width="full"
-                className="mt-1"
                 placeholder="e.g. website-rewrite or cloudtop-agent"
               />
-            </label>
+            </FormField>
 
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500 mb-1">
-                Project Location / Path *
-              </label>
-              <div className="rounded-xl border border-white/10 bg-[#121214] p-2.5 flex items-center justify-between gap-3 min-h-[46px]">
+            <FormField label="Project Location / Path" required>
+              <div className="rounded-[var(--radius-md)] border border-subtle bg-surface p-2.5 flex items-center justify-between gap-3 min-h-[46px]">
                 <div className="min-w-0 flex-1">
                   {(projectType === 'local' && defaultPath) || (projectType === 'fig' && workspaceName) ? (
                     <div>
@@ -229,43 +225,44 @@ function ProjectList() {
                           size={14}
                           className={projectType === 'fig' ? 'text-amber-400 shrink-0' : 'text-sky-400 shrink-0'}
                         />
-                        <span className="font-mono text-xs font-semibold text-zinc-200 truncate">
+                        <span className="font-mono text-xs font-semibold text-primary truncate">
                           {projectType === 'fig' ? workspaceName : defaultPath}
                         </span>
-                        <span className="rounded bg-white/[0.08] px-1.5 py-0.5 text-[10px] font-semibold text-zinc-300 border border-white/10">
+                        <Badge tone={projectType === 'fig' ? 'warning' : 'neutral'} emphasis="soft">
                           {projectType === 'fig' ? 'CitC' : 'Local'}
-                        </span>
+                        </Badge>
                       </div>
                       {projectType === 'fig' ? (
-                        <div className="mt-0.5 text-[11px] font-mono text-zinc-400 truncate">
+                        <div className="mt-0.5 text-caption font-mono text-muted truncate">
                           /google/src/cloud/…/{workspaceName}/google3{relativePath ? `/${relativePath}` : ''}
                         </div>
                       ) : null}
                     </div>
                   ) : (
                     <div>
-                      <div className="text-xs font-semibold text-zinc-300">No Location Selected</div>
-                      <div className="text-[11px] text-zinc-500">Pick a local directory or CitC workspace</div>
+                      <div className="text-xs font-semibold text-primary">No Location Selected</div>
+                      <div className="text-caption text-muted">Pick a local directory or CitC workspace</div>
                     </div>
                   )}
                 </div>
-                <button
+                <Button
                   data-debug-id="projects-create-browse-btn projects-create-local-browse-btn projects-create-fig-browse-btn"
                   id="projects-create-fig-browse-btn"
-                  type="button"
+                  variant="secondary"
+                  size="sm"
                   disabled={!selectedBridgeId}
                   onClick={() => {
                     setPickerTab(projectType === 'fig' ? 'fig' : 'local');
                     setShowLocationModal(true);
                   }}
-                  className="shrink-0 rounded-lg border border-white/10 bg-white/[0.05] hover:bg-white/[0.1] px-3.5 py-1.5 text-xs font-semibold text-zinc-200 transition disabled:opacity-40"
+                  className="shrink-0"
                 >
                   {(projectType === 'local' && defaultPath) || (projectType === 'fig' && workspaceName)
                     ? 'Change Location…'
                     : 'Browse…'}
-                </button>
+                </Button>
               </div>
-            </div>
+            </FormField>
           </div>
 
           {/* Preserved form fields for compatibility */}
@@ -305,7 +302,7 @@ function ProjectList() {
             ))}
           </Select>
 
-          {createError ? <p data-debug-id="projects-create-error" className="mt-2 text-xs text-red-300">{createError}</p> : null}
+          {createError ? <p data-debug-id="projects-create-error" className="mt-2 text-xs text-danger">{createError}</p> : null}
           <div className="mt-3 flex gap-2">
             <Button
               variant="primary"
@@ -328,212 +325,195 @@ function ProjectList() {
               Cancel
             </Button>
           </div>
-        </div>
+        </Panel>
       ) : null}
 
       {/* Unified Location Modal Popup: Local / Fig Tabs */}
-      {showLocationModal ? (
-        <div data-debug-id="projects-create-location-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-[#121214] p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                  <Icon name="folder" size={16} className="text-sky-400" />
-                  <span>Choose Project Location</span>
-                </h3>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  Select a local directory or CitC workspace on your bridge host
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowLocationModal(false)}
-                aria-label="Close"
-                className="rounded-lg p-1.5 text-zinc-400 hover:bg-white/10 hover:text-white transition"
+      <Modal
+        open={showLocationModal}
+        onOpenChange={setShowLocationModal}
+        title={
+          <span className="flex items-center gap-2">
+            <Icon name="folder" size={16} className="text-sky-400" />
+            <span>Choose Project Location</span>
+          </span>
+        }
+        size="lg"
+        data-debug-id="projects-create-location-modal"
+      >
+        <Modal.Body className="space-y-4">
+          <p className="text-xs text-muted">
+            Select a local directory or CitC workspace on your bridge host
+          </p>
+
+          {/* Tab switch */}
+          <div data-debug-id="projects-create-type-toggle">
+            <Tabs variant="segmented" value={pickerTab} onChange={(v) => setPickerTab(v as 'local' | 'fig')}>
+              <Tabs.List>
+                <Tabs.Tab value="local" data-debug-id="projects-create-type-local-btn" className="flex items-center gap-1.5">
+                  <Icon name="folder" size={13} className="text-sky-400" />
+                  <span>Local Directory</span>
+                </Tabs.Tab>
+                <Tabs.Tab value="fig" data-debug-id="projects-create-type-fig-btn" className="flex items-center gap-1.5">
+                  <Icon name="folder" size={13} className="text-amber-400" />
+                  <span>Fig (CitC)</span>
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs>
+          </div>
+
+          {/* Optional Bridge Select when multiple bridges exist */}
+          {bridges.length > 1 ? (
+            <div className="flex items-center justify-between gap-2 p-2 rounded-[var(--radius-md)] bg-surface border border-subtle">
+              <span className="text-xs text-muted">Bridge Host:</span>
+              <Select
+                data-debug-id="projects-create-fig-bridge-select projects-create-local-bridge-select"
+                value={selectedBridgeId}
+                onChange={setSelectedBridgeId}
+                size="sm"
+                className="w-48"
               >
-                <Icon name="close" size={16} />
-              </button>
+                {bridges.map((b) => (
+                  <option key={bridgeId(b)} value={bridgeId(b)}>
+                    {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
+                  </option>
+                ))}
+              </Select>
             </div>
+          ) : null}
 
-            {/* Tab switch */}
-            <div data-debug-id="projects-create-type-toggle" className="inline-flex rounded-xl bg-black/40 p-1 border border-white/10">
-              <button
-                data-debug-id="projects-create-type-local-btn"
-                type="button"
-                onClick={() => setPickerTab('local')}
-                className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition flex items-center gap-1.5 ${
-                  pickerTab === 'local'
-                    ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
-                    : 'text-zinc-400 hover:text-white border border-transparent'
-                }`}
-              >
-                <Icon name="folder" size={13} className="text-sky-400" />
-                <span>Local Directory</span>
-              </button>
-              <button
-                data-debug-id="projects-create-type-fig-btn"
-                type="button"
-                onClick={() => setPickerTab('fig')}
-                className={`rounded-lg px-4 py-1.5 text-xs font-semibold transition flex items-center gap-1.5 ${
-                  pickerTab === 'fig'
-                    ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
-                    : 'text-zinc-400 hover:text-white border border-transparent'
-                }`}
-              >
-                <Icon name="folder" size={13} className="text-amber-400" />
-                <span>Fig (CitC)</span>
-              </button>
-            </div>
-
-            {/* Optional Bridge Select when multiple bridges exist */}
-            {bridges.length > 1 ? (
-              <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-black/30 border border-white/5">
-                <span className="text-xs text-zinc-400">Bridge Host:</span>
-                <Select
-                  data-debug-id="projects-create-fig-bridge-select projects-create-local-bridge-select"
-                  value={selectedBridgeId}
-                  onChange={setSelectedBridgeId}
-                  size="sm"
-                  className="w-48"
-                >
-                  {bridges.map((b) => (
-                    <option key={bridgeId(b)} value={bridgeId(b)}>
-                      {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
-                    </option>
-                  ))}
-                </Select>
-              </div>
-            ) : null}
-
-            {/* Offline warning if CitC tab is active and error */}
-            {pickerTab === 'fig' && figWorkspacesError ? (
-              <div
-                data-debug-id="projects-create-fig-offline-warning"
-                className="flex items-start gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"
-              >
-                <Icon name="alert" size={16} className="shrink-0 text-amber-400 mt-0.5" />
-                <div className="flex-1 space-y-1">
-                  <div className="font-semibold text-amber-300">
-                    CitC Bridge Offline (409 Conflict)
-                  </div>
-                  <div>{figWorkspacesError}</div>
+          {/* Offline warning if CitC tab is active and error */}
+          {pickerTab === 'fig' && figWorkspacesError ? (
+            <div
+              data-debug-id="projects-create-fig-offline-warning"
+              className="flex items-start gap-2.5 rounded-[var(--radius-md)] border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200"
+            >
+              <Icon name="alert" size={16} className="shrink-0 text-amber-400 mt-0.5" />
+              <div className="flex-1 space-y-1">
+                <div className="font-semibold text-amber-300">
+                  CitC Bridge Offline (409 Conflict)
                 </div>
-                <button
-                  data-debug-id="projects-create-fig-retry-btn"
-                  type="button"
-                  onClick={() => figWorkspacesQuery.refetch()}
-                  className="shrink-0 px-2.5 py-1 text-[11px] rounded-lg border border-white/10 bg-white/[0.05] hover:bg-white/[0.1] font-medium text-zinc-200 transition"
-                >
-                  Retry
-                </button>
+                <div>{figWorkspacesError}</div>
               </div>
-            ) : null}
+              <Button
+                data-debug-id="projects-create-fig-retry-btn"
+                variant="secondary"
+                size="sm"
+                onClick={() => figWorkspacesQuery.refetch()}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : null}
 
-            {/* Tab content */}
-            {pickerTab === 'local' && selectedBridgeId ? (
-              <BridgeDirectoryPicker
-                debugId="projects-create-local-picker"
+          {/* Tab content */}
+          {pickerTab === 'local' && selectedBridgeId ? (
+            <BridgeDirectoryPicker
+              debugId="projects-create-local-picker"
+              bridgeId={selectedBridgeId}
+              bridgeLabel={selectedBridge ? bridgeLabel(selectedBridge) : undefined}
+              initialPath={defaultPath}
+              onPick={(p) => {
+                setProjectType('local');
+                setDefaultPath(p);
+                if (!name.trim()) {
+                  const base = p.split('/').filter(Boolean).pop();
+                  if (base) setName(base);
+                }
+                setShowLocationModal(false);
+              }}
+              onClose={() => setShowLocationModal(false)}
+            />
+          ) : null}
+
+          {pickerTab === 'fig' && selectedBridgeId ? (
+            <div data-debug-id="projects-create-fig-picker" className="space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-xs text-muted">CitC Workspaces</span>
+                <Button
+                  data-debug-id="projects-create-fig-new-workspace-btn"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => { setShowNewWorkspaceModal(true); setNewWorkspaceError(''); }}
+                  leading={<Icon name="plus" size={12} />}
+                >
+                  New CitC Workspace
+                </Button>
+              </div>
+              <FigDirectoryPicker
+                debugId="projects-create-fig-picker-inner"
                 bridgeId={selectedBridgeId}
-                bridgeLabel={selectedBridge ? bridgeLabel(selectedBridge) : undefined}
-                initialPath={defaultPath}
-                onPick={(p) => {
-                  setProjectType('local');
-                  setDefaultPath(p);
-                  if (!name.trim()) {
-                    const base = p.split('/').filter(Boolean).pop();
-                    if (base) setName(base);
+                workspace={workspaceName}
+                initialPath={relativePath}
+                onPick={(p, ws) => {
+                  setProjectType('fig');
+                  if (ws) {
+                    setWorkspaceName(ws);
+                    if (!name.trim()) setName(ws);
                   }
+                  setRelativePath(p);
                   setShowLocationModal(false);
+                }}
+                onSelectWorkspace={(ws) => {
+                  setWorkspaceName(ws);
+                  if (!name.trim()) setName(ws);
                 }}
                 onClose={() => setShowLocationModal(false)}
               />
-            ) : null}
-
-            {pickerTab === 'fig' && selectedBridgeId ? (
-              <div data-debug-id="projects-create-fig-picker" className="space-y-2">
-                <div className="flex items-center justify-between px-1">
-                  <span className="text-xs text-zinc-400">CitC Workspaces</span>
-                  <button
-                    data-debug-id="projects-create-fig-new-workspace-btn"
-                    type="button"
-                    onClick={() => { setShowNewWorkspaceModal(true); setNewWorkspaceError(''); }}
-                    className="text-xs text-sky-400 hover:text-sky-300 flex items-center gap-1 font-semibold transition"
-                  >
-                    <Icon name="plus" size={12} /> + New CitC Workspace
-                  </button>
-                </div>
-                <FigDirectoryPicker
-                  debugId="projects-create-fig-picker-inner"
-                  bridgeId={selectedBridgeId}
-                  workspace={workspaceName}
-                  initialPath={relativePath}
-                  onPick={(p, ws) => {
-                    setProjectType('fig');
-                    if (ws) {
-                      setWorkspaceName(ws);
-                      if (!name.trim()) setName(ws);
-                    }
-                    setRelativePath(p);
-                    setShowLocationModal(false);
-                  }}
-                  onSelectWorkspace={(ws) => {
-                    setWorkspaceName(ws);
-                    if (!name.trim()) setName(ws);
-                  }}
-                  onClose={() => setShowLocationModal(false)}
-                />
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
+            </div>
+          ) : null}
+        </Modal.Body>
+      </Modal>
 
       {/* New CitC Workspace Modal */}
-      {showNewWorkspaceModal ? (
-        <div data-debug-id="projects-create-fig-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#121214] p-5 shadow-2xl space-y-4">
-            <h3 className="text-base font-semibold text-white flex items-center gap-2">
-              <Icon name="folder" size={16} className="text-amber-400" />
-              <span>Create New CitC Workspace</span>
-            </h3>
-            <p className="text-xs text-zinc-400">
-              Runs <code className="font-mono text-zinc-300">g4 citc -q --head &lt;name&gt;</code> on the bridge host to create a fresh CitC client.
-            </p>
-            <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Workspace Name *</label>
-              <input
-                data-debug-id="projects-create-fig-modal-name-input"
-                value={newWorkspaceName}
-                onChange={(e) => setNewWorkspaceName(e.target.value)}
-                placeholder="e.g. feat-mobile-sync"
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-sky-500 font-mono"
-              />
-            </div>
-            {newWorkspaceError ? (
-              <p className="text-xs text-red-400">{newWorkspaceError}</p>
-            ) : null}
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                data-debug-id="projects-create-fig-modal-cancel-btn"
-                type="button"
-                onClick={() => { setShowNewWorkspaceModal(false); setNewWorkspaceError(''); }}
-                className="rounded-xl bg-zinc-800 hover:bg-zinc-700 px-4 py-2 text-xs font-medium text-zinc-300 transition"
-              >
-                Cancel
-              </button>
-              <button
-                data-debug-id="projects-create-fig-modal-submit-btn"
-                type="button"
-                disabled={!newWorkspaceName.trim() || creatingWorkspace}
-                onClick={handleCreateWorkspace}
-                className="rounded-xl bg-sky-600 hover:bg-sky-500 px-4 py-2 text-xs font-bold text-white transition disabled:opacity-50"
-              >
-                {creatingWorkspace ? 'Creating…' : 'Create Workspace'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <Modal
+        open={showNewWorkspaceModal}
+        onOpenChange={setShowNewWorkspaceModal}
+        title={
+          <span className="flex items-center gap-2">
+            <Icon name="folder" size={16} className="text-amber-400" />
+            <span>Create New CitC Workspace</span>
+          </span>
+        }
+        size="sm"
+        data-debug-id="projects-create-fig-modal"
+      >
+        <Modal.Body className="space-y-3">
+          <p className="text-xs text-muted">
+            Runs <code className="font-mono text-zinc-300">g4 citc -q --head &lt;name&gt;</code> on the bridge host to create a fresh CitC client.
+          </p>
+          <FormField label="Workspace Name" required error={newWorkspaceError || undefined}>
+            <Input
+              data-debug-id="projects-create-fig-modal-name-input"
+              value={newWorkspaceName}
+              onChange={setNewWorkspaceName}
+              placeholder="e.g. feat-mobile-sync"
+              width="full"
+              className="font-mono"
+            />
+          </FormField>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button
+            data-debug-id="projects-create-fig-modal-cancel-btn"
+            variant="secondary"
+            size="sm"
+            onClick={() => { setShowNewWorkspaceModal(false); setNewWorkspaceError(''); }}
+          >
+            Cancel
+          </Button>
+          <Button
+            data-debug-id="projects-create-fig-modal-submit-btn"
+            variant="primary"
+            size="sm"
+            disabled={!newWorkspaceName.trim() || creatingWorkspace}
+            loading={creatingWorkspace}
+            onClick={handleCreateWorkspace}
+          >
+            Create Workspace
+          </Button>
+        </Modal.Footer>
+      </Modal>
 
       <Input
         type="search"
@@ -638,14 +618,16 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 }
 
 function Card({ title, count, children, debugId, action }: { title: string; count?: number; children: React.ReactNode; debugId: string; action?: React.ReactNode }) {
+  const headerTitle = (
+    <span>
+      {title}
+      {typeof count === 'number' ? <span className="ml-2 text-caption font-normal text-muted">{count}</span> : null}
+    </span>
+  );
   return (
-    <section data-debug-id={debugId} className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-200">{title}{typeof count === 'number' ? <span className="ml-2 text-xs font-normal text-zinc-500">{count}</span> : null}</h2>
-        {action}
-      </div>
+    <Panel data-debug-id={debugId} title={headerTitle} actions={action} tone="raised" padding="md">
       {children}
-    </section>
+    </Panel>
   );
 }
 
@@ -710,23 +692,21 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
       {!editing ? (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold border ${
-              isFig ? 'border-amber-400/30 bg-amber-400/10 text-amber-300' : 'border-zinc-700 bg-zinc-800 text-zinc-400'
-            }`}>
+            <Badge tone={isFig ? 'warning' : 'neutral'} emphasis="soft">
               {isFig ? 'Fig (CitC)' : 'Local Directory'}
-            </span>
+            </Badge>
             {isFig && project?.workspace_name ? (
-              <span className="font-mono text-xs text-amber-300 font-semibold">
+              <Badge tone="warning" emphasis="outline" className="font-mono">
                 ws: {project.workspace_name}
-              </span>
+              </Badge>
             ) : null}
           </div>
           {isFig && project?.relative_path ? (
-            <p className="font-mono text-xs text-zinc-400">
+            <p className="font-mono text-xs text-muted">
               google3 relative path: <span className="text-amber-300">{project.relative_path}</span>
             </p>
           ) : null}
-          {project?.default_path ? <p data-debug-id="project-detail-path" className="font-mono text-xs text-zinc-500">{project.default_path}</p> : null}
+          {project?.default_path ? <p data-debug-id="project-detail-path" className="font-mono text-xs text-muted">{project.default_path}</p> : null}
           {str(project?.description) ? (
             <p data-debug-id="project-detail-description" className="max-w-2xl whitespace-pre-wrap text-sm leading-6 text-zinc-300">{project?.description}</p>
           ) : (
@@ -735,30 +715,30 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
         </div>
       ) : (
         <div className="space-y-3">
-          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Name
-            <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" className="mt-1" />
-          </label>
+          <FormField label="Name">
+            <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" />
+          </FormField>
           {isFig ? (
-            <div className="grid gap-3 sm:grid-cols-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
-              <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">CitC Workspace
-                <Input value={workspaceName} onChange={setWorkspaceName} width="full" className="mt-1 font-mono" />
-              </label>
-              <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-amber-300">Relative google3 Path
-                <Input value={relativePath} onChange={setRelativePath} placeholder="e.g. cloud/security" width="full" className="mt-1 font-mono" />
-              </label>
+            <div className="grid gap-3 sm:grid-cols-2 rounded-[var(--radius-md)] border border-amber-500/20 bg-amber-500/[0.04] p-3">
+              <FormField label="CitC Workspace">
+                <Input value={workspaceName} onChange={setWorkspaceName} width="full" className="font-mono" />
+              </FormField>
+              <FormField label="Relative google3 Path">
+                <Input value={relativePath} onChange={setRelativePath} placeholder="e.g. cloud/security" width="full" className="font-mono" />
+              </FormField>
             </div>
           ) : null}
-          <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">Description
-            <Textarea data-debug-id="project-detail-description-input" value={description} onChange={setDescription} rows={4} placeholder="What is this project about?" width="full" className="mt-1" />
-          </label>
-          <div>
-            <label className="block text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500 mb-1">Default path</label>
+          <FormField label="Description">
+            <Textarea data-debug-id="project-detail-description-input" value={description} onChange={setDescription} rows={4} placeholder="What is this project about?" width="full" />
+          </FormField>
+          <FormField label="Default path">
             <div className="flex items-center gap-2">
               <Input data-debug-id="project-detail-default-path-input" value={defaultPath} onChange={setDefaultPath} width="full" className="flex-1 font-mono" placeholder="~/path/to/repo" />
               {!isFig ? (
                 <Button
                   data-debug-id="project-detail-edit-local-browse-btn"
                   variant="secondary"
+                  size="sm"
                   disabled={!selectedBridgeId}
                   onClick={() => setShowLocalPicker((v) => !v)}
                   leading={<Icon name="folder" size={14} />}
@@ -767,7 +747,7 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
                 </Button>
               ) : null}
             </div>
-          </div>
+          </FormField>
           {!isFig && showLocalPicker && selectedBridgeId ? (
             <div className="mt-2">
               <BridgeDirectoryPicker
@@ -782,7 +762,7 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
               />
             </div>
           ) : null}
-          {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-red-300">{err}</p> : null}
+          {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-danger">{err}</p> : null}
           <div className="flex gap-2">
             <Button data-debug-id="project-detail-save-btn" variant="primary" size="md" disabled={updateState.isLoading} onClick={save}>{updateState.isLoading ? 'Saving…' : 'Save'}</Button>
             <Button data-debug-id="project-detail-cancel-btn" variant="secondary" size="md" onClick={() => { setEditing(false); setShowLocalPicker(false); setErr(''); }}>Cancel</Button>
@@ -817,7 +797,7 @@ function AgentsPanel({ agents, loading, projectId }: { agents: any[]; loading: b
               <a key={id} data-debug-id={`project-detail-agent-${id}`} href={buildRouteHash('/agents', `agentId=${encodeURIComponent(id)}`)} className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-white/[0.05]">
                 <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-caption font-bold text-zinc-300">{(name || '?').slice(0, 1).toUpperCase()}</span>
                 <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">{name}</span>
-                {instances > 0 ? <span className="shrink-0 rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">{instances} live</span> : null}
+                {instances > 0 ? <Badge tone="success" emphasis="soft">{instances} live</Badge> : null}
                 {tier ? <span className="shrink-0 text-caption text-zinc-500">{tier}</span> : null}
               </a>
             );
@@ -850,8 +830,8 @@ function MemoryPanel({ memories, loading, projectId }: { memories: any[]; loadin
             return (
               <div key={id} data-debug-id={`project-detail-memory-${id}`} className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-white/[0.04]">
                 <span className="min-w-0 flex-1 truncate text-sm text-zinc-200">{title}</span>
-                {type ? <span className="shrink-0 rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] font-semibold text-zinc-400">{type}</span> : null}
-                {status && status !== 'active' ? <span className="shrink-0 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">{status}</span> : null}
+                {type ? <Badge tone="neutral" emphasis="soft">{type}</Badge> : null}
+                {status && status !== 'active' ? <Badge tone="warning" emphasis="soft">{status}</Badge> : null}
               </div>
             );
           })}
@@ -957,15 +937,16 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
               <div key={bid} data-debug-id={`project-detail-bridge-path-row-${bid}`} className="rounded-lg border border-white/[0.06] bg-black/20">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
                   {/* status dot */}
-                  <span
-                    aria-hidden="true"
-                    className={`h-2 w-2 shrink-0 rounded-full ${st.loading ? 'bg-zinc-500 animate-pulse' : st.error ? 'bg-amber-400' : st.exists ? 'bg-emerald-400' : 'bg-red-400'}`}
+                  <StatusDot
+                    tone={st.loading ? 'neutral' : st.error ? 'warning' : st.exists ? 'success' : 'danger'}
+                    pulse={st.loading}
+                    label={st.loading ? 'checking…' : st.error ? st.error : st.exists ? (st.hasGit ? 'present · git' : 'present') : 'not present'}
                   />
-                  <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-caption font-semibold text-zinc-300">{bridgeLabel(b)}</span>
-                  <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold ${overridden ? 'bg-sky-400/15 text-sky-300' : 'bg-white/[0.06] text-zinc-500'}`}>{overridden ? 'override' : 'default'}</span>
+                  <Badge tone="neutral" emphasis="soft">{bridgeLabel(b)}</Badge>
+                  <Badge tone={overridden ? 'info' : 'neutral'} emphasis="soft">{overridden ? 'override' : 'default'}</Badge>
                   <span className="min-w-0 flex-1 basis-full truncate font-mono text-[12px] text-zinc-400 sm:basis-0" title={path}>{path || <span className="text-zinc-600">no path set</span>}</span>
                   {/* presence label */}
-                  <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className={`shrink-0 text-caption font-semibold ${st.loading ? 'text-zinc-500' : st.error ? 'text-amber-400' : st.exists ? 'text-emerald-400' : 'text-red-400'}`}>
+                  <span data-debug-id={`project-detail-bridge-path-status-${bid}`} className={`shrink-0 text-caption font-semibold ${st.loading ? 'text-muted' : st.error ? 'text-amber-400' : st.exists ? 'text-emerald-400' : 'text-danger'}`}>
                     {st.loading ? 'checking…' : st.error ? st.error : st.exists ? (st.hasGit ? 'present · git' : 'present') : 'not present'}
                   </span>
                   {/* actions */}
@@ -1001,14 +982,16 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
 function CreateOnBridgeButton({ bridgeId, path, onDone }: { bridgeId: string; path: string; onDone: () => void }) {
   const [mkdir, state] = useMkdirBridgePathMutation();
   return (
-    <button
+    <Button
       data-debug-id={`project-detail-bridge-path-create-${bridgeId}`}
-      type="button"
+      variant="secondary"
+      size="sm"
       disabled={state.isLoading}
+      loading={state.isLoading}
       onClick={async () => { try { await mkdir({ bridgeId, path }).unwrap(); } catch { /* ignore */ } onDone(); }}
-      className="shrink-0 rounded-md border border-emerald-400/30 px-2 py-1 text-caption font-semibold text-emerald-200 hover:bg-emerald-400/10 disabled:opacity-50"
+      className="shrink-0 text-emerald-200 border-emerald-400/30 hover:bg-emerald-400/10"
     >
-      {state.isLoading ? 'Creating…' : 'Create'}
-    </button>
+      Create
+    </Button>
   );
 }
