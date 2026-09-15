@@ -78,7 +78,7 @@ export type MobileTab = {
   badge?: number;
 };
 
-// UI-13: the mobile bottom tab bar. Chat / Chains / (palette center) / Library / More.
+// UI-13: the mobile bottom tab bar. Home / Chains / (palette center) / Chats / Settings.
 // `onOpenPalette` opens the command palette from the center button. The four
 // outer tabs navigate; debug-ids are layout-independent (same as desktop nav).
 export type MobileTabBarProps = {
@@ -92,14 +92,15 @@ export type MobileTabBarProps = {
   paletteDebugId?: string;
 };
 
-// Mirror the desktop left-sidebar nav (Conversations, Projects, Agents, Settings)
-// with the command-palette as the center button.
+// Bottom tabs: Home (the Action Cards home page) and Chats replace the former
+// Chat/Agents entries; the command-palette stays the center button.
 const TABS: { id: string; label: string; icon: IconName; route: string }[] = [
-  { id: 'chat', label: 'Chats', icon: 'chat', route: '/conversations' },
+  // Home routes to the Action Cards feed (the app's home page).
+  { id: 'home', label: 'Home', icon: 'home', route: '/cards' },
   // Slot 2 sits immediately left of the palette button: Task Chains, not Projects.
   { id: 'chains', label: 'Chains', icon: 'tasks', route: '/chains' },
-  // 'bot', not 'tasks' — Agents shared the checklist glyph with Task Chains.
-  { id: 'agents', label: 'Agents', icon: 'bot', route: '/agents' },
+  // Conversations sit right of the palette button.
+  { id: 'chats', label: 'Chats', icon: 'chat', route: '/conversations' },
   { id: 'settings', label: 'Settings', icon: 'gear', route: '/settings/bridges' },
 ];
 
@@ -112,7 +113,7 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
       className="ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-white/10 bg-[#101010]/95 backdrop-blur md:hidden"
     >
       {TABS.slice(0, 2).map((tab) => (
-        <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chat' ? chatBadge : tab.id === 'chains' ? chainsBadge : 0} onClick={() => onNavigate(tab.route)} />
+        <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chains' ? chainsBadge : 0} onClick={() => onNavigate(tab.route)} />
       ))}
       {/* Center = command palette (dedicated center button per arch doc §6D). */}
       <div className="flex items-end justify-center pb-1">
@@ -127,7 +128,7 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
         </button>
       </div>
       {TABS.slice(2).map((tab) => (
-        <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} onClick={() => onNavigate(tab.route)} />
+        <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chats' ? chatBadge : 0} onClick={() => onNavigate(tab.route)} />
       ))}
     </nav>
   );

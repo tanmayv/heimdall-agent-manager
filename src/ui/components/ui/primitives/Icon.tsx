@@ -33,6 +33,7 @@ export type IconName =
   | 'plus'
   | 'gear'
   | 'chat'
+  | 'home'
   | 'grid'
   | 'tasks'
   | 'chevron-left'
@@ -86,6 +87,13 @@ const PATHS: Record<IconName, ReactElement> = {
     </g>
   ),
   chat: <path d="M4 5.5h16v11H9l-4 3.5v-3.5H4z" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round" />,
+  home: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 11.5 12 4l8 7.5" />
+      <path d="M6 10.5V20h12v-9.5" />
+      <path d="M10 20v-5h4v5" />
+    </g>
+  ),
   grid: (
     <g fill="none" stroke="currentColor" strokeWidth={1.8}>
       <rect x={4} y={4} width={6.5} height={6.5} rx={1.2} />

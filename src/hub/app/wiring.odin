@@ -142,6 +142,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}, &graph.users, &graph.repos.users, &graph.clock, &graph.ids)
 	graph.auth.bridges = &graph.bridges
 	graph.auth.agents = &graph.agents
+	// Bridge-token authorization mode (default monitor): only "enforce" blocks.
+	graph.auth.bridge_auth_mode = .Enforce if config.bridge_auth_mode == "enforce" else .Monitor
 	graph.device_auth_store = device_auth_service.new_grant_store(device_auth_service.Grant_Store_Config{
 		verification_uri = config.device_auth_verification_uri,
 		expires_in = config.device_auth_expires_in,

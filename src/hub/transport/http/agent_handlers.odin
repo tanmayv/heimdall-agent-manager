@@ -145,10 +145,17 @@ list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	filter := agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status"), project_id = query_value(req.query, "project_id")}
 	if auth_ctx.kind == .Bridge_Token {
 		req_bridge := query_value(req.query, "bridge_id")
-		if req_bridge != "" && req_bridge != auth_ctx.bridge_id {
+		cross := req_bridge != "" && req_bridge != auth_ctx.bridge_id
+		if cross && h.auth.bridge_auth_mode != .Monitor {
 			return respond_error(domain.domain_error(.Forbidden, "bridge cannot list instances of another bridge"), req.request_id)
 		}
-		filter.bridge_id = auth_ctx.bridge_id
+		if cross {
+			// monitor: allow the cross-bridge listing to proceed as requested, and log it.
+			auth_service.log_bridge_auth_monitor("cross_bridge_list", req.method, req.path, auth_ctx.bridge_id, auth_ctx.user_id, req_bridge, req.request_id)
+			filter.bridge_id = req_bridge
+		} else {
+			filter.bridge_id = auth_ctx.bridge_id
+		}
 	}
 	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, filter, limit, cursor)
 	if err.code != .None do return respond_error(err, req.request_id)
@@ -169,10 +176,16 @@ create_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !ok do return auth_resp
 	input := instance_input_from_body(req.body)
 	if auth_ctx.kind == .Bridge_Token {
-		if input.bridge_id != "" && input.bridge_id != auth_ctx.bridge_id {
+		cross := input.bridge_id != "" && input.bridge_id != auth_ctx.bridge_id
+		if cross && h.auth.bridge_auth_mode != .Monitor {
 			return respond_error(domain.domain_error(.Forbidden, "bridge cannot create instances on another bridge"), req.request_id)
 		}
-		input.bridge_id = auth_ctx.bridge_id
+		if cross {
+			// monitor: allow creating on the requested bridge, and log it.
+			auth_service.log_bridge_auth_monitor("cross_bridge_create", req.method, req.path, auth_ctx.bridge_id, auth_ctx.user_id, input.bridge_id, req.request_id)
+		} else {
+			input.bridge_id = auth_ctx.bridge_id
+		}
 	}
 	inst, created, err := agent_service.create_instance(h.agents, auth_ctx, input)
 	if !created do return respond_error(err, req.request_id)

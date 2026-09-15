@@ -51,6 +51,9 @@ main :: proc() {
 	check(ok, message)
 	defer app.shutdown_graph(&graph)
 
+	// Default bridge-auth mode (unset in Hub_Config) must resolve to monitor.
+	check(graph.auth.bridge_auth_mode == .Monitor, "default bridge_auth_mode must be monitor")
+
 	alice := [?]contracts.HTTP_Header{
 		{name = "X-authentik-username", value = "alice"},
 		{name = "X-authentik-name", value = "Alice"},
@@ -511,7 +514,8 @@ main :: proc() {
 	run_agent_msg_id := extract_json_string(run_agent_resp.body, "message_id")
 	check(run_agent_msg_id != "", "message_id in run-now agent response")
 
-	// 10. Security & Bridge Auth Isolation Tests
+	// 10. Security & Bridge Auth Isolation Tests — 10a–10g asserted under ENFORCE mode.
+	graph.auth.bridge_auth_mode = .Enforce
 	// 10a. Negative Test: Bare hbr_ token REJECTED on user endpoint (GET /api/v1/task-chains)
 	bare_bridge_tc_resp := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "GET",
@@ -621,6 +625,43 @@ main :: proc() {
 		headers = bridge2_headers[:],
 	})
 	check(cross_exec_resp.status == 403, fmt.tprintf("cross-owner bridge execute must be 403: %d %s", cross_exec_resp.status, cross_exec_resp.body))
+
+	// 10h–10j. MONITOR mode: the same boundary cases now ALLOW (audit-not-enforce).
+	graph.auth.bridge_auth_mode = .Monitor
+
+	// 10h. Bare hbr_ token on /api/v1/task-chains is ALLOWED under monitor.
+	mon_tc := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/task-chains",
+		request_id = "req_mon_bare_tc",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(mon_tc.status == 200, fmt.tprintf("monitor: bare bridge token should be allowed on task-chains; got %d %s", mon_tc.status, mon_tc.body))
+
+	// 10i. Cross-bridge list is ALLOWED under monitor (not 403).
+	mon_list_other := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/agent-instances",
+		query = "bridge_id=brg_other",
+		request_id = "req_mon_list_other",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(mon_list_other.status != 403, fmt.tprintf("monitor: cross-bridge list must NOT be 403; got %d %s", mon_list_other.status, mon_list_other.body))
+
+	// 10j. Cross-owner bridge execute bypasses the owner gate under monitor
+	// (no "does not belong to bridge owner" rejection; an unrelated same-bridge
+	// check may still apply downstream, which is fine).
+	mon_cross_exec := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", agent_act_id),
+		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
+		request_id = "req_mon_cross_exec",
+		remote_addr = "127.0.0.1",
+		headers = bridge2_headers[:],
+	})
+	check(!strings.contains(mon_cross_exec.body, "does not belong to bridge owner"), fmt.tprintf("monitor: cross-owner execute must bypass the owner gate; got %d %s", mon_cross_exec.status, mon_cross_exec.body))
 
 	fmt.println("ALL ACTIONS API TESTS PASSED")
 }

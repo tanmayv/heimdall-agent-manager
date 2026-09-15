@@ -42,6 +42,11 @@ Hub_Config :: struct {
 	// absolute `href` in Web Push payloads that the service worker opens on click
 	// (WP-SEND). The Hub serves only /api/v1; the SW/manifest are same-origin here.
 	public_app_origin: string,
+	// Bridge-token authorization mode: "monitor" (default) ALLOWS the operation but
+	// emits a bridge_auth_monitor audit line wherever enforcement would deny, so we
+	// can enumerate impact before turning on blocking; "enforce" blocks. Wired to
+	// Auth_Service.bridge_auth_mode in build_graph.
+	bridge_auth_mode: string,
 }
 
 // vapid_is_configured reports whether a usable VAPID keypair is present. Push
@@ -72,6 +77,7 @@ default_config :: proc() -> Hub_Config {
 		device_auth_rate_window = 60,
 		reaper_interval_seconds = 20,
 		title_nudge_cooldown_seconds = 3600,
+		bridge_auth_mode = "monitor",
 		vapid_subject = "mailto:12tanmayvijay@gmail.com",
 		public_app_origin = "https://heimdall.mundus.in",
 	}
