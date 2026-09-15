@@ -76,7 +76,7 @@ export function ProvidersPanel() {
   // Poll: a Bridge can come online / report capabilities after this page loaded,
   // and the Hub emits no user-WS event for bridge liveness.
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
-  const bridges = bridgesQuery.data?.bridges || [];
+  const bridges = (bridgesQuery.data?.bridges || []).filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked' && !b?.revoked_at);
   const [selectedBridgeId, setSelectedBridgeId] = useState('');
   const selectedBridge = bridges.find((bridge: any) => bridgeId(bridge) === selectedBridgeId) || bridges[0];
   const selectedId = selectedBridge ? bridgeId(selectedBridge) : '';
@@ -212,7 +212,7 @@ export function ProvidersPanel() {
 export function ProviderEditorPage({ providerName = '' }: { providerName?: string }) {
   const isEdit = Boolean(providerName);
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000, refetchOnMountOrArgChange: true });
-  const bridges = bridgesQuery.data?.bridges || [];
+  const bridges = (bridgesQuery.data?.bridges || []).filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked' && !b?.revoked_at);
   const [selectedBridgeId, setSelectedBridgeId] = useState('');
   const selectedBridge = bridges.find((bridge: any) => bridgeId(bridge) === selectedBridgeId) || bridges[0];
   const selectedId = selectedBridge ? bridgeId(selectedBridge) : '';
