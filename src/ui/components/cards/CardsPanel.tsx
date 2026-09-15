@@ -4,6 +4,8 @@ import {
   Card,
   CardOperation,
   formatOpLabel,
+  formatSourceRef,
+  toDisplayText,
   cardErrorText,
   useListCardsQuery,
   useAcceptCardMutation,
@@ -817,7 +819,7 @@ function CardRow({
                   key={i}
                   className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] text-zinc-300"
                 >
-                  {refId}
+                  {formatSourceRef(refId)}
                 </span>
               ))}
             </div>
@@ -868,14 +870,17 @@ function OperationPreviewRow({ op, index }: { op: CardOperation; index: number }
 
   const getArg = (k: string) => op.args?.[k] ?? op[k];
 
-  // Specific operation parameters for clean diff preview
-  const memTitle = getArg('title');
-  const memBody = getArg('body');
-  const memType = getArg('type');
-  const memId = getArg('memory_id') || getArg('id');
-  const taskVote = getArg('result');
-  const taskComment = getArg('comment');
-  const chainStatus = getArg('status');
+  // Specific operation parameters for clean diff preview.
+  // Coerce every value to a display-safe string: raw objects/arrays passed as
+  // React children throw ("Objects are not valid as a React child") and blank
+  // the whole page.
+  const memTitle = toDisplayText(getArg('title'));
+  const memBody = toDisplayText(getArg('body'));
+  const memType = toDisplayText(getArg('type'));
+  const memId = toDisplayText(getArg('memory_id') ?? getArg('id'));
+  const taskVote = toDisplayText(getArg('result'));
+  const taskComment = toDisplayText(getArg('comment'));
+  const chainStatus = toDisplayText(getArg('status'));
 
   return (
     <div

@@ -24,6 +24,7 @@ import ProjectsSurface from '../projects/ProjectsSurface';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import ActionsPanel from '../actions/ActionsPanel';
 import CardsPanel from '../cards/CardsPanel';
+import ErrorBoundary from './ErrorBoundary';
 import ActionEditorPage from '../actions/ActionEditorPage';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
@@ -994,7 +995,9 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
             position, menus) resets synchronously instead of the previous
             conversation's content painting for a frame and then swapping +
             re-scrolling. The RTK Query cache still makes revisits fast. */}
-        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
+        <ErrorBoundary resetKey={agentInstanceId} label="Conversation">
+          <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
+        </ErrorBoundary>
       </main>
     );
   }
@@ -1003,6 +1006,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
     <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto overflow-x-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
       <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
+        <ErrorBoundary resetKey={path} label={routeTitle(path)}>
         {path === '/cards' || path.startsWith('/cards') ? (
           <CardsPanel />
         ) : path === '/conversations' ? (
@@ -1066,6 +1070,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
             <p className="mt-3 text-sm leading-6 text-zinc-400">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
           </div>
         )}
+        </ErrorBoundary>
       </section>
     </main>
   );

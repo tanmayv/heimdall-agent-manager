@@ -10,6 +10,15 @@ export type CardOperation = {
   [key: string]: any;
 };
 
+/**
+ * A source reference / evidence pointer on a card. The hub serializes these as
+ * structured objects (e.g. {"type":"task","id":"task_..."}), but older/other
+ * providers may emit plain strings, so accept both.
+ */
+export type CardSourceRef =
+  | string
+  | { type?: string; id?: string; [key: string]: any };
+
 export type CardGuard = {
   target_type?: string;
   target_id?: string;
@@ -28,7 +37,7 @@ export type Card = {
   scope: string;
   provider: string;
   confidence: number;
-  source_refs: string[];
+  source_refs: CardSourceRef[];
   status: CardStatus | string;
   operations: CardOperation[];
   guard?: CardGuard;
@@ -53,7 +62,7 @@ export type CreateCardInput = {
   scope?: string;
   provider?: string;
   confidence?: number;
-  source_refs?: string[];
+  source_refs?: CardSourceRef[];
   operations?: CardOperation[];
   guard?: CardGuard;
   snooze_until?: string;
@@ -132,6 +141,44 @@ export function formatOpLabel(op: CardOperation): string {
     }
     default:
       return `${opName} operation`;
+  }
+}
+
+/**
+ * Render a source reference as a short human string. The hub emits these as
+ * {type,id} objects; some providers may emit plain strings. NEVER return a raw
+ * object — passing one as a React child throws and blanks the page.
+ */
+export function formatSourceRef(ref: CardSourceRef): string {
+  if (ref == null) return '';
+  if (typeof ref === 'string') return ref;
+  if (typeof ref === 'object') {
+    const type = typeof ref.type === 'string' ? ref.type : '';
+    const id = typeof ref.id === 'string' ? ref.id : '';
+    if (type && id) return `${type}:${id}`;
+    if (id) return id;
+    if (type) return type;
+    try {
+      return JSON.stringify(ref);
+    } catch {
+      return String(ref);
+    }
+  }
+  return String(ref);
+}
+
+/**
+ * Coerce an arbitrary operation-arg value into a safe display string. Guards
+ * against objects/arrays being rendered directly as React children.
+ */
+export function toDisplayText(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }
 
