@@ -18,6 +18,7 @@ import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
 import card_service "odin_test:hub/service/card"
+import shell_job_service "odin_test:hub/service/shell_job"
 import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
@@ -40,6 +41,7 @@ App_Graph :: struct {
 	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_push: sqlite.Push_Repo_SQLite,
 	sqlite_cards: sqlite.Card_Repo_SQLite,
+	sqlite_shell_jobs: sqlite.Shell_Job_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
 	uow_factory: iface.Unit_Of_Work_Factory,
@@ -68,7 +70,9 @@ App_Graph :: struct {
 	action_handlers: http.Action_Handlers,
 	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
 	cards: card_service.Card_Service,
+	shell_jobs: shell_job_service.Shell_Job_Service,
 	card_handlers: http.Card_Handlers,
+	shell_job_handlers: http.Shell_Job_Handlers,
 	action_mutex: sync.Mutex,
 	action_bridge_versions: map[string]int,
 	router: http.Router,
@@ -116,6 +120,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.repos.cards = sqlite.new_card_repository(&graph.sqlite_cards, &graph.db)
+	graph.repos.shell_jobs = sqlite.new_shell_job_repository(&graph.sqlite_shell_jobs, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
@@ -125,6 +130,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content = content_service.new_content_service_with_runtime(&graph.repos.content, &graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.taskchains, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content.title_nudge_cooldown_seconds = config.title_nudge_cooldown_seconds
 	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
+	graph.shell_jobs = shell_job_service.new_shell_job_service(&graph.repos.shell_jobs, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.push = push_service.new_push_service(&graph.repos.push_subscriptions, &graph.clock, &graph.ids, push_service.Vapid_Config{
 		public_key = config.vapid_public_key,
@@ -195,6 +201,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	)
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
+	graph.agent_action_handlers.shell_jobs = &graph.shell_jobs
+	graph.shell_job_handlers = http.Shell_Job_Handlers{auth = &graph.auth, shell_jobs = &graph.shell_jobs}
 	graph.router = http.new_router()
 	register_routes(graph)
 	// Log the Web Push send status ONCE at startup. Never log the private key.
@@ -270,6 +278,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/restart", rawptr(&graph.agent_handlers), http.restart_agent_instance_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/stop", rawptr(&graph.agent_handlers), http.stop_agent_instance_handler)
 	// Read-only agent run-dir browser (list + bounded file read), owner-scoped.
+	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/shell-jobs", rawptr(&graph.shell_job_handlers), http.list_instance_shell_jobs_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs", rawptr(&graph.bridge_handlers), http.list_instance_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs/file", rawptr(&graph.bridge_handlers), http.read_instance_file_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents", rawptr(&graph.agent_handlers), http.list_agents_handler)
@@ -355,6 +364,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/content", rawptr(&graph.agent_action_handlers), http.agent_action_memory_content_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/create", rawptr(&graph.agent_action_handlers), http.agent_action_card_create_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/list", rawptr(&graph.agent_action_handlers), http.agent_action_card_list_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/shell-cmd/report", rawptr(&graph.agent_action_handlers), http.agent_action_shell_cmd_report_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/shell-cmd/list", rawptr(&graph.agent_action_handlers), http.agent_action_shell_cmd_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/show", rawptr(&graph.agent_action_handlers), http.agent_action_card_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/discard", rawptr(&graph.agent_action_handlers), http.agent_action_card_discard_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/accept", rawptr(&graph.agent_action_handlers), http.agent_action_card_accept_handler)

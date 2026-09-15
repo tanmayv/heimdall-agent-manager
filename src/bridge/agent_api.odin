@@ -204,6 +204,12 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/discard"}
 	case "agent.cards.accept":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/accept"}
+
+	// ---- shell commands (bridge-local subprocess, output stays on this host) ---
+	case "agent.shell_cmd.exec":
+		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.exec"}
+	case "agent.shell_cmd.read":
+		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.read"}
 	}
 	return Bridge_Agent_Route{kind = .Unknown}
 }
@@ -241,7 +247,9 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.artifact.content",
 	     // cards
 	     "agent.cards.create", "agent.cards.list", "agent.cards.show",
-	     "agent.cards.discard", "agent.cards.accept":
+	     "agent.cards.discard", "agent.cards.accept",
+	     // shell commands (bridge-local)
+	     "agent.shell_cmd.exec", "agent.shell_cmd.read":
 		return true
 	}
 	return false
@@ -335,6 +343,8 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 		strings.write_string(&b, "]}")
 		return bridge_local_response_data(request_id, strings.to_string(b))
 	}
+	if op == "shell_cmd.exec" do return bridge_shell_cmd_exec(request_id, params, rec)
+	if op == "shell_cmd.read" do return bridge_shell_cmd_read(request_id, params, rec)
 	return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"unknown local op: ", op}))
 }
 

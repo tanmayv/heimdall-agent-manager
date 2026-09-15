@@ -51,7 +51,7 @@ export const RIGHT_SIDEBAR_DEFAULT_WIDTH = 480;
 export const RIGHT_SIDEBAR_MIN_WIDTH = 360;
 export const CHAT_VIEW_MIN_WIDTH = 380;
 
-export type RightSidebarTab = 'tasks' | 'files' | 'rundir';
+export type RightSidebarTab = 'tasks' | 'files' | 'rundir' | 'jobs';
 
 export function clampRightSidebarWidth(width: number, maxAllowedWidth?: number): number {
   if (!Number.isFinite(width) || Number.isNaN(width) || width <= 0) {
@@ -110,7 +110,7 @@ export function readRightSidebarTab(): RightSidebarTab | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(RIGHT_SIDEBAR_TAB_KEY);
-    if (raw === 'tasks' || raw === 'files' || raw === 'rundir') {
+    if (raw === 'tasks' || raw === 'files' || raw === 'rundir' || raw === 'jobs') {
       return raw;
     }
     return null;
@@ -122,7 +122,7 @@ export function readRightSidebarTab(): RightSidebarTab | null {
 export function writeRightSidebarTab(tab: RightSidebarTab): void {
   if (typeof window === 'undefined') return;
   try {
-    if (tab === 'tasks' || tab === 'files' || tab === 'rundir') {
+    if (tab === 'tasks' || tab === 'files' || tab === 'rundir' || tab === 'jobs') {
       window.localStorage.setItem(RIGHT_SIDEBAR_TAB_KEY, tab);
     }
   } catch {

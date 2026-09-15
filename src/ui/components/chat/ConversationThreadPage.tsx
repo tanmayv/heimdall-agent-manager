@@ -1,6 +1,7 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
 import ProjectFilesPanel from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
+import ShellJobsPanel from './ShellJobsPanel';
 import { type ClipboardEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
@@ -563,7 +564,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
   // panel itself has Tasks / Files / RunDir tabs. 'closed' hides it entirely.
   // Initialized from ?panel= / ?sidebar= query param, falling back to UI storage.
-  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files' | 'rundir'>(() => {
+  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files' | 'rundir' | 'jobs'>(() => {
     const search = getRouteSearch();
     const params = new URLSearchParams(search.replace(/^\?/, ''));
     const param = params.get('panel') || params.get('sidebar');
@@ -572,6 +573,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       if (norm === 'tasks') return 'tasks';
       if (norm === 'files') return 'files';
       if (norm === 'rundir') return 'rundir';
+      if (norm === 'jobs') return 'jobs';
       if (norm === 'closed' || norm === 'false' || norm === '0') return 'closed';
       if (norm === 'open' || norm === 'true' || norm === '1') {
         return readRightSidebarTab() || 'tasks';
@@ -608,6 +610,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           setRightPanel('rundir');
           writeRightSidebarOpen(true);
           writeRightSidebarTab('rundir');
+        } else if (norm === 'jobs') {
+          setRightPanel('jobs');
+          writeRightSidebarOpen(true);
+          writeRightSidebarTab('jobs');
         } else if (norm === 'closed' || norm === 'false' || norm === '0') {
           setRightPanel('closed');
           writeRightSidebarOpen(false);
@@ -906,7 +912,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   // Default the panel's active tab based on what this conversation has: prefer
   // Tasks when linked to a chain, else Files when it has a project.
-  function defaultPanelTab(): 'tasks' | 'files' | 'rundir' {
+  function defaultPanelTab(): 'tasks' | 'files' | 'rundir' | 'jobs' {
     if (chainId) return 'tasks';
     if (projectId) return 'files';
     if (agentInstanceId) return 'rundir';
@@ -914,7 +920,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   // Sync ?panel=<tab> to route hash search on panel open/tab switch, or clean it up on close
-  function syncUrlPanel(tab: 'tasks' | 'files' | 'rundir' | null) {
+  function syncUrlPanel(tab: 'tasks' | 'files' | 'rundir' | 'jobs' | null) {
     if (typeof window === 'undefined') return;
     try {
       const search = getRouteSearch();
@@ -956,7 +962,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   // Open the panel focused on a specific tab (e.g. the composer project chip
   // opens Files; a current-task link opens Tasks).
-  function openRightPanel(tab: 'tasks' | 'files' | 'rundir') {
+  function openRightPanel(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
     setHeaderActionsOpen(false);
     writeRightSidebarOpen(true);
     writeRightSidebarTab(tab);
@@ -970,7 +976,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setRightPanel('closed');
   }
 
-  function selectRightPanelTab(tab: 'tasks' | 'files' | 'rundir') {
+  function selectRightPanelTab(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
     writeRightSidebarOpen(true);
     writeRightSidebarTab(tab);
     syncUrlPanel(tab);
@@ -1240,14 +1246,16 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const hasTasks = Boolean(chainId);
     const hasFiles = Boolean(projectId);
     const hasRunDir = Boolean(agentInstanceId);
+    const hasJobs = Boolean(agentInstanceId);
     // The two file-explorer tabs are labeled with a folder icon + the resource
     // name (project name for Files, instance display name for Run dir) and
     // truncate when long. Tasks keeps its fixed label.
     const instanceDisplayName = String(instance?.display_name || (instance as any)?.displayName || title || agentId || agentInstanceId || 'instance').trim();
     const filesLabel = projectName || 'Files';
-    const active: 'tasks' | 'files' | 'rundir' =
+    const active: 'tasks' | 'files' | 'rundir' | 'jobs' =
       rightPanel === 'files' && hasFiles ? 'files'
       : rightPanel === 'rundir' && hasRunDir ? 'rundir'
+      : rightPanel === 'jobs' && hasJobs ? 'jobs'
       : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
       : hasTasks ? 'tasks'
       : hasFiles ? 'files'
@@ -1275,6 +1283,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <span className="truncate">{instanceDisplayName}</span>
             </button>
           ) : null}
+          {hasJobs ? (
+            <button type="button" title="Background jobs" data-debug-id="conversation-right-panel-tab-jobs" onClick={() => selectRightPanelTab('jobs')} aria-pressed={active === 'jobs' ? 'true' : 'false'} className={`${tabBase} ${active === 'jobs' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+              <Icon name="terminal" size={15} className="shrink-0" />
+              <span className="truncate">Jobs</span>
+            </button>
+          ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
           {active === 'files' && hasFiles ? (
@@ -1293,6 +1307,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               rootLabel={instanceDisplayName}
               conversationKey={conversationId}
               onPublishComments={publishFileComments}
+              onClose={closeRightPanel}
+              isMobile={isMobilePanel}
+            />
+          ) : active === 'jobs' && hasJobs ? (
+            <ShellJobsPanel
+              agentInstanceId={agentInstanceId}
+              rootLabel={instanceDisplayName}
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
             />

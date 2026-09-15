@@ -616,7 +616,7 @@ print_hub_help :: proc(cmd: []string) {
 		fmt.println("  memory.approve          Approve a pending memory proposal.")
 		fmt.println("  memory.reject           Reject a pending memory proposal.")
 		fmt.println("  memory.create           Create a new durable memory.")
-		fmt.println("  memory.update           Edit an existing memory's fields.")
+		fmt.println("  memory.update           Edit an existing memory's fields (incl. scope: agent/project/bridge/template ids).")
 		fmt.println("  memory.delete           Archive (soft-delete) a memory.  (alias: memory.archive)")
 		fmt.println("  project.update          Edit a project's name/description.")
 		fmt.println("  project.delete          Archive (soft-delete) a project.")

@@ -47,6 +47,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
 	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
 	case "search":        ctl_agentmode_search(endpoint, token, rest, args); return
+	case "shell-cmd":     ctl_agentmode_shell_cmd(endpoint, token, rest, args); return
 	}
 	print_agent_help(cmd[idx:])
 }
@@ -81,6 +82,35 @@ ctl_agentmode_search :: proc(endpoint, token: string, tokens, args: []string) {
 	if v := option_value(args, "--not-in-conversation-ids", ""); v != "" do append(&fields, json_kv("not_in_conversation_ids", v))
 	if v := option_value(args, "--exclude", ""); v != "" do append(&fields, json_kv("exclude", v))
 	ctl_agent_call(endpoint, token, "agent.search", json_object_from_slice(fields[:]))
+}
+
+// ---- shell-cmd ----------------------------------------------------------
+// Agents run shell commands on their local Bridge host via two RPCs:
+//   exec  — submit a command line for the Bridge to run locally
+//   read  — fetch the status/output of a previously submitted exec by id
+// This is the CTL-side dispatch only; the Bridge handler is REQ-14. Output is
+// the raw JSON envelope from the local endpoint (curators consume it
+// programmatically). The non-agent user-mode path is unaffected.
+ctl_agentmode_shell_cmd :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "exec":
+		cmd := option_value(args, "--cmd", "")
+		if strings.trim_space(cmd) == "" {
+			print_agent_help([]string{"shell-cmd"})
+			return
+		}
+		ctl_agent_call(endpoint, token, "agent.shell_cmd.exec", json_object(json_kv("cmd", cmd)))
+	case "read":
+		id := pos(tokens, 1)
+		if strings.trim_space(id) == "" {
+			print_agent_help([]string{"shell-cmd"})
+			return
+		}
+		ctl_agent_call(endpoint, token, "agent.shell_cmd.read", json_object(json_kv("exec_id", id)))
+	case:
+		print_agent_help([]string{"shell-cmd"})
+	}
 }
 
 // pos returns positional token i (0-based) from the group's remaining tokens, or
@@ -1073,6 +1103,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "artifact", "artifacts": print_help_artifact(); return
 	case "memory": print_help_memory(); return
 	case "cards", "card": print_help_cards(); return
+	case "shell-cmd": print_help_shell_cmd(); return
 	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
 	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
 	}
@@ -1096,6 +1127,7 @@ print_help_overview :: proc() {
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")
 	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
+	fmt.println("  shell-cmd   Run a shell command on your local Bridge host (exec, read)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")
 	fmt.println("")
@@ -1114,6 +1146,22 @@ print_help_overview :: proc() {
 	fmt.println("  ham-ctl chat send --to inst_reviewer --body \"Can you LGTM inst_task_1?\"")
 	fmt.println("")
 	fmt.println("  ham-ctl <group> --help    # detailed help for any group")
+}
+
+print_help_shell_cmd :: proc() {
+	fmt.println("ham-ctl shell-cmd — run a shell command on your local Bridge host")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  exec --cmd <command>   Submit a shell command for the Bridge to run locally.")
+	fmt.println("                         Returns an exec id; read it back with `shell-cmd read`.")
+	fmt.println("  read <exec-id>         Fetch the status/output of a previously submitted exec.")
+	fmt.println("")
+	fmt.println("FLAGS")
+	fmt.println("  --cmd <command>        The command line to run (required for exec).")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl shell-cmd exec --cmd \"nix develop --command bash -c 'odin build src/ctl'\"")
+	fmt.println("  ham-ctl shell-cmd read exec_abc123")
 }
 
 print_help_bridge :: proc() {
@@ -1296,7 +1344,7 @@ print_help_cards :: proc() {
 	fmt.println("  memory.approve          Approve a pending memory proposal.")
 	fmt.println("  memory.reject           Reject a pending memory proposal.")
 	fmt.println("  memory.create           Create a new durable memory.")
-	fmt.println("  memory.update           Edit an existing memory's fields.")
+	fmt.println("  memory.update           Edit an existing memory's fields (incl. scope: agent/project/bridge/template ids).")
 	fmt.println("  memory.delete           Archive (soft-delete) a memory.  (alias: memory.archive)")
 	fmt.println("  project.update          Edit a project's name/description.")
 	fmt.println("  project.delete          Archive (soft-delete) a project.")

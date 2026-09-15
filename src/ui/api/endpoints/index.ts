@@ -11,3 +11,4 @@ export * from './artifacts';
 export * from './sidebar';
 export * from './actions';
 export * from './cards';
+export * from './shellJobs';

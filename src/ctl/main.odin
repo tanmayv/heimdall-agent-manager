@@ -66,7 +66,7 @@ main :: proc() {
 		switch cmd[0] {
 		case "bridge", "bridges", "agents", "task-chain", "task-chains",
 		     "task", "tasks", "chat", "chats", "artifact", "artifacts",
-		     "memory", "cards", "card", "context", "search":
+		     "memory", "cards", "card", "context", "search", "shell-cmd":
 			ctl_agent_mode(cmd[:], os.args)
 			return
 		}

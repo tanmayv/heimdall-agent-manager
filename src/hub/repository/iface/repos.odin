@@ -12,4 +12,5 @@ Repositories :: struct {
 	scheduled_prompts: Scheduled_Prompt_Repository,
 	push_subscriptions: Push_Repository,
 	cards: Card_Repository,
+	shell_jobs: Shell_Job_Repository,
 }
