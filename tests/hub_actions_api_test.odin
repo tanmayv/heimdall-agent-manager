@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 import contracts "odin_test:contracts"
 import app "odin_test:hub/app"
+import auth_service "odin_test:hub/service/auth"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import project_service "odin_test:hub/service/project"
@@ -18,6 +19,17 @@ check :: proc(ok: bool, msg: string) {
 	if ok do return
 	fmt.eprintln("FAIL:", msg)
 	os.exit(1)
+}
+
+// Capture the checkpoint-1 (bare_token_shared_endpoint) audit event so the test
+// can assert it identifies the endpoint (method/path), not just that it fired.
+cp1_captured_path: string
+cp1_captured_method: string
+capture_bridge_auth_monitor :: proc(point, method, path, bridge_id, user_id, target, request_id: string) {
+	if point == "bare_token_shared_endpoint" {
+		cp1_captured_path = path
+		cp1_captured_method = method
+	}
 }
 
 extract_json_string :: proc(body, key: string) -> string {
@@ -628,8 +640,13 @@ main :: proc() {
 
 	// 10h–10j. MONITOR mode: the same boundary cases now ALLOW (audit-not-enforce).
 	graph.auth.bridge_auth_mode = .Monitor
+	auth_service.bridge_auth_monitor_hook = capture_bridge_auth_monitor
+	defer auth_service.bridge_auth_monitor_hook = nil
 
-	// 10h. Bare hbr_ token on /api/v1/task-chains is ALLOWED under monitor.
+	// 10h. Bare hbr_ token on /api/v1/task-chains is ALLOWED under monitor, and the
+	// checkpoint-1 audit line must identify the endpoint (method + path).
+	cp1_captured_path = ""
+	cp1_captured_method = ""
 	mon_tc := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "GET",
 		path = "/api/v1/task-chains",
@@ -638,6 +655,8 @@ main :: proc() {
 		headers = bridge1_headers[:],
 	})
 	check(mon_tc.status == 200, fmt.tprintf("monitor: bare bridge token should be allowed on task-chains; got %d %s", mon_tc.status, mon_tc.body))
+	check(cp1_captured_path == "/api/v1/task-chains", fmt.tprintf("monitor cp1 audit must carry the endpoint path; got '%s'", cp1_captured_path))
+	check(cp1_captured_method == "GET", fmt.tprintf("monitor cp1 audit must carry the method; got '%s'", cp1_captured_method))
 
 	// 10i. Cross-bridge list is ALLOWED under monitor (not 403).
 	mon_list_other := api_http.router_dispatch(&graph.router, api_http.Request{

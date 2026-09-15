@@ -42,10 +42,18 @@ Auth_Service :: struct {
 	bridge_auth_mode: Bridge_Auth_Mode,
 }
 
+// bridge_auth_monitor_hook, when non-nil, receives each audit event instead of
+// the default stdout logger. Tests set it to capture and assert the emitted fields.
+bridge_auth_monitor_hook: proc(point, method, path, bridge_id, user_id, target, request_id: string)
+
 // log_bridge_auth_monitor emits a single greppable audit line for a bridge-token
 // authorization decision that enforcement would have denied. `grep bridge_auth_monitor`
 // over the hub log enumerates exactly which operations flipping to enforce would block.
 log_bridge_auth_monitor :: proc(point, method, path, bridge_id, user_id, target, request_id: string) {
+	if bridge_auth_monitor_hook != nil {
+		bridge_auth_monitor_hook(point, method, path, bridge_id, user_id, target, request_id)
+		return
+	}
 	fmt.printfln(
 		"ham-hub bridge_auth_monitor point=%s method=%s path=%s bridge_id=%s user_id=%s target=%s request_id=%s",
 		point, method, path, bridge_id, user_id, target, request_id,
@@ -149,9 +157,11 @@ resolve_auth_any :: proc(service: ^Auth_Service, req: Auth_Request) -> (contract
 				return resolve_bridge_instance_auth(service, req)
 			}
 			if service != nil && service.bridge_auth_mode == .Monitor && service.bridges != nil && !token_in_query_or_body(req.query, req.body) {
+				// Accept the bare bridge token; require_auth_any emits the
+				// bare_token_shared_endpoint audit line where it has the full request
+				// context (method/path/request_id), which Auth_Request lacks here.
 				ctx, ok, _ := bridge_service.verify_bridge_token(service.bridges, token)
 				if ok {
-					log_bridge_auth_monitor("bare_token_shared_endpoint", "", "", ctx.bridge_id, ctx.user_id, "", "")
 					return ctx, true, domain.Domain_Error{}
 				}
 			}
