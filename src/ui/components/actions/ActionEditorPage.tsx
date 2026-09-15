@@ -143,28 +143,33 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
 
   const agentOptions = useMemo<ComboboxOption[]>(() => {
     return (Array.isArray(agentIdentities) ? agentIdentities : [])
-      .filter((a: any) => a?.id)
-      .map((a: any) => ({
-        value: String(a.id),
-        title: String(a.name || a.slug || a.id),
-        id: String(a.id),
+      // The /agents serializer emits `agent_id` (no `id`); fall back for safety.
+      .map((a: any) => ({ raw: a, id: String(a?.agent_id || a?.id || '') }))
+      .filter(({ id }) => Boolean(id))
+      .map(({ raw: a, id }) => ({
+        value: id,
+        title: String(a.name || a.slug || id),
+        id,
         tag: a.default_provider ? `${a.default_provider}${a.default_tier ? ` / ${a.default_tier}` : ''}` : undefined,
-        keywords: [String(a.id), String(a.name || ''), String(a.slug || '')].filter(Boolean).join(' '),
+        keywords: [id, String(a.name || ''), String(a.slug || '')].filter(Boolean).join(' '),
       }))
       .sort((l, r) => l.title.localeCompare(r.title));
   }, [agentIdentities]);
 
   const bridgeOptions = useMemo<ComboboxOption[]>(() => {
     return (Array.isArray(bridges) ? bridges : [])
+      // The /bridges serializer emits `bridge_id`/`label`/`machine_hostname` and a
+      // `status` of online|offline|revoked. Show the label, and drop revoked bridges.
+      .filter((b: any) => b?.status !== 'revoked')
       .map((b: any) => {
-        const id = String(b.id || b.bridge_id || '');
-        const title = String(b.name || b.hostname || id);
+        const id = String(b.bridge_id || b.id || '');
+        const title = String(b.label || b.machine_hostname || id);
         return {
           value: id,
           title,
           id,
           tag: b.status,
-          keywords: [id, title, String(b.hostname || '')].filter(Boolean).join(' '),
+          keywords: [id, title, String(b.machine_hostname || '')].filter(Boolean).join(' '),
         };
       })
       .filter((opt) => Boolean(opt.value))
