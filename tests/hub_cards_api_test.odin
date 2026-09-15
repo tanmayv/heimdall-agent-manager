@@ -29,6 +29,37 @@ extract_json_string :: proc(body, key: string) -> string {
 	return tail[:end_idx]
 }
 
+// Create a task in the given chain and drive it to in_validation; returns task_id.
+create_in_validation_task :: proc(router: ^api_http.Router, chain_id, body: string, headers: []contracts.HTTP_Header, tag: string) -> string {
+	resp := api_http.router_dispatch(router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/task-chains/%s/tasks", chain_id),
+		body = body,
+		request_id = fmt.tprintf("req_%s_create", tag),
+		remote_addr = "127.0.0.1",
+		headers = headers,
+	})
+	check(resp.status == 201, fmt.tprintf("%s: create task failed: %d %s", tag, resp.status, resp.body))
+	tid := extract_json_string(resp.body, "task_id")
+	// Status bodies are literals (not tprintf) to mirror the proven section-15 pattern.
+	transitions := [?][2]string{
+		{"in_progress", "{\"status\":\"in_progress\"}"},
+		{"in_validation", "{\"status\":\"in_validation\"}"},
+	}
+	for tr in transitions {
+		sresp := api_http.router_dispatch(router, api_http.Request{
+			method = "POST",
+			path = fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/status", chain_id, tid),
+			body = tr[1],
+			request_id = fmt.tprintf("req_%s_%s", tag, tr[0]),
+			remote_addr = "127.0.0.1",
+			headers = headers,
+		})
+		check(sresp.status == 200, fmt.tprintf("%s: move task to %s failed: %d %s", tag, tr[0], sresp.status, sresp.body))
+	}
+	return tid
+}
+
 main :: proc() {
 	db_path := "/tmp/cards_api_test.db"
 	_ = os.remove(db_path)
@@ -438,6 +469,81 @@ main :: proc() {
 		headers = alice[:],
 	})
 	check(resp_accept_stale_task.status == 409, fmt.tprintf("accepting stale task card must return 409, got %d", resp_accept_stale_task.status))
+
+	// =========================================================================
+	// 15b. REQ-PROV-2: only project in_validation tasks that AWAIT THE USER.
+	// A task with an agent reviewer must NOT produce a card; a task with a user
+	// reviewer (or no reviewer) must. A projected card is withdrawn once an agent
+	// reviewer is later assigned (guard consistency).
+	// =========================================================================
+
+	// Case 1: agent_instance reviewer (via agent_id ref, resolved to inst_curator_1)
+	//         => NO card projected.
+	agentrev_task_id := create_in_validation_task(
+		&graph.router, val_chain_id,
+		"{\"title\":\"Agent-reviewed task\",\"reviewer_refs\":[{\"type\":\"agent_id\",\"agent_id\":\"agt_curator\"}]}",
+		alice[:], "agentrev")
+
+	agentrev_card_id := fmt.tprintf("crd_task_%s", agentrev_task_id)
+	resp_cards_agentrev := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = "/api/v1/cards", query = "status=pending",
+		request_id = "req_list_agentrev", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(resp_cards_agentrev.status == 200, "list cards (agent reviewer) failed")
+	check(!strings.contains(resp_cards_agentrev.body, agentrev_card_id), "task with an agent reviewer must NOT be projected as a card")
+
+	// Case 2: user reviewer (user_id == chain owner) => card IS projected.
+	userrev_task_id := create_in_validation_task(
+		&graph.router, val_chain_id,
+		"{\"title\":\"User-reviewed task\",\"reviewer_refs\":[{\"type\":\"user\",\"user_id\":\"alice\"}]}",
+		alice[:], "userrev")
+
+	userrev_card_id := fmt.tprintf("crd_task_%s", userrev_task_id)
+	resp_cards_userrev := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = "/api/v1/cards", query = "status=pending",
+		request_id = "req_list_userrev", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(resp_cards_userrev.status == 200, "list cards (user reviewer) failed")
+	check(strings.contains(resp_cards_userrev.body, userrev_card_id), "task with a user reviewer must be projected as a card")
+
+	// Case 3 (guard): a projected no-reviewer card is withdrawn once an agent
+	// reviewer is assigned, and accepting it then fails cleanly (stale guard).
+	norev_task_id := create_in_validation_task(
+		&graph.router, val_chain_id,
+		"{\"title\":\"Initially unreviewed task\"}",
+		alice[:], "norev")
+
+	norev_card_id := fmt.tprintf("crd_task_%s", norev_task_id)
+	resp_cards_norev := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = "/api/v1/cards", query = "status=pending",
+		request_id = "req_list_norev", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(strings.contains(resp_cards_norev.body, norev_card_id), "no-reviewer in_validation task must be projected as a card")
+
+	// Assign an agent reviewer after the card exists.
+	resp_patch_norev := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/task-chains/%s/tasks/%s", val_chain_id, norev_task_id),
+		body = "{\"reviewer_refs\":[{\"type\":\"agent_id\",\"agent_id\":\"agt_curator\"}]}",
+		request_id = "req_tk_norev_patch",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_patch_norev.status == 200, fmt.tprintf("assign agent reviewer failed: %d %s", resp_patch_norev.status, resp_patch_norev.body))
+
+	// The now-stale card must drop from the pending list (guard fails).
+	resp_cards_norev_after := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = "/api/v1/cards", query = "status=pending",
+		request_id = "req_list_norev_after", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(!strings.contains(resp_cards_norev_after.body, norev_card_id), "card must disappear once an agent reviewer is assigned")
+
+	// Accepting the stale card must fail cleanly (409 Conflict).
+	resp_accept_norev := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = fmt.tprintf("/api/v1/cards/%s/accept", norev_card_id),
+		body = "{}", request_id = "req_accept_norev_stale", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(resp_accept_norev.status == 409, fmt.tprintf("accepting stale (now agent-reviewed) task card must return 409, got %d", resp_accept_norev.status))
 
 	// =========================================================================
 	// 16. Deterministic memory-proposal card projection and out-of-band approval drop

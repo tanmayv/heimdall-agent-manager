@@ -241,6 +241,14 @@ sync_projected_cards :: proc(s: ^Card_Service, owner: domain.User_ID) {
 				for task in tasks {
 					if task.status != .In_Validation do continue
 
+					// Only surface tasks that AWAIT THE USER: skip any task that has an
+					// agent reviewer (that agent will vote on it). Empty / user-only
+					// reviewer_refs yields 0 instances => still projected.
+					task_reviewers := taskchain_service.extract_instances_from_ref_blob(task.reviewer_refs_json)
+					has_agent_reviewer := len(task_reviewers) > 0
+					delete(task_reviewers)
+					if has_agent_reviewer do continue
+
 					cid := domain.Card_ID(fmt.tprintf("crd_task_%s", string(task.task_id)))
 					existing, exists, _ := iface.card_get(s.cards, cid)
 					if exists {
@@ -398,6 +406,15 @@ evaluate_guard :: proc(s: ^Card_Service, owner: domain.User_ID, card: domain.Car
 			if actual_status != expected_status {
 				return false, fmt.tprintf("task status is %s, expected %s", actual_status, expected_status)
 			}
+		}
+		// Consistency with sync_projected_cards: a task card only belongs on the
+		// user's feed while the task awaits the user. Once an agent reviewer is
+		// assigned the card is stale (that agent will vote, not the user).
+		reviewers := taskchain_service.extract_instances_from_ref_blob(task.reviewer_refs_json)
+		has_agent_reviewer := len(reviewers) > 0
+		delete(reviewers)
+		if has_agent_reviewer {
+			return false, "task now has an agent reviewer"
 		}
 	}
 
