@@ -55,6 +55,32 @@ op_arg_string :: proc(obj: json.Object, key: string) -> string {
 	return ""
 }
 
+// op_arg_string_array mirrors op_arg_string's resolution order (args.<key> first,
+// then top-level <key>) but for JSON arrays of strings. The returned bool is true
+// only when the key is present AS AN ARRAY (even an empty one — meaning "set to the
+// empty list" for a scope dimension); an absent key or a non-array value yields
+// (nil, false). Non-string elements are silently skipped, matching json_array_present
+// in the HTTP handler. The output slice uses context.temp_allocator.
+op_arg_string_array :: proc(obj: json.Object, key: string) -> ([]string, bool) {
+	lookup :: proc(o: json.Object, k: string) -> ([]string, bool) {
+		v, ok := o[k]
+		if !ok do return nil, false
+		arr, is_arr := v.(json.Array)
+		if !is_arr do return nil, false
+		out := make([]string, len(arr), context.temp_allocator)
+		for elem, i in arr {
+			if s, is_s := elem.(json.String); is_s do out[i] = string(s)
+		}
+		return out, true
+	}
+	if args_val, has_args := obj["args"]; has_args {
+		if args_obj, ok := args_val.(json.Object); ok {
+			if vals, present := lookup(args_obj, key); present do return vals, true
+		}
+	}
+	return lookup(obj, key)
+}
+
 // validate_card_operations enforces, at CREATE / UPDATE(operations) / ACCEPT time,
 // that every operation is a KNOWN op type carrying its required args. It is the
 // single source of truth for required fields and MUST stay in lockstep with the
@@ -910,19 +936,33 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 			body := op_arg_string(op_obj, "body")
 			description := op_arg_string(op_obj, "description")
 			evidence := op_arg_string(op_obj, "evidence")
+			agent_ids, has_agent_ids := op_arg_string_array(op_obj, "agent_ids")
+			bridge_ids, has_bridge_ids := op_arg_string_array(op_obj, "bridge_ids")
+			template_ids, has_template_ids := op_arg_string_array(op_obj, "template_ids")
+			project_id_strs, has_project_ids := op_arg_string_array(op_obj, "project_ids")
+			project_ids := make([]domain.Project_ID, len(project_id_strs), context.temp_allocator)
+			for str, i in project_id_strs do project_ids[i] = domain.Project_ID(str)
 			if s.content == nil {
 				if has_uow do iface.unit_of_work_rollback(&uow)
 				return domain.Card{}, false, domain.domain_error(.Internal_Error, "content service is not configured")
 			}
 			_, u_ok, u_err := content_service.update_memory(s.content, user_auth, mid, content_service.Memory_Update_Input{
-				title           = title,
-				has_title       = title != "",
-				body            = body,
-				has_body        = body != "",
-				description     = description,
-				has_description = description != "",
-				evidence        = evidence,
-				has_evidence    = evidence != "",
+				title            = title,
+				has_title        = title != "",
+				body             = body,
+				has_body         = body != "",
+				description      = description,
+				has_description  = description != "",
+				evidence         = evidence,
+				has_evidence     = evidence != "",
+				agent_ids        = agent_ids,
+				has_agent_ids    = has_agent_ids,
+				bridge_ids       = bridge_ids,
+				has_bridge_ids   = has_bridge_ids,
+				template_ids     = template_ids,
+				has_template_ids = has_template_ids,
+				project_ids      = project_ids,
+				has_project_ids  = has_project_ids,
 			})
 			if !u_ok {
 				if has_uow do iface.unit_of_work_rollback(&uow)

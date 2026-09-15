@@ -59,6 +59,11 @@ Bridge_Runtime_Launch :: struct {
 	run_dir: string,
 	pane_id: string,
 	agent_token: string,
+	// role is the action role from the wake_agent run[] entry that (re)started this
+	// instance ("worker"/"reviewer"). Empty means unknown (a launch predating this
+	// field, or a non-wake launch). Used only for the coordinator stop-exemption
+	// (defense in depth); unknown is treated as non-coordinator.
+	role: string,
 }
 
 Bridge_Pane_Capture_Pending :: struct {
@@ -429,6 +434,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_pane_capture_command(conn, text)
 		return
 	}
+	if type == "wake_agent" {
+		bridge_hub_handle_wake_agent(conn, text)
+		return
+	}
 	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
 }
@@ -453,6 +462,101 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 	_ = bridge_hub_send(conn, accepted)
 	result := bridge_pty_host_capture_result(pending)
 	_ = bridge_hub_send(conn, result)
+}
+
+// bridge_hub_handle_wake_agent services the ephemeral-lifecycle push from the hub
+// (REQ-10/REQ-11). The reconcile pass sends one wake_agent per (chain × bridge):
+//   {"type":"wake_agent","chain_id":"..","payload":{"run":[{"agent_instance_id":"..",
+//    "task_id":"..","role":".."}],"stop":["..",..]}}
+// run[] names the non-coordinator agents that SHOULD be running for the chain right
+// now — started fresh (full bootstrap) when we hold no launch record, or restarted
+// (process re-fork from the saved spec, reusing run_dir + token) when a record
+// exists but the process is not registered with the daemon; an already-running agent
+// is left alone. stop[] names the instances whose task is no longer actionable and
+// should be stopped. Coordinators are never emitted by the hub, but we re-check the
+// role here (both from run[] entries and from the local launch record) as defense in
+// depth so this path can never stop or churn a coordinator. The command body carries
+// no command_id and the hub fire-and-forgets the send, so there is normally nothing
+// to ack; we still ack if a command_id is ever present.
+bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	payload, payload_ok := bridge_provider_json_extract_object(text, "payload")
+	if !payload_ok {
+		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+		return
+	}
+
+	// coordinator_ids collects any instance the hub (unexpectedly) marked coordinator
+	// in run[]; combined with the local launch-record role in the stop loop below it
+	// guarantees a coordinator can never be terminated by this path.
+	coordinator_ids := make(map[string]bool)
+	defer delete(coordinator_ids)
+
+	// RUN: start fresh, restart, or no-op each entry.
+	if run_arr, run_ok := bridge_provider_json_extract_array(payload, "run"); run_ok {
+		entries := bridge_provider_json_top_level_objects(run_arr)
+		defer { for e in entries do delete(e); delete(entries) }
+		for entry in entries {
+			instance_id := extract_json_string(entry, "agent_instance_id", "")
+			role := extract_json_string(entry, "role", "")
+			if role == "coordinator" {
+				if strings.trim_space(instance_id) != "" do coordinator_ids[instance_id] = true
+				continue
+			}
+			if strings.trim_space(instance_id) == "" do continue
+			task_id := extract_json_string(entry, "task_id", "")
+
+			if _, has := bridge_runtime_get_launch(instance_id); has {
+				// A launch record exists: reuse run_dir + token, restarting the process
+				// only if it is not currently registered with the daemon (i.e. it
+				// exited on its own). No bootstrap, no token regeneration.
+				socket, sok := bridge_pty_host_ensure_daemon()
+				if !sok {
+					fmt.eprintln("bridge wake_agent: daemon unavailable for restart", instance_id)
+				} else if bridge_pty_host_is_registered(socket, instance_id) {
+					// Already alive — nothing to do.
+				} else if pid, rok := bridge_pty_host_restart(socket, instance_id); rok {
+					bridge_runtime_update_launch_pane(instance_id, fmt.tprintf("pty-host:%d", pid))
+					bridge_runtime_set_launch_role(instance_id, role)
+					bridge_runtime_set_status(instance_id, "starting", "active")
+					fmt.println("bridge wake_agent: restarted instance", instance_id)
+				} else {
+					fmt.eprintln("bridge wake_agent: restart failed", instance_id)
+				}
+			} else {
+				// No launch record: fresh full bootstrap via the standard launch path.
+				// The instance id MUST live inside a "payload" object (matching the hub
+				// launch_agent contract) so bridge_bootstrap_descriptor_from_launch can
+				// resolve it — a top-level-only id aborts the launch at validate. This
+				// mirrors the scheduler sched_wake synthetic launch.
+				syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
+				command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", syn_command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\",\"task_id\":\"", task_id, "\"}}"})
+				defer delete(command_json)
+				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
+				if ok {
+					bridge_runtime_set_launch_role(instance_id, role)
+					fmt.println("bridge wake_agent: launched instance", instance_id)
+				} else {
+					fmt.eprintln("bridge wake_agent: launch failed", instance_id, detail)
+				}
+			}
+		}
+	}
+
+	// STOP: terminate each instance whose task is no longer actionable, honoring the
+	// coordinator exemption (defense in depth — the hub never emits coordinators).
+	if stop_ids, stop_ok := bridge_provider_json_extract_string_array(payload, "stop"); stop_ok {
+		defer delete(stop_ids)
+		for id in stop_ids {
+			if strings.trim_space(id) == "" do continue
+			if coordinator_ids[id] do continue
+			if launch, has := bridge_runtime_get_launch(id); has && launch.role == "coordinator" do continue
+			bridge_runtime_stop_agent(id)
+			fmt.println("bridge wake_agent: stopped instance", id)
+		}
+	}
+
+	if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
 }
 
 bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
@@ -773,6 +877,21 @@ bridge_runtime_update_launch_pane :: proc(instance_id, pane_id: string) {
 	for i in 0..<len(bridge_runtime_launches) {
 		if bridge_runtime_launches[i].agent_instance_id == instance_id {
 			bridge_runtime_launches[i].pane_id = strings.clone(pane_id)
+			break
+		}
+	}
+}
+
+// bridge_runtime_set_launch_role stamps the wake_agent action role onto an existing
+// launch record so a later stop[] push can honor the coordinator exemption. No-op if
+// no launch record exists for the instance yet.
+bridge_runtime_set_launch_role :: proc(instance_id, role: string) {
+	if strings.trim_space(instance_id) == "" || strings.trim_space(role) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_runtime_launches) {
+		if bridge_runtime_launches[i].agent_instance_id == instance_id {
+			bridge_runtime_launches[i].role = strings.clone(role)
 			break
 		}
 	}

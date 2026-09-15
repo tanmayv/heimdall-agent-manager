@@ -1216,6 +1216,41 @@ stop_command_json :: proc(command_id, instance_id, reason: string) -> string {
 	return strings.to_string(b)
 }
 
+// Wake_Agent_Run_Entry is one instance the bridge SHOULD have running for a chain:
+// the agent instance, the task it is focused on, and its action role ("worker" or
+// "reviewer"). Coordinators are never emitted (the reconcile pass excludes them).
+Wake_Agent_Run_Entry :: struct {
+	agent_instance_id: string,
+	task_id:           string,
+	role:              string,
+}
+
+// wake_agent_command_json builds the ephemeral-lifecycle push the reconcile pass
+// sends to a bridge (REQ-10): the run[] entries name the non-coordinator agents that
+// should be running (started fresh, or restarted) and stop[] names the agent
+// instances that should be stopped (were running, task no longer actionable). One
+// command is sent per (chain × bridge). Shape:
+//   {"type":"wake_agent","chain_id":"<id>","payload":{"run":[{"agent_instance_id":"..","task_id":"..","role":".."}],"stop":["..",..]}}
+wake_agent_command_json :: proc(chain_id: string, run: []Wake_Agent_Run_Entry, stop: []string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"wake_agent\",\"chain_id\":\""); write_service_json_string(&b, chain_id)
+	strings.write_string(&b, "\",\"payload\":{\"run\":[")
+	for entry, i in run {
+		if i > 0 do strings.write_string(&b, ",")
+		strings.write_string(&b, "{\"agent_instance_id\":\""); write_service_json_string(&b, entry.agent_instance_id)
+		strings.write_string(&b, "\",\"task_id\":\""); write_service_json_string(&b, entry.task_id)
+		strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, entry.role)
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_string(&b, "],\"stop\":[")
+	for id, i in stop {
+		if i > 0 do strings.write_string(&b, ",")
+		strings.write_string(&b, "\""); write_service_json_string(&b, id); strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, "]}}")
+	return strings.to_string(b)
+}
+
 write_service_json_string :: proc(b: ^strings.Builder, value: string) {
 	contracts.write_json_string(b, value)
 }

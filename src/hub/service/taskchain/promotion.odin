@@ -7,6 +7,7 @@ import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
 import project "odin_test:hub/service/project"
+import agent "odin_test:hub/service/agent"
 
 // Auto-promotion ports the ham-daemon task_recompute_promotions behavior into the
 // lean Hub/Bridge split. It runs entirely against durable Hub state on the
@@ -343,7 +344,83 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		notify_task_status_change(service, contracts.Auth_Context{}, saved, chain)
 	}
 
+	// (6) EPHEMERAL LIFECYCLE (REQ-10): push one wake_agent per (chain × bridge) so a
+	// bridge starts/restarts the non-coordinator agents that SHOULD be running for
+	// this chain (those with an actionable focus) and stops the non-coordinator agents
+	// that are live but no longer hold an actionable task. Coordinators are EXEMPT.
+	emit_wake_agent_commands(service, chain, instance_ids[:], focus)
+
 	return promoted
+}
+
+// emit_wake_agent_commands fans out the ephemeral-lifecycle wake_agent push produced
+// by a reconcile pass. For every candidate instance in the chain it decides, from the
+// resolved focus, whether the instance SHOULD be running (has an actionable focus ->
+// run[]) or SHOULD be stopped (no focus but currently live -> stop[]), groups those
+// decisions by bridge, and sends exactly one wake_agent per bridge that has any run or
+// stop entries. Coordinators are never placed in run[] or stop[]. run[] is independent
+// of current runtime_status (a stopped/never-started ephemeral agent must still be
+// started); the live check gates only stop[]. Fire-and-forget: a delivery failure does
+// not fail the reconcile.
+emit_wake_agent_commands :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_ids: []string, focus: map[string]Instance_Focus) {
+	if service.bridge_command_sink.send_runtime_command == nil do return
+	if service.agents == nil do return
+	coordinator_id := chain.coordinator_agent_instance_id
+
+	runs := make(map[string][dynamic]agent.Wake_Agent_Run_Entry)
+	stops := make(map[string][dynamic]string)
+	defer {
+		for _, v in runs do delete(v)
+		delete(runs)
+		for _, v in stops do delete(v)
+		delete(stops)
+	}
+	// Preserve a stable bridge order for deterministic emission.
+	bridge_order := make([dynamic]string)
+	defer delete(bridge_order)
+	seen_bridge := make(map[string]bool)
+	defer delete(seen_bridge)
+	note_bridge := proc(order: ^[dynamic]string, seen: ^map[string]bool, bridge_id: string) {
+		if bridge_id == "" || seen[bridge_id] do return
+		seen[bridge_id] = true
+		append(order, bridge_id)
+	}
+
+	for instance_id in instance_ids {
+		if instance_id == "" || instance_id == coordinator_id do continue
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id)
+		if !inst_ok || inst.bridge_id == "" do continue
+		f := focus[instance_id]
+		if f.task_id != "" {
+			role := "worker"
+			if f.role == .Review do role = "reviewer"
+			entries := runs[inst.bridge_id]
+			append(&entries, agent.Wake_Agent_Run_Entry{agent_instance_id = instance_id, task_id = string(f.task_id), role = role})
+			runs[inst.bridge_id] = entries
+			note_bridge(&bridge_order, &seen_bridge, inst.bridge_id)
+		} else if instance_is_live(inst) {
+			entries := stops[inst.bridge_id]
+			append(&entries, instance_id)
+			stops[inst.bridge_id] = entries
+			note_bridge(&bridge_order, &seen_bridge, inst.bridge_id)
+		}
+	}
+
+	for bridge_id in bridge_order {
+		run_entries := runs[bridge_id]
+		stop_entries := stops[bridge_id]
+		if len(run_entries) == 0 && len(stop_entries) == 0 do continue
+		cmd_id := platform.generate_id(service.ids, "cmd_")
+		body := agent.wake_agent_command_json(string(chain.chain_id), run_entries[:], stop_entries[:])
+		_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id = bridge_id, command_id = cmd_id, body_json = body})
+	}
+}
+
+// instance_is_live reports whether an instance currently has a running process
+// (mirrors the "live" set used by instance_is_idle). Only live instances are eligible
+// for a stop[] push; a stopped/launching instance is left alone.
+instance_is_live :: proc(inst: domain.Agent_Instance) -> bool {
+	return inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy"
 }
 
 // recompute_chain_promotions is kept as an alias so existing call sites compile;
