@@ -1321,6 +1321,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         isOpen={Boolean(launchModalProject)}
         project={launchModalProject}
         onClose={() => setLaunchModalProject(null)}
+        onLaunched={(instanceId) => {
+          setLaunchModalProject(null);
+          window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(instanceId), '');
+        }}
       />
     </div>
   );

@@ -20,6 +20,7 @@ import {
 } from '../../api/endpoints/agents';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
+import { useGetAgentsLiveQuery, type LiveAgent } from '../../api/endpoints/agentsLive';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import {
   normalizeBridgeCapabilities,
@@ -495,6 +496,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // reconfigure invalidates AgentInstances, and the poll below is the backstop.
   const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: instancePollInterval, skipPollingIfUnfocused: true });
   const instance = instanceQuery.data?.instance || null;
+  // Flattened list of currently running agents across all projects/chains, for
+  // the composer's agent-switcher picker. Polled slowly (the picker is a
+  // convenience, not a live surface).
+  const { data: liveProjects } = useGetAgentsLiveQuery(undefined, { pollingInterval: 30000, skipPollingIfUnfocused: true });
+  const liveAgents = useMemo<LiveAgent[]>(
+    () => (liveProjects ?? []).flatMap((p) => p.chains.flatMap((c) => c.liveAgents)),
+    [liveProjects],
+  );
   // Agent identity (name + persona/instructions) — used for the empty-state
   // welcome so a fresh conversation shows who you're talking to.
   const agentIdentityQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
@@ -637,6 +646,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     return () => window.removeEventListener('resize', handleWindowResize);
   }, []);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1307,6 +1317,49 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   function renderComposer() {
+    const agentPickerList = (
+      <div className="max-h-64 overflow-y-auto py-1">
+        {liveAgents.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-zinc-500">No running agents</p>
+        ) : (
+          liveAgents.map((agent) => {
+            const isCurrent = agent.agentInstanceId === agentInstanceId;
+            return (
+              <button
+                key={agent.agentInstanceId}
+                type="button"
+                data-debug-id={`conversation-agent-picker-item-${agent.agentInstanceId}`}
+                className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] hover:bg-white/10 ${
+                  isCurrent ? 'text-sky-400' : 'text-zinc-200'
+                }`}
+                onClick={() => {
+                  setAgentPickerOpen(false);
+                  window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(agent.agentInstanceId), '');
+                }}
+              >
+                <span className="min-w-0 truncate">{agent.displayName || agent.agentInstanceId}</span>
+                {isCurrent && <Icon name="check" size={14} className="ml-auto shrink-0 text-sky-400" />}
+              </button>
+            );
+          })
+        )}
+      </div>
+    );
+    const agentPickerTrigger = (
+      <button
+        type="button"
+        data-debug-id="conversation-agent-picker-btn"
+        aria-label="Current agent — click to switch"
+        title={agentDisplayName || agentInstanceId || 'Agent'}
+        aria-haspopup={isMobile ? 'dialog' : undefined}
+        aria-expanded={isMobile ? (agentPickerOpen ? 'true' : 'false') : undefined}
+        onClick={isMobile ? () => setAgentPickerOpen((open) => !open) : undefined}
+        className="inline-flex h-9 items-center gap-1.5 rounded-xl px-2.5 text-[13px] text-zinc-300 hover:bg-white/10 hover:text-white"
+      >
+        <span className="max-w-[140px] truncate font-medium">{agentDisplayName || agentInstanceId || 'Agent'}</span>
+        <Icon name="chevron-down" size={13} />
+      </button>
+    );
     return (
       <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3">
         {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
@@ -1410,6 +1463,34 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           <div className="mt-1 flex items-center gap-1.5">
             <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white"><Icon name="plus" size={19} /></button>
             <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={requestPaneFromComposer} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"><Icon name="terminal" size={18} /></button>
+
+            <div className="flex-1" />
+
+            {/* Agent chip: shows the current agent's display name, centered
+                between the pane-capture controls and the model switcher. Clicking
+                it opens a picker of all running agents to switch conversations.
+                Desktop uses a Popover; mobile uses a bottom Drawer (matching the
+                runtime menu pattern below). */}
+            {!isMobile ? (
+              <Popover
+                side="top"
+                align="start"
+                label="Switch agent"
+                open={agentPickerOpen}
+                onOpenChange={setAgentPickerOpen}
+                className="w-[min(92vw,320px)]"
+                trigger={agentPickerTrigger}
+              >
+                {agentPickerList}
+              </Popover>
+            ) : (
+              <>
+                {agentPickerTrigger}
+                <Drawer side="bottom" title="Switch agent" open={agentPickerOpen} onOpenChange={setAgentPickerOpen} data-debug-id="conversation-agent-picker-mobile-sheet">
+                  <Drawer.Body>{agentPickerList}</Drawer.Body>
+                </Drawer>
+              </>
+            )}
 
             <div className="flex-1" />
 
