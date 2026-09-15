@@ -11,6 +11,7 @@ import ownership "odin_test:hub/service/ownership"
 import taskchain_service "odin_test:hub/service/taskchain"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
+import agent_service "odin_test:hub/service/agent"
 
 is_valid_json_array :: proc(s: string) -> bool {
 	trimmed := strings.trim_space(s)
@@ -52,6 +53,72 @@ op_arg_string :: proc(obj: json.Object, key: string) -> string {
 		if s, is_s := v.(json.String); is_s do return string(s)
 	}
 	return ""
+}
+
+// validate_card_operations enforces, at CREATE / UPDATE(operations) / ACCEPT time,
+// that every operation is a KNOWN op type carrying its required args. It is the
+// single source of truth for required fields and MUST stay in lockstep with the
+// executor switch in accept_card. Arg resolution goes through op_arg_string (the
+// SAME args.<key> / top-level <key> / id-alias resolution the executor uses) so a
+// card that validates here will not false-fail there. Multiple ops and extra/unknown
+// args are allowed; only missing REQUIRED args and unknown op NAMES are rejected.
+// Returns (true, "") when every op is valid, else (false, "operation N (<op>): ...").
+validate_card_operations :: proc(ops_json: string) -> (bool, string) {
+	trimmed := strings.trim_space(ops_json)
+	if trimmed == "" || trimmed == "[]" do return true, ""
+	val, err := json.parse_string(trimmed)
+	if err != .None do return false, "operations must be a valid JSON array"
+	defer json.destroy_value(val)
+	arr, is_arr := val.(json.Array)
+	if !is_arr do return false, "operations must be a valid JSON array"
+	for elem, idx in arr {
+		op_obj, is_obj := elem.(json.Object)
+		if !is_obj do return false, fmt.tprintf("operation %d: must be a JSON object", idx + 1)
+		op_name := json_obj_string(op_obj, "op")
+		if op_name == "" do return false, fmt.tprintf("operation %d: missing required field \"op\"", idx + 1)
+		if ok, reason := validate_op_required_args(op_name, op_obj); !ok {
+			return false, fmt.tprintf("operation %d (%s): %s", idx + 1, op_name, reason)
+		}
+	}
+	return true, ""
+}
+
+op_field_missing :: proc(field: string) -> string { return fmt.tprintf("missing required field \"%s\"", field) }
+
+// validate_op_required_args holds the per-op required-field rules. Every case here
+// MUST correspond to a case in the accept_card executor switch (and vice versa); an
+// unrecognized op name is rejected so unknown ops are caught at create, not accept.
+validate_op_required_args :: proc(op_name: string, op_obj: json.Object) -> (bool, string) {
+	switch op_name {
+	case "task.vote":
+		if op_arg_string(op_obj, "task_id") == "" do return false, op_field_missing("task_id")
+	case "memory.approve", "memory.reject", "memory.update", "memory.delete", "memory.archive":
+		if op_arg_string(op_obj, "memory_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("memory_id")
+	case "memory.create":
+		if op_arg_string(op_obj, "title") == "" do return false, op_field_missing("title")
+		if op_arg_string(op_obj, "body") == "" do return false, op_field_missing("body")
+	case "task_chain.set_status":
+		if op_arg_string(op_obj, "chain_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("chain_id")
+		if op_arg_string(op_obj, "status") == "" do return false, op_field_missing("status")
+	case "project.update":
+		if op_arg_string(op_obj, "project_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("project_id")
+		if op_arg_string(op_obj, "name") == "" && op_arg_string(op_obj, "description") == "" do return false, "requires at least one of \"name\" or \"description\""
+	case "project.delete":
+		if op_arg_string(op_obj, "project_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("project_id")
+	case "agent.prompt":
+		if op_arg_string(op_obj, "instance_id") == "" && op_arg_string(op_obj, "agent_instance_id") == "" do return false, op_field_missing("instance_id")
+		if op_arg_string(op_obj, "prompt") == "" && op_arg_string(op_obj, "prompt_text") == "" && op_arg_string(op_obj, "body") == "" do return false, op_field_missing("prompt")
+	case "agent.update":
+		if op_arg_string(op_obj, "agent_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("agent_id")
+		if op_arg_string(op_obj, "name") == "" && op_arg_string(op_obj, "slug") == "" && op_arg_string(op_obj, "template_id") == "" && op_arg_string(op_obj, "default_provider") == "" && op_arg_string(op_obj, "default_tier") == "" && op_arg_string(op_obj, "instructions") == "" {
+			return false, "requires at least one updatable field (name/slug/template_id/default_provider/default_tier/instructions)"
+		}
+	case "agent.delete":
+		if op_arg_string(op_obj, "agent_id") == "" && op_arg_string(op_obj, "id") == "" do return false, op_field_missing("agent_id")
+	case:
+		return false, fmt.tprintf("unsupported card operation: %s", op_name)
+	}
+	return true, ""
 }
 
 task_status_str :: proc(st: domain.Task_Status) -> string {
@@ -131,6 +198,7 @@ Card_Service :: struct {
 	taskchains:  ^taskchain_service.Taskchain_Service,
 	content:     ^content_service.Content_Service,
 	project_svc: ^project_service.Project_Service,
+	agents:      ^agent_service.Agent_Service,
 	uow_factory: ^iface.Unit_Of_Work_Factory,
 	clock:       ^platform.Clock,
 	ids:         ^platform.ID_Generator,
@@ -142,6 +210,7 @@ new_card_service :: proc(
 	taskchains:  ^taskchain_service.Taskchain_Service = nil,
 	content:     ^content_service.Content_Service = nil,
 	project_svc: ^project_service.Project_Service = nil,
+	agents:      ^agent_service.Agent_Service = nil,
 	uow_factory: ^iface.Unit_Of_Work_Factory = nil,
 	clock:       ^platform.Clock = nil,
 	ids:         ^platform.ID_Generator = nil,
@@ -152,6 +221,7 @@ new_card_service :: proc(
 		taskchains  = taskchains,
 		content     = content,
 		project_svc = project_svc,
+		agents      = agents,
 		uow_factory = uow_factory,
 		clock       = clock,
 		ids         = ids,
@@ -190,6 +260,11 @@ create_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, input: Card_
 		ops = "[]"
 	} else if !is_valid_json_array(ops) {
 		return domain.Card{}, false, domain.domain_error(.Validation_Failed, "operations must be a valid JSON array")
+	}
+	// Validate every operation carries its required args (and is a known op) up front,
+	// so a card that would fail on accept is rejected at create with a clear message.
+	if ops_ok, ops_reason := validate_card_operations(ops); !ops_ok {
+		return domain.Card{}, false, domain.domain_error(.Validation_Failed, ops_reason)
 	}
 
 	guard := input.guard_json
@@ -448,6 +523,42 @@ evaluate_guard :: proc(s: ^Card_Service, owner: domain.User_ID, card: domain.Car
 		}
 	}
 
+	// Agent / project guards (for agent.update / agent.delete / project.delete cards).
+	// A card whose target no longer exists, changed owner, or (via expected_state)
+	// has already been archived is stale: it drops from list and accept returns 409.
+	expected_state := json_obj_string(obj, "expected_state")
+	guard_auth := contracts.Auth_Context{kind = .User_Token, user_id = string(owner)}
+
+	agent_id := json_obj_string(obj, "agent_id")
+	if agent_id != "" {
+		if s.agents == nil do return false, "agent service not configured"
+		agent, agent_ok, _ := agent_service.get_agent(s.agents, guard_auth, agent_id)
+		if !agent_ok {
+			return false, "referenced agent does not exist"
+		}
+		if expected_state != "" {
+			actual_state := domain.agent_state_string(agent.state)
+			if actual_state != expected_state {
+				return false, fmt.tprintf("agent state is %s, expected %s", actual_state, expected_state)
+			}
+		}
+	}
+
+	guard_project_id := json_obj_string(obj, "project_id")
+	if guard_project_id != "" {
+		if s.project_svc == nil do return false, "project service not configured"
+		project, project_ok, _ := project_service.get(s.project_svc, guard_auth, domain.Project_ID(guard_project_id))
+		if !project_ok {
+			return false, "referenced project does not exist"
+		}
+		if expected_state != "" {
+			actual_state := domain.project_state_string(project.state)
+			if actual_state != expected_state {
+				return false, fmt.tprintf("project state is %s, expected %s", actual_state, expected_state)
+			}
+		}
+	}
+
 	return true, ""
 }
 
@@ -585,6 +696,9 @@ update_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 		if !is_valid_json_array(input.operations_json) {
 			return domain.Card{}, false, domain.domain_error(.Validation_Failed, "operations must be a valid JSON array")
 		}
+		if ops_ok, ops_reason := validate_card_operations(input.operations_json); !ops_ok {
+			return domain.Card{}, false, domain.domain_error(.Validation_Failed, ops_reason)
+		}
 		card.operations_json = input.operations_json
 	}
 	if input.has_guard {
@@ -646,6 +760,12 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 
 	if card.status != domain.CARD_STATUS_PENDING && card.status != domain.CARD_STATUS_SNOOZED {
 		return domain.Card{}, false, domain.domain_error(.Conflict, fmt.tprintf("card cannot be accepted in status '%s'", card.status))
+	}
+
+	// Defense-in-depth: validate operations before doing any work (also guards rows
+	// created before create-time validation existed).
+	if ops_ok, ops_reason := validate_card_operations(card.operations_json); !ops_ok {
+		return domain.Card{}, false, domain.domain_error(.Validation_Failed, ops_reason)
 	}
 
 	// Re-check guard against live state
@@ -864,6 +984,63 @@ accept_card :: proc(s: ^Card_Service, auth: contracts.Auth_Context, id: domain.C
 			if !snd_ok {
 				if has_uow do iface.unit_of_work_rollback(&uow)
 				return domain.Card{}, false, snd_err
+			}
+
+		case "agent.update":
+			aid := op_arg_string(op_obj, "agent_id")
+			if aid == "" do aid = op_arg_string(op_obj, "id")
+			if s.agents == nil {
+				if has_uow do iface.unit_of_work_rollback(&uow)
+				return domain.Card{}, false, domain.domain_error(.Internal_Error, "agent service is not configured")
+			}
+			name := op_arg_string(op_obj, "name")
+			slug := op_arg_string(op_obj, "slug")
+			template_id := op_arg_string(op_obj, "template_id")
+			provider := op_arg_string(op_obj, "default_provider")
+			tier := op_arg_string(op_obj, "default_tier")
+			instructions := op_arg_string(op_obj, "instructions")
+			_, au_ok, au_err := agent_service.update_agent(s.agents, user_auth, aid, agent_service.Create_Agent_Input{
+				name                 = name,
+				slug                 = slug,
+				template_id          = template_id,
+				has_template_id      = template_id != "",
+				default_provider     = provider,
+				has_default_provider = provider != "",
+				default_tier         = tier,
+				has_default_tier     = tier != "",
+				instructions         = instructions,
+			})
+			if !au_ok {
+				if has_uow do iface.unit_of_work_rollback(&uow)
+				return domain.Card{}, false, au_err
+			}
+
+		case "agent.delete":
+			aid := op_arg_string(op_obj, "agent_id")
+			if aid == "" do aid = op_arg_string(op_obj, "id")
+			if s.agents == nil {
+				if has_uow do iface.unit_of_work_rollback(&uow)
+				return domain.Card{}, false, domain.domain_error(.Internal_Error, "agent service is not configured")
+			}
+			// SOFT delete: archive_agent sets state=Archived (never removes the row).
+			_, ad_ok, ad_err := agent_service.archive_agent(s.agents, user_auth, aid)
+			if !ad_ok {
+				if has_uow do iface.unit_of_work_rollback(&uow)
+				return domain.Card{}, false, ad_err
+			}
+
+		case "project.delete":
+			pid := op_arg_string(op_obj, "project_id")
+			if pid == "" do pid = op_arg_string(op_obj, "id")
+			if s.project_svc == nil {
+				if has_uow do iface.unit_of_work_rollback(&uow)
+				return domain.Card{}, false, domain.domain_error(.Internal_Error, "project service is not configured")
+			}
+			// SOFT delete: archive_project sets state=Archived (never removes the row).
+			_, pd_ok, pd_err := project_service.archive_project(s.project_svc, user_auth, domain.Project_ID(pid))
+			if !pd_ok {
+				if has_uow do iface.unit_of_work_rollback(&uow)
+				return domain.Card{}, false, pd_err
 			}
 
 		case:

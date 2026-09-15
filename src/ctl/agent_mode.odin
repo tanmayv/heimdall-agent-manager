@@ -606,6 +606,34 @@ ctl_agentmode_cards_create_params :: proc(title: string, args: []string) -> stri
 	return json_object_from_slice(fields[:])
 }
 
+// cards_op_arg pulls a string arg from an operation object, checking args.<key>
+// then a top-level <key> (mirrors the hub's op_arg_string / the UI's getArg).
+cards_op_arg :: proc(op_item: json.Object, key: string) -> string {
+	if args, ok := op_item["args"].(json.Object); ok {
+		if v, ok2 := args[key].(json.String); ok2 do return string(v)
+	}
+	if v, ok := op_item[key].(json.String); ok do return string(v)
+	return ""
+}
+
+// cards_op_fallback_label derives a friendly CLI label for the ops that need one
+// when a card omits the per-op `label` (parity with the UI's formatOpLabel). Returns
+// "" for ops it doesn't special-case, so the caller falls back to the raw op name.
+cards_op_fallback_label :: proc(op_name: string, op_item: json.Object) -> string {
+	switch op_name {
+	case "agent.update":
+		id := cards_op_arg(op_item, "agent_id"); if id == "" do id = cards_op_arg(op_item, "id")
+		return fmt.tprintf("Edit agent %s", id) if id != "" else "Edit agent"
+	case "agent.delete":
+		id := cards_op_arg(op_item, "agent_id"); if id == "" do id = cards_op_arg(op_item, "id")
+		return fmt.tprintf("Archive agent %s", id) if id != "" else "Archive agent"
+	case "project.delete":
+		id := cards_op_arg(op_item, "project_id"); if id == "" do id = cards_op_arg(op_item, "id")
+		return fmt.tprintf("Archive project %s", id) if id != "" else "Archive project"
+	}
+	return ""
+}
+
 render_human_card :: proc(body: string) {
 	val, err := json.parse(transmute([]byte)body)
 	if err != .None {
@@ -695,6 +723,7 @@ render_human_card :: proc(body: string) {
 			}
 			label := ""
 			if s, ok2 := op_item["label"].(json.String); ok2 do label = string(s)
+			if label == "" do label = cards_op_fallback_label(op_name, op_item)
 
 			if label != "" && op_name != "" {
 				fmt.printfln("  %d. %s [%s]", idx + 1, label, op_name)
@@ -1220,6 +1249,25 @@ print_help_cards :: proc() {
 	fmt.println("      [--operations <json>] [--guard <json>]")
 	fmt.println("  discard <card-id>                   Discard a card without executing operations.")
 	fmt.println("  accept  <card-id>                   Accept card and atomically execute all operations.")
+	fmt.println("")
+	fmt.println("  (agent mode has no reject/snooze — those are hub/user mode only.)")
+	fmt.println("")
+	fmt.println("OPERATIONS  (a card's operation types; each carries a human `label` shown in the dashboard)")
+	fmt.println("  task.vote               Cast a review vote on a task (default lgtm).")
+	fmt.println("  memory.approve          Approve a pending memory proposal.")
+	fmt.println("  memory.reject           Reject a pending memory proposal.")
+	fmt.println("  memory.create           Create a new durable memory.")
+	fmt.println("  memory.update           Edit an existing memory's fields.")
+	fmt.println("  memory.delete           Archive (soft-delete) a memory.  (alias: memory.archive)")
+	fmt.println("  project.update          Edit a project's name/description.")
+	fmt.println("  project.delete          Archive (soft-delete) a project.")
+	fmt.println("  task_chain.set_status   Change a task chain's status.")
+	fmt.println("  agent.prompt            Send a prompt/message to an agent instance's conversation.")
+	fmt.println("  agent.update            Edit a durable agent's fields (name/provider/tier/instructions/...).")
+	fmt.println("  agent.delete            Archive (soft-delete) a durable agent.")
+	fmt.println("")
+	fmt.println("  Operations run ATOMICALLY (all-or-nothing) only when a card is ACCEPTED; a single")
+	fmt.println("  card may bundle several, and accepting executes them in order under your authority.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl cards list")

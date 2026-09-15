@@ -60,6 +60,26 @@ create_in_validation_task :: proc(router: ^api_http.Router, chain_id, body: stri
 	return tid
 }
 
+// create_card_via_api POSTs a user card with the given operations + guard JSON and
+// returns the new card_id (asserts 201). operations_json/guard_json are raw JSON.
+create_card_via_api :: proc(router: ^api_http.Router, title, operations_json, guard_json: string, headers: []contracts.HTTP_Header, tag: string) -> string {
+	body := strings.concatenate({"{\"title\":\"", title, "\",\"operations\":", operations_json, ",\"guard\":", guard_json, "}"})
+	resp := api_http.router_dispatch(router, api_http.Request{
+		method = "POST", path = "/api/v1/cards", body = body,
+		request_id = fmt.tprintf("req_%s_create", tag), remote_addr = "127.0.0.1", headers = headers,
+	})
+	check(resp.status == 201, fmt.tprintf("%s: create card failed: %d %s", tag, resp.status, resp.body))
+	return extract_json_string(resp.body, "card_id")
+}
+
+// accept_card_via_api accepts a card by id and returns the raw response.
+accept_card_via_api :: proc(router: ^api_http.Router, card_id: string, headers: []contracts.HTTP_Header, tag: string) -> api_http.Response {
+	return api_http.router_dispatch(router, api_http.Request{
+		method = "POST", path = strings.concatenate({"/api/v1/cards/", card_id, "/accept"}), body = "{}",
+		request_id = fmt.tprintf("req_%s_accept", tag), remote_addr = "127.0.0.1", headers = headers,
+	})
+}
+
 main :: proc() {
 	db_path := "/tmp/cards_api_test.db"
 	_ = os.remove(db_path)
@@ -119,7 +139,7 @@ main :: proc() {
 	check(resp_bad_guard.status == 400, "non-object guard must return 400")
 
 	// 4. Create valid card
-	create_body := "{\"title\":\"Review auth module\",\"rationale\":\"Auth token expiry logic needs audit\",\"scope\":\"project\",\"provider\":\"curator\",\"confidence\":0.85,\"operations\":[{\"type\":\"task.create\",\"params\":{\"title\":\"Audit auth token\"}}],\"guard\":{\"chain_idle\":true}}"
+	create_body := "{\"title\":\"Review auth module\",\"rationale\":\"Auth token expiry logic needs audit\",\"scope\":\"project\",\"provider\":\"curator\",\"confidence\":0.85,\"operations\":[{\"op\":\"memory.create\",\"label\":\"Audit auth token\",\"args\":{\"title\":\"Audit auth token\",\"body\":\"Auth token expiry logic needs audit\"}}],\"guard\":{\"chain_idle\":true}}"
 	resp_create := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
 		path = "/api/v1/cards",
@@ -308,7 +328,7 @@ main :: proc() {
 	agent_create_resp := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
 		path = "/api/v1/agent-actions/cards/create",
-		body = "{\"agent_instance_id\":\"inst_curator_1\",\"params\":{\"title\":\"Agent created card\",\"operations\":[{\"type\":\"task.create\",\"params\":{\"title\":\"Subtask\"}}]}}",
+		body = "{\"agent_instance_id\":\"inst_curator_1\",\"params\":{\"title\":\"Agent created card\",\"operations\":[{\"op\":\"memory.create\",\"label\":\"Create subtask memory\",\"args\":{\"title\":\"Subtask\",\"body\":\"Agent created card\"}}]}}",
 		request_id = "req_agt_create",
 		remote_addr = "127.0.0.1",
 		headers = agent_headers[:],
@@ -544,6 +564,152 @@ main :: proc() {
 		body = "{}", request_id = "req_accept_norev_stale", remote_addr = "127.0.0.1", headers = alice[:],
 	})
 	check(resp_accept_norev.status == 409, fmt.tprintf("accepting stale (now agent-reviewed) task card must return 409, got %d", resp_accept_norev.status))
+
+	// =========================================================================
+	// 15c. REQ-CARDOP-1: agent.update / agent.delete / project.delete executor ops.
+	// Proposal semantics: nothing mutates until accept; accept is atomic; delete==soft.
+	// =========================================================================
+
+	// --- agent.update: accepting the card edits the durable agent ---
+	resp_au_agent := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/agents", body = "{\"name\":\"AU Agent\",\"slug\":\"au-agent\"}",
+		request_id = "req_au_agent", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(resp_au_agent.status == 201, fmt.tprintf("create au agent: %d %s", resp_au_agent.status, resp_au_agent.body))
+	au_agent_id := extract_json_string(resp_au_agent.body, "agent_id")
+	au_ops := strings.concatenate({"[{\"op\":\"agent.update\",\"label\":\"Edit agent\",\"args\":{\"agent_id\":\"", au_agent_id, "\",\"name\":\"AU Renamed\",\"default_tier\":\"smart\"}}]"})
+	au_card := create_card_via_api(&graph.router, "Update agent", au_ops, "{}", alice[:], "au")
+	au_accept := accept_card_via_api(&graph.router, au_card, alice[:], "au")
+	check(au_accept.status == 200, fmt.tprintf("accept agent.update card: %d %s", au_accept.status, au_accept.body))
+	au_after := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = strings.concatenate({"/api/v1/agents/", au_agent_id}), request_id = "req_au_after", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(au_after.status == 200 && strings.contains(au_after.body, "\"name\":\"AU Renamed\""), fmt.tprintf("agent.update must rename agent: %s", au_after.body))
+	check(strings.contains(au_after.body, "\"default_tier\":\"smart\""), "agent.update must update default_tier")
+
+	// --- agent.delete: accepting soft-archives the durable agent (state=archived) ---
+	resp_ad_agent := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/agents", body = "{\"name\":\"AD Agent\",\"slug\":\"ad-agent\"}",
+		request_id = "req_ad_agent", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(resp_ad_agent.status == 201, fmt.tprintf("create ad agent: %d %s", resp_ad_agent.status, resp_ad_agent.body))
+	ad_agent_id := extract_json_string(resp_ad_agent.body, "agent_id")
+	ad_ops := strings.concatenate({"[{\"op\":\"agent.delete\",\"label\":\"Archive agent\",\"args\":{\"agent_id\":\"", ad_agent_id, "\"}}]"})
+	ad_guard := strings.concatenate({"{\"agent_id\":\"", ad_agent_id, "\",\"expected_state\":\"active\"}"})
+	ad_card := create_card_via_api(&graph.router, "Archive agent", ad_ops, ad_guard, alice[:], "ad")
+	ad_accept := accept_card_via_api(&graph.router, ad_card, alice[:], "ad")
+	check(ad_accept.status == 200, fmt.tprintf("accept agent.delete card: %d %s", ad_accept.status, ad_accept.body))
+	ad_after := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = strings.concatenate({"/api/v1/agents/", ad_agent_id}), request_id = "req_ad_after", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(ad_after.status == 200 && strings.contains(ad_after.body, "\"state\":\"archived\""), fmt.tprintf("agent.delete must archive agent: %s", ad_after.body))
+
+	// --- project.delete: accepting soft-archives the project (state=archived) ---
+	resp_pd_proj := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/projects", body = "{\"name\":\"PD Project\",\"slug\":\"pd-project\",\"default_path\":\"/tmp/pd-project\"}",
+		request_id = "req_pd_proj", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(resp_pd_proj.status == 201, fmt.tprintf("create pd project: %d %s", resp_pd_proj.status, resp_pd_proj.body))
+	pd_project_id := extract_json_string(resp_pd_proj.body, "project_id")
+	pd_ops := strings.concatenate({"[{\"op\":\"project.delete\",\"label\":\"Archive project\",\"args\":{\"project_id\":\"", pd_project_id, "\"}}]"})
+	pd_guard := strings.concatenate({"{\"project_id\":\"", pd_project_id, "\",\"expected_state\":\"active\"}"})
+	pd_card := create_card_via_api(&graph.router, "Archive project", pd_ops, pd_guard, alice[:], "pd")
+	pd_accept := accept_card_via_api(&graph.router, pd_card, alice[:], "pd")
+	check(pd_accept.status == 200, fmt.tprintf("accept project.delete card: %d %s", pd_accept.status, pd_accept.body))
+	pd_after := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = strings.concatenate({"/api/v1/projects/", pd_project_id}), request_id = "req_pd_after", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(pd_after.status == 200 && strings.contains(pd_after.body, "\"state\":\"archived\""), fmt.tprintf("project.delete must archive project: %s", pd_after.body))
+
+	// --- guard staleness: a project.delete card whose target is ALREADY archived is
+	//     stale (expected_state active != archived) => dropped from list + accept 409 ---
+	stale_ops := pd_ops // same op targeting the now-archived project
+	stale_card := create_card_via_api(&graph.router, "Archive project (stale)", stale_ops, pd_guard, alice[:], "pdstale")
+	stale_list := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = "/api/v1/cards", query = "status=pending", request_id = "req_pdstale_list", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(stale_list.status == 200 && !strings.contains(stale_list.body, stale_card), "stale project.delete card (target already archived) must drop from pending list")
+	stale_accept := accept_card_via_api(&graph.router, stale_card, alice[:], "pdstale")
+	check(stale_accept.status == 409, fmt.tprintf("accepting stale project.delete card must return 409, got %d", stale_accept.status))
+
+	// --- atomicity: a multi-op card whose LATER op fails must roll back the earlier op ---
+	resp_atom_agent := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/agents", body = "{\"name\":\"Atom Agent\",\"slug\":\"atom-agent\"}",
+		request_id = "req_atom_agent", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(resp_atom_agent.status == 201, fmt.tprintf("create atom agent: %d %s", resp_atom_agent.status, resp_atom_agent.body))
+	atom_agent_id := extract_json_string(resp_atom_agent.body, "agent_id")
+	// op1 renames the agent (valid); op2 archives a non-existent project (fails) => rollback.
+	atom_ops := strings.concatenate({"[{\"op\":\"agent.update\",\"args\":{\"agent_id\":\"", atom_agent_id, "\",\"name\":\"Atom RENAMED\"}},{\"op\":\"project.delete\",\"args\":{\"project_id\":\"proj_missing_atom\"}}]"})
+	atom_card := create_card_via_api(&graph.router, "Atomic multi-op", atom_ops, "{}", alice[:], "atom")
+	atom_accept := accept_card_via_api(&graph.router, atom_card, alice[:], "atom")
+	check(atom_accept.status != 200, fmt.tprintf("multi-op card with a failing op must NOT succeed, got %d", atom_accept.status))
+	atom_after := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET", path = strings.concatenate({"/api/v1/agents/", atom_agent_id}), request_id = "req_atom_after", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(atom_after.status == 200 && !strings.contains(atom_after.body, "Atom RENAMED"), fmt.tprintf("earlier op must roll back when a later op fails: %s", atom_after.body))
+	check(strings.contains(atom_after.body, "\"name\":\"Atom Agent\""), "rolled-back agent must keep its original name")
+
+	// =========================================================================
+	// 15e. REQ-CARD-VALIDATE-1: required-param validation at CREATE time. Missing
+	// required args (or unknown op names) are rejected up front (400), not lazily at
+	// accept. Multiple ops and extra args stay allowed.
+	// =========================================================================
+
+	// 1. memory.create missing body -> rejected at create; error names op + field.
+	val_mc := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/cards",
+		body = "{\"title\":\"Bad memory card\",\"operations\":[{\"op\":\"memory.create\",\"args\":{\"title\":\"Only a title\"}}]}",
+		request_id = "req_val_mc", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(val_mc.status == 400, fmt.tprintf("memory.create missing body must be rejected at create, got %d %s", val_mc.status, val_mc.body))
+	check(strings.contains(val_mc.body, "memory.create") && strings.contains(val_mc.body, "body"), fmt.tprintf("error must name the op and the missing field: %s", val_mc.body))
+
+	// 2a. agent.update missing agent_id -> rejected.
+	val_au_bad := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/cards",
+		body = "{\"title\":\"Bad agent update\",\"operations\":[{\"op\":\"agent.update\",\"args\":{\"name\":\"New\"}}]}",
+		request_id = "req_val_au_bad", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(val_au_bad.status == 400 && strings.contains(val_au_bad.body, "agent_id"), fmt.tprintf("agent.update missing agent_id must be rejected: %d %s", val_au_bad.status, val_au_bad.body))
+	// 2b. agent.update with agent_id + one field -> accepted at create (201).
+	val_au_ok := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/cards",
+		body = "{\"title\":\"Good agent update\",\"operations\":[{\"op\":\"agent.update\",\"args\":{\"agent_id\":\"agt_example\",\"name\":\"Renamed\"}}]}",
+		request_id = "req_val_au_ok", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(val_au_ok.status == 201, fmt.tprintf("agent.update with agent_id + a field must be accepted at create: %d %s", val_au_ok.status, val_au_ok.body))
+
+	// 3a. project.update with project_id but no name/description -> rejected.
+	val_pu_bad := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/cards",
+		body = "{\"title\":\"Bad project update\",\"operations\":[{\"op\":\"project.update\",\"args\":{\"project_id\":\"proj_example\"}}]}",
+		request_id = "req_val_pu_bad", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(val_pu_bad.status == 400 && strings.contains(val_pu_bad.body, "project.update"), fmt.tprintf("project.update with no name/description must be rejected: %d %s", val_pu_bad.status, val_pu_bad.body))
+	// 3b. project.update with a field -> accepted.
+	val_pu_ok := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/cards",
+		body = "{\"title\":\"Good project update\",\"operations\":[{\"op\":\"project.update\",\"args\":{\"project_id\":\"proj_example\",\"name\":\"Renamed\"}}]}",
+		request_id = "req_val_pu_ok", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(val_pu_ok.status == 201, fmt.tprintf("project.update with a field must be accepted at create: %d %s", val_pu_ok.status, val_pu_ok.body))
+
+	// 4. unknown op name -> rejected at create.
+	val_unknown := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/cards",
+		body = "{\"title\":\"Unknown op\",\"operations\":[{\"op\":\"frobnicate.everything\",\"args\":{}}]}",
+		request_id = "req_val_unknown", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(val_unknown.status == 400 && strings.contains(val_unknown.body, "unsupported card operation"), fmt.tprintf("unknown op must be rejected at create: %d %s", val_unknown.status, val_unknown.body))
+
+	// 5. A well-formed multi-op card still creates successfully (no regression).
+	val_multi := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST", path = "/api/v1/cards",
+		body = "{\"title\":\"Valid multi-op\",\"operations\":[{\"op\":\"memory.create\",\"args\":{\"title\":\"A\",\"body\":\"B\"}},{\"op\":\"agent.delete\",\"args\":{\"agent_id\":\"agt_example\"}}]}",
+		request_id = "req_val_multi", remote_addr = "127.0.0.1", headers = alice[:],
+	})
+	check(val_multi.status == 201, fmt.tprintf("well-formed multi-op card must still create: %d %s", val_multi.status, val_multi.body))
 
 	// =========================================================================
 	// 16. Deterministic memory-proposal card projection and out-of-band approval drop

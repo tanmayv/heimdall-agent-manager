@@ -526,6 +526,106 @@ main :: proc() {
 	run_agent_msg_id := extract_json_string(run_agent_resp.body, "message_id")
 	check(run_agent_msg_id != "", "message_id in run-now agent response")
 
+	// ==========================================
+	// Test 9f: Instance strategy (REQ-SCHED-2) — fresh_per_run opt-in + validation
+	// ==========================================
+	// 9f-i. Default: an agent-targeted action with no instance_strategy defaults to "reuse".
+	strat_default_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"default strategy\",\"cron_expr\":\"0 9 * * 1-5\"}"})
+	defer delete(strat_default_body)
+	strat_default_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = strat_default_body,
+		request_id = "req_strat_default",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_default_resp.status == 201, fmt.tprintf("create default-strategy action failed: %s", strat_default_resp.body))
+	check(strings.contains(strat_default_resp.body, "\"instance_strategy\":\"reuse\""), fmt.tprintf("default instance_strategy must be reuse: %s", strat_default_resp.body))
+
+	// 9f-ii. Opt-in: fresh_per_run persists through create and GET.
+	strat_fresh_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"fresh strategy\",\"cron_expr\":\"0 9 * * 1-5\",\"instance_strategy\":\"fresh_per_run\"}"})
+	defer delete(strat_fresh_body)
+	strat_fresh_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = strat_fresh_body,
+		request_id = "req_strat_fresh",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_fresh_resp.status == 201, fmt.tprintf("create fresh_per_run action failed: %s", strat_fresh_resp.body))
+	strat_fresh_id := extract_json_string(strat_fresh_resp.body, "id")
+	check(strat_fresh_id != "", "fresh_per_run action id must not be empty")
+	check(strings.contains(strat_fresh_resp.body, "\"instance_strategy\":\"fresh_per_run\""), fmt.tprintf("fresh_per_run must be in create response: %s", strat_fresh_resp.body))
+
+	strat_get_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = fmt.tprintf("/api/v1/actions/%s", strat_fresh_id),
+		request_id = "req_strat_get",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_get_resp.status == 200, fmt.tprintf("get fresh_per_run action failed: %s", strat_get_resp.body))
+	check(strings.contains(strat_get_resp.body, "\"instance_strategy\":\"fresh_per_run\""), "fresh_per_run must persist through GET")
+
+	// 9f-iii. Invalid strategy value is rejected (400), no action created.
+	strat_bad_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"bad strategy\",\"instance_strategy\":\"bogus\"}"})
+	defer delete(strat_bad_body)
+	strat_bad_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = strat_bad_body,
+		request_id = "req_strat_bad",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_bad_resp.status == 400, fmt.tprintf("invalid instance_strategy must be 400, got %d: %s", strat_bad_resp.status, strat_bad_resp.body))
+
+	// 9f-iv. PATCH can flip strategy, and validates the new value.
+	strat_patch_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/actions/%s", strat_fresh_id),
+		body = "{\"instance_strategy\":\"reuse\"}",
+		request_id = "req_strat_patch",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_patch_resp.status == 200, fmt.tprintf("patch instance_strategy failed: %s", strat_patch_resp.body))
+	check(strings.contains(strat_patch_resp.body, "\"instance_strategy\":\"reuse\""), "patch flips strategy back to reuse")
+
+	strat_patch_bad_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/actions/%s", strat_fresh_id),
+		body = "{\"instance_strategy\":\"nope\"}",
+		request_id = "req_strat_patch_bad",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_patch_bad_resp.status == 400, fmt.tprintf("patch invalid instance_strategy must be 400, got %d: %s", strat_patch_bad_resp.status, strat_patch_bad_resp.body))
+
+	// 9f-v. Bridge execute persists last_spawned_instance_id (fresh_per_run reaping bookkeeping).
+	fresh_exec_rec, _, _ := graph.repos.actions.get(graph.repos.actions.ctx, domain.Action_ID(strat_fresh_id))
+	fresh_exec_rec.target_run_at = "2020-01-01T00:00:00Z"
+	fresh_exec_rec.in_flight = false
+	fresh_exec_rec.state = .Active
+	_, _, _ = graph.repos.actions.save(graph.repos.actions.ctx, fresh_exec_rec)
+
+	fresh_exec_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", strat_fresh_id),
+		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\",\"last_spawned_instance_id\":\"inst_ac_1\"}",
+		request_id = "req_fresh_exec",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(fresh_exec_resp.status == 200, fmt.tprintf("bridge execute fresh action failed: %s", fresh_exec_resp.body))
+	check(strings.contains(fresh_exec_resp.body, "\"last_spawned_instance_id\":\"inst_ac_1\""), "execute response carries persisted last_spawned_instance_id")
+
+	fresh_after_rec, fresh_after_ok, _ := graph.repos.actions.get(graph.repos.actions.ctx, domain.Action_ID(strat_fresh_id))
+	check(fresh_after_ok, "fresh action still present after execute")
+	check(string(fresh_after_rec.last_spawned_instance_id) == "inst_ac_1", "last_spawned_instance_id persisted on the action row")
+
 	// 10. Security & Bridge Auth Isolation Tests — 10a–10g asserted under ENFORCE mode.
 	graph.auth.bridge_auth_mode = .Enforce
 	// 10a. Negative Test: Bare hbr_ token REJECTED on user endpoint (GET /api/v1/task-chains)

@@ -232,15 +232,10 @@ list_chains :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -
 	if !ok do return nil, err
 	chains, list_err := iface.taskchain_list_chains_by_owner(service.repo, owner)
 	if list_err.code != .None do return nil, list_err
-	if auth.kind == .Instance_Token {
-		filtered := make([dynamic]domain.Task_Chain)
-		for c in chains {
-			if is_instance_member_or_coordinator(service, c, auth.agent_instance_id) {
-				append(&filtered, c)
-			}
-		}
-		return filtered[:], domain.Domain_Error{}
-	}
+	// READ (REQ-SEC-3): owner-scoped, not membership-scoped. Both User_Token and
+	// Instance_Token see ALL chains of their owner; an agent may list (and then
+	// read) chains it is not a member of, as long as they belong to the same owner.
+	// owner_from_auth above already guarantees cross-owner isolation.
 	return chains, domain.Domain_Error{}
 }
 
@@ -270,8 +265,23 @@ get_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, cha
 	return chain, true, domain.Domain_Error{}
 }
 
+// get_chain_for_read (REQ-SEC-3): the READ-ONLY authorizer. It enforces ONLY
+// ownership (require_owner) — an Instance_Token may read ANY chain of its own
+// owner, even one it does not belong to (e.g. the Curator or a worker inspecting
+// another coordinator's chain). It deliberately DROPS the membership check that
+// get_chain applies; owner isolation is untouched (cross-owner still 404s via
+// require_owner). WRITES must NOT use this — they call the membership-gated
+// get_chain (plus their own coordinator/assignee guards).
+get_chain_for_read :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	chain, ok, err := iface.taskchain_get_chain(service.repo, chain_id)
+	if !ok do return domain.Task_Chain{}, false, err
+	if owner_ok, owner_err := ownership.require_owner(auth, chain.owner_user_id); !owner_ok do return domain.Task_Chain{}, false, owner_err
+	return chain, true, domain.Domain_Error{}
+}
+
 list_tasks :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task, domain.Domain_Error) {
-	chain, ok, err := get_chain(service, auth, chain_id)
+	// READ: owner-scoped, not membership-scoped (REQ-SEC-3).
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 }
@@ -513,8 +523,17 @@ valid_chain_transition :: proc(current, next: domain.Task_Chain_Status) -> bool 
 }
 
 create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Create_Task_Input) -> (domain.Task, bool, domain.Domain_Error) {
-	chain, ok, err := get_chain(service, auth, input.chain_id)
+	// WRITE. REQ-SEC-3 (close the create_task hole): fetch owner-scoped, then
+	// enforce membership EXPLICITLY here. create_task previously relied entirely on
+	// the shared get_chain gate; making the membership check local and independent
+	// keeps task creation restricted to chain members/coordinator regardless of how
+	// the read gate evolves. Cross-owner is rejected as Not_Found by get_chain_for_read
+	// (require_owner); a same-owner non-member is rejected as Forbidden below.
+	chain, ok, err := get_chain_for_read(service, auth, input.chain_id)
 	if !ok do return domain.Task{}, false, err
+	if auth.kind == .Instance_Token && !is_instance_member_or_coordinator(service, chain, auth.agent_instance_id) {
+		return domain.Task{}, false, domain.domain_error(.Forbidden, "only a member or coordinator of the chain can create tasks")
+	}
 	requested_owner := domain.User_ID(input.owner_user_id)
 	if requested_owner == "" do requested_owner = chain.owner_user_id
 	if same_ok, same_err := ownership.require_same_owner(chain.owner_user_id, requested_owner); !same_ok do return domain.Task{}, false, same_err
@@ -883,7 +902,8 @@ create_comment :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context
 }
 
 list_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
 }
@@ -1635,7 +1655,8 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 }
 
 list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
 }
@@ -1643,7 +1664,8 @@ list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 // task_comment_summary returns the compact comment rollup (count + last comment
 // metadata + preview) for embedding on task objects. Owner-scoped via get_task.
 task_comment_summary :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> (domain.Task_Comment_Summary, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return domain.Task_Comment_Summary{}, err
 	return iface.taskchain_comment_summary_by_task(service.repo, task.task_id, task.owner_user_id)
 }
@@ -1651,7 +1673,8 @@ task_comment_summary :: proc(service: ^Taskchain_Service, auth: contracts.Auth_C
 // list_recent_task_comments returns the newest `last` comments (ascending), or
 // all when last <= 0. Owner-scoped via get_task.
 list_recent_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, last: int) -> ([]domain.Task_Comment, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_recent_comments_by_task(service.repo, task.task_id, task.owner_user_id, last)
 }
@@ -1785,7 +1808,8 @@ remove_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 }
 
 list_chain_members :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Member, domain.Domain_Error) {
-	chain, ok, err := get_chain(service, auth, chain_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 }
@@ -1851,7 +1875,8 @@ remove_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 }
 
 list_chain_dependencies :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Dependency, domain.Domain_Error) {
-	chain, ok, err := get_chain(service, auth, chain_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_dependencies_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 }
@@ -2030,7 +2055,8 @@ count_required_reviewers :: proc(reviewer_refs_json: string) -> int {
 }
 
 list_task_votes :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Vote, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_votes_by_task(service.repo, task.task_id, task.owner_user_id)
 }
@@ -2058,6 +2084,18 @@ get_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task
 			return domain.Task{}, false, domain.domain_error(.Forbidden, "agent instance is not a member or coordinator of this task's chain")
 		}
 	}
+	return task, true, domain.Domain_Error{}
+}
+
+// get_task_for_read (REQ-SEC-3): the READ-ONLY task authorizer. Enforces ONLY
+// ownership (require_owner) — an Instance_Token may read ANY task of its own
+// owner regardless of chain membership. It drops the membership check that
+// get_task applies. Owner isolation is preserved (cross-owner still 404s).
+// WRITES must NOT use this — they call the membership-gated get_task.
+get_task_for_read :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> (domain.Task, bool, domain.Domain_Error) {
+	task, ok, err := iface.taskchain_get_task(service.repo, task_id)
+	if !ok do return domain.Task{}, false, err
+	if owner_ok, owner_err := ownership.require_owner(auth, task.owner_user_id); !owner_ok do return domain.Task{}, false, owner_err
 	return task, true, domain.Domain_Error{}
 }
 

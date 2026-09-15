@@ -166,3 +166,80 @@ test_action_scheduler_interval_advance :: proc(t: ^testing.T) {
 	testing.expect(t, !completed3, "recurring action must not be completed")
 	testing.expect(t, next3 == 1_180_000, "missed intervals must resync to next future slot (1_180_000)")
 }
+
+// REQ-SCHED-2 + reuse bridge/project filter (SCOPE ADDENDUM): pure decision helpers.
+
+@(test)
+test_action_scheduler_candidate_matches :: proc(t: ^testing.T) {
+	// Empty targets impose no filter (backward-compat).
+	testing.expect(t, action_scheduler_candidate_matches("brgA", "projA", "", ""), "no target -> match anything")
+	// Bridge filter only when set.
+	testing.expect(t, action_scheduler_candidate_matches("brgA", "projA", "brgA", ""), "same bridge, no project filter -> match")
+	testing.expect(t, !action_scheduler_candidate_matches("brgB", "projA", "brgA", ""), "different bridge -> no match")
+	// Project filter only when set.
+	testing.expect(t, action_scheduler_candidate_matches("brgA", "projA", "", "projA"), "same project, no bridge filter -> match")
+	testing.expect(t, !action_scheduler_candidate_matches("brgA", "projB", "", "projA"), "different project -> no match")
+	// Both must match when both set.
+	testing.expect(t, action_scheduler_candidate_matches("brgA", "projA", "brgA", "projA"), "bridge+project both match")
+	testing.expect(t, !action_scheduler_candidate_matches("brgA", "projB", "brgA", "projA"), "bridge matches but project differs -> no match")
+}
+
+@(test)
+test_action_scheduler_should_reuse :: proc(t: ^testing.T) {
+	// A live instance of the agent-id on the action's target bridge/project.
+	live_match := []Instance_Candidate{
+		{id = "inst_live", bridge_id = "brgA", project_id = "projA", live = true},
+	}
+
+	// reuse strategy + live matching instance -> REUSED (no new instance).
+	id, ok := action_scheduler_should_reuse("reuse", "brgA", "projA", live_match)
+	testing.expect(t, ok && id == "inst_live", "reuse strategy reuses the live matching instance")
+
+	// fresh_per_run + the SAME live matching instance -> NOT reused (forces a fresh create).
+	_, ok_fresh := action_scheduler_should_reuse("fresh_per_run", "brgA", "projA", live_match)
+	testing.expect(t, !ok_fresh, "fresh_per_run never reuses -> a new instance is created")
+
+	// reuse + live instance on a DIFFERENT bridge -> NOT reused (bug fix).
+	diff_bridge := []Instance_Candidate{
+		{id = "inst_other_bridge", bridge_id = "brgB", project_id = "projA", live = true},
+	}
+	_, ok_db := action_scheduler_should_reuse("reuse", "brgA", "projA", diff_bridge)
+	testing.expect(t, !ok_db, "reuse must not reuse an instance on a different bridge")
+
+	// reuse + live instance in a DIFFERENT project -> NOT reused (bug fix).
+	diff_project := []Instance_Candidate{
+		{id = "inst_other_project", bridge_id = "brgA", project_id = "projB", live = true},
+	}
+	_, ok_dp := action_scheduler_should_reuse("reuse", "brgA", "projA", diff_project)
+	testing.expect(t, !ok_dp, "reuse must not reuse an instance in a different project")
+
+	// reuse + only a STOPPED (not live) matching instance -> not reused here (wake handles it).
+	stopped := []Instance_Candidate{
+		{id = "inst_stopped", bridge_id = "brgA", project_id = "projA", live = false},
+	}
+	_, ok_stopped := action_scheduler_should_reuse("reuse", "brgA", "projA", stopped)
+	testing.expect(t, !ok_stopped, "reuse only reuses LIVE instances")
+
+	// reuse + empty targets (legacy action) + a live instance anywhere -> reused (backward-compat).
+	id_legacy, ok_legacy := action_scheduler_should_reuse("reuse", "", "", live_match)
+	testing.expect(t, ok_legacy && id_legacy == "inst_live", "legacy (no bridge/project target) still reuses a live instance")
+}
+
+@(test)
+test_action_scheduler_reap_target :: proc(t: ^testing.T) {
+	// fresh_per_run with a prior instance different from the new one -> reap the prior.
+	reap, do_reap := action_scheduler_reap_target("fresh_per_run", "inst_prev", "inst_new")
+	testing.expect(t, do_reap && reap == "inst_prev", "fresh_per_run reaps the previous instance after the new one is ready")
+
+	// fresh_per_run but no prior instance -> nothing to reap (first fire).
+	_, do_reap_first := action_scheduler_reap_target("fresh_per_run", "", "inst_new")
+	testing.expect(t, !do_reap_first, "first fresh_per_run fire has no prior instance to reap")
+
+	// fresh_per_run but prior == new (shouldn't happen) -> never reap the live one.
+	_, do_reap_same := action_scheduler_reap_target("fresh_per_run", "inst_new", "inst_new")
+	testing.expect(t, !do_reap_same, "never reap the newly minted instance")
+
+	// reuse strategy never reaps, even with a prior value present.
+	_, do_reap_reuse := action_scheduler_reap_target("reuse", "inst_prev", "inst_new")
+	testing.expect(t, !do_reap_reuse, "reuse strategy never reaps")
+}

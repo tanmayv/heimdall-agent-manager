@@ -492,7 +492,7 @@ ctl_hub_actions :: proc(base, token: string, tokens, args: []string) {
 	if action == "create" {
 		prompt := option_value(args, "--prompt", option_value(args, "--body", ""))
 		if prompt == "" {
-			fmt.println("usage: ham-ctl hub actions create --prompt <text> (--instance <id> | --agent-id <id> --bridge <id>) [--provider <p>] [--tier <t>] [--project <id>] [--cron <expr>] [--timezone <tz>] [--interval <int>] [--active-from <t>] [--active-until <t>] [--blackout-dates <json>] [--target-run-at <t>]")
+			fmt.println("usage: ham-ctl hub actions create --prompt <text> (--instance <id> | --agent-id <id> --bridge <id>) [--provider <p>] [--tier <t>] [--project <id>] [--instance-strategy reuse|fresh_per_run] [--cron <expr>] [--timezone <tz>] [--interval <int>] [--active-from <t>] [--active-until <t>] [--blackout-dates <json>] [--target-run-at <t>]")
 			return
 		}
 		fields := make([dynamic]string)
@@ -513,6 +513,7 @@ ctl_hub_actions :: proc(base, token: string, tokens, args: []string) {
 		if pid := option_value(args, "--project", option_value(args, "--project-id", option_value(args, "--target-project-id", ""))); pid != "" {
 			append(&fields, json_kv("target_project_id", pid))
 		}
+		if strat := option_value(args, "--instance-strategy", ""); strat != "" do append(&fields, json_kv("instance_strategy", strat))
 		if cron := option_value(args, "--cron", ""); cron != "" do append(&fields, json_kv("cron_expr", cron))
 		if tz := option_value(args, "--timezone", ""); tz != "" do append(&fields, json_kv("timezone", tz))
 		if interval := option_value(args, "--interval", ""); interval != "" do append(&fields, json_kv("interval", interval))
@@ -595,8 +596,45 @@ print_hub_help :: proc(cmd: []string) {
 	if resource == "projects" { fmt.println("ham-ctl hub projects <list|create|show|update>\nPurpose: manage Hub projects.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... projects list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... projects create --name demo --repo-url https://example/repo.git"); return }
 	if resource == "artifacts" { fmt.println("ham-ctl hub artifacts <list|create|show|content|update|delete>\nPurpose: manage Hub artifacts.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... artifacts list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... artifacts create --name notes --content 'hello'"); return }
 	if resource == "memories" || resource == "memory" { fmt.println("ham-ctl hub memories <list|create|show|content|approve|reject|archive>\nPurpose: manage Hub memories.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories show mem_123\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories content mem_123\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories create --body 'Use nix check.' --title 'Test command'"); return }
-	if resource == "cards" || resource == "card" { fmt.println("ham-ctl hub cards <list|show|create|discard|accept|reject|snooze>\nPurpose: manage action cards.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards show crd_123"); return }
-	if resource == "actions" || resource == "action" || resource == "scheduled-prompts" || resource == "scheduled-prompt" { fmt.println("ham-ctl hub actions <list|show|create|delete|run>\nPurpose: manage scheduled prompt actions.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... actions list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... actions create --prompt 'Run review' --agent-id curator --bridge brg_123 --cron '0 * * * *'"); return }
+	if resource == "cards" || resource == "card" {
+		fmt.println("ham-ctl hub cards — action cards (user/Hub mode)")
+		fmt.println("")
+		fmt.println("VERBS")
+		fmt.println("  list [--status <s>] [--scope <s>] [--provider <p>] [--project <id>] [--limit <n>]")
+		fmt.println("                          List cards matching filters.")
+		fmt.println("  show    <card-id> [--json|--raw]   Show card detail (formatted or raw JSON).")
+		fmt.println("  create  --title <title> [--rationale <t>] [--scope <project|global>] [--provider <p>]")
+		fmt.println("          [--confidence <f>] [--project <id>] [--source-refs <json>] [--operations <json>]")
+		fmt.println("          [--guard <json>]   Create a new action card.")
+		fmt.println("  discard <card-id>       Discard a card without executing operations.")
+		fmt.println("  accept  <card-id>       Accept card and atomically execute all operations.")
+		fmt.println("  reject  <card-id>       Reject a card (declined; operations not executed).")
+		fmt.println("  snooze  <card-id> --snooze-until <ts>   Hide a card until the given time.")
+		fmt.println("")
+		fmt.println("OPERATIONS  (a card's operation types; each carries a human `label` shown in the dashboard)")
+		fmt.println("  task.vote               Cast a review vote on a task (default lgtm).")
+		fmt.println("  memory.approve          Approve a pending memory proposal.")
+		fmt.println("  memory.reject           Reject a pending memory proposal.")
+		fmt.println("  memory.create           Create a new durable memory.")
+		fmt.println("  memory.update           Edit an existing memory's fields.")
+		fmt.println("  memory.delete           Archive (soft-delete) a memory.  (alias: memory.archive)")
+		fmt.println("  project.update          Edit a project's name/description.")
+		fmt.println("  project.delete          Archive (soft-delete) a project.")
+		fmt.println("  task_chain.set_status   Change a task chain's status.")
+		fmt.println("  agent.prompt            Send a prompt/message to an agent instance's conversation.")
+		fmt.println("  agent.update            Edit a durable agent's fields (name/provider/tier/instructions/...).")
+		fmt.println("  agent.delete            Archive (soft-delete) a durable agent.")
+		fmt.println("")
+		fmt.println("  Operations run ATOMICALLY (all-or-nothing) only when a card is ACCEPTED; a single")
+		fmt.println("  card may bundle several, applied in order.")
+		fmt.println("")
+		fmt.println("EXAMPLES")
+		fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards list")
+		fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards show crd_123")
+		fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards accept crd_123")
+		return
+	}
+	if resource == "actions" || resource == "action" || resource == "scheduled-prompts" || resource == "scheduled-prompt" { fmt.println("ham-ctl hub actions <list|show|create|delete|run>\nPurpose: manage scheduled prompt actions.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... actions list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... actions create --prompt 'Run review' --agent-id curator --bridge brg_123 --cron '0 * * * *'\n  ham-ctl hub ... actions create --prompt 'Nightly' --agent-id curator --bridge brg_123 --cron '0 3 * * *' --instance-strategy fresh_per_run  # new instance each run, reaps the previous\nFlags:\n  --instance-strategy reuse|fresh_per_run  reuse (default) reuses/wakes an existing instance of the agent-id; fresh_per_run mints a NEW instance every run and stops the prior one (durable agent-id targets only)."); return }
 	fmt.println("ham-ctl hub — Hub /api/v1 user mode; uses Authorization: Bearer only")
 	fmt.println("commands:")
 	fmt.println("  me           Show authenticated user")
@@ -609,7 +647,7 @@ print_hub_help :: proc(cmd: []string) {
 	fmt.println("  projects     List/create/show/update projects")
 	fmt.println("  artifacts    List/create/show/update artifacts")
 	fmt.println("  memories     List/create/show/content/approve/reject/archive memories")
-	fmt.println("  cards        List/create/show/discard/accept cards")
+	fmt.println("  cards        List/show/create/discard/accept/reject/snooze action cards")
 	fmt.println("  actions      List/create/show/delete/run scheduled prompt actions")
 	fmt.println("examples:")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... me")

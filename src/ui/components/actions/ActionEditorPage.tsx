@@ -8,6 +8,7 @@ import {
   useListAllAgentInstancesQuery,
   usePatchActionMutation,
 } from '../../api/endpoints/actions';
+import type { ActionInstanceStrategy } from '../../api/endpoints/actions';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { useListProjectsQuery } from '../../api/endpoints/projects';
@@ -77,6 +78,9 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   const [targetProvider, setTargetProvider] = useState('');
   const [targetTier, setTargetTier] = useState('');
   const [targetProjectId, setTargetProjectId] = useState('');
+  // REQ-SCHED-2: instance strategy for durable agent-id targeting. Defaults to
+  // 'reuse'; only meaningful in 'agent' target mode (see the strategy control).
+  const [instanceStrategy, setInstanceStrategy] = useState<ActionInstanceStrategy>('reuse');
 
   const [promptText, setPromptText] = useState('');
   const [isScheduled, setIsScheduled] = useState(true);
@@ -102,6 +106,8 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
       setTargetProvider(action.target_provider || '');
       setTargetTier(action.target_tier || '');
       setTargetProjectId(action.target_project_id || '');
+      // Round-trip the saved instance strategy (default 'reuse' for older rows).
+      setInstanceStrategy(action.instance_strategy === 'fresh_per_run' ? 'fresh_per_run' : 'reuse');
     }
     setPromptText(action.prompt_text);
     const hasCron = Boolean(action.cron_expr && action.cron_expr.trim() !== '');
@@ -231,7 +237,15 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
 
     try {
       if (isEdit && action) {
-        await patchAction({ id: action.id, prompt_text: promptText.trim(), ...schedulePayload }).unwrap();
+        // instance_strategy only applies to agent-id targeting; send it on edit
+        // only when the action targets an agent-id so instance-targeted actions
+        // aren't given a meaningless value.
+        await patchAction({
+          id: action.id,
+          prompt_text: promptText.trim(),
+          ...(targetMode === 'agent' ? { instance_strategy: instanceStrategy } : {}),
+          ...schedulePayload,
+        }).unwrap();
       } else {
         if (targetMode === 'instance') {
           await createAction({ target_instance_id: targetInstanceId, prompt_text: promptText.trim(), ...schedulePayload }).unwrap();
@@ -242,6 +256,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
             target_provider: targetProvider.trim() || undefined,
             target_tier: targetTier.trim() || undefined,
             target_project_id: targetProjectId.trim() || undefined,
+            instance_strategy: instanceStrategy,
             prompt_text: promptText.trim(),
             ...schedulePayload,
           }).unwrap();
@@ -253,6 +268,40 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
       setError(msg);
     }
   }
+
+  // REQ-SCHED-2: instance-strategy selector. Only meaningful for durable
+  // agent-id targeting (the scheduler resolves/launches the instance), so it is
+  // rendered only in 'agent' target mode. Mirrors the target-mode toggle styling.
+  const strategyControl = (
+    <div className="space-y-1.5" data-debug-id="action-editor-strategy">
+      <label className="text-xs font-semibold text-zinc-300">Instance strategy</label>
+      <div className="flex gap-2 p-1 bg-black/40 rounded-xl border border-white/10 w-fit">
+        <button
+          type="button"
+          data-debug-id="action-editor-strategy-reuse"
+          onClick={() => setInstanceStrategy('reuse')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            instanceStrategy === 'reuse' ? 'bg-white/20 text-white' : 'text-zinc-400 hover:text-white'
+          }`}
+        >
+          Reuse existing
+        </button>
+        <button
+          type="button"
+          data-debug-id="action-editor-strategy-fresh"
+          onClick={() => setInstanceStrategy('fresh_per_run')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            instanceStrategy === 'fresh_per_run' ? 'bg-white/20 text-white' : 'text-zinc-400 hover:text-white'
+          }`}
+        >
+          Fresh per run
+        </button>
+      </div>
+      <p className="text-caption text-zinc-500">
+        Fresh per run creates a new agent instance on each scheduled run (and stops the previous one); Reuse keeps one instance alive.
+      </p>
+    </div>
+  );
 
   // Edit mode: don't render the form until the action is loaded so fields never
   // flash empty then repopulate.
@@ -327,6 +376,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           <input type="hidden" data-debug-id="action-editor-bridge-id" value={targetBridgeId} readOnly />
 
           {isEdit ? (
+            <>
             <div
               data-debug-id="action-editor-target-locked"
               className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/30 p-3"
@@ -362,6 +412,9 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
               )}
               <span className="text-caption text-zinc-500">Target cannot be changed after creation</span>
             </div>
+            {/* Strategy IS editable after creation (agent-id targeting only). */}
+            {targetMode === 'agent' && <div className="pt-1">{strategyControl}</div>}
+            </>
           ) : (
             <div className="space-y-4">
               {/* Target Mode Toggle */}
@@ -475,6 +528,8 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                       />
                     </div>
                   </div>
+
+                  {strategyControl}
                 </div>
               )}
             </div>

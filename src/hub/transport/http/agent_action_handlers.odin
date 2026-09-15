@@ -213,7 +213,9 @@ agent_action_chain_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := strings.trim_space(json_string(params, "chain_id"))
 	if chain_id == "" do chain_id = inst.chain_id
 	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "no chain for this instance; pass chain_id"), req.request_id)
-	chain, got, err := taskchain_service.get_chain(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
+	// READ (REQ-SEC-3): owner-scoped; an agent may view any same-owner chain,
+	// including one it is not a member of (passing an explicit chain_id).
+	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
 	if !got do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "chain_show", "viewed the chain")
 	b := strings.builder_make()
@@ -415,7 +417,9 @@ agent_action_task_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	params := json_object_raw(req.body, "params")
 	task_id := domain.Task_ID(json_string(params, "task_id"))
 	if strings.trim_space(string(task_id)) == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
-	task, got, err := taskchain_service.get_task(h.taskchains, auth, task_id)
+	// READ (REQ-SEC-3): owner-scoped; an agent may open any same-owner task,
+	// including one in a chain it is not a member of.
+	task, got, err := taskchain_service.get_task_for_read(h.taskchains, auth, task_id)
 	if !got do return respond_error(err, req.request_id)
 	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth, task.chain_id)
 	publish_agent_action(h, inst, "task_show", "opened a task")

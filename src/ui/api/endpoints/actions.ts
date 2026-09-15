@@ -3,6 +3,13 @@ import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 
 export type ActionState = 'active' | 'in_flight' | 'completed';
 
+// REQ-SCHED-2: how the scheduler provides the instance for a durable agent-id
+// target. 'reuse' keeps a single instance alive across runs; 'fresh_per_run'
+// launches a new instance each run (stopping the previous). Only meaningful when
+// targeting an agent-id (not an explicit instance). Mirrors the backend
+// action.instance_strategy field (default 'reuse').
+export type ActionInstanceStrategy = 'reuse' | 'fresh_per_run';
+
 export type Action = {
   id: string;
   owner_user_id: string;
@@ -12,6 +19,7 @@ export type Action = {
   target_provider?: string;
   target_tier?: string;
   target_project_id?: string;
+  instance_strategy?: ActionInstanceStrategy;
   prompt_text: string;
   cron_expr?: string;
   timezone?: string;
@@ -34,6 +42,7 @@ export type CreateActionInput = {
   target_provider?: string;
   target_tier?: string;
   target_project_id?: string;
+  instance_strategy?: ActionInstanceStrategy;
   prompt_text: string;
   cron_expr?: string;
   timezone?: string;
@@ -51,6 +60,7 @@ export type PatchActionInput = {
   target_provider?: string;
   target_tier?: string;
   target_project_id?: string;
+  instance_strategy?: ActionInstanceStrategy;
   prompt_text?: string;
   cron_expr?: string;
   timezone?: string;

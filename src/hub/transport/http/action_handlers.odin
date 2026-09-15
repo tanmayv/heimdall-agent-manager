@@ -204,6 +204,10 @@ write_action_json :: proc(b: ^strings.Builder, a: domain.Action) {
 	write_handler_json_string(b, a.target_tier)
 	strings.write_string(b, "\",\"target_project_id\":\"")
 	write_handler_json_string(b, string(a.target_project_id))
+	strings.write_string(b, "\",\"instance_strategy\":\"")
+	write_handler_json_string(b, a.instance_strategy if a.instance_strategy != "" else "reuse")
+	strings.write_string(b, "\",\"last_spawned_instance_id\":\"")
+	write_handler_json_string(b, string(a.last_spawned_instance_id))
 	strings.write_string(b, "\"}")
 }
 
@@ -253,6 +257,12 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !has_instance_target && (target_agent_id == "" || target_bridge_id == "") {
 		return respond_error(domain.domain_error(.Validation_Failed, "both target_agent_id and target_bridge_id are required for agent targeting"), req.request_id)
 	}
+
+	instance_strategy := strings.trim_space(json_string(req.body, "instance_strategy"))
+	if !domain.action_instance_strategy_valid(instance_strategy) {
+		return respond_error(domain.domain_error(.Validation_Failed, "instance_strategy must be 'reuse' or 'fresh_per_run'"), req.request_id)
+	}
+	if instance_strategy == "" do instance_strategy = domain.ACTION_INSTANCE_STRATEGY_REUSE
 
 	prompt_text := json_string(req.body, "prompt_text")
 	if prompt_text == "" do prompt_text = json_string(req.body, "prompt")
@@ -339,6 +349,7 @@ create_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		target_provider = target_provider,
 		target_tier = target_tier,
 		target_project_id = domain.Project_ID(target_project_id),
+		instance_strategy = instance_strategy,
 	}
 
 	saved, save_ok, save_err := h.repo.save(h.repo.ctx, act)
@@ -428,6 +439,14 @@ patch_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		case "completed": act.state = .Completed
 		case "active": act.state = .Active
 		}
+	}
+	if json_key_present(req.body, "instance_strategy") {
+		strat := strings.trim_space(json_string(req.body, "instance_strategy"))
+		if !domain.action_instance_strategy_valid(strat) {
+			return respond_error(domain.domain_error(.Validation_Failed, "instance_strategy must be 'reuse' or 'fresh_per_run'"), req.request_id)
+		}
+		if strat == "" do strat = domain.ACTION_INSTANCE_STRATEGY_REUSE
+		act.instance_strategy = strat
 	}
 	now := platform.clock_now(h.clock)
 	act.updated_at = now
@@ -686,6 +705,14 @@ bridge_execute_action_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		act.in_flight = false
 		act.leased_at = ""
 		act.updated_at = now
+	}
+
+	// REQ-SCHED-2: for fresh_per_run actions the bridge mints a new instance every
+	// fire and carries its id here so the hub records it as last_spawned_instance_id.
+	// The next fire uses it to reap the prior run's instance. Only overwrite when the
+	// bridge actually sent the key, so reuse-strategy executes never clear it.
+	if json_key_present(req.body, "last_spawned_instance_id") {
+		act.last_spawned_instance_id = domain.Agent_Instance_ID(strings.trim_space(json_string(req.body, "last_spawned_instance_id")))
 	}
 
 	_, _, _ = h.repo.save(h.repo.ctx, act)

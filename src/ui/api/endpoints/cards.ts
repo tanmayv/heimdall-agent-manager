@@ -135,6 +135,18 @@ export function formatOpLabel(op: CardOperation): string {
       const name = getArg('name');
       return name ? `Update project settings: "${name}"` : 'Update project settings';
     }
+    case 'project.delete': {
+      const pid = getArg('project_id') || getArg('id');
+      return pid ? `Archive project ${pid}` : 'Archive project';
+    }
+    case 'agent.update': {
+      const aid = getArg('agent_id') || getArg('id');
+      return aid ? `Edit agent ${aid}` : 'Edit agent';
+    }
+    case 'agent.delete': {
+      const aid = getArg('agent_id') || getArg('id');
+      return aid ? `Archive agent ${aid}` : 'Archive agent';
+    }
     case 'agent.prompt': {
       const iid = getArg('instance_id') || getArg('agent_instance_id');
       return iid ? `Dispatch prompt to agent instance ${iid}` : 'Dispatch agent prompt';

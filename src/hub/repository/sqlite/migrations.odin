@@ -633,7 +633,15 @@ MIGRATION_035_CURATOR_TEMPLATE :: #load("migrations/035_curator_template.sql", s
 // target_tier, target_project_id to actions table (REQ-SCHED-1).
 MIGRATION_036_ACTION_TARGETS :: #load("migrations/036_action_targets.sql", string)
 
-migration_order :: [36]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql"}
+// MIGRATION_037_PROJECT_STATE adds the soft-archive `state` column to projects
+// (mirrors the agents `state` column). Default 'active'; archiving is reversible.
+MIGRATION_037_PROJECT_STATE :: #load("migrations/037_project_state.sql", string)
+
+// MIGRATION_038_ACTION_INSTANCE_STRATEGY adds instance_strategy + last_spawned_instance_id
+// to actions (REQ-SCHED-2). Defaults keep existing rows on the legacy "reuse" behavior.
+MIGRATION_038_ACTION_INSTANCE_STRATEGY :: #load("migrations/038_action_instance_strategy.sql", string)
+
+migration_order :: [38]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -707,6 +715,14 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "037_project_state.sql" && table_column_exists(conn, "projects", "state") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "038_action_instance_strategy.sql" && table_column_exists(conn, "actions", "instance_strategy") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -732,6 +748,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_push_subscriptions_schema(conn) do return false, domain.domain_error(.Internal_Error, "push subscriptions schema upgrade failed")
 	if !upgrade_memory_description_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory description schema upgrade failed")
 	if !upgrade_cards_schema(conn) do return false, domain.domain_error(.Internal_Error, "cards schema upgrade failed")
+	if !upgrade_projects_state_schema(conn) do return false, domain.domain_error(.Internal_Error, "projects state schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -777,6 +794,8 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "034_cards.sql" do return strings.clone(MIGRATION_034_CARDS)
 	if name == "035_curator_template.sql" do return strings.clone(MIGRATION_035_CURATOR_TEMPLATE)
 	if name == "036_action_targets.sql" do return strings.clone(MIGRATION_036_ACTION_TARGETS)
+	if name == "037_project_state.sql" do return strings.clone(MIGRATION_037_PROJECT_STATE)
+	if name == "038_action_instance_strategy.sql" do return strings.clone(MIGRATION_038_ACTION_INSTANCE_STRATEGY)
 	return ""
 }
 
@@ -976,6 +995,8 @@ CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user
 	if !table_column_exists(conn, "actions", "target_provider") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_provider TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "actions", "target_tier") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_tier TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "actions", "target_project_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN target_project_id TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "actions", "instance_strategy") && !exec(conn, "ALTER TABLE actions ADD COLUMN instance_strategy TEXT NOT NULL DEFAULT 'reuse';") do return false
+	if !table_column_exists(conn, "actions", "last_spawned_instance_id") && !exec(conn, "ALTER TABLE actions ADD COLUMN last_spawned_instance_id TEXT NOT NULL DEFAULT '';") do return false
 	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_actions_target_agent ON actions(target_agent_id);") do return false
 	if !exec(conn, "CREATE INDEX IF NOT EXISTS idx_actions_target_bridge ON actions(target_bridge_id);") do return false
 
@@ -1044,6 +1065,14 @@ CREATE INDEX IF NOT EXISTS idx_cards_project ON cards(project_id);
 CREATE INDEX IF NOT EXISTS idx_cards_status ON cards(status);
 CREATE INDEX IF NOT EXISTS idx_cards_owner_status ON cards(owner_user_id, status);
 CREATE TRIGGER IF NOT EXISTS cards_owner_immutable BEFORE UPDATE OF owner_user_id ON cards BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;`)
+}
+
+// upgrade_projects_state_schema idempotently ensures the projects `state` column
+// exists (REQ-PROJ-ARCHIVE-1). Runs on every startup so a DB predating migration
+// 037 self-heals, mirroring the agents `state` column.
+upgrade_projects_state_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "projects", "state") && !exec(conn, "ALTER TABLE projects ADD COLUMN state TEXT NOT NULL DEFAULT 'active';") do return false
+	return true
 }
 
 

@@ -14,6 +14,7 @@ import {
   useSnoozeCardMutation,
 } from '../../api/endpoints/cards';
 import { useListProjectsQuery, Project } from '../../api/endpoints/projects';
+import Markdown from '../Markdown';
 
 const STATUS_TABS = [
   { id: 'pending', label: 'Pending' },
@@ -720,14 +721,14 @@ function CardRow({
               </span>
             </div>
 
-            {/* Rationale Summary */}
+            {/* Rationale Summary (markdown via shared MarkdownBody) */}
             {card.rationale && (
-              <p
+              <div
                 data-debug-id={`card-rationale-${card.card_id}`}
-                className="text-xs text-zinc-400 leading-relaxed max-w-3xl"
+                className="text-xs text-zinc-400 leading-relaxed max-w-3xl break-words"
               >
-                {card.rationale}
-              </p>
+                <Markdown source={card.rationale} compact copyAll={false} />
+              </div>
             )}
           </div>
         </div>
@@ -909,8 +910,11 @@ function OperationPreviewRow({ op, index }: { op: CardOperation; index: number }
           <div>Type: <span className="capitalize text-zinc-300">{memType}</span></div>
         )}
         {memBody && (
-          <div className="line-clamp-2 text-zinc-300 bg-white/[0.02] p-1.5 rounded font-mono text-[10px]">
-            {memBody}
+          <div
+            data-debug-id={`card-op-body-${index}`}
+            className="text-zinc-300 bg-white/[0.02] p-1.5 rounded break-words"
+          >
+            <Markdown source={memBody} compact copyAll={false} />
           </div>
         )}
         {taskVote && (
