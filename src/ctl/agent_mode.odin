@@ -46,8 +46,41 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "memory":        ctl_v2_memory(endpoint, token, rest, args); return
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
 	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
+	case "search":        ctl_agentmode_search(endpoint, token, rest, args); return
 	}
 	print_agent_help(cmd[idx:])
+}
+
+// ---- search -------------------------------------------------------------
+// Agent-mode search routes through the agent.search RPC (POST
+// /api/v1/agent-actions/search), which accepts an agent token and scopes hits
+// to the caller's owner. Output is the raw JSON envelope (curators consume it
+// programmatically — the human pagination view of ctl_search_command is not
+// used here). The non-agent user-mode path (ctl_search_command) is untouched.
+ctl_agentmode_search :: proc(endpoint, token: string, tokens, args: []string) {
+	query := pos(tokens, 0)
+	if strings.trim_space(query) == "" {
+		fmt.println(`{"ok":false,"message":"search requires a query: ham-ctl search <query> [--scope csv] [--limit N] [--cursor C] [--task-ids csv] [--chain-ids csv] [--project-ids csv] [--conversation-ids csv] [--not-in-task-ids csv] [--not-in-chain-ids csv] [--not-in-project-ids csv] [--not-in-conversation-ids csv] [--exclude text]"}`)
+		return
+	}
+	fields := make([dynamic]string)
+	defer delete(fields)
+	append(&fields, json_kv("query", query))
+	// scopes maps to the REST `types` param; the hub reads it as `scopes`.
+	if v := option_value(args, "--scope", ""); v != "" do append(&fields, json_kv("scopes", v))
+	// limit is a JSON number (json_int on the hub); emit raw when provided.
+	if v := option_value(args, "--limit", ""); v != "" do append(&fields, json_kv_raw("limit", v))
+	if v := option_value(args, "--cursor", option_value(args, "--since", "")); v != "" do append(&fields, json_kv("cursor", v))
+	if v := option_value(args, "--task-ids", ""); v != "" do append(&fields, json_kv("task_ids", v))
+	if v := option_value(args, "--chain-ids", ""); v != "" do append(&fields, json_kv("chain_ids", v))
+	if v := option_value(args, "--project-ids", ""); v != "" do append(&fields, json_kv("project_ids", v))
+	if v := option_value(args, "--conversation-ids", ""); v != "" do append(&fields, json_kv("conversation_ids", v))
+	if v := option_value(args, "--not-in-task-ids", ""); v != "" do append(&fields, json_kv("not_in_task_ids", v))
+	if v := option_value(args, "--not-in-chain-ids", ""); v != "" do append(&fields, json_kv("not_in_chain_ids", v))
+	if v := option_value(args, "--not-in-project-ids", ""); v != "" do append(&fields, json_kv("not_in_project_ids", v))
+	if v := option_value(args, "--not-in-conversation-ids", ""); v != "" do append(&fields, json_kv("not_in_conversation_ids", v))
+	if v := option_value(args, "--exclude", ""); v != "" do append(&fields, json_kv("exclude", v))
+	ctl_agent_call(endpoint, token, "agent.search", json_object_from_slice(fields[:]))
 }
 
 // pos returns positional token i (0-based) from the group's remaining tokens, or
@@ -434,7 +467,12 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 	
 	if include_outgoing { append(&fields, json_kv_raw("include_outgoing", "true")) } else { append(&fields, json_kv_raw("include_outgoing", "false")) }
 	if include_debug { append(&fields, json_kv_raw("include_debug", "true")) } else { append(&fields, json_kv_raw("include_debug", "false")) }
-	
+
+	// Optional cross-agent read: read another agent's inbox (same owner user).
+	// Omitted -> the hub reads the caller's own inbox exactly as before.
+	target := option_value(args, "--agent-instance-id", "")
+	if target != "" do append(&fields, json_kv("target_instance_id", target))
+
 	ctl_agent_call(endpoint, token, "agent.chat.read", json_object_from_slice(fields[:]))
 }
 
@@ -1181,6 +1219,7 @@ print_help_chat :: proc() {
 	fmt.println("")
 	fmt.println("VERBS")
 	fmt.println("  read [--limit N] [--since T] [--include-read] [--transcript]   Read messages.")
+	fmt.println("      [--agent-instance-id <inst-id>]   Read another agent's inbox (same owner). Default: your own inbox.")
 	fmt.println("  send --to <user|agent-instance-id> --body <t> | --stdin        Send a message.")
 	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
 	fmt.println("  set-title <title>                                              Rename THIS conversation.")

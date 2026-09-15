@@ -20,7 +20,7 @@ import {
 } from '../../api/endpoints/agents';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
-import { useGetAgentsLiveQuery, type LiveAgent } from '../../api/endpoints/agentsLive';
+import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import {
   normalizeBridgeCapabilities,
@@ -496,14 +496,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // reconfigure invalidates AgentInstances, and the poll below is the backstop.
   const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: instancePollInterval, skipPollingIfUnfocused: true });
   const instance = instanceQuery.data?.instance || null;
-  // Flattened list of currently running agents across all projects/chains, for
-  // the composer's agent-switcher picker. Polled slowly (the picker is a
-  // convenience, not a live surface).
+  // Currently running agents across all projects/chains, for the composer's
+  // agent-switcher picker (grouped by project → chain like the sidebar). Polled
+  // slowly (the picker is a convenience, not a live surface).
   const { data: liveProjects } = useGetAgentsLiveQuery(undefined, { pollingInterval: 30000, skipPollingIfUnfocused: true });
-  const liveAgents = useMemo<LiveAgent[]>(
-    () => (liveProjects ?? []).flatMap((p) => p.chains.flatMap((c) => c.liveAgents)),
-    [liveProjects],
-  );
   // Agent identity (name + persona/instructions) — used for the empty-state
   // welcome so a fresh conversation shows who you're talking to.
   const agentIdentityQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
@@ -1317,31 +1313,60 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   function renderComposer() {
+    // Group running agents by project → chain, mirroring the sidebar: project
+    // header labels, a subtle divider before every chain group except the first,
+    // and amber-300 coordinators. The current agent keeps sky-400 + check and
+    // always wins over the coordinator color.
+    const pickerProjects = (liveProjects ?? []).filter((p) =>
+      p.chains.some((c) => c.liveAgents.length > 0)
+    );
+    let pickerChainsRendered = 0;
     const agentPickerList = (
       <div className="max-h-64 overflow-y-auto py-1">
-        {liveAgents.length === 0 ? (
+        {pickerProjects.length === 0 ? (
           <p className="px-3 py-2 text-xs text-zinc-500">No running agents</p>
         ) : (
-          liveAgents.map((agent) => {
-            const isCurrent = agent.agentInstanceId === agentInstanceId;
-            return (
-              <button
-                key={agent.agentInstanceId}
-                type="button"
-                data-debug-id={`conversation-agent-picker-item-${agent.agentInstanceId}`}
-                className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] hover:bg-white/10 ${
-                  isCurrent ? 'text-sky-400' : 'text-zinc-200'
-                }`}
-                onClick={() => {
-                  setAgentPickerOpen(false);
-                  window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(agent.agentInstanceId), '');
-                }}
-              >
-                <span className="min-w-0 truncate">{agent.displayName || agent.agentInstanceId}</span>
-                {isCurrent && <Icon name="check" size={14} className="ml-auto shrink-0 text-sky-400" />}
-              </button>
-            );
-          })
+          pickerProjects.map((project) => (
+            <div key={project.projectId}>
+              <div className="px-3 pt-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                {project.name || project.projectId}
+              </div>
+              {project.chains
+                .filter((chain) => chain.liveAgents.length > 0)
+                .map((chain) => {
+                  const showDivider = pickerChainsRendered > 0;
+                  pickerChainsRendered += 1;
+                  return (
+                    <div key={chain.chainId}>
+                      {showDivider && <div className="mx-3 my-1 border-t border-white/5" />}
+                      {chain.liveAgents.map((agent) => {
+                        const isCurrent = agent.agentInstanceId === agentInstanceId;
+                        const textClass = isCurrent
+                          ? 'text-sky-400'
+                          : agent.isCoordinator
+                          ? 'text-amber-300'
+                          : 'text-zinc-200';
+                        return (
+                          <button
+                            key={agent.agentInstanceId}
+                            type="button"
+                            data-debug-id={`conversation-agent-picker-item-${agent.agentInstanceId}`}
+                            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] hover:bg-white/10 ${textClass}`}
+                            onClick={() => {
+                              setAgentPickerOpen(false);
+                              window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(agent.agentInstanceId), '');
+                            }}
+                          >
+                            <span className="min-w-0 truncate">{agent.displayName || agent.agentInstanceId}</span>
+                            {isCurrent && <Icon name="check" size={14} className="ml-auto shrink-0 text-sky-400" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+            </div>
+          ))
         )}
       </div>
     );

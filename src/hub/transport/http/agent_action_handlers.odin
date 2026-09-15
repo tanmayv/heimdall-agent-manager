@@ -238,7 +238,13 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	params := json_object_raw(req.body, "params")
 	limit := json_int(params, "limit", 50)
 	cursor := json_string(params, "cursor")
-	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
+	// Optional cross-agent read: a curator (same owner user) may read another
+	// agent's conversation by passing target_instance_id. get_conversation_by_instance
+	// scopes by auth.user_id, so cross-user access is blocked automatically — no extra
+	// ownership check is needed. Absent target_id falls back to the caller's own inbox.
+	target_id := json_string(params, "target_instance_id")
+	effective_instance_id := target_id != "" ? target_id : inst.agent_instance_id
+	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, effective_instance_id)
 	if !conv_ok do return respond_error(conv_err, req.request_id)
 	
 	unread_only := !strings.contains(params, "\"unread_only\":false") && !strings.contains(params, "\"unread_only\": false")
@@ -248,7 +254,7 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	mark_read := default_mark_read ? (!strings.contains(params, "\"mark_read\":false") && !strings.contains(params, "\"mark_read\": false")) : (strings.contains(params, "\"mark_read\":true") || strings.contains(params, "\"mark_read\": true"))
 
 	filter := content_service.Agent_Inbox_Filter{
-		agent_instance_id=inst.agent_instance_id, 
+		agent_instance_id=effective_instance_id,
 		unread_only=unread_only, 
 		receiver_only=receiver_only, 
 		include_outgoing=include_outgoing, 
@@ -285,8 +291,8 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	mode_str := unread_only ? "inbox_unread" : "history"
 	
 	fmt.sbprintf(&b, "{{\"conversation\":{{\"conversation_id\":\"%s\",\"agent_instance_id\":\"%s\",\"unread_count_before\":%d,\"unread_count_after\":%d}},\"mode\":\"%s\",\"filters\":{{\"receiver_agent_instance_id\":\"%s\",\"unread_only\":%t,\"receiver_only\":%t,\"include_outgoing\":%t,\"include_debug\":%t,\"mark_read\":%t}},\"messages\":[",
-		conv.conversation_id, inst.agent_instance_id, unread_count_before, unread_count_before - marked_count, mode_str,
-		inst.agent_instance_id, unread_only, receiver_only, include_outgoing, include_debug, mark_read)
+		conv.conversation_id, effective_instance_id, unread_count_before, unread_count_before - marked_count, mode_str,
+		effective_instance_id, unread_only, receiver_only, include_outgoing, include_debug, mark_read)
 
 	next := ""
 	for msg, i in rows { if i > 0 do strings.write_byte(&b, ','); write_message_json(&b, msg, h.content); next = msg.created_at }
@@ -298,9 +304,11 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 
 	// Human-readable activity bubble: 'read inbox (N new)' vs 'checked messages'.
 	if default_mark_read {
-		publish_agent_action(h, inst, "chat_read", fmt.tprintf("read inbox (%d new)", unread_count_before))
+		act := target_id != "" ? fmt.tprintf("read inbox of %s (%d new)", target_id, unread_count_before) : fmt.tprintf("read inbox (%d new)", unread_count_before)
+		publish_agent_action(h, inst, "chat_read", act)
 	} else {
-		publish_agent_action(h, inst, "chat_fetch", "checked messages")
+		act := target_id != "" ? fmt.tprintf("checked messages of %s", target_id) : "checked messages"
+		publish_agent_action(h, inst, "chat_fetch", act)
 	}
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }

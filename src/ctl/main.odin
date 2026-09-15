@@ -32,7 +32,11 @@ main :: proc() {
 		return
 	}
 
-	if cmd[0] == "search" {
+	// User-mode search hits GET /api/v1/search with a user token. In an agent
+	// context (bridge endpoint + agent token present) search instead routes
+	// through agent mode (agent.search RPC) via the agent_ctx switch below, so
+	// this early user-mode return is skipped when running as an agent.
+	if cmd[0] == "search" && !(agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != "") {
 		if has_flag(os.args, "--help") || has_flag(os.args, "-h") { print_search_help(); return }
 		ctl_search_command(cmd[:], os.args)
 		return
@@ -62,7 +66,7 @@ main :: proc() {
 		switch cmd[0] {
 		case "bridge", "bridges", "agents", "task-chain", "task-chains",
 		     "task", "tasks", "chat", "chats", "artifact", "artifacts",
-		     "memory", "cards", "card", "context":
+		     "memory", "cards", "card", "context", "search":
 			ctl_agent_mode(cmd[:], os.args)
 			return
 		}
