@@ -15,8 +15,10 @@ package main
 // delivered as data, so the wrapper needs no provider knowledge.
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:sync"
+import "core:sys/posix"
 
 Bridge_Bootstrap_Fileset_Entry :: struct {
 	instance_id: string,
@@ -89,6 +91,38 @@ bridge_bootstrap_fileset_list_json :: proc(instance_id: string) -> (string, bool
 	strings.write_string(&b, "\",\"skill_dir\":\""); bridge_local_write_json_string(&b, skill_dir)
 	strings.write_string(&b, "\"}}")
 	return strings.to_string(b), true
+}
+
+// bridge_bootstrap_fileset_store_write_run_dir writes the stored fileset for an
+// instance directly to run_dir. Used by the pty-host fallback path after
+// bridge_bootstrap_fetch_manifest_and_materialize publishes to the store without
+// writing to disk (the function was built for the wrapper path where the wrapper
+// is the disk writer). Returns false if the instance is unknown or any write fails.
+bridge_bootstrap_fileset_store_write_run_dir :: proc(instance_id, run_dir: string) -> bool {
+	clean := strings.trim_right(run_dir, "/")
+	if strings.trim_space(clean) == "" || strings.trim_space(instance_id) == "" do return false
+	sync.mutex_lock(&bridge_bootstrap_fileset_mutex)
+	defer sync.mutex_unlock(&bridge_bootstrap_fileset_mutex)
+	entry, ok := bridge_bootstrap_filesets[instance_id]
+	if !ok do return false
+	for f in entry.files {
+		rel := strings.trim_left(f.relative_path, "/")
+		if strings.trim_space(rel) == "" do continue
+		full := strings.concatenate({clean, "/", rel})
+		if slash := strings.last_index_byte(full, '/'); slash > 0 {
+			parent := full[:slash]
+			_ = os.make_directory_all(parent)
+		}
+		write_err := os.write_entire_file(full, transmute([]byte)f.content)
+		if f.mode == 0o755 && write_err == nil {
+			cpath := strings.clone_to_cstring(full)
+			_ = posix.chmod(cpath, posix.mode_t{.IRUSR, .IWUSR, .IXUSR})
+			delete(cpath)
+		}
+		delete(full)
+		if write_err != nil do return false
+	}
+	return true
 }
 
 // bridge_bootstrap_fileset_file_json returns one file (with content) for an

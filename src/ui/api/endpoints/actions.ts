@@ -184,7 +184,7 @@ export const actionsApi = heimdallApi.injectEndpoints({
       queryFn: async () => {
         try {
           const data = await cookieJsonFetch('/agent-instances?limit=200');
-          const instances = Array.isArray(data) ? data : (data?.data || []);
+          const instances = Array.isArray(data) ? data : (data?.instances || []);
           return { data: { instances } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

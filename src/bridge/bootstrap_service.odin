@@ -919,6 +919,13 @@ bridge_bootstrap_launch_materialize_run_dir :: proc(hub_url, bridge_token, run_d
 		// which DO write run_dir.
 		bridge_prespawn_clean_slate(strings.trim_right(run_dir, "/"))
 		if bridge_bootstrap_fetch_manifest_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider, cache) {
+			// bridge_bootstrap_fetch_manifest_and_materialize publishes to the
+			// fileset store for wrapper RPCs but ignores run_dir (it was built for
+			// the wrapper path where the wrapper writes to disk). In the pty-host
+			// path we must write the store to disk ourselves.
+			if !bridge_bootstrap_fileset_store_write_run_dir(d.instance_id, run_dir) {
+				return Bridge_Bootstrap_Result{ok = false, stage = "write_run_dir", detail = "fallback_manifest: failed to write fileset to run_dir"}
+			}
 			return Bridge_Bootstrap_Result{ok = true, stage = "fallback_manifest"}
 		}
 		if bridge_bootstrap_fetch_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider) {
