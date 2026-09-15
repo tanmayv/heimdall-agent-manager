@@ -652,6 +652,22 @@ bridge_bootstrap_render_template :: proc(tpl_obj, manifest_json: string, d: Brid
 	is_reviewer := d.role == "reviewer"
 	is_worker := !is_coordinator && !is_reviewer
 
+	// {coordinator_line} is the header's "Coordinator:" line, computed here (the
+	// engine has no emptiness conditional). It carries its OWN leading newline so an
+	// empty value drops the whole line rather than leaving a bare "Coordinator: "
+	// with a trailing space — matching the legacy render_header behavior for a
+	// worker/reviewer whose coordinator_id is unset.
+	coordinator_line := ""
+	coord_line_owned := false
+	if is_coordinator {
+		coordinator_line = "\nCoordinator: you (coordinator)"
+	} else if d.coordinator_id != "" {
+		coordinator_line = strings.concatenate({"\nCoordinator: ", d.coordinator_id})
+		coord_line_owned = true
+	}
+	add_var(&names, &values, "coordinator_line", coordinator_line)
+	if coord_line_owned do delete(coordinator_line)
+
 	body := bridge_bootstrap_eval_role_sections(template_body, is_coordinator, is_worker, is_reviewer)
 	defer delete(body)
 	substituted := bridge_bootstrap_substitute_scalars(body, names[:], values[:])

@@ -1,6 +1,6 @@
 ---
 name: heimdall-ctl-communication
-description: Use Heimdall CLI for agent startup, chat communication, task coordination, and concise status reporting. Load when communicating through Heimdall or reacting to message notifications.
+description: How an agent communicates through Heimdall with ham-ctl — signal readiness at startup (start-success), read your inbox and message history (chat read), send to the user or another agent (chat send --to), name your conversation (chat set-title), and keep user-facing chat separate from technical task comments. Load when communicating through Heimdall: replying to the user, coordinating agent-to-agent, titling the conversation, or reacting to a new-message notification.
 ---
 
 # Heimdall CLI communication

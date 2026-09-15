@@ -106,8 +106,8 @@ bt3_e2e_real_template_coordinator :: proc(t: ^testing.T) {
 	tpl := string(#load("../prompts/bootstrap_agents.md", string))
 	after := bridge_bootstrap_eval_role_sections(tpl, true, false, false)
 	defer delete(after)
-	names := []string{"agent_name","instance_id","chain_title","chain_id","coordinator_id","template_persona","template_instructions","agent_instructions","project_name","project_path","project_repo","project_vcs","project_description"}
-	values := []string{"Backend Agent","inst_1","Prompts audit","chain_1","","You are Odin.","Base rules.","Agent rules.","Heimdall","~/h","git@x","git","Desc"}
+	names := []string{"agent_name","instance_id","chain_title","chain_id","coordinator_id","coordinator_line","template_persona","template_instructions","agent_instructions","project_name","project_path","project_repo","project_vcs","project_description"}
+	values := []string{"Backend Agent","inst_1","Prompts audit","chain_1","","\nCoordinator: you (coordinator)","You are Odin.","Base rules.","Agent rules.","Heimdall","~/h","git@x","git","Desc"}
 	got := bridge_bootstrap_substitute_scalars(after, names, values)
 	defer delete(got)
 	// coordinator section present, worker/reviewer absent
@@ -132,8 +132,8 @@ bt3_e2e_real_template_worker :: proc(t: ^testing.T) {
 	tpl := string(#load("../prompts/bootstrap_agents.md", string))
 	after := bridge_bootstrap_eval_role_sections(tpl, false, true, false)
 	defer delete(after)
-	names := []string{"coordinator_id"}
-	values := []string{"inst_coord"}
+	names := []string{"coordinator_id","coordinator_line"}
+	values := []string{"inst_coord","\nCoordinator: inst_coord"}
 	got := bridge_bootstrap_substitute_scalars(after, names, values)
 	defer delete(got)
 	testing.expect(t, strings.contains(got, "## You are a WORKER"))
