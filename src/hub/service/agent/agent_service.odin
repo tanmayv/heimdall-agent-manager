@@ -1225,6 +1225,18 @@ Wake_Agent_Run_Entry :: struct {
 	role:              string,
 	provider:          string,
 	tier:              string,
+	// REQ-37: enriched descriptor (parity with launch_command_json_full) so the
+	// bridge's wake path forms the (agent_id, role, provider, project) key and takes
+	// the full agent-keyed template bootstrap instead of the header-only instance
+	// fallback (which, post BT-6, carries only the 6-line header). agent_id is the
+	// load-bearing field; without it the bridge cannot fetch the template manifest.
+	agent_id:          string,
+	agent_name:        string,
+	chain_id:          string,
+	chain_title:       string,
+	coordinator_id:    string,
+	project_id:        string,
+	project_path:      string,
 }
 
 // wake_agent_command_json builds the ephemeral-lifecycle push the reconcile pass
@@ -1253,6 +1265,30 @@ wake_agent_command_json :: proc(chain_id: string, run: []Wake_Agent_Run_Entry, s
 		}
 		if entry.tier != "" {
 			strings.write_string(&b, ",\"tier\":\""); write_service_json_string(&b, entry.tier); strings.write_string(&b, "\"")
+		}
+		// REQ-37: enriched descriptor fields (same JSON keys as launch_command_json_full)
+		// so the bridge takes the full agent-keyed template bootstrap. Emitted only when
+		// non-empty; an old bridge ignores unknown keys and keeps its prior behavior.
+		if entry.agent_id != "" {
+			strings.write_string(&b, ",\"agent_id\":\""); write_service_json_string(&b, entry.agent_id); strings.write_string(&b, "\"")
+		}
+		if entry.agent_name != "" {
+			strings.write_string(&b, ",\"agent_name\":\""); write_service_json_string(&b, entry.agent_name); strings.write_string(&b, "\"")
+		}
+		if entry.chain_id != "" {
+			strings.write_string(&b, ",\"chain_id\":\""); write_service_json_string(&b, entry.chain_id); strings.write_string(&b, "\"")
+		}
+		if entry.chain_title != "" {
+			strings.write_string(&b, ",\"chain_title\":\""); write_service_json_string(&b, entry.chain_title); strings.write_string(&b, "\"")
+		}
+		if entry.coordinator_id != "" {
+			strings.write_string(&b, ",\"coordinator_agent_instance_id\":\""); write_service_json_string(&b, entry.coordinator_id); strings.write_string(&b, "\"")
+		}
+		if entry.project_id != "" {
+			strings.write_string(&b, ",\"project_id\":\""); write_service_json_string(&b, entry.project_id); strings.write_string(&b, "\"")
+		}
+		if entry.project_path != "" {
+			strings.write_string(&b, ",\"project_path\":\""); write_service_json_string(&b, entry.project_path); strings.write_string(&b, "\"")
 		}
 		strings.write_string(&b, "}")   // close entry object
 	}
@@ -1580,11 +1616,25 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 		}
 	}
 
+	// REQ-37 (B1): the instance descriptor the bridge's scheduler wake path reads to
+	// build an enriched launch command (it only knows the instance_id locally). role
+	// mirrors the wake/launch role vocabulary: coordinator > reviewer (current review
+	// focus) > worker.
+	instance_role := "worker"
+	if is_coordinator {
+		instance_role = "coordinator"
+	} else if inst.current_task_role == .Review {
+		instance_role = "reviewer"
+	}
+
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"protocol\":2,\"instance\":{\"agent_instance_id\":\"")
 	write_service_json_string(&b, inst.agent_instance_id)
 	strings.write_string(&b, "\",\"agent_id\":\""); write_service_json_string(&b, agent.agent_id)
+	strings.write_string(&b, "\",\"agent_name\":\""); write_service_json_string(&b, agent.name)
+	strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, instance_role)
 	strings.write_string(&b, "\",\"chain_id\":\""); write_service_json_string(&b, inst.chain_id)
+	strings.write_string(&b, "\",\"chain_title\":\""); write_service_json_string(&b, chain.title)
 	strings.write_string(&b, "\",\"coordinator_agent_instance_id\":\""); write_service_json_string(&b, chain.coordinator_agent_instance_id)
 	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, string(inst.project_id))
 	strings.write_string(&b, "\",\"project_path\":\""); write_service_json_string(&b, inst.project_path)

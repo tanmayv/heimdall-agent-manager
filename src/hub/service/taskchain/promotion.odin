@@ -381,6 +381,13 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		if cf.new_task_id != "" {
 			role := "worker"
 			if cf.new_role == .Review do role = "reviewer"
+			// REQ-37: carry the full descriptor so the bridge takes the agent-keyed
+			// template bootstrap (not the header-only instance fallback). agent_name is
+			// looked up like launch_command_json_full does; the rest come from inst/chain.
+			agent_name := ""
+			if service.agents != nil && inst.agent_id != "" {
+				if ag, ag_ok, _ := iface.agent_get(service.agents, inst.agent_id); ag_ok do agent_name = ag.name
+			}
 			entries := runs[inst.bridge_id]
 			append(&entries, agent.Wake_Agent_Run_Entry{
 				agent_instance_id = cf.instance_id,
@@ -388,6 +395,13 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 				role              = role,
 				provider          = inst.provider,
 				tier              = inst.tier,
+				agent_id          = inst.agent_id,
+				agent_name        = agent_name,
+				chain_id          = string(chain.chain_id),
+				chain_title       = chain.title,
+				coordinator_id    = chain.coordinator_agent_instance_id,
+				project_id        = string(inst.project_id),
+				project_path      = inst.project_path,
 			})
 			runs[inst.bridge_id] = entries
 			note_bridge_local(&bridge_order, &seen_bridge, inst.bridge_id)

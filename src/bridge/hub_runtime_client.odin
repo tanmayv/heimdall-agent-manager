@@ -518,6 +518,18 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 			task_id  := extract_json_string(entry, "task_id", "")
 			provider := extract_json_string(entry, "provider", "")
 			tier     := extract_json_string(entry, "tier", "")
+			// REQ-37: the enriched descriptor fields the hub now carries per run[] entry.
+			// Forwarding them into the synthetic launch_agent payload makes the bridge
+			// take the full agent-keyed template bootstrap instead of the header-only
+			// instance fallback. Missing (old hub) -> empty -> launch fails loudly at the
+			// agent_id guard rather than silently producing a 6-line CLAUDE.md.
+			agent_id       := extract_json_string(entry, "agent_id", "")
+			agent_name     := extract_json_string(entry, "agent_name", "")
+			chain_id       := extract_json_string(entry, "chain_id", "")
+			chain_title    := extract_json_string(entry, "chain_title", "")
+			coordinator_id := extract_json_string(entry, "coordinator_agent_instance_id", "")
+			project_id     := extract_json_string(entry, "project_id", "")
+			project_path   := extract_json_string(entry, "project_path", "")
 
 			if _, has := bridge_runtime_get_launch(instance_id); has {
 				// A launch record exists, but restart via the pty-host's remembered
@@ -528,7 +540,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 				// bridge_runtime_launch_agent_pty_host already closes any registered
 				// instance before re-spawning, so no separate is_registered check.
 				syn_command_id := fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", syn_command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\",\"task_id\":\"", task_id, "\",\"provider\":\"", provider, "\",\"tier\":\"", tier, "\"}}"})
+				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path)
 				defer delete(command_json)
 				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
 				if ok {
@@ -544,7 +556,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 				// resolve it — a top-level-only id aborts the launch at validate. This
 				// mirrors the scheduler sched_wake synthetic launch.
 				syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", syn_command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\",\"task_id\":\"", task_id, "\",\"provider\":\"", provider, "\",\"tier\":\"", tier, "\"}}"})
+				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path)
 				defer delete(command_json)
 				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
 				if ok {
@@ -571,6 +583,42 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 	}
 
 	if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+}
+
+// bridge_wake_launch_command_json builds the synthetic launch_agent command the
+// wake_agent handler feeds to bridge_runtime_launch_agent. It carries the SAME
+// payload keys as the hub's launch_command_json_full so the resulting descriptor
+// (bridge_bootstrap_descriptor_from_launch) is fully populated and the launch takes
+// the agent-keyed template bootstrap path rather than the header-only fallback
+// (REQ-37). Free-text fields (agent_name, chain_title) are JSON-escaped. Fields are
+// emitted unconditionally (empty is harmless) so the descriptor is deterministic.
+bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path: string) -> string {
+	b := strings.builder_make()
+	write_field :: proc(b: ^strings.Builder, first: ^bool, key, val: string) {
+		if !first^ do strings.write_byte(b, ',')
+		first^ = false
+		strings.write_byte(b, '"'); strings.write_string(b, key); strings.write_string(b, "\":\"")
+		bridge_runtime_write_json_string(b, val)
+		strings.write_byte(b, '"')
+	}
+	strings.write_string(&b, "{\"type\":\"launch_agent\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"payload\":{")
+	first := true
+	write_field(&b, &first, "agent_instance_id", instance_id)
+	write_field(&b, &first, "task_id", task_id)
+	write_field(&b, &first, "role", role)
+	write_field(&b, &first, "provider", provider)
+	write_field(&b, &first, "tier", tier)
+	write_field(&b, &first, "agent_id", agent_id)
+	write_field(&b, &first, "agent_name", agent_name)
+	write_field(&b, &first, "chain_id", chain_id)
+	write_field(&b, &first, "chain_title", chain_title)
+	write_field(&b, &first, "coordinator_agent_instance_id", coordinator_id)
+	write_field(&b, &first, "project_id", project_id)
+	write_field(&b, &first, "project_path", project_path)
+	strings.write_string(&b, "}}")
+	return strings.to_string(b)
 }
 
 bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {

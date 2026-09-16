@@ -904,15 +904,12 @@ bridge_bootstrap_launch_materialize :: proc(hub_url, bridge_token, run_dir, brid
 		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "missing hub_url/bridge_token/instance_id"}
 	}
 	if strings.trim_space(d.agent_id) == "" {
-		if strings.trim_space(d.instance_id) != "" {
-			if bridge_bootstrap_fetch_manifest_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider, cache) {
-				return Bridge_Bootstrap_Result{ok = true, stage = "fallback_manifest"}
-			}
-			if bridge_bootstrap_fetch_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider) {
-				return Bridge_Bootstrap_Result{ok = true, stage = "fallback_legacy"}
-			}
-		}
-		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch payload missing agent_id (enriched descriptor required)"}
+		// REQ-37: refuse to launch on an incomplete descriptor rather than fall back to
+		// the header-only instance-endpoint bootstrap (see the matching guard in
+		// bridge_bootstrap_launch_materialize_run_dir). Every launch path supplies
+		// agent_id, so an empty agent_id is a caller bug — fail loudly.
+		fmt.eprintln("bridge bootstrap: refusing launch with empty agent_id (would degrade to header-only bootstrap)", "instance=", d.instance_id)
+		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch descriptor missing agent_id -- refusing degraded header-only bootstrap (REQ-37)"}
 	}
 	provider := d.provider
 	manifest_json, res := bridge_bootstrap_conditional_manifest(hub_url, bridge_token, provider, d, cache)
@@ -931,23 +928,18 @@ bridge_bootstrap_launch_materialize_run_dir :: proc(hub_url, bridge_token, run_d
 		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "missing hub_url/bridge_token/instance_id"}
 	}
 	if strings.trim_space(d.agent_id) == "" {
-		// Minimal descriptor: clean-slate + legacy manifest/content materializers,
-		// which DO write run_dir.
-		bridge_prespawn_clean_slate(strings.trim_right(run_dir, "/"))
-		if bridge_bootstrap_fetch_manifest_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider, cache) {
-			// bridge_bootstrap_fetch_manifest_and_materialize publishes to the
-			// fileset store for wrapper RPCs but ignores run_dir (it was built for
-			// the wrapper path where the wrapper writes to disk). In the pty-host
-			// path we must write the store to disk ourselves.
-			if !bridge_bootstrap_fileset_store_write_run_dir(d.instance_id, run_dir) {
-				return Bridge_Bootstrap_Result{ok = false, stage = "write_run_dir", detail = "fallback_manifest: failed to write fileset to run_dir"}
-			}
-			return Bridge_Bootstrap_Result{ok = true, stage = "fallback_manifest"}
-		}
-		if bridge_bootstrap_fetch_and_materialize(hub_url, bridge_token, d.instance_id, run_dir, bridge_endpoint, agent_token, d.provider) {
-			return Bridge_Bootstrap_Result{ok = true, stage = "fallback_legacy"}
-		}
-		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch payload missing agent_id (enriched descriptor required)"}
+		// REQ-37: refuse to launch on an incomplete descriptor. This branch used to
+		// fall back to the instance-endpoint header-only bootstrap, silently
+		// materializing a 6-line CLAUDE.md/AGENTS.md (all static skills, persona, and
+		// instructions missing) because that endpoint's AGENTS_MD assembly now carries
+		// only the header — the static prose lives in the template blob that the
+		// fallback ignored. Every launch path now supplies agent_id (the hub's
+		// launch_command_json_full, the wake_agent handler's enriched payload, and the
+		// scheduler's bridge_scheduler_fetch_enriched_launch_json), so an empty agent_id
+		// here means the caller is broken. Fail loudly and visibly rather than start an
+		// agent with a degraded bootstrap.
+		fmt.eprintln("bridge bootstrap: refusing launch with empty agent_id (would degrade to header-only bootstrap)", "instance=", d.instance_id)
+		return Bridge_Bootstrap_Result{ok = false, stage = "validate", detail = "launch descriptor missing agent_id -- refusing degraded header-only bootstrap (REQ-37)"}
 	}
 	provider := d.provider
 	manifest_json, res := bridge_bootstrap_conditional_manifest(hub_url, bridge_token, provider, d, cache)
