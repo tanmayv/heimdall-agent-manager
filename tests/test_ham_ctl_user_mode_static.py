@@ -3,7 +3,10 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CTL = ROOT / "src" / "ctl" / "main.odin"
+# Hub user-mode moved out of main.odin into hub_mode.odin; legacy daemon routes
+# moved into legacy/daemon_legacy.odin.
+CTL = ROOT / "src" / "ctl" / "hub_mode.odin"
+LEGACY = ROOT / "src" / "ctl" / "legacy" / "daemon_legacy.odin"
 OLD_WRAPPER = ROOT / "src" / "wrapper"
 
 
@@ -14,6 +17,7 @@ def require(condition: bool, message: str) -> None:
 
 def main() -> None:
     ctl = CTL.read_text(encoding="utf-8")
+    legacy = LEGACY.read_text(encoding="utf-8")
     require("ctl_hub_user_mode" in ctl, "ham-ctl must expose explicit Hub user mode")
     require("hub_user_mode_url" in ctl and "--hub-url" in ctl and "HAM_HUB_URL" in ctl, "Hub user mode must configure Hub URL")
     require("hub_user_mode_token" in ctl and "--user-token" in ctl and "HAM_HUB_USER_TOKEN" in ctl, "Hub user mode must configure user token")
@@ -33,10 +37,11 @@ def main() -> None:
     ]:
         require(marker in ctl, f"missing Hub /api/v1 route marker: {marker}")
 
-    hub_segment = ctl[ctl.index("ctl_hub_user_mode"):ctl.index("ctl_agents_list")]
+    # hub_mode.odin is entirely the Hub user-mode surface.
+    hub_segment = ctl
     require('?token' not in hub_segment and 'access_token' not in hub_segment, "Hub user mode must not put bearer tokens in URL/query")
     require('json_kv("token"' not in hub_segment and 'json_kv("user_token"' not in hub_segment, "Hub user mode must not put bearer tokens in JSON body")
-    require("ROUTE_AGENTS_START" in ctl and 'http.post(daemon_url, "/agents/create"' in ctl, "legacy current-daemon ctl routes must remain present")
+    require("ROUTE_AGENTS_START" in legacy and 'http.post(daemon_url, "/agents/create"' in legacy, "legacy current-daemon ctl routes must remain present")
 
     wrapper_text = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in OLD_WRAPPER.rglob("*.odin"))
     require("HAM_HUB_USER_TOKEN" not in wrapper_text and "--user-token" not in wrapper_text, "old wrapper must not receive Hub user tokens")

@@ -18,7 +18,7 @@ def test_agent_model_service_routes() -> None:
     sql = read(ROOT / "src/hub/repository/sqlite/migrations/002_owner_scoped_core.sql")
     for snippet in ["Agent :: struct", "Agent_Bridge_Support", "owner_user_id", "default_provider", "default_tier", "state"]:
         require(snippet in domain, f"domain missing {snippet}")
-    for snippet in ["require_enabled_support", "resolve_provider_tier", "bridge_supports_provider_tier", "json_value_at", "json_tiers_array_contains", "replace_supports", "request > support override", "agent.default_provider", "default_tier_from_bridge"]:
+    for snippet in ["require_enabled_support", "resolve_provider_tier", "bridge_supports_provider_tier", "json_value_at", "json_tiers_array_contains", "replace_supports", "request > per-bridge override", "agent.default_provider", "default_tier_from_bridge"]:
         require(snippet in service, f"service missing HBR-11 marker {snippet}")
     for route in [
         '"GET", "/api/v1/agents"', '"POST", "/api/v1/agents"', '"PATCH", "/api/v1/agents/*"',

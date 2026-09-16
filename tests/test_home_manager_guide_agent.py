@@ -72,7 +72,9 @@ def main() -> int:
     require("default guide template id", 'template_id = "guide"' in default_cfg)
     require("default guide provider profile", 'provider_profile = "pi"' in default_cfg)
     require("default guide model tier", 'model_tier = "smart"' in default_cfg)
-    require("non-guide sections remain rendered", "[wrapper]" in default_cfg and "[ctl]" in default_cfg and "[daemon]" in default_cfg)
+    # The daemon/wrapper config sections were removed with the ham-daemon/ham-wrapper
+    # architecture (agents now run via ham-pty-host); [ctl] is the surviving non-guide section.
+    require("non-guide sections remain rendered", "[ctl]" in default_cfg)
 
     custom_cfg = render_config('''
       {
@@ -94,7 +96,7 @@ def main() -> int:
     require("custom guide template id", 'template_id = "guide-custom"' in custom_cfg)
     require("custom guide empty provider profile", 'provider_profile = ""' in custom_cfg)
     require("custom guide model tier", 'model_tier = "normal"' in custom_cfg)
-    require("custom render preserves wrapper and ctl", "[wrapper]" in custom_cfg and "[ctl]" in custom_cfg)
+    require("custom render preserves ctl", "[ctl]" in custom_cfg)
 
     print("TEST PASSED: Home Manager guideAgent options render to [guide_agent] TOML")
     return 0

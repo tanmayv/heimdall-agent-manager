@@ -8,7 +8,7 @@
 // cached epoch still matches the current epoch (no re-render, no memories scan),
 // and is forced to re-render (and recompute bootstrap_version) after any write.
 //
-// It intentionally lives in its own leaf package so both the repository/sqlite
+// It intentionally lives in its own leaf package so both the SQLite repository
 // layer (which bumps it) and the agent service (which reads it) can depend on it
 // without creating an import cycle.
 package bootcache

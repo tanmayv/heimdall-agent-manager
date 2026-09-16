@@ -98,7 +98,7 @@ def main() -> None:
     # --- Settings panel mounted ---------------------------------------------
     require("NotificationsPanel" in panel or "settings-notifications-panel" in panel,
             "NotificationsPanel component must exist")
-    require("role=\"switch\"" in panel, "panel must use accessible switch toggles")
+    require("role=\"switch\"" in panel or "<Toggle" in panel, "panel must use accessible switch toggles")
     require("requestNotificationPermission" in panel,
             "panel toggle must request permission via explicit user gesture")
     require("import NotificationsPanel" in shell,

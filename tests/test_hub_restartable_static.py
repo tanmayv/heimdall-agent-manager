@@ -17,7 +17,7 @@ def main():
     require('agent_id, bridge_id, project_id, chain_id, and conversation_id are immutable' in svc and '.Conflict' in svc, 'immutable instance fields must be rejected with conflict')
     require('AgentBridgeSupport' in svc and 'no longer allowlists provider/tier' in svc and 'bridge_supports_provider_tier(bridge, provider, tier)' in svc, 'provider/tier must be validated against the bridge capability matrix')
     require('bridge_runtime_registry_has_live' in svc and 'pinned bridge is offline' in svc, 'restart must require pinned live bridge')
-    require('launch_command_json(command_id, next)' in svc, 'restart/reconfigure must replay bootstrap via launch command')
+    require('launch_command_json_full(service, command_id, next)' in svc, 'restart/reconfigure must replay bootstrap via launch command')
     require('private_conversation' in svc and 'conversation_id = conversation_id' in svc and 'write_bootstrap_messages' in svc, 'HBR-24 requires private chain creation and chain/conversation-aware bootstrap')
     require('chain_id' in svc and 'conversation_id' in svc and 'launch_command_json' in svc, 'launch payload must include immutable chain/conversation ids')
     for route in ['"POST", "/api/v1/agent-instances/*/restart"','"PATCH", "/api/v1/agent-instances/*"']:
