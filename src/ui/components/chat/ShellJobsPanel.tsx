@@ -3,13 +3,17 @@
 // READ-ONLY, pull-model view of an agent INSTANCE's background shell jobs (REQ-16).
 // Agents can run local shell commands on the bridge; when one exceeds 15s the hub
 // records its status/metadata (never output). This panel lists those jobs for the
-// current instance with a manual Refresh button — there is NO auto-poll/streaming.
-// Command output lives only on the bridge host and is never shown here.
+// current instance. A manual Refresh button re-pulls page 1, and the panel also
+// auto-refreshes when the hub reports shell activity for this instance over the
+// WebSocket (REQ-35). Command output lives only on the bridge host and is never
+// shown here.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSelector } from 'react-redux';
 
 import { Icon, IconButton, StatusPill } from '@ui';
 import { useListShellJobsQuery, useFetchShellJobOutputQuery, type ShellJob, type ShellJobStatus } from '../../api/endpoints/shellJobs';
+import { selectAgentLastActionAt } from '../../store/agentActivitySlice';
 
 export type ShellJobsPanelProps = {
   agentInstanceId: string;
@@ -69,6 +73,12 @@ export default function ShellJobsPanel({
 
   const [cursor, setCursor] = useState<string>('');
   const [accJobs, setAccJobs] = useState<ShellJob[]>([]);
+  // Monotonic counter bumped on every user-triggered / auto refresh. It is a
+  // dependency of the accumulation effect below so a refresh always re-runs the
+  // page-1 replacement branch — even when RTK Query's structuralSharing returns
+  // the SAME `data` reference (identical response), which would otherwise leave
+  // the effect dormant and the freshly-cleared list empty (REQ-35).
+  const [refreshKey, setRefreshKey] = useState(0);
   const prevInstanceId = useRef<string>('');
 
   const { data, isLoading, isFetching, error, refetch } = useListShellJobsQuery(
@@ -93,7 +103,9 @@ export default function ShellJobsPanel({
         });
       }
     }
-  }, [data, agentInstanceId, cursor]);
+    // refreshKey is intentionally a dep: it forces the page-1 replacement branch
+    // to re-run after a refresh even when `data` keeps the same reference.
+  }, [data, agentInstanceId, cursor, refreshKey]);
 
   const [showOutput, setShowOutput] = useState<Record<string, boolean>>({});
 
@@ -101,10 +113,38 @@ export default function ShellJobsPanel({
   const errorText = error ? String((error as any)?.error || (error as any)?.data || 'Failed to load background jobs') : '';
 
   function handleRefresh() {
+    // Reset to page 1 and force a network re-pull. Bumping refreshKey guarantees
+    // the accumulation effect re-runs its replacement branch even if the fetch
+    // returns a structurally-identical response (same `data` reference).
     setCursor('');
-    setAccJobs([]);
+    setRefreshKey((k) => k + 1);
     void refetch();
   }
+
+  // Auto-refresh (REQ-35): the hub broadcasts an `agent_action` WS event with
+  // action `shell_cmd_report` whenever a background job starts (>=15s running
+  // report) or finishes; wsInvalidation routes it into the transient
+  // agentActivity slice, bumping this instance's lastActionAt. When that time
+  // advances while the panel is mounted, re-pull page 1 so new/updated jobs
+  // appear without a manual click. Other agent_action kinds also bump the same
+  // clock — an occasional harmless extra list refresh, never a stale panel.
+  const lastActionAt = useSelector((s) => selectAgentLastActionAt(s, agentInstanceId));
+  const seenActionAt = useRef<number>(0);
+  useEffect(() => {
+    // Prime the baseline on (re)mount / instance switch so we don't refetch for
+    // activity that predates the panel being opened.
+    seenActionAt.current = lastActionAt;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentInstanceId]);
+  useEffect(() => {
+    if (!agentInstanceId) return;
+    if (lastActionAt > seenActionAt.current) {
+      seenActionAt.current = lastActionAt;
+      handleRefresh();
+    }
+    // handleRefresh is stable enough for this effect; only the clock matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastActionAt, agentInstanceId]);
 
   const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-[#0b0d11]';
 
