@@ -73,6 +73,7 @@ main :: proc() {
 	bridge_config = bridge_config_from_args(os.args)
 	bridge_fs_init(bridge_config.fs_root, bridge_config.fs_read_page_bytes)
 	bridge_provider_store_init()
+	bridge_provider_startup_log()
 	bootstrap_cache_init(&bootstrap_global_cache, bridge_config.data_dir, bridge_config.bootstrap_cache_max_bytes)
 	if has_flag(os.args, "--bootstrap-fetch") {
 		instance_id := option_value(os.args, "--instance-id", "")

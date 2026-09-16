@@ -8,7 +8,7 @@ import cfg_lib "odin_test:lib/config"
 import agent_runtime "odin_test:lib/agent_runtime"
 
 Bridge_Provider_Source :: enum {
-	Config,
+	Seed,
 	Store,
 	Merged,
 }
@@ -29,6 +29,7 @@ Bridge_Provider_Profile :: struct {
 	use_random_dir: bool,
 	skill_dir: string,
 	bootstrap_file_name: string,
+	logo: string,
 	models: cfg_lib.Model_Tiers_Config,
 	startup_detection: cfg_lib.Startup_Detection_Config,
 	activity_detection: cfg_lib.Activity_Detection_Config,
@@ -60,6 +61,8 @@ Bridge_Provider_Override :: struct {
 	skill_dir_set: bool,
 	bootstrap_file_name: string,
 	bootstrap_file_name_set: bool,
+	logo: string,
+	logo_set: bool,
 	models: cfg_lib.Model_Tiers_Config,
 	models_flag_set: bool,
 	models_cheap_set: bool,
@@ -92,12 +95,37 @@ bridge_provider_overrides: [dynamic]Bridge_Provider_Override
 
 bridge_provider_store_init :: proc() {
 	sync.mutex_lock(&bridge_provider_mutex)
-	defer sync.mutex_unlock(&bridge_provider_mutex)
-	if bridge_provider_store_loaded do return
+	if bridge_provider_store_loaded {
+		sync.mutex_unlock(&bridge_provider_mutex)
+		return
+	}
 	bridge_provider_overrides = make([dynamic]Bridge_Provider_Override)
 	bridge_provider_store_path_value = bridge_provider_store_path()
 	bridge_provider_load_unlocked()
+	need_save := bridge_provider_autodetect_unlocked()
 	bridge_provider_store_loaded = true
+	sync.mutex_unlock(&bridge_provider_mutex)
+	if need_save do bridge_provider_save_overrides()
+}
+
+bridge_provider_autodetect_unlocked :: proc() -> bool {
+	seeds := bridge_provider_seed_data()
+	any_added := false
+	for seed in seeds {
+		if len(seed.command) == 0 do continue
+		exec_name := seed.command[0]
+		if _, has := bridge_provider_override_for_name_unlocked(seed.name); has do continue
+		found := bridge_runtime_find_on_path(exec_name)
+		if found == "" do continue
+		override := Bridge_Provider_Override{
+			name        = strings.clone(seed.name),
+			command     = bridge_clone_string_slice([]string{found}),
+			command_set = true,
+		}
+		bridge_provider_upsert_override_unlocked(override)
+		any_added = true
+	}
+	return any_added
 }
 
 bridge_provider_store_path :: proc() -> string {
@@ -175,8 +203,10 @@ bridge_effective_provider_profiles :: proc() -> []Bridge_Provider_Profile {
 	sync.mutex_lock(&bridge_provider_mutex)
 	defer sync.mutex_unlock(&bridge_provider_mutex)
 	profiles := make([dynamic]Bridge_Provider_Profile)
-	for cmd in bridge_config.agent_commands {
-		profile := bridge_provider_profile_from_config(cmd)
+	seeds := bridge_provider_seed_data()
+	// Pass 1: seeds (apply store override on top if exists)
+	for seed in seeds {
+		profile := bridge_provider_profile_from_seed(seed)
 		if override, ok := bridge_provider_override_for_name_unlocked(profile.name); ok {
 			profile = bridge_provider_apply_override(profile, override)
 			profile.source = .Merged
@@ -184,8 +214,11 @@ bridge_effective_provider_profiles :: proc() -> []Bridge_Provider_Profile {
 		}
 		append(&profiles, profile)
 	}
+	// Pass 2: store-only overrides not covered by any seed
 	for override in bridge_provider_overrides {
-		if bridge_config_agent_command_exists(override.name) do continue
+		already := false
+		for seed in seeds { if seed.name == override.name { already = true; break } }
+		if already do continue
 		profile := bridge_provider_profile_from_override(override)
 		profile.source = .Store
 		profile.has_override = true
@@ -194,70 +227,35 @@ bridge_effective_provider_profiles :: proc() -> []Bridge_Provider_Profile {
 	return profiles[:]
 }
 
-bridge_config_agent_command_exists :: proc(name: string) -> bool {
-	for cmd in bridge_config.agent_commands { if cmd.name == name do return true }
-	return false
-}
-
 bridge_provider_override_for_name_unlocked :: proc(name: string) -> (Bridge_Provider_Override, bool) {
 	for override in bridge_provider_overrides { if override.name == name do return override, true }
 	return {}, false
 }
 
-bridge_provider_profile_from_config :: proc(cmd: cfg_lib.Agent_Command_Config) -> Bridge_Provider_Profile {
+bridge_provider_profile_from_seed :: proc(seed: Bridge_Provider_Seed) -> Bridge_Provider_Profile {
 	return Bridge_Provider_Profile{
-		name = strings.clone(cmd.name),
-		enabled = true,
-		source = .Config,
-		command = bridge_clone_string_slice(cmd.command),
-		yolo_flags = bridge_clone_string_slice(cmd.yolo_flags),
-		prompt_flags = bridge_clone_string_slice(cmd.prompt_flags),
-		starter_prompt = strings.clone(cmd.starter_prompt),
-		prompt_delivery = strings.clone(cmd.prompt_delivery),
-		prompt_tmux_delay_ms = cmd.prompt_tmux_delay_ms,
-		prompt_tmux_enter = cmd.prompt_tmux_enter,
-		agent_run_dir = strings.clone(cmd.agent_run_dir),
-		use_random_dir = cmd.use_random_dir,
-		skill_dir = bridge_provider_skill_dir_from_config(cmd),
-		bootstrap_file_name = bridge_provider_bootstrap_file_name_from_config(cmd),
-		models = cmd.models,
-		startup_detection = cmd.startup_detection,
-		activity_detection = cmd.activity_detection,
+		name                = strings.clone(seed.name),
+		enabled             = true,
+		source              = .Seed,
+		logo                = strings.clone(seed.logo),
+		command             = bridge_clone_string_slice(seed.command),
+		prompt_flags        = bridge_clone_string_slice(seed.prompt_flags),
+		yolo_flags          = bridge_clone_string_slice(seed.yolo_flags),
+		starter_prompt      = strings.clone(seed.starter_prompt),
+		prompt_delivery     = strings.clone(seed.prompt_delivery),
+		skill_dir           = strings.clone(seed.skill_dir),
+		bootstrap_file_name = strings.clone(seed.bootstrap_file_name),
+		startup_detection   = seed.startup_detection,
+		activity_detection  = cfg_lib.default_activity_detection_config(),
 	}
-}
-
-bridge_provider_skill_dir_from_config :: proc(cmd: cfg_lib.Agent_Command_Config) -> string {
-	if cmd.bootstrap.features != nil {
-		for key, feature in cmd.bootstrap.features {
-			if strings.to_lower(key) == "skills" && strings.trim_space(feature.relative_dir) != "" do return strings.clone(feature.relative_dir)
-		}
-	}
-	return bridge_provider_default_skill_dir(cmd.name)
 }
 
 bridge_provider_default_skill_dir :: proc(provider: string) -> string {
 	name := strings.to_lower(strings.trim_space(provider))
-	switch name {
-	case "pi":
-		return ".pi/skills"
-	case "antigravity", "agy":
-		return ".agents/skills"
+	for seed in bridge_provider_seed_data() {
+		if strings.to_lower(seed.name) == name do return seed.skill_dir
 	}
 	return "skills"
-}
-
-// bridge_provider_bootstrap_file_name_from_config surfaces the configured
-// bootstrap filename (bootstrap.features['AGENTS_MD'].name) so the UI can show
-// and edit it. Empty means "use the profile default" (the wrapper picks
-// CLAUDE.md for the claude profile, AGENTS.md otherwise); we deliberately do not
-// synthesize that default here so a blank value round-trips as blank.
-bridge_provider_bootstrap_file_name_from_config :: proc(cmd: cfg_lib.Agent_Command_Config) -> string {
-	if cmd.bootstrap.features != nil {
-		for key, feature in cmd.bootstrap.features {
-			if strings.to_upper(key) == "AGENTS_MD" && strings.trim_space(feature.name) != "" do return strings.clone(feature.name)
-		}
-	}
-	return ""
 }
 
 bridge_provider_profile_from_override :: proc(override: Bridge_Provider_Override) -> Bridge_Provider_Profile {
@@ -285,6 +283,7 @@ bridge_provider_apply_override :: proc(profile: Bridge_Provider_Profile, overrid
 	if override.use_random_dir_set do result.use_random_dir = override.use_random_dir
 	if override.skill_dir_set do result.skill_dir = strings.clone(override.skill_dir)
 	if override.bootstrap_file_name_set do result.bootstrap_file_name = strings.clone(override.bootstrap_file_name)
+	if override.logo_set do result.logo = strings.clone(override.logo)
 	if override.models_flag_set do result.models.flag = strings.clone(override.models.flag)
 	if override.models_cheap_set do result.models.cheap = strings.clone(override.models.cheap)
 	if override.models_normal_set do result.models.normal = strings.clone(override.models.normal)
@@ -439,6 +438,7 @@ bridge_provider_write_profile_json :: proc(b: ^strings.Builder, profile: Bridge_
 	strings.write_string(b, "\",\"use_random_dir\":"); strings.write_string(b, "true" if profile.use_random_dir else "false")
 	strings.write_string(b, ",\"skill_dir\":\""); json_write_string(b, profile.skill_dir); strings.write_byte(b, '"')
 	strings.write_string(b, ",\"bootstrap_file_name\":\""); json_write_string(b, profile.bootstrap_file_name); strings.write_byte(b, '"')
+	strings.write_string(b, ",\"logo\":\""); json_write_string(b, profile.logo); strings.write_byte(b, '"')
 	strings.write_string(b, ",\"startup_detection\":"); bridge_provider_write_startup_json(b, profile.startup_detection)
 	strings.write_string(b, ",\"activity_detection\":"); bridge_provider_write_activity_json(b, profile.activity_detection)
 	strings.write_string(b, "}")
@@ -446,11 +446,11 @@ bridge_provider_write_profile_json :: proc(b: ^strings.Builder, profile: Bridge_
 
 bridge_provider_source_string :: proc(source: Bridge_Provider_Source) -> string {
 	switch source {
-	case .Config: return "config"
+	case .Seed: return "seed"
 	case .Store: return "store"
 	case .Merged: return "merged"
 	}
-	return "config"
+	return "seed"
 }
 
 bridge_provider_write_override_json :: proc(b: ^strings.Builder, override: Bridge_Provider_Override) {
@@ -470,6 +470,7 @@ bridge_provider_write_override_json :: proc(b: ^strings.Builder, override: Bridg
 	if override.use_random_dir_set { bridge_provider_write_json_field_prefix(b, &first, "use_random_dir"); strings.write_string(b, "true" if override.use_random_dir else "false") }
 	if override.skill_dir_set { bridge_provider_write_json_field_prefix(b, &first, "skill_dir"); strings.write_byte(b, '"'); json_write_string(b, override.skill_dir); strings.write_byte(b, '"') }
 	if override.bootstrap_file_name_set { bridge_provider_write_json_field_prefix(b, &first, "bootstrap_file_name"); strings.write_byte(b, '"'); json_write_string(b, override.bootstrap_file_name); strings.write_byte(b, '"') }
+	if override.logo_set { bridge_provider_write_json_field_prefix(b, &first, "logo"); strings.write_byte(b, '"'); json_write_string(b, override.logo); strings.write_byte(b, '"') }
 	if bridge_provider_override_has_models(override) {
 		bridge_provider_write_json_field_prefix(b, &first, "models")
 		bridge_provider_write_override_models_json(b, override)
@@ -602,6 +603,7 @@ bridge_provider_override_from_json_with_name :: proc(obj, fallback_name: string)
 	if v, ok := bridge_provider_json_extract_bool(obj, "use_random_dir"); ok { o.use_random_dir = v; o.use_random_dir_set = true }
 	if v, ok := bridge_provider_json_extract_string_set(obj, "skill_dir"); ok { o.skill_dir = v; o.skill_dir_set = true }
 	if v, ok := bridge_provider_json_extract_string_set(obj, "bootstrap_file_name"); ok { o.bootstrap_file_name = strings.trim_space(v); o.bootstrap_file_name_set = true }
+	if v, ok := bridge_provider_json_extract_string_set(obj, "logo"); ok { o.logo = v; o.logo_set = true }
 	if models_obj, ok := bridge_provider_json_extract_object(obj, "models"); ok {
 		if v, got := bridge_provider_json_extract_string_set(models_obj, "flag"); got { o.models.flag = v; o.models_flag_set = true }
 		if v, got := bridge_provider_json_extract_string_set(models_obj, "cheap"); got { o.models.cheap = v; o.models_cheap_set = true }
@@ -647,8 +649,8 @@ bridge_provider_upsert_override_json :: proc(name, body: string) -> (Bridge_Prov
 }
 
 bridge_provider_candidate_profile :: proc(override: Bridge_Provider_Override) -> (Bridge_Provider_Profile, bool) {
-	for cmd in bridge_config.agent_commands {
-		if cmd.name == override.name do return bridge_provider_apply_override(bridge_provider_profile_from_config(cmd), override), true
+	for seed in bridge_provider_seed_data() {
+		if seed.name == override.name do return bridge_provider_apply_override(bridge_provider_profile_from_seed(seed), override), true
 	}
 	return bridge_provider_profile_from_override(override), true
 }
@@ -657,7 +659,9 @@ bridge_provider_delete_override :: proc(name: string) -> (bool, string) {
 	bridge_provider_store_init()
 	trimmed := strings.trim_space(name)
 	if trimmed == "" do return false, "provider name is required"
-	if bridge_config_agent_command_exists(trimmed) do return false, "deleting config-backed providers or resetting overrides is deferred in v1"
+	for seed in bridge_provider_seed_data() {
+		if seed.name == trimmed do return false, "deleting seed-backed providers or resetting overrides is deferred in v1"
+	}
 	deleted := false
 	sync.mutex_lock(&bridge_provider_mutex)
 	for i in 0..<len(bridge_provider_overrides) {
@@ -943,4 +947,21 @@ bridge_shell_write_quoted :: proc(b: ^strings.Builder, arg: string) {
 		}
 	}
 	strings.write_byte(b, '\'')
+}
+
+bridge_provider_startup_log :: proc() {
+	profiles := bridge_effective_provider_profiles()
+	b := strings.builder_make()
+	strings.write_string(&b, "bridge providers: ")
+	strings.write_string(&b, fmt.tprintf("%d detected [", len(profiles)))
+	for profile, i in profiles {
+		if i > 0 do strings.write_byte(&b, ' ')
+		strings.write_string(&b, profile.name)
+		strings.write_byte(&b, '(')
+		strings.write_string(&b, bridge_provider_source_string(profile.source))
+		if profile.has_override do strings.write_string(&b, "/auto")
+		strings.write_byte(&b, ')')
+	}
+	strings.write_byte(&b, ']')
+	fmt.println(strings.to_string(b))
 }
