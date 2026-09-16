@@ -1208,7 +1208,8 @@ write_shell_job_json :: proc(b: ^strings.Builder, job: domain.Shell_Job) {
 	strings.write_string(b, `","agent_instance_id":"`)
 	write_handler_json_string(b, job.agent_instance_id)
 	strings.write_string(b, `","cmd":"`)
-	write_handler_json_string(b, job.cmd)
+	cmd_display := job.cmd[:min(len(job.cmd), 200)]
+	write_handler_json_string(b, cmd_display)
 	strings.write_string(b, `","status":"`)
 	write_handler_json_string(b, job.status)
 	strings.write_string(b, `","started_at":"`)

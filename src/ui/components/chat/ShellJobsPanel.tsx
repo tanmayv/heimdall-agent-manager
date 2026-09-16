@@ -161,7 +161,7 @@ export default function ShellJobsPanel({
                 className="rounded-xl border border-white/10 bg-black/20 p-3 transition-colors hover:bg-white/[0.05]"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <code className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-100">{job.cmd || '(no command)'}</code>
+                  <code className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-100" title={job.cmd}>{job.cmd || '(no command)'}</code>
                   <StatusPill tone={statusTone(job.status)} className="shrink-0 uppercase">{job.status}</StatusPill>
                 </div>
                 <div className="mt-1 truncate font-mono text-[11px] text-zinc-500">{job.exec_id}</div>
