@@ -46,13 +46,12 @@ let
     // lib.optionalAttrs cfg.ctl.enable     { ctl     = { daemon_url = cfg.ctl.daemonUrl; }; };
 
   resolvePackage = name:
-    let
-      basePkg = self.packages.${system}.${
+    if name == "agents" then hamAgentsPkg
+    else
+      self.packages.${system}.${
         { hub = "ham-hub"; bridge = "ham-bridge"; ctl = "ham-ctl";
           test-agent = "ham-test-agent"; ui = "heimdall"; pty-host = "ham-pty-host"; }.${name}
       };
-    in
-    basePkg;
 
   bridgeInstanceType = lib.types.submodule ({ name, ... }: {
     options = {
@@ -102,6 +101,19 @@ let
   bridgeActualLocalEndpointPort = bridgeCfg:
     if bridgeCfg.localEndpointPort != null then bridgeCfg.localEndpointPort else bridgeCfg.port + 1;
 
+  hamAgentsPkg =
+    let
+      entry =
+        if enabledBridgeEntries != [] then lib.head enabledBridgeEntries
+        else { config = bridgePrimaryConfig; };
+    in
+    pkgs.writeShellScriptBin "ham-agents" ''
+      #!/usr/bin/env bash
+      set -euo pipefail
+      SOCKET="''${HAM_PTY_HOST_SOCKET:-${entry.config.localRunDir}/pty-host-port-${toString (bridgeActualLocalEndpointPort entry.config)}.sock}"
+      exec ${ptyHostPkg}/bin/ham-pty-host --socket "$SOCKET" "$@"
+    '';
+
   bridgeCommandArgsFor = bridgeCfg: [
     "${bridgePkg}/bin/ham-bridge"
     "--hub" bridgeCfg.hubUrl
@@ -148,7 +160,7 @@ in
     enable = lib.mkEnableOption "Heimdall Agent Manager";
 
     packageNames = lib.mkOption {
-      type    = lib.types.listOf (lib.types.enum [ "hub" "bridge" "ctl" "test-agent" "ui" "pty-host" ]);
+      type    = lib.types.listOf (lib.types.enum [ "hub" "bridge" "ctl" "test-agent" "ui" "pty-host" "agents" ]);
       default = [ "hub" "bridge" "ctl" "pty-host" ];
       example = [ "hub" "bridge" "ctl" "pty-host" "ui" ];
       description = ''
@@ -158,6 +170,7 @@ in
         "ctl"        → ham-ctl     (+ bc-odinctl symlink)
         "test-agent" → ham-test-agent
         "pty-host"   → ham-pty-host
+        "agents"     → ham-agents wrapper
         "ui"         → heimdall Electron app
       '';
     };
@@ -350,6 +363,7 @@ in
         ++ lib.optional anyBridgeEnabled bridgePkg
         ++ lib.optional anyBridgeEnabled ptyHostPkg
         ++ lib.optional anyBridgeEnabled ctlPkg
+        ++ lib.optional anyBridgeEnabled hamAgentsPkg
         ++ cfg.extraPackages;
 
       xdg.configFile."heimdall/config.toml".source =

@@ -65,6 +65,10 @@ pub enum SelectorAction {
     Cancel,
     /// Confirm selection and switch to the chosen agent instance id.
     Switch(String),
+    /// Kill/close the selected agent instance id.
+    Kill(String),
+    /// Restart the selected agent instance id.
+    Restart(String),
 }
 
 /// Pure state machine for the fullscreen agent selector.
@@ -169,6 +173,20 @@ impl SelectorState {
             Key::Enter => {
                 if let Some(item) = self.selected_item() {
                     SelectorAction::Switch(item.instance_id.clone())
+                } else {
+                    SelectorAction::None
+                }
+            }
+            Key::Ctrl('x') => {
+                if let Some(item) = self.selected_item() {
+                    SelectorAction::Kill(item.instance_id.clone())
+                } else {
+                    SelectorAction::None
+                }
+            }
+            Key::Ctrl('r') => {
+                if let Some(item) = self.selected_item() {
+                    SelectorAction::Restart(item.instance_id.clone())
                 } else {
                     SelectorAction::None
                 }
@@ -386,6 +404,34 @@ mod tests {
         assert_eq!(state.handle_key(Key::Esc), SelectorAction::Cancel);
         assert_eq!(state.handle_key(Key::Ctrl('c')), SelectorAction::Cancel);
         assert_eq!(state.handle_key(Key::Ctrl(' ')), SelectorAction::Cancel);
+    }
+
+    #[test]
+    fn test_selector_kill_and_restart() {
+        let items = sample_items();
+        let mut state = SelectorState::new("inst_alpha", items);
+        assert_eq!(state.selected, 0);
+
+        // Ctrl-x triggers Kill on the highlighted agent
+        assert_eq!(
+            state.handle_key(Key::Ctrl('x')),
+            SelectorAction::Kill("inst_alpha".into())
+        );
+
+        // Move to inst_beta
+        state.handle_key(Key::Down);
+        assert_eq!(state.selected, 1);
+
+        // Ctrl-r triggers Restart on the highlighted agent
+        assert_eq!(
+            state.handle_key(Key::Ctrl('r')),
+            SelectorAction::Restart("inst_beta".into())
+        );
+
+        // Empty list does not emit Kill or Restart
+        let mut empty_state = SelectorState::new("inst_none", Vec::new());
+        assert_eq!(empty_state.handle_key(Key::Ctrl('x')), SelectorAction::None);
+        assert_eq!(empty_state.handle_key(Key::Ctrl('r')), SelectorAction::None);
     }
 
     #[test]

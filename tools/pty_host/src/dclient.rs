@@ -16,11 +16,11 @@
 //! The underlying screen content and colors remain completely uncorrupted.
 //! Selecting an agent performs `Detach{old}` + `Attach{new}` + `Resize`.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -42,11 +42,336 @@ const DETACH_BYTE: u8 = 0x1c;
 /// Byte that triggers the agent selector overlay (Ctrl-Space / NUL / 0x00).
 const SELECTOR_BYTE: u8 = 0x00;
 
+/// Byte that triggers tmux-like prefix command navigation (Ctrl-b / 0x02).
+const PREFIX_BYTE: u8 = 0x02;
+
+/// Actions emitted by the Ctrl-b prefix state machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrefixAction {
+    /// Raw bytes to forward directly to the child PTY.
+    Passthrough(Vec<u8>),
+    /// Switch to the next agent in the list ((idx + 1) % len).
+    NextAgent,
+    /// Switch to the previous agent in the list ((idx + len - 1) % len).
+    PrevAgent,
+    /// Open the alternate-buffer agent selector overlay (Ctrl-Space).
+    OpenSelector,
+    /// Detach cleanly from the host/daemon (Ctrl-\).
+    Detach,
+}
+
+/// Internal state of the Ctrl-b prefix state machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixState {
+    Idle,
+    PrefixPending(Instant),
+}
+
+/// Prefix state machine handling Ctrl-b navigation and raw terminal passthrough.
+pub struct PrefixStateMachine {
+    state: PrefixState,
+    timeout: Duration,
+}
+
+impl Default for PrefixStateMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrefixStateMachine {
+    pub const PREFIX_BYTE: u8 = PREFIX_BYTE;
+    pub const DETACH_BYTE: u8 = DETACH_BYTE;
+    pub const SELECTOR_BYTE: u8 = SELECTOR_BYTE;
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(1000);
+
+    pub fn new() -> Self {
+        Self {
+            state: PrefixState::Idle,
+            timeout: Self::DEFAULT_TIMEOUT,
+        }
+    }
+
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            state: PrefixState::Idle,
+            timeout,
+        }
+    }
+
+    pub fn state(&self) -> PrefixState {
+        self.state
+    }
+
+    pub fn time_until_timeout(&self, now: Instant) -> Option<Duration> {
+        match self.state {
+            PrefixState::Idle => None,
+            PrefixState::PrefixPending(start) => {
+                let elapsed = now.saturating_duration_since(start);
+                Some(self.timeout.saturating_sub(elapsed))
+            }
+        }
+    }
+
+    pub fn check_timeout(&mut self, now: Instant) -> Vec<PrefixAction> {
+        if let PrefixState::PrefixPending(start) = self.state {
+            if now.saturating_duration_since(start) >= self.timeout {
+                self.state = PrefixState::Idle;
+                return vec![PrefixAction::Passthrough(vec![Self::PREFIX_BYTE])];
+            }
+        }
+        Vec::new()
+    }
+
+    pub fn feed_byte(&mut self, b: u8, now: Instant) -> Vec<PrefixAction> {
+        let mut actions = Vec::new();
+        if let PrefixState::PrefixPending(start) = self.state {
+            if now.saturating_duration_since(start) >= self.timeout {
+                self.state = PrefixState::Idle;
+                actions.push(PrefixAction::Passthrough(vec![Self::PREFIX_BYTE]));
+            }
+        }
+
+        match self.state {
+            PrefixState::Idle => {
+                match b {
+                    Self::DETACH_BYTE => actions.push(PrefixAction::Detach),
+                    Self::SELECTOR_BYTE => actions.push(PrefixAction::OpenSelector),
+                    Self::PREFIX_BYTE => self.state = PrefixState::PrefixPending(now),
+                    _ => actions.push(PrefixAction::Passthrough(vec![b])),
+                }
+            }
+            PrefixState::PrefixPending(_) => {
+                self.state = PrefixState::Idle;
+                match b {
+                    b'n' | 0x0e => actions.push(PrefixAction::NextAgent),
+                    b'p' | 0x10 => actions.push(PrefixAction::PrevAgent),
+                    Self::PREFIX_BYTE => {
+                        actions.push(PrefixAction::Passthrough(vec![Self::PREFIX_BYTE]));
+                    }
+                    Self::DETACH_BYTE => {
+                        actions.push(PrefixAction::Passthrough(vec![Self::PREFIX_BYTE]));
+                        actions.push(PrefixAction::Detach);
+                    }
+                    Self::SELECTOR_BYTE => {
+                        actions.push(PrefixAction::Passthrough(vec![Self::PREFIX_BYTE]));
+                        actions.push(PrefixAction::OpenSelector);
+                    }
+                    _ => {
+                        actions.push(PrefixAction::Passthrough(vec![Self::PREFIX_BYTE, b]));
+                    }
+                }
+            }
+        }
+        actions
+    }
+
+    pub fn feed_chunk(&mut self, chunk: &[u8], now: Instant) -> Vec<PrefixAction> {
+        let mut actions = Vec::new();
+        for &b in chunk {
+            actions.extend(self.feed_byte(b, now));
+        }
+        Self::coalesce_actions(actions)
+    }
+
+    pub fn coalesce_actions(actions: Vec<PrefixAction>) -> Vec<PrefixAction> {
+        let mut result = Vec::new();
+        for action in actions {
+            match action {
+                PrefixAction::Passthrough(data) => {
+                    if let Some(PrefixAction::Passthrough(ref mut prev_data)) = result.last_mut() {
+                        prev_data.extend(data);
+                    } else {
+                        result.push(PrefixAction::Passthrough(data));
+                    }
+                }
+                other => result.push(other),
+            }
+        }
+        result
+    }
+}
+
+/// Cycle through registered agents in `agent_list` relative to `current_instance`.
+///
+/// If `forward` is true: (current_idx + 1) % len.
+/// If `forward` is false: (current_idx + len - 1) % len.
+/// Returns `None` if `agent_list` is empty.
+pub fn cycle_agent(
+    agent_list: &[AgentInfo],
+    current_instance: &str,
+    forward: bool,
+) -> Option<String> {
+    if agent_list.is_empty() {
+        return None;
+    }
+    let len = agent_list.len();
+    let current_idx = agent_list
+        .iter()
+        .position(|a| a.instance_id == current_instance)
+        .unwrap_or(0);
+    let next_idx = if forward {
+        (current_idx + 1) % len
+    } else {
+        (current_idx + len - 1) % len
+    };
+    Some(agent_list[next_idx].instance_id.clone())
+}
+
+/// Switch the active PTY subscription from `old_inst` to `new_inst`.
+///
+/// Detaches `old_inst`, attaches `new_inst`, and performs a micro-resize
+/// nudge (cols - 1 then cols) to ensure the child process receives a winsize
+/// delta and forces a full redraw.
+/// If `old_inst == new_inst`, it only performs the micro-resize nudge.
+pub fn switch_agent(
+    ws: &mut UnixStream,
+    old_inst: &str,
+    new_inst: &str,
+) -> Result<()> {
+    if old_inst != new_inst {
+        let _ = dproto::write_ctl_msg(ws, &CtlMsg::Detach { instance: old_inst.to_string() });
+        let _ = dproto::write_ctl_msg(ws, &CtlMsg::Attach { instance: new_inst.to_string() });
+    }
+    if let Some((rows, cols)) = current_winsize() {
+        let _ = dproto::write_ctl_msg(
+            ws,
+            &CtlMsg::Resize {
+                instance: new_inst.to_string(),
+                rows,
+                cols: cols.saturating_sub(1),
+            },
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = dproto::write_ctl_msg(
+            ws,
+            &CtlMsg::Resize {
+                instance: new_inst.to_string(),
+                rows,
+                cols,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn spawn_stdin_reader(
+    done: Arc<AtomicBool>,
+    in_tx: std::sync::mpsc::Sender<Vec<u8>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while !done.load(Ordering::SeqCst) {
+            let mut pfd = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let res = unsafe { libc::poll(&mut pfd, 1, 50) };
+            if res > 0 && (pfd.revents & libc::POLLIN) != 0 {
+                match unsafe {
+                    libc::read(
+                        libc::STDIN_FILENO,
+                        buf.as_mut_ptr() as *mut libc::c_void,
+                        buf.len(),
+                    )
+                } {
+                    n if n > 0 => {
+                        if in_tx.send(buf[..n as usize].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    0 => break, // EOF
+                    _ => {}
+                }
+            }
+        }
+    })
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Connect to the daemon socket at `socket_path`, fetch registered agents, and
+/// run the fullscreen alternate-buffer agent selector overlay.
+///
+/// Returns `Some(instance_id)` if an agent was selected, or `None` if cancelled
+/// (e.g. Esc or Ctrl-C).
+pub fn select_instance(socket_path: &std::path::Path) -> Result<Option<String>> {
+    let stream = UnixStream::connect(socket_path)
+        .with_context(|| format!("connect to daemon socket {socket_path:?}"))?;
+    let write_stream = stream.try_clone().context("clone socket")?;
+    let read_stream = stream;
+
+    // Raw mode so keystrokes pass through untouched to the selector.
+    let _raw = RawGuard::enable().context("enable raw mode")?;
+
+    let current_inst_arc = Arc::new(Mutex::new(String::new()));
+    let write_stream = Arc::new(Mutex::new(write_stream));
+    let done = Arc::new(AtomicBool::new(false));
+    let agent_list = Arc::new(Mutex::new(Vec::<AgentInfo>::new()));
+
+    // Request initial agent list
+    {
+        let mut ws = write_stream.lock().unwrap();
+        dproto::write_ctl_msg(&mut *ws, &CtlMsg::List)?;
+    }
+
+    // Spawn background reader thread to receive daemon replies (AgentList)
+    let reader = {
+        let done = Arc::clone(&done);
+        let agent_list = Arc::clone(&agent_list);
+        let mut read_stream = read_stream;
+        std::thread::spawn(move || {
+            loop {
+                if done.load(Ordering::SeqCst) {
+                    break;
+                }
+                match dproto::read_ctl_reply(&mut read_stream) {
+                    Ok(Some(CtlReply::AgentList(list))) => {
+                        *agent_list.lock().unwrap() = list;
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        done.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+            }
+        })
+    };
+
+    // Stdin reader thread -> channel using poll for prompt shutdown on exit
+    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let stdin_reader = spawn_stdin_reader(Arc::clone(&done), in_tx);
+
+    // Give daemon up to 50ms to deliver initial AgentList before drawing
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(50) {
+        if !agent_list.lock().unwrap().is_empty() || done.load(Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let chosen = run_selector_overlay(
+        &in_rx,
+        &done,
+        &agent_list,
+        &current_inst_arc,
+        &write_stream,
+    );
+
+    done.store(true, Ordering::SeqCst);
+    let _ = write_stream.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    let _ = stdin_reader.join();
+    let _ = reader.join();
+
+    Ok(chosen)
 }
 
 /// Attach to a single daemon agent `instance` at `socket_path`, driving the
@@ -64,20 +389,31 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
     let current_inst_arc = Arc::new(Mutex::new(current_instance.clone()));
     let write_stream = Arc::new(Mutex::new(write_stream));
 
-    // Attach + initial Resize to match our window.
+    // Attach + initial Resize to match our window (with micro-nudge for instant full redraw).
     {
         let mut ws = write_stream.lock().unwrap();
         dproto::write_ctl_msg(&mut *ws, &CtlMsg::Attach { instance: current_instance.clone() })?;
         if let Some((rows, cols)) = current_winsize() {
-            dproto::write_ctl_msg(
+            let _ = dproto::write_ctl_msg(
+                &mut *ws,
+                &CtlMsg::Resize {
+                    instance: current_instance.clone(),
+                    rows,
+                    cols: cols.saturating_sub(1),
+                },
+            );
+            std::thread::sleep(Duration::from_millis(20));
+            let _ = dproto::write_ctl_msg(
                 &mut *ws,
                 &CtlMsg::Resize {
                     instance: current_instance.clone(),
                     rows,
                     cols,
                 },
-            )?;
+            );
         }
+        // Send initial CtlMsg::List so agent_list is populated immediately
+        dproto::write_ctl_msg(&mut *ws, &CtlMsg::List)?;
     }
 
     let child_exit = Arc::new(AtomicI32::new(i32::MIN));
@@ -130,26 +466,10 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
     };
 
     // stdin reader thread -> channel (portable non-blocking).
-    let mut stdin = std::io::stdin();
-    let mut buf = [0u8; 4096];
     let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    {
-        let done = Arc::clone(&done);
-        std::thread::spawn(move || loop {
-            if done.load(Ordering::SeqCst) {
-                break;
-            }
-            match stdin.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if in_tx.send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        });
-    }
+    let stdin_reader = spawn_stdin_reader(Arc::clone(&done), in_tx);
+
+    let mut prefix_sm = PrefixStateMachine::new();
 
     let outcome = loop {
         if done.load(Ordering::SeqCst) {
@@ -176,151 +496,111 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
             }
         }
 
-        match in_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(chunk) => {
-                // Check if chunk contains Ctrl-\ (detach)
-                if let Some(pos) = chunk.iter().position(|&b| b == DETACH_BYTE) {
-                    let inst = current_inst_arc.lock().unwrap().clone();
-                    let mut ws = write_stream.lock().unwrap();
-                    if pos > 0 {
-                        let _ = dproto::write_ctl_msg(
-                            &mut *ws,
-                            &CtlMsg::Input {
-                                instance: inst.clone(),
-                                data: chunk[..pos].to_vec(),
-                            },
-                        );
-                    }
-                    let _ = dproto::write_ctl_msg(&mut *ws, &CtlMsg::Detach { instance: inst });
-                    break AttachOutcome::Detached;
-                }
-
-                // Check if chunk contains Ctrl-Space (0x00)
-                if let Some(pos) = chunk.iter().position(|&b| b == SELECTOR_BYTE) {
-                    let inst = current_inst_arc.lock().unwrap().clone();
-                    // Forward any pending bytes before Ctrl-Space
-                    if pos > 0 {
-                        let mut ws = write_stream.lock().unwrap();
-                        let _ = dproto::write_ctl_msg(
-                            &mut *ws,
-                            &CtlMsg::Input {
-                                instance: inst.clone(),
-                                data: chunk[..pos].to_vec(),
-                            },
-                        );
-                    }
-
-                    // Request fresh agent list
-                    {
-                        let mut ws = write_stream.lock().unwrap();
-                        let _ = dproto::write_ctl_msg(&mut *ws, &CtlMsg::List);
-                    }
-
-                    // Enter alternate screen overlay
-                    in_selector.store(true, Ordering::SeqCst);
-                    let switch_target = run_selector_overlay(
-                        &in_rx,
-                        &done,
-                        &agent_list,
-                        &current_inst_arc,
-                        &write_stream,
-                    );
-                    in_selector.store(false, Ordering::SeqCst);
-
-                    if let Some(new_inst) = switch_target {
-                        let old_inst = current_inst_arc.lock().unwrap().clone();
-                        if new_inst != old_inst {
-                            let mut ws = write_stream.lock().unwrap();
-                            let _ = dproto::write_ctl_msg(
-                                &mut *ws,
-                                &CtlMsg::Detach { instance: old_inst },
-                            );
-                            let _ = dproto::write_ctl_msg(
-                                &mut *ws,
-                                &CtlMsg::Attach { instance: new_inst.clone() },
-                            );
-                            if let Some((rows, cols)) = current_winsize() {
-                                // Micro-resize nudge: send cols - 1 then cols to guarantee
-                                // child process receives an actual winsize delta and emits a full redraw.
-                                let _ = dproto::write_ctl_msg(
-                                    &mut *ws,
-                                    &CtlMsg::Resize {
-                                        instance: new_inst.clone(),
-                                        rows,
-                                        cols: cols.saturating_sub(1),
-                                    },
-                                );
-                                std::thread::sleep(Duration::from_millis(20));
-                                let _ = dproto::write_ctl_msg(
-                                    &mut *ws,
-                                    &CtlMsg::Resize {
-                                        instance: new_inst.clone(),
-                                        rows,
-                                        cols,
-                                    },
-                                );
-                            }
-                            *current_inst_arc.lock().unwrap() = new_inst;
-                        } else {
-                            // If reselecting same agent, nudge resize to restore display
-                            if let Some((rows, cols)) = current_winsize() {
-                                let mut ws = write_stream.lock().unwrap();
-                                let _ = dproto::write_ctl_msg(
-                                    &mut *ws,
-                                    &CtlMsg::Resize {
-                                        instance: old_inst.clone(),
-                                        rows,
-                                        cols: cols.saturating_sub(1),
-                                    },
-                                );
-                                std::thread::sleep(Duration::from_millis(20));
-                                let _ = dproto::write_ctl_msg(
-                                    &mut *ws,
-                                    &CtlMsg::Resize {
-                                        instance: old_inst,
-                                        rows,
-                                        cols,
-                                    },
-                                );
-                            }
-                        }
-                    } else {
-                        // Cancelled: restore primary screen and nudge resize
-                        if let Some((rows, cols)) = current_winsize() {
-                            let inst = current_inst_arc.lock().unwrap().clone();
-                            let mut ws = write_stream.lock().unwrap();
-                            let _ = dproto::write_ctl_msg(
-                                &mut *ws,
-                                &CtlMsg::Resize {
-                                    instance: inst.clone(),
-                                    rows,
-                                    cols: cols.saturating_sub(1),
-                                },
-                            );
-                            std::thread::sleep(Duration::from_millis(20));
-                            let _ = dproto::write_ctl_msg(
-                                &mut *ws,
-                                &CtlMsg::Resize {
-                                    instance: inst,
-                                    rows,
-                                    cols,
-                                },
-                            );
-                        }
-                    }
-                    continue;
-                }
-
-                // Normal raw passthrough input
+        // Check if prefix key timed out (1000ms)
+        let timeout_actions = prefix_sm.check_timeout(Instant::now());
+        for action in timeout_actions {
+            if let PrefixAction::Passthrough(data) = action {
                 let inst = current_inst_arc.lock().unwrap().clone();
                 let mut ws = write_stream.lock().unwrap();
                 let _ = dproto::write_ctl_msg(
                     &mut *ws,
                     &CtlMsg::Input {
                         instance: inst,
-                        data: chunk,
+                        data,
                     },
                 );
+            }
+        }
+
+        let recv_wait = match prefix_sm.time_until_timeout(Instant::now()) {
+            Some(rem) => rem.min(Duration::from_millis(50)),
+            None => Duration::from_millis(50),
+        };
+
+        match in_rx.recv_timeout(recv_wait) {
+            Ok(chunk) => {
+                let actions = prefix_sm.feed_chunk(&chunk, Instant::now());
+                let mut should_detach = false;
+
+                for action in actions {
+                    match action {
+                        PrefixAction::Passthrough(data) => {
+                            let inst = current_inst_arc.lock().unwrap().clone();
+                            let mut ws = write_stream.lock().unwrap();
+                            let _ = dproto::write_ctl_msg(
+                                &mut *ws,
+                                &CtlMsg::Input {
+                                    instance: inst,
+                                    data,
+                                },
+                            );
+                        }
+                        PrefixAction::NextAgent => {
+                            let list = agent_list.lock().unwrap().clone();
+                            let cur = current_inst_arc.lock().unwrap().clone();
+                            if let Some(next_inst) = cycle_agent(&list, &cur, true) {
+                                if next_inst != cur {
+                                    let mut ws = write_stream.lock().unwrap();
+                                    let _ = switch_agent(&mut *ws, &cur, &next_inst);
+                                    *current_inst_arc.lock().unwrap() = next_inst;
+                                }
+                            }
+                        }
+                        PrefixAction::PrevAgent => {
+                            let list = agent_list.lock().unwrap().clone();
+                            let cur = current_inst_arc.lock().unwrap().clone();
+                            if let Some(prev_inst) = cycle_agent(&list, &cur, false) {
+                                if prev_inst != cur {
+                                    let mut ws = write_stream.lock().unwrap();
+                                    let _ = switch_agent(&mut *ws, &cur, &prev_inst);
+                                    *current_inst_arc.lock().unwrap() = prev_inst;
+                                }
+                            }
+                        }
+                        PrefixAction::OpenSelector => {
+                            // Request fresh agent list
+                            {
+                                let mut ws = write_stream.lock().unwrap();
+                                let _ = dproto::write_ctl_msg(&mut *ws, &CtlMsg::List);
+                            }
+
+                            // Enter alternate screen overlay
+                            in_selector.store(true, Ordering::SeqCst);
+                            let switch_target = run_selector_overlay(
+                                &in_rx,
+                                &done,
+                                &agent_list,
+                                &current_inst_arc,
+                                &write_stream,
+                            );
+                            in_selector.store(false, Ordering::SeqCst);
+
+                            let old_inst = current_inst_arc.lock().unwrap().clone();
+                            if let Some(new_inst) = switch_target {
+                                let mut ws = write_stream.lock().unwrap();
+                                let _ = switch_agent(&mut *ws, &old_inst, &new_inst);
+                                if new_inst != old_inst {
+                                    *current_inst_arc.lock().unwrap() = new_inst;
+                                }
+                            } else {
+                                // Cancelled: restore primary screen and nudge resize
+                                let mut ws = write_stream.lock().unwrap();
+                                let _ = switch_agent(&mut *ws, &old_inst, &old_inst);
+                            }
+                        }
+                        PrefixAction::Detach => {
+                            let inst = current_inst_arc.lock().unwrap().clone();
+                            let mut ws = write_stream.lock().unwrap();
+                            let _ = dproto::write_ctl_msg(&mut *ws, &CtlMsg::Detach { instance: inst });
+                            should_detach = true;
+                            break;
+                        }
+                    }
+                }
+
+                if should_detach {
+                    break AttachOutcome::Detached;
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -336,6 +616,8 @@ pub fn attach_instance(socket_path: &std::path::Path, instance: &str) -> Result<
     };
 
     done.store(true, Ordering::SeqCst);
+    let _ = write_stream.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    let _ = stdin_reader.join();
     let _ = reader.join();
     Ok(outcome)
 }
@@ -410,6 +692,18 @@ fn run_selector_overlay(
                             chosen_instance = Some(target);
                             should_exit = true;
                             break;
+                        }
+                        SelectorAction::Kill(instance) => {
+                            if let Ok(mut ws) = write_stream.lock() {
+                                let _ = dproto::write_ctl_msg(&mut *ws, &CtlMsg::Close { instance });
+                                let _ = dproto::write_ctl_msg(&mut *ws, &CtlMsg::List);
+                            }
+                        }
+                        SelectorAction::Restart(instance) => {
+                            if let Ok(mut ws) = write_stream.lock() {
+                                let _ = dproto::write_ctl_msg(&mut *ws, &CtlMsg::Restart { instance });
+                                let _ = dproto::write_ctl_msg(&mut *ws, &CtlMsg::List);
+                            }
                         }
                     }
                 }
@@ -543,10 +837,9 @@ fn draw_selector(f: &mut ratatui::Frame, state: &mut SelectorState) {
             let runtime_str = item.format_runtime();
             let activity_str = item.format_activity(now);
 
-            let (primary_label, id_label) = if let Some(ref d) = item.display_name {
-                (d.clone(), format!("({})", item.instance_id))
-            } else {
-                (item.instance_id.clone(), String::new())
+            let primary_label = match &item.display_name {
+                Some(d) if !d.trim().is_empty() => d.as_str(),
+                _ => &item.instance_id,
             };
 
             let row_spans = vec![
@@ -554,12 +847,8 @@ fn draw_selector(f: &mut ratatui::Frame, state: &mut SelectorState) {
                 Span::styled(dot, dot_style),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<22}", primary_label),
+                    format!("{:<28}", primary_label),
                     Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{:<26}", id_label),
-                    Style::default().fg(Color::DarkGray),
                 ),
                 Span::styled(format!("{:<10} ", item.program), Style::default().fg(Color::Yellow)),
                 Span::styled(format!("dir: {:<24} ", cwd_str), Style::default().fg(Color::Cyan)),
@@ -587,6 +876,10 @@ fn draw_selector(f: &mut ratatui::Frame, state: &mut SelectorState) {
     let footer_text = Line::from(vec![
         Span::styled(" [Enter] ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::raw(" Switch  "),
+        Span::styled(" [Ctrl-X] ", Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw(" Kill  "),
+        Span::styled(" [Ctrl-R] ", Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw(" Restart  "),
         Span::styled(" [↑/↓] ", Style::default().fg(Color::Black).bg(Color::White)),
         Span::raw(" Select  "),
         Span::styled(" [Esc/Ctrl-C] ", Style::default().fg(Color::Black).bg(Color::White)),
@@ -673,8 +966,10 @@ fn parse_keys_from_bytes(bytes: &[u8]) -> Vec<Key> {
             0x08 | 0x7f => keys.push(Key::Backspace),
             0x09 => keys.push(Key::Tab),
             0x0d | 0x0a => keys.push(Key::Enter),
+            0x12 => keys.push(Key::Ctrl('r')),
             0x15 => keys.push(Key::Ctrl('u')),
             0x17 => keys.push(Key::Ctrl('w')),
+            0x18 => keys.push(Key::Ctrl('x')),
             b if b >= 0x20 && b <= 0x7e => keys.push(Key::Char(b as char)),
             _ => keys.push(Key::Other),
         }
@@ -702,3 +997,211 @@ fn take_sigwinch() -> bool {
 }
 
 use crate::termios::{libc_signal, libc_sigwinch};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn make_agent(id: &str) -> AgentInfo {
+        AgentInfo {
+            instance_id: id.to_string(),
+            program: "bash".to_string(),
+            pid: 1000,
+            alive: true,
+            exit_code: None,
+            rows: 24,
+            cols: 80,
+            started_at: 0,
+            last_activity: 0,
+            display_name: None,
+        }
+    }
+
+    #[test]
+    fn test_prefix_state_machine_passthrough_normal_keys() {
+        let mut sm = PrefixStateMachine::new();
+        let now = Instant::now();
+        let actions = sm.feed_chunk(b"hello world", now);
+        assert_eq!(actions, vec![PrefixAction::Passthrough(b"hello world".to_vec())]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_ctrl_b_n_cycles_next() {
+        let mut sm = PrefixStateMachine::new();
+        let now = Instant::now();
+        // b'n'
+        let actions = sm.feed_chunk(&[0x02, b'n'], now);
+        assert_eq!(actions, vec![PrefixAction::NextAgent]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+
+        // Ctrl-n (0x0e)
+        let actions2 = sm.feed_chunk(&[0x02, 0x0e], now);
+        assert_eq!(actions2, vec![PrefixAction::NextAgent]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_ctrl_b_p_cycles_prev() {
+        let mut sm = PrefixStateMachine::new();
+        let now = Instant::now();
+        // b'p'
+        let actions = sm.feed_chunk(&[0x02, b'p'], now);
+        assert_eq!(actions, vec![PrefixAction::PrevAgent]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+
+        // Ctrl-p (0x10)
+        let actions2 = sm.feed_chunk(&[0x02, 0x10], now);
+        assert_eq!(actions2, vec![PrefixAction::PrevAgent]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_ctrl_b_ctrl_b_literal() {
+        let mut sm = PrefixStateMachine::new();
+        let now = Instant::now();
+        // Ctrl-b followed by Ctrl-b: literal 0x02 to child PTY
+        let actions = sm.feed_chunk(&[0x02, 0x02], now);
+        assert_eq!(actions, vec![PrefixAction::Passthrough(vec![0x02])]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_ctrl_b_other_byte() {
+        let mut sm = PrefixStateMachine::new();
+        let now = Instant::now();
+        // Ctrl-b followed by another byte (e.g. b'x'): forwards [0x02, b'x']
+        let actions = sm.feed_chunk(&[0x02, b'x'], now);
+        assert_eq!(actions, vec![PrefixAction::Passthrough(vec![0x02, b'x'])]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_timeout() {
+        let mut sm = PrefixStateMachine::new();
+        let t0 = Instant::now();
+        let actions1 = sm.feed_chunk(&[0x02], t0);
+        assert!(actions1.is_empty());
+        assert!(matches!(sm.state(), PrefixState::PrefixPending(_)));
+
+        // Not yet timed out
+        let actions2 = sm.check_timeout(t0 + Duration::from_millis(500));
+        assert!(actions2.is_empty());
+        assert!(matches!(sm.state(), PrefixState::PrefixPending(_)));
+
+        // Timed out at 1000ms
+        let actions3 = sm.check_timeout(t0 + Duration::from_millis(1000));
+        assert_eq!(actions3, vec![PrefixAction::Passthrough(vec![0x02])]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+
+        // Subsequent byte is normal passthrough
+        let actions4 = sm.feed_chunk(b"a", t0 + Duration::from_millis(1100));
+        assert_eq!(actions4, vec![PrefixAction::Passthrough(b"a".to_vec())]);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_timeout_on_next_feed() {
+        let mut sm = PrefixStateMachine::new();
+        let t0 = Instant::now();
+        let actions1 = sm.feed_chunk(&[0x02], t0);
+        assert!(actions1.is_empty());
+
+        // Feeding next byte after 1500ms without explicit check_timeout
+        let actions2 = sm.feed_chunk(b"k", t0 + Duration::from_millis(1500));
+        assert_eq!(actions2, vec![PrefixAction::Passthrough(vec![0x02, b'k'])]);
+        assert_eq!(sm.state(), PrefixState::Idle);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_ctrl_backslash_detach() {
+        let mut sm = PrefixStateMachine::new();
+        let now = Instant::now();
+        let actions = sm.feed_chunk(&[0x1c], now);
+        assert_eq!(actions, vec![PrefixAction::Detach]);
+
+        // Ctrl-b followed by Ctrl-\: forward [0x02] then Detach
+        let actions2 = sm.feed_chunk(&[0x02, 0x1c], now);
+        assert_eq!(actions2, vec![PrefixAction::Passthrough(vec![0x02]), PrefixAction::Detach]);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_ctrl_space_selector() {
+        let mut sm = PrefixStateMachine::new();
+        let now = Instant::now();
+        let actions = sm.feed_chunk(&[0x00], now);
+        assert_eq!(actions, vec![PrefixAction::OpenSelector]);
+
+        // Ctrl-b followed by Ctrl-Space: forward [0x02] then OpenSelector
+        let actions2 = sm.feed_chunk(&[0x02, 0x00], now);
+        assert_eq!(actions2, vec![PrefixAction::Passthrough(vec![0x02]), PrefixAction::OpenSelector]);
+    }
+
+    #[test]
+    fn test_prefix_state_machine_interleaved_chunk() {
+        let mut sm = PrefixStateMachine::new();
+        let now = Instant::now();
+        let chunk = vec![b'a', b'b', 0x02, b'n', b'c'];
+        let actions = sm.feed_chunk(&chunk, now);
+        assert_eq!(
+            actions,
+            vec![
+                PrefixAction::Passthrough(vec![b'a', b'b']),
+                PrefixAction::NextAgent,
+                PrefixAction::Passthrough(vec![b'c']),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cycle_agent_empty_and_single() {
+        assert_eq!(cycle_agent(&[], "any", true), None);
+        assert_eq!(cycle_agent(&[], "any", false), None);
+
+        let list = vec![make_agent("inst-1")];
+        assert_eq!(cycle_agent(&list, "inst-1", true), Some("inst-1".to_string()));
+        assert_eq!(cycle_agent(&list, "inst-1", false), Some("inst-1".to_string()));
+        assert_eq!(cycle_agent(&list, "unknown", true), Some("inst-1".to_string()));
+    }
+
+    #[test]
+    fn test_cycle_agent_multiple_forward_and_backward() {
+        let list = vec![
+            make_agent("inst-1"),
+            make_agent("inst-2"),
+            make_agent("inst-3"),
+        ];
+
+        // Forward cycling with wraparound
+        assert_eq!(cycle_agent(&list, "inst-1", true), Some("inst-2".to_string()));
+        assert_eq!(cycle_agent(&list, "inst-2", true), Some("inst-3".to_string()));
+        assert_eq!(cycle_agent(&list, "inst-3", true), Some("inst-1".to_string()));
+
+        // Backward cycling with wraparound
+        assert_eq!(cycle_agent(&list, "inst-1", false), Some("inst-3".to_string()));
+        assert_eq!(cycle_agent(&list, "inst-3", false), Some("inst-2".to_string()));
+        assert_eq!(cycle_agent(&list, "inst-2", false), Some("inst-1".to_string()));
+
+        // Unknown instance defaults to index 0, then cycles
+        assert_eq!(cycle_agent(&list, "nonexistent", true), Some("inst-2".to_string()));
+        assert_eq!(cycle_agent(&list, "nonexistent", false), Some("inst-3".to_string()));
+    }
+
+    #[test]
+    fn test_parse_keys_from_bytes_ctrl_x_and_r() {
+        // 0x18 is Ctrl-x, 0x12 is Ctrl-r
+        let keys = parse_keys_from_bytes(&[0x18, 0x12, 0x00, 0x03, 0x0d, 0x1b]);
+        assert_eq!(
+            keys,
+            vec![
+                Key::Ctrl('x'),
+                Key::Ctrl('r'),
+                Key::Ctrl(' '),
+                Key::Ctrl('c'),
+                Key::Enter,
+                Key::Esc,
+            ]
+        );
+    }
+}
+
