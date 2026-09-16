@@ -2,6 +2,7 @@ import TaskChainOverview from '../taskchain/TaskChainOverview';
 import ProjectFilesPanel from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
 import ShellJobsPanel from './ShellJobsPanel';
+import AtMentionPopup, { type MentionEntity } from './AtMentionPopup';
 import { type ClipboardEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
@@ -555,12 +556,56 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [olderCursor, setOlderCursor] = useState('');
   const [olderHasMore, setOlderHasMore] = useState(false);
   const [draft, setDraft] = useState('');
+  // @-mention popup state: mentionQuery is the fragment typed after '@' (null when
+  // the popup is closed); mentionIndex is the highlighted row for arrow-key nav.
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState('');
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
+  // Flatten the live projects->chains->agents tree into a single @-mention list
+  // (agents, projects, and task chains). liveProjects is LiveProject[] with the
+  // camelCase shape from api/endpoints/agentsLive.ts.
+  const mentionEntities = useMemo<MentionEntity[]>(() => {
+    const items: MentionEntity[] = [];
+    for (const proj of (liveProjects ?? [])) {
+      const projectName = String(proj.name || proj.projectId || '');
+      items.push({ type: 'project', id: String(proj.projectId || ''), label: projectName, sublabel: 'project' });
+      for (const chain of (proj.chains ?? [])) {
+        items.push({ type: 'chain', id: String(chain.chainId || ''), label: String(chain.title || chain.chainId || ''), sublabel: projectName });
+        for (const agent of (chain.liveAgents ?? [])) {
+          items.push({ type: 'agent', id: String(agent.agentInstanceId || ''), label: String(agent.displayName || agent.agentInstanceId || ''), sublabel: String(chain.title || '') });
+        }
+      }
+    }
+    return items;
+  }, [liveProjects]);
+  // Client-side fuzzy filter (label or id contains the query, case-insensitive),
+  // capped at 8 items. Empty query shows the first 8 entities.
+  const filteredMentions = useMemo(() => {
+    if (mentionQuery === null) return [] as MentionEntity[];
+    const q = mentionQuery.toLowerCase();
+    return mentionEntities
+      .filter((e) => !q || e.label.toLowerCase().includes(q) || e.id.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [mentionEntities, mentionQuery]);
+  // Replace the '@fragment' immediately before the caret with '@<id>' and restore
+  // focus/caret after React re-renders the textarea value.
+  function handleMentionSelect(entity: MentionEntity) {
+    const ta = textareaRef.current;
+    const pos = ta?.selectionStart ?? draft.length;
+    const before = draft.slice(0, pos);
+    const after = draft.slice(pos);
+    const newBefore = before.replace(/@([^\s@]*)$/, `@${entity.id}`);
+    setDraft(newBefore + after);
+    setMentionQuery(null);
+    setMentionIndex(0);
+    setTimeout(() => { ta?.focus(); const np = newBefore.length; ta?.setSelectionRange(np, np); }, 0);
+  }
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
   // panel itself has Tasks / Files / RunDir tabs. 'closed' hides it entirely.
   // Initialized from ?panel= / ?sidebar= query param, falling back to UI storage.
@@ -1495,16 +1540,48 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             </div>
           </div>
 
-          <textarea
-            data-debug-id="conversation-composer-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); } }}
-            onPaste={handleComposerPaste}
-            rows={2}
-            placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
-            className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-white outline-none placeholder:text-zinc-600 sm:text-sm"
-          />
+          <div className="relative">
+            {mentionQuery !== null && (
+              <AtMentionPopup
+                query={mentionQuery}
+                entities={filteredMentions}
+                activeIndex={mentionIndex}
+                onSelect={handleMentionSelect}
+                onClose={() => setMentionQuery(null)}
+              />
+            )}
+            <textarea
+              ref={textareaRef}
+              data-debug-id="conversation-composer-input"
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                const val = e.target.value;
+                const pos = e.target.selectionStart ?? val.length;
+                const before = val.slice(0, pos);
+                const match = before.match(/@([^\s@]*)$/);
+                if (match) {
+                  setMentionQuery(match[1]);
+                  setMentionIndex(0);
+                } else {
+                  setMentionQuery(null);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (mentionQuery !== null && filteredMentions.length > 0) {
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex((i) => (i + 1) % filteredMentions.length); return; }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length); return; }
+                  if (e.key === 'Enter') { e.preventDefault(); handleMentionSelect(filteredMentions[mentionIndex]); return; }
+                  if (e.key === 'Escape') { e.preventDefault(); setMentionQuery(null); return; }
+                }
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); }
+              }}
+              onPaste={handleComposerPaste}
+              rows={2}
+              placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
+              className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-white outline-none placeholder:text-zinc-600 sm:text-sm"
+            />
+          </div>
 
           <div className="mt-1 flex items-center gap-1.5">
             <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white"><Icon name="plus" size={19} /></button>
