@@ -515,7 +515,9 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 				continue
 			}
 			if strings.trim_space(instance_id) == "" do continue
-			task_id := extract_json_string(entry, "task_id", "")
+			task_id  := extract_json_string(entry, "task_id", "")
+			provider := extract_json_string(entry, "provider", "")
+			tier     := extract_json_string(entry, "tier", "")
 
 			if _, has := bridge_runtime_get_launch(instance_id); has {
 				// A launch record exists, but restart via the pty-host's remembered
@@ -526,7 +528,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 				// bridge_runtime_launch_agent_pty_host already closes any registered
 				// instance before re-spawning, so no separate is_registered check.
 				syn_command_id := fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", syn_command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\",\"task_id\":\"", task_id, "\"}}"})
+				command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", syn_command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\",\"task_id\":\"", task_id, "\",\"provider\":\"", provider, "\",\"tier\":\"", tier, "\"}}"})
 				defer delete(command_json)
 				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
 				if ok {
@@ -542,7 +544,7 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 				// resolve it — a top-level-only id aborts the launch at validate. This
 				// mirrors the scheduler sched_wake synthetic launch.
 				syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
-				command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", syn_command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\",\"task_id\":\"", task_id, "\"}}"})
+				command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", syn_command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\",\"task_id\":\"", task_id, "\",\"provider\":\"", provider, "\",\"tier\":\"", tier, "\"}}"})
 				defer delete(command_json)
 				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
 				if ok {

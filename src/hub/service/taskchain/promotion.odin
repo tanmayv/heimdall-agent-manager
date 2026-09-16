@@ -386,6 +386,8 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 				agent_instance_id = cf.instance_id,
 				task_id           = cf.new_task_id,
 				role              = role,
+				provider          = inst.provider,
+				tier              = inst.tier,
 			})
 			runs[inst.bridge_id] = entries
 			note_bridge_local(&bridge_order, &seen_bridge, inst.bridge_id)
