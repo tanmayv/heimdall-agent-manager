@@ -88,6 +88,11 @@ bridge_runtime_results: [dynamic]Bridge_Runtime_Command_Result
 bridge_runtime_launches: [dynamic]Bridge_Runtime_Launch
 bridge_pane_capture_pending: [dynamic]Bridge_Pane_Capture_Pending
 bridge_pane_capture_outgoing: [dynamic]Bridge_Pane_Capture_Outgoing
+Bridge_Shell_Output_Outgoing :: struct {
+	command_id:  string,
+	result_json: string,
+}
+bridge_shell_output_outgoing: [dynamic]Bridge_Shell_Output_Outgoing
 // Queue of instance ids whose status changed on a BACKGROUND thread (e.g. the
 // pty-host events worker applying a ChildExited) and must be pushed to the hub
 // immediately, without waiting for the next 45s bridge_heartbeat. The hub runtime
@@ -106,6 +111,7 @@ bridge_hub_runtime_init :: proc() {
 	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
 	bridge_pane_capture_pending = make([dynamic]Bridge_Pane_Capture_Pending)
 	bridge_pane_capture_outgoing = make([dynamic]Bridge_Pane_Capture_Outgoing)
+	bridge_shell_output_outgoing = make([dynamic]Bridge_Shell_Output_Outgoing)
 	bridge_runtime_status_outgoing = make([dynamic]string)
 }
 
@@ -190,6 +196,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		if text, got := ws.poll_text(conn); got do bridge_hub_handle_command(conn, text)
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
+		bridge_shell_output_drain_outgoing(conn)
 		// Flush any status transitions applied on background threads (e.g. a
 		// pty-host ChildExited) so "stopped"/"unreachable" reaches the hub now,
 		// not on the next heartbeat.
@@ -436,6 +443,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	}
 	if type == "wake_agent" {
 		bridge_hub_handle_wake_agent(conn, text)
+		return
+	}
+	if type == "get_shell_output" {
+		bridge_hub_handle_get_shell_output(conn, text)
 		return
 	}
 	if bridge_fs_handle_command(conn, type, text) do return
@@ -1321,6 +1332,60 @@ bridge_pane_capture_enqueue_result :: proc(result_json, command_id: string) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	append(&bridge_pane_capture_outgoing, Bridge_Pane_Capture_Outgoing{command_id=strings.clone(command_id),result_json=strings.clone(result_json)})
+}
+
+bridge_shell_output_enqueue_result :: proc(result_json, command_id: string) {
+	if strings.trim_space(result_json) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	append(&bridge_shell_output_outgoing, Bridge_Shell_Output_Outgoing{command_id=strings.clone(command_id),result_json=strings.clone(result_json)})
+}
+
+bridge_shell_output_drain_outgoing :: proc(conn: ^ws.Connection) {
+	for {
+		item: Bridge_Shell_Output_Outgoing
+		have := false
+		sync.mutex_lock(&bridge_runtime_mutex)
+		if len(bridge_shell_output_outgoing) > 0 { item = bridge_shell_output_outgoing[0]; ordered_remove(&bridge_shell_output_outgoing, 0); have = true }
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		if !have do return
+		if !bridge_hub_send(conn, item.result_json) {
+			sync.mutex_lock(&bridge_runtime_mutex)
+			inject_at(&bridge_shell_output_outgoing, 0, item)
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			conn.connected = false
+			return
+		}
+	}
+}
+
+bridge_hub_handle_get_shell_output :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	exec_id := extract_json_string(text, "exec_id", "")
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"command_result\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_byte(&b, '"')
+	if command_id == "" || exec_id == "" {
+		strings.write_string(&b, ",\"ok\":false,\"error\":\"missing fields\"}")
+		bridge_shell_output_enqueue_result(strings.to_string(b), command_id)
+		return
+	}
+	strings.write_string(&b, ",\"exec_id\":\"")
+	bridge_runtime_write_json_string(&b, exec_id)
+	strings.write_byte(&b, '"')
+	output_path := bridge_shell_output_path(exec_id)
+	raw, rerr := os.read_entire_file(output_path, context.allocator)
+	defer if rerr == nil do delete(raw)
+	output_str := ""
+	if rerr == nil do output_str = string(raw)
+	tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
+	strings.write_string(&b, ",\"ok\":true,\"output\":\"")
+	bridge_runtime_write_json_string(&b, tail)
+	strings.write_string(&b, "\",\"truncated\":")
+	strings.write_string(&b, "true" if truncated else "false")
+	strings.write_byte(&b, '}')
+	bridge_shell_output_enqueue_result(strings.to_string(b), command_id)
 }
 
 // bridge_runtime_enqueue_status_push_locked records that instance_id's runtime

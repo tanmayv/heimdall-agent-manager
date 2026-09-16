@@ -130,7 +130,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content = content_service.new_content_service_with_runtime(&graph.repos.content, &graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.taskchains, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content.title_nudge_cooldown_seconds = config.title_nudge_cooldown_seconds
 	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
-	graph.shell_jobs = shell_job_service.new_shell_job_service(&graph.repos.shell_jobs, bridge_command_sink, &graph.clock, &graph.ids)
+	graph.shell_jobs = shell_job_service.new_shell_job_service(&graph.repos.shell_jobs, bridge_command_sink, &graph.clock, &graph.ids, &graph.repos.agents)
 	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.push = push_service.new_push_service(&graph.repos.push_subscriptions, &graph.clock, &graph.ids, push_service.Vapid_Config{
 		public_key = config.vapid_public_key,
@@ -279,6 +279,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/stop", rawptr(&graph.agent_handlers), http.stop_agent_instance_handler)
 	// Read-only agent run-dir browser (list + bounded file read), owner-scoped.
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/shell-jobs", rawptr(&graph.shell_job_handlers), http.list_instance_shell_jobs_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/shell-jobs/*/output", rawptr(&graph.shell_job_handlers), http.get_instance_shell_job_output_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs", rawptr(&graph.bridge_handlers), http.list_instance_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs/file", rawptr(&graph.bridge_handlers), http.read_instance_file_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents", rawptr(&graph.agent_handlers), http.list_agents_handler)

@@ -6,10 +6,10 @@
 // current instance with a manual Refresh button — there is NO auto-poll/streaming.
 // Command output lives only on the bridge host and is never shown here.
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Icon, IconButton, StatusPill } from '@ui';
-import { useListShellJobsQuery, type ShellJob, type ShellJobStatus } from '../../api/endpoints/shellJobs';
+import { useListShellJobsQuery, useFetchShellJobOutputQuery, type ShellJob, type ShellJobStatus } from '../../api/endpoints/shellJobs';
 
 export type ShellJobsPanelProps = {
   agentInstanceId: string;
@@ -41,6 +41,23 @@ function fmtTime(s?: string): string {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+function JobOutputSection({ agentInstanceId, execId }: { agentInstanceId: string; execId: string }) {
+  const { data, isLoading, error } = useFetchShellJobOutputQuery(
+    { instanceId: agentInstanceId, execId },
+  );
+  if (isLoading) return <p className="mt-2 font-mono text-[11px] text-zinc-400">Loading output…</p>;
+  if (error) return <p className="mt-2 text-[11px] text-rose-400">Failed to load output</p>;
+  if (!data) return null;
+  return (
+    <div className="mt-2">
+      {data.truncated ? (
+        <p className="mb-1 text-[10px] text-zinc-500">Output truncated — showing last 100 lines</p>
+      ) : null}
+      <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-all rounded bg-zinc-900 p-2 font-mono text-xs text-zinc-100">{data.output}</pre>
+    </div>
+  );
+}
+
 export default function ShellJobsPanel({
   agentInstanceId,
   rootLabel,
@@ -50,13 +67,44 @@ export default function ShellJobsPanel({
 }: ShellJobsPanelProps) {
   void isMobile; // accepted for parity with the sibling panels; layout is responsive via CSS.
 
+  const [cursor, setCursor] = useState<string>('');
+  const [accJobs, setAccJobs] = useState<ShellJob[]>([]);
+  const prevInstanceId = useRef<string>('');
+
   const { data, isLoading, isFetching, error, refetch } = useListShellJobsQuery(
-    { instanceId: agentInstanceId },
+    { instanceId: agentInstanceId, cursor },
     { skip: !agentInstanceId },
   );
 
-  const jobs: ShellJob[] = useMemo(() => data?.jobs ?? [], [data]);
+  useEffect(() => {
+    if (prevInstanceId.current !== agentInstanceId) {
+      prevInstanceId.current = agentInstanceId;
+      setCursor('');
+      setAccJobs([]);
+      return;
+    }
+    if (data?.jobs) {
+      if (!cursor) {
+        setAccJobs(data.jobs);
+      } else {
+        setAccJobs((prev) => {
+          const seen = new Set(prev.map((j) => j.exec_id));
+          return [...prev, ...data.jobs.filter((j) => !seen.has(j.exec_id))];
+        });
+      }
+    }
+  }, [data, agentInstanceId, cursor]);
+
+  const [showOutput, setShowOutput] = useState<Record<string, boolean>>({});
+
+  const jobs: ShellJob[] = useMemo(() => accJobs, [accJobs]);
   const errorText = error ? String((error as any)?.error || (error as any)?.data || 'Failed to load background jobs') : '';
+
+  function handleRefresh() {
+    setCursor('');
+    setAccJobs([]);
+    void refetch();
+  }
 
   const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-[#0b0d11]';
 
@@ -75,7 +123,7 @@ export default function ShellJobsPanel({
           <button
             type="button"
             data-debug-id={`${debugPrefix}-refresh-btn`}
-            onClick={() => { void refetch(); }}
+            onClick={handleRefresh}
             disabled={isFetching}
             className="rounded-lg border border-sky-400/30 px-2.5 py-1 text-xs text-sky-100 transition-colors hover:bg-sky-400/10 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -89,7 +137,7 @@ export default function ShellJobsPanel({
 
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {isLoading ? (
+        {isLoading && accJobs.length === 0 ? (
           <div data-debug-id={`${debugPrefix}-loading`} className="animate-pulse space-y-3">
             <div className="h-16 rounded-xl bg-white/5" />
             <div className="h-16 rounded-xl bg-white/5" />
@@ -123,9 +171,30 @@ export default function ShellJobsPanel({
                   {typeof job.exit_code === 'number' ? (
                     <span>exit <span className={job.exit_code === 0 ? 'text-emerald-300' : 'text-rose-300'}>{job.exit_code}</span></span>
                   ) : null}
+                  <button
+                    type="button"
+                    className="ml-auto text-[11px] text-zinc-500 hover:text-zinc-300"
+                    onClick={() => setShowOutput((prev) => ({ ...prev, [job.exec_id]: !prev[job.exec_id] }))}
+                  >
+                    {showOutput[job.exec_id] ? 'Hide Output' : 'View Output'}
+                  </button>
                 </div>
+                {showOutput[job.exec_id] ? (
+                  <JobOutputSection agentInstanceId={agentInstanceId} execId={job.exec_id} />
+                ) : null}
               </div>
             ))}
+            {data?.has_more ? (
+              <button
+                type="button"
+                data-debug-id={`${debugPrefix}-load-more-btn`}
+                onClick={() => { if (data?.next_cursor) setCursor(data.next_cursor); }}
+                disabled={isFetching}
+                className="w-full rounded-lg border border-white/10 py-2 text-xs text-zinc-400 transition-colors hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isFetching ? 'Loading…' : 'Load More'}
+              </button>
+            ) : null}
           </div>
         )}
       </div>

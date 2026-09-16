@@ -14,6 +14,7 @@ new_shell_job_repository :: proc(impl: ^Shell_Job_Repo_SQLite, conn: ^Conn) -> i
 		ctx              = rawptr(impl),
 		upsert           = shell_job_upsert_sqlite,
 		list_by_instance = shell_job_list_by_instance_sqlite,
+		get_by_exec_id   = shell_job_get_by_exec_id_sqlite,
 	}
 }
 
@@ -81,7 +82,7 @@ shell_job_upsert_sqlite :: proc(ctx: rawptr, job: domain.Shell_Job) -> (bool, do
 	return true, domain.Domain_Error{}
 }
 
-shell_job_list_by_instance_sqlite :: proc(ctx: rawptr, owner_user_id, agent_instance_id, status_filter: string, limit: int) -> ([]domain.Shell_Job, domain.Domain_Error) {
+shell_job_list_by_instance_sqlite :: proc(ctx: rawptr, owner_user_id, agent_instance_id, status_filter, cursor: string, limit: int) -> ([]domain.Shell_Job, domain.Domain_Error) {
 	impl := (^Shell_Job_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -91,10 +92,17 @@ shell_job_list_by_instance_sqlite :: proc(ctx: rawptr, owner_user_id, agent_inst
 
 	stmt: sqlite3_stmt = nil
 	query := ""
-	if status_filter != "" {
-		query = "SELECT exec_id, owner_user_id, agent_instance_id, cmd, status, exit_code, started_at, finished_at, created_at FROM shell_jobs WHERE owner_user_id = ? AND agent_instance_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?;"
-	} else {
-		query = "SELECT exec_id, owner_user_id, agent_instance_id, cmd, status, exit_code, started_at, finished_at, created_at FROM shell_jobs WHERE owner_user_id = ? AND agent_instance_id = ? ORDER BY created_at DESC LIMIT ?;"
+	has_status := status_filter != ""
+	has_cursor := cursor != ""
+	switch {
+	case has_status && has_cursor:
+		query = "SELECT exec_id, owner_user_id, agent_instance_id, cmd, status, exit_code, started_at, finished_at, created_at FROM shell_jobs WHERE owner_user_id = ? AND agent_instance_id = ? AND status = ? AND exec_id < ? ORDER BY started_at DESC, exec_id DESC LIMIT ?;"
+	case has_status:
+		query = "SELECT exec_id, owner_user_id, agent_instance_id, cmd, status, exit_code, started_at, finished_at, created_at FROM shell_jobs WHERE owner_user_id = ? AND agent_instance_id = ? AND status = ? ORDER BY started_at DESC, exec_id DESC LIMIT ?;"
+	case has_cursor:
+		query = "SELECT exec_id, owner_user_id, agent_instance_id, cmd, status, exit_code, started_at, finished_at, created_at FROM shell_jobs WHERE owner_user_id = ? AND agent_instance_id = ? AND exec_id < ? ORDER BY started_at DESC, exec_id DESC LIMIT ?;"
+	case:
+		query = "SELECT exec_id, owner_user_id, agent_instance_id, cmd, status, exit_code, started_at, finished_at, created_at FROM shell_jobs WHERE owner_user_id = ? AND agent_instance_id = ? ORDER BY started_at DESC, exec_id DESC LIMIT ?;"
 	}
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
 		return nil, domain.domain_error(.Internal_Error, "failed to prepare shell job list")
@@ -103,16 +111,32 @@ shell_job_list_by_instance_sqlite :: proc(ctx: rawptr, owner_user_id, agent_inst
 
 	bind_text(stmt, 1, owner_user_id)
 	bind_text(stmt, 2, agent_instance_id)
-	if status_filter != "" {
-		bind_text(stmt, 3, status_filter)
-		bind_text(stmt, 4, int_s(lim))
-	} else {
-		bind_text(stmt, 3, int_s(lim))
-	}
+	p := 3
+	if has_status { bind_text(stmt, p, status_filter); p += 1 }
+	if has_cursor { bind_text(stmt, p, cursor); p += 1 }
+	bind_text(stmt, p, int_s(lim))
 
 	items := make([dynamic]domain.Shell_Job)
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		append(&items, shell_job_from_stmt(stmt))
 	}
 	return items[:], domain.Domain_Error{}
+}
+
+shell_job_get_by_exec_id_sqlite :: proc(ctx: rawptr, owner_user_id, agent_instance_id, exec_id: string) -> (domain.Shell_Job, bool, domain.Domain_Error) {
+	impl := (^Shell_Job_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return domain.Shell_Job{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	stmt: sqlite3_stmt = nil
+	query := "SELECT exec_id, owner_user_id, agent_instance_id, cmd, status, exit_code, started_at, finished_at, created_at FROM shell_jobs WHERE exec_id = ? AND owner_user_id = ? AND agent_instance_id = ? LIMIT 1;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
+		return domain.Shell_Job{}, false, domain.domain_error(.Internal_Error, "failed to prepare shell job get")
+	}
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, exec_id)
+	bind_text(stmt, 2, owner_user_id)
+	bind_text(stmt, 3, agent_instance_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Shell_Job{}, false, domain.Domain_Error{}
+	return shell_job_from_stmt(stmt), true, domain.Domain_Error{}
 }

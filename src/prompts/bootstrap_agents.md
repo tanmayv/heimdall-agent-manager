@@ -82,6 +82,32 @@ Strict rules (do not skip):
   to the coordinator; do not take over the implementation.
 {{/is_reviewer}}
 
+### Shell Command Execution (MANDATORY for all agents)
+
+Use `ham-ctl shell-cmd` for any command that could take longer than a few seconds, or when in doubt. Direct shell execution (Bash tool, os.execute, subprocess) is reserved ONLY for trivially fast read-only one-liners (e.g. a single grep, wc -l). When unsure — use ham-ctl.
+
+**Why:**
+- Output is tracked by the hub shell_jobs system and visible in the UI Background Jobs panel.
+- Long-running commands (>=15s) run asynchronously — the agent is NOT blocked and the bridge continues in background.
+- Output is automatically truncated (>200 lines -> last 100 lines) preventing agent context window exhaustion.
+- Completion is reported to the hub, which posts a chat notification to the agent conversation.
+
+**Commands:**
+
+```bash
+# Run a shell command (sync if <15s, async if >=15s)
+ham-ctl shell-cmd exec --cmd 'your command here'
+
+# Read output of a completed or in-progress background job
+ham-ctl shell-cmd read <exec-id>
+```
+
+**Async pattern:**
+When a command runs longer than 15 seconds, shell-cmd exec returns immediately with status=running and an exec_id. The bridge continues the job in background. When it finishes, the hub posts a chat notification to the agent conversation. Use `ham-ctl shell-cmd read <exec_id>` to retrieve output at any time.
+
+**Output truncation:**
+If output exceeds 200 lines, only the last 100 lines are returned. The truncated=true field in the response signals this. The full output is available on the bridge filesystem at `<data_dir>/shell_jobs/<exec_id>.out`.
+
 ## Skills index (load on demand)
 These skills carry the procedures and exact command syntax — load the one you need
 rather than guessing:
