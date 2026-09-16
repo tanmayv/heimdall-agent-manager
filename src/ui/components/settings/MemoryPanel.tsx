@@ -21,7 +21,7 @@ import {
 
 export const MemoryPanel: React.FC = () => {
   const catalog = useMemoryScopeCatalog();
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("active");
   const [typeFilter, setTypeFilter] = useState<string>("");
   const [filterTargeting, setFilterTargeting] = useState<Targeting>(emptyTargeting());
   const [createOpen, setCreateOpen] = useState<boolean>(false);
