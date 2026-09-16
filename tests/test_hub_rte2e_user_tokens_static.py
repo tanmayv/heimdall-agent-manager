@@ -39,9 +39,16 @@ def main() -> None:
         "token.revoked_at != \"\"",
         "token.last_used_at = now",
         "user_service.get_user(service.users, owner_id)",
-        "revoke_active_user_tokens(service, owner_id)",
     ]:
         require(marker in auth, f"missing auth token marker: {marker}")
+
+    # Multiple active user tokens per user are ALLOWED (one per Electron/device
+    # install), each independently revocable. Issuance must NOT auto-revoke prior
+    # tokens, and a dedicated device-authorization issuance path exists.
+    require("Multiple active user tokens are allowed" in auth, "auth must allow multiple active user tokens per user")
+    require("Intentionally NO revoke_active_user_tokens here" in auth, "issuance must not cap/auto-revoke prior device tokens")
+    require("issue_device_authorization_token" in auth, "device-authorization token issuance path must exist")
+    require("created_from = \"device_authorization\"" in auth, "device tokens must record created_from provenance")
 
     # Explicit user creation: no auto-create on token issue.
     require("ensure_user_from_auth(service.users" not in auth.split("issue_user_api_token :: proc")[1].split("list_user_api_tokens :: proc")[0],
@@ -121,8 +128,10 @@ def main() -> None:
         "token issue must fail when user does not exist (no auto-create)",
         "create_user must require name",
         "create_user must require email",
-        "at most one active token must remain after reissue",
-        "the first active token must be auto-revoked when a second is issued",
+        "device issuance must not revoke existing operator or device tokens",
+        "tokens list must surface multiple device token provenance rows",
+        "multiple device tokens must remain concurrently active",
+        "tokens revoke must revoke one device token without revoking other devices",
     ]:
         require(marker in test, f"missing token hygiene test marker: {marker}")
 

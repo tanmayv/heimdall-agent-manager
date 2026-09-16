@@ -294,6 +294,17 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
+	// `tasks show` is an explicit-id lookup and requires --task-id (there is no
+	// current-task fallback for it). Fail with a clear JSON error when it is
+	// omitted instead of silently producing no output.
+	if action == "show" {
+		tid := strings.trim_space(option_value(args, "--task-id", option_value(args, "--task", "")))
+		if tid == "" {
+			fmt.println(`{"ok":false,"message":"missing required --task-id"}`)
+			return
+		}
+	}
+
 	transport, ok := resolve_ctl_transport(args)
 	if !ok do return
 

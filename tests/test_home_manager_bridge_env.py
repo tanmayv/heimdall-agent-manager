@@ -86,19 +86,22 @@ def main() -> int:
     packages = "\n".join(data["packageNames"])
 
     for env_name, env in [("systemd", sys_env), ("launchd", launchd_env)]:
-        require(f"{env_name} wrapper bin pinned", env.get("HEIMDALL_HAM_WRAPPER_BIN", "").endswith("/bin/ham-wrapper"))
+        # pty-host runtime: the bridge launches agents through ham-pty-host, so the
+        # pty-host bin is pinned (no ham-wrapper), plus the ham-ctl bin for bootstrap.
+        require(f"{env_name} pty-host bin pinned", env.get("HEIMDALL_HAM_PTY_HOST_BIN", "").endswith("/bin/ham-pty-host"))
+        require(f"{env_name} pty-host runtime enabled", env.get("HEIMDALL_BRIDGE_PTY_HOST", "") == "true")
         require(f"{env_name} ctl bin pinned", env.get("HEIMDALL_HAM_CTL_BIN", "").endswith("/bin/ham-ctl"))
         require(f"{env_name} shell is absolute bash", env.get("SHELL", "").endswith("/bin/bash"))
         path = env.get("PATH", "")
         require(f"{env_name} PATH includes home profile", "/home/tester/.nix-profile/bin" in path)
         require(f"{env_name} PATH includes pi install dir", "/home/tester/.pi/agent/bin" in path)
         require(f"{env_name} PATH includes user local bin", "/home/tester/.local/bin" in path)
-        require(f"{env_name} PATH includes tmux package", "tmux" in path)
+        require(f"{env_name} PATH includes pty-host package", "ham-pty-host" in path)
         require(f"{env_name} PATH includes bash package", "bash" in path)
         require(f"{env_name} PATH includes system fallback", "/run/current-system/sw/bin" in path)
 
     require("bridge installs matching ham-ctl for agent bootstrap", "ham-ctl" in packages)
-    require("bridge installs tmux runtime dependency", "tmux" in packages)
+    require("bridge installs ham-pty-host runtime dependency", "ham-pty-host" in packages)
 
     overridden = eval_bridge('''
       {
@@ -112,7 +115,7 @@ def main() -> int:
     require("bridge env PATH remains user-overridable", overridden_sys.get("PATH") == "/custom/bin")
     require("bridge env SHELL remains user-overridable", overridden_sys.get("SHELL") == "/custom/sh")
 
-    print("TEST PASSED: Home Manager bridge env includes PATH/SHELL and matching wrapper/ctl")
+    print("TEST PASSED: Home Manager bridge env includes PATH/SHELL and matching pty-host/ctl")
     return 0
 
 
