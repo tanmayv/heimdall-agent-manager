@@ -105,6 +105,30 @@ work_task_eligible :: proc(tasks: []domain.Task, deps: []domain.Task_Dependency,
 	return true
 }
 
+// instance_has_pending_validation reports whether the given instance has any task
+// currently in_validation (i.e. submitted for review but not yet resolved). Used
+// as a promotion gate: an assignee should not pick up new work while review is pending.
+instance_has_pending_validation :: proc(tasks: []domain.Task, instance_id: string) -> bool {
+	for t in tasks {
+		if t.status != .In_Validation do continue
+		a := primary_assignee_instance(t.assignee_ref_json)
+		is_mine := a == instance_id
+		delete(a)
+		if is_mine do return true
+	}
+	return false
+}
+
+// instance_has_voted reports whether instance_id has already cast a vote on task_id,
+// using the pre-loaded votes_by_task map. Used to exclude already-voted tasks from
+// the review pool so reviewers stop being focused on tasks they've voted on.
+instance_has_voted :: proc(votes_by_task: map[domain.Task_ID][]string, task_id: domain.Task_ID, instance_id: string) -> bool {
+	voters, has := votes_by_task[task_id]
+	if !has do return false
+	for v in voters do if v == instance_id do return true
+	return false
+}
+
 // promotion_eligible is retained for compatibility with callers/tests that ask
 // whether a task can auto-claim into In_Progress right now (published, Assigned,
 // deps satisfied). The richer selection lives in recompute_chain_promotions.
@@ -183,6 +207,23 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		}
 	}
 
+	// Load votes for all in_validation tasks so the review pool can exclude tasks
+	// an instance has already voted on (stopping reviewers after they vote).
+	votes_by_task := make(map[domain.Task_ID][]string) // task_id -> []voter_instance_ids
+	defer {
+		for _, voters in votes_by_task do delete(voters)
+		delete(votes_by_task)
+	}
+	for t in tasks {
+		if t.status != .In_Validation do continue
+		votes, verr := iface.taskchain_list_votes_by_task(service.repo, t.task_id, chain.owner_user_id)
+		if verr.code != .None do continue
+		voter_ids := make([dynamic]string, len(votes))
+		for v, i in votes do voter_ids[i] = v.reviewer_agent_instance_id
+		votes_by_task[t.task_id] = voter_ids[:]
+		delete(votes)
+	}
+
 	// Resolve each instance's focus and collect the resulting task mutations. We
 	// stage decisions first, then apply them so the tasks slice remains a stable
 	// snapshot during selection.
@@ -203,7 +244,14 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		for t in tasks {
 			if t.status != .In_Validation do continue
 			if !instance_reviews_task(t, chain, instance_id) do continue
+			if instance_has_voted(votes_by_task, t.task_id, instance_id) do continue
 			if !have_review || task_prefers(t, best_review) { best_review = t; have_review = true }
+		}
+
+		// Block new work promotion while this instance has a task pending review.
+		if !have_review && instance_has_pending_validation(tasks[:], instance_id) {
+			focus[instance_id] = Instance_Focus{task_id = "", role = .None}
+			continue
 		}
 
 		// WORK pool: actionable, unblocked tasks assigned to this instance.
@@ -290,15 +338,10 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		}
 	}
 
-	// Persist each instance's current-task pointer BEFORE notifying, so the gate
-	// sees the freshly-promoted focus. TOTAL: every instance in the candidate set
-	// gets its pointer set (to its focus) or CLEARED (no focus), and we collect
-	// which ones actually changed so we can notify only those. Also re-read the
-	// reconciled task list (statuses moved above) so focus/idle notifications use
-	// current status.
 	changed_focus := apply_instance_focus_total(service, instance_ids[:], focus)
+	defer delete(changed_focus)
 
-	// Re-read tasks so notifications reflect the just-applied status changes.
+	// Re-read tasks so notifications reflect just-applied status changes.
 	fresh_tasks, ft_err := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	defer if ft_err.code == .None do delete(fresh_tasks)
 	lookup_task :: proc(tasks: []domain.Task, id: domain.Task_ID) -> (domain.Task, bool) {
@@ -306,114 +349,71 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		return domain.Task{}, false
 	}
 
-	// (5a) NOTIFY current-task change: for every instance whose pointer changed to
-	// a NEW task, wake it with the WORK/REVIEW label. Cleared pointers (-> none)
-	// send no nudge. Also reset the idle-nudge backoff for the new focus.
-	for cf in changed_focus {
-		if cf.new_task_id == "" do continue
-		inst, inst_ok, _ := iface.agent_get_instance(service.agents, cf.instance_id)
-		if !inst_ok do continue
-		task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], domain.Task_ID(cf.new_task_id))
-		if !task_ok do continue
-		notify_current_task_changed(service, inst, task, cf.new_role)
-		idle_nudge_reset(service, cf.instance_id, cf.new_task_id)
-	}
-
-	// (5b) NUDGE idle + actionable: an instance whose focus DID NOT change but is
-	// live+idle while holding an actionable current task gets a gentle re-nudge,
-	// rate-limited to 10 min with exponential backoff per (instance:task).
-	changed_ids := make(map[string]bool)
-	defer delete(changed_ids)
-	for cf in changed_focus do changed_ids[cf.instance_id] = true
-	for instance_id in instance_ids {
-		if changed_ids[instance_id] do continue
-		f, has := focus[instance_id]
-		if !has || f.task_id == "" do continue
-		inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id)
-		if !inst_ok do continue
-		if !instance_is_idle(inst) do continue
-		task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], f.task_id)
-		if !task_ok do continue
-		if !idle_nudge_due(service, instance_id, string(f.task_id)) do continue
-		notify_current_task_changed(service, inst, task, f.role)
-	}
-
-	// Now fan out promotion notifications. System-initiated promotion: empty auth
-	// actor so the runtime fan-out targets the assignee (no actor is excluded).
-	for saved in promoted_tasks {
-		notify_task_status_change(service, contracts.Auth_Context{}, saved, chain)
-	}
-
-	// (6) EPHEMERAL LIFECYCLE (REQ-10): push one wake_agent per (chain × bridge) so a
-	// bridge starts/restarts the non-coordinator agents that SHOULD be running for
-	// this chain (those with an actionable focus) and stops the non-coordinator agents
-	// that are live but no longer hold an actionable task. Coordinators are EXEMPT.
-	emit_wake_agent_commands(service, chain, instance_ids[:], focus)
-
-	return promoted
-}
-
-// emit_wake_agent_commands fans out the ephemeral-lifecycle wake_agent push produced
-// by a reconcile pass. For every candidate instance in the chain it decides, from the
-// resolved focus, whether the instance SHOULD be running (has an actionable focus ->
-// run[]) or SHOULD be stopped (no focus but currently live -> stop[]), groups those
-// decisions by bridge, and sends exactly one wake_agent per bridge that has any run or
-// stop entries. Coordinators are never placed in run[] or stop[]. run[] is independent
-// of current runtime_status (a stopped/never-started ephemeral agent must still be
-// started); the live check gates only stop[]. Fire-and-forget: a delivery failure does
-// not fail the reconcile.
-emit_wake_agent_commands :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_ids: []string, focus: map[string]Instance_Focus) {
-	if service.bridge_command_sink.send_runtime_command == nil do return
-	if service.agents == nil do return
+	// Notify and act on focus changes: send the task-changed message, then emit
+	// a wake_agent run[] or stop[] for every instance whose current_task pointer
+	// moved. Unchanged pointers produce no action (idle nudge removed).
 	coordinator_id := chain.coordinator_agent_instance_id
-
-	runs := make(map[string][dynamic]agent.Wake_Agent_Run_Entry)
+	runs  := make(map[string][dynamic]agent.Wake_Agent_Run_Entry)
 	stops := make(map[string][dynamic]string)
-	defer {
-		for _, v in runs do delete(v)
-		delete(runs)
-		for _, v in stops do delete(v)
-		delete(stops)
-	}
-	// Preserve a stable bridge order for deterministic emission.
 	bridge_order := make([dynamic]string)
-	defer delete(bridge_order)
-	seen_bridge := make(map[string]bool)
-	defer delete(seen_bridge)
-	note_bridge := proc(order: ^[dynamic]string, seen: ^map[string]bool, bridge_id: string) {
+	seen_bridge  := make(map[string]bool)
+	defer {
+		for _, entries in runs  do delete(entries)
+		for _, entries in stops do delete(entries)
+		delete(runs); delete(stops); delete(bridge_order); delete(seen_bridge)
+	}
+	note_bridge_local :: proc(order: ^[dynamic]string, seen: ^map[string]bool, bridge_id: string) {
 		if bridge_id == "" || seen[bridge_id] do return
 		seen[bridge_id] = true
 		append(order, bridge_id)
 	}
 
-	for instance_id in instance_ids {
-		if instance_id == "" || instance_id == coordinator_id do continue
-		inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id)
-		if !inst_ok || inst.bridge_id == "" do continue
-		f := focus[instance_id]
-		if f.task_id != "" {
+	for cf in changed_focus {
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, cf.instance_id)
+		if !inst_ok do continue
+		// Send the task-changed chat message when the new focus is non-empty.
+		if cf.new_task_id != "" {
+			task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], domain.Task_ID(cf.new_task_id))
+			if task_ok do notify_current_task_changed(service, inst, task, cf.new_role)
+		}
+		// Emit runtime wake/stop (coordinators exempt).
+		if cf.instance_id == coordinator_id do continue
+		if cf.new_task_id != "" {
 			role := "worker"
-			if f.role == .Review do role = "reviewer"
+			if cf.new_role == .Review do role = "reviewer"
 			entries := runs[inst.bridge_id]
-			append(&entries, agent.Wake_Agent_Run_Entry{agent_instance_id = instance_id, task_id = string(f.task_id), role = role})
+			append(&entries, agent.Wake_Agent_Run_Entry{
+				agent_instance_id = cf.instance_id,
+				task_id           = cf.new_task_id,
+				role              = role,
+			})
 			runs[inst.bridge_id] = entries
-			note_bridge(&bridge_order, &seen_bridge, inst.bridge_id)
+			note_bridge_local(&bridge_order, &seen_bridge, inst.bridge_id)
 		} else if instance_is_live(inst) {
 			entries := stops[inst.bridge_id]
-			append(&entries, instance_id)
+			append(&entries, cf.instance_id)
 			stops[inst.bridge_id] = entries
-			note_bridge(&bridge_order, &seen_bridge, inst.bridge_id)
+			note_bridge_local(&bridge_order, &seen_bridge, inst.bridge_id)
 		}
 	}
 
+	// Fan out one wake_agent command per bridge.
 	for bridge_id in bridge_order {
-		run_entries := runs[bridge_id]
+		run_entries  := runs[bridge_id]
 		stop_entries := stops[bridge_id]
 		if len(run_entries) == 0 && len(stop_entries) == 0 do continue
 		cmd_id := platform.generate_id(service.ids, "cmd_")
-		body := agent.wake_agent_command_json(string(chain.chain_id), run_entries[:], stop_entries[:])
-		_, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id = bridge_id, command_id = cmd_id, body_json = body})
+		body   := agent.wake_agent_command_json(string(chain.chain_id), run_entries[:], stop_entries[:])
+		_, _ = project.bridge_command_send_runtime(service.bridge_command_sink,
+			project.Runtime_Command{bridge_id = bridge_id, command_id = cmd_id, body_json = body})
 	}
+
+	// Fan out promotion status-change notifications.
+	for saved in promoted_tasks {
+		notify_task_status_change(service, contracts.Auth_Context{}, saved, chain)
+	}
+
+	return promoted
 }
 
 // instance_is_live reports whether an instance currently has a running process

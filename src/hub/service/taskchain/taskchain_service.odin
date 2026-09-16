@@ -49,13 +49,6 @@ Taskchain_Service :: struct {
 	replay_last_unix_ms: map[string]i64,
 	nudge_debounce_mutex: sync.Mutex,
 	nudge_debounce_last_unix_ms: map[string]i64,
-	// idle_nudge tracks self-heal idle re-nudges per (instance:task): last send
-	// time + the current backoff interval (10m, doubling each successive idle
-	// nudge for the same task, reset when the task's focus/status changes).
-	// Guarded by idle_nudge_mutex.
-	idle_nudge_mutex: sync.Mutex,
-	idle_nudge_last_unix_ms: map[string]i64,
-	idle_nudge_interval_ms: map[string]i64,
 }
 
 Create_Chain_Input :: struct {
@@ -1137,71 +1130,6 @@ should_debounce_nudge_dispatch :: proc(service: ^Taskchain_Service, instance_id,
 	return false
 }
 
-// IDLE_NUDGE_MIN_INTERVAL_MS is the minimum gap between self-heal idle nudges for
-// the same (instance:task); the interval doubles on each successive idle nudge.
-IDLE_NUDGE_MIN_INTERVAL_MS :: 10 * 60 * 1000
-// IDLE_NUDGE_MAX_INTERVAL_MS caps the exponential backoff so it never grows
-// unbounded (10m -> 20m -> 40m -> ... -> capped).
-IDLE_NUDGE_MAX_INTERVAL_MS :: 4 * 60 * 60 * 1000
-
-// idle_nudge_due reports whether an idle+actionable agent may be re-nudged for a
-// task now, and if so records the send and doubles the next interval. First nudge
-// for a (instance:task) is always allowed; subsequent ones wait the current
-// backoff interval (starting at 10 min, doubling, capped).
-idle_nudge_due :: proc(service: ^Taskchain_Service, instance_id, task_id: string) -> bool {
-	if service == nil || instance_id == "" || task_id == "" do return false
-	key := strings.concatenate({instance_id, ":", task_id})
-	defer delete(key)
-	now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
-
-	sync.mutex_lock(&service.idle_nudge_mutex)
-	defer sync.mutex_unlock(&service.idle_nudge_mutex)
-	if service.idle_nudge_last_unix_ms == nil {
-		service.idle_nudge_last_unix_ms = make(map[string]i64, runtime.heap_allocator())
-		service.idle_nudge_interval_ms = make(map[string]i64, runtime.heap_allocator())
-	}
-
-	last, seen := service.idle_nudge_last_unix_ms[key]
-	if seen {
-		interval := service.idle_nudge_interval_ms[key]
-		if interval <= 0 do interval = IDLE_NUDGE_MIN_INTERVAL_MS
-		if now_ms - last < interval do return false
-		next := interval * 2
-		if next > IDLE_NUDGE_MAX_INTERVAL_MS do next = IDLE_NUDGE_MAX_INTERVAL_MS
-		service.idle_nudge_interval_ms[key] = next
-		service.idle_nudge_last_unix_ms[key] = now_ms
-		return true
-	}
-	// first idle nudge for this pair. Both maps share one heap-owned key so it
-	// outlives the per-request arena (MEM-4); freed once in idle_nudge_reset.
-	ck := strings.clone(key, runtime.heap_allocator())
-	service.idle_nudge_last_unix_ms[ck] = now_ms
-	service.idle_nudge_interval_ms[ck] = IDLE_NUDGE_MIN_INTERVAL_MS
-	return true
-}
-
-// idle_nudge_reset clears the idle-nudge backoff for a (instance:task) — called
-// when the instance's focus/status for that task changes, so a re-focus starts
-// the backoff fresh rather than inheriting a long interval.
-idle_nudge_reset :: proc(service: ^Taskchain_Service, instance_id, task_id: string) {
-	if service == nil || instance_id == "" || task_id == "" do return
-	key := strings.concatenate({instance_id, ":", task_id})
-	defer delete(key)
-	sync.mutex_lock(&service.idle_nudge_mutex)
-	defer sync.mutex_unlock(&service.idle_nudge_mutex)
-	if service.idle_nudge_last_unix_ms == nil do return
-	// Capture the heap-owned stored key (shared by both maps) so we can free it
-	// after removing the entries — delete_key drops the slot but never frees the
-	// key bytes, which would otherwise leak on every reset.
-	owned_key := ""
-	for k in service.idle_nudge_last_unix_ms {
-		if k == key { owned_key = k; break }
-	}
-	delete_key(&service.idle_nudge_last_unix_ms, key)
-	delete_key(&service.idle_nudge_interval_ms, key)
-	if owned_key != "" do delete(owned_key, runtime.heap_allocator())
-}
-
 // notification_allowed_for_recipient implements CT-6 gating with a fail-open bias:
 // a recipient is SUPPRESSED only when we positively know its persisted current
 // task is a DIFFERENT task. When the instance's current_task is this task we allow
@@ -1964,6 +1892,15 @@ record_task_vote :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		} else {
 			_ = send_task_wake(service, updated, coord, "vote", "Changes Requested", "requested changes on", input.comment, voter_instance_id)
 		}
+	}
+
+	// Always reconcile after a vote so the reviewer is stopped once their focus
+	// clears (REQ-30 excludes already-voted tasks from the review pool). On a
+	// resolving vote, evaluate_task_quorum already called recompute above; calling
+	// it again is idempotent with snapshot-diff-act — the second diff sees no
+	// change and emits nothing.
+	if chain2, chain2_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id); chain2_ok {
+		_ = recompute_chain_promotions(service, chain2)
 	}
 
 	return saved_vote, true, domain.Domain_Error{}
