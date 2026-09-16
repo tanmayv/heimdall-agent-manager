@@ -91,7 +91,9 @@ export default function ShellJobsPanel({
       prevInstanceId.current = agentInstanceId;
       setCursor('');
       setAccJobs([]);
-      return;
+      // Fall through: populate from cached data if available, so a remount
+      // (e.g. returning to the Jobs tab) doesn't leave the list empty until
+      // the user manually refreshes.
     }
     if (data?.jobs) {
       if (!cursor) {
