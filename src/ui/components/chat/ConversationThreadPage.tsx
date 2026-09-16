@@ -1410,7 +1410,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3">
         {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
             above the composer (co-located with the working indicator). */}
-        <AgentActivityBubbles instanceId={agentInstanceId} />
+        <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
         {currentTask ? (
           <CurrentTaskStrip
             task={currentTask}

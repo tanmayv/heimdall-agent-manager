@@ -98,9 +98,18 @@ Use `ham-ctl shell-cmd` for any command that could take longer than a few second
 # Run a shell command (sync if <15s, async if >=15s)
 ham-ctl shell-cmd exec --cmd 'your command here'
 
+# Run a command in a specific working directory (recommended for build/test)
+ham-ctl shell-cmd exec --cwd ~/heimdall-agent-manager --cmd 'odin build src/bridge'
+
 # Read output of a completed or in-progress background job
 ham-ctl shell-cmd read <exec-id>
 ```
+
+If `--cwd` is omitted, the command inherits the bridge service's working directory
+(typically `$HOME`), NOT the project directory — so for build/test commands either
+pass `--cwd <project-dir>` or prefix the command with `cd <project-dir> &&`. The
+`--cwd` value may start with `~` (expanded to `$HOME`) and must be an existing
+directory, otherwise the exec is rejected.
 
 **Async pattern:**
 When a command runs longer than 15 seconds, shell-cmd exec returns immediately with status=running and an exec_id. The bridge continues the job in background. When it finishes, the hub posts a chat notification to the agent conversation. Use `ham-ctl shell-cmd read <exec_id>` to retrieve output at any time.

@@ -53,6 +53,71 @@ bridge_shell_tail_empty :: proc(t: ^testing.T) {
 	testing.expect(t, tail == "", "empty output unchanged")
 }
 
+// ---- pure helpers: paging (REQ-25) ---------------------------------------
+
+@(test)
+bridge_shell_page_offset_skips_from_start :: proc(t: ^testing.T) {
+	out := "a\nb\nc\nd\ne\n"
+	page, truncated := bridge_shell_page(out, 2, 100, "")
+	defer delete(page)
+	testing.expect(t, page == "c\nd\ne\n", "offset 2 keeps lines 3..5")
+	testing.expect(t, truncated, "offset > 0 marks truncated")
+}
+
+@(test)
+bridge_shell_page_limit_caps_lines :: proc(t: ^testing.T) {
+	out := "a\nb\nc\nd\ne\n"
+	page, truncated := bridge_shell_page(out, 0, 2, "")
+	defer delete(page)
+	testing.expect(t, page == "a\nb\n", "limit 2 keeps the first 2 lines from offset 0")
+	testing.expect(t, truncated, "more lines remain -> truncated")
+}
+
+@(test)
+bridge_shell_page_limit_within_bounds_not_truncated :: proc(t: ^testing.T) {
+	out := "a\nb\nc\n"
+	page, truncated := bridge_shell_page(out, 0, 10, "")
+	defer delete(page)
+	testing.expect(t, page == "a\nb\nc\n", "limit above line count returns all")
+	testing.expect(t, !truncated, "nothing skipped or dropped -> not truncated")
+}
+
+@(test)
+bridge_shell_page_grep_filters_with_line_numbers :: proc(t: ^testing.T) {
+	out := "alpha\nerror one\nbeta\nerror two\ngamma\n"
+	page, truncated := bridge_shell_page(out, 0, 100, "error")
+	defer delete(page)
+	testing.expect(t, page == "2:error one\n4:error two\n", "grep keeps matches with original 1-based line numbers")
+	testing.expect(t, !truncated, "all matches returned -> not truncated")
+}
+
+@(test)
+bridge_shell_page_grep_with_offset_and_limit :: proc(t: ^testing.T) {
+	out := "e1\nx\ne2\ne3\ny\ne4\n"
+	// matches are lines 1,3,4,6 -> skip 1 match, keep 2.
+	page, truncated := bridge_shell_page(out, 1, 2, "e")
+	defer delete(page)
+	testing.expect(t, page == "3:e2\n4:e3\n", "offset+limit page the grep matches")
+	testing.expect(t, truncated, "offset skipped a match -> truncated")
+}
+
+@(test)
+bridge_shell_page_no_trailing_newline :: proc(t: ^testing.T) {
+	out := "a\nb\nc"
+	page, truncated := bridge_shell_page(out, 0, 10, "")
+	defer delete(page)
+	testing.expect(t, page == "a\nb\nc\n", "final line without newline is still emitted")
+	testing.expect(t, !truncated, "all lines returned -> not truncated")
+}
+
+@(test)
+bridge_shell_page_empty_output :: proc(t: ^testing.T) {
+	page, truncated := bridge_shell_page("", 0, 100, "")
+	defer delete(page)
+	testing.expect(t, page == "", "empty output pages to empty")
+	testing.expect(t, !truncated, "empty output not truncated")
+}
+
 // ---- routing + allowlist -------------------------------------------------
 
 @(test)
@@ -147,6 +212,43 @@ bridge_shell_cmd_read_unknown :: proc(t: ^testing.T) {
 	resp := bridge_shell_cmd_read("req5", "{\"exec_id\":\"sexc_does_not_exist\"}", rec)
 	testing.expect(t, strings.contains(resp, "\"ok\":false"), "unknown exec_id -> error")
 	testing.expect(t, strings.contains(resp, "not_found"), "unknown exec_id -> not_found")
+}
+
+@(test)
+bridge_shell_cmd_read_paging_reaches_early_lines :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_token_store_test_mutex)
+	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	saved := bridge_config.data_dir
+	defer { bridge_config.data_dir = saved }
+	bridge_config.data_dir = "/tmp/ham-shell-page-e2e-test"
+
+	rec := Bridge_Local_Agent_Token_Record{}
+	// 300 lines: the default tail-100 read only exposes line201..line300.
+	resp := bridge_shell_cmd_exec("rp1", "{\"cmd\":\"for i in $(seq 1 300); do echo line$i; done\"}", rec)
+	testing.expect(t, strings.contains(resp, "\"status\":\"completed\""), "exec completed")
+	exec_id := bridge_local_extract_json_string(resp, "exec_id", "")
+	testing.expect(t, strings.has_prefix(exec_id, "sexc_"), "got exec id")
+
+	// grep reaches an early line the default tail would hide, tagged with its number.
+	gp := strings.concatenate({"{\"exec_id\":\"", exec_id, "\",\"grep_pattern\":\"line150\"}"})
+	gr := bridge_shell_cmd_read("rp2", gp, rec)
+	testing.expect(t, strings.contains(gr, "150:line150"), "grep returns line150 with its 1-based line number")
+	testing.expect(t, !strings.contains(gr, "line151"), "grep returns only the matching line")
+
+	// offset+limit page an explicit window from the start.
+	op := strings.concatenate({"{\"exec_id\":\"", exec_id, "\",\"offset_lines\":10,\"limit_lines\":3}"})
+	or := bridge_shell_cmd_read("rp3", op, rec)
+	testing.expect(t, strings.contains(or, "line11"), "offset 10 starts at line11")
+	testing.expect(t, strings.contains(or, "line13"), "limit 3 ends at line13")
+	testing.expect(t, !strings.contains(or, "line14"), "limit stops before line14")
+	testing.expect(t, strings.contains(or, "\"truncated\":true"), "more lines remain -> truncated")
+
+	// Default read (no paging flags) is still the tail-100 window.
+	dp := strings.concatenate({"{\"exec_id\":\"", exec_id, "\"}"})
+	dr := bridge_shell_cmd_read("rp4", dp, rec)
+	testing.expect(t, strings.contains(dr, "line300"), "default read keeps the last line")
+	testing.expect(t, !strings.contains(dr, "line150\\n"), "default tail-100 does not reach line150")
+	testing.expect(t, strings.contains(dr, "\"truncated\":true"), "default tail still marks truncated for >200 lines")
 }
 
 // bridge_shell_extract_json_number returns the raw numeric token for `key`

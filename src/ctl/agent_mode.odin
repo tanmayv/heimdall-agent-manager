@@ -100,17 +100,39 @@ ctl_agentmode_shell_cmd :: proc(endpoint, token: string, tokens, args: []string)
 			print_agent_help([]string{"shell-cmd"})
 			return
 		}
-		ctl_agent_call(endpoint, token, "agent.shell_cmd.exec", json_object(json_kv("cmd", cmd)))
+		// --cwd is optional; empty is sent through and the Bridge treats it as
+		// "inherit my working directory" (REQ-24).
+		cwd := option_value(args, "--cwd", "")
+		ctl_agent_call(endpoint, token, "agent.shell_cmd.exec", json_object(json_kv("cmd", cmd), json_kv("cwd", cwd)))
 	case "read":
 		id := pos(tokens, 1)
 		if strings.trim_space(id) == "" {
 			print_agent_help([]string{"shell-cmd"})
 			return
 		}
-		ctl_agent_call(endpoint, token, "agent.shell_cmd.read", json_object(json_kv("exec_id", id)))
+		// Optional paging (REQ-25). Defaults (offset 0, limit 100, no grep)
+		// reproduce the historic tail-100 output. offset/limit are validated as
+		// non-negative integers so a malformed flag can never emit invalid JSON.
+		offset := ctl_shell_uint_flag(args, "--offset", "0")
+		limit := ctl_shell_uint_flag(args, "--limit", "100")
+		grep := option_value(args, "--grep", "")
+		ctl_agent_call(endpoint, token, "agent.shell_cmd.read", json_object(json_kv("exec_id", id), json_kv_raw("offset_lines", offset), json_kv_raw("limit_lines", limit), json_kv("grep_pattern", grep)))
 	case:
 		print_agent_help([]string{"shell-cmd"})
 	}
+}
+
+// ctl_shell_uint_flag returns the value of a non-negative integer flag as a bare
+// numeric string suitable for json_kv_raw, falling back to `fallback` when the flag
+// is absent, empty, or not all digits — so a typo like `--offset x` degrades to the
+// default instead of producing invalid JSON on the wire.
+ctl_shell_uint_flag :: proc(args: []string, name, fallback: string) -> string {
+	v := strings.trim_space(option_value(args, name, ""))
+	if v == "" do return fallback
+	for ch in v {
+		if ch < '0' || ch > '9' do return fallback
+	}
+	return v
 }
 
 // pos returns positional token i (0-based) from the group's remaining tokens, or
@@ -1155,13 +1177,27 @@ print_help_shell_cmd :: proc() {
 	fmt.println("  exec --cmd <command>   Submit a shell command for the Bridge to run locally.")
 	fmt.println("                         Returns an exec id; read it back with `shell-cmd read`.")
 	fmt.println("  read <exec-id>         Fetch the status/output of a previously submitted exec.")
+	fmt.println("                         By default returns the last 100 lines; page the full log")
+	fmt.println("                         with --offset/--limit/--grep.")
 	fmt.println("")
 	fmt.println("FLAGS")
 	fmt.println("  --cmd <command>        The command line to run (required for exec).")
+	fmt.println("  --cwd <dir>            Working directory to run the command in (exec, optional).")
+	fmt.println("                         A leading ~ is expanded and the directory must exist.")
+	fmt.println("                         If omitted, the command inherits the Bridge's working")
+	fmt.println("                         directory (typically $HOME).")
+	fmt.println("  --offset <N>           read: skip the first N lines of the output (0-indexed;")
+	fmt.println("                         default 0).")
+	fmt.println("  --limit <N>            read: return at most N lines (default 100).")
+	fmt.println("  --grep <pattern>       read: return only lines containing <pattern>, each")
+	fmt.println("                         prefixed with its original line number.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl shell-cmd exec --cwd ~/heimdall-agent-manager --cmd \"odin build src/bridge\"")
 	fmt.println("  ham-ctl shell-cmd exec --cmd \"nix develop --command bash -c 'odin build src/ctl'\"")
 	fmt.println("  ham-ctl shell-cmd read exec_abc123")
+	fmt.println("  ham-ctl shell-cmd read exec_abc123 --grep error")
+	fmt.println("  ham-ctl shell-cmd read exec_abc123 --offset 200 --limit 100")
 }
 
 print_help_bridge :: proc() {

@@ -20,7 +20,7 @@ Conventions used below:
   `./.heimdall/bin/ham-ctl --help` lists all groups.
 
 Groups: `bridge`, `agents`, `task-chain`, `task`, `chat`, `memory`, `artifact`,
-`context`, `start-success`.
+`shell-cmd`, `context`, `start-success`.
 
 ---
 
@@ -96,6 +96,35 @@ the reviewer's job is `--result lgtm|ngtm`; completion happens on its own.
   agent-to-agent.
 - `chat set-title <title>` — rename THIS conversation (the chat thread shown in the UI).
   Distinct from `task-chain set-title`, which renames the chain board.
+
+## shell-cmd — run a shell command on your local Bridge host
+- `shell-cmd exec --cmd <command> [--cwd <dir>]` — run a shell command locally on the
+  Bridge. Runs synchronously if it finishes in <15s (the response carries `status`,
+  `exit_code`, `output`, and `exec_id`); if it runs >=15s it switches to async and
+  returns immediately with `status:"running"` and an `exec_id` (see below).
+  - `--cwd <dir>` — working directory for the command; a leading `~` is expanded and
+    the directory must exist. If omitted, the command inherits the Bridge service's
+    working directory (typically `$HOME`), NOT the project — so for build/test either
+    pass `--cwd <project-dir>` or prefix the command with `cd <project-dir> &&`.
+  - The command runs via `sh -c` with no interactive stdin, so it must be
+    non-interactive (a command that waits for input will block until it is killed).
+- `shell-cmd read <exec-id> [--offset <N>] [--limit <N>] [--grep <pattern>]` — fetch
+  the status/output of a previously submitted exec (works while it is still running).
+  - Default (no flags) returns the last 100 lines (tail), matching `exec`.
+  - `--offset <N>` skips the first N lines of the output (0-indexed; default 0).
+  - `--limit <N>` returns at most N lines (default 100).
+  - `--grep <pattern>` returns only lines containing `<pattern>`, each prefixed with
+    its original line number. Combine with `--offset`/`--limit` to page the matches.
+
+### Async model + output truncation
+- A command running >=15s returns right away with `status:"running"` and an `exec_id`;
+  the Bridge keeps running it in the background and the Hub posts a chat notification
+  to your conversation when it finishes. Retrieve the output any time with
+  `shell-cmd read <exec_id>`.
+- Output longer than 200 lines is truncated to the last 100 lines by default, with
+  `truncated:true` in the response. The full, untruncated output is always on the
+  Bridge filesystem at the `raw_output_location` path in the response — reach earlier
+  lines with `shell-cmd read <id> --offset/--limit/--grep`.
 
 ## memory — durable memories
 - `memory list [--agent-ids <id,...>] [--project-ids <id,...>] [--bridge-ids <id,...>] [--template-ids <id,...>] [--status <s>] [--type <t>] [--limit <n>]` — list memories (metadata only).

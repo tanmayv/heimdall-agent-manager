@@ -49,7 +49,7 @@ function prefersReducedMotion(): boolean {
   );
 }
 
-export default function AgentActivityBubbles({ instanceId }: { instanceId: string }) {
+export default function AgentActivityBubbles({ instanceId, onOpenJobs }: { instanceId: string; onOpenJobs?: () => void }) {
   const dispatch = useDispatch();
   const buffer = useSelector((state: any) => selectAgentActivityBuffer(state, instanceId));
   // Ids already surfaced for this instance, persisted in redux so it survives
@@ -92,6 +92,7 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
     const isFirst = liveCountRef.current === 0 && !prefersReducedMotion();
     liveCountRef.current += 1;
     const phase: BubblePhase = isFirst ? 'dots' : 'pill';
+    const bubbleLifetimeMs = item.shellStatus === 'running' ? 60000 : BUBBLE_LIFETIME_MS;
     // Prepend so the newest bubble slides in at the left and the rest slide over.
     setVisible((prev) => (prev.some((b) => b.id === item.id) ? prev : [{ ...item, phase }, ...prev]));
 
@@ -107,7 +108,7 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
       setVisible((prev) => prev.map((b) => (b.id === item.id ? { ...b, phase: 'exiting' } : b)));
       const remove = window.setTimeout(() => removeBubble(item.id), EXIT_ANIM_MS);
       timersRef.current.push(remove);
-    }, lifeDelay + BUBBLE_LIFETIME_MS);
+    }, lifeDelay + bubbleLifetimeMs);
     timersRef.current.push(hide);
   }, [dispatch, instanceId, removeBubble]);
 
@@ -159,7 +160,7 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
     <div
       data-debug-id="conversation-activity-bubbles"
       aria-hidden="true"
-      className="pointer-events-none mb-1 flex h-6 items-center gap-1.5 overflow-hidden whitespace-nowrap px-1"
+      className="mb-1 flex h-6 items-center gap-1.5 overflow-hidden whitespace-nowrap px-1"
     >
       {visible.map((bubble) => {
         const animClass =
@@ -170,22 +171,36 @@ export default function AgentActivityBubbles({ instanceId }: { instanceId: strin
               : bubble.morphed
                 ? 'agent-bubble-morph'
                 : 'agent-bubble-pill-in';
-        return (
+        const isClickable = bubble.action === 'shell_cmd_report' && !!onOpenJobs;
+        const sharedClassName = `inline-flex max-w-[240px] shrink-0 items-center overflow-hidden rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-caption leading-none text-zinc-400 ${animClass}`;
+        const inner = bubble.phase === 'dots' ? (
+          <span data-debug-id="conversation-activity-bubble-dots" className="inline-flex items-center gap-0.5">
+            <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '0ms' }} />
+            <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '150ms' }} />
+            <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '300ms' }} />
+          </span>
+        ) : (
+          <span className="truncate">{bubble.summary}</span>
+        );
+        return isClickable ? (
+          <button
+            key={bubble.id}
+            data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
+            title={bubble.summary}
+            role="button"
+            onClick={onOpenJobs}
+            className={`${sharedClassName} cursor-pointer`}
+          >
+            {inner}
+          </button>
+        ) : (
           <span
             key={bubble.id}
             data-debug-id={`conversation-activity-bubble-${bubble.action || 'action'}`}
             title={bubble.summary}
-            className={`inline-flex max-w-[240px] shrink-0 items-center overflow-hidden rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-caption leading-none text-zinc-400 ${animClass}`}
+            className={sharedClassName}
           >
-            {bubble.phase === 'dots' ? (
-              <span data-debug-id="conversation-activity-bubble-dots" className="inline-flex items-center gap-0.5">
-                <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '0ms' }} />
-                <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '150ms' }} />
-                <span className="agent-bubble-dot h-1 w-1 rounded-full bg-zinc-500" style={{ animationDelay: '300ms' }} />
-              </span>
-            ) : (
-              <span className="truncate">{bubble.summary}</span>
-            )}
+            {inner}
           </span>
         );
       })}

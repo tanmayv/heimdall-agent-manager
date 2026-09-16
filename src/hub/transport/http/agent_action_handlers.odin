@@ -376,6 +376,48 @@ agent_action_event_json :: proc(agent_instance_id, action, summary: string) -> s
 	return strings.to_string(b)
 }
 
+// agent_action_event_json_with_shell_status is like agent_action_event_json but
+// appends a shell_status field so the UI can adjust bubble lifetime.
+agent_action_event_json_with_shell_status :: proc(agent_instance_id, action, summary, shell_status: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"agent_action","instance_id":"`)
+	write_handler_json_string(&b, agent_instance_id)
+	strings.write_string(&b, `","action":"`)
+	write_handler_json_string(&b, action)
+	strings.write_string(&b, `","summary":"`)
+	clipped := chat_event_preview(summary, AGENT_ACTION_SUMMARY_MAX)
+	defer delete(clipped)
+	write_handler_json_string(&b, clipped)
+	strings.write_string(&b, `","shell_status":"`)
+	write_handler_json_string(&b, shell_status)
+	strings.write_string(&b, `","ts":`)
+	strings.write_string(&b, fmt.tprintf("%d", time.to_unix_nanoseconds(time.now()) / 1_000_000))
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+// publish_agent_action_shell_cmd publishes a human-friendly shell-job bubble.
+publish_agent_action_shell_cmd :: proc(h: ^Agent_Action_Handlers, inst: domain.Agent_Instance, job: domain.Shell_Job) {
+	if h == nil || h.event_bus == nil do return
+	owner := string(inst.owner_user_id)
+	if owner == "" || inst.agent_instance_id == "" do return
+	cmd_short := job.cmd[:min(len(job.cmd), 50)]
+	summary: string
+	switch job.status {
+	case "running":
+		summary = fmt.tprintf("Background job started: %s", cmd_short)
+	case "completed":
+		exit_str := fmt.tprintf("%d", job.exit_code) if job.exit_code_set else "0"
+		summary = fmt.tprintf("Background job done (exit %s): %s", exit_str, cmd_short)
+	case:
+		exit_str := fmt.tprintf("%d", job.exit_code) if job.exit_code_set else "n/a"
+		summary = fmt.tprintf("Background job failed (exit %s): %s", exit_str, cmd_short)
+	}
+	event := agent_action_event_json_with_shell_status(inst.agent_instance_id, "shell_cmd_report", summary, job.status)
+	defer delete(event)
+	events.publish_raw_to_user(h.event_bus, owner, event)
+}
+
 agent_action_agents_live_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
@@ -1157,7 +1199,7 @@ agent_action_shell_cmd_report_handler :: proc(ctx: rawptr, req: Request) -> Resp
 	job, saved, err := shell_job_service.report_shell_job(h.shell_jobs, auth, input)
 	if !saved do return respond_error(err, req.request_id)
 
-	publish_agent_action(h, inst, "shell_cmd_report", fmt.tprintf("shell job %s %s", job.exec_id, job.status))
+	publish_agent_action_shell_cmd(h, inst, job)
 
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"exec_id":"`)

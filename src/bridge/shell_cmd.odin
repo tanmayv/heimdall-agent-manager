@@ -70,6 +70,21 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	cmd := strings.trim_space(bridge_local_extract_json_string(params, "cmd", ""))
 	if cmd == "" do return bridge_local_response_error(request_id, "bad_request", "shell-cmd exec requires --cmd '<command>'")
 
+	// Optional working directory (REQ-24). Empty -> inherit the bridge service's
+	// cwd (historic behavior). A non-empty value is ~-expanded and must resolve to
+	// an existing directory; an invalid --cwd is rejected before spawn rather than
+	// silently ignored, so agents get a clear error instead of a command that ran
+	// in the wrong place. working_dir is only heap-allocated when ~ was expanded
+	// (bridge_expand_home aliases the input otherwise), hence the guarded delete.
+	cwd := strings.trim_space(bridge_local_extract_json_string(params, "cwd", ""))
+	working_dir := ""
+	if cwd != "" do working_dir = bridge_expand_home(cwd)
+	defer if working_dir != cwd && working_dir != "" do delete(working_dir)
+	if cwd != "" {
+		if !os.exists(working_dir) do return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"shell-cmd exec --cwd does not exist: ", working_dir}))
+		if !os.is_dir(working_dir) do return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"shell-cmd exec --cwd is not a directory: ", working_dir}))
+	}
+
 	exec_id := bridge_shell_next_exec_id()
 	output_path := bridge_shell_output_path(exec_id)
 	if slash := strings.last_index_byte(output_path, '/'); slash > 0 do _ = os.make_directory_all(output_path[:slash])
@@ -84,7 +99,7 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	start_time := strings.clone(action_scheduler_format_rfc3339_utc(started_ms))
 
 	command := []string{"sh", "-c", cmd}
-	process, perr := os.process_start(os.Process_Desc{command = command, stdout = out_file, stderr = out_file})
+	process, perr := os.process_start(os.Process_Desc{command = command, stdout = out_file, stderr = out_file, working_dir = working_dir})
 	_ = os.close(out_file)
 	if perr != nil {
 		delete(start_time)
@@ -179,6 +194,14 @@ bridge_shell_cmd_read :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	exec_id := strings.trim_space(bridge_local_extract_json_string(params, "exec_id", ""))
 	if exec_id == "" do return bridge_local_response_error(request_id, "bad_request", "shell-cmd read requires <exec-id>")
 
+	// Optional paging over the on-disk output (REQ-25). The default triple
+	// (offset 0, limit 100, no grep) reproduces the historic tail-100 behavior
+	// exactly; any customization switches to explicit from-start paging so agents
+	// can reach output earlier than the last 100 lines of a long build/test log.
+	offset_lines := bridge_local_extract_json_int(params, "offset_lines", 0)
+	limit_lines := bridge_local_extract_json_int(params, "limit_lines", BRIDGE_SHELL_TAIL_KEEP)
+	grep_pattern := bridge_local_extract_json_string(params, "grep_pattern", "")
+
 	// Snapshot the record under the lock. Only `status` is mutated after creation
 	// (by the async worker), so we clone it; the other fields are set once and are
 	// safe to share since job records are never removed.
@@ -202,7 +225,19 @@ bridge_shell_cmd_read :: proc(request_id, params: string, rec: Bridge_Local_Agen
 		output_str = string(raw)
 		output_size = len(raw)
 	}
-	tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
+	tail: string
+	truncated: bool
+	tail_owned := false
+	if offset_lines == 0 && limit_lines == BRIDGE_SHELL_TAIL_KEEP && grep_pattern == "" {
+		// Back-compat default: last 100 lines only when the file exceeds 200 lines.
+		tail, truncated = bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
+	} else {
+		// Explicit paging: from-start offset + limit, optional grep filter. The
+		// returned string is heap-allocated, so free it after the response is built.
+		tail, truncated = bridge_shell_page(output_str, offset_lines, limit_lines, grep_pattern)
+		tail_owned = true
+	}
+	defer if tail_owned do delete(tail)
 
 	b := strings.builder_make()
 	bridge_shell_write_job_json(&b, &snap, tail, truncated, output_size, true)
@@ -359,6 +394,51 @@ bridge_shell_tail :: proc(output: string, threshold, keep: int) -> (string, bool
 		}
 	}
 	return output, true
+}
+
+// bridge_shell_page produces the output slice for `shell-cmd read` when any of the
+// paging flags are set (REQ-25): it skips the first `offset` lines of the file,
+// optionally keeps only lines containing `grep` (each prefixed with its original
+// 1-based line number, grep -n style), and returns at most `limit` lines. A `limit`
+// of <= 0 means "no cap". truncated is true when lines were skipped by the offset
+// or candidate lines remain beyond the returned slice. The returned string is
+// heap-allocated and owned by the caller. A single trailing newline is treated as a
+// line terminator (not an extra empty line), matching bridge_shell_tail's counting.
+bridge_shell_page :: proc(output: string, offset, limit: int, grep: string) -> (string, bool) {
+	off := offset
+	if off < 0 do off = 0
+	no_limit := limit <= 0
+
+	b := strings.builder_make()
+	idx := 0 // index among candidate (post-grep) lines
+	emitted := 0
+	line_no := 0
+	start := 0
+	total := len(output)
+	for i := 0; i <= total; i += 1 {
+		at_end := i == total
+		if !at_end && output[i] != '\n' do continue
+		// A line spans [start, i). Skip the empty tail produced by a final newline.
+		if !(at_end && start == i) {
+			line := output[start:i]
+			line_no += 1
+			if grep == "" || strings.contains(line, grep) {
+				if idx >= off && (no_limit || emitted < limit) {
+					if grep != "" {
+						strings.write_int(&b, line_no)
+						strings.write_byte(&b, ':')
+					}
+					strings.write_string(&b, line)
+					strings.write_byte(&b, '\n')
+					emitted += 1
+				}
+				idx += 1
+			}
+		}
+		start = i + 1
+	}
+	truncated := off > 0 || idx > off + emitted
+	return strings.to_string(b), truncated
 }
 
 bridge_shell_next_exec_id :: proc() -> string {

@@ -518,21 +518,22 @@ bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
 			task_id := extract_json_string(entry, "task_id", "")
 
 			if _, has := bridge_runtime_get_launch(instance_id); has {
-				// A launch record exists: reuse run_dir + token, restarting the process
-				// only if it is not currently registered with the daemon (i.e. it
-				// exited on its own). No bootstrap, no token regeneration.
-				socket, sok := bridge_pty_host_ensure_daemon()
-				if !sok {
-					fmt.eprintln("bridge wake_agent: daemon unavailable for restart", instance_id)
-				} else if bridge_pty_host_is_registered(socket, instance_id) {
-					// Already alive — nothing to do.
-				} else if pid, rok := bridge_pty_host_restart(socket, instance_id); rok {
-					bridge_runtime_update_launch_pane(instance_id, fmt.tprintf("pty-host:%d", pid))
+				// A launch record exists, but restart via the pty-host's remembered
+				// spec would reuse the ORIGINAL run_dir contents — including a stale
+				// CLAUDE.md written at first launch. Re-bootstrap instead: run the full
+				// launch path (deterministic run_dir, fresh token, current bootstrap
+				// template) so template updates take effect on each reconcile restart.
+				// bridge_runtime_launch_agent_pty_host already closes any registered
+				// instance before re-spawning, so no separate is_registered check.
+				syn_command_id := fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
+				command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", syn_command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\",\"task_id\":\"", task_id, "\"}}"})
+				defer delete(command_json)
+				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
+				if ok {
 					bridge_runtime_set_launch_role(instance_id, role)
-					bridge_runtime_set_status(instance_id, "starting", "active")
-					fmt.println("bridge wake_agent: restarted instance", instance_id)
+					fmt.println("bridge wake_agent: re-bootstrapped and restarted instance", instance_id)
 				} else {
-					fmt.eprintln("bridge wake_agent: restart failed", instance_id)
+					fmt.eprintln("bridge wake_agent: restart via re-bootstrap failed", instance_id, detail)
 				}
 			} else {
 				// No launch record: fresh full bootstrap via the standard launch path.
