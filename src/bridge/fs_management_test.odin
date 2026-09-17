@@ -36,9 +36,14 @@ fs_test_base :: proc() -> string {
 @(private = "file")
 fs_test_make_root :: proc(t: ^testing.T, tag: string) -> string {
 	base := fs_test_base()
-	root := strings.concatenate({base, "/ham_fs_test_", tag, "_", fs_test_stamp()})
+	stamp := fs_test_stamp()
+	defer delete(stamp)
+	root := strings.concatenate({base, "/ham_fs_test_", tag, "_", stamp})
 	if err := os.make_directory_all(root); err != nil do testing.expect(t, false, "could not create temp root")
-	if resolved, rerr := os.get_absolute_path(root, context.allocator); rerr == nil do root = resolved
+	if resolved, rerr := os.get_absolute_path(root, context.allocator); rerr == nil {
+		delete(root)
+		root = resolved
+	}
 	return root
 }
 
@@ -52,12 +57,16 @@ fs_test_stamp :: proc() -> string {
 
 @(private = "file")
 fs_test_cleanup :: proc(root: string) {
-	if root != "" do _ = os.remove_all(root)
+	if root != "" {
+		_ = os.remove_all(root)
+		delete(root)
+	}
 }
 
 @(private = "file")
 fs_test_seed_file :: proc(t: ^testing.T, root, rel, content: string) {
 	full := strings.concatenate({root, "/", rel})
+	defer delete(full)
 	parent := full[:strings.last_index_byte(full, '/')]
 	_ = os.make_directory_all(parent)
 	testing.expect(t, os.write_entire_file_from_string(full, content) == nil, "seed file")
@@ -66,6 +75,7 @@ fs_test_seed_file :: proc(t: ^testing.T, root, rel, content: string) {
 @(private = "file")
 fs_test_seed_dir :: proc(t: ^testing.T, root, rel: string) {
 	full := strings.concatenate({root, "/", rel})
+	defer delete(full)
 	testing.expect(t, os.make_directory_all(full) == nil, "seed dir")
 }
 
@@ -99,7 +109,9 @@ fs_list_paginates_with_opaque_cursor :: proc(t: ^testing.T) {
 	root := fs_test_make_root(t, "page")
 	defer fs_test_cleanup(root)
 	for name in ([]string{"a", "b", "c", "d", "e"}) {
-		fs_test_seed_file(t, root, strings.concatenate({name, ".txt"}), name)
+		fname := strings.concatenate({name, ".txt"})
+		fs_test_seed_file(t, root, fname, name)
+		delete(fname)
 	}
 	// Page 1: limit 2 -> a,b + has_more + next_cursor
 	p1 := bridge_fs_list_dir("", true, "", 2, root)
@@ -336,6 +348,7 @@ fs_project_root_override_scopes_listing :: proc(t: ^testing.T) {
 	fs_test_seed_file(t, root, "proj/inside.txt", "in")
 	fs_test_seed_file(t, root, "outside.txt", "out")
 	proj_root := strings.concatenate({root, "/proj"})
+	defer delete(proj_root)
 
 	res := bridge_fs_list_dir("", true, "", 200, proj_root)
 	testing.expect(t, res.ok, "list ok")
@@ -353,6 +366,7 @@ fs_project_root_override_blocks_escape_above_project :: proc(t: ^testing.T) {
 	fs_test_seed_file(t, root, "proj/inside.txt", "in")
 	fs_test_seed_file(t, root, "secret.txt", "s")
 	proj_root := strings.concatenate({root, "/proj"})
+	defer delete(proj_root)
 
 	// "../secret.txt" is still within the GLOBAL bridge root but escapes the
 	// project root -> must be rejected.
@@ -363,7 +377,8 @@ fs_project_root_override_blocks_escape_above_project :: proc(t: ^testing.T) {
 
 @(test)
 fs_project_root_override_rejects_root_outside_bridge :: proc(t: ^testing.T) {
-	_ = fs_test_make_root(t, "proj_bad_root") // pins the global base
+	bad_root := fs_test_make_root(t, "proj_bad_root") // pins the global base
+	defer fs_test_cleanup(bad_root)
 	// A project root override that escapes the global bridge root must be refused
 	// (defense-in-depth) rather than honored.
 	res := bridge_fs_list_dir("", true, "", 200, "/etc")
@@ -390,6 +405,7 @@ fs_run_dir_root_resolves_within_instances_base :: proc(t: ^testing.T) {
 	bridge_config.local_endpoint_run_dir = base
 	// The instance dir need not exist yet (agent may not have launched).
 	root, ok := bridge_fs_run_dir_root("inst_abc123")
+	defer if ok do delete(root)
 	testing.expect(t, ok, "run-dir root resolves")
 	testing.expect(t, strings.has_suffix(root, "/instances/inst_abc123"), "root is <base>/instances/<id>")
 }
@@ -408,8 +424,10 @@ fs_run_dir_root_sanitizes_instance_id :: proc(t: ^testing.T) {
 	// collapses to a single contained component (cannot escape the instances base).
 	dirty := "inst/../../etc"
 	root, ok := bridge_fs_run_dir_root(dirty)
+	defer if ok do delete(root)
 	testing.expect(t, ok, "sanitized run-dir root resolves")
 	expected_suffix := strings.concatenate({"/instances/", bridge_runtime_safe_part(dirty)})
+	defer delete(expected_suffix)
 	testing.expect(t, strings.has_suffix(root, expected_suffix), "id sanitized to one contained component")
 	testing.expect(t, !strings.has_suffix(root, "/etc"), "no traversal to /etc")
 }
@@ -444,6 +462,7 @@ fs_run_dir_root_canonicalizes_symlinked_base :: proc(t: ^testing.T) {
 	bridge_config.local_endpoint_run_dir = link_base
 
 	root, ok := bridge_fs_run_dir_root("inst_symlink1")
+	defer if ok do delete(root)
 	testing.expect(t, ok, "run-dir root resolves through a symlinked base")
 	testing.expect(t, strings.has_suffix(root, "/instances/inst_symlink1"), "root ends at <id>")
 

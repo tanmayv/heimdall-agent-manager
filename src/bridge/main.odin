@@ -571,6 +571,7 @@ bridge_hub_chunk_frames_with_payload :: proc(text: string, payload: int) -> []st
 		if end > len(text) do end = len(text)
 		fragment := base64.encode(transmute([]byte)text[start:end])
 		frames[i] = bridge_ws_chunk_json(chunk_id, i, chunk_count, len(text), fragment)
+		delete(fragment)
 	}
 	return frames
 }

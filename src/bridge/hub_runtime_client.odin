@@ -461,9 +461,37 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_get_shell_output(conn, text)
 		return
 	}
+	if type == "agent_pty_input" {
+		bridge_hub_handle_agent_pty_input(conn, text)
+		return
+	}
 	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_vcs_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
+}
+
+bridge_hub_handle_agent_pty_input :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	instance_id := extract_json_string(text, "agent_instance_id", "")
+	if instance_id == "" && has_payload do instance_id = extract_json_string(payload, "agent_instance_id", "")
+
+	data := extract_json_string(text, "data", "")
+	if data == "" && has_payload do data = extract_json_string(payload, "data", "")
+
+	ok := bridge_pty_host_deliver_raw_input(instance_id, data)
+	if !ok do fmt.println("bridge agent_pty_input delivery failed for instance", instance_id)
+
+	if command_id != "" {
+		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
 }
 
 bridge_hub_handle_get_agent_pane :: proc(conn: ^ws.Connection, text: string) {
@@ -913,6 +941,7 @@ bridge_runtime_startup_detection_arg :: proc(sd: cfg_lib.Startup_Detection_Confi
 
 bridge_runtime_find_on_path :: proc(name: string) -> string {
 	path := os.get_env_alloc("PATH", context.allocator)
+	defer delete(path)
 	start := 0
 	for start <= len(path) {
 		end_rel := strings.index_byte(path[start:], ':')
@@ -922,9 +951,13 @@ bridge_runtime_find_on_path :: proc(name: string) -> string {
 		if strings.trim_space(dir) != "" {
 			candidate := strings.concatenate({strings.trim_right(dir, "/"), "/", name})
 			if _, err := os.stat(candidate, context.allocator); err == nil {
-				if absolute, abs_err := os.get_absolute_path(candidate, context.allocator); abs_err == nil && strings.trim_space(absolute) != "" do return absolute
+				if absolute, abs_err := os.get_absolute_path(candidate, context.allocator); abs_err == nil && strings.trim_space(absolute) != "" {
+					delete(candidate)
+					return absolute
+				}
 				return candidate
 			}
+			delete(candidate)
 		}
 		if end_rel < 0 do break
 		start = end + 1

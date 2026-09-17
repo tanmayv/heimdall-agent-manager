@@ -27,8 +27,10 @@ bridge_token_store_namespace_is_per_bridge :: proc(t: ^testing.T) {
 
 	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
 	a := bridge_agent_token_store_namespace()
+	defer delete(a)
 	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local-macbook-remote"
 	b := bridge_agent_token_store_namespace()
+	defer delete(b)
 	testing.expect(t, a != b, "distinct run dirs must yield distinct namespaces")
 	testing.expect(t, !strings.contains(a, "/"), "namespace must be a single safe path segment")
 	testing.expect(t, !strings.contains(b, "/"), "namespace must be a single safe path segment")

@@ -75,6 +75,7 @@ request_blocking_with_headers :: proc(method, base_url, path, body: string, extr
 	if send_err != nil do return {}, false
 
 	data := make([dynamic]byte, 0, 8192)
+	defer delete(data)
 	buf: [8192]byte
 	for {
 		n, recv_err := net.recv_tcp(socket, buf[:])
@@ -112,6 +113,7 @@ request_tls_with_headers :: proc(method, host: string, port: u16, path, body: st
 
 	deadline := time.to_unix_nanoseconds(time.now()) + i64(time.Duration(timeout_ms if timeout_ms > 0 else DEFAULT_TIMEOUT_MS) * time.Millisecond)
 	data := make([dynamic]byte, 0, 8192)
+	defer delete(data)
 	buf: [8192]byte
 	for time.to_unix_nanoseconds(time.now()) < deadline {
 		if ready, pipe_err := os.pipe_has_data(stdout_r); pipe_err != nil {

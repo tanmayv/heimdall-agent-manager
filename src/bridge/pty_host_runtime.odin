@@ -293,6 +293,37 @@ bridge_pty_host_send_oneway :: proc(socket: string, frame: []byte) -> bool {
 	return pty_host_send_all(fd, frame)
 }
 
+// bridge_pty_host_deliver_raw_input delivers raw input bytes directly to the agent's
+// PTY stdin via CtlMsg::Input to the ham-pty-host daemon socket.
+bridge_pty_host_deliver_raw_input_socket_bytes :: proc(socket, instance: string, data: []byte) -> bool {
+	if strings.trim_space(socket) == "" || strings.trim_space(instance) == "" do return false
+	frame := pty_host_encode_input(instance, data)
+	defer delete(frame)
+	return bridge_pty_host_send_oneway(socket, frame)
+}
+
+bridge_pty_host_deliver_raw_input_socket_string :: proc(socket, instance, data: string) -> bool {
+	return bridge_pty_host_deliver_raw_input_socket_bytes(socket, instance, transmute([]byte)data)
+}
+
+bridge_pty_host_deliver_raw_input_bytes :: proc(instance: string, data: []byte) -> bool {
+	if strings.trim_space(instance) == "" do return false
+	socket, ok := bridge_pty_host_ensure_daemon()
+	if !ok do return false
+	return bridge_pty_host_deliver_raw_input_socket_bytes(socket, instance, data)
+}
+
+bridge_pty_host_deliver_raw_input_string :: proc(instance, data: string) -> bool {
+	return bridge_pty_host_deliver_raw_input_bytes(instance, transmute([]byte)data)
+}
+
+bridge_pty_host_deliver_raw_input :: proc{
+	bridge_pty_host_deliver_raw_input_bytes,
+	bridge_pty_host_deliver_raw_input_string,
+	bridge_pty_host_deliver_raw_input_socket_bytes,
+	bridge_pty_host_deliver_raw_input_socket_string,
+}
+
 // bridge_pty_host_message_notice renders the agent_message notice text (pure, so
 // it is unit-testable). Mirrors the wrapper's wrapper_bridge_deliver_message_push.
 bridge_pty_host_message_notice :: proc(sender: string) -> string {

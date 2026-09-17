@@ -696,6 +696,47 @@ get_instance_pane :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 	return reply, true, domain.Domain_Error{}
 }
 
+agent_pty_input_command_json :: proc(command_id, instance_id, data: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"agent_pty_input\",\"command_id\":\"")
+	write_service_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"agent_instance_id\":\"")
+	write_service_json_string(&b, instance_id)
+	strings.write_string(&b, "\",\"data\":\"")
+	write_service_json_string(&b, data)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+agent_service_send_pty_input :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, data: string) -> (bool, domain.Domain_Error) {
+	inst, ok, err := get_instance(service, auth, instance_id)
+	if !ok do return false, err
+
+	if strings.trim_space(inst.bridge_id) == "" {
+		return false, domain.domain_error(.Bridge_Offline, "agent instance has no bridge")
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_input_")
+	}
+
+	cmd_json := agent_pty_input_command_json(cmd_id, instance_id, data)
+	sent, send_err := project_service.bridge_command_send_runtime(
+		service.bridge_command_sink,
+		project_service.Runtime_Command{
+			bridge_id = inst.bridge_id,
+			command_id = cmd_id,
+			body_json = cmd_json,
+		},
+	)
+	if !sent do return false, send_err
+
+	return true, domain.Domain_Error{}
+}
+
+send_pty_input :: agent_service_send_pty_input
+
 reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err

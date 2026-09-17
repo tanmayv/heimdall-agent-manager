@@ -388,6 +388,7 @@ bridge_fs_is_within_root :: proc(abs_path: string, sandbox_root: string = "") ->
 	if abs_path == root do return true
 	// Must be a strict descendant: root + "/" prefix.
 	prefix := strings.concatenate({root, "/"}, context.allocator)
+	defer delete(prefix)
 	return strings.has_prefix(abs_path, prefix)
 }
 
@@ -516,6 +517,9 @@ bridge_fs_list_dir :: proc(requested: string, include_hidden: bool = true, curso
 	if end > total do end = total
 	page := make([dynamic]Bridge_Fs_Entry, context.allocator)
 	for i in start..<end do append(&page, all[i])
+	for i in 0..<start do delete(all[i].name)
+	for i in end..<total do delete(all[i].name)
+	delete(all)
 	has_more := end < total
 	next_cursor := ""
 	if has_more do next_cursor = bridge_fs_encode_cursor(end)

@@ -1170,7 +1170,31 @@ json_string_unescaped :: proc(body, key: string) -> string {
 	for i := 1; i < len(rest); i += 1 {
 		ch := rest[i]
 		if escaped {
-			switch ch { case 'n': strings.write_byte(&b,'\n'); case 'r': strings.write_byte(&b,'\r'); case 't': strings.write_byte(&b,'\t'); case '"': strings.write_byte(&b,'"'); case '\\': strings.write_byte(&b,'\\'); case: strings.write_byte(&b,ch) }
+			switch ch {
+			case 'n': strings.write_byte(&b, '\n')
+			case 'r': strings.write_byte(&b, '\r')
+			case 't': strings.write_byte(&b, '\t')
+			case '"': strings.write_byte(&b, '"')
+			case '\\': strings.write_byte(&b, '\\')
+			case 'u':
+				if i + 4 < len(rest) {
+					hex_str := rest[i + 1:i + 5]
+					val, ok := strconv.parse_int(hex_str, 16)
+					if ok {
+						if val < 128 {
+							strings.write_byte(&b, byte(val))
+						} else {
+							strings.write_rune(&b, rune(val))
+						}
+						i += 4
+					} else {
+						strings.write_byte(&b, 'u')
+					}
+				} else {
+					strings.write_byte(&b, 'u')
+				}
+			case: strings.write_byte(&b, ch)
+			}
 			escaped = false
 			continue
 		}

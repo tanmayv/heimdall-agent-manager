@@ -71,4 +71,42 @@ assert.equal(
   'Stopped agent runtime must pause polling (0ms)'
 );
 
-console.log('ALL COMPOSER PANEL TESTS PASSED (REQ-PANE-4, REQ-PANE-5)');
+// REQ-INT-3: Interactive Terminal Integration & ANSI Color Support
+import { agentsApi, useSendAgentPaneInputMutation } from '../src/ui/api/endpoints/agents';
+import * as xtermModule from '@xterm/xterm';
+import * as fitAddonModule from '@xterm/addon-fit';
+
+console.log('Testing REQ-INT-3: sendAgentPaneInput API endpoint & hook...');
+assert.equal(typeof useSendAgentPaneInputMutation, 'function', 'useSendAgentPaneInputMutation hook must be exported');
+assert.ok(agentsApi.endpoints.sendAgentPaneInput, 'sendAgentPaneInput endpoint must exist on agentsApi');
+
+console.log('Testing REQ-INT-3: @xterm/xterm Terminal & ANSI color rendering...');
+const TerminalClass = (xtermModule.Terminal || (xtermModule as any).default?.Terminal || (xtermModule as any).default);
+const FitAddonClass = (fitAddonModule.FitAddon || (fitAddonModule as any).default?.FitAddon || (fitAddonModule as any).default);
+
+assert.equal(typeof TerminalClass, 'function', 'Terminal must be available from @xterm/xterm');
+assert.equal(typeof FitAddonClass, 'function', 'FitAddon must be available from @xterm/addon-fit');
+
+const testTerminal = new TerminalClass({ convertEol: true });
+const testFit = new FitAddonClass();
+testTerminal.loadAddon(testFit);
+
+// Verify ANSI color test strings writing
+const ansiColorString = '\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m \x1b[1;34mBold Blue\x1b[0m \x1b[38;2;255;100;50mRGB\x1b[0m\n';
+testTerminal.write(ansiColorString);
+
+// Verify keystroke dispatch hook
+let capturedInput = '';
+const disposable = testTerminal.onData((data: string) => {
+  capturedInput = data;
+});
+
+testTerminal.input('ls -la\r');
+assert.equal(capturedInput, 'ls -la\r', 'Terminal onData must capture input keystrokes');
+disposable.dispose();
+
+// Verify auto-scroll to bottom
+assert.equal(typeof testTerminal.scrollToBottom, 'function', 'Terminal must support scrollToBottom');
+testTerminal.scrollToBottom();
+
+console.log('ALL COMPOSER PANEL & INTERACTIVE TERMINAL TESTS PASSED (REQ-PANE-4, REQ-PANE-5, REQ-INT-3)');

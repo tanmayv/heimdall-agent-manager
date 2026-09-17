@@ -149,8 +149,15 @@ bridge_agent_token_store_namespace :: proc() -> string {
 
 bridge_agent_token_store_path :: proc() -> string {
 	data_dir := bridge_expand_home(bridge_config.data_dir)
-	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
-	return strings.concatenate({strings.trim_right(data_dir, "/"), "/bridge/", bridge_agent_token_store_namespace(), "/local-tokens.jsonl"})
+	expanded_default := false
+	if strings.trim_space(data_dir) == "" {
+		data_dir = bridge_expand_home("~/.local/share/heimdall")
+		expanded_default = true
+	}
+	defer if expanded_default || data_dir != bridge_config.data_dir do delete(data_dir)
+	ns := bridge_agent_token_store_namespace()
+	defer if ns != "default" do delete(ns)
+	return strings.concatenate({strings.trim_right(data_dir, "/"), "/bridge/", ns, "/local-tokens.jsonl"})
 }
 
 // bridge_agent_token_store_legacy_path is the pre-namespacing shared location.
@@ -158,7 +165,12 @@ bridge_agent_token_store_path :: proc() -> string {
 // the previous build are not lost across the upgrade.
 bridge_agent_token_store_legacy_path :: proc() -> string {
 	data_dir := bridge_expand_home(bridge_config.data_dir)
-	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
+	expanded_default := false
+	if strings.trim_space(data_dir) == "" {
+		data_dir = bridge_expand_home("~/.local/share/heimdall")
+		expanded_default = true
+	}
+	defer if expanded_default || data_dir != bridge_config.data_dir do delete(data_dir)
 	return strings.concatenate({strings.trim_right(data_dir, "/"), "/bridge/local-tokens.jsonl"})
 }
 
@@ -166,9 +178,12 @@ bridge_agent_token_store_load :: proc() {
 	// Load the namespaced store first, then migrate any records for THIS bridge's
 	// instances out of the legacy shared file (so an upgrade doesn't lose tokens).
 	// Dedup by token_hash; namespaced records win.
-	bridge_agent_token_store_load_file(bridge_agent_token_store_path())
+	path := bridge_agent_token_store_path()
+	defer delete(path)
+	bridge_agent_token_store_load_file(path)
 	legacy := bridge_agent_token_store_legacy_path()
-	if legacy != bridge_agent_token_store_path() {
+	defer delete(legacy)
+	if legacy != path {
 		before := len(bridge_local_token_records)
 		bridge_agent_token_store_load_file(legacy)
 		// If we adopted any legacy records, persist them into the namespaced file so
@@ -182,6 +197,7 @@ bridge_agent_token_store_load :: proc() {
 bridge_agent_token_store_load_file :: proc(path: string) {
 	raw, err := os.read_entire_file(path, context.allocator)
 	if err != nil do return
+	defer delete(raw)
 	lines := strings.split(string(raw), "\n")
 	defer delete(lines)
 	for line in lines {
@@ -205,8 +221,10 @@ bridge_agent_token_store_load_file :: proc(path: string) {
 
 bridge_agent_token_store_save_locked :: proc() {
 	path := bridge_agent_token_store_path()
+	defer delete(path)
 	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
 	b := strings.builder_make()
+	defer strings.builder_destroy(&b)
 	for rec in bridge_local_token_records {
 		strings.write_string(&b, "{\"token_hash\":\""); bridge_agent_token_json_write(&b, rec.token_hash)
 		strings.write_string(&b, "\",\"agent_instance_id\":\""); bridge_agent_token_json_write(&b, rec.agent_instance_id)

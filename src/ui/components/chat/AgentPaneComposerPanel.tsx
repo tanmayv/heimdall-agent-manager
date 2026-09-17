@@ -1,6 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import type { Terminal as TerminalType } from '@xterm/xterm';
+import type { FitAddon as FitAddonType } from '@xterm/addon-fit';
+import * as xtermModule from '@xterm/xterm';
+import * as fitAddonModule from '@xterm/addon-fit';
+
+const xtermObj = xtermModule as Record<string, any>;
+const Terminal = (xtermObj.Terminal || xtermObj['default']?.Terminal || xtermObj['default']) as typeof TerminalType;
+
+const fitAddonObj = fitAddonModule as Record<string, any>;
+const FitAddon = (fitAddonObj.FitAddon || fitAddonObj['default']?.FitAddon || fitAddonObj['default']) as typeof FitAddonType;
 import { useAgentPaneSubscription } from '../../hooks/useAgentPaneSubscription';
+import { useSendAgentPaneInputMutation } from '../../api/endpoints/agents';
 import Icon from '../Icon';
+
+// Dynamically import xterm CSS in browser environment so Node/tsx tests don't fail on CSS syntax
+if (typeof window !== 'undefined') {
+  import('@xterm/xterm/css/xterm.css');
+}
 
 export interface AgentPaneComposerPanelProps {
   agentInstanceId?: string | null;
@@ -33,19 +49,142 @@ export function AgentPaneComposerPanel({
     runtimeStatus,
   });
 
+  const [sendAgentPaneInput] = useSendAgentPaneInputMutation();
+
+  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
+  const terminalRef = useRef<TerminalType | null>(null);
+  const fitAddonRef = useRef<FitAddonType | null>(null);
   const preRef = useRef<HTMLPreElement | null>(null);
   const userScrolledUpRef = useRef<boolean>(false);
+  const lastWrittenOutputRef = useRef<string>('');
+  const agentInstanceIdRef = useRef(agentInstanceId);
 
-  // Detect manual scroll up
+  useEffect(() => {
+    agentInstanceIdRef.current = agentInstanceId;
+  }, [agentInstanceId]);
+
+  // Detect manual scroll up on accessible fallback pre
   const handleScroll = useCallback(() => {
     const node = preRef.current;
     if (!node) return;
-    // If user is within 25px of the bottom, consider at bottom; otherwise manual scroll up
     const isAtBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= 25;
     userScrolledUpRef.current = !isAtBottom;
   }, []);
 
-  // Auto-scroll to bottom on update unless user has manually scrolled up
+  // Initialize @xterm/xterm Terminal instance when expanded
+  useEffect(() => {
+    if (!isExpanded || !terminalContainerRef.current) return;
+    const container = terminalContainerRef.current;
+
+    const term = new Terminal({
+      convertEol: true,
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+      fontSize: 12,
+      lineHeight: 1.25,
+      scrollback: 1000,
+      theme: {
+        background: '#09090b',
+        foreground: '#e4e4e7',
+        cursor: '#38bdf8',
+        cursorAccent: '#09090b',
+        selectionBackground: 'rgba(56, 189, 248, 0.3)',
+        black: '#18181b',
+        red: '#ef4444',
+        green: '#22c55e',
+        yellow: '#eab308',
+        blue: '#3b82f6',
+        magenta: '#a855f7',
+        cyan: '#06b6d4',
+        white: '#f4f4f5',
+        brightBlack: '#71717a',
+        brightRed: '#f87171',
+        brightGreen: '#4ade80',
+        brightYellow: '#fde047',
+        brightBlue: '#60a5fa',
+        brightMagenta: '#c084fc',
+        brightCyan: '#22d3ee',
+        brightWhite: '#ffffff',
+      },
+      allowProposedApi: true,
+    });
+
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(container);
+
+    terminalRef.current = term;
+    fitAddonRef.current = fitAddon;
+
+    // Track scrolling within xterm buffer
+    term.onScroll(() => {
+      const buffer = term.buffer.active;
+      userScrolledUpRef.current = buffer.viewportY < buffer.baseY;
+    });
+
+    // Keystroke input hook: dispatch to sendAgentPaneInput
+    const dataDisposable = term.onData((data) => {
+      const targetId = agentInstanceIdRef.current;
+      if (targetId) {
+        sendAgentPaneInput({ agentInstanceId: targetId, data }).catch(() => {});
+      }
+    });
+
+    // Initial fit with frame delay for container layout
+    const timer = setTimeout(() => {
+      try {
+        fitAddon.fit();
+      } catch (e) {}
+    }, 10);
+
+    const resizeObserver = new ResizeObserver(() => {
+      try {
+        fitAddon.fit();
+      } catch (e) {}
+    });
+    resizeObserver.observe(container);
+
+    // Initial write if output already present
+    if (output) {
+      term.reset();
+      term.write(output, () => {
+        if (!userScrolledUpRef.current) {
+          term.scrollToBottom();
+        }
+      });
+      lastWrittenOutputRef.current = output;
+    } else if (isLoading) {
+      term.write('\x1b[90mLoading terminal output…\x1b[0m');
+    }
+
+    return () => {
+      clearTimeout(timer);
+      resizeObserver.disconnect();
+      dataDisposable.dispose();
+      term.dispose();
+      terminalRef.current = null;
+      fitAddonRef.current = null;
+      lastWrittenOutputRef.current = '';
+    };
+  }, [isExpanded, sendAgentPaneInput]);
+
+  // Feed incoming ANSI output into terminal
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (!term || output === undefined) return;
+    if (output === lastWrittenOutputRef.current) return;
+
+    lastWrittenOutputRef.current = output;
+    term.reset();
+    term.write(output || '', () => {
+      if (!userScrolledUpRef.current) {
+        term.scrollToBottom();
+      }
+    });
+  }, [output]);
+
+  // Auto-scroll to bottom on update for accessible fallback
   useEffect(() => {
     const node = preRef.current;
     if (!node) return;
@@ -58,6 +197,7 @@ export function AgentPaneComposerPanel({
   useEffect(() => {
     if (isExpanded) {
       userScrolledUpRef.current = false;
+      terminalRef.current?.scrollToBottom();
       const node = preRef.current;
       if (node) {
         node.scrollTop = node.scrollHeight;
@@ -140,12 +280,24 @@ export function AgentPaneComposerPanel({
         </div>
       </div>
 
-      {/* Terminal Output content */}
+      {/* Interactive xterm terminal container */}
+      <div
+        ref={terminalContainerRef}
+        data-debug-id="agent-pane-terminal"
+        onClick={() => terminalRef.current?.focus()}
+        tabIndex={0}
+        role="region"
+        aria-label="Interactive Terminal"
+        className="chat-scrollbar relative h-[180px] sm:h-[260px] max-h-[180px] sm:max-h-[300px] w-full overflow-hidden p-2 font-mono text-xs cursor-text bg-[#09090b]/80 touch-manipulation focus:outline-none"
+      />
+
+      {/* Accessible fallback & static verification pre element */}
       <pre
         ref={preRef}
         onScroll={handleScroll}
         data-debug-id="agent-pane-output"
-        className="chat-scrollbar max-h-[300px] overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-zinc-200"
+        aria-hidden="true"
+        className="sr-only chat-scrollbar max-h-[180px] sm:max-h-[300px] overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-zinc-200"
       >
         {output || (isLoading ? 'Loading terminal output…' : '')}
       </pre>

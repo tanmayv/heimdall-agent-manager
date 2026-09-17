@@ -195,3 +195,42 @@ pty_host_build_spawn_from_profile :: proc(t: ^testing.T) {
 	testing.expect_value(t, req.rows, u16(PTY_HOST_DEFAULT_ROWS))
 	testing.expect_value(t, req.cols, u16(PTY_HOST_DEFAULT_COLS))
 }
+
+@(test)
+pty_host_raw_input_framing :: proc(t: ^testing.T) {
+	data := "echo hello\n"
+	frame := pty_host_encode_input("inst_a", transmute([]byte)data)
+	defer delete(frame)
+	ip := pty_host_test_reframe(t, frame)
+	testing.expect_value(t, ip[0], u8(PTY_HOST_T_INPUT))
+	// tag + u32 len(6) + "inst_a" + raw data bytes
+	testing.expect_value(t, len(ip), 1 + 4 + 6 + len(data))
+	// Verify raw data bytes match exactly
+	testing.expect_value(t, string(ip[11:]), data)
+}
+
+@(test)
+pty_host_deliver_raw_input_rejects_empty :: proc(t: ^testing.T) {
+	data := "test input"
+	testing.expect(t, !bridge_pty_host_deliver_raw_input("", data), "empty instance fails")
+	testing.expect(t, !bridge_pty_host_deliver_raw_input("", "inst_a", data), "empty socket fails")
+	testing.expect(t, !bridge_pty_host_deliver_raw_input("/nonexistent.sock", "", data), "empty instance with socket fails")
+}
+
+@(test)
+agent_pty_input_command_handles_payload_and_caching :: proc(t: ^testing.T) {
+	// 1. Direct top-level fields
+	cmd_top := `{"type":"agent_pty_input","command_id":"cmd_input_1","agent_instance_id":"inst_test","data":"cmd1"}`
+	bridge_runtime_cache_command("cmd_input_1", `{"command_id":"cmd_input_1","status":"cached_ok"}`)
+	bridge_hub_handle_agent_pty_input(nil, cmd_top)
+	cached, ok := bridge_runtime_cached_command("cmd_input_1")
+	testing.expect(t, ok, "cached command found")
+	testing.expect(t, strings.contains(cached, "cached_ok"), "cached result matched")
+
+	// 2. Nested payload fields
+	cmd_nested := `{"type":"agent_pty_input","command_id":"cmd_input_2","payload":{"agent_instance_id":"","data":""}}`
+	bridge_hub_handle_agent_pty_input(nil, cmd_nested)
+	res, res_ok := bridge_runtime_cached_command("cmd_input_2")
+	testing.expect(t, res_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res, "failed"), "empty instance fails gracefully")
+}

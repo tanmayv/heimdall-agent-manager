@@ -48,7 +48,13 @@ def main() -> None:
     require('data-debug-id="agent-pane-collapse-btn"' in panel_src, "Collapse button must have data-debug-id")
     require("chevron-down" in panel_src, "Collapse button must use chevron-down icon")
 
-    # Content pre element
+    # Content pre element & interactive terminal (REQ-INT-3)
+    require("@xterm/xterm" in panel_src, "Component must import @xterm/xterm")
+    require("@xterm/addon-fit" in panel_src, "Component must import @xterm/addon-fit")
+    require('data-debug-id="agent-pane-terminal"' in panel_src, "Component must mount interactive terminal with data-debug-id")
+    require("useSendAgentPaneInputMutation" in panel_src, "Component must use useSendAgentPaneInputMutation hook")
+    require("max-h-[180px]" in panel_src and "max-h-[300px]" in panel_src, "Component must maintain responsive heights (max-h-[180px] mobile, max-h-[300px] desktop)")
+    require("onData" in panel_src, "Terminal must hook onData for keystroke dispatch")
     require("<pre" in panel_src, "Component must render a <pre> element")
     require("chat-scrollbar" in panel_src, "Pre element must use chat-scrollbar class")
     require("max-h-[300px]" in panel_src, "Pre element must use max-h-[300px] class")
