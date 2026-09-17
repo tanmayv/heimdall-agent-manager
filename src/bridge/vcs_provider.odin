@@ -72,34 +72,21 @@ VCS_Provider :: struct {
 
 // --- registry ------------------------------------------------------------
 
-// Ordered provider registry. Populated by vcs_init(); the first provider whose
-// detect() returns true for a path wins, so git is tried before jj.
-vcs_providers: []VCS_Provider
+// vcs_init is retained as an empty stub so the startup call site (main.odin) stays
+// valid. The provider registry is no longer held in a global slice: detection now
+// always builds a stack-local provider list (see vcs_detect_provider), which avoids
+// a crash observed when the .detect proc pointer was loaded through the global
+// slice indirection.
+vcs_init :: proc() {}
 
-// vcs_init populates the provider registry with the git then jj adapters. Called
-// once at startup (see main.odin, next to bridge_fs_init), before any WS handler
-// thread is spawned — so the shared slice is fully written before it is read
-// concurrently (no torn-read race).
-vcs_init :: proc() {
-	vcs_providers = []VCS_Provider{
-		vcs_git_provider(),
-		vcs_jj_provider(),
-	}
-}
-
-// vcs_detect_provider returns the first registered provider that detects a VCS at
-// `path`. ok=false means no known VCS is present. When the global registry has not
-// been populated (e.g. a unit test that never calls vcs_init), it falls back to a
-// stack-local provider list — never mutating the shared global on demand, so the
-// detector is safe to call from multiple threads without a prior vcs_init.
+// vcs_detect_provider returns the first provider that detects a VCS at `path`.
+// ok=false means no known VCS is present (or path is empty). The provider list is
+// always built as a stack-local array (git before jj), so the detector touches no
+// shared global and is safe to call from multiple threads without any prior init.
 vcs_detect_provider :: proc(path: string) -> (VCS_Provider, bool) {
 	if path == "" do return VCS_Provider{}, false
-	providers := vcs_providers
-	local: [2]VCS_Provider
-	if providers == nil {
-		local = [2]VCS_Provider{vcs_git_provider(), vcs_jj_provider()}
-		providers = local[:]
-	}
+	local := [2]VCS_Provider{vcs_git_provider(), vcs_jj_provider()}
+	providers := local[:]
 	for p in providers {
 		if p.detect != nil && p.detect(path) do return p, true
 	}
