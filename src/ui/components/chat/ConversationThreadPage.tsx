@@ -4,7 +4,7 @@ import InstanceRunDirPanel from './InstanceRunDirPanel';
 import ShellJobsPanel from './ShellJobsPanel';
 import AtMentionPopup, { type MentionEntity } from './AtMentionPopup';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
-import { type ClipboardEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ClipboardEvent, type FormEvent, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
   useFetchConversationMessagesQuery,
@@ -731,6 +731,59 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
+
+  // Mobile scroll hide/reveal chrome tracking
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const lastScrollTopRef = useRef(0);
+  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const restoreChrome = useCallback(() => {
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+    setChromeVisible(true);
+  }, []);
+
+  const handleTranscriptScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      if (!isMobile) return;
+      if (inactivityTimerRef.current) {
+        clearTimeout(inactivityTimerRef.current);
+      }
+      inactivityTimerRef.current = setTimeout(() => {
+        setChromeVisible(true);
+      }, 1800);
+
+      const currentTop = event.currentTarget.scrollTop;
+      const delta = currentTop - lastScrollTopRef.current;
+      if (Math.abs(delta) > 8) {
+        if (delta > 0 && currentTop > 30) {
+          setChromeVisible(false);
+        }
+        if (delta < -12) {
+          setChromeVisible(true);
+        }
+        lastScrollTopRef.current = currentTop;
+      }
+    },
+    [isMobile],
+  );
+
+  useEffect(() => {
+    if (!isMobile) {
+      restoreChrome();
+    }
+  }, [isMobile, restoreChrome]);
+
+  useEffect(() => {
+    return () => {
+      if (inactivityTimerRef.current) {
+        clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
+    };
+  }, []);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
@@ -785,7 +838,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setOlderHasMore(false);
     setLocalMessages([]);
     setAttachments([]);
-  }, [conversationId]);
+    restoreChrome();
+    lastScrollTopRef.current = 0;
+  }, [conversationId, restoreChrome]);
   useEffect(() => {
     if (baseMessages.length === 0 || localMessages.length === 0) return;
     const serverIds = new Set(baseMessages.map((message, index) => msgId(message, index)));
@@ -1450,7 +1505,16 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       </button>
     );
     return (
-      <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3">
+      <form
+        onSubmit={submit}
+        data-debug-id="conversation-composer-shell"
+        data-mobile-shell-chrome="hide-on-focus"
+        className={`w-full max-w-full shrink-0 px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3 transition-all duration-300 ease-in-out ${
+          isMobile && !chromeVisible
+            ? 'translate-y-full opacity-0 pointer-events-none'
+            : 'translate-y-0 opacity-100 pointer-events-auto'
+        }`}
+      >
         {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
             above the composer (co-located with the working indicator). */}
         <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
@@ -1563,7 +1627,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               ref={textareaRef}
               data-debug-id="conversation-composer-input"
               value={draft}
+              onFocus={() => {
+                restoreChrome();
+              }}
               onChange={(e) => {
+                restoreChrome();
                 setDraft(e.target.value);
                 const val = e.target.value;
                 const pos = e.target.selectionStart ?? val.length;
@@ -1577,6 +1645,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 }
               }}
               onKeyDown={(e) => {
+                restoreChrome();
                 if (mentionQuery !== null && filteredMentions.length > 0) {
                   if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex((i) => (i + 1) % filteredMentions.length); return; }
                   if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length); return; }
@@ -1686,7 +1755,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           right-sidebar toggle (right). The left nav sidebar has its own toggle.
           Runtime/model controls + immutable bridge/project context live in the
           composer. */}
-      <header data-debug-id="conversation-thread-header" className="flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2 sm:gap-3 sm:px-4">
+      <header
+        data-debug-id="conversation-thread-header"
+        className={`flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
+          isMobile && !chromeVisible
+            ? '-translate-y-full opacity-0 pointer-events-none'
+            : 'translate-y-0 opacity-100 pointer-events-auto'
+        }`}
+      >
         <div className="hidden h-9 w-9 shrink-0 sm:block" aria-hidden="true" />
 
         <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5 sm:justify-center">
@@ -1757,6 +1833,45 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         ) : null}
       </header>
 
+      {/* Subtle Top-Right Floating Toggle Button */}
+      {isMobile && !chromeVisible && rightPanel === 'closed' && Boolean(chainId || projectId || agentInstanceId) ? (
+        <button
+          type="button"
+          data-debug-id="conversation-floating-panel-toggle-btn"
+          aria-label="Open side panel"
+          title="Open panel"
+          onClick={toggleRightPanel}
+          className="fixed top-2.5 right-2.5 z-30 bg-black/50 backdrop-blur border border-white/10 text-zinc-400 hover:text-white rounded-xl h-9 w-9 grid place-items-center transition-opacity duration-200"
+        >
+          <Icon name="panel-right" size={18} />
+          {chainId && chainProgress.total > 0 ? (
+            <span
+              data-debug-id="conversation-floating-panel-toggle-progress"
+              className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black"
+            >
+              {chainProgress.done}/{chainProgress.total}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
+
+      {/* Subtle Bottom Agent Name Pill */}
+      {isMobile && !chromeVisible ? (
+        <div className="fixed bottom-3 inset-x-0 flex justify-center z-30 pointer-events-none">
+          <button
+            type="button"
+            data-debug-id="conversation-floating-agent-pill"
+            aria-label="Switch agent"
+            title={agentDisplayName || agentInstanceId || 'Agent'}
+            onClick={() => setAgentPickerOpen(true)}
+            className="pointer-events-auto bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200"
+          >
+            <span className="max-w-[160px] truncate">{agentDisplayName || agentInstanceId || 'Agent'}</span>
+            <Icon name="chevron-down" size={13} />
+          </button>
+        </div>
+      ) : null}
+
       <CommandPalette
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
@@ -1777,6 +1892,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               hasMore={olderHasMore && Boolean(olderCursor)}
               loadingOlder={olderMessagesState.isFetching}
               onLoadOlder={loadOlderMessages}
+              onScroll={handleTranscriptScroll}
               formatTimestamp={formatMessageTimestamp}
               getDeliveryStatus={deliveryStatusFor}
               agentIsWorking={isWorking}
