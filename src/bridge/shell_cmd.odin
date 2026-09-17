@@ -20,7 +20,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
-import "core:sys/linux"
+import "core:sys/posix"
 import "core:thread"
 import "core:time"
 
@@ -103,7 +103,12 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	// setsid creates a new session so the spawned sh becomes the session/group
 	// leader (PGID == PID). On timeout we kill the entire group with kill(-pgid)
 	// so child processes the shell spawns are also terminated (REQ-27).
-	command := []string{"setsid", "sh", "-c", cmd}
+	command: []string
+	when ODIN_OS == .Darwin {
+		command = []string{"sh", "-c", cmd}
+	} else {
+		command = []string{"setsid", "sh", "-c", cmd}
+	}
 	process, perr := os.process_start(os.Process_Desc{command = command, stdout = out_file, stderr = out_file, working_dir = working_dir})
 	_ = os.close(out_file)
 	if perr != nil {
@@ -266,7 +271,12 @@ bridge_shell_async_worker :: proc(data: rawptr) {
 	if bridge_shell_err_is_timeout(werr) {
 		// Exceeded the hard cap: kill the entire process group (setsid made the
 		// shell the group leader, so kill(-pgid) reaches all its children too).
-		_ = linux.kill(linux.Pid(-i32(ctx.process.pid)), .SIGKILL)
+		when ODIN_OS == .Darwin {
+			_ = posix.kill(posix.pid_t(-i32(ctx.process.pid)), .SIGKILL)
+			_ = posix.kill(posix.pid_t(ctx.process.pid), .SIGKILL)
+		} else {
+			_ = posix.kill(posix.pid_t(-i32(ctx.process.pid)), .SIGKILL)
+		}
 		_, _ = os.process_wait(ctx.process)
 		bridge_shell_append_line(ctx.output_path, "[job killed: exceeded 30-minute timeout]")
 		status = "failed"
