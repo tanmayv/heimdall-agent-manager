@@ -44,6 +44,8 @@ export type VcsChangedFile = {
   path: string;
   status: VcsFileStatus;
   staged: boolean;
+  additions: number;
+  deletions: number;
 };
 
 export type VcsFilesResult = {

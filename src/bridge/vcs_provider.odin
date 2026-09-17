@@ -33,9 +33,11 @@ VCS_Status :: struct {
 
 // status: added | modified | deleted | renamed | untracked
 VCS_Changed_File :: struct {
-	path:   string,
-	status: string,
-	staged: bool,
+	path:      string,
+	status:    string,
+	staged:    bool,
+	additions: int,
+	deletions: int,
 }
 
 // op: "+" (added) | "-" (removed) | " " (context)

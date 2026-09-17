@@ -63,10 +63,18 @@ vcs_git_status :: proc(path: string) -> (VCS_Status, bool) {
 }
 
 // vcs_git_changed_files parses `git status --porcelain` into the neutral changed-
-// file shape, then paginates (default 100, max 500).
+// file shape, joins per-file addition/deletion counts from `git diff --numstat`,
+// then paginates (default 100, max 500).
 vcs_git_changed_files :: proc(path, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
 	out, ok := vcs_run([]string{"git", "-C", path, "status", "--porcelain"})
 	if !ok do return nil, "", false, false
+
+	// Per-file +/- counts. Unstaged edits show up in `diff HEAD` numstat; staged-
+	// only changes need the `--cached HEAD` pass. A later entry wins on overlap,
+	// but a path is normally only in one of the two sets.
+	stats := make(map[string][2]int, 0, context.temp_allocator)
+	vcs_git_numstat_into(&stats, path, []string{"git", "-C", path, "diff", "--numstat", "HEAD"})
+	vcs_git_numstat_into(&stats, path, []string{"git", "-C", path, "diff", "--numstat", "--cached", "HEAD"})
 
 	all := make([dynamic]VCS_Changed_File, context.allocator)
 	lines := strings.split_lines(out, context.temp_allocator)
@@ -85,14 +93,44 @@ vcs_git_changed_files :: proc(path, cursor: string, limit: int) -> ([]VCS_Change
 		// staged when the index column carries a real (non-space, non-untracked)
 		// status.
 		staged := x != ' ' && x != '?'
+		clean_path := strings.clone(strings.trim_space(raw_path))
+		// Untracked files never appear in numstat; they stay 0/0.
+		counts := stats[clean_path] // zero value {0, 0} when absent
 		append(&all, VCS_Changed_File{
-			path   = strings.clone(strings.trim_space(raw_path)),
-			status = status,
-			staged = staged,
+			path      = clean_path,
+			status    = status,
+			staged    = staged,
+			additions = counts[0],
+			deletions = counts[1],
 		})
 	}
 	page, next_cursor, has_more := vcs_paginate_files(all[:], cursor, limit, VCS_FILES_DEFAULT_LIMIT, VCS_FILES_MAX_LIMIT)
 	return page, next_cursor, has_more, true
+}
+
+// vcs_git_numstat_into runs a `git diff --numstat` argv and folds its per-file
+// "<additions>\t<deletions>\t<path>" rows into `stats` (keyed by path). A binary
+// file reports "-\t-\t<path>", which vcs_atoi maps to 0/0. Fails soft: a git
+// error leaves `stats` untouched. Keys are temp-allocated (only read within the
+// changed-files build, which allocates its cloned paths from the same lookup).
+vcs_git_numstat_into :: proc(stats: ^map[string][2]int, repo: string, args: []string) {
+	out, ok := vcs_run(args)
+	if !ok do return
+	lines := strings.split_lines(out, context.temp_allocator)
+	for line in lines {
+		if len(line) == 0 do continue
+		// Tab-separated: additions, deletions, path.
+		first := strings.index_byte(line, '\t')
+		if first < 0 do continue
+		rest := line[first + 1:]
+		second := strings.index_byte(rest, '\t')
+		if second < 0 do continue
+		add_s := line[:first]
+		del_s := rest[:second]
+		file := strings.trim_space(rest[second + 1:])
+		if file == "" do continue
+		stats[file] = [2]int{vcs_atoi(add_s), vcs_atoi(del_s)}
+	}
 }
 
 // vcs_git_status_word maps a porcelain (index, worktree) status pair to one of

@@ -176,6 +176,8 @@ bridge_vcs_files_json :: proc(command_id, text: string) -> string {
 		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, f.path)
 		strings.write_string(&b, "\",\"status\":\""); json_write_string(&b, f.status)
 		strings.write_string(&b, "\",\"staged\":"); strings.write_string(&b, "true" if f.staged else "false")
+		strings.write_string(&b, ",\"additions\":"); strings.write_string(&b, fmt.tprintf("%d", f.additions))
+		strings.write_string(&b, ",\"deletions\":"); strings.write_string(&b, fmt.tprintf("%d", f.deletions))
 		strings.write_string(&b, "}")
 	}
 	strings.write_string(&b, "]")
@@ -263,3 +265,5 @@ vcs_write_error :: proc(b: ^strings.Builder, code, message: string) {
 	strings.write_string(b, "\",\"message\":\""); json_write_string(b, message)
 	strings.write_string(b, "\"}")
 }
+
+// vcs-panel-test: 2026-09-17T08:26:21Z
