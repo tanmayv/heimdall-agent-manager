@@ -110,7 +110,7 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
     <nav
       data-debug-id="shell-mobile-tab-bar"
       aria-label="Mobile bottom navigation"
-      className="ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-white/10 bg-[#101010]/95 backdrop-blur md:hidden"
+      className="ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-white/10 bg-[#101010]/95 backdrop-blur transition-transform duration-300 ease-in-out md:hidden"
     >
       {TABS.slice(0, 2).map((tab) => (
         <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chains' ? chainsBadge : 0} onClick={() => onNavigate(tab.route)} />

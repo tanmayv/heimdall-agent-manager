@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """Static verification guard for mobile scroll hide/reveal, smooth transitions,
-persistent floating toggle, and bottom agent pill.
+persistent floating toggle, bottom agent pill, full-screen transcript layout collapsing,
+and AppShell mobile chrome suppression.
 
 Requirements covered:
 - REQ-MOBILE-SCROLL-1: ChatMessageList forwards onScroll event to ConversationThreadPage
 - REQ-MOBILE-SCROLL-2: Mobile scroll down slides away top bar (-translate-y-full) and
   composer bottom bar (translate-y-full) with smooth transitions (duration-300 ease-in-out)
-- REQ-MOBILE-SCROLL-3: Restore chrome on scroll up (delta < -12), 1.8s inactivity, or typing/focus
 - REQ-MOBILE-SCROLL-FLOATING-TOGGLE: Floating button at top-right (fixed top-2.5 right-2.5 z-30)
   when chrome is hidden and right panel is closed
 - REQ-MOBILE-SCROLL-COMPOSER-AGENT-PILL: Bottom agent name pill (fixed bottom-3 inset-x-0 flex justify-center z-30)
   when composer is hidden to open agent picker
 - REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= 20) or bottom (distanceToBottom <= 30) of transcript
 - REQ-SCROLL-BOUNDARY-2: Validate boundary chrome restore, test suite execution, and clean git push
+- REQ-MOBILE-FS-1: Full-screen mobile transcript: top bar & composer layout boxes collapse to 0 height
+- REQ-MOBILE-FS-2: AppShell listens to heimdall:mobile-chrome event, suppresses bottom tab bar & padding
+- REQ-MOBILE-FS-3: Scroll hide unification: hides on any Math.abs(delta) > 8, inactivity timer removed
 """
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAT_LIST_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ChatMessageList.tsx"
 CONVERSATION_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ConversationThreadPage.tsx"
+SHELL_FILE = ROOT / "src" / "ui" / "components" / "shell" / "AppShell.tsx"
+RESPONSIVE_FILE = ROOT / "src" / "ui" / "components" / "shell" / "responsive.tsx"
 
 
 def require(condition: bool, message: str) -> None:
@@ -44,8 +49,10 @@ def test_conversation_thread_page_scroll_tracking():
             "ConversationThreadPage must have chromeVisible state initialized to true")
     require("lastScrollTopRef = useRef(0)" in src,
             "ConversationThreadPage must have lastScrollTopRef initialized to 0")
-    require("inactivityTimerRef = useRef" in src,
-            "ConversationThreadPage must have inactivityTimerRef")
+    require("inactivityTimerRef" not in src,
+            "ConversationThreadPage must have inactivityTimerRef completely removed")
+    require("1800" not in src,
+            "handleTranscriptScroll must not have 1800ms inactivity timer")
 
     # Scroll callback logic
     require("handleTranscriptScroll" in src,
@@ -60,14 +67,10 @@ def test_conversation_thread_page_scroll_tracking():
             "handleTranscriptScroll must restore chrome on boundary reaching top or bottom")
     require("restoreChrome();\n        lastScrollTopRef.current = currentTop;\n        return;" in src,
             "handleTranscriptScroll must call restoreChrome() and update lastScrollTopRef on boundary")
-    require("1800" in src,
-            "handleTranscriptScroll must set 1800ms inactivity timer")
     require("Math.abs(delta) > 8" in src,
             "handleTranscriptScroll must check Math.abs(delta) > 8 threshold")
-    require("delta > 0 && currentTop > 30" in src,
-            "handleTranscriptScroll must hide chrome when delta > 0 and currentTop > 30")
-    require("delta < -12" in src,
-            "handleTranscriptScroll must restore chrome when delta < -12")
+    require("setChromeVisible(false);" in src,
+            "handleTranscriptScroll must hide chrome when Math.abs(delta) > 8")
 
     # Forwarding prop
     require("onScroll={handleTranscriptScroll}" in src,
@@ -83,21 +86,52 @@ def test_conversation_thread_page_scroll_tracking():
     require("onKeyDown" in src and "restoreChrome();" in src,
             "Textarea onKeyDown must call restoreChrome")
 
+    # Event dispatch
+    require("heimdall:mobile-chrome" in src,
+            "ConversationThreadPage must dispatch heimdall:mobile-chrome event")
+    require("new CustomEvent('heimdall:mobile-chrome', { detail: { visible: chromeVisible } })" in src,
+            "ConversationThreadPage must broadcast chromeVisible state in CustomEvent detail")
+
 
 def test_transitions_and_classes():
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
     # Top Bar transition classes
-    require("-translate-y-full opacity-0 pointer-events-none" in src,
-            "Top Bar must slide away with -translate-y-full opacity-0 pointer-events-none")
-    require("translate-y-0 opacity-100 pointer-events-auto" in src,
-            "Top Bar / Composer must restore with translate-y-0 opacity-100 pointer-events-auto")
+    require("max-h-0 py-0 border-transparent overflow-hidden -translate-y-full opacity-0 pointer-events-none" in src,
+            "Top Bar must collapse layout box with max-h-0 py-0 border-transparent overflow-hidden -translate-y-full opacity-0 pointer-events-none")
+    require("max-h-16 py-2 border-white/10 translate-y-0 opacity-100 pointer-events-auto" in src,
+            "Top Bar must restore with max-h-16 py-2 border-white/10 translate-y-0 opacity-100 pointer-events-auto")
     require("transition-all duration-300 ease-in-out" in src,
             "Top Bar and Composer must have transition-all duration-300 ease-in-out")
 
     # Composer Bottom Bar transition classes
-    require("translate-y-full opacity-0 pointer-events-none" in src,
-            "Composer bottom bar must slide away with translate-y-full opacity-0 pointer-events-none")
+    require("max-h-0 py-0 px-3 overflow-hidden translate-y-full opacity-0 pointer-events-none" in src,
+            "Composer bottom bar must collapse layout box with max-h-0 py-0 px-3 overflow-hidden translate-y-full opacity-0 pointer-events-none")
+    require("max-h-[800px] px-3 pb-4 pt-2 translate-y-0 opacity-100 pointer-events-auto" in src,
+            "Composer bottom bar must restore with max-h-[800px] px-3 pb-4 pt-2 translate-y-0 opacity-100 pointer-events-auto")
+
+
+def test_app_shell_and_mobile_tab_bar():
+    shell_src = SHELL_FILE.read_text(encoding="utf-8")
+    responsive_src = RESPONSIVE_FILE.read_text(encoding="utf-8")
+
+    require("const [scrollChromeSuppressed, setScrollChromeSuppressed] = useState(false);" in shell_src,
+            "AppShell must declare scrollChromeSuppressed state initialized to false")
+    require("window.addEventListener('heimdall:mobile-chrome'" in shell_src,
+            "AppShell must listen for heimdall:mobile-chrome custom event")
+    require("setScrollChromeSuppressed(true)" in shell_src and "setScrollChromeSuppressed(false)" in shell_src,
+            "AppShell must toggle scrollChromeSuppressed based on visible detail")
+    require("const hideMobileShellChrome = isMobile && (mobileChromeSuppressed || scrollChromeSuppressed);" in shell_src,
+            "AppShell hideMobileShellChrome must include scrollChromeSuppressed")
+    require("setScrollChromeSuppressed(false);" in shell_src,
+            "AppShell route change handler must reset scrollChromeSuppressed to false")
+    require("mobileBottomPadded={isMobile && !hideMobileShellChrome}" in shell_src,
+            "AppShell must suppress bottom padding when hideMobileShellChrome is true")
+    require("!hideMobileShellChrome ? (" in shell_src,
+            "AppShell must conditionally render MobileTabBar based on hideMobileShellChrome")
+
+    require("transition-transform duration-300 ease-in-out" in responsive_src,
+            "MobileTabBar must include transition-transform duration-300 ease-in-out")
 
 
 def test_floating_toggle_button():
@@ -132,6 +166,7 @@ if __name__ == "__main__":
     test_chat_message_list_on_scroll()
     test_conversation_thread_page_scroll_tracking()
     test_transitions_and_classes()
+    test_app_shell_and_mobile_tab_bar()
     test_floating_toggle_button()
     test_bottom_agent_pill()
-    print("PASS: mobile scroll hide/reveal, smooth transitions, floating toggle, and agent pill static verification")
+    print("PASS: mobile scroll hide/reveal, smooth transitions, floating toggle, agent pill, and full-screen mobile static verification")

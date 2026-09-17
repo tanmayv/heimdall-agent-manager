@@ -735,13 +735,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // Mobile scroll hide/reveal chrome tracking
   const [chromeVisible, setChromeVisible] = useState(true);
   const lastScrollTopRef = useRef(0);
-  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const restoreChrome = useCallback(() => {
-    if (inactivityTimerRef.current) {
-      clearTimeout(inactivityTimerRef.current);
-      inactivityTimerRef.current = null;
-    }
     setChromeVisible(true);
   }, []);
 
@@ -761,21 +756,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         return;
       }
 
-      if (inactivityTimerRef.current) {
-        clearTimeout(inactivityTimerRef.current);
-      }
-      inactivityTimerRef.current = setTimeout(() => {
-        setChromeVisible(true);
-      }, 1800);
-
       const delta = currentTop - lastScrollTopRef.current;
       if (Math.abs(delta) > 8) {
-        if (delta > 0 && currentTop > 30) {
-          setChromeVisible(false);
-        }
-        if (delta < -12) {
-          setChromeVisible(true);
-        }
+        setChromeVisible(false);
         lastScrollTopRef.current = currentTop;
       }
     },
@@ -789,10 +772,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }, [isMobile, restoreChrome]);
 
   useEffect(() => {
+    if (typeof window !== 'undefined' && isMobile) {
+      window.dispatchEvent(new CustomEvent('heimdall:mobile-chrome', { detail: { visible: chromeVisible } }));
+    }
+  }, [chromeVisible, isMobile]);
+
+  useEffect(() => {
     return () => {
-      if (inactivityTimerRef.current) {
-        clearTimeout(inactivityTimerRef.current);
-        inactivityTimerRef.current = null;
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('heimdall:mobile-chrome', { detail: { visible: true } }));
       }
     };
   }, []);
@@ -1521,10 +1509,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         onSubmit={submit}
         data-debug-id="conversation-composer-shell"
         data-mobile-shell-chrome="hide-on-focus"
-        className={`w-full max-w-full shrink-0 px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3 transition-all duration-300 ease-in-out ${
+        className={`w-full max-w-full shrink-0 sm:px-6 sm:pb-6 sm:pt-3 transition-all duration-300 ease-in-out ${
           isMobile && !chromeVisible
-            ? 'translate-y-full opacity-0 pointer-events-none'
-            : 'translate-y-0 opacity-100 pointer-events-auto'
+            ? 'max-h-0 py-0 px-3 overflow-hidden translate-y-full opacity-0 pointer-events-none'
+            : 'max-h-[800px] px-3 pb-4 pt-2 translate-y-0 opacity-100 pointer-events-auto'
         }`}
       >
         {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
@@ -1769,10 +1757,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           composer. */}
       <header
         data-debug-id="conversation-thread-header"
-        className={`flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
+        className={`flex shrink-0 items-center gap-2 border-b px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
           isMobile && !chromeVisible
-            ? '-translate-y-full opacity-0 pointer-events-none'
-            : 'translate-y-0 opacity-100 pointer-events-auto'
+            ? 'max-h-0 py-0 border-transparent overflow-hidden -translate-y-full opacity-0 pointer-events-none'
+            : 'max-h-16 py-2 border-white/10 translate-y-0 opacity-100 pointer-events-auto'
         }`}
       >
         <div className="hidden h-9 w-9 shrink-0 sm:block" aria-hidden="true" />

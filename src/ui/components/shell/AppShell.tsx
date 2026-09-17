@@ -1083,6 +1083,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
+  const [scrollChromeSuppressed, setScrollChromeSuppressed] = useState(false);
   const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
   const displayName = user.display_name || user.name || user.user_id || 'Current user';
 
@@ -1190,7 +1191,26 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   };
 
   useEffect(() => {
-    const update = () => { setPath(routeFromLocation()); setFocusMessageId(focusMessageFromLocation()); };
+    const handleMobileChrome = (event: Event) => {
+      const customEvent = event as CustomEvent<{ visible?: boolean }>;
+      if (customEvent.detail?.visible === false) {
+        setScrollChromeSuppressed(true);
+      } else if (customEvent.detail?.visible === true) {
+        setScrollChromeSuppressed(false);
+      }
+    };
+    window.addEventListener('heimdall:mobile-chrome', handleMobileChrome);
+    return () => {
+      window.removeEventListener('heimdall:mobile-chrome', handleMobileChrome);
+    };
+  }, []);
+
+  useEffect(() => {
+    const update = () => {
+      setPath(routeFromLocation());
+      setFocusMessageId(focusMessageFromLocation());
+      setScrollChromeSuppressed(false);
+    };
     window.addEventListener('hashchange', update);
     window.addEventListener('popstate', update);
     update();
@@ -1204,7 +1224,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, liveProjects), [conversations, liveProjects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
-  const hideMobileShellChrome = isMobile && mobileChromeSuppressed;
+  const hideMobileShellChrome = isMobile && (mobileChromeSuppressed || scrollChromeSuppressed);
   const sidebarError = String((conversationsQuery.error as any)?.error || (agentsLiveQuery.error as any)?.error || '');
   const sidebarLoading = conversationsQuery.isLoading || agentsLiveQuery.isLoading;
 
