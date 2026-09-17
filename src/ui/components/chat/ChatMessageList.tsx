@@ -195,7 +195,7 @@ export default function ChatMessageList({
     const node = scrollRef.current;
     if (!node) return;
     const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    const nearBottom = distance < 48;
+    const nearBottom = distance < 64;
     stickyRef.current = nearBottom;
     setShowJump(!nearBottom && messages.length > 0);
   }, [messages.length, onScrollProp]);

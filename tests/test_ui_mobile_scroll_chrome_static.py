@@ -11,8 +11,9 @@ Requirements covered:
   when chrome is hidden and right panel is closed
 - REQ-MOBILE-SCROLL-COMPOSER-AGENT-PILL: Bottom agent name pill (fixed bottom-3 inset-x-0 flex justify-center z-30)
   when composer is hidden to open agent picker
-- REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= 20) or bottom (distanceToBottom <= 30) of transcript
+- REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= TOP_MARGIN = 60) or bottom (distanceToBottom <= BOTTOM_MARGIN = 100) of transcript
 - REQ-SCROLL-BOUNDARY-2: Validate boundary chrome restore, test suite execution, and clean git push
+- REQ-SCROLL-MARGIN-4: Validate margin thresholds (TOP_MARGIN = 60, BOTTOM_MARGIN = 100) and bottom padding (pb-8)
 - REQ-MOBILE-FS-1: Full-screen mobile transcript: top bar & composer layout boxes collapse to 0 height
 - REQ-MOBILE-FS-2: AppShell listens to heimdall:mobile-chrome event, suppresses bottom tab bar & padding
 - REQ-MOBILE-FS-3: Scroll hide unification: hides on any Math.abs(delta) > 8, inactivity timer removed
@@ -59,10 +60,14 @@ def test_conversation_thread_page_scroll_tracking():
             "ConversationThreadPage must implement handleTranscriptScroll")
     require("if (!isMobile) return" in src,
             "handleTranscriptScroll must return early if !isMobile")
-    require("const isAtTop = currentTop <= 20;" in src,
-            "handleTranscriptScroll must compute isAtTop using currentTop <= 20")
-    require("const isAtBottom = distanceToBottom <= 30;" in src,
-            "handleTranscriptScroll must compute isAtBottom using distanceToBottom <= 30")
+    require("const TOP_MARGIN = 60;" in src,
+            "handleTranscriptScroll must define TOP_MARGIN = 60")
+    require("const BOTTOM_MARGIN = 100;" in src,
+            "handleTranscriptScroll must define BOTTOM_MARGIN = 100")
+    require("const isAtTop = currentTop <= TOP_MARGIN;" in src,
+            "handleTranscriptScroll must compute isAtTop using currentTop <= TOP_MARGIN")
+    require("const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;" in src,
+            "handleTranscriptScroll must compute isAtBottom using distanceToBottom <= BOTTOM_MARGIN")
     require("if (isAtTop || isAtBottom)" in src,
             "handleTranscriptScroll must restore chrome on boundary reaching top or bottom")
     require("restoreChrome();\n        lastScrollTopRef.current = currentTop;\n        return;" in src,
@@ -72,9 +77,11 @@ def test_conversation_thread_page_scroll_tracking():
     require("setChromeVisible(false);" in src,
             "handleTranscriptScroll must hide chrome when Math.abs(delta) > 8")
 
-    # Forwarding prop
+    # Forwarding prop and bottom padding
     require("onScroll={handleTranscriptScroll}" in src,
             "ChatMessageList must receive onScroll={handleTranscriptScroll}")
+    require("pb-8" in src,
+            "ChatMessageList scrollClassName must include pb-8 for bottom message padding")
 
     # Typing and focus restore
     require("restoreChrome" in src,
