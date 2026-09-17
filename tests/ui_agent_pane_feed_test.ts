@@ -70,7 +70,7 @@ assert.equal(
   'runtimeStatus=failed must return 0'
 );
 
-// 2. Active expanded returns 15000 (15 seconds)
+// 2. Active expanded returns 500 (500ms continuous feed)
 assert.equal(
   computeAgentPanePollingInterval({
     agentInstanceId: 'inst_1',
@@ -79,8 +79,8 @@ assert.equal(
     runtimeStatus: 'running',
     isDocumentHidden: false,
   }),
-  15000,
-  'expanded active subscription must return 15000 (15s)'
+  500,
+  'expanded active subscription must return 500 (500ms)'
 );
 
 // 3. Active collapsed returns 300000 (5 minutes)

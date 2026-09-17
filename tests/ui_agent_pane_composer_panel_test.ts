@@ -33,8 +33,8 @@ assert.equal(
     runtimeStatus: 'running',
     isDocumentHidden: false,
   }),
-  15000,
-  'Composer panel expanded polling interval must be 15s (15000ms)'
+  500,
+  'Composer panel expanded polling interval must be 500ms continuous'
 );
 
 assert.equal(
@@ -93,9 +93,16 @@ const FitAddonClass = (fitAddonModule.FitAddon || (fitAddonModule as any).defaul
 assert.equal(typeof TerminalClass, 'function', 'Terminal must be available from @xterm/xterm');
 assert.equal(typeof FitAddonClass, 'function', 'FitAddon must be available from @xterm/addon-fit');
 
-const testTerminal = new TerminalClass({ convertEol: true });
+const testTerminal = new TerminalClass({
+  convertEol: true,
+  cursorBlink: false,
+  cursorInactiveStyle: 'none',
+});
 const testFit = new FitAddonClass();
 testTerminal.loadAddon(testFit);
+
+assert.equal(testTerminal.options.cursorBlink, false, 'Terminal cursorBlink must be disabled');
+assert.equal(testTerminal.options.cursorInactiveStyle, 'none', 'Terminal cursorInactiveStyle must be none');
 
 // Verify ANSI color test strings writing
 const ansiColorString = '\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m \x1b[1;34mBold Blue\x1b[0m \x1b[38;2;255;100;50mRGB\x1b[0m\n';

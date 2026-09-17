@@ -47,8 +47,8 @@ def main() -> None:
             "hook must export useAgentPaneSubscription function")
     require("export function computeAgentPanePollingInterval" in hook_src,
             "hook must export computeAgentPanePollingInterval helper")
-    require("15000" in hook_src,
-            "hook must use 15s (15000ms) interval when expanded")
+    require("500" in hook_src,
+            "hook must use 500ms interval when expanded")
     require("300000" in hook_src,
             "hook must use 5m (300000ms) interval when collapsed")
     require("runtimeStatus === 'stopped'" in hook_src,

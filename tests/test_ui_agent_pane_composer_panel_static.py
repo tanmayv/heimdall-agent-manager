@@ -52,12 +52,21 @@ def main() -> None:
     require("animate-pulse" in panel_src and "bg-emerald-400" in panel_src, "Status dot must pulse green when updating/running")
     require("Terminal Output" in panel_src, "Header must include 'Terminal Output' title")
     require('data-debug-id="agent-pane-interval-tag"' in panel_src, "Refresh interval tag must have data-debug-id")
-    require("15s" in panel_src, "Interval tag must surface 15s interval")
+    require("500ms" in panel_src, "Interval tag must surface 500ms interval")
     require('data-debug-id="agent-pane-refresh-btn"' in panel_src, "Manual refresh button must have data-debug-id")
     require('data-debug-id="agent-pane-copy-btn"' not in panel_src, "No copy button allowed per user requirement")
     require(all(ord(c) <= 0x1F000 for c in panel_src), "Zero emojis allowed in panel")
     require('data-debug-id="agent-pane-collapse-btn"' in panel_src, "Collapse button must have data-debug-id")
     require("chevron-down" in panel_src, "Collapse button must use chevron-down icon")
+
+    # Interactive terminal cursor & keystroke refetch checks (REQ-STREAM-2, REQ-CURSOR-1)
+    require("cursorBlink: false" in panel_src, "Terminal cursorBlink must be false")
+    require("cursorInactiveStyle: 'none'" in panel_src or 'cursorInactiveStyle: "none"' in panel_src,
+            "Terminal cursorInactiveStyle must be 'none'")
+    require(".xterm-cursor-layer" in panel_src or "\\x1b[?25l" in panel_src,
+            "Component must hide trailing end-cursor via CSS or escape sequence")
+    require("50" in panel_src and ("refetch" in panel_src or "setTimeout" in panel_src),
+            "Terminal onData must trigger debounced refetch(50ms) on keystrokes")
 
     # Content pre element & interactive terminal (REQ-INT-3)
     require("@xterm/xterm" in panel_src, "Component must import @xterm/xterm")

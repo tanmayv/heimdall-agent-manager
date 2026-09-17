@@ -25,7 +25,7 @@ export interface UseAgentPaneSubscriptionResult {
  * - runtimeStatus: 'stopped' or 'failed' pauses polling (0)
  * - isActiveTab: false pauses polling (0)
  * - isDocumentHidden: true pauses polling (0)
- * - isExpanded: true => 15000 ms (15s), false => 300000 ms (5m)
+ * - isExpanded: true => 500 ms (continuous feed), false => 300000 ms (5m)
  */
 export function computeAgentPanePollingInterval(options: {
   agentInstanceId?: string | null;
@@ -46,14 +46,14 @@ export function computeAgentPanePollingInterval(options: {
     return 0;
   }
 
-  return isExpanded ? 15000 : 300000;
+  return isExpanded ? 500 : 300000;
 }
 
 /**
  * Custom React hook that subscribes to an agent instance's terminal pane feed.
  *
  * Implements dynamic polling:
- * - 15s when panel is expanded
+ * - 500ms continuous feed when panel is expanded
  * - 300s (5 minutes) when panel is collapsed
  * - 0 (paused) when tab is inactive, window is hidden, or agent is stopped
  * - Tracks last seen hash and passes as since_hash

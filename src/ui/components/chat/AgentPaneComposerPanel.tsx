@@ -61,10 +61,16 @@ export function AgentPaneComposerPanel({
   const userScrolledUpRef = useRef<boolean>(false);
   const lastWrittenOutputRef = useRef<string>('');
   const agentInstanceIdRef = useRef(agentInstanceId);
+  const refetchRef = useRef(refetch);
+  const keystrokeDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     agentInstanceIdRef.current = agentInstanceId;
   }, [agentInstanceId]);
+
+  useEffect(() => {
+    refetchRef.current = refetch;
+  }, [refetch]);
 
   // Detect manual scroll up on accessible fallback pre
   const handleScroll = useCallback(() => {
@@ -81,7 +87,8 @@ export function AgentPaneComposerPanel({
 
     const term = new Terminal({
       convertEol: true,
-      cursorBlink: true,
+      cursorBlink: false,
+      cursorInactiveStyle: 'none',
       cursorStyle: 'bar',
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
       fontSize: 12,
@@ -116,6 +123,8 @@ export function AgentPaneComposerPanel({
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
+    // Hide xterm's synthetic cursor layer so no trailing cursor sits at the end of the 25-line screen
+    term.write('\x1b[?25l');
 
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -126,12 +135,18 @@ export function AgentPaneComposerPanel({
       userScrolledUpRef.current = buffer.viewportY < buffer.baseY;
     });
 
-    // Keystroke input hook: dispatch to sendAgentPaneInput
+    // Keystroke input hook: dispatch to sendAgentPaneInput and trigger debounced refetch (50ms)
     const dataDisposable = term.onData((data) => {
       const targetId = agentInstanceIdRef.current;
       if (targetId) {
         sendAgentPaneInput({ agentInstanceId: targetId, data }).catch(() => {});
       }
+      if (keystrokeDebounceTimerRef.current) {
+        clearTimeout(keystrokeDebounceTimerRef.current);
+      }
+      keystrokeDebounceTimerRef.current = setTimeout(() => {
+        refetchRef.current?.();
+      }, 50);
     });
 
     // Terminal resize hook: dispatch to sendAgentPaneResize and update dimensions
@@ -201,7 +216,7 @@ export function AgentPaneComposerPanel({
     // Initial write if output already present
     if (output) {
       term.reset();
-      term.write(output, () => {
+      term.write('\x1b[?25l' + output, () => {
         if (!userScrolledUpRef.current) {
           term.scrollToBottom();
         }
@@ -214,6 +229,9 @@ export function AgentPaneComposerPanel({
     return () => {
       if (typeof window !== 'undefined') {
         window.removeEventListener('resize', handleWindowResize);
+      }
+      if (keystrokeDebounceTimerRef.current) {
+        clearTimeout(keystrokeDebounceTimerRef.current);
       }
       clearTimeout(timer);
       resizeObserver.disconnect();
@@ -234,7 +252,7 @@ export function AgentPaneComposerPanel({
 
     lastWrittenOutputRef.current = output;
     term.reset();
-    term.write(output || '', () => {
+    term.write('\x1b[?25l' + (output || ''), () => {
       if (!userScrolledUpRef.current) {
         term.scrollToBottom();
       }
@@ -268,7 +286,7 @@ export function AgentPaneComposerPanel({
 
   const isStopped = runtimeStatus === 'stopped' || runtimeStatus === 'failed';
   const isUpdatingOrRunning = Boolean(isFetching || runtimeStatus === 'running' || runtimeStatus === 'active');
-  const intervalLabel = !agentInstanceId || isStopped || isActiveTab === false ? 'paused' : isExpanded ? '15s' : '5m';
+  const intervalLabel = !agentInstanceId || isStopped || isActiveTab === false ? 'paused' : isExpanded ? '500ms continuous' : '5m';
 
   const handleClose = onClose || onToggleExpand;
 
@@ -338,6 +356,9 @@ export function AgentPaneComposerPanel({
       </div>
 
       {/* Interactive xterm terminal container */}
+      <style>{`
+        .xterm-cursor-layer, .xterm-cursor { display: none !important; }
+      `}</style>
       <div
         ref={terminalContainerRef}
         data-debug-id="agent-pane-terminal"
@@ -345,7 +366,7 @@ export function AgentPaneComposerPanel({
         tabIndex={0}
         role="region"
         aria-label="Interactive Terminal"
-        className="chat-scrollbar relative h-[180px] sm:h-[260px] max-h-[180px] sm:max-h-[300px] w-full overflow-hidden p-2 font-mono text-xs cursor-text bg-[#09090b]/80 touch-manipulation focus:outline-none"
+        className="chat-scrollbar relative h-[180px] sm:h-[260px] max-h-[180px] sm:max-h-[300px] w-full overflow-hidden p-2 font-mono text-xs cursor-text bg-[#09090b]/80 touch-manipulation focus:outline-none [&_.xterm-cursor-layer]:!hidden [&_.xterm-cursor]:!hidden"
       />
 
       {/* Accessible fallback & static verification pre element */}
