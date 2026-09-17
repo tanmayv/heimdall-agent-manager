@@ -64,9 +64,9 @@ bridge_vcs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> b
 	return false
 }
 
-// vcs_request_path extracts and home-expands the "path" param.
+// vcs_request_path extracts and home-expands the "root" param.
 vcs_request_path :: proc(text: string) -> string {
-	raw := strings.trim_space(extract_json_string(text, "path", ""))
+	raw := strings.trim_space(extract_json_string(text, "root", ""))
 	if raw == "" do return ""
 	return bridge_expand_home(raw)
 }
@@ -188,7 +188,7 @@ bridge_vcs_files_json :: proc(command_id, text: string) -> string {
 
 bridge_vcs_diff_json :: proc(command_id, text: string) -> string {
 	path := vcs_request_path(text)
-	file := strings.trim_space(extract_json_string(text, "file", ""))
+	file := strings.trim_space(extract_json_string(text, "path", ""))
 	cursor := extract_json_string(text, "cursor", "")
 	limit := extract_json_int(text, "limit", VCS_DIFF_DEFAULT_LIMIT)
 	eff_limit := vcs_clamp_limit(limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)

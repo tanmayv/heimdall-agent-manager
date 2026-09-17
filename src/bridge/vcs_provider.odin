@@ -93,6 +93,7 @@ vcs_init :: proc() {
 // stack-local provider list — never mutating the shared global on demand, so the
 // detector is safe to call from multiple threads without a prior vcs_init.
 vcs_detect_provider :: proc(path: string) -> (VCS_Provider, bool) {
+	if path == "" do return VCS_Provider{}, false
 	providers := vcs_providers
 	local: [2]VCS_Provider
 	if providers == nil {
