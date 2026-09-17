@@ -894,7 +894,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			_ = got
 			applied := current_seq == state_seq && current_runtime == runtime_status
 			_ = write_ws_text_frame_locked(h, client, bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime))
-		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result":
+		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result":
 			command_id := json_string(text, "command_id")
 			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		case "pane_capture_result":
