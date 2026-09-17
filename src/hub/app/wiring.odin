@@ -309,6 +309,12 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/dir", rawptr(&graph.bridge_handlers), http.create_project_dir_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/move", rawptr(&graph.bridge_handlers), http.move_project_path_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/projects/*/fs", rawptr(&graph.bridge_handlers), http.delete_project_path_handler)
+
+	// Project-scoped VCS relay (resolves project -> bridge+root, relays vcs_* WS commands).
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/capabilities", rawptr(&graph.bridge_handlers), http.project_handle_vcs_capabilities)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/status", rawptr(&graph.bridge_handlers), http.project_handle_vcs_status)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/files", rawptr(&graph.bridge_handlers), http.project_handle_vcs_files)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/diff", rawptr(&graph.bridge_handlers), http.project_handle_vcs_diff)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.list_task_chains_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.create_task_chain_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)

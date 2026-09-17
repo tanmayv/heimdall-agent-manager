@@ -352,6 +352,96 @@ delete_project_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+// --- Project-scoped VCS relay (read-only) ---------------------------------
+// Resolves (project_id -> bridge_id, root_path) exactly like project_fs_relay,
+// then relays a read-only vcs_* WS command carrying the project root so the
+// bridge computes VCS status/diff against the project checkout. Same owner +
+// online guards as project_fs_relay. The bridge result JSON is returned verbatim.
+
+Project_Vcs_Command :: struct {
+	command_type: string, // vcs_capabilities | vcs_status | vcs_files | vcs_diff
+	path:         string, // file path for diff; empty for others
+	cursor:       string,
+	limit:        int,
+	send_path:    bool, // whether to include path in JSON body
+	send_cursor:  bool,
+	send_limit:   bool,
+}
+
+project_vcs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Vcs_Command) -> (string, bool, domain.Domain_Error) {
+	auth_ctx, auth_ok, _ := require_auth(h.auth, req)
+	if !auth_ok do return "", false, domain.domain_error(.Unauthenticated, "authentication required")
+	project_id := domain.Project_ID(path_part(req.path, 4))
+	bridge_hint := query_value(req.query, "bridge_id")
+	target, target_ok, target_err := project_service.resolve_fs_target(h.projects, auth_ctx, project_id, bridge_hint)
+	if !target_ok do return "", false, target_err
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, target.bridge_id)
+	if !bridge_ok do return "", false, bridge_err
+	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	command_id := fmt.tprintf("cmd_pvcs_%d", time.to_unix_nanoseconds(time.now()))
+	cmd_body := project_vcs_command_json(cmd, command_id, target.root_path)
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	if !reply_ok do return "", false, reply_err
+	return reply, true, domain.Domain_Error{}
+}
+
+project_vcs_command_json :: proc(cmd: Project_Vcs_Command, command_id, root_path: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\""); write_handler_json_string(&b, cmd.command_type)
+	strings.write_string(&b, "\",\"command_id\":\""); write_handler_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"root\":\""); write_handler_json_string(&b, root_path)
+	strings.write_string(&b, "\"")
+	if cmd.send_path {
+		strings.write_string(&b, ",\"path\":\""); write_handler_json_string(&b, cmd.path); strings.write_string(&b, "\"")
+	}
+	if cmd.send_cursor && cmd.cursor != "" {
+		strings.write_string(&b, ",\"cursor\":\""); write_handler_json_string(&b, cmd.cursor); strings.write_string(&b, "\"")
+	}
+	if cmd.send_limit {
+		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.limit)
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+project_handle_vcs_capabilities :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{command_type = "vcs_capabilities"})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_status :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{command_type = "vcs_status"})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_files :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_files",
+		cursor = query_value(req.query, "cursor"), send_cursor = true,
+		limit = query_int(req.query, "limit", 100), send_limit = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_diff :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_diff",
+		path = query_value(req.query, "file"), send_path = true,
+		cursor = query_value(req.query, "cursor"), send_cursor = true,
+		limit = query_int(req.query, "limit", 50), send_limit = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
 // --- Agent instance run-dir browser (READ-ONLY) ---------------------------
 // Resolves (instance_id -> owner-checked instance -> bridge_id) then relays a
 // read-only agent_run_dir_* command carrying the instance_id. The bridge computes
