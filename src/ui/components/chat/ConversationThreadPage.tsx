@@ -748,6 +748,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const handleTranscriptScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
       if (!isMobile) return;
+
+      const target = event.currentTarget;
+      const currentTop = target.scrollTop;
+      const distanceToBottom = target.scrollHeight - currentTop - target.clientHeight;
+      const isAtTop = currentTop <= 20;
+      const isAtBottom = distanceToBottom <= 30;
+
+      if (isAtTop || isAtBottom) {
+        restoreChrome();
+        lastScrollTopRef.current = currentTop;
+        return;
+      }
+
       if (inactivityTimerRef.current) {
         clearTimeout(inactivityTimerRef.current);
       }
@@ -755,7 +768,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         setChromeVisible(true);
       }, 1800);
 
-      const currentTop = event.currentTarget.scrollTop;
       const delta = currentTop - lastScrollTopRef.current;
       if (Math.abs(delta) > 8) {
         if (delta > 0 && currentTop > 30) {
@@ -767,7 +779,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         lastScrollTopRef.current = currentTop;
       }
     },
-    [isMobile],
+    [isMobile, restoreChrome],
   );
 
   useEffect(() => {

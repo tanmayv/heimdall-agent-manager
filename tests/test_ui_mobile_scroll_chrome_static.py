@@ -11,6 +11,8 @@ Requirements covered:
   when chrome is hidden and right panel is closed
 - REQ-MOBILE-SCROLL-COMPOSER-AGENT-PILL: Bottom agent name pill (fixed bottom-3 inset-x-0 flex justify-center z-30)
   when composer is hidden to open agent picker
+- REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= 20) or bottom (distanceToBottom <= 30) of transcript
+- REQ-SCROLL-BOUNDARY-2: Validate boundary chrome restore, test suite execution, and clean git push
 """
 from pathlib import Path
 
@@ -50,6 +52,14 @@ def test_conversation_thread_page_scroll_tracking():
             "ConversationThreadPage must implement handleTranscriptScroll")
     require("if (!isMobile) return" in src,
             "handleTranscriptScroll must return early if !isMobile")
+    require("const isAtTop = currentTop <= 20;" in src,
+            "handleTranscriptScroll must compute isAtTop using currentTop <= 20")
+    require("const isAtBottom = distanceToBottom <= 30;" in src,
+            "handleTranscriptScroll must compute isAtBottom using distanceToBottom <= 30")
+    require("if (isAtTop || isAtBottom)" in src,
+            "handleTranscriptScroll must restore chrome on boundary reaching top or bottom")
+    require("restoreChrome();\n        lastScrollTopRef.current = currentTop;\n        return;" in src,
+            "handleTranscriptScroll must call restoreChrome() and update lastScrollTopRef on boundary")
     require("1800" in src,
             "handleTranscriptScroll must set 1800ms inactivity timer")
     require("Math.abs(delta) > 8" in src,
