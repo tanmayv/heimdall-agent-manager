@@ -366,7 +366,7 @@ export function AgentPaneComposerPanel({
         tabIndex={0}
         role="region"
         aria-label="Interactive Terminal"
-        className="chat-scrollbar relative h-[180px] sm:h-[260px] max-h-[180px] sm:max-h-[300px] w-full overflow-hidden p-2 font-mono text-xs cursor-text bg-[#09090b]/80 touch-manipulation focus:outline-none [&_.xterm-cursor-layer]:!hidden [&_.xterm-cursor]:!hidden"
+        className="chat-scrollbar relative min-h-[280px] h-[280px] sm:min-h-[360px] sm:h-[360px] max-h-[280px] sm:max-h-[420px] w-full overflow-hidden p-2 font-mono text-xs cursor-text bg-[#09090b]/80 touch-manipulation focus:outline-none [&_.xterm-cursor-layer]:!hidden [&_.xterm-cursor]:!hidden"
       />
 
       {/* Accessible fallback & static verification pre element */}
@@ -375,7 +375,7 @@ export function AgentPaneComposerPanel({
         onScroll={handleScroll}
         data-debug-id="agent-pane-output"
         aria-hidden="true"
-        className="sr-only chat-scrollbar max-h-[180px] sm:max-h-[300px] overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-zinc-200"
+        className="sr-only chat-scrollbar max-h-[280px] sm:max-h-[420px] overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-zinc-200"
       >
         {output || (isLoading ? 'Loading terminal output…' : '')}
       </pre>
