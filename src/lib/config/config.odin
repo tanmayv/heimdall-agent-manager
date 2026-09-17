@@ -40,7 +40,6 @@ Config :: struct {
 	daemon: Daemon_Config,
 	bridge: Bridge_Config,
 	wrapper: Wrapper_Config,
-	guide_agent: Guide_Agent_Config,
 	ctl: Ctl_Config,
 }
 
@@ -108,16 +107,6 @@ Daemon_Config :: struct {
 	bridge_token: string,
 	federation_poll_interval_seconds: int,
 	federation_advertised_agent_instance_ids: []string,
-}
-
-Guide_Agent_Config :: struct {
-	enabled: bool,
-	autostart: bool,
-	restart_if_stopped: bool,
-	agent_instance_id: string,
-	template_id: string,
-	provider_profile: string,
-	model_tier: string,
 }
 
 Wrapper_Config :: struct {
@@ -222,7 +211,6 @@ Section :: enum {
 	Wrapper_Agent_Models,
 	Wrapper_Agent_Startup_Detection,
 	Wrapper_Agent_Activity_Detection,
-	Guide_Agent,
 	Ctl,
 }
 
@@ -288,10 +276,6 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		}
 		if line == "[bridge]" {
 			section = .Bridge
-			continue
-		}
-		if line == "[guide_agent]" {
-			section = .Guide_Agent
 			continue
 		}
 		// Most specific first: [wrapper.agent-cmd.<name>.bootstrap.<FEATURE>]
@@ -377,8 +361,6 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			parse_startup_detection_key(current_agent_command, key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Activity_Detection:
 			parse_activity_detection_key(current_agent_command, key, value, &cfg.wrapper)
-		case .Guide_Agent:
-			parse_guide_agent_key(key, value, &cfg.guide_agent)
 		case .Ctl:
 			parse_ctl_key(key, value, &cfg.ctl)
 		case:
@@ -526,26 +508,6 @@ parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
 		if n, ok := strconv.parse_int(value); ok do cfg.fs_read_page_bytes = int(n)
 	case "pty_host_runtime":
 		cfg.pty_host_runtime = parse_bool(value)
-	case:
-	}
-}
-
-parse_guide_agent_key :: proc(key, value: string, cfg: ^Guide_Agent_Config) {
-	switch key {
-	case "enabled":
-		cfg.enabled = parse_bool(value)
-	case "autostart":
-		cfg.autostart = parse_bool(value)
-	case "restart_if_stopped":
-		cfg.restart_if_stopped = parse_bool(value)
-	case "agent_instance_id":
-		cfg.agent_instance_id = parse_string(value)
-	case "template_id":
-		cfg.template_id = parse_string(value)
-	case "provider_profile":
-		cfg.provider_profile = parse_string(value)
-	case "model_tier":
-		cfg.model_tier = parse_string(value)
 	case:
 	}
 }
@@ -856,14 +818,6 @@ default_config :: proc() -> Config {
 	cfg.daemon.federation_poll_interval_seconds = 10
 	cfg.daemon.federation_advertised_agent_instance_ids = nil
 	cfg.bridge.fs_read_page_bytes = 16_000
-
-	cfg.guide_agent.enabled = false
-	cfg.guide_agent.autostart = false
-	cfg.guide_agent.restart_if_stopped = false
-	cfg.guide_agent.agent_instance_id = "guide@heimdall"
-	cfg.guide_agent.template_id = "guide"
-	cfg.guide_agent.provider_profile = "pi"
-	cfg.guide_agent.model_tier = "smart"
 
 	cfg.wrapper.daemon_url = "http://127.0.0.1:49322"
 	cfg.wrapper.credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
