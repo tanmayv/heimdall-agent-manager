@@ -41,6 +41,10 @@ const TERM_GRACE: Duration = Duration::from_millis(750);
 /// death path; this is only the silent-failure/idle backstop.
 const HOST_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
+/// CRT resolution constants for unattached agents (REQ-CRT-1).
+pub const CRT_COLS: u16 = 80;
+pub const CRT_ROWS: u16 = 25;
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -200,8 +204,8 @@ impl Daemon {
 
     /// Build + start an [`Agent`] (PTY spawn + pump + exit watcher) from a spec.
     fn build_agent(&self, spec: SpawnRequest) -> Result<Agent> {
-        let rows = if spec.rows == 0 { 24 } else { spec.rows };
-        let cols = if spec.cols == 0 { 80 } else { spec.cols };
+        let rows = if spec.rows == 0 { CRT_ROWS } else { spec.rows };
+        let cols = if spec.cols == 0 { CRT_COLS } else { spec.cols };
         let program = spec.argv[0].clone();
         let args = spec.argv[1..].to_vec();
         let config = SpawnConfig {
@@ -442,18 +446,33 @@ impl Daemon {
     }
 
     /// Drop a client entirely: its sink, any active subscription, and its event
-    /// watch.
-    fn unsubscribe(&self, id: u64) {
-        self.subs.lock().unwrap().remove(&id);
+    /// watch. For any instances it was attached to that now have 0 remaining
+    /// attached subscribers, automatically resizes them to CRT resolution (80x25).
+    pub fn unsubscribe(&self, id: u64) {
+        let unattached_instances: Vec<String> = {
+            let mut subs = self.subs.lock().unwrap();
+            if let Some(sub) = subs.remove(&id) {
+                sub.instances
+                    .into_iter()
+                    .filter(|inst| !subs.values().any(|s| s.instances.contains(inst)))
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
         self.sinks.lock().unwrap().remove(&id);
         self.watchers.lock().unwrap().remove(&id);
+
+        for instance in unattached_instances {
+            let _ = self.resize(&instance, CRT_ROWS, CRT_COLS);
+        }
     }
 
     /// Attach client `id` to `instance`'s output stream. Creates the client's
     /// subscription on first attach. Returns the current screen so the client
     /// renders live state immediately. Does not affect the child. Errors if the
     /// instance does not exist.
-    fn attach(&self, id: u64, instance: &str) -> Result<ScreenSnapshot> {
+    pub fn attach(&self, id: u64, instance: &str) -> Result<ScreenSnapshot> {
         let snap = self
             .capture(instance)
             .ok_or_else(|| anyhow!("attach: no such instance {instance}"))?;
@@ -476,14 +495,22 @@ impl Daemon {
 
     /// Detach client `id` from `instance`. When it has no instances left the
     /// whole subscription is removed so it stops receiving ALL events (returns
-    /// to control-only status).
-    fn detach(&self, id: u64, instance: &str) {
-        let mut subs = self.subs.lock().unwrap();
-        if let Some(sub) = subs.get_mut(&id) {
-            sub.instances.remove(instance);
-            if sub.instances.is_empty() {
-                subs.remove(&id);
+    /// to control-only status). If no remaining subscribers are attached to
+    /// `instance`, automatically resizes it to CRT resolution (80x25).
+    pub fn detach(&self, id: u64, instance: &str) {
+        let should_resize = {
+            let mut subs = self.subs.lock().unwrap();
+            let mut removed = false;
+            if let Some(sub) = subs.get_mut(&id) {
+                removed = sub.instances.remove(instance);
+                if sub.instances.is_empty() {
+                    subs.remove(&id);
+                }
             }
+            removed && !subs.values().any(|sub| sub.instances.contains(instance))
+        };
+        if should_resize {
+            let _ = self.resize(instance, CRT_ROWS, CRT_COLS);
         }
     }
 
@@ -1874,4 +1901,170 @@ mod tests {
         );
         server.shutdown();
     }
+
+    #[test]
+    fn default_crt_resolution_on_zero_rows_cols() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        d.spawn(SpawnRequest {
+            instance: "crt_default".into(),
+            argv: vec![sh],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 0,
+            cols: 0,
+            display_name: None,
+        })
+        .unwrap();
+
+        let snap = d.capture("crt_default").unwrap();
+        assert_eq!(snap.rows, CRT_ROWS);
+        assert_eq!(snap.cols, CRT_COLS);
+
+        let info = find(&d.list(), "crt_default").unwrap();
+        assert_eq!(info.rows, CRT_ROWS);
+        assert_eq!(info.cols, CRT_COLS);
+
+        d.shutdown();
+    }
+
+    #[test]
+    fn detach_resizes_unattached_instance_to_crt() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        d.spawn(SpawnRequest {
+            instance: "inst1".into(),
+            argv: vec![sh],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 20,
+            cols: 60,
+            display_name: None,
+        })
+        .unwrap();
+
+        let (tx1, _rx1) = std::sync::mpsc::channel();
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        d.register_sink(1, tx1);
+        d.register_sink(2, tx2);
+
+        // Attach both client 1 and client 2.
+        d.attach(1, "inst1").unwrap();
+        d.attach(2, "inst1").unwrap();
+
+        // Dynamically resize while both are attached.
+        d.resize("inst1", 40, 100).unwrap();
+        assert_eq!(d.capture("inst1").unwrap().rows, 40);
+        assert_eq!(d.capture("inst1").unwrap().cols, 100);
+
+        // Client 1 detaches; client 2 is still attached -> should NOT resize to CRT.
+        d.detach(1, "inst1");
+        assert_eq!(d.capture("inst1").unwrap().rows, 40);
+        assert_eq!(d.capture("inst1").unwrap().cols, 100);
+
+        // Client 2 detaches; 0 subscribers remain -> automatically resizes to CRT (25, 80).
+        d.detach(2, "inst1");
+        assert_eq!(d.capture("inst1").unwrap().rows, CRT_ROWS);
+        assert_eq!(d.capture("inst1").unwrap().cols, CRT_COLS);
+
+        d.shutdown();
+    }
+
+    #[test]
+    fn unsubscribe_resizes_unattached_instances_to_crt() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        d.spawn(SpawnRequest {
+            instance: "inst_unsub".into(),
+            argv: vec![sh],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 20,
+            cols: 60,
+            display_name: None,
+        })
+        .unwrap();
+
+        let (tx1, _rx1) = std::sync::mpsc::channel();
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        d.register_sink(1, tx1);
+        d.register_sink(2, tx2);
+
+        // Attach client 1 and client 2.
+        d.attach(1, "inst_unsub").unwrap();
+        d.attach(2, "inst_unsub").unwrap();
+
+        d.resize("inst_unsub", 50, 120).unwrap();
+        assert_eq!(d.capture("inst_unsub").unwrap().rows, 50);
+        assert_eq!(d.capture("inst_unsub").unwrap().cols, 120);
+
+        // Client 1 disconnects/unsubscribes; client 2 is still attached -> no resize.
+        d.unsubscribe(1);
+        assert_eq!(d.capture("inst_unsub").unwrap().rows, 50);
+        assert_eq!(d.capture("inst_unsub").unwrap().cols, 120);
+
+        // Client 2 disconnects/unsubscribes; 0 subscribers remain -> auto-resized to CRT (25, 80).
+        d.unsubscribe(2);
+        assert_eq!(d.capture("inst_unsub").unwrap().rows, CRT_ROWS);
+        assert_eq!(d.capture("inst_unsub").unwrap().cols, CRT_COLS);
+
+        d.shutdown();
+    }
+
+    #[test]
+    fn unattached_agent_starts_at_80x25_and_detach_resizes_back_to_80x25() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        // Unattached agent starts at 80x25
+        d.spawn(SpawnRequest {
+            instance: "inst_crt_detach".into(),
+            argv: vec![sh],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 0,
+            cols: 0,
+            display_name: None,
+        })
+        .unwrap();
+
+        assert_eq!(d.capture("inst_crt_detach").unwrap().rows, CRT_ROWS);
+        assert_eq!(d.capture("inst_crt_detach").unwrap().cols, CRT_COLS);
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        d.register_sink(1, tx);
+
+        // Attaching at 40x120
+        d.attach(1, "inst_crt_detach").unwrap();
+        d.resize("inst_crt_detach", 40, 120).unwrap();
+        assert_eq!(d.capture("inst_crt_detach").unwrap().rows, 40);
+        assert_eq!(d.capture("inst_crt_detach").unwrap().cols, 120);
+
+        // Detaching automatically resizes the instance back to 80x25
+        d.detach(1, "inst_crt_detach");
+        assert_eq!(d.capture("inst_crt_detach").unwrap().rows, CRT_ROWS);
+        assert_eq!(d.capture("inst_crt_detach").unwrap().cols, CRT_COLS);
+
+        d.shutdown();
+    }
 }
+

@@ -20,6 +20,7 @@ package main
 // wrapper can answer) and can also be injected by the hub through the wrapper
 // push channel. Either path resolves the same pending entry by request_id.
 
+import "base:runtime"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -64,9 +65,9 @@ bridge_permission_clamp_timeout :: proc(value_ms: int) -> int {
 // Register a pending request. Returns false if request_id is empty or already active.
 bridge_permission_register :: proc(pending: Bridge_Permission_Pending) -> bool {
 	if strings.trim_space(pending.request_id) == "" do return false
-	if bridge_permission_pending == nil do bridge_permission_pending = make([dynamic]Bridge_Permission_Pending)
 	sync.mutex_lock(&bridge_permission_mutex)
 	defer sync.mutex_unlock(&bridge_permission_mutex)
+	if bridge_permission_pending == nil do bridge_permission_pending = make([dynamic]Bridge_Permission_Pending, runtime.default_allocator())
 	for i in 0..<len(bridge_permission_pending) {
 		if bridge_permission_pending[i].request_id == pending.request_id && bridge_permission_pending[i].agent_instance_id == pending.agent_instance_id {
 			return false
@@ -74,6 +75,13 @@ bridge_permission_register :: proc(pending: Bridge_Permission_Pending) -> bool {
 	}
 	append(&bridge_permission_pending, pending)
 	return true
+}
+
+// Reset / clear pending permission requests under lock (for tests).
+bridge_permission_test_reset :: proc() {
+	sync.mutex_lock(&bridge_permission_mutex)
+	defer sync.mutex_unlock(&bridge_permission_mutex)
+	clear(&bridge_permission_pending)
 }
 
 // Resolve a pending request by (request_id, instance). Returns true if a match was found.

@@ -10,9 +10,8 @@ import "core:testing"
 // mutating bridge_config (restoring it after) — no daemon needed.
 
 // These tests mutate the global bridge_config, so they must not run concurrently
-// with each other (the default test runner is multi-threaded). A shared mutex
-// serializes them; each test also snapshots+restores the fields it touches.
-pty_host_socket_test_mutex: sync.Mutex
+// with each other (the default test runner is multi-threaded). The shared
+// bridge_test_config_mutex serializes them; each test also snapshots+restores the fields it touches.
 
 // pty_host_socket_test_save snapshots the config fields these tests mutate.
 Pty_Host_Socket_Test_Save :: struct {
@@ -32,8 +31,8 @@ pty_host_socket_test_restore :: proc(s: Pty_Host_Socket_Test_Save) {
 
 @(test)
 pty_host_socket_differs_by_bridge_id_same_run_dir :: proc(t: ^testing.T) {
-	sync.mutex_lock(&pty_host_socket_test_mutex)
-	defer sync.mutex_unlock(&pty_host_socket_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	save := pty_host_socket_test_snapshot()
 	defer pty_host_socket_test_restore(save)
 
@@ -57,8 +56,8 @@ pty_host_socket_differs_by_bridge_id_same_run_dir :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_socket_stable_for_same_bridge_id :: proc(t: ^testing.T) {
-	sync.mutex_lock(&pty_host_socket_test_mutex)
-	defer sync.mutex_unlock(&pty_host_socket_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	save := pty_host_socket_test_snapshot()
 	defer pty_host_socket_test_restore(save)
 
@@ -75,8 +74,8 @@ pty_host_socket_stable_for_same_bridge_id :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_socket_falls_back_to_port_then_default :: proc(t: ^testing.T) {
-	sync.mutex_lock(&pty_host_socket_test_mutex)
-	defer sync.mutex_unlock(&pty_host_socket_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	save := pty_host_socket_test_snapshot()
 	defer pty_host_socket_test_restore(save)
 
@@ -105,8 +104,8 @@ pty_host_socket_falls_back_to_port_then_default :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_socket_respects_custom_run_dir :: proc(t: ^testing.T) {
-	sync.mutex_lock(&pty_host_socket_test_mutex)
-	defer sync.mutex_unlock(&pty_host_socket_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	save := pty_host_socket_test_snapshot()
 	defer pty_host_socket_test_restore(save)
 

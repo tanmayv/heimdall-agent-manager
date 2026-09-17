@@ -1,5 +1,6 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -99,13 +100,26 @@ bridge_provider_store_init :: proc() {
 		sync.mutex_unlock(&bridge_provider_mutex)
 		return
 	}
-	bridge_provider_overrides = make([dynamic]Bridge_Provider_Override)
+	context.allocator = runtime.default_allocator()
+	if bridge_provider_overrides == nil {
+		bridge_provider_overrides = make([dynamic]Bridge_Provider_Override, runtime.default_allocator())
+	} else {
+		clear(&bridge_provider_overrides)
+	}
 	bridge_provider_store_path_value = bridge_provider_store_path()
 	bridge_provider_load_unlocked()
 	need_save := bridge_provider_autodetect_unlocked()
 	bridge_provider_store_loaded = true
 	sync.mutex_unlock(&bridge_provider_mutex)
 	if need_save do bridge_provider_save_overrides()
+}
+
+// Reset / clear provider store overrides and loaded state under lock (for tests).
+bridge_provider_test_reset :: proc() {
+	sync.mutex_lock(&bridge_provider_mutex)
+	defer sync.mutex_unlock(&bridge_provider_mutex)
+	clear(&bridge_provider_overrides)
+	bridge_provider_store_loaded = false
 }
 
 bridge_provider_autodetect_unlocked :: proc() -> bool {
@@ -216,6 +230,7 @@ bridge_effective_provider_profiles :: proc() -> []Bridge_Provider_Profile {
 	}
 	// Pass 2: store-only overrides not covered by any seed
 	for override in bridge_provider_overrides {
+		if strings.trim_space(override.name) == "" do continue
 		already := false
 		for seed in seeds { if seed.name == override.name { already = true; break } }
 		if already do continue

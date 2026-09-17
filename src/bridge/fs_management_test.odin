@@ -13,6 +13,7 @@ package main
 
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "core:time"
 import base64 "core:encoding/base64"
@@ -379,6 +380,11 @@ fs_project_root_override_rejects_root_outside_bridge :: proc(t: ^testing.T) {
 
 @(test)
 fs_run_dir_root_resolves_within_instances_base :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	saved_dir := bridge_config.local_endpoint_run_dir
+	defer { bridge_config.local_endpoint_run_dir = saved_dir }
+
 	base := fs_test_make_root(t, "rundir_base")
 	defer fs_test_cleanup(base)
 	bridge_config.local_endpoint_run_dir = base
@@ -390,6 +396,11 @@ fs_run_dir_root_resolves_within_instances_base :: proc(t: ^testing.T) {
 
 @(test)
 fs_run_dir_root_sanitizes_instance_id :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	saved_dir := bridge_config.local_endpoint_run_dir
+	defer { bridge_config.local_endpoint_run_dir = saved_dir }
+
 	base := fs_test_make_root(t, "rundir_sanitize")
 	defer fs_test_cleanup(base)
 	bridge_config.local_endpoint_run_dir = base
@@ -411,6 +422,11 @@ fs_run_dir_root_rejects_empty_instance_id :: proc(t: ^testing.T) {
 
 @(test)
 fs_run_dir_root_canonicalizes_symlinked_base :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	saved_dir := bridge_config.local_endpoint_run_dir
+	defer { bridge_config.local_endpoint_run_dir = saved_dir }
+
 	// Regression: on hosts where the instances base traverses a symlink (e.g.
 	// macOS /tmp -> /private/tmp), the raw (unresolved) base failed to prefix-match
 	// the symlink-resolved run dir, so every run-dir op returned path_outside_root.

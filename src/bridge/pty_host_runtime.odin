@@ -36,8 +36,8 @@ PTY_HOST_SPAWN_MAX_ATTEMPTS :: 5
 PTY_HOST_SPAWN_BASE_BACKOFF_MS :: 100
 
 // Default VT geometry for a freshly spawned agent pane.
-PTY_HOST_DEFAULT_ROWS :: 40
-PTY_HOST_DEFAULT_COLS :: 120
+PTY_HOST_DEFAULT_ROWS :: 25
+PTY_HOST_DEFAULT_COLS :: 80
 
 // ---- runtime flag -------------------------------------------------------
 

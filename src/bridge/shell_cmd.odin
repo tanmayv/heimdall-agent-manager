@@ -15,6 +15,7 @@ package main
 // metadata only (exec_id, status, exit_code); the hub delivers it via the
 // transient nudge path (REQ-15), not as a stored chat message.
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -322,8 +323,15 @@ bridge_shell_cmd_notify_hub :: proc(exec_id, status: string, exit_code: int, exi
 bridge_shell_jobs_put :: proc(job: ^Bridge_Shell_Job) {
 	sync.mutex_lock(&bridge_shell_jobs_mutex)
 	defer sync.mutex_unlock(&bridge_shell_jobs_mutex)
-	if bridge_shell_jobs == nil do bridge_shell_jobs = make(map[string]^Bridge_Shell_Job)
+	if bridge_shell_jobs == nil do bridge_shell_jobs = make(map[string]^Bridge_Shell_Job, allocator = runtime.default_allocator())
 	bridge_shell_jobs[job.exec_id] = job
+}
+
+// Reset / clear stored shell jobs under lock (for tests).
+bridge_shell_test_reset :: proc() {
+	sync.mutex_lock(&bridge_shell_jobs_mutex)
+	defer sync.mutex_unlock(&bridge_shell_jobs_mutex)
+	clear(&bridge_shell_jobs)
 }
 
 bridge_shell_jobs_finish :: proc(exec_id, status: string, exit_code: int, finished_ms: i64) {

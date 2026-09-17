@@ -25,6 +25,11 @@ pty_host_flag_truthy_parsing :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_always_enabled :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	old_pty := bridge_config.pty_host_runtime
+	defer { bridge_config.pty_host_runtime = old_pty }
+
 	// DEL-1: ham-pty-host is the only agent-launch runtime; the tmux path was
 	// removed, so bridge_pty_host_runtime_enabled() is always true regardless of
 	// the (now no-op) config flag / env override.
@@ -69,8 +74,8 @@ pty_host_socket_path_under_run_dir :: proc(t: ^testing.T) {
 	// Shares the global bridge_config with the BR-2a socket tests; serialize on the
 	// same mutex and snapshot/restore. BR-2a made the socket name bridge-unique, so
 	// pin a known identity and assert the new <run_dir>/pty-host-<id>.sock shape.
-	sync.mutex_lock(&pty_host_socket_test_mutex)
-	defer sync.mutex_unlock(&pty_host_socket_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	old_dir := bridge_config.local_endpoint_run_dir
 	old_id := bridge_config.daemon_id
 	old_port := bridge_config.local_endpoint_port
@@ -185,6 +190,8 @@ pty_host_build_spawn_from_profile :: proc(t: ^testing.T) {
 	testing.expect(t, req.has_cwd, "cwd present")
 	testing.expect(t, len(req.argv) > 0, "argv non-empty")
 	testing.expect_value(t, len(req.env), 2)
+	testing.expect_value(t, req.rows, u16(25))
+	testing.expect_value(t, req.cols, u16(80))
 	testing.expect_value(t, req.rows, u16(PTY_HOST_DEFAULT_ROWS))
 	testing.expect_value(t, req.cols, u16(PTY_HOST_DEFAULT_COLS))
 }

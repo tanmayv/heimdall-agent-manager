@@ -38,7 +38,8 @@ vcs_api_capabilities_nonexistent_path_no_crash :: proc(t: ^testing.T) {
 // 3. A real git repo resolves and reports provider "git".
 @(test)
 vcs_api_capabilities_git_repo_returns_provider :: proc(t: ^testing.T) {
-	out := bridge_vcs_capabilities_json("t3", `{"command_id":"t3","root":"/home/tanmay/heimdall-agent-manager"}`)
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_capabilities_json("t3", `{"command_id":"t3","root":"."}`)
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":true`), "git repo must return ok:true")
 	testing.expect(t, strings.contains(out, `"provider":"git"`), "git repo must report provider git")

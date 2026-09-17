@@ -142,8 +142,10 @@ bridge_shell_cmd_methods_allowed :: proc(t: ^testing.T) {
 bridge_shell_cmd_exec_sync_completed :: proc(t: ^testing.T) {
 	// data_dir is a shared global; serialize with the token-store tests that also
 	// mutate it (see agent_token_store_test.odin).
-	sync.mutex_lock(&bridge_token_store_test_mutex)
-	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	bridge_shell_test_reset()
+	defer bridge_shell_test_reset()
 	saved := bridge_config.data_dir
 	defer { bridge_config.data_dir = saved }
 	bridge_config.data_dir = "/tmp/ham-shell-sync-test"
@@ -173,8 +175,10 @@ bridge_shell_cmd_exec_sync_completed :: proc(t: ^testing.T) {
 
 @(test)
 bridge_shell_cmd_exec_truncates_large_output :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_token_store_test_mutex)
-	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	bridge_shell_test_reset()
+	defer bridge_shell_test_reset()
 	saved := bridge_config.data_dir
 	defer { bridge_config.data_dir = saved }
 	bridge_config.data_dir = "/tmp/ham-shell-trunc-test"
@@ -216,8 +220,10 @@ bridge_shell_cmd_read_unknown :: proc(t: ^testing.T) {
 
 @(test)
 bridge_shell_cmd_read_paging_reaches_early_lines :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_token_store_test_mutex)
-	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	bridge_shell_test_reset()
+	defer bridge_shell_test_reset()
 	saved := bridge_config.data_dir
 	defer { bridge_config.data_dir = saved }
 	bridge_config.data_dir = "/tmp/ham-shell-page-e2e-test"

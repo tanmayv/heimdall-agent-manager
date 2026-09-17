@@ -115,6 +115,14 @@ bridge_hub_runtime_init :: proc() {
 	bridge_runtime_status_outgoing = make([dynamic]string)
 }
 
+// Reset / clear runtime instance and launch registries under lock (for tests).
+bridge_runtime_test_reset :: proc() {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	clear(&bridge_runtime_instances)
+	clear(&bridge_runtime_launches)
+}
+
 bridge_hub_runtime_worker :: proc() {
 	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(bridge_config.bridge_token) == "" {
 		fmt.println("bridge hub runtime disabled: missing daemon_url or bridge_token (has the bridge enrolled? check the bridge_token/--bridge-token-file)")
