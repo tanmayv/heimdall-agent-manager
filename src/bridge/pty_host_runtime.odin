@@ -20,6 +20,8 @@ package main
 // is layered on in BR-3; BR-2 wires the control plane + a ChildExited-to-status
 // mapping helper the subscriber will call.
 
+import crypto_hash "core:crypto/hash"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -406,6 +408,59 @@ bridge_pty_host_screen_to_output :: proc(lines: []string, line_limit: int) -> (o
 	}
 	tail := lines[start:]
 	return strings.join(tail, "\n"), len(tail), trunc
+}
+
+// bridge_pty_host_pane_hash computes the SHA256 hex string for pane content.
+// Caller owns the returned string.
+bridge_pty_host_pane_hash :: proc(s: string, allocator := context.allocator) -> string {
+	buf: [32]byte
+	crypto_hash.hash_string_to_buffer(.SHA256, s, buf[:])
+	hex_bytes := hex.encode(buf[:], allocator)
+	return string(hex_bytes)
+}
+
+// bridge_pty_host_evaluate_pane evaluates rendered screen lines against since_hash.
+// If since_hash matches the computed SHA256 hash of the output tail, returns unchanged: true
+// with empty output payload. If different or no since_hash, returns unchanged: false with
+// output, line_count, and truncated flag. Caller owns the returned hash and output strings.
+bridge_pty_host_evaluate_pane :: proc(lines: []string, line_limit: int, since_hash: string) -> (unchanged: bool, hash_val: string, output: string, line_count: int, truncated: bool) {
+	out, count, trunc := bridge_pty_host_screen_to_output(lines, line_limit)
+	h := bridge_pty_host_pane_hash(out)
+	trimmed_since := strings.trim_space(since_hash)
+	if trimmed_since != "" && (h == trimmed_since || strings.equal_fold(h, trimmed_since)) {
+		delete(out)
+		return true, h, "", 0, false
+	}
+	return false, h, out, count, trunc
+}
+
+// bridge_pty_host_get_pane proxies host.capture against the pty-host daemon,
+// computes the screen output hash, and evaluates against since_hash (REQ-PANE-2).
+// Returns (ok, unchanged, hash, output, line_count, truncated, err_msg).
+// Caller owns returned hash and output strings when present.
+bridge_pty_host_get_pane :: proc(instance_id: string, since_hash: string, line_limit: int, width: int) -> (ok: bool, unchanged: bool, hash: string, output: string, line_count: int, truncated: bool, err_msg: string) {
+	_ = width
+	trimmed_id := strings.trim_space(instance_id)
+	if trimmed_id == "" {
+		return false, false, "", "", 0, false, "missing agent_instance_id"
+	}
+
+	socket, ok_daemon := bridge_pty_host_ensure_daemon()
+	if !ok_daemon {
+		return false, false, "", "", 0, false, "The ham-pty-host daemon is not available."
+	}
+
+	frame := pty_host_encode_capture(trimmed_id)
+	defer delete(frame)
+	reply, rok := pty_host_request(socket, frame)
+	if !rok || reply.kind != .Screen {
+		if rok do pty_host_reply_delete(reply)
+		return false, false, "", "", 0, false, "No screen snapshot was returned for this agent."
+	}
+	defer pty_host_reply_delete(reply)
+
+	unchanged_val, h, out, count, trunc := bridge_pty_host_evaluate_pane(reply.screen.lines, line_limit, since_hash)
+	return true, unchanged_val, h, out, count, trunc, ""
 }
 
 // ---- event->status mapping (consumed by the BR-3 subscriber) ------------

@@ -27,7 +27,7 @@
  * to give the glyph an accessible name — it then renders `role="img"` + a
  * `<title>`. `focusable="false"` keeps it out of the tab order in every browser.
  */
-import type { CSSProperties, ReactElement } from 'react';
+import React, { type CSSProperties, type ReactElement } from 'react';
 
 export type IconName =
   | 'plus'

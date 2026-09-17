@@ -3,6 +3,7 @@ import ProjectFilesPanel from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
 import ShellJobsPanel from './ShellJobsPanel';
 import AtMentionPopup, { type MentionEntity } from './AtMentionPopup';
+import AgentPaneComposerPanel from './AgentPaneComposerPanel';
 import { type ClipboardEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
@@ -556,6 +557,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [olderCursor, setOlderCursor] = useState('');
   const [olderHasMore, setOlderHasMore] = useState(false);
   const [draft, setDraft] = useState('');
+  const [isPaneExpanded, setIsPaneExpanded] = useState<boolean>(false);
   // @-mention popup state: mentionQuery is the fragment typed after '@' (null when
   // the popup is closed); mentionIndex is the highlighted row for arrow-key nav.
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
@@ -937,10 +939,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       const message = errMsg(err, 'Pane capture request failed');
       setLocalMessages((current) => current.map((item) => (msgId(item, 0) === localId ? failedPaneCaptureMessage(item, message) : item)));
     }
-  }
-
-  function requestPaneFromComposer() {
-    if (!paneCaptureDisabled) void requestPane();
   }
 
   function beginRenameFromHeader() {
@@ -1540,6 +1538,17 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             </div>
           </div>
 
+          {/* Terminal pane panel above composer textarea when isPaneExpanded is true */}
+          <AgentPaneComposerPanel
+            agentInstanceId={agentInstanceId}
+            isExpanded={isPaneExpanded}
+            onClose={() => setIsPaneExpanded(false)}
+            onToggleExpand={() => setIsPaneExpanded((prev) => !prev)}
+            isActiveTab={true}
+            runtimeStatus={runtimeStatus}
+            className="mb-2.5"
+          />
+
           <div className="relative">
             {mentionQuery !== null && (
               <AtMentionPopup
@@ -1585,7 +1594,21 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
           <div className="mt-1 flex items-center gap-1.5">
             <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white"><Icon name="plus" size={19} /></button>
-            <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={requestPaneFromComposer} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"><Icon name="terminal" size={18} /></button>
+            <button
+              data-debug-id="conversation-request-pane-btn"
+              type="button"
+              aria-pressed={isPaneExpanded}
+              title="Toggle terminal pane panel"
+              aria-label="Toggle terminal pane panel"
+              onClick={() => setIsPaneExpanded((prev) => !prev)}
+              className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors ${
+                isPaneExpanded
+                  ? 'bg-sky-400/20 text-sky-300 border border-sky-400/40 hover:bg-sky-400/30'
+                  : 'text-zinc-400 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              <Icon name="terminal" size={18} />
+            </button>
 
             <div className="flex-1" />
 

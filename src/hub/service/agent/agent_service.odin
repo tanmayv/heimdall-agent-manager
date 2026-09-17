@@ -646,6 +646,56 @@ start_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, in
 	return relaunch_instance(service, auth, inst, inst.provider, inst.tier)
 }
 
+get_instance_pane :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, since_hash: string, width, line_limit: int) -> (string, bool, domain.Domain_Error) {
+	inst, ok, err := get_instance(service, auth, instance_id)
+	if !ok do return "", false, err
+
+	if inst.runtime_status == "stopped" || inst.runtime_status == "failed" {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"ok\":true,\"status\":\"")
+		write_service_json_string(&b, inst.runtime_status)
+		strings.write_string(&b, "\",\"unchanged\":true,\"hash\":\"\",\"output\":\"\"}")
+		return strings.to_string(b), true, domain.Domain_Error{}
+	}
+
+	if strings.trim_space(inst.bridge_id) == "" {
+		return "", false, domain.domain_error(.Bridge_Offline, "agent instance has no bridge")
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_")
+	}
+
+	cmd_b := strings.builder_make()
+	strings.write_string(&cmd_b, "{\"type\":\"get_agent_pane\",\"command_id\":\"")
+	write_service_json_string(&cmd_b, cmd_id)
+	strings.write_string(&cmd_b, "\",\"agent_instance_id\":\"")
+	write_service_json_string(&cmd_b, instance_id)
+	strings.write_string(&cmd_b, "\",\"since_hash\":\"")
+	write_service_json_string(&cmd_b, since_hash)
+	strings.write_string(&cmd_b, "\",\"width\":")
+	strings.write_int(&cmd_b, width)
+	strings.write_string(&cmd_b, ",\"line_limit\":")
+	strings.write_int(&cmd_b, line_limit)
+	strings.write_string(&cmd_b, "}")
+
+	reply, reply_ok, reply_err := project_service.bridge_command_send_runtime_wait(
+		service.bridge_command_sink,
+		project_service.Runtime_Command{
+			bridge_id = inst.bridge_id,
+			command_id = cmd_id,
+			body_json = strings.to_string(cmd_b),
+		},
+		5000,
+	)
+	if !reply_ok {
+		return "", false, reply_err
+	}
+
+	return reply, true, domain.Domain_Error{}
+}
+
 reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := get_instance(service, auth, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err

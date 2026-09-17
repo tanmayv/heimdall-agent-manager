@@ -206,6 +206,34 @@ agent_instance_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+get_agent_instance_pane_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	instance_id := path_part(req.path, 4)
+	if strings.contains(instance_id, "/") do return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
+	since_hash := query_value(req.query, "since_hash")
+	width := query_int(req.query, "width", 80)
+	if width <= 0 do width = 80
+	line_limit := query_int(req.query, "line_limit", 120)
+	if line_limit <= 0 do line_limit = 120
+
+	inst, got, err := agent_service.get_instance(h.agents, auth_ctx, instance_id)
+	if !got do return respond_error(err, req.request_id)
+
+	if inst.runtime_status == "stopped" || inst.runtime_status == "failed" {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"ok\":true,\"status\":\"")
+		write_handler_json_string(&b, inst.runtime_status)
+		strings.write_string(&b, "\",\"unchanged\":true,\"hash\":\"\",\"output\":\"\"}")
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+	}
+
+	reply, reply_ok, reply_err := agent_service.get_instance_pane(h.agents, auth_ctx, instance_id, since_hash, width, line_limit)
+	if !reply_ok do return respond_error(reply_err, req.request_id)
+	return respond_success(reply, req.request_id, auth_ctx_server_time(req))
+}
+
 stop_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
 	// Accept user tokens AND bridge-relayed instance tokens so a running agent can

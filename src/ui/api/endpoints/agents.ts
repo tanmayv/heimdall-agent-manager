@@ -3,6 +3,24 @@ import { applyAgentRuntimeEvent, loadKnownAgents, mapAgent, mergeKnownAndLiveAge
 import { cookieMutation, cookieJsonFetch } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
+export interface GetAgentPaneArgs {
+  agentInstanceId: string;
+  sinceHash?: string;
+  width?: number;
+  lineLimit?: number;
+}
+
+export interface AgentPaneResult {
+  ok?: boolean;
+  status?: string;
+  unchanged?: boolean;
+  hash?: string;
+  output?: string;
+  line_count?: number;
+  truncated?: boolean;
+  [key: string]: any;
+}
+
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function agentTagId(agent: any, fallback = '') {
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
@@ -482,6 +500,38 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
+    getAgentPane: build.query<AgentPaneResult, GetAgentPaneArgs>({
+      queryFn: async ({ agentInstanceId, sinceHash, width = 80, lineLimit = 120 }) => {
+        if (!agentInstanceId) {
+          return { data: { ok: false, unchanged: true, hash: '', output: '' } };
+        }
+        try {
+          const path = `/agent-instances/${encodeURIComponent(agentInstanceId)}/pane?since_hash=${encodeURIComponent(sinceHash || '')}&width=${width || 80}&line_limit=${lineLimit || 120}`;
+          const data = await cookieJsonFetch(path);
+          return { data: data || {} };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      serializeQueryArgs: ({ endpointName, queryArgs }) => {
+        return `${endpointName}-${queryArgs.agentInstanceId}-${queryArgs.width || 80}-${queryArgs.lineLimit || 120}`;
+      },
+      merge: (currentCache, newItems) => {
+        if (newItems?.unchanged && currentCache?.output !== undefined) {
+          return {
+            ...currentCache,
+            ...newItems,
+            output: currentCache.output,
+            line_count: currentCache.line_count ?? newItems.line_count,
+            truncated: currentCache.truncated ?? newItems.truncated,
+          };
+        }
+        return newItems;
+      },
+      providesTags: (_result, _error, { agentInstanceId }) => [
+        { type: 'AgentInstances' as const, id: `${agentInstanceId}:PANE` },
+      ],
+    }),
   }),
 });
 
@@ -600,4 +650,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }]));
 }
 
-export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation } = agentsApi;
+export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useGetAgentPaneQuery, useLazyGetAgentPaneQuery } = agentsApi;

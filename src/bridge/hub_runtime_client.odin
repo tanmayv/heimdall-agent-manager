@@ -441,6 +441,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_pane_capture_command(conn, text)
 		return
 	}
+	if type == "get_agent_pane" {
+		bridge_hub_handle_get_agent_pane(conn, text)
+		return
+	}
 	if type == "wake_agent" {
 		bridge_hub_handle_wake_agent(conn, text)
 		return
@@ -452,6 +456,34 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_vcs_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
+}
+
+bridge_hub_handle_get_agent_pane :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		_ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	instance_id := extract_json_string(text, "agent_instance_id", "")
+	if instance_id == "" && has_payload do instance_id = extract_json_string(payload, "agent_instance_id", "")
+	since_hash := extract_json_string(text, "since_hash", "")
+	if since_hash == "" && has_payload do since_hash = extract_json_string(payload, "since_hash", "")
+	width := extract_json_int(text, "width", 0)
+	if width <= 0 && has_payload do width = extract_json_int(payload, "width", 0)
+	if width <= 0 do width = 80
+	line_limit := extract_json_int(text, "line_limit", 0)
+	if line_limit <= 0 && has_payload do line_limit = extract_json_int(payload, "line_limit", 0)
+	if line_limit <= 0 do line_limit = 120
+
+	ok, unchanged, h, output, line_count, truncated, err_msg := bridge_pty_host_get_pane(instance_id, since_hash, line_limit, width)
+	defer if h != "" do delete(h)
+	defer if output != "" do delete(output)
+
+	result := bridge_get_agent_pane_result_json(command_id, ok, unchanged, h, output, line_count, truncated, err_msg)
+	defer delete(result)
+	bridge_runtime_cache_command(command_id, result)
+	_ = bridge_hub_send(conn, result)
 }
 
 bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: string) {
@@ -1510,6 +1542,39 @@ bridge_pane_capture_push_json :: proc(pending: Bridge_Pane_Capture_Pending, sett
 
 bridge_pane_capture_result_json :: proc(pending: Bridge_Pane_Capture_Pending, ok:bool, error_code,message,output:string,line_count:int,truncated:bool)->string{ b:=strings.builder_make(); strings.write_string(&b,"{\"type\":\"pane_capture_result\",\"protocol_version\":1,\"command_id\":\""); bridge_runtime_write_json_string(&b,pending.command_id); strings.write_string(&b,"\",\"pane_capture_request_id\":\""); bridge_runtime_write_json_string(&b,pending.pane_capture_request_id); strings.write_string(&b,"\",\"conversation_id\":\""); bridge_runtime_write_json_string(&b,pending.conversation_id); strings.write_string(&b,"\",\"message_id\":\""); bridge_runtime_write_json_string(&b,pending.message_id); strings.write_string(&b,"\",\"agent_instance_id\":\""); bridge_runtime_write_json_string(&b,pending.agent_instance_id); strings.write_string(&b,"\",\"ok\":"); strings.write_string(&b,"true" if ok else "false"); strings.write_string(&b,",\"width\":"); strings.write_string(&b,fmt.tprintf("%d",pending.width)); strings.write_string(&b,",\"line_count\":"); strings.write_string(&b,fmt.tprintf("%d",line_count)); strings.write_string(&b,",\"truncated\":"); strings.write_string(&b,"true" if truncated else "false"); if ok { strings.write_string(&b,",\"output\":\""); bridge_runtime_write_json_string(&b,output); strings.write_string(&b,"\"") } else { strings.write_string(&b,",\"error_code\":\""); bridge_runtime_write_json_string(&b,error_code); strings.write_string(&b,"\",\"message\":\""); bridge_runtime_write_json_string(&b,message); strings.write_string(&b,"\"") }; strings.write_string(&b,"}"); return strings.to_string(b) }
 
+bridge_get_agent_pane_result_json :: proc(command_id: string, ok: bool, unchanged: bool, hash_val: string, output: string, line_count: int, truncated: bool, err_msg: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"command_result\",\"protocol_version\":1,\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\"")
+	if ok {
+		strings.write_string(&b, ",\"ok\":true,\"unchanged\":")
+		strings.write_string(&b, "true" if unchanged else "false")
+		strings.write_string(&b, ",\"hash\":\"")
+		bridge_runtime_write_json_string(&b, hash_val)
+		strings.write_string(&b, "\"")
+		if !unchanged {
+			strings.write_string(&b, ",\"output\":\"")
+			bridge_runtime_write_json_string(&b, output)
+			strings.write_string(&b, "\",\"line_count\":")
+			strings.write_string(&b, fmt.tprintf("%d", line_count))
+			strings.write_string(&b, ",\"truncated\":")
+			strings.write_string(&b, "true" if truncated else "false")
+		}
+	} else {
+		strings.write_string(&b, ",\"ok\":false,\"unchanged\":false")
+		if err_msg != "" {
+			strings.write_string(&b, ",\"error\":\"")
+			bridge_runtime_write_json_string(&b, err_msg)
+			strings.write_string(&b, "\",\"message\":\"")
+			bridge_runtime_write_json_string(&b, err_msg)
+			strings.write_string(&b, "\"")
+		}
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
 bridge_command_result_json :: proc(command_id, status, runtime_status: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"command_result\",\"protocol_version\":1,\"command_id\":\"")
@@ -1591,7 +1656,7 @@ bridge_hub_hello_json :: proc() -> string {
 	return strings.to_string(b)
 }
 
-bridge_runtime_features_json :: proc() -> string { return "[\"capture_agent_pane\"]" }
+bridge_runtime_features_json :: proc() -> string { return "[\"capture_agent_pane\",\"get_agent_pane\"]" }
 
 bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
 	for ch in value {
