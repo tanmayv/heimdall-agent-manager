@@ -161,6 +161,87 @@ list_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+// POST /api/v1/bridges/{bridge_id}/shells/{shell_id}/input
+// Delivers interactive keystrokes and raw PTY input to any target bridge shell.
+bridge_shell_input_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+
+	if auth_ctx.kind == .Bridge_Token {
+		return respond_error(domain.domain_error(.Forbidden, "bridge cannot send shell input"), req.request_id)
+	}
+
+	bridge_id := path_part(req.path, 4)
+	shell_id := path_part(req.path, 6)
+	if strings.contains(bridge_id, "/") || strings.contains(shell_id, "/") || strings.trim_space(bridge_id) == "" || strings.trim_space(shell_id) == "" {
+		return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
+	}
+
+	data := json_string(req.body, "data")
+	defer delete(data)
+
+	sink_override: project_service.Bridge_Command_Sink = {}
+	if h.agents != nil {
+		sink_override = h.agents.bridge_command_sink
+	}
+
+	sent, err := bridge_service.send_shell_input(h.bridges, auth_ctx, bridge_id, shell_id, data, sink_override)
+	if !sent do return respond_error(err, req.request_id)
+
+	return respond_success("{\"ok\":true}", req.request_id, auth_ctx_server_time(req))
+}
+
+post_bridge_shell_input_handler :: bridge_shell_input_handler
+
+// POST /api/v1/bridges/{bridge_id}/shells/{shell_id}/resize
+// Updates the PTY terminal geometry (rows and cols) for any target bridge shell.
+bridge_shell_resize_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+
+	if auth_ctx.kind == .Bridge_Token {
+		return respond_error(domain.domain_error(.Forbidden, "bridge cannot send shell resize"), req.request_id)
+	}
+
+	bridge_id := path_part(req.path, 4)
+	shell_id := path_part(req.path, 6)
+	if strings.contains(bridge_id, "/") || strings.contains(shell_id, "/") || strings.trim_space(bridge_id) == "" || strings.trim_space(shell_id) == "" {
+		return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
+	}
+
+	rows := json_int(req.body, "rows", 0)
+	if rows <= 0 {
+		str_val := json_string(req.body, "rows")
+		defer delete(str_val)
+		if parsed, ok_parse := strconv.parse_int(str_val); ok_parse do rows = int(parsed)
+	}
+
+	cols := json_int(req.body, "cols", 0)
+	if cols <= 0 {
+		str_val := json_string(req.body, "cols")
+		defer delete(str_val)
+		if parsed, ok_parse := strconv.parse_int(str_val); ok_parse do cols = int(parsed)
+	}
+
+	if rows < 1 || cols < 1 {
+		return respond_error(domain.domain_error(.Validation_Failed, "rows and cols must be at least 1"), req.request_id)
+	}
+
+	sink_override: project_service.Bridge_Command_Sink = {}
+	if h.agents != nil {
+		sink_override = h.agents.bridge_command_sink
+	}
+
+	sent, err := bridge_service.send_shell_resize(h.bridges, auth_ctx, bridge_id, shell_id, rows, cols, sink_override)
+	if !sent do return respond_error(err, req.request_id)
+
+	return respond_success("{\"ok\":true}", req.request_id, auth_ctx_server_time(req))
+}
+
+post_bridge_shell_resize_handler :: bridge_shell_resize_handler
+
 // --- Bridge filesystem directory management (browse/stat/mkdir) -----------
 // Live pass-through to the target bridge (no hub persistence). Same owner + online
 // guards as the provider relay; the bridge sandboxes every path to its fs_root.

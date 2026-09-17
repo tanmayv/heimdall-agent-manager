@@ -1,7 +1,9 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -107,7 +109,7 @@ bridge_runtime_local_endpoint_descriptor: string
 bridge_hub_runtime_init :: proc() {
 	bridge_runtime_mutex = sync.Mutex{}
 	bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
-	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result)
+	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result, runtime.default_allocator())
 	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
 	bridge_pane_capture_pending = make([dynamic]Bridge_Pane_Capture_Pending)
 	bridge_pane_capture_outgoing = make([dynamic]Bridge_Pane_Capture_Outgoing)
@@ -465,6 +467,18 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_agent_pty_input(conn, text)
 		return
 	}
+	if type == "agent_pty_resize" {
+		bridge_hub_handle_agent_pty_resize(conn, text)
+		return
+	}
+	if type == "shell_pty_input" {
+		bridge_hub_handle_shell_pty_input(conn, text)
+		return
+	}
+	if type == "shell_pty_resize" {
+		bridge_hub_handle_shell_pty_resize(conn, text)
+		return
+	}
 	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_vcs_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
@@ -485,6 +499,126 @@ bridge_hub_handle_agent_pty_input :: proc(conn: ^ws.Connection, text: string) {
 
 	ok := bridge_pty_host_deliver_raw_input(instance_id, data)
 	if !ok do fmt.println("bridge agent_pty_input delivery failed for instance", instance_id)
+
+	if command_id != "" {
+		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+}
+
+bridge_hub_handle_agent_pty_resize :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	instance_id := extract_json_string(text, "agent_instance_id", "")
+	if instance_id == "" && has_payload do instance_id = extract_json_string(payload, "agent_instance_id", "")
+
+	rows_val := extract_json_int(text, "rows", 0)
+	if rows_val <= 0 && has_payload do rows_val = extract_json_int(payload, "rows", 0)
+	if rows_val <= 0 {
+		str_val := extract_json_string(text, "rows", "")
+		if str_val == "" && has_payload do str_val = extract_json_string(payload, "rows", "")
+		if str_val != "" {
+			if parsed, ok := strconv.parse_int(str_val); ok do rows_val = int(parsed)
+		}
+	}
+
+	cols_val := extract_json_int(text, "cols", 0)
+	if cols_val <= 0 && has_payload do cols_val = extract_json_int(payload, "cols", 0)
+	if cols_val <= 0 {
+		str_val := extract_json_string(text, "cols", "")
+		if str_val == "" && has_payload do str_val = extract_json_string(payload, "cols", "")
+		if str_val != "" {
+			if parsed, ok := strconv.parse_int(str_val); ok do cols_val = int(parsed)
+		}
+	}
+
+	rows: u16 = 0
+	if rows_val > 0 && rows_val <= 65535 do rows = u16(rows_val)
+	cols: u16 = 0
+	if cols_val > 0 && cols_val <= 65535 do cols = u16(cols_val)
+
+	ok := bridge_pty_host_deliver_resize(instance_id, rows, cols)
+	if !ok do fmt.println("bridge agent_pty_resize delivery failed for instance", instance_id)
+
+	if command_id != "" {
+		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+}
+
+bridge_hub_handle_shell_pty_input :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	shell_id := extract_json_string(text, "shell_id", "")
+	if shell_id == "" && has_payload do shell_id = extract_json_string(payload, "shell_id", "")
+	if shell_id == "" do shell_id = extract_json_string(text, "agent_instance_id", "")
+	if shell_id == "" && has_payload do shell_id = extract_json_string(payload, "agent_instance_id", "")
+
+	data := extract_json_string(text, "data", "")
+	if data == "" && has_payload do data = extract_json_string(payload, "data", "")
+
+	ok := bridge_pty_host_deliver_shell_input(shell_id, data)
+	if !ok do fmt.println("bridge shell_pty_input delivery failed for shell", shell_id)
+
+	if command_id != "" {
+		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+}
+
+bridge_hub_handle_shell_pty_resize :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	shell_id := extract_json_string(text, "shell_id", "")
+	if shell_id == "" && has_payload do shell_id = extract_json_string(payload, "shell_id", "")
+	if shell_id == "" do shell_id = extract_json_string(text, "agent_instance_id", "")
+	if shell_id == "" && has_payload do shell_id = extract_json_string(payload, "agent_instance_id", "")
+
+	rows_val := extract_json_int(text, "rows", 0)
+	if rows_val <= 0 && has_payload do rows_val = extract_json_int(payload, "rows", 0)
+	if rows_val <= 0 {
+		str_val := extract_json_string(text, "rows", "")
+		if str_val == "" && has_payload do str_val = extract_json_string(payload, "rows", "")
+		if str_val != "" {
+			if parsed, ok := strconv.parse_int(str_val); ok do rows_val = int(parsed)
+		}
+	}
+
+	cols_val := extract_json_int(text, "cols", 0)
+	if cols_val <= 0 && has_payload do cols_val = extract_json_int(payload, "cols", 0)
+	if cols_val <= 0 {
+		str_val := extract_json_string(text, "cols", "")
+		if str_val == "" && has_payload do str_val = extract_json_string(payload, "cols", "")
+		if str_val != "" {
+			if parsed, ok := strconv.parse_int(str_val); ok do cols_val = int(parsed)
+		}
+	}
+
+	rows: u16 = 0
+	if rows_val > 0 && rows_val <= 65535 do rows = u16(rows_val)
+	cols: u16 = 0
+	if cols_val > 0 && cols_val <= 65535 do cols = u16(cols_val)
+
+	ok := bridge_pty_host_deliver_shell_resize(shell_id, rows, cols)
+	if !ok do fmt.println("bridge shell_pty_resize delivery failed for shell", shell_id)
 
 	if command_id != "" {
 		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
@@ -1427,8 +1561,21 @@ bridge_runtime_cache_command :: proc(command_id, result_json: string) {
 	if command_id == "" do return
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for i in 0..<len(bridge_runtime_results) { if bridge_runtime_results[i].command_id == command_id { bridge_runtime_results[i].result_json = strings.clone(result_json); return } }
-	append(&bridge_runtime_results, Bridge_Runtime_Command_Result{command_id = strings.clone(command_id), result_json = strings.clone(result_json)})
+	alloc := runtime.default_allocator()
+	if bridge_runtime_results.allocator.procedure == nil {
+		bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result, alloc)
+	}
+	for i in 0..<len(bridge_runtime_results) {
+		if bridge_runtime_results[i].command_id == command_id {
+			delete(bridge_runtime_results[i].result_json, alloc)
+			bridge_runtime_results[i].result_json = strings.clone(result_json, alloc)
+			return
+		}
+	}
+	append(&bridge_runtime_results, Bridge_Runtime_Command_Result{
+		command_id = strings.clone(command_id, alloc),
+		result_json = strings.clone(result_json, alloc),
+	})
 }
 
 bridge_pane_capture_register_pending :: proc(pending: Bridge_Pane_Capture_Pending) {

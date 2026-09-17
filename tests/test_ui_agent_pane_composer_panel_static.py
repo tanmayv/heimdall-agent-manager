@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Static and regression checks for AgentPaneComposerPanel and its integration
-in ConversationThreadPage (REQ-PANE-4, REQ-PANE-5).
+in ConversationThreadPage (REQ-PANE-4, REQ-PANE-5, REQ-WINSIZE-3).
 """
 
 from pathlib import Path
@@ -10,6 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PANEL_FILE = ROOT / "src" / "ui" / "components" / "chat" / "AgentPaneComposerPanel.tsx"
 PAGE_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ConversationThreadPage.tsx"
+AGENTS_FILE = ROOT / "src" / "ui" / "api" / "endpoints" / "agents.ts"
 
 
 def require(condition: bool, message: str) -> None:
@@ -19,6 +20,16 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
+    print("[*] Checking src/ui/api/endpoints/agents.ts (REQ-WINSIZE-3)...")
+    require(AGENTS_FILE.exists(), "agents.ts must exist")
+    agents_src = AGENTS_FILE.read_text(encoding="utf-8")
+    require("sendAgentPaneResize: build.mutation" in agents_src,
+            "agents.ts must define sendAgentPaneResize mutation endpoint")
+    require("/agent-instances/${encodeURIComponent(agentInstanceId)}/resize" in agents_src,
+            "sendAgentPaneResize must target /agent-instances/${id}/resize")
+    require("useSendAgentPaneResizeMutation" in agents_src,
+            "agents.ts must export useSendAgentPaneResizeMutation")
+
     print("[*] Checking AgentPaneComposerPanel.tsx...")
     require(PANEL_FILE.exists(), "AgentPaneComposerPanel.tsx must exist")
     panel_src = PANEL_FILE.read_text(encoding="utf-8")
@@ -62,6 +73,20 @@ def main() -> None:
     require("font-mono" in panel_src, "Pre element must use font-mono class")
     require("text-xs" in panel_src, "Pre element must use text-xs class")
     require("scrollTop" in panel_src and "scrollHeight" in panel_src, "Pre element must handle auto-scroll")
+
+    # Terminal resize & dimension synchronization (REQ-WINSIZE-3)
+    require("useSendAgentPaneResizeMutation" in panel_src,
+            "Component must import/use useSendAgentPaneResizeMutation hook")
+    require("onResize" in panel_src,
+            "Terminal must hook onResize for dimensions dispatch")
+    require("sendAgentPaneResize" in panel_src,
+            "Component must dispatch sendAgentPaneResize")
+    require("fitAddon.fit()" in panel_src,
+            "Component must trigger fitAddon.fit() on mount/expansion")
+    require("window.addEventListener('resize'" in panel_src or 'window.addEventListener("resize"' in panel_src,
+            "Component must attach window resize listener for fitAddon.fit()")
+    require("width:" in panel_src and "lineLimit:" in panel_src,
+            "useAgentPaneSubscription must receive dynamic width and lineLimit")
 
     # Collapsed guard
     require("if (!isExpanded)" in panel_src or "!isExpanded &&" in panel_src, "Component must hide output when not expanded")
@@ -110,7 +135,7 @@ def main() -> None:
     else:
         print(result.stdout.strip())
 
-    print("[+] ALL CHECKS PASSED (REQ-PANE-4, REQ-PANE-5)")
+    print("[+] ALL CHECKS PASSED (REQ-PANE-4, REQ-PANE-5, REQ-WINSIZE-3)")
 
 
 if __name__ == "__main__":

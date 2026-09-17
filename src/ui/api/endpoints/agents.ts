@@ -545,6 +545,19 @@ export const agentsApi = heimdallApi.injectEndpoints({
         }
       },
     }),
+    sendAgentPaneResize: build.mutation<{ ok?: boolean; [key: string]: any }, { agentInstanceId: string; rows: number; cols: number }>({
+      queryFn: async ({ agentInstanceId, rows, cols }) => {
+        if (!agentInstanceId) {
+          return { error: { status: 'CUSTOM_ERROR', error: 'Missing agentInstanceId' } as any };
+        }
+        try {
+          const res = await cookieMutation(`/agent-instances/${encodeURIComponent(agentInstanceId)}/resize`, 'POST', { rows, cols });
+          return { data: res || { ok: true } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+    }),
   }),
 });
 
@@ -663,4 +676,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }]));
 }
 
-export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useGetAgentPaneQuery, useLazyGetAgentPaneQuery, useSendAgentPaneInputMutation } = agentsApi;
+export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useGetAgentPaneQuery, useLazyGetAgentPaneQuery, useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } = agentsApi;

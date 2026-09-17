@@ -8,8 +8,9 @@ agent_pty_input_command_json_formats_payload :: proc(t: ^testing.T) {
 	got := agent_pty_input_command_json("cmd_123", "inst_456", "ls -la\n")
 	defer delete(got)
 
-	testing.expect(t, strings.contains(got, "\"type\":\"agent_pty_input\""), "type field must be agent_pty_input")
+	testing.expect(t, strings.contains(got, "\"type\":\"shell_pty_input\"") || strings.contains(got, "\"type\":\"agent_pty_input\""), "type field must be shell_pty_input or agent_pty_input")
 	testing.expect(t, strings.contains(got, "\"command_id\":\"cmd_123\""), "command_id must match")
+	testing.expect(t, strings.contains(got, "\"shell_id\":\"inst_456\""), "shell_id must match")
 	testing.expect(t, strings.contains(got, "\"agent_instance_id\":\"inst_456\""), "agent_instance_id must match")
 	testing.expect(t, strings.contains(got, "\"data\":\"ls -la\\n\""), "data field must be JSON-escaped")
 }

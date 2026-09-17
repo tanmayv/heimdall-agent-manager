@@ -698,8 +698,10 @@ get_instance_pane :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 
 agent_pty_input_command_json :: proc(command_id, instance_id, data: string) -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"agent_pty_input\",\"command_id\":\"")
+	strings.write_string(&b, "{\"type\":\"shell_pty_input\",\"command_id\":\"")
 	write_service_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"shell_id\":\"")
+	write_service_json_string(&b, instance_id)
 	strings.write_string(&b, "\",\"agent_instance_id\":\"")
 	write_service_json_string(&b, instance_id)
 	strings.write_string(&b, "\",\"data\":\"")
@@ -707,6 +709,8 @@ agent_pty_input_command_json :: proc(command_id, instance_id, data: string) -> s
 	strings.write_string(&b, "\"}")
 	return strings.to_string(b)
 }
+
+shell_pty_input_command_json :: agent_pty_input_command_json
 
 agent_service_send_pty_input :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, data: string) -> (bool, domain.Domain_Error) {
 	inst, ok, err := get_instance(service, auth, instance_id)
@@ -736,6 +740,53 @@ agent_service_send_pty_input :: proc(service: ^Agent_Service, auth: contracts.Au
 }
 
 send_pty_input :: agent_service_send_pty_input
+
+agent_pty_resize_command_json :: proc(command_id, instance_id: string, rows, cols: int) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_pty_resize\",\"command_id\":\"")
+	write_service_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"shell_id\":\"")
+	write_service_json_string(&b, instance_id)
+	strings.write_string(&b, "\",\"agent_instance_id\":\"")
+	write_service_json_string(&b, instance_id)
+	strings.write_string(&b, "\",\"rows\":")
+	strings.write_int(&b, rows)
+	strings.write_string(&b, ",\"cols\":")
+	strings.write_int(&b, cols)
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+shell_pty_resize_command_json :: agent_pty_resize_command_json
+
+agent_service_send_pty_resize :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, rows, cols: int) -> (bool, domain.Domain_Error) {
+	inst, ok, err := get_instance(service, auth, instance_id)
+	if !ok do return false, err
+
+	if strings.trim_space(inst.bridge_id) == "" {
+		return false, domain.domain_error(.Bridge_Offline, "agent instance has no bridge")
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_resize_")
+	}
+
+	cmd_json := agent_pty_resize_command_json(cmd_id, instance_id, rows, cols)
+	sent, send_err := project_service.bridge_command_send_runtime(
+		service.bridge_command_sink,
+		project_service.Runtime_Command{
+			bridge_id = inst.bridge_id,
+			command_id = cmd_id,
+			body_json = cmd_json,
+		},
+	)
+	if !sent do return false, send_err
+
+	return true, domain.Domain_Error{}
+}
+
+send_pty_resize :: agent_service_send_pty_resize
 
 reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := get_instance(service, auth, instance_id)

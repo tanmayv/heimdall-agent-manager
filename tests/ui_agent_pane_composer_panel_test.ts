@@ -72,7 +72,8 @@ assert.equal(
 );
 
 // REQ-INT-3: Interactive Terminal Integration & ANSI Color Support
-import { agentsApi, useSendAgentPaneInputMutation } from '../src/ui/api/endpoints/agents';
+// REQ-WINSIZE-3: Terminal render window dimensions and viewport resize synchronization
+import { agentsApi, useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } from '../src/ui/api/endpoints/agents';
 import * as xtermModule from '@xterm/xterm';
 import * as fitAddonModule from '@xterm/addon-fit';
 
@@ -80,7 +81,12 @@ console.log('Testing REQ-INT-3: sendAgentPaneInput API endpoint & hook...');
 assert.equal(typeof useSendAgentPaneInputMutation, 'function', 'useSendAgentPaneInputMutation hook must be exported');
 assert.ok(agentsApi.endpoints.sendAgentPaneInput, 'sendAgentPaneInput endpoint must exist on agentsApi');
 
-console.log('Testing REQ-INT-3: @xterm/xterm Terminal & ANSI color rendering...');
+console.log('Testing REQ-WINSIZE-3: sendAgentPaneResize API endpoint & hook...');
+assert.equal(typeof useSendAgentPaneResizeMutation, 'function', 'useSendAgentPaneResizeMutation hook must be exported');
+assert.ok(agentsApi.endpoints.sendAgentPaneResize, 'sendAgentPaneResize endpoint must exist on agentsApi');
+assert.equal(typeof agentsApi.endpoints.sendAgentPaneResize.initiate, 'function', 'sendAgentPaneResize must have initiate function');
+
+console.log('Testing REQ-INT-3 & REQ-WINSIZE-3: @xterm/xterm Terminal & ANSI color rendering...');
 const TerminalClass = (xtermModule.Terminal || (xtermModule as any).default?.Terminal || (xtermModule as any).default);
 const FitAddonClass = (fitAddonModule.FitAddon || (fitAddonModule as any).default?.FitAddon || (fitAddonModule as any).default);
 
@@ -105,8 +111,20 @@ testTerminal.input('ls -la\r');
 assert.equal(capturedInput, 'ls -la\r', 'Terminal onData must capture input keystrokes');
 disposable.dispose();
 
+// Verify terminal onResize listener and dimension updates (REQ-WINSIZE-3)
+let capturedResize: { cols: number; rows: number } | null = null;
+const resizeDisposable = testTerminal.onResize((e: { cols: number; rows: number }) => {
+  capturedResize = { cols: e.cols, rows: e.rows };
+});
+
+testTerminal.resize(110, 25);
+assert.deepEqual(capturedResize, { cols: 110, rows: 25 }, 'Terminal onResize must fire with new cols and rows');
+assert.equal(testTerminal.cols, 110, 'Terminal cols must update to 110');
+assert.equal(testTerminal.rows, 25, 'Terminal rows must update to 25');
+resizeDisposable.dispose();
+
 // Verify auto-scroll to bottom
 assert.equal(typeof testTerminal.scrollToBottom, 'function', 'Terminal must support scrollToBottom');
 testTerminal.scrollToBottom();
 
-console.log('ALL COMPOSER PANEL & INTERACTIVE TERMINAL TESTS PASSED (REQ-PANE-4, REQ-PANE-5, REQ-INT-3)');
+console.log('ALL COMPOSER PANEL & INTERACTIVE TERMINAL TESTS PASSED (REQ-PANE-4, REQ-PANE-5, REQ-INT-3, REQ-WINSIZE-3)');

@@ -324,6 +324,68 @@ bridge_pty_host_deliver_raw_input :: proc{
 	bridge_pty_host_deliver_raw_input_socket_string,
 }
 
+// bridge_pty_host_deliver_resize delivers a window resize request directly to the
+// agent's PTY and VT screen model via CtlMsg::Resize to the ham-pty-host daemon socket.
+bridge_pty_host_deliver_resize_socket :: proc(socket, instance: string, rows, cols: u16) -> bool {
+	if strings.trim_space(socket) == "" || strings.trim_space(instance) == "" || rows == 0 || cols == 0 do return false
+	frame := pty_host_encode_resize(instance, rows, cols)
+	defer delete(frame)
+	return bridge_pty_host_send_oneway(socket, frame)
+}
+
+bridge_pty_host_deliver_resize_default :: proc(instance: string, rows, cols: u16) -> bool {
+	if strings.trim_space(instance) == "" || rows == 0 || cols == 0 do return false
+	socket, ok := bridge_pty_host_ensure_daemon()
+	if !ok do return false
+	return bridge_pty_host_deliver_resize_socket(socket, instance, rows, cols)
+}
+
+bridge_pty_host_deliver_resize :: proc{
+	bridge_pty_host_deliver_resize_default,
+	bridge_pty_host_deliver_resize_socket,
+}
+
+// bridge_pty_host_deliver_shell_input delivers raw input bytes directly to a shell's
+// PTY stdin via CtlMsg::Input to the ham-pty-host daemon socket.
+bridge_pty_host_deliver_shell_input_string :: proc(shell_id: string, data: string) -> bool {
+	return bridge_pty_host_deliver_raw_input(shell_id, data)
+}
+
+bridge_pty_host_deliver_shell_input_bytes :: proc(shell_id: string, data: []byte) -> bool {
+	return bridge_pty_host_deliver_raw_input(shell_id, data)
+}
+
+bridge_pty_host_deliver_shell_input_socket_string :: proc(socket, shell_id: string, data: string) -> bool {
+	return bridge_pty_host_deliver_raw_input(socket, shell_id, data)
+}
+
+bridge_pty_host_deliver_shell_input_socket_bytes :: proc(socket, shell_id: string, data: []byte) -> bool {
+	return bridge_pty_host_deliver_raw_input(socket, shell_id, data)
+}
+
+bridge_pty_host_deliver_shell_input :: proc{
+	bridge_pty_host_deliver_shell_input_string,
+	bridge_pty_host_deliver_shell_input_bytes,
+	bridge_pty_host_deliver_shell_input_socket_string,
+	bridge_pty_host_deliver_shell_input_socket_bytes,
+}
+
+// bridge_pty_host_deliver_shell_resize delivers a window resize request directly to a
+// shell's PTY and VT screen model via CtlMsg::Resize to the ham-pty-host daemon socket.
+bridge_pty_host_deliver_shell_resize_default :: proc(shell_id: string, rows, cols: u16) -> bool {
+	return bridge_pty_host_deliver_resize(shell_id, rows, cols)
+}
+
+bridge_pty_host_deliver_shell_resize_socket :: proc(socket, shell_id: string, rows, cols: u16) -> bool {
+	return bridge_pty_host_deliver_resize(socket, shell_id, rows, cols)
+}
+
+bridge_pty_host_deliver_shell_resize :: proc{
+	bridge_pty_host_deliver_shell_resize_default,
+	bridge_pty_host_deliver_shell_resize_socket,
+}
+
+
 // bridge_pty_host_message_notice renders the agent_message notice text (pure, so
 // it is unit-testable). Mirrors the wrapper's wrapper_bridge_deliver_message_push.
 bridge_pty_host_message_notice :: proc(sender: string) -> string {

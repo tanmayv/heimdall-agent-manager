@@ -1,4 +1,4 @@
-package hub_agent_instance_input_test
+package hub_agent_instance_resize_test
 
 import "core:fmt"
 import "core:os"
@@ -59,7 +59,7 @@ request :: proc(graph: ^app.App_Graph, method, target, body: string, headers: []
 		path = path,
 		query = query,
 		body = body,
-		request_id = "req_input_test",
+		request_id = "req_resize_test",
 		remote_addr = "127.0.0.1",
 		headers = headers,
 	})
@@ -82,7 +82,7 @@ extract_json_string :: proc(body, key: string) -> string {
 }
 
 main :: proc() {
-	db_path := "/tmp/heimdall-hub-input-test.db"
+	db_path := "/tmp/heimdall-hub-resize-test.db"
 	_ = os.remove(db_path)
 
 	cidrs := [?]string{"127.0.0.1/32"}
@@ -136,49 +136,55 @@ main :: proc() {
 	inst_id := extract_json_string(inst_res.body, "agent_instance_id")
 	check(inst_id != "", "inst_id must not be empty")
 
-	input_path := strings.concatenate({"/api/v1/agent-instances/", inst_id, "/input"})
+	resize_path := strings.concatenate({"/api/v1/agent-instances/", inst_id, "/resize"})
 
 	// 1. Unauthenticated request must return 401
-	unauth_res := request(&graph, "POST", input_path, "{\"data\":\"ls -la\\n\"}", nil)
+	unauth_res := request(&graph, "POST", resize_path, "{\"rows\":25,\"cols\":110}", nil)
 	check(unauth_res.status == 401, strings.concatenate({"unauthenticated request must return 401, got: ", fmt.tprintf("%d", unauth_res.status)}))
 
 	// 2. Bare bridge token caller must be rejected with 403
 	bridge_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_token})}}
-	bridge_res := request(&graph, "POST", input_path, "{\"data\":\"ls -la\\n\"}", bridge_headers[:])
+	bridge_res := request(&graph, "POST", resize_path, "{\"rows\":25,\"cols\":110}", bridge_headers[:])
 	check(bridge_res.status == 403, strings.concatenate({"bridge caller must return 403, got: ", fmt.tprintf("%d", bridge_res.status)}))
 
 	// 3. Cross-user request (bob) must return 404 (ownership check)
-	cross_res := request(&graph, "POST", input_path, "{\"data\":\"ls -la\\n\"}", bob[:])
+	cross_res := request(&graph, "POST", resize_path, "{\"rows\":25,\"cols\":110}", bob[:])
 	check(cross_res.status == 404, strings.concatenate({"cross-user request must return 404, got: ", fmt.tprintf("%d", cross_res.status)}))
 
 	// 4. Non-existent instance must return 404
-	non_existent_path := "/api/v1/agent-instances/inst_doesnotexist/input"
-	non_exist_res := request(&graph, "POST", non_existent_path, "{\"data\":\"ls -la\\n\"}", alice[:])
+	non_existent_path := "/api/v1/agent-instances/inst_doesnotexist/resize"
+	non_exist_res := request(&graph, "POST", non_existent_path, "{\"rows\":25,\"cols\":110}", alice[:])
 	check(non_exist_res.status == 404, strings.concatenate({"non-existent instance must return 404, got: ", fmt.tprintf("%d", non_exist_res.status)}))
 
-	// 5. Valid authenticated request from alice: sends agent_pty_input runtime command to bridge
+	// 5. Invalid parameters: rows < 1 must return 400
+	bad_rows_res := request(&graph, "POST", resize_path, "{\"rows\":0,\"cols\":110}", alice[:])
+	check(bad_rows_res.status == 400, strings.concatenate({"zero rows must return 400, got: ", fmt.tprintf("%d", bad_rows_res.status)}))
+
+	// 6. Invalid parameters: cols < 1 must return 400
+	bad_cols_res := request(&graph, "POST", resize_path, "{\"rows\":25,\"cols\":0}", alice[:])
+	check(bad_cols_res.status == 400, strings.concatenate({"zero cols must return 400, got: ", fmt.tprintf("%d", bad_cols_res.status)}))
+
+	// 7. Valid authenticated request from alice: sends agent_pty_resize runtime command to bridge
 	mock_bridge_call_count = 0
-	valid_res := request(&graph, "POST", input_path, "{\"data\":\"ls -la\\n\"}", alice[:])
-	check(valid_res.status == 200, strings.concatenate({"valid input request must return 200, got: ", fmt.tprintf("%d body=%s", valid_res.status, valid_res.body)}))
+	valid_res := request(&graph, "POST", resize_path, "{\"rows\":25,\"cols\":110}", alice[:])
+	check(valid_res.status == 200, strings.concatenate({"valid resize request must return 200, got: ", fmt.tprintf("%d body=%s", valid_res.status, valid_res.body)}))
 	check(mock_bridge_call_count == 1, "mock bridge must be called exactly once")
 	check(last_received_command.bridge_id == bridge_id, "bridge_id must match target instance bridge")
-	check(strings.contains(last_received_command.body_json, "\"type\":\"shell_pty_input\"") || strings.contains(last_received_command.body_json, "\"type\":\"agent_pty_input\""), "command must have type shell_pty_input or agent_pty_input")
+	check(strings.contains(last_received_command.body_json, "\"type\":\"shell_pty_resize\"") || strings.contains(last_received_command.body_json, "\"type\":\"agent_pty_resize\""), "command must have type shell_pty_resize or agent_pty_resize")
 	check(strings.contains(last_received_command.body_json, strings.concatenate({"\"shell_id\":\"", inst_id, "\""})), "command must have shell_id")
 	check(strings.contains(last_received_command.body_json, strings.concatenate({"\"agent_instance_id\":\"", inst_id, "\""})), "command must have agent_instance_id")
-	check(strings.contains(last_received_command.body_json, "\"data\":\"ls -la\\n\""), "command must pass data payload")
+	check(strings.contains(last_received_command.body_json, "\"rows\":25"), "command must pass rows payload")
+	check(strings.contains(last_received_command.body_json, "\"cols\":110"), "command must pass cols payload")
 	check(strings.contains(valid_res.body, "\"ok\":true"), "response must contain ok: true")
 
-	// 6. Valid keystrokes with control characters (e.g. Ctrl+C)
-	mock_bridge_call_count = 0
-	ctrl_c_res := request(&graph, "POST", input_path, "{\"data\":\"\\u0003\"}", alice[:])
-	check(ctrl_c_res.status == 200, "ctrl_c input request must return 200")
-	check(mock_bridge_call_count == 1, "mock bridge must be called")
-	check(strings.contains(last_received_command.body_json, "\\u0003"), "command must escape control character 0x03")
+	// 8. Verify POST /input and GET /pane endpoints are NOT broken
+	input_path := strings.concatenate({"/api/v1/agent-instances/", inst_id, "/input"})
+	input_res := request(&graph, "POST", input_path, "{\"data\":\"ls -la\\n\"}", alice[:])
+	check(input_res.status == 200, "input endpoint must continue to work")
 
-	// 7. Verify GET /api/v1/agent-instances/{id}/pane is NOT broken
 	pane_path := strings.concatenate({"/api/v1/agent-instances/", inst_id, "/pane"})
 	pane_res := request(&graph, "GET", pane_path, "", alice[:])
 	check(pane_res.status == 200, "pane endpoint must continue to work")
 
-	fmt.println("PASS: hub agent instance input endpoint (REQ-INT-2)")
+	fmt.println("PASS: hub agent instance resize endpoint (REQ-WINSIZE-2)")
 }

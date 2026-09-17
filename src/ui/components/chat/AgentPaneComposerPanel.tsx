@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Terminal as TerminalType } from '@xterm/xterm';
 import type { FitAddon as FitAddonType } from '@xterm/addon-fit';
 import * as xtermModule from '@xterm/xterm';
@@ -10,7 +10,7 @@ const Terminal = (xtermObj.Terminal || xtermObj['default']?.Terminal || xtermObj
 const fitAddonObj = fitAddonModule as Record<string, any>;
 const FitAddon = (fitAddonObj.FitAddon || fitAddonObj['default']?.FitAddon || fitAddonObj['default']) as typeof FitAddonType;
 import { useAgentPaneSubscription } from '../../hooks/useAgentPaneSubscription';
-import { useSendAgentPaneInputMutation } from '../../api/endpoints/agents';
+import { useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } from '../../api/endpoints/agents';
 import Icon from '../Icon';
 
 // Dynamically import xterm CSS in browser environment so Node/tsx tests don't fail on CSS syntax
@@ -37,6 +37,11 @@ export function AgentPaneComposerPanel({
   runtimeStatus,
   className = '',
 }: AgentPaneComposerPanelProps) {
+  const [terminalDimensions, setTerminalDimensions] = useState<{ cols: number; rows: number }>({
+    cols: 80,
+    rows: 120,
+  });
+
   const {
     output,
     isLoading,
@@ -47,9 +52,12 @@ export function AgentPaneComposerPanel({
     isExpanded,
     isActiveTab,
     runtimeStatus,
+    width: terminalDimensions.cols,
+    lineLimit: terminalDimensions.rows,
   });
 
   const [sendAgentPaneInput] = useSendAgentPaneInputMutation();
+  const [sendAgentPaneResize] = useSendAgentPaneResizeMutation();
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<TerminalType | null>(null);
@@ -131,11 +139,36 @@ export function AgentPaneComposerPanel({
       }
     });
 
-    // Initial fit with frame delay for container layout
-    const timer = setTimeout(() => {
+    // Terminal resize hook: dispatch to sendAgentPaneResize and update dimensions
+    const resizeDisposable = term.onResize(({ cols, rows }) => {
+      const targetId = agentInstanceIdRef.current;
+      if (targetId) {
+        sendAgentPaneResize({ agentInstanceId: targetId, rows, cols }).catch(() => {});
+      }
+      setTerminalDimensions({ cols, rows });
+    });
+
+    const dispatchResize = () => {
       try {
         fitAddon.fit();
+        const targetId = agentInstanceIdRef.current;
+        if (targetId && term.rows > 0 && term.cols > 0) {
+          sendAgentPaneResize({
+            agentInstanceId: targetId,
+            rows: term.rows,
+            cols: term.cols,
+          }).catch(() => {});
+          setTerminalDimensions({ cols: term.cols, rows: term.rows });
+        }
       } catch (e) {}
+    };
+
+    // Dispatch initial resize immediately after initial fitAddon.fit() on mount/expansion
+    dispatchResize();
+
+    // Initial fit with frame delay for container layout
+    const timer = setTimeout(() => {
+      dispatchResize();
     }, 10);
 
     const resizeObserver = new ResizeObserver(() => {
@@ -144,6 +177,15 @@ export function AgentPaneComposerPanel({
       } catch (e) {}
     });
     resizeObserver.observe(container);
+
+    const handleWindowResize = () => {
+      try {
+        fitAddon.fit();
+      } catch (e) {}
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('resize', handleWindowResize);
+    }
 
     // Initial write if output already present
     if (output) {
@@ -159,15 +201,19 @@ export function AgentPaneComposerPanel({
     }
 
     return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('resize', handleWindowResize);
+      }
       clearTimeout(timer);
       resizeObserver.disconnect();
       dataDisposable.dispose();
+      resizeDisposable.dispose();
       term.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       lastWrittenOutputRef.current = '';
     };
-  }, [isExpanded, sendAgentPaneInput]);
+  }, [isExpanded, sendAgentPaneInput, sendAgentPaneResize]);
 
   // Feed incoming ANSI output into terminal
   useEffect(() => {
