@@ -1859,7 +1859,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
       {/* Subtle Bottom Agent Name Pill */}
       {isMobile && !chromeVisible ? (
-        <div className="fixed bottom-3 inset-x-0 flex justify-center z-30 pointer-events-none">
+        <div className="fixed bottom-9 inset-x-0 flex justify-center z-30 pointer-events-none">
           <button
             type="button"
             data-debug-id="conversation-floating-agent-pill"

@@ -9,7 +9,7 @@ Requirements covered:
   composer bottom bar (translate-y-full) with smooth transitions (duration-300 ease-in-out)
 - REQ-MOBILE-SCROLL-FLOATING-TOGGLE: Floating button at top-right (fixed top-2.5 right-2.5 z-30)
   when chrome is hidden and right panel is closed
-- REQ-MOBILE-SCROLL-COMPOSER-AGENT-PILL: Bottom agent name pill (fixed bottom-3 inset-x-0 flex justify-center z-30)
+- REQ-MOBILE-SCROLL-COMPOSER-AGENT-PILL: Bottom agent name pill (fixed bottom-9 inset-x-0 flex justify-center z-30)
   when composer is hidden to open agent picker
 - REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= TOP_MARGIN = 60) or bottom (distanceToBottom <= BOTTOM_MARGIN = 100) of transcript
 - REQ-SCROLL-BOUNDARY-2: Validate boundary chrome restore, test suite execution, and clean git push
@@ -159,8 +159,8 @@ def test_floating_toggle_button():
 def test_bottom_agent_pill():
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
-    require("fixed bottom-3 inset-x-0 flex justify-center z-30" in src,
-            "Bottom agent pill must be rendered at fixed bottom-3 inset-x-0 flex justify-center z-30")
+    require("fixed bottom-9 inset-x-0 flex justify-center z-30" in src,
+            "Bottom agent pill must be rendered at fixed bottom-9 inset-x-0 flex justify-center z-30")
     require("bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200" in src,
             "Bottom agent pill must match required styling")
     require("onClick={() => setAgentPickerOpen(true)}" in src,
