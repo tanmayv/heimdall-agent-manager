@@ -23,8 +23,19 @@ export async function cookieJsonFetch(path: string): Promise<any> {
     } catch (e) {}
     throw new Error(msg);
   }
-  const body = await res.json();
-  return body?.data !== undefined ? body.data : body;
+  let rawText: string;
+  try {
+    rawText = await res.text();
+  } catch (e) {
+    throw new Error(`Failed to read response body for ${path}`);
+  }
+  try {
+    const body = JSON.parse(rawText);
+    return body?.data !== undefined ? body.data : body;
+  } catch (e) {
+    console.error('[cookieJsonFetch] JSON parse error for', path, '— raw body (first 500 chars):', rawText.slice(0, 500));
+    throw new Error(`JSON parse failed for ${path}: ${(e as Error).message}`);
+  }
 }
 
 // Like cookieJsonFetch but returns the FULL response envelope ({data, page, meta})

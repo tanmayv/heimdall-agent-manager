@@ -1847,6 +1847,7 @@ bridge_hub_hello_json :: proc() -> string {
 bridge_runtime_features_json :: proc() -> string { return "[\"capture_agent_pane\",\"get_agent_pane\"]" }
 
 bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
+	logged_ctrl := false
 	for ch in value {
 		switch ch {
 		case '\\': strings.write_string(b, "\\\\")
@@ -1854,7 +1855,16 @@ bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
 		case '\n': strings.write_string(b, "\\n")
 		case '\r': strings.write_string(b, "\\r")
 		case '\t': strings.write_string(b, "\\t")
-		case: strings.write_rune(b, ch)
+		case:
+			if ch < 32 {
+				if !logged_ctrl {
+					fmt.eprintln("bridge_runtime_write_json_string: escaping control char(s); first=", fmt.tprintf("\\u%04x", u32(ch)), "in payload len=", len(value))
+					logged_ctrl = true
+				}
+				strings.write_string(b, fmt.tprintf("\\u%04x", u32(ch)))
+			} else {
+				strings.write_rune(b, ch)
+			}
 		}
 	}
 }
