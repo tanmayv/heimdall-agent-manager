@@ -13,11 +13,6 @@ import { useAgentPaneSubscription } from '../../hooks/useAgentPaneSubscription';
 import { useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } from '../../api/endpoints/agents';
 import Icon from '../Icon';
 
-// Dynamically import xterm CSS in browser environment so Node/tsx tests don't fail on CSS syntax
-if (typeof window !== 'undefined') {
-  import('@xterm/xterm/css/xterm.css');
-}
-
 export interface AgentPaneComposerPanelProps {
   agentInstanceId?: string | null;
   isExpanded: boolean;
@@ -150,7 +145,13 @@ export function AgentPaneComposerPanel({
 
     const dispatchResize = () => {
       try {
-        fitAddon.fit();
+        if (container.clientWidth > 0 && container.clientHeight > 0) {
+          fitAddon.fit();
+          // Guarantee minimum usable dimensions if fit produced 0 cols/rows
+          if (term.cols === 0 || term.rows === 0) {
+            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
+          }
+        }
         const targetId = agentInstanceIdRef.current;
         if (targetId && term.rows > 0 && term.cols > 0) {
           sendAgentPaneResize({
@@ -166,21 +167,31 @@ export function AgentPaneComposerPanel({
     // Dispatch initial resize immediately after initial fitAddon.fit() on mount/expansion
     dispatchResize();
 
-    // Initial fit with frame delay for container layout
+    // Initial fit with frame delay for container layout (animation may not be settled yet)
     const timer = setTimeout(() => {
       dispatchResize();
-    }, 10);
+    }, 150);
 
     const resizeObserver = new ResizeObserver(() => {
       try {
-        fitAddon.fit();
+        if (container.clientWidth > 0 && container.clientHeight > 0) {
+          fitAddon.fit();
+          if (term.cols === 0 || term.rows === 0) {
+            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
+          }
+        }
       } catch (e) {}
     });
     resizeObserver.observe(container);
 
     const handleWindowResize = () => {
       try {
-        fitAddon.fit();
+        if (container.clientWidth > 0 && container.clientHeight > 0) {
+          fitAddon.fit();
+          if (term.cols === 0 || term.rows === 0) {
+            term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
+          }
+        }
       } catch (e) {}
     };
     if (typeof window !== 'undefined') {
