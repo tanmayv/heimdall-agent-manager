@@ -74,11 +74,13 @@ def test_2column_layout_structure() -> None:
 def test_topbar_breadcrumb() -> None:
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
-    # Breadcrumb container with text-sm font-medium
+    # Breadcrumb container matching icon font size (16px)
     require('data-debug-id="conversation-thread-breadcrumb"' in src,
             "Col 1 top bar must render breadcrumb with data-debug-id='conversation-thread-breadcrumb'")
-    require("text-sm font-medium" in src,
-            "Breadcrumb must use text-sm font-medium styling matching icon height (~16px)")
+    require("font-medium" in src,
+            "Breadcrumb must use font-medium styling")
+    require("text-[16px]" in src or "text-base" in src,
+            "Breadcrumb must match icon font size (16px)")
 
     # Breadcrumb components: project, slash separator, and chain/conversation title
     require('data-debug-id="conversation-breadcrumb-project"' in src,

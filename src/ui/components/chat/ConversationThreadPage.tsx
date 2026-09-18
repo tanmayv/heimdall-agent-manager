@@ -1823,10 +1823,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
               </div>
             ) : (
-              <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+              <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-[16px] font-medium">
                 <span data-debug-id="conversation-breadcrumb-project" className="truncate text-zinc-400">{projectName || 'Project'}</span>
                 <span className="shrink-0 text-zinc-600">/</span>
-                <h2 data-debug-id="conversation-thread-title" className="truncate text-sm font-medium text-white">{chainTitle || title}</h2>
+                <h2 data-debug-id="conversation-thread-title" className="truncate text-[16px] font-medium text-white">{chainTitle || title}</h2>
               </div>
             )}
             {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
