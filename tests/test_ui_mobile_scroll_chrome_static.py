@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Static verification guard for mobile scroll hide/reveal, smooth transitions,
-persistent floating toggle, bottom agent pill, and True Overlay Architecture
-for invariant transcript clientHeight (REQ-OVERLAY-1 to REQ-OVERLAY-5).
+persistent floating toggle, bottom agent pill, True Overlay Architecture
+for invariant transcript clientHeight (REQ-OVERLAY-1 to REQ-OVERLAY-5),
+and explicit DOM spacer clearance with tap-to-appear composer (REQ-SPACER-1 to REQ-SPACER-4).
 
 Requirements covered:
 - REQ-MOBILE-SCROLL-1: ChatMessageList forwards onScroll event to ConversationThreadPage
@@ -15,16 +16,19 @@ Requirements covered:
   No max-h-0 or py-0 collapsing.
 - REQ-OVERLAY-3: Mobile transcript container and chat pane remain permanent full-height (h-full w-full)
   on mobile with invariant clientHeight.
-- REQ-OVERLAY-4: ChatMessageList mobile scroll container has fixed pt-16 (to clear 56px header overlay)
-  and pb-44 (to clear floating composer and tab bar) clearances.
+- REQ-OVERLAY-4: ChatMessageList mobile scroll container has fixed top padding pt-16 (to clear 56px header overlay).
 - REQ-OVERLAY-5: RouteOutlet for isConversationThreadRoute no longer adds dynamic pb-16 on mobile;
   MobileTabBar uses CSS transform translate-y-full when scrollChromeSuppressed is true instead of unmounting or changing layout dimensions.
+- REQ-SPACER-1: ChatMessageList contains explicit DOM spacer element (<div data-debug-id="...-mobile-bottom-spacer" className="h-80 shrink-0 sm:hidden" aria-hidden="true" />)
+  and pb-4 clearance for mobile.
+- REQ-SPACER-2: handleTranscriptScroll removes isAtBottom auto-restore so scrolling down keeps full-screen reading mode uninterrupted.
+- REQ-SPACER-3: Floating reply pill rendered when mobile chrome is hidden to allow tap-to-appear composer.
+- REQ-SPACER-4: Automated static test suite, build verification, and push to origin/main.
 - REQ-MOBILE-SCROLL-FLOATING-TOGGLE: Floating button at top-right (fixed top-2.5 right-2.5 z-30)
   when chrome is hidden and right panel is closed.
 - REQ-MOBILE-SCROLL-COMPOSER-AGENT-PILL: Bottom agent name pill (fixed bottom-9 inset-x-0 flex justify-center z-30)
   when composer is hidden to open agent picker.
-- REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= TOP_MARGIN = 60)
-  or bottom (distanceToBottom <= BOTTOM_MARGIN = 100) of transcript without oscillation.
+- REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= TOP_MARGIN = 60) of transcript.
 - REQ-SCROLL-BOUNDARY-2: Validate boundary chrome restore, test suite execution, and clean git push.
 """
 from pathlib import Path
@@ -51,6 +55,14 @@ def test_chat_message_list_on_scroll():
             "ChatMessageList must bind onScroll to the scrollable container div")
 
 
+def test_chat_message_list_mobile_bottom_spacer():
+    src = CHAT_LIST_FILE.read_text(encoding="utf-8")
+    require('<div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-80 shrink-0 sm:hidden" aria-hidden="true" />' in src,
+            "ChatMessageList must contain explicit DOM spacer with debugPrefix-mobile-bottom-spacer and h-80 shrink-0 sm:hidden")
+    require("pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4" in src,
+            "ChatMessageList default scrollClassName must use pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4")
+
+
 def test_conversation_thread_page_scroll_tracking():
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
@@ -71,14 +83,14 @@ def test_conversation_thread_page_scroll_tracking():
             "handleTranscriptScroll must return early if !isMobile")
     require("const TOP_MARGIN = 60;" in src,
             "handleTranscriptScroll must define TOP_MARGIN = 60")
-    require("const BOTTOM_MARGIN = 100;" in src,
-            "handleTranscriptScroll must define BOTTOM_MARGIN = 100")
     require("const isAtTop = currentTop <= TOP_MARGIN;" in src,
             "handleTranscriptScroll must compute isAtTop using currentTop <= TOP_MARGIN")
-    require("const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;" in src,
-            "handleTranscriptScroll must compute isAtBottom using distanceToBottom <= BOTTOM_MARGIN")
-    require("if (isAtTop || isAtBottom)" in src,
-            "handleTranscriptScroll must restore chrome on boundary reaching top or bottom")
+    require("isAtBottom" not in src,
+            "handleTranscriptScroll must remove isAtBottom auto-restore so scrolling down keeps full-screen reading mode")
+    require("BOTTOM_MARGIN" not in src,
+            "handleTranscriptScroll must not define BOTTOM_MARGIN")
+    require("if (isAtTop)" in src,
+            "handleTranscriptScroll must restore chrome on boundary reaching top")
     require("restoreChrome();\n        lastScrollTopRef.current = currentTop;\n        return;" in src,
             "handleTranscriptScroll must call restoreChrome() and update lastScrollTopRef on boundary")
     require("Math.abs(delta) > 8" in src,
@@ -89,8 +101,8 @@ def test_conversation_thread_page_scroll_tracking():
     # Forwarding prop and clearances
     require("onScroll={handleTranscriptScroll}" in src,
             "ChatMessageList must receive onScroll={handleTranscriptScroll}")
-    require("pt-16 pb-44" in src,
-            "ChatMessageList scrollClassName must include pt-16 pb-44 clearances for overlays")
+    require("pt-16 pb-4" in src,
+            "ChatMessageList scrollClassName must include pt-16 pb-4 clearances")
 
     # Typing and focus restore
     require("restoreChrome" in src,
@@ -182,8 +194,10 @@ def test_floating_toggle_button():
 def test_bottom_agent_pill():
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
-    require("fixed bottom-9 inset-x-0 flex justify-center z-30" in src,
-            "Bottom agent pill must be rendered at fixed bottom-9 inset-x-0 flex justify-center z-30")
+    require("fixed bottom-9 inset-x-0 flex justify-center" in src and "items-center gap-2 z-30 pointer-events-none" in src,
+            "Bottom floating pills container must be rendered at fixed bottom-9 inset-x-0 flex justify-center items-center gap-2 z-30 pointer-events-none")
+    require('data-debug-id="conversation-floating-agent-pill"' in src,
+            "Bottom agent pill must have data-debug-id='conversation-floating-agent-pill'")
     require("bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200" in src,
             "Bottom agent pill must match required styling")
     require("onClick={() => setAgentPickerOpen(true)}" in src,
@@ -192,11 +206,26 @@ def test_bottom_agent_pill():
             "Bottom agent pill must show chevron-down icon")
 
 
+def test_floating_reply_pill():
+    src = CONVERSATION_FILE.read_text(encoding="utf-8")
+
+    require('data-debug-id="conversation-floating-reply-pill"' in src,
+            "ConversationThreadPage must render floating reply pill with data-debug-id='conversation-floating-reply-pill'")
+    require("restoreChrome();" in src and "textareaRef.current?.focus();" in src,
+            "Floating reply pill onClick must restore chrome and focus textareaRef")
+    require('aria-label="Reply"' in src and 'title="Reply"' in src,
+            "Floating reply pill must have Reply accessibility attributes")
+    require("Reply" in src,
+            "Floating reply pill must display 'Reply' label")
+
+
 if __name__ == "__main__":
     test_chat_message_list_on_scroll()
+    test_chat_message_list_mobile_bottom_spacer()
     test_conversation_thread_page_scroll_tracking()
     test_transitions_and_classes()
     test_app_shell_and_mobile_tab_bar()
     test_floating_toggle_button()
     test_bottom_agent_pill()
-    print("PASS: True Overlay Architecture static verification (REQ-OVERLAY-1 to REQ-OVERLAY-5)")
+    test_floating_reply_pill()
+    print("PASS: Mobile scroll chrome and DOM spacer verification (REQ-OVERLAY-1..5, REQ-SPACER-1..4)")

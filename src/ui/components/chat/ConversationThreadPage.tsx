@@ -745,14 +745,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       if (!isMobile) return;
 
       const TOP_MARGIN = 60;
-      const BOTTOM_MARGIN = 100;
       const target = event.currentTarget;
       const currentTop = target.scrollTop;
-      const distanceToBottom = target.scrollHeight - currentTop - target.clientHeight;
       const isAtTop = currentTop <= TOP_MARGIN;
-      const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;
 
-      if (isAtTop || isAtBottom) {
+      if (isAtTop) {
         restoreChrome();
         lastScrollTopRef.current = currentTop;
         return;
@@ -1865,9 +1862,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </button>
       ) : null}
 
-      {/* Subtle Bottom Agent Name Pill */}
+      {/* Subtle Bottom Floating Pills */}
       {isMobile && !chromeVisible ? (
-        <div className="fixed bottom-9 inset-x-0 flex justify-center z-30 pointer-events-none">
+        <div className="fixed bottom-9 inset-x-0 flex justify-center items-center gap-2 z-30 pointer-events-none">
           <button
             type="button"
             data-debug-id="conversation-floating-agent-pill"
@@ -1878,6 +1875,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           >
             <span className="max-w-[160px] truncate">{agentDisplayName || agentInstanceId || 'Agent'}</span>
             <Icon name="chevron-down" size={13} />
+          </button>
+          <button
+            type="button"
+            data-debug-id="conversation-floating-reply-pill"
+            aria-label="Reply"
+            title="Reply"
+            onClick={() => {
+              restoreChrome();
+              textareaRef.current?.focus();
+            }}
+            className="pointer-events-auto bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200"
+          >
+            Reply
           </button>
         </div>
       ) : null}
@@ -1908,7 +1918,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               agentIsWorking={isWorking}
               renderMessageBody={({ message }) => renderConversationMessageBody(message)}
               wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-              scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-44 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+              scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
               emptyState={messagesQuery.isFetching ? (
                 <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-zinc-500">Loading messages…</div>
               ) : (
