@@ -88,11 +88,12 @@ export type PaletteAction = {
   label: string;
   hint?: string;
   icon?: IconName;
+  route?: string;
 };
 
 export type PaletteResult =
   | { kind: 'navigate'; label: string; hint?: string; icon?: IconName; route: string; group: 'Navigate' }
-  | { kind: 'action'; label: string; hint?: string; icon?: IconName; actionId: string; group: 'Actions' }
+  | { kind: 'action'; label: string; hint?: string; icon?: IconName; actionId: string; route?: string; group: 'Actions' }
   | { kind: 'conversation'; label: string; hint?: string; route: string; group: string; convo: PaletteConversation }
   | { kind: 'entity'; label: string; hint?: string; hit: SearchHit; group: string; route?: string };
 
@@ -105,7 +106,6 @@ function convoDot(convo: PaletteConversation): { tone: Parameters<typeof StatusD
 }
 
 const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
-  { label: 'New conversation', icon: 'plus', route: '/conversations/new' },
   { label: 'Conversations', icon: 'chat', route: '/conversations' },
   { label: 'Actions', icon: 'clock', route: '/actions' },
   { label: 'Projects', icon: 'grid', route: '/projects' },
@@ -113,13 +113,14 @@ const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
   { label: 'Memory', icon: 'spark', route: '/memory' },
   { label: 'Task Chains', icon: 'tasks', route: '/chains' },
   { label: 'Library', icon: 'device', route: '/library' },
-  { label: 'Settings', icon: 'gear', route: '/settings' },
+  { label: 'Settings', icon: 'gear', route: '/settings/bridges' },
 ];
 
 const DEFAULT_ACTIONS: PaletteAction[] = [
-  { id: 'new-chain', label: 'New task chain', icon: 'tasks', hint: 'Start a chain' },
-  { id: 'new-agent', label: 'New agent', icon: 'plus', hint: 'Create a durable identity' },
-  { id: 'new-project', label: 'New project', icon: 'grid', hint: 'Grouping + paths' },
+  { id: 'new-conversation', label: 'New conversation', icon: 'plus', hint: 'Start a new conversation', route: '/conversations/new' },
+  { id: 'new-agent', label: 'New agent', icon: 'bot', hint: 'Create a durable identity', route: '/agents/new' },
+  { id: 'new-chain', label: 'New task chain', icon: 'tasks', hint: 'Start a chain', route: '/chains' },
+  { id: 'new-project', label: 'New project', icon: 'grid', hint: 'Grouping + paths', route: '/projects' },
 ];
 
 // Search-call tuning (user-approved): a slightly longer debounce and a 2-char
@@ -284,7 +285,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
 
       const actionItems = q ? actions.filter((a) => matches(a.label, q)) : actions;
       if (actionItems.length) {
-        actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, icon: a.icon, actionId: a.id, group: 'Actions' }));
+        actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, icon: a.icon, actionId: a.id, route: a.route, group: 'Actions' }));
       }
     }
 
@@ -346,6 +347,9 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
         onClose();
       }
     } else if (result.kind === 'action') {
+      if (result.route) {
+        onNavigate(result.route);
+      }
       onAction?.(result.actionId);
       onClose();
     }

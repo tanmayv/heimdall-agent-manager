@@ -49,10 +49,9 @@ import {
   type RightSidebarTab,
 } from '../../utils/clientPersistence';
 import Icon from '../Icon';
-import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
-import CurrentTaskStrip from './CurrentTaskStrip';
+import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import AgentActivityBubbles from './AgentActivityBubbles';
-import { switchableTasksFor, taskRoleLabel, type TaskLike } from './chainTaskInference';
+import { type TaskLike } from './chainTaskInference';
 import { useIsMobile } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
@@ -439,7 +438,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [restartInstance, restartState] = useRestartAgentInstanceMutation();
   const [stopInstance, stopState] = useStopAgentInstanceMutation();
   const [createArtifact] = useCreateArtifactMutation();
-  const [setInstanceCurrentTask, setInstanceCurrentTaskState] = useSetInstanceCurrentTaskMutation();
 
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
   const agentInstanceId = String(conversation?.agent_instance_id || conversation?.agentInstanceId || routeInstanceId);
@@ -526,23 +524,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
   const activityStatus = String(instance?.activity_status || instance?.activityStatus || '').toLowerCase();
   const isWorking = runtimeStateFromStatus(runtimeStatus) === 'live' && (activityStatus === 'active' || activityStatus === 'busy' || activityStatus === 'working');
-  const chainTasks: TaskLike[] = useMemo(() => {
-    return (chainDetailQuery.data?.chain?.tasks || chainTasksQuery.data?.tasks || []) as TaskLike[];
-  }, [chainDetailQuery.data, chainTasksQuery.data]);
-
-  const currentTask: TaskLike | null = useMemo(() => {
-    const explicitTaskId = String(instance?.current_task_id || instance?.currentTaskId || '');
-    if (!explicitTaskId) return null;
-    return chainTasks.find((t: TaskLike) => String(t.taskId || (t as any).id || '') === explicitTaskId) || null;
-  }, [chainTasks, instance?.current_task_id, instance?.currentTaskId]);
-
-  const switchableTasks = useMemo(() => {
-    return switchableTasksFor(chainTasks, agentInstanceId);
-  }, [chainTasks, agentInstanceId]);
-
-  const taskRole = useMemo(() => {
-    return currentTask ? taskRoleLabel(currentTask, agentInstanceId, chainDetailQuery.data?.chain) : 'assignee';
-  }, [currentTask, agentInstanceId, chainDetailQuery.data?.chain]);
 
 
   // Bridges are near-static (label + provider/tier caps); no refetch on every
@@ -1536,29 +1517,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
             above the composer (co-located with the working indicator). */}
         <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
-        {currentTask ? (
-          <CurrentTaskStrip
-            task={currentTask}
-            chain={chainDetailQuery.data?.chain}
-            agentInstanceId={agentInstanceId}
-            role={taskRole}
-            debugPrefix="conversation"
-            switchableTasks={switchableTasks}
-            onSwitchCurrentTask={async (taskId) => {
-              if (!chainId || !agentInstanceId || !taskId) return;
-              try {
-                await setInstanceCurrentTask({ chainId, taskId, agentInstanceId }).unwrap();
-                void chainDetailQuery.refetch();
-                void instanceQuery.refetch();
-              } catch (err: any) {
-                setError(errMsg(err, 'Failed to switch current task'));
-              }
-            }}
-            onOpenTask={() => {
-              if (chainId) openRightPanel('tasks');
-            }}
-          />
-        ) : null}
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
         {attachments.length > 0 && (
           <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
