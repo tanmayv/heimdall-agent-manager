@@ -29,9 +29,9 @@ def test_static_checks() -> None:
     # 1. install.sh must configure providers.json
     require("providers.json" in install_txt, "scripts/install.sh must reference providers.json")
     require('"jetski"' in install_txt, "scripts/install.sh must preconfigure jetski provider")
-    require("Gemini 3.5 Flash" in install_txt, "scripts/install.sh must specify Gemini 3.5 Flash")
-    require("Gemini 3.7 Flash" in install_txt, "scripts/install.sh must specify Gemini 3.7 Flash")
-    require("Gemini 3.8 Flash" in install_txt, "scripts/install.sh must specify Gemini 3.8 Flash")
+    require('"cheap": "Gemini"' in install_txt, "scripts/install.sh must specify Gemini for cheap tier")
+    require('"normal": "Gemini"' in install_txt, "scripts/install.sh must specify Gemini for normal tier")
+    require('"smart": "Gemini"' in install_txt, "scripts/install.sh must specify Gemini for smart tier")
     require("chmod 0600" in install_txt, "scripts/install.sh must set 0600 permissions on providers.json")
 
     # 2. package-cloudtop-bundle.sh must pre-seed providers.json
@@ -88,14 +88,14 @@ def test_install_script_execution() -> None:
       "bootstrap_file_name": "AGENTS.md",
       "models": {{
         "flag": "--model",
-        "cheap": "Gemini 3.5 Flash",
-        "normal": "Gemini 3.7 Flash",
-        "smart": "Gemini 3.8 Flash"
+        "cheap": "Gemini",
+        "normal": "Gemini",
+        "smart": "Gemini"
       }},
       "startup_detection": {{
         "enabled": false,
-        "startup_probe_seconds": 0,
-        "capture_interval_ms": 0,
+        "startup_probe_seconds": 20,
+        "capture_interval_ms": 500,
         "blocked_patterns": [],
         "auto_enter_patterns": [],
         "auto_enter_pre_keys": [],
@@ -103,12 +103,12 @@ def test_install_script_execution() -> None:
         "sanitized_reason_mapping": []
       }},
       "activity_detection": {{
-        "enabled": true,
+        "enabled": false,
         "sample_line_count": 20,
         "ignore_bottom_lines": 0,
-        "check_interval_seconds": 15,
-        "min_gap_ms": 100,
-        "max_gap_ms": 500
+        "check_interval_seconds": 2,
+        "min_gap_ms": 250,
+        "max_gap_ms": 5000
       }}
     }}
   ]
@@ -134,9 +134,9 @@ PROVIDERSEOF
         require("/google/bin/releases/jetski-devs/tools/cli" in jetski.get("command", []), "Command must include jetski CLI")
         
         models = jetski.get("models", {})
-        require(models.get("cheap") == "Gemini 3.5 Flash", "Cheap tier must be Gemini 3.5 Flash")
-        require(models.get("normal") == "Gemini 3.7 Flash", "Normal tier must be Gemini 3.7 Flash")
-        require(models.get("smart") == "Gemini 3.8 Flash", "Smart tier must be Gemini 3.8 Flash")
+        require(models.get("cheap") == "Gemini", "Cheap tier must be Gemini")
+        require(models.get("normal") == "Gemini", "Normal tier must be Gemini")
+        require(models.get("smart") == "Gemini", "Smart tier must be Gemini")
         
         mode = oct(providers_path.stat().st_mode & 0o777)
         require(mode == "0o600", f"providers.json permissions must be 0600, got {mode}")

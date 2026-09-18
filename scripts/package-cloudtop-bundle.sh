@@ -65,6 +65,12 @@ cat << 'PROVIDERSEOF' > "$BUNDLE_DIR/bridge/providers.json"
       "command": [
         "/google/bin/releases/jetski-devs/tools/cli"
       ],
+      "models": {
+        "flag": "--model",
+        "cheap": "Gemini",
+        "normal": "Gemini",
+        "smart": "Gemini"
+      },
       "prompt_flags": [
         "--prompt-interactive"
       ],
@@ -75,16 +81,10 @@ cat << 'PROVIDERSEOF' > "$BUNDLE_DIR/bridge/providers.json"
       "prompt_delivery": "",
       "skill_dir": ".agents/skills",
       "bootstrap_file_name": "AGENTS.md",
-      "models": {
-        "flag": "--model",
-        "cheap": "Gemini 3.5 Flash",
-        "normal": "Gemini 3.7 Flash",
-        "smart": "Gemini 3.8 Flash"
-      },
       "startup_detection": {
         "enabled": false,
-        "startup_probe_seconds": 0,
-        "capture_interval_ms": 0,
+        "startup_probe_seconds": 20,
+        "capture_interval_ms": 500,
         "blocked_patterns": [],
         "auto_enter_patterns": [],
         "auto_enter_pre_keys": [],
@@ -92,12 +92,12 @@ cat << 'PROVIDERSEOF' > "$BUNDLE_DIR/bridge/providers.json"
         "sanitized_reason_mapping": []
       },
       "activity_detection": {
-        "enabled": true,
+        "enabled": false,
         "sample_line_count": 20,
         "ignore_bottom_lines": 0,
-        "check_interval_seconds": 15,
-        "min_gap_ms": 100,
-        "max_gap_ms": 500
+        "check_interval_seconds": 2,
+        "min_gap_ms": 250,
+        "max_gap_ms": 5000
       }
     }
   ]
