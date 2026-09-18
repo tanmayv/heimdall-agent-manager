@@ -34,7 +34,7 @@ agent_next_title_counter_sqlite :: proc(ctx: rawptr, agent_id: string, owner_use
 	defer sqlite3_finalize(sel)
 	bind_text(sel, 1, agent_id)
 	if sqlite3_step(sel) != SQLITE_ROW do return 0, false, domain.domain_error(.Internal_Error, "title counter row missing after bump")
-	return string_to_i32(column_text(sel, 0)), true, domain.Domain_Error{}
+	return string_to_i32(column_text_unowned(sel, 0)), true, domain.Domain_Error{}
 }
 
 agent_save_sqlite :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error) {
@@ -209,11 +209,11 @@ bind_support :: proc(stmt: sqlite3_stmt, s: domain.Agent_Bridge_Support) {
 }
 
 agent_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Agent {
-	return domain.Agent{agent_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), name = column_text(stmt, 2), slug = column_text(stmt, 3), template_id = column_text(stmt, 4), default_provider = column_text(stmt, 5), default_tier = column_text(stmt, 6), instructions = column_text(stmt, 7), state = agent_state_from_string(column_text(stmt, 8)), created_at = column_text(stmt, 9), updated_at = column_text(stmt, 10)}
+	return domain.Agent{agent_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), name = column_text(stmt, 2), slug = column_text(stmt, 3), template_id = column_text(stmt, 4), default_provider = column_text(stmt, 5), default_tier = column_text(stmt, 6), instructions = column_text(stmt, 7), state = agent_state_from_string(column_text_unowned(stmt, 8)), created_at = column_text(stmt, 9), updated_at = column_text(stmt, 10)}
 }
 
 support_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Agent_Bridge_Support {
-	return domain.Agent_Bridge_Support{agent_id = column_text(stmt, 0), bridge_id = column_text(stmt, 1), owner_user_id = domain.User_ID(column_text(stmt, 2)), enabled = column_text(stmt, 3) == "1", provider = column_text(stmt, 4), tier = column_text(stmt, 5), priority = string_to_i32(column_text(stmt, 6)), max_instances = string_to_i32(column_text(stmt, 7)), created_at = column_text(stmt, 8), updated_at = column_text(stmt, 9)}
+	return domain.Agent_Bridge_Support{agent_id = column_text(stmt, 0), bridge_id = column_text(stmt, 1), owner_user_id = domain.User_ID(column_text(stmt, 2)), enabled = column_text_unowned(stmt, 3) == "1", provider = column_text(stmt, 4), tier = column_text(stmt, 5), priority = string_to_i32(column_text_unowned(stmt, 6)), max_instances = string_to_i32(column_text_unowned(stmt, 7)), created_at = column_text(stmt, 8), updated_at = column_text(stmt, 9)}
 }
 
 bind_instance :: proc(stmt: sqlite3_stmt, inst: domain.Agent_Instance) {
@@ -221,7 +221,7 @@ bind_instance :: proc(stmt: sqlite3_stmt, inst: domain.Agent_Instance) {
 }
 
 instance_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Agent_Instance {
-	return domain.Agent_Instance{agent_instance_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), agent_id = column_text(stmt, 2), bridge_id = column_text(stmt, 3), display_name = column_text(stmt, 4), provider = column_text(stmt, 5), tier = column_text(stmt, 6), project_id = domain.Project_ID(column_text(stmt, 7)), project_path = column_text(stmt, 8), chain_id = column_text(stmt, 9), conversation_id = column_text(stmt, 10), runtime_status = column_text(stmt, 11), startup_status = column_text(stmt, 12), activity_status = column_text(stmt, 13), status_message = column_text(stmt, 14), last_applied_seq = string_to_i32(column_text(stmt, 15)), run_count = string_to_i32(column_text(stmt, 16)), current_task_id = column_text(stmt, 17), current_task_role = domain.current_task_role_from_string(column_text(stmt, 18)), created_at = column_text(stmt, 19), updated_at = column_text(stmt, 20), started_at = column_text(stmt, 21), stopped_at = column_text(stmt, 22), last_seen_at = column_text(stmt, 23)}
+	return domain.Agent_Instance{agent_instance_id = column_text(stmt, 0), owner_user_id = domain.User_ID(column_text(stmt, 1)), agent_id = column_text(stmt, 2), bridge_id = column_text(stmt, 3), display_name = column_text(stmt, 4), provider = column_text(stmt, 5), tier = column_text(stmt, 6), project_id = domain.Project_ID(column_text(stmt, 7)), project_path = column_text(stmt, 8), chain_id = column_text(stmt, 9), conversation_id = column_text(stmt, 10), runtime_status = column_text(stmt, 11), startup_status = column_text(stmt, 12), activity_status = column_text(stmt, 13), status_message = column_text(stmt, 14), last_applied_seq = string_to_i32(column_text_unowned(stmt, 15)), run_count = string_to_i32(column_text_unowned(stmt, 16)), current_task_id = column_text(stmt, 17), current_task_role = domain.current_task_role_from_string(column_text_unowned(stmt, 18)), created_at = column_text(stmt, 19), updated_at = column_text(stmt, 20), started_at = column_text(stmt, 21), stopped_at = column_text(stmt, 22), last_seen_at = column_text(stmt, 23)}
 }
 
 agent_state_from_string :: proc(state: string) -> domain.Agent_State { if state == "archived" do return .Archived; return .Active }

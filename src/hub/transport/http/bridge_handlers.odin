@@ -728,11 +728,16 @@ bridge_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Soc
 	defer bridge_ws_reader_destroy(&reader)
 	hello_text, hello_frame_ok := read_ws_text_blocking(&reader, 3 * time.Second)
 	if !hello_frame_ok do return
-	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, json_string(hello_text, "hostname"), json_string(hello_text, "os"), json_string(hello_text, "arch"), hello_text)
+	defer delete(hello_text)
+	hostname := json_string(hello_text, "hostname"); defer delete(hostname)
+	os_str := json_string(hello_text, "os"); defer delete(os_str)
+	arch_str := json_string(hello_text, "arch"); defer delete(arch_str)
+	validation_url := json_string(hello_text, "validation_ws_url"); defer delete(validation_url)
+	body_bridge_id := json_string(hello_text, "bridge_id"); defer delete(body_bridge_id)
+	bridge, connect_ok, err := bridge_service.bridge_runtime_connect(h.bridges, token, hostname, os_str, arch_str, hello_text)
 	if !connect_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(err.message)); return }
-	body_bridge_id := json_string(hello_text, "bridge_id")
 	if body_bridge_id != "" && body_bridge_id != bridge.bridge_id { _ = write_ws_text_frame(client, bridge_ws_error_payload("bridge_id does not match bearer token")); return }
-	hello, hello_ok, hello_err := bridge_runtime_service.runtime_accept_hello(h.bridge_runtime_registry, bridge.bridge_id, json_int(hello_text, "protocol_version", 1), json_string(hello_text, "validation_ws_url"))
+	hello, hello_ok, hello_err := bridge_runtime_service.runtime_accept_hello(h.bridge_runtime_registry, bridge.bridge_id, json_int(hello_text, "protocol_version", 1), validation_url)
 	if !hello_ok { _ = write_ws_text_frame(client, bridge_ws_error_payload(hello_err.message)); return }
 	project_service.bridge_runtime_registry_set_command_socket(h.bridge_runtime_registry, bridge.bridge_id, client)
 	// From here the socket is registered, so other threads (fs/file commands) may
@@ -771,15 +776,20 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 	// but nothing marked it back down on WS close). Idempotent + skips revoked.
 	if h.bridges != nil {
 		if bridge, changed, _ := bridge_service.mark_bridge_offline(h.bridges, bridge_id); changed {
-			events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "status_changed", bridge_status_summary_json(domain.bridge_status_string(bridge.status)))
+			summary := bridge_status_summary_json(domain.bridge_status_string(bridge.status))
+			events.publish_resource_changed(h.event_bus, string(bridge.owner_user_id), "bridge", bridge.bridge_id, "status_changed", summary)
+			delete(summary)
 		}
 	}
 	if h.agents == nil do return
 	// The bridge is gone; its registry entry was just removed above. The durable DB
 	// is authoritative here, so we only persist the cleared state and notify the UI.
 	cleared := agent_service.mark_bridge_instances_unreachable(h.agents, bridge_id)
+	defer domain.agent_instances_destroy(cleared)
 	for inst in cleared {
-		events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status))
+		summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
+		events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
+		delete(summary)
 	}
 }
 
@@ -912,85 +922,161 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 		// gone, so we never tear down a healthy connection at the cadence edge.
 		text, ok := read_ws_text_blocking(reader, 120 * time.Second)
 		if !ok do return
-		if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation {
-			_ = write_ws_text_frame_locked(h, client, bridge_connection_replaced_payload())
+		if !bridge_ws_process_frame(h, bridge_id, connection_generation, client, &reassemblies, text) {
 			return
 		}
-		type := json_string(text, "type")
-		// Chunk reassembly. A real chunk frame has kind:"chunk" and NO top-level
-		// "type" (its payload_fragment is base64, so it can never contain a "type"
-		// key) — that is what distinguishes it from a normal frame whose file
-		// CONTENT merely embeds "kind":"chunk". Buffer until the stream completes,
-		// then dispatch the reassembled original frame by its real type. Non-chunk
-		// frames — including heartbeats interleaved between chunks — fall straight
-		// through untouched. Ack-less: see the bridge's bridge_hub_send.
-		if type == "" && json_string(text, "kind") == contracts.BRIDGE_WS_FRAME_KIND_CHUNK {
-			assembled, complete, cok := bridge_ws_reassemble_chunk(&reassemblies, text)
-			if !cok || !complete do continue
+	}
+}
+
+bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_generation: int, client: net.TCP_Socket, reassemblies: ^[dynamic]Bridge_Chunk_Reassembly, raw_text: string) -> bool {
+	text := raw_text
+	if project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) != connection_generation {
+		delete(text)
+		_ = write_ws_text_frame_locked(h, client, bridge_connection_replaced_payload())
+		return false
+	}
+	type := json_string(text, "type")
+	// Chunk reassembly. A real chunk frame has kind:"chunk" and NO top-level
+	// "type" (its payload_fragment is base64, so it can never contain a "type"
+	// key) — that is what distinguishes it from a normal frame whose file
+	// CONTENT merely embeds "kind":"chunk". Buffer until the stream completes,
+	// then dispatch the reassembled original frame by its real type. Non-chunk
+	// frames — including heartbeats interleaved between chunks — fall straight
+	// through untouched. Ack-less: see the bridge's bridge_hub_send.
+	if type == "" {
+		kind := json_string(text, "kind")
+		if kind == contracts.BRIDGE_WS_FRAME_KIND_CHUNK {
+			delete(kind)
+			delete(type)
+			assembled, complete, cok := bridge_ws_reassemble_chunk(reassemblies, text)
+			delete(text)
+			if !cok || !complete do return true
 			text = assembled
 			type = json_string(text, "type")
+		} else {
+			delete(kind)
 		}
-		switch type {
-		case "bridge_heartbeat":
-			if strings.contains(text, "\"capabilities\"") { _, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text) }
-			active := json_string_array(text, "active_instance_ids")
-			digest_active := bridge_apply_heartbeat_digest(h, bridge_id, text)
-			if len(active) == 0 && len(digest_active) > 0 do active = digest_active
-			reconciled := bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, active)
-			// H7 cross-bridge reap: any instance this bridge reports active whose
-			// canonical bridge_id is now a DIFFERENT bridge has been relaunched
-			// elsewhere. Tell this bridge to invalidate those instances' local tokens
-			// (via the ack) so the stale old ham-wrapper self-terminates.
-			superseded: []string
-			if h.agents != nil do superseded = agent_service.detect_superseded_instances(h.agents, bridge_id, active)
-			if h.agents != nil do reconciled += agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
-			// Opportunistic time-based reap: catches instances stranded by a
-			// disconnect the hub never observed (hub restart with persisted DB, or a
-			// lost WS close). Request-driven, so no background thread is required.
-			if h.agents != nil {
-				for inst in agent_service.reap_stale_instances(h.agents, BRIDGE_INSTANCE_STALE_MS) {
-					events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status))
-					reconciled += 1
-				}
-			}
-			schedules_version := 0
-			if h.actions != nil {
-				schedules_version = get_actions_bridge_version(h.actions, bridge_id)
-			} else if h.scheduled_prompts != nil {
-				schedules_version = get_scheduled_prompts_bridge_version(h.scheduled_prompts, bridge_id)
-			}
-			_ = write_ws_text_frame_locked(h, client, bridge_heartbeat_ack_payload(reconciled, superseded, schedules_version))
-		case "agent_instance_status":
-			instance_id := json_string(text, "agent_instance_id")
-			state_seq := json_int(text, "state_seq", 0)
-			runtime_status := json_string(text, "runtime_status")
-			activity_status := json_string(text, "activity_status")
-			_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, instance_id, state_seq, runtime_status, activity_status)
-			if h.agents != nil {
-				if inst, applied, _ := agent_service.apply_bridge_status_report(h.agents, bridge_id, instance_id, state_seq, runtime_status, activity_status); applied {
-					events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status))
-				}
-			}
-			current_runtime, _, current_seq, got := bridge_runtime_service.runtime_instance_status(h.bridge_runtime_registry, instance_id)
-			_ = got
-			applied := current_seq == state_seq && current_runtime == runtime_status
-			_ = write_ws_text_frame_locked(h, client, bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime))
-		case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result":
-			command_id := json_string(text, "command_id")
-			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
-		case "pane_capture_result":
-			if json_int(text, "protocol_version", 0) != 1 do continue
-			if h.content != nil {
-				input := content_service.Pane_Capture_Result_Input{command_id=json_string_unescaped(text,"command_id"),pane_capture_request_id=json_string_unescaped(text,"pane_capture_request_id"),conversation_id=json_string_unescaped(text,"conversation_id"),message_id=json_string_unescaped(text,"message_id"),agent_instance_id=json_string_unescaped(text,"agent_instance_id"),ok=json_bool_value(text,"ok"),output=json_string_unescaped(text,"output"),error_code=json_string_unescaped(text,"error_code"),message=json_string_unescaped(text,"message"),width=json_int(text,"width",80),line_count=json_int(text,"line_count",0),truncated=json_bool_value(text,"truncated")}
-				if msg, conv, applied, _ := content_service.complete_pane_capture(h.content, bridge_id, input); applied {
-					events.publish_owned(h.event_bus, string(conv.owner_user_id), pane_capture_chat_event_json(conv, msg))
-				}
-			}
-		case "capability_report":
-			_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
-		}
-
 	}
+	defer delete(text)
+	defer delete(type)
+
+	switch type {
+	case "bridge_heartbeat":
+		if strings.contains(text, "\"capabilities\"") { _, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text) }
+		active := json_string_array(text, "active_instance_ids")
+		digest_active := bridge_apply_heartbeat_digest(h, bridge_id, text)
+		used_digest := false
+		if len(active) == 0 && len(digest_active) > 0 {
+			delete(active)
+			active = digest_active
+			used_digest = true
+		}
+		reconciled := bridge_runtime_service.runtime_reconcile_digest(h.bridge_runtime_registry, active)
+		// H7 cross-bridge reap: any instance this bridge reports active whose
+		// canonical bridge_id is now a DIFFERENT bridge has been relaunched
+		// elsewhere. Tell this bridge to invalidate those instances' local tokens
+		// (via the ack) so the stale old ham-wrapper self-terminates.
+		superseded: []string
+		if h.agents != nil do superseded = agent_service.detect_superseded_instances(h.agents, bridge_id, active)
+		if h.agents != nil do reconciled += agent_service.reconcile_bridge_heartbeat(h.agents, bridge_id, active)
+		// Opportunistic time-based reap: catches instances stranded by a
+		// disconnect the hub never observed (hub restart with persisted DB, or a
+		// lost WS close). Request-driven, so no background thread is required.
+		if h.agents != nil {
+			reaped := agent_service.reap_stale_instances(h.agents, BRIDGE_INSTANCE_STALE_MS)
+			for inst in reaped {
+				summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
+				events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
+				delete(summary)
+				reconciled += 1
+			}
+			domain.agent_instances_destroy(reaped)
+		}
+		schedules_version := 0
+		if h.actions != nil {
+			schedules_version = get_actions_bridge_version(h.actions, bridge_id)
+		} else if h.scheduled_prompts != nil {
+			schedules_version = get_scheduled_prompts_bridge_version(h.scheduled_prompts, bridge_id)
+		}
+		ack := bridge_heartbeat_ack_payload(reconciled, superseded, schedules_version)
+		_ = write_ws_text_frame_locked(h, client, ack)
+		delete(ack)
+		if superseded != nil {
+			for s in superseded do delete(s)
+			delete(superseded)
+		}
+		if used_digest {
+			for s in active do delete(s)
+			delete(active)
+		} else {
+			delete(active)
+			if digest_active != nil {
+				for s in digest_active do delete(s)
+				delete(digest_active)
+			}
+		}
+	case "agent_instance_status":
+		instance_id := json_string(text, "agent_instance_id")
+		state_seq := json_int(text, "state_seq", 0)
+		runtime_status := json_string(text, "runtime_status")
+		activity_status := json_string(text, "activity_status")
+		_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, instance_id, state_seq, runtime_status, activity_status)
+		if h.agents != nil {
+			if inst, applied, _ := agent_service.apply_bridge_status_report(h.agents, bridge_id, instance_id, state_seq, runtime_status, activity_status); applied {
+				summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
+				events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
+				delete(summary)
+				domain.agent_instance_destroy(&inst)
+			}
+		}
+		current_runtime, _, current_seq, got := bridge_runtime_service.runtime_instance_status(h.bridge_runtime_registry, instance_id)
+		_ = got
+		applied := current_seq == state_seq && current_runtime == runtime_status
+		ack := bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime)
+		_ = write_ws_text_frame_locked(h, client, ack)
+		delete(ack)
+		delete(instance_id)
+		delete(runtime_status)
+		delete(activity_status)
+	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result":
+		command_id := json_string(text, "command_id")
+		_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
+		delete(command_id)
+	case "pane_capture_result":
+		if json_int(text, "protocol_version", 0) != 1 do return true
+		if h.content != nil {
+			input := content_service.Pane_Capture_Result_Input{
+				command_id = json_string_unescaped(text, "command_id"),
+				pane_capture_request_id = json_string_unescaped(text, "pane_capture_request_id"),
+				conversation_id = json_string_unescaped(text, "conversation_id"),
+				message_id = json_string_unescaped(text, "message_id"),
+				agent_instance_id = json_string_unescaped(text, "agent_instance_id"),
+				ok = json_bool_value(text, "ok"),
+				output = json_string_unescaped(text, "output"),
+				error_code = json_string_unescaped(text, "error_code"),
+				message = json_string_unescaped(text, "message"),
+				width = json_int(text, "width", 80),
+				line_count = json_int(text, "line_count", 0),
+				truncated = json_bool_value(text, "truncated"),
+			}
+			if msg, conv, applied, _ := content_service.complete_pane_capture(h.content, bridge_id, input); applied {
+				evt := pane_capture_chat_event_json(conv, msg)
+				events.publish_owned(h.event_bus, string(conv.owner_user_id), evt)
+			}
+			delete(input.command_id)
+			delete(input.pane_capture_request_id)
+			delete(input.conversation_id)
+			delete(input.message_id)
+			delete(input.agent_instance_id)
+			delete(input.output)
+			delete(input.error_code)
+			delete(input.message)
+		}
+	case "capability_report":
+		_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
+	}
+
+	return true
 }
 
 bridge_apply_heartbeat_digest :: proc(h: ^Bridge_Handlers, bridge_id, text: string) -> []string {
@@ -1012,11 +1098,18 @@ bridge_apply_heartbeat_digest :: proc(h: ^Bridge_Handlers, bridge_id, text: stri
 			_ = bridge_runtime_service.runtime_apply_state_report(h.bridge_runtime_registry, instance_id, state_seq, runtime_status, activity_status)
 			if h.agents != nil {
 				if inst, applied, _ := agent_service.apply_bridge_status_report(h.agents, bridge_id, instance_id, state_seq, runtime_status, activity_status); applied {
-					events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status))
+					summary := agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
+					events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "status_changed", summary)
+					delete(summary)
+					domain.agent_instance_destroy(&inst)
 				}
 			}
 			append(&active, instance_id)
+		} else {
+			delete(instance_id)
 		}
+		delete(runtime_status)
+		delete(activity_status)
 		search_from = end
 	}
 	return active[:]
@@ -1537,6 +1630,7 @@ write_ws_text_frame :: proc(client: net.TCP_Socket, text: string) -> bool {
 	header_len := 2
 	if n > 125 do header_len = 4
 	frame := make([]byte, header_len + n)
+	defer delete(frame)
 	frame[0] = 0x81
 	if n <= 125 { frame[1] = byte(n) } else { frame[1] = 126; frame[2] = byte((n >> 8) & 0xff); frame[3] = byte(n & 0xff) }
 	copy(frame[header_len:], transmute([]byte)text)
