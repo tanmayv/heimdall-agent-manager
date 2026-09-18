@@ -246,12 +246,12 @@ export default function ArtifactUploadButton({
         disabled={disabled || uploading}
         onClick={() => { clearError(); inputRef.current?.click(); }}
         title="Upload a supported artifact"
-        className={buttonClassName || 'framer-pill bg-white/10 text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40'}
+        className={buttonClassName || 'framer-pill bg-surface-raised text-primary hover:bg-neutral-soft disabled:cursor-not-allowed disabled:opacity-40'}
       >
         {uploading ? <span className="inline-block animate-bounce" aria-label="Uploading artifact">⇧</span> : label}
       </button>
       {error && (
-        <div data-debug-id={`${debugIdPrefix}-error`} className="mt-1 text-xs text-red-300">{error}</div>
+        <div data-debug-id={`${debugIdPrefix}-error`} className="mt-1 text-xs text-danger">{error}</div>
       )}
     </div>
   );

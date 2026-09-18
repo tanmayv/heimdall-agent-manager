@@ -215,8 +215,8 @@ export default function ActionsPanel() {
           data-debug-id="actions-feedback-banner"
           className={`flex items-center justify-between rounded-xl border p-3.5 text-xs font-medium animate-fade-in ${
             feedback.type === 'success'
-              ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-300'
-              : 'border-red-500/40 bg-red-950/20 text-red-300'
+              ? 'border-success/30 bg-success-soft text-success'
+              : 'border-danger/30 bg-danger-soft text-danger'
           }`}
         >
           <div className="flex items-center gap-2">
@@ -250,9 +250,9 @@ export default function ActionsPanel() {
 
       {/* Loading State */}
       {isLoading && (
-        <div data-debug-id="actions-loading-state" className="flex items-center justify-center p-12 text-zinc-400 text-sm">
+        <div data-debug-id="actions-loading-state" className="flex items-center justify-center p-12 text-muted text-sm">
           <div className="flex items-center gap-2">
-            <Icon name="refresh" size={14} className="animate-spin text-sky-400" />
+            <Icon name="refresh" size={14} className="animate-spin text-accent" />
             <span>Loading actions and projects...</span>
           </div>
         </div>
@@ -260,7 +260,7 @@ export default function ActionsPanel() {
 
       {/* Error State */}
       {actionsError && !isLoading && (
-        <div data-debug-id="actions-error-state" className="rounded-xl border border-red-500/40 bg-red-950/20 p-5 text-sm text-red-300">
+        <div data-debug-id="actions-error-state" className="rounded-xl border border-danger/30 bg-danger-soft p-5 text-sm text-danger">
           Failed to load actions: {String((actionsError as any)?.error || (actionsError as any)?.message || actionsError)}
         </div>
       )}
@@ -269,13 +269,13 @@ export default function ActionsPanel() {
       {!isLoading && !actionsError && totalActionsCount === 0 && (
         <div
           data-debug-id="actions-empty-state"
-          className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.01] p-12 text-center"
+          className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-subtle bg-surface/50 p-12 text-center"
         >
-          <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/5 text-zinc-400">
+          <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted">
             <Icon name="clock" size={24} />
           </div>
-          <h3 className="text-base font-semibold text-white">No Actions Configured</h3>
-          <p className="mt-1 max-w-md text-xs leading-relaxed text-zinc-400">
+          <h3 className="text-base font-semibold text-primary">No Actions Configured</h3>
+          <p className="mt-1 max-w-md text-xs leading-relaxed text-muted">
             Actions allow you to schedule recurring prompts or trigger on-demand automation routines for any running agent instance.
           </p>
           <Button variant="primary" data-debug-id="actions-empty-create-btn" className="mt-5" onClick={() => navigateTo('/actions/new')} leading={<Icon name="plus" size={16} />}>
@@ -295,29 +295,29 @@ export default function ActionsPanel() {
               <div
                 key={group.id}
                 data-debug-id={`actions-project-group-${group.id}`}
-                className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden"
+                className="rounded-2xl border border-subtle bg-surface overflow-hidden"
               >
                 {/* Collapsible Project Section Header */}
                 <button
                   type="button"
                   data-debug-id={`actions-project-toggle-${group.id}`}
                   onClick={() => toggleProjectCollapse(group.id)}
-                  className="w-full flex items-center justify-between px-4 py-3 bg-white/[0.03] hover:bg-white/[0.05] border-b border-white/10 transition-colors text-left"
+                  className="w-full flex items-center justify-between px-4 py-3 bg-neutral-soft/50 hover:bg-neutral-soft border-b border-subtle transition-colors text-left"
                 >
                   <div className="flex items-center gap-3">
-                    <span className="text-zinc-400">
+                    <span className="text-muted">
                       <Icon name={isCollapsed ? 'chevron-right' : 'chevron-down'} size={14} />
                     </span>
                     <div className="flex items-center gap-2">
-                      <Icon name="folder" size={15} className="text-sky-400" />
-                      <span className="text-sm font-semibold text-white">{group.name}</span>
+                      <Icon name="folder" size={15} className="text-accent" />
+                      <span className="text-sm font-semibold text-primary">{group.name}</span>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2">
                     <span
                       data-debug-id={`actions-project-count-${group.id}`}
-                      className="rounded-md bg-black/40 border border-white/10 px-2 py-0.5 text-xs text-zinc-400"
+                      className="rounded-md bg-surface-raised border border-subtle px-2 py-0.5 text-xs text-muted"
                     >
                       {actionCount} {actionCount === 1 ? 'action' : 'actions'}
                     </span>
@@ -328,7 +328,7 @@ export default function ActionsPanel() {
                 {!isCollapsed && (
                   <div className="p-4 space-y-3">
                     {actionCount === 0 ? (
-                      <p className="text-xs text-zinc-500 italic py-2">
+                      <p className="text-xs text-muted italic py-2">
                         No actions matching filter in this project.
                       </p>
                     ) : (
@@ -413,36 +413,36 @@ function ActionCard({
   return (
     <div
       data-debug-id={`action-row-${action.id}`}
-      className="rounded-xl border border-white/10 bg-black/40 p-4 transition-colors hover:border-white/20 space-y-3"
+      className="rounded-xl border border-subtle bg-surface-raised p-4 transition-colors hover:border-strong space-y-3"
     >
       {/* Top Header: Target Instance + State Badges + Actions Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 pb-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-subtle pb-2.5">
         {/* Left: Instance and state badges */}
         <div className="flex flex-wrap items-center gap-2">
           {/* Instance / Target badge */}
           <div
             data-debug-id={`action-instance-badge-${action.id}`}
-            className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-zinc-200"
+            className="flex items-center gap-1.5 rounded-lg border border-subtle bg-surface px-2.5 py-1 text-xs text-primary"
           >
             {isAgentTargeted ? (
               <>
-                <Icon name="bot" size={12} className="text-sky-400" />
-                <span className="font-semibold text-white">Agent: {targetName}</span>
-                <span className="text-caption text-zinc-500 font-mono">({action.target_bridge_id || 'bridge'})</span>
+                <Icon name="bot" size={12} className="text-accent" />
+                <span className="font-semibold text-primary">Agent: {targetName}</span>
+                <span className="text-caption text-muted font-mono">({action.target_bridge_id || 'bridge'})</span>
               </>
             ) : (
               <>
                 <span
                   className={`h-1.5 w-1.5 rounded-full ${
                     instanceStatus === 'running'
-                      ? 'bg-emerald-400'
+                      ? 'bg-success'
                       : instanceStatus === 'stopped'
-                      ? 'bg-zinc-500'
-                      : 'bg-amber-400'
+                      ? 'bg-faint'
+                      : 'bg-warning'
                   }`}
                 />
-                <span className="font-semibold text-white">{targetName}</span>
-                <span className="text-caption text-zinc-500 font-mono">({action.target_instance_id})</span>
+                <span className="font-semibold text-primary">{targetName}</span>
+                <span className="text-caption text-muted font-mono">({action.target_instance_id})</span>
               </>
             )}
           </div>
@@ -469,8 +469,8 @@ function ActionCard({
             data-debug-id={`action-schedule-badge-${action.id}`}
             className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-caption border ${
               isScheduled
-                ? 'border-sky-500/30 bg-sky-500/10 text-sky-300'
-                : 'border-zinc-800 bg-black/40 text-zinc-400'
+                ? 'border-info/30 bg-info-soft text-info'
+                : 'border-subtle bg-surface text-muted'
             }`}
           >
             <Icon name={isScheduled ? 'clock' : 'zap'} size={12} />
@@ -479,7 +479,7 @@ function ActionCard({
 
           {/* Timezone badge if scheduled */}
           {isScheduled && action.timezone && (
-            <span className="rounded-md border border-white/10 bg-black/30 px-1.5 py-0.5 text-[10px] text-zinc-400">
+            <span className="rounded-md border border-subtle bg-surface px-1.5 py-0.5 text-[10px] text-muted">
               {action.timezone}
             </span>
           )}
@@ -487,7 +487,7 @@ function ActionCard({
           {/* Blackout dates badge if any */}
           {blackouts.length > 0 && (
             <span
-              className="rounded-md border border-amber-500/20 bg-amber-950/10 px-1.5 py-0.5 text-[10px] text-amber-300/80"
+              className="rounded-md border border-warning/30 bg-warning-soft px-1.5 py-0.5 text-[10px] text-warning"
               title={`Blackout dates: ${blackouts.join(', ')}`}
             >
               {blackouts.length} blackout {blackouts.length === 1 ? 'date' : 'dates'}
@@ -503,12 +503,12 @@ function ActionCard({
             data-debug-id={`action-run-now-btn-${action.id}`}
             disabled={isRunning}
             onClick={onRun}
-            className="flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 px-3 py-1 text-xs font-semibold text-sky-300 transition-colors disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg border border-info/30 bg-info-soft hover:bg-info/20 px-3 py-1 text-xs font-semibold text-info transition-colors disabled:opacity-50"
             title="Execute this action immediately against the target instance"
           >
             {isRunning ? (
               <>
-                <Icon name="refresh" size={11} className="animate-spin text-sky-400" />
+                <Icon name="refresh" size={11} className="animate-spin text-info" />
                 <span>Running...</span>
               </>
             ) : (
@@ -531,7 +531,7 @@ function ActionCard({
       <div>
         <p
           data-debug-id={`action-prompt-text-${action.id}`}
-          className={`text-xs text-zinc-200 leading-relaxed font-mono whitespace-pre-wrap ${
+          className={`text-xs text-primary leading-relaxed font-mono whitespace-pre-wrap ${
             expanded ? '' : 'line-clamp-2'
           }`}
         >
@@ -541,7 +541,7 @@ function ActionCard({
           <button
             type="button"
             onClick={() => setExpanded(!expanded)}
-            className="mt-1 text-caption text-sky-400 hover:underline"
+            className="mt-1 text-caption text-accent hover:underline"
           >
             {expanded ? 'Show less' : 'Show full prompt'}
           </button>
@@ -550,22 +550,22 @@ function ActionCard({
 
       {/* Next Execution Info Footer */}
       {isScheduled && (
-        <div className="flex flex-wrap items-center justify-between text-caption text-zinc-500 border-t border-white/5 pt-2">
+        <div className="flex flex-wrap items-center justify-between text-caption text-muted border-t border-subtle pt-2">
           <div className="flex items-center gap-1.5">
             <span>Next run:</span>
             {nextRuns.length > 0 ? (
-              <span className="font-mono text-zinc-300">
+              <span className="font-mono text-primary">
                 {formatInTimeZone(nextRuns[0], action.timezone || 'UTC')}
-                <span className="ml-1.5 text-zinc-500">({timeZoneLabel(nextRuns[0], action.timezone || 'UTC')})</span>
+                <span className="ml-1.5 text-muted">({timeZoneLabel(nextRuns[0], action.timezone || 'UTC')})</span>
               </span>
             ) : action.target_run_at ? (
-              <span className="font-mono text-zinc-300">{action.target_run_at}</span>
+              <span className="font-mono text-primary">{action.target_run_at}</span>
             ) : (
-              <span className="italic text-zinc-600">Pending calculation</span>
+              <span className="italic text-faint">Pending calculation</span>
             )}
           </div>
 
-          <div className="text-[10px] text-zinc-600 font-mono">
+          <div className="text-[10px] text-faint font-mono">
             ID: {action.id}
           </div>
         </div>

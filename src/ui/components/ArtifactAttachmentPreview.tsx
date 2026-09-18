@@ -158,7 +158,7 @@ export function ArtifactImagePreview({
   debugId,
   alt,
   className = 'h-full w-full object-cover',
-  placeholderClassName = 'grid h-full w-full place-items-center text-xs text-zinc-600',
+  placeholderClassName = 'grid h-full w-full place-items-center text-xs text-faint',
 }: {
   artifactId?: string;
   artifact?: ArtifactPreviewMeta | null;
@@ -194,25 +194,25 @@ export function ArtifactAttachmentPreview({
 
   if (preview.isImage) {
     return (
-      <a data-debug-id={`${debugId}-link`} href={target} className="group block min-w-0 max-w-[min(320px,100%)] overflow-hidden rounded-xl border border-white/10 bg-black/30 text-left hover:border-sky-400/40 hover:bg-black/40">
-        <div className="grid max-h-56 min-h-[120px] place-items-center overflow-hidden bg-black/40">
+      <a data-debug-id={`${debugId}-link`} href={target} className="group block min-w-0 max-w-[min(320px,100%)] overflow-hidden rounded-xl border border-subtle bg-surface text-left hover:border-accent/40 hover:bg-surface-raised">
+        <div className="grid max-h-56 min-h-[120px] place-items-center overflow-hidden bg-surface-raised">
           {preview.contentUrl ? (
             <img data-debug-id={`${debugId}-image`} src={preview.contentUrl} alt={label} loading="lazy" className="max-h-56 w-full object-contain" />
           ) : (
-            <div className="px-3 py-8 text-xs text-zinc-500">{preview.loadingContent || preview.loadingMeta ? 'Loading image…' : 'Image unavailable'}</div>
+            <div className="px-3 py-8 text-xs text-faint">{preview.loadingContent || preview.loadingMeta ? 'Loading image…' : 'Image unavailable'}</div>
           )}
         </div>
-        <div className="flex items-center gap-2 px-2.5 py-1.5 text-caption text-zinc-400">
-          <span className="text-sky-300">🖼</span>
+        <div className="flex items-center gap-2 px-2.5 py-1.5 text-caption text-muted">
+          <span className="text-accent">🖼</span>
           <span className="min-w-0 flex-1 truncate">{label}</span>
-          <span className="text-zinc-600 group-hover:text-sky-300">Open</span>
+          <span className="text-faint group-hover:text-accent">Open</span>
         </div>
       </a>
     );
   }
 
   return (
-    <a data-debug-id={`${debugId}-link`} href={target} className="flex min-w-0 max-w-full items-center gap-1 rounded bg-sky-400/10 px-2 py-1 text-caption text-sky-300 hover:bg-sky-400/20">
+    <a data-debug-id={`${debugId}-link`} href={target} className="flex min-w-0 max-w-full items-center gap-1 rounded bg-info-soft px-2 py-1 text-caption text-accent hover:bg-neutral-soft">
       <span className="opacity-70">▣</span>
       <span className="truncate">{preview.loadingMeta ? id : label}</span>
     </a>

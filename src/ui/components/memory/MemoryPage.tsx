@@ -110,9 +110,9 @@ export default function MemoryPage() {
         </>
       }
     >
-      <div data-debug-id="memory-page" className="text-zinc-100">
+      <div data-debug-id="memory-page" className="text-primary">
       {/* Tabs */}
-      <div data-debug-id="memory-tabs" className="mt-5 flex items-center gap-6 border-b border-white/[0.08]">
+      <div data-debug-id="memory-tabs" className="mt-5 flex items-center gap-6 border-b border-subtle">
         <TabButton id="active" label="Active" count={activeItems.length} active={tab === 'active'} onClick={() => setTab('active')} />
         <TabButton id="proposals" label="Proposals" count={proposals.length} active={tab === 'proposals'} onClick={() => setTab('proposals')} />
       </div>
@@ -123,14 +123,14 @@ export default function MemoryPage() {
           <div data-debug-id="memory-filter-bar" className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <Input type="search" data-debug-id="memory-filter-search" value={search} onChange={setSearch} placeholder="Search title / body / id…" size="sm" className="min-w-[14rem] flex-1" />
-              <label className="text-caption uppercase tracking-wide text-zinc-500">Type
+              <label className="text-caption uppercase tracking-wide text-muted">Type
                 <Select data-debug-id="memory-filter-type" value={typeFilter} onChange={setTypeFilter} size="sm" className="ml-1">
                   <option value="">all</option>
                   {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </Select>
               </label>
               {facetsActive ? (
-                <button type="button" data-debug-id="memory-filter-clear" onClick={() => { setFacets(emptyTargeting()); setTypeFilter(''); setSearch(''); }} className="text-caption text-zinc-500 hover:text-zinc-200">clear</button>
+                <button type="button" data-debug-id="memory-filter-clear" onClick={() => { setFacets(emptyTargeting()); setTypeFilter(''); setSearch(''); }} className="text-caption text-muted hover:text-primary">clear</button>
               ) : null}
             </div>
             <ScopeEditor targeting={facets} catalog={catalog} onChange={setFacets} debugId="memory-filter-scope" />
@@ -178,10 +178,10 @@ function TabButton({ id, label, count, active, onClick }: { id: string; label: s
       type="button"
       data-debug-id={`memory-tab-${id}`}
       onClick={onClick}
-      className={`-mb-px flex items-center gap-2 border-b-2 px-1 pb-2.5 text-sm font-semibold ${active ? 'border-sky-400 text-zinc-100' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}
+      className={`-mb-px flex items-center gap-2 border-b-2 px-1 pb-2.5 text-sm font-semibold ${active ? 'border-accent text-primary' : 'border-transparent text-muted hover:text-primary'}`}
     >
       {label}
-      <span className={`rounded-full px-1.5 py-0.5 text-[10.5px] ${active ? 'bg-sky-400/15 text-sky-200' : 'bg-white/[0.06] text-zinc-400'}`}>{count}</span>
+      <span className={`rounded-full px-1.5 py-0.5 text-[10.5px] ${active ? 'bg-accent/15 text-accent' : 'bg-neutral-soft text-muted'}`}>{count}</span>
     </button>
   );
 }
@@ -190,28 +190,28 @@ function MemoryListItem({ memory, catalog, onDelete }: { memory: any; catalog: S
   const id = memory.memoryId || memory.id;
   const targeting = targetingFromRecord(memory);
   return (
-    <div data-debug-id={`memory-row-${id}`} className="rounded-2xl border border-white/10 bg-white/[0.02] p-4 transition hover:border-white/20 hover:bg-white/[0.04]">
+    <div data-debug-id={`memory-row-${id}`} className="rounded-2xl border border-subtle bg-surface p-4 transition hover:border-strong hover:bg-surface-raised">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" data-debug-id={`memory-row-open-${id}`} onClick={() => navigateToMemory(id)} className="truncate text-left text-base font-semibold text-zinc-100 hover:text-sky-200">
+            <button type="button" data-debug-id={`memory-row-open-${id}`} onClick={() => navigateToMemory(id)} className="truncate text-left text-base font-semibold text-primary hover:text-accent">
               {memory.title || id}
             </button>
             <Badge>{memory.type || 'fact'}</Badge>
-            <span className="text-caption text-zinc-600">v{memory.version || 0}</span>
-            <span className="text-caption text-zinc-600">·</span>
-            <span className="text-caption text-zinc-600">{timeAgo(memory.updatedUnixMs || memory.createdUnixMs)}</span>
+            <span className="text-caption text-faint">v{memory.version || 0}</span>
+            <span className="text-caption text-faint">·</span>
+            <span className="text-caption text-faint">{timeAgo(memory.updatedUnixMs || memory.createdUnixMs)}</span>
           </div>
-          {memory.description ? <p className="mt-1 line-clamp-2 text-[12.5px] font-medium text-zinc-300">{memory.description}</p> : null}
-          {memory.body ? <p className="mt-1.5 line-clamp-2 text-[12.5px] leading-5 text-zinc-400">{memory.body}</p> : null}
+          {memory.description ? <p className="mt-1 line-clamp-2 text-[12.5px] font-medium text-muted">{memory.description}</p> : null}
+          {memory.body ? <p className="mt-1.5 line-clamp-2 text-[12.5px] leading-5 text-muted">{memory.body}</p> : null}
           <div className="mt-2">
             <ScopeChips targeting={targeting} catalog={catalog} debugId={`memory-row-scope-${id}`} />
           </div>
-          <div className="mt-1 font-mono text-[10.5px] text-zinc-600">{id}</div>
+          <div className="mt-1 font-mono text-[10.5px] text-faint">{id}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <button type="button" aria-label="Open" title="Open" data-debug-id={`memory-row-detail-${id}`} onClick={() => navigateToMemory(id)} className="rounded-md border border-white/10 px-2 py-1 text-[11.5px] text-zinc-300 hover:bg-white/10">Open</button>
-          <button type="button" aria-label="Edit" title="Edit" data-debug-id={`memory-row-edit-${id}`} onClick={() => navigateToMemory(id, { edit: true })} className="rounded-md border border-white/10 px-1.5 py-1 text-zinc-400 hover:bg-white/10"><Icon name="pencil" size={13} /></button>
+          <button type="button" aria-label="Open" title="Open" data-debug-id={`memory-row-detail-${id}`} onClick={() => navigateToMemory(id)} className="rounded-md border border-subtle bg-surface-raised px-2 py-1 text-[11.5px] text-muted hover:bg-neutral-soft hover:text-primary">Open</button>
+          <button type="button" aria-label="Edit" title="Edit" data-debug-id={`memory-row-edit-${id}`} onClick={() => navigateToMemory(id, { edit: true })} className="rounded-md border border-subtle bg-surface-raised px-1.5 py-1 text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="pencil" size={13} /></button>
           <IconButton icon="trash" label="Delete" variant="danger" size="sm" data-debug-id={`memory-row-delete-${id}`} onClick={onDelete} />
         </div>
       </div>
@@ -245,29 +245,29 @@ function ProposalCard({ memory, catalog }: { memory: any; catalog: ScopeCatalog 
   }
 
   return (
-    <div data-debug-id={`memory-proposal-${id}`} className="rounded-2xl border border-amber-400/25 bg-amber-950/10 p-4">
+    <div data-debug-id={`memory-proposal-${id}`} className="rounded-2xl border border-warning/30 bg-warning-soft p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-caption font-bold uppercase text-amber-200">Pending</span>
-          <span className="font-semibold text-zinc-100">{memory.title || id}</span>
+          <span className="rounded-full bg-warning/20 px-2 py-0.5 text-caption font-bold uppercase text-warning">Pending</span>
+          <span className="font-semibold text-primary">{memory.title || id}</span>
           <Badge>{memory.type || 'fact'}</Badge>
         </div>
-        <span className="font-mono text-caption text-zinc-500">{memory.proposalId || id}</span>
+        <span className="font-mono text-caption text-faint">{memory.proposalId || id}</span>
       </div>
 
       {memory.description ? (
-        <p className="mt-2 text-[13px] font-medium text-zinc-300">{memory.description}</p>
+        <p className="mt-2 text-[13px] font-medium text-primary">{memory.description}</p>
       ) : null}
 
       {memory.body ? (
-        <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3">
-          <Markdown source={memory.body} compact className="text-sm text-zinc-200" />
+        <div className="mt-3 rounded-xl border border-subtle bg-surface-raised p-3">
+          <Markdown source={memory.body} compact className="text-sm text-primary" />
         </div>
       ) : null}
       {(memory.reason || memory.evidence) ? (
-        <div className="mt-2 grid gap-2 text-xs text-zinc-400 sm:grid-cols-2">
-          <div><span className="text-zinc-500">Reason:</span> {memory.reason || '—'}</div>
-          <div><span className="text-zinc-500">Evidence:</span> {memory.evidence || '—'}</div>
+        <div className="mt-2 grid gap-2 text-xs text-muted sm:grid-cols-2">
+          <div><span className="text-muted">Reason:</span> {memory.reason || '—'}</div>
+          <div><span className="text-muted">Evidence:</span> {memory.evidence || '—'}</div>
         </div>
       ) : null}
 
@@ -277,10 +277,10 @@ function ProposalCard({ memory, catalog }: { memory: any; catalog: ScopeCatalog 
       </div>
 
       <Input data-debug-id={`memory-proposal-reason-${id}`} value={reason} onChange={setReason} placeholder="Decision reason (optional)" width="full" className="mt-3" />
-      {error ? <div className="mt-2 rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div> : null}
+      {error ? <div className="mt-2 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{error}</div> : null}
       <div className="mt-3 flex flex-wrap justify-end gap-2">
         <Button variant="danger" size="md" data-debug-id={`memory-proposal-reject-${id}`} disabled={Boolean(busy)} onClick={() => decide('reject')}>{busy === 'reject' ? 'Rejecting…' : 'Reject'}</Button>
-        <button type="button" data-debug-id={`memory-proposal-approve-${id}`} disabled={Boolean(busy)} onClick={() => decide('approve')} className="rounded-lg bg-emerald-400 px-3.5 py-1.5 text-sm font-bold text-black hover:bg-emerald-300 disabled:opacity-50">{busy === 'approve' ? 'Approving…' : 'Approve'}</button>
+        <button type="button" data-debug-id={`memory-proposal-approve-${id}`} disabled={Boolean(busy)} onClick={() => decide('approve')} className="rounded-lg bg-success px-3.5 py-1.5 text-sm font-bold text-accent-fg hover:opacity-90 disabled:opacity-50">{busy === 'approve' ? 'Approving…' : 'Approve'}</button>
       </div>
     </div>
   );
@@ -312,7 +312,7 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
 
   return (
     <ModalShell debugId="memory-create-modal" title="Propose memory" onClose={onClose}>
-      {error ? <div data-debug-id="memory-create-error" className="rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div> : null}
+      {error ? <div data-debug-id="memory-create-error" className="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{error}</div> : null}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Title">
           <Input data-debug-id="memory-create-title" value={title} onChange={setTitle} placeholder="Memory title" width="full" />
@@ -346,7 +346,7 @@ function CreateMemoryModal({ catalog, onClose }: { catalog: ScopeCatalog; onClos
 function ConfirmDeleteModal({ title, onCancel, onConfirm }: { title: string; onCancel: () => void; onConfirm: () => void }) {
   return (
     <ModalShell debugId="memory-delete-modal" title="Delete memory" onClose={onCancel} maxWidth="max-w-md">
-      <p className="text-sm text-zinc-300">Delete <span className="font-semibold text-zinc-100">{title}</span>? Agents will stop receiving it.</p>
+      <p className="text-sm text-primary">Delete <span className="font-semibold text-primary">{title}</span>? Agents will stop receiving it.</p>
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="secondary" size="sm" data-debug-id="memory-delete-cancel" onClick={onCancel}>Cancel</Button>
         <Button variant="danger" size="sm" data-debug-id="memory-delete-confirm" onClick={onConfirm}>Delete</Button>
@@ -367,7 +367,7 @@ function ModalShell({ debugId, title, onClose, maxWidth = 'max-w-2xl', children 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="block">
-      <div className="mb-1 text-caption uppercase tracking-wide text-zinc-500">{label}</div>
+      <div className="mb-1 text-caption uppercase tracking-wide text-muted">{label}</div>
       {children}
     </div>
   );

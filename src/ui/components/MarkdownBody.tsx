@@ -66,12 +66,12 @@ function normalizeMarkdownSource(source: string): string {
 function createArtifactButtonHtml(artifactId: string, initialLabelHtml = ''): string {
   const safeArtifactId = escapeHtml(artifactId);
   const initialText = initialLabelHtml || safeArtifactId;
-  return `<button type="button" data-artifact-id="${safeArtifactId}" data-artifact-link="true" data-debug-id="artifact-link-chip-${safeArtifactId}" title="Open artifact" class="inline-flex items-center gap-1 rounded-full border border-sky-400/30 bg-sky-400/10 px-2.5 py-0.5 text-xs font-medium text-sky-200 hover:bg-sky-400/15"><span aria-hidden="true">\u{1F4CE}</span><span data-artifact-label="true">${initialText}</span></button>`;
+  return `<button type="button" data-artifact-id="${safeArtifactId}" data-artifact-link="true" data-debug-id="artifact-link-chip-${safeArtifactId}" title="Open artifact" class="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-info-soft px-2.5 py-0.5 text-xs font-medium text-accent hover:bg-neutral-soft"><span aria-hidden="true">\u{1F4CE}</span><span data-artifact-label="true">${initialText}</span></button>`;
 }
 
 function renderInline(text: string): string {
   let escaped = escapeHtml(text);
-  escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code class="rounded bg-white/10 px-1 py-0.5 font-mono text-[0.85em] text-zinc-100">${code}</code>`);
+  escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code class="rounded bg-neutral-soft px-1 py-0.5 font-mono text-[0.85em] text-primary">${code}</code>`);
   escaped = escaped.replace(/\*\*\*([^*\n]+)\*\*\*/g, '<strong><em>$1</em></strong>');
   escaped = escaped.replace(/(^|[^A-Za-z0-9_])___([^_\n]+)___(?![A-Za-z0-9_])/g, '$1<strong><em>$2</em></strong>');
   escaped = escaped.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
@@ -80,7 +80,7 @@ function renderInline(text: string): string {
   escaped = escaped.replace(/(^|[^A-Za-z0-9_])_([^_\s](?:[^_\n]*?[^_\s])?)_(?![A-Za-z0-9_])/g, '$1<em>$2</em>');
   escaped = escaped.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
   escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, url) => (
-    `<a href="${url}" target="_blank" rel="noreferrer" class="text-sky-300 underline decoration-sky-500/40 hover:decoration-sky-400">${label}</a>`
+    `<a href="${url}" target="_blank" rel="noreferrer" class="text-accent underline decoration-accent/40 hover:decoration-accent">${label}</a>`
   ));
   escaped = escaped.replace(ARTIFACT_MARKDOWN_LINK_RE, (_m, label, _link, artifactId) => createArtifactButtonHtml(artifactId, label));
   escaped = escaped.replace(ARTIFACT_TOKEN_RE, (_m, prefix, _link, artifactId) => {
@@ -89,7 +89,7 @@ function renderInline(text: string): string {
     return `${prefix}${createArtifactButtonHtml(artifactId)}`;
   });
   escaped = escaped.replace(/(^|[^"'>])((?:https?:\/\/)[\w\-._~:\/?#\[\]@!$&'()*+,;=%]+[\w\-_~:\/?#\[\]@!$&'()*+;=%])/g, (_m, prefix, url) => {
-    return `${prefix}<a href="${url}" target="_blank" rel="noreferrer" class="text-sky-300 underline decoration-sky-500/40 hover:decoration-sky-400">${url}</a>`;
+    return `${prefix}<a href="${url}" target="_blank" rel="noreferrer" class="text-accent underline decoration-accent/40 hover:decoration-accent">${url}</a>`;
   });
   return escaped;
 }
@@ -145,10 +145,10 @@ function renderTable(lines: string[], start: number): { html: string; nextIndex:
     rows.push(splitTableRow(lines[i]));
     i += 1;
   }
-  const head = headers.map((cell, idx) => `<th class="whitespace-nowrap border-b border-white/10 px-3 py-2 ${aligns[idx] || 'text-left'} font-semibold text-zinc-100">${renderInline(cell)}</th>`).join('');
-  const body = rows.map((row) => `<tr>${headers.map((_h, idx) => `<td class="whitespace-nowrap border-b border-white/5 px-3 py-2 align-top ${aligns[idx] || 'text-left'}">${renderInline(row[idx] || '')}</td>`).join('')}</tr>`).join('');
+  const head = headers.map((cell, idx) => `<th class="whitespace-nowrap border-b border-subtle px-3 py-2 ${aligns[idx] || 'text-left'} font-semibold text-primary">${renderInline(cell)}</th>`).join('');
+  const body = rows.map((row) => `<tr>${headers.map((_h, idx) => `<td class="whitespace-nowrap border-b border-subtle px-3 py-2 align-top ${aligns[idx] || 'text-left'}">${renderInline(row[idx] || '')}</td>`).join('')}</tr>`).join('');
   return {
-    html: `<div class="markdown-table my-2 overflow-hidden rounded-xl border border-white/10"><div class="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-3 py-1.5 text-caption text-zinc-500"><span>table</span><button type="button" data-markdown-copy-table="true" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy CSV</button></div><div class="overflow-x-auto"><table class="min-w-full border-collapse text-left text-sm"><thead class="bg-white/[0.04]"><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`,
+    html: `<div class="markdown-table my-2 overflow-hidden rounded-xl border border-subtle"><div class="flex items-center justify-between border-b border-subtle bg-surface-raised px-3 py-1.5 text-caption text-muted"><span>table</span><button type="button" data-markdown-copy-table="true" class="rounded-md bg-neutral-soft px-2 py-1 text-xs text-primary opacity-80 hover:bg-surface-raised hover:opacity-100">Copy CSV</button></div><div class="overflow-x-auto"><table class="min-w-full border-collapse text-left text-sm"><thead class="bg-surface-raised"><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`,
     nextIndex: i,
   };
 }
@@ -172,10 +172,10 @@ function renderBlocks(source: string): string {
       const escapedCode = escapeHtml(body.join('\n'));
       const langLabel = escapeHtml(lang || 'code');
       if (/^(?:mermaid|mermedai)$/i.test((lang || '').trim())) {
-        out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 mermaid-block" data-mermaid-code="${escapedCode}"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-caption text-zinc-500"><span class="font-mono">mermaid</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><div class="mermaid-diagram-container p-3 overflow-x-auto flex flex-col items-center justify-center bg-black/20" data-mermaid-rendered="false"><pre class="font-mono text-[12px] leading-relaxed text-zinc-100 text-left w-full" data-lang="mermaid"><code>${escapedCode}</code></pre></div></div>`);
+        out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-subtle bg-surface mermaid-block" data-mermaid-code="${escapedCode}"><div class="flex items-center justify-between border-b border-subtle px-3 py-1.5 text-caption text-muted"><span class="font-mono">mermaid</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-neutral-soft px-2 py-1 text-xs text-primary opacity-80 hover:bg-surface-raised hover:opacity-100">Copy</button></div><div class="mermaid-diagram-container p-3 overflow-x-auto flex flex-col items-center justify-center bg-surface-raised" data-mermaid-rendered="false"><pre class="font-mono text-[12px] leading-relaxed text-primary text-left w-full" data-lang="mermaid"><code>${escapedCode}</code></pre></div></div>`);
         continue;
       }
-      out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-caption text-zinc-500"><span class="font-mono">${langLabel}</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><pre class="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-zinc-100" data-lang="${escapeHtml(lang)}"><code>${escapedCode}</code></pre></div>`);
+      out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-subtle bg-surface"><div class="flex items-center justify-between border-b border-subtle px-3 py-1.5 text-caption text-muted"><span class="font-mono">${langLabel}</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-neutral-soft px-2 py-1 text-xs text-primary opacity-80 hover:bg-surface-raised hover:opacity-100">Copy</button></div><pre class="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-primary" data-lang="${escapeHtml(lang)}"><code>${escapedCode}</code></pre></div>`);
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
@@ -183,7 +183,7 @@ function renderBlocks(source: string): string {
     if (heading) {
       const level = heading[1].length;
       const tag = `h${Math.min(6, level + 2)}`;
-      out.push(`<${tag} class="mt-2 font-semibold text-zinc-100">${renderInline(heading[2])}</${tag}>`);
+      out.push(`<${tag} class="mt-2 font-semibold text-primary">${renderInline(heading[2])}</${tag}>`);
       i += 1;
       continue;
     }
@@ -199,7 +199,7 @@ function renderBlocks(source: string): string {
         quote.push(lines[i].slice(2));
         i += 1;
       }
-      out.push(`<blockquote class="my-1 border-l-2 border-sky-400/40 pl-3 text-zinc-300">${renderInline(quote.join(' '))}</blockquote>`);
+      out.push(`<blockquote class="my-1 border-l-2 border-accent/40 pl-3 text-muted">${renderInline(quote.join(' '))}</blockquote>`);
       continue;
     }
     if (/^[-*+]\s+/.test(line)) {
@@ -221,7 +221,7 @@ function renderBlocks(source: string): string {
       continue;
     }
     if (/^(---|\*\*\*|___)\s*$/.test(line)) {
-      out.push('<hr class="my-2 border-white/10" />');
+      out.push('<hr class="my-2 border-subtle" />');
       i += 1;
       continue;
     }
@@ -242,7 +242,7 @@ export function renderMarkdown(source: string, copyAll = true): string {
   if (!raw.trim()) return '';
   if (!copyAll) return renderBlocks(source);
   const escapedSource = escapeHtml(raw);
-  const copyBtn = `<div class="mb-1 flex items-center justify-end"><button type="button" data-markdown-copy-all="true" data-debug-id="markdown-copy-all-btn" data-markdown-source="${escapedSource}" title="Copy entire markdown" class="inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-zinc-400 opacity-60 transition hover:bg-white/15 hover:text-zinc-100 hover:opacity-100"><span aria-hidden="true" class="text-xs">\u{1F4CB}</span></button></div>`;
+  const copyBtn = `<div class="mb-1 flex items-center justify-end"><button type="button" data-markdown-copy-all="true" data-debug-id="markdown-copy-all-btn" data-markdown-source="${escapedSource}" title="Copy entire markdown" class="inline-flex h-6 w-6 items-center justify-center rounded-md border border-subtle bg-surface text-muted opacity-60 transition hover:bg-surface-raised hover:text-primary hover:opacity-100"><span aria-hidden="true" class="text-xs">\u{1F4CB}</span></button></div>`;
   return copyBtn + renderBlocks(source);
 }
 
@@ -346,9 +346,9 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
           tempEl.parentNode.removeChild(tempEl);
         }
         const errorBanner = document.createElement('div');
-        errorBanner.className = 'mb-2 rounded bg-rose-500/10 border border-rose-500/30 px-2 py-1 text-caption text-rose-300';
+        errorBanner.className = 'mb-2 rounded bg-danger-soft border border-danger/30 px-2 py-1 text-caption text-danger';
         errorBanner.textContent = 'Failed to render Mermaid diagram';
-        if (!container.querySelector('.text-rose-300')) {
+        if (!container.querySelector('.text-danger')) {
           container.insertBefore(errorBanner, container.firstChild);
         }
       }
@@ -425,7 +425,7 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
     <div
       ref={rootRef}
       data-debug-id={dataDebugId}
-      className={`markdown min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${spacing} text-sm text-zinc-200 ${className || ''}`}
+      className={`markdown min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${spacing} text-sm text-primary ${className || ''}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

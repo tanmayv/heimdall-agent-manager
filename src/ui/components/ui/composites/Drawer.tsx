@@ -91,7 +91,7 @@ const DrawerBase: React.FC<DrawerProps> = ({
 
   return createPortal(
     <div
-      className={['fixed inset-0 z-modal flex bg-black/70 backdrop-blur-sm', isBottom ? 'items-end' : '']
+      className={['fixed inset-0 z-modal flex bg-surface-overlay/80 backdrop-blur-sm', isBottom ? 'items-end' : '']
         .filter(Boolean)
         .join(' ')}
       onMouseDown={(e) => {

@@ -442,17 +442,17 @@ export default function ProjectLaunchModal({
       open={isOpen}
       onOpenChange={(next) => { if (!next) onClose(); }}
       size="lg"
-      className="h-[640px] text-white"
+      className="h-[640px] text-primary"
       data-debug-id="project-launch-modal"
-      title={<>Launch Agent — <span className="text-sky-400">{project.name}</span></>}
+      title={<>Launch Agent — <span className="text-accent">{project.name}</span></>}
     >
       <div className="flex h-full flex-col px-6 pb-2">
-        <p className="shrink-0 -mt-1 mb-3 text-xs text-zinc-400">
+        <p className="shrink-0 -mt-1 mb-3 text-xs text-muted">
           Start or launch agents scoped to this project
         </p>
 
         {/* Tab Navigation */}
-        <div className="shrink-0 flex items-center gap-2 border-b border-white/10 pb-2.5 mb-3">
+        <div className="shrink-0 flex items-center gap-2 border-b border-subtle pb-2.5 mb-3">
           <button
             type="button"
             data-debug-id="project-launch-tab-chain"
@@ -462,8 +462,8 @@ export default function ProjectLaunchModal({
             }}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
               activeTab === 'chain'
-                ? 'bg-white/10 text-white font-semibold shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+                ? 'bg-neutral-soft text-primary font-semibold shadow-sm'
+                : 'text-muted hover:text-primary hover:bg-neutral-soft'
             }`}
           >
             Existing Task Chain Agent
@@ -477,8 +477,8 @@ export default function ProjectLaunchModal({
             }}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
               activeTab === 'new'
-                ? 'bg-white/10 text-white font-semibold shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+                ? 'bg-neutral-soft text-primary font-semibold shadow-sm'
+                : 'text-muted hover:text-primary hover:bg-neutral-soft'
             }`}
           >
             New Agent Instance
@@ -492,8 +492,8 @@ export default function ProjectLaunchModal({
             }}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
               activeTab === 'existing'
-                ? 'bg-white/10 text-white font-semibold shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'
+                ? 'bg-neutral-soft text-primary font-semibold shadow-sm'
+                : 'text-muted hover:text-primary hover:bg-neutral-soft'
             }`}
           >
             Existing Agent Instance
@@ -506,8 +506,8 @@ export default function ProjectLaunchModal({
             data-debug-id="project-launch-feedback-banner"
             className={`shrink-0 mb-3 flex items-center gap-2 rounded-xl px-3 py-2 text-xs leading-5 ${
               feedback.type === 'success'
-                ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
-                : 'border border-red-500/20 bg-red-500/10 text-red-300'
+                ? 'border border-success/30 bg-success-soft text-success'
+                : 'border border-danger/30 bg-danger-soft text-danger'
             }`}
           >
             <Icon name={feedback.type === 'success' ? 'check' : 'alert'} size={14} />
@@ -521,11 +521,11 @@ export default function ProjectLaunchModal({
           {activeTab === 'chain' && (
             <div className="flex-1 min-h-0 flex flex-col space-y-3 overflow-hidden">
               {chainsQuery.isLoading ? (
-                <div className="py-8 text-center text-xs text-zinc-500">Loading task chains…</div>
+                <div className="py-8 text-center text-xs text-muted">Loading task chains…</div>
               ) : chains.length === 0 ? (
                 <div
                   data-debug-id="project-launch-chains-empty"
-                  className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
+                  className="rounded-xl border border-subtle bg-surface-raised py-8 text-center text-xs text-muted"
                 >
                   No task chains found for this project.
                 </div>
@@ -534,7 +534,7 @@ export default function ProjectLaunchModal({
                   {/* Task chains list section */}
                   <div className="shrink-0 space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                      <span className="text-caption font-semibold uppercase tracking-[0.14em] text-muted">
                         Select Task Chain
                       </span>
                       {(chainHasMore || chainCursorHistory.length > 0) && (
@@ -579,15 +579,15 @@ export default function ProjectLaunchModal({
                             onClick={() => setSelectedChainId(chain.chainId)}
                             className={`flex flex-col items-start rounded-xl border p-2.5 text-left transition-all ${
                               isSelected
-                                ? 'border-sky-500/60 bg-sky-500/10 shadow-sm'
-                                : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.05]'
+                                ? 'border-accent/60 bg-accent/10 shadow-sm'
+                                : 'border-subtle bg-surface hover:bg-surface-raised'
                             }`}
                           >
-                            <span className="truncate w-full text-xs font-medium text-zinc-200">
+                            <span className="truncate w-full text-xs font-medium text-primary">
                               {chain.title || chain.chainId}
                             </span>
-                            <div className="mt-1 flex items-center gap-2 text-[10px] text-zinc-400">
-                              <span className="rounded bg-white/5 px-1.5 py-0.5 capitalize">
+                            <div className="mt-1 flex items-center gap-2 text-[10px] text-muted">
+                              <span className="rounded bg-neutral-soft px-1.5 py-0.5 capitalize">
                                 {chain.status || 'active'}
                               </span>
                               <span>{chain.taskCount} task{chain.taskCount === 1 ? '' : 's'}</span>
@@ -600,13 +600,13 @@ export default function ProjectLaunchModal({
 
                   {/* Chain Agents List */}
                   {selectedChainId && (
-                    <div className="flex-1 min-h-0 flex flex-col rounded-xl border border-white/10 bg-black/20 p-3 overflow-hidden">
+                    <div className="flex-1 min-h-0 flex flex-col rounded-xl border border-subtle bg-surface p-3 overflow-hidden">
                       <div className="shrink-0 flex items-center justify-between pb-2">
-                        <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                        <span className="text-caption font-semibold uppercase tracking-[0.14em] text-muted">
                           Chain Agents
                         </span>
                         {chainMembers.length > 0 && (
-                          <span className="text-[10px] text-zinc-500">
+                          <span className="text-[10px] text-faint">
                             {selectedChainAgentIds.size} of {chainMembers.length} selected
                           </span>
                         )}
@@ -614,9 +614,9 @@ export default function ProjectLaunchModal({
 
                       <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
                         {chainDetailQuery.isLoading ? (
-                          <div className="py-4 text-center text-xs text-zinc-500">Loading chain agents…</div>
+                          <div className="py-4 text-center text-xs text-muted">Loading chain agents…</div>
                         ) : chainMembers.length === 0 ? (
-                          <div className="py-3 text-center text-xs text-zinc-500">
+                          <div className="py-3 text-center text-xs text-muted">
                             No agents found in this task chain.
                           </div>
                         ) : (
@@ -649,10 +649,10 @@ export default function ProjectLaunchModal({
                                 data-debug-id={`project-launch-chain-agent-row-${memberInstanceId}`}
                                 className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors ${
                                   isActive
-                                    ? 'border-transparent opacity-60 cursor-not-allowed bg-white/[0.01]'
+                                    ? 'border-transparent opacity-60 cursor-not-allowed bg-neutral-soft/30'
                                     : isChecked
-                                    ? 'border-white/20 bg-white/[0.06] cursor-pointer'
-                                    : 'border-transparent hover:bg-white/[0.03] cursor-pointer'
+                                    ? 'border-subtle bg-neutral-soft cursor-pointer'
+                                    : 'border-transparent hover:bg-neutral-soft cursor-pointer'
                                 }`}
                               >
                                 <Checkbox
@@ -665,20 +665,20 @@ export default function ProjectLaunchModal({
                                   <span
                                     className={`truncate text-xs ${
                                       isCoordinator
-                                        ? 'text-amber-400 font-semibold'
-                                        : 'text-zinc-200'
+                                        ? 'text-warning font-semibold'
+                                        : 'text-primary'
                                     }`}
                                   >
                                     {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
                                     {member.displayName || member.agentId || memberInstanceId}
                                   </span>
                                   {isCoordinator && (
-                                    <span className="rounded-full bg-amber-400/15 border border-amber-400/30 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                                    <span className="rounded-full bg-warning-soft border border-warning/30 px-2 py-0.5 text-[10px] font-semibold text-warning">
                                       Coordinator
                                     </span>
                                   )}
                                   {member.role && !isCoordinator && (
-                                    <span className="rounded bg-white/5 px-1.5 py-0.2 text-[10px] text-zinc-400 capitalize">
+                                    <span className="rounded bg-neutral-soft px-1.5 py-0.2 text-[10px] text-muted capitalize">
                                       {member.role}
                                     </span>
                                   )}
@@ -686,12 +686,12 @@ export default function ProjectLaunchModal({
                                 {isActive ? (
                                   <span
                                     data-debug-id={`project-launch-chain-agent-active-badge-${memberInstanceId}`}
-                                    className="rounded-full bg-emerald-400/15 border border-emerald-400/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300"
+                                    className="rounded-full bg-success-soft border border-success/30 px-2 py-0.5 text-[10px] font-semibold text-success"
                                   >
                                     Active ({memberStatus})
                                   </span>
                                 ) : (
-                                  <span className="font-mono text-[10.5px] text-zinc-500">
+                                  <span className="font-mono text-[10.5px] text-faint">
                                     {memberStatus}
                                   </span>
                                 )}
@@ -711,18 +711,18 @@ export default function ProjectLaunchModal({
           {activeTab === 'new' && (
             <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
               {/* Bridge Selector */}
-              <div className="shrink-0 flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+              <div className="shrink-0 flex items-center justify-between gap-3 rounded-xl border border-subtle bg-surface px-3 py-2">
                 <label
                   htmlFor="project-launch-bridge-select"
-                  className="text-xs font-medium text-zinc-300 shrink-0"
+                  className="text-xs font-medium text-primary shrink-0"
                 >
                   Target Bridge:
                 </label>
                 <div className="flex-1 min-w-0 flex items-center justify-end">
                   {bridgesQuery.isLoading ? (
-                    <span className="text-xs text-zinc-500">Loading bridges…</span>
+                    <span className="text-xs text-muted">Loading bridges…</span>
                   ) : availableBridges.length === 0 ? (
-                    <span className="text-xs text-amber-400">No bridges available</span>
+                    <span className="text-xs text-warning">No bridges available</span>
                   ) : (
                     <Select
                       id="project-launch-bridge-select"
@@ -744,11 +744,11 @@ export default function ProjectLaunchModal({
               </div>
 
               <div className="shrink-0 flex items-center justify-between pb-1 pt-1">
-                <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                <span className="text-caption font-semibold uppercase tracking-[0.14em] text-muted">
                   Durable Agents Catalog
                 </span>
                 {durableAgents.length > 0 && (
-                  <span className="text-caption text-zinc-500">
+                  <span className="text-caption text-faint">
                     Showing {agentsPage * AGENTS_PAGE_SIZE + 1}–{Math.min((agentsPage + 1) * AGENTS_PAGE_SIZE, durableAgents.length)} of {durableAgents.length}
                   </span>
                 )}
@@ -756,11 +756,11 @@ export default function ProjectLaunchModal({
 
               <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
                 {identitiesQuery.isLoading ? (
-                  <div className="py-8 text-center text-xs text-zinc-500">Loading agents…</div>
+                  <div className="py-8 text-center text-xs text-muted">Loading agents…</div>
                 ) : durableAgents.length === 0 ? (
                   <div
                     data-debug-id="project-launch-new-agents-empty"
-                    className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
+                    className="rounded-xl border border-subtle bg-surface-raised py-8 text-center text-xs text-muted"
                   >
                     No durable agents found.
                   </div>
@@ -773,8 +773,8 @@ export default function ProjectLaunchModal({
                         data-debug-id={`project-launch-new-agent-row-${agent.agentId}`}
                         className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
                           isChecked
-                            ? 'border-white/20 bg-white/[0.06]'
-                            : 'border-transparent hover:bg-white/[0.03]'
+                            ? 'border-subtle bg-neutral-soft'
+                            : 'border-transparent hover:bg-neutral-soft'
                         }`}
                       >
                         <Checkbox
@@ -783,20 +783,20 @@ export default function ProjectLaunchModal({
                           onChange={() => toggleNewAgent(agent.agentId)}
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-xs font-medium text-zinc-200">
+                          <div className="truncate text-xs font-medium text-primary">
                             {agent.name}
                           </div>
-                          <div className="truncate font-mono text-[10.5px] text-zinc-500">
+                          <div className="truncate font-mono text-[10.5px] text-faint">
                             {agent.agentId}
                           </div>
                         </div>
                         {agent.tier && (
-                          <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-zinc-400">
+                          <span className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] text-muted">
                             {agent.tier}
                           </span>
                         )}
                         {agent.provider && (
-                          <span className="text-[10.5px] text-zinc-500 capitalize">
+                          <span className="text-[10.5px] text-faint capitalize">
                             {agent.provider}
                           </span>
                         )}
@@ -808,8 +808,8 @@ export default function ProjectLaunchModal({
 
               {/* Pagination Controls */}
               {totalAgentPages > 1 && (
-                <div className="shrink-0 flex items-center justify-between border-t border-white/5 pt-2">
-                  <span className="text-caption text-zinc-500">
+                <div className="shrink-0 flex items-center justify-between border-t border-subtle pt-2">
+                  <span className="text-caption text-faint">
                     {selectedNewAgentIds.size} agent(s) selected
                   </span>
                   <div className="flex items-center gap-2">
@@ -821,7 +821,7 @@ export default function ProjectLaunchModal({
                     >
                       Previous
                     </Button>
-                    <span className="text-caption text-zinc-400">
+                    <span className="text-caption text-muted">
                       {agentsPage + 1} / {totalAgentPages}
                     </span>
                     <Button
@@ -842,11 +842,11 @@ export default function ProjectLaunchModal({
           {activeTab === 'existing' && (
             <div className="flex-1 min-h-0 flex flex-col space-y-2 overflow-hidden">
               <div className="shrink-0 flex items-center justify-between pb-1">
-                <span className="text-caption font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                <span className="text-caption font-semibold uppercase tracking-[0.14em] text-muted">
                   Project Instances
                 </span>
                 {stoppedInstances.length > 0 && (
-                  <span className="text-caption text-zinc-500">
+                  <span className="text-caption text-faint">
                     Showing {existingPage * EXISTING_PAGE_SIZE + 1}–{Math.min((existingPage + 1) * EXISTING_PAGE_SIZE, stoppedInstances.length)} of {stoppedInstances.length} ({stoppedInstances.length} stopped instance{stoppedInstances.length === 1 ? '' : 's'})
                   </span>
                 )}
@@ -854,18 +854,18 @@ export default function ProjectLaunchModal({
 
               <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
                 {instancesQuery.isLoading ? (
-                  <div className="py-8 text-center text-xs text-zinc-500">Loading instances…</div>
+                  <div className="py-8 text-center text-xs text-muted">Loading instances…</div>
                 ) : rawInstances.length === 0 ? (
                   <div
                     data-debug-id="project-launch-existing-instances-empty"
-                    className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-500"
+                    className="rounded-xl border border-subtle bg-surface-raised py-8 text-center text-xs text-muted"
                   >
                     No existing instances for this project yet.
                   </div>
                 ) : hasOnlyActiveInstances ? (
                   <div
                     data-debug-id="project-launch-existing-instances-all-active"
-                    className="rounded-xl border border-white/5 bg-white/[0.02] py-8 text-center text-xs text-zinc-400"
+                    className="rounded-xl border border-subtle bg-surface-raised py-8 text-center text-xs text-muted"
                   >
                     All existing instances for this project are currently running.
                   </div>
@@ -895,8 +895,8 @@ export default function ProjectLaunchModal({
                         data-debug-id={`project-launch-existing-instance-row-${instanceId}`}
                         className={`flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
                           isChecked
-                            ? 'border-white/20 bg-white/[0.06]'
-                            : 'border-transparent hover:bg-white/[0.03]'
+                            ? 'border-subtle bg-neutral-soft'
+                            : 'border-transparent hover:bg-neutral-soft'
                         }`}
                       >
                         <Checkbox
@@ -905,14 +905,14 @@ export default function ProjectLaunchModal({
                           onChange={() => toggleExistingInstance(instanceId)}
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-xs font-medium text-zinc-200">
+                          <div className="truncate text-xs font-medium text-primary">
                             {displayName}
                           </div>
-                          <div className="truncate font-mono text-[10.5px] text-zinc-500">
+                          <div className="truncate font-mono text-[10.5px] text-faint">
                             {instanceId}
                           </div>
                         </div>
-                        <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold border bg-zinc-700/50 border-zinc-600/50 text-zinc-400">
+                        <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold border border-subtle bg-neutral-soft text-muted">
                           {runtimeStatus}
                         </span>
                       </label>
@@ -923,8 +923,8 @@ export default function ProjectLaunchModal({
 
               {/* Pagination Controls */}
               {totalExistingPages > 1 && (
-                <div className="shrink-0 flex items-center justify-between border-t border-white/5 pt-2">
-                  <span className="text-caption text-zinc-500">
+                <div className="shrink-0 flex items-center justify-between border-t border-subtle pt-2">
+                  <span className="text-caption text-faint">
                     {selectedExistingInstanceIds.size} instance(s) selected
                   </span>
                   <div className="flex items-center gap-2">
@@ -936,7 +936,7 @@ export default function ProjectLaunchModal({
                     >
                       Previous
                     </Button>
-                    <span className="text-caption text-zinc-400">
+                    <span className="text-caption text-muted">
                       {existingPage + 1} / {totalExistingPages}
                     </span>
                     <Button

@@ -50,15 +50,15 @@ export default class ErrorBoundary extends React.Component<ErrorBoundaryProps, E
     return (
       <div
         data-debug-id="error-boundary-fallback"
-        className="m-4 rounded-2xl border border-red-500/30 bg-red-950/20 p-6 text-sm text-red-100"
+        className="m-4 rounded-2xl border border-danger/30 bg-danger-soft p-6 text-sm text-primary"
         role="alert"
       >
-        <h2 className="mb-1 text-base font-bold text-red-200">Something went wrong{where}.</h2>
-        <p className="mb-3 text-red-200/80">
+        <h2 className="mb-1 text-base font-bold text-danger">Something went wrong{where}.</h2>
+        <p className="mb-3 text-muted">
           This section hit an unexpected error and was contained so the rest of the app keeps working.
         </p>
         {error?.message ? (
-          <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-black/40 p-3 font-mono text-[11px] text-red-200/90">
+          <pre className="mb-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-subtle bg-surface-raised p-3 font-mono text-[11px] text-danger">
             {error.message}
           </pre>
         ) : null}
@@ -67,7 +67,7 @@ export default class ErrorBoundary extends React.Component<ErrorBoundaryProps, E
             type="button"
             data-debug-id="error-boundary-retry"
             onClick={this.handleReset}
-            className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+            className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-accent-fg hover:opacity-90"
           >
             Try again
           </button>
@@ -75,7 +75,7 @@ export default class ErrorBoundary extends React.Component<ErrorBoundaryProps, E
             type="button"
             data-debug-id="error-boundary-reload"
             onClick={() => window.location.reload()}
-            className="rounded-xl bg-white/5 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-white/10"
+            className="rounded-xl border border-subtle bg-surface px-4 py-2 text-sm font-semibold text-muted hover:bg-surface-raised hover:text-primary"
           >
             Reload page
           </button>

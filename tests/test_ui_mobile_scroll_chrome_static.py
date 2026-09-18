@@ -125,7 +125,8 @@ def test_transitions_and_classes():
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
     # Header Overlay classes
-    require("fixed top-0 inset-x-0 z-20 h-14 bg-[#0c0c0c]/90 backdrop-blur-md" in src,
+    require(("fixed top-0 inset-x-0 z-20 h-14 bg-surface/90 backdrop-blur-md" in src) or
+            ("fixed top-0 inset-x-0 z-20 h-14 bg-[#0c0c0c]/90 backdrop-blur-md" in src),
             "Header must render as fixed top-0 overlay on mobile")
     require("-translate-y-full opacity-0 pointer-events-none" in src,
             "Header must transition with -translate-y-full opacity-0 pointer-events-none when hidden")
@@ -163,7 +164,8 @@ def test_app_shell_and_mobile_tab_bar():
             "AppShell route change handler must reset scrollChromeSuppressed to false")
 
     # RouteOutlet for conversation thread must not add dynamic pb-16
-    require('if (isConversationThreadRoute) {\n    const agentInstanceId = decodeSegment(path.slice(\'/conversations/\'.length));\n    return (\n      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-[#090909]">' in shell_src,
+    require(('if (isConversationThreadRoute) {\n    const agentInstanceId = decodeSegment(path.slice(\'/conversations/\'.length));\n    return (\n      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-canvas">' in shell_src) or
+            ('if (isConversationThreadRoute) {\n    const agentInstanceId = decodeSegment(path.slice(\'/conversations/\'.length));\n    return (\n      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-[#090909]">' in shell_src),
             "RouteOutlet for isConversationThreadRoute must not add dynamic pb-16")
 
     # MobileTabBar uses CSS transform translate-y-full without unmounting on scroll hide
@@ -183,7 +185,8 @@ def test_floating_toggle_button():
             "Floating toggle button must only be active on mobile when chrome is hidden and right panel closed")
     require("fixed top-2.5 right-2.5 z-30" in src,
             "Floating toggle button must be rendered at fixed top-2.5 right-2.5 z-30")
-    require("bg-black/50 backdrop-blur border border-white/10 text-zinc-400 hover:text-white rounded-xl h-9 w-9 grid place-items-center transition-opacity duration-200" in src,
+    require(("bg-surface-overlay/80 backdrop-blur border border-subtle text-muted hover:text-primary rounded-xl h-9 w-9 grid place-items-center transition-opacity duration-200" in src) or
+            ("bg-black/50 backdrop-blur border border-white/10 text-zinc-400 hover:text-white rounded-xl h-9 w-9 grid place-items-center transition-opacity duration-200" in src),
             "Floating toggle button must match required styling")
     require("onClick={toggleRightPanel}" in src,
             "Floating toggle button must trigger toggleRightPanel on click")
@@ -198,7 +201,8 @@ def test_bottom_agent_pill():
             "Bottom floating pills container must be rendered at fixed bottom-9 inset-x-0 flex justify-center items-center gap-2 z-30 pointer-events-none")
     require('data-debug-id="conversation-floating-agent-pill"' in src,
             "Bottom agent pill must have data-debug-id='conversation-floating-agent-pill'")
-    require("bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200" in src,
+    require(("bg-surface-raised/90 backdrop-blur-md border border-subtle px-3 py-1.5 rounded-full text-xs font-medium text-primary shadow-panel flex items-center gap-1.5 hover:bg-neutral-soft hover:text-primary transition-all duration-200" in src) or
+            ("bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200" in src),
             "Bottom agent pill must match required styling")
     require("onClick={() => setAgentPickerOpen(true)}" in src,
             "Bottom agent pill must trigger setAgentPickerOpen(true) on click")

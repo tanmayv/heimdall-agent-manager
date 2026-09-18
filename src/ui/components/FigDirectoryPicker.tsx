@@ -267,12 +267,12 @@ export default function FigDirectoryPicker({
           {/* Header */}
           <div className="mb-3 flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
-                <Icon name="folder" size={14} className="text-amber-400" />
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                <Icon name="folder" size={14} className="text-warning" />
                 <span>CitC Workspaces · Select Workspace</span>
                 <StatusPill tone="warning" emphasis="soft">CitC</StatusPill>
               </div>
-              <div className="mt-0.5 truncate text-xs text-zinc-500">
+              <div className="mt-0.5 truncate text-xs text-muted">
                 Choose a Client in the Cloud workspace on this bridge machine
               </div>
             </div>
@@ -303,8 +303,8 @@ export default function FigDirectoryPicker({
 
           {/* Inline New Workspace Form */}
           {showNewWs ? (
-            <form onSubmit={handleCreateWorkspaceSubmit} className="mb-3 rounded-xl border border-white/10 bg-black/40 p-3">
-              <div className="text-xs font-semibold text-zinc-300 mb-2">Create New CitC Workspace (<code>g4 citc</code>)</div>
+            <form onSubmit={handleCreateWorkspaceSubmit} className="mb-3 rounded-xl border border-subtle bg-surface p-3">
+              <div className="text-xs font-semibold text-primary mb-2">Create New CitC Workspace (<code>g4 citc</code>)</div>
               <div className="flex items-center gap-2">
                 <Input
                   data-debug-id={`${debugId}-new-ws-input`}
@@ -333,7 +333,7 @@ export default function FigDirectoryPicker({
                 </Button>
               </div>
               {createWsError ? (
-                <p className="mt-1.5 text-xs text-red-400">{createWsError}</p>
+                <p className="mt-1.5 text-xs text-danger">{createWsError}</p>
               ) : null}
             </form>
           ) : null}
@@ -349,32 +349,32 @@ export default function FigDirectoryPicker({
               className="font-mono text-xs"
             />
             {isWsFetching ? (
-              <span className="absolute right-3 top-2.5 text-[10px] text-zinc-400 animate-pulse font-mono">
+              <span className="absolute right-3 top-2.5 text-[10px] text-muted animate-pulse font-mono">
                 Filtering…
               </span>
             ) : null}
           </div>
 
           {/* Workspaces List */}
-          <div data-debug-id={`${debugId}-workspaces-list`} className="max-h-[260px] overflow-y-auto rounded-xl border border-white/10 bg-black/20 p-1 space-y-0.5">
+          <div data-debug-id={`${debugId}-workspaces-list`} className="max-h-[260px] overflow-y-auto rounded-xl border border-subtle bg-surface p-1 space-y-0.5">
             {isWsLoading && workspaces.length === 0 ? (
-              <div data-debug-id={`${debugId}-workspaces-loading`} className="p-6 text-center text-xs text-zinc-500">
+              <div data-debug-id={`${debugId}-workspaces-loading`} className="p-6 text-center text-xs text-muted">
                 Loading CitC workspaces…
               </div>
             ) : wsQueryError ? (
-              <div className="p-4 text-center text-xs text-zinc-400">
+              <div className="p-4 text-center text-xs text-muted">
                 CitC workspace discovery failed.
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => refetchWs()}
-                  className="ml-2 text-sky-400"
+                  className="ml-2 text-accent"
                 >
                   Retry
                 </Button>
               </div>
             ) : workspaces.length === 0 ? (
-              <div data-debug-id={`${debugId}-workspaces-empty`} className="p-6 text-center text-xs text-zinc-500">
+              <div data-debug-id={`${debugId}-workspaces-empty`} className="p-6 text-center text-xs text-faint">
                 {wsSearch ? `No CitC workspaces matching "${wsSearch}".` : 'No CitC workspaces found.'}
               </div>
             ) : (
@@ -388,11 +388,11 @@ export default function FigDirectoryPicker({
                     onSelectWorkspace?.(ws.name);
                     void load('');
                   }}
-                  className="flex w-full items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-white/[0.04] transition cursor-pointer text-left group"
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-surface-raised transition cursor-pointer text-left group"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <Icon name="folder" size={15} className="shrink-0 text-amber-400 group-hover:scale-105 transition-transform" />
-                    <span className="text-zinc-200 text-sm font-medium font-mono truncate group-hover:text-white transition-colors">
+                    <Icon name="folder" size={15} className="shrink-0 text-warning group-hover:scale-105 transition-transform" />
+                    <span className="text-primary text-sm font-medium font-mono truncate">
                       {ws.name}
                     </span>
                   </div>
@@ -407,7 +407,7 @@ export default function FigDirectoryPicker({
                         {ws.age_text}
                       </Badge>
                     ) : null}
-                    <Icon name="chevron-right" size={14} className="text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+                    <Icon name="chevron-right" size={14} className="text-faint group-hover:text-muted transition-colors" />
                   </div>
                 </button>
               ))
@@ -422,12 +422,12 @@ export default function FigDirectoryPicker({
           {/* Header */}
           <div className="mb-3 flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-300">
-                <Icon name="folder" size={14} className="text-amber-400" />
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                <Icon name="folder" size={14} className="text-warning" />
                 <span>CitC Browse</span>
                 <StatusPill tone="warning" emphasis="soft">{activeWorkspace}</StatusPill>
               </div>
-              <div className="mt-0.5 truncate font-mono text-xs text-zinc-500">
+              <div className="mt-0.5 truncate font-mono text-xs text-muted">
                 /google/src/cloud/…/{activeWorkspace}/google3{cwd ? `/${cwd}` : ''}
               </div>
             </div>
@@ -463,34 +463,34 @@ export default function FigDirectoryPicker({
           </div>
 
           {/* Breadcrumb Navigation: 'CitC Workspaces > [activeWorkspace] > [subdirs]' */}
-          <div data-debug-id={`${debugId}-breadcrumb`} className="mb-2.5 flex flex-wrap items-center gap-1 text-xs text-zinc-400">
+          <div data-debug-id={`${debugId}-breadcrumb`} className="mb-2.5 flex flex-wrap items-center gap-1 text-xs text-muted">
             <button
               data-debug-id={`${debugId}-crumb-workspaces`}
               type="button"
               onClick={() => setActiveWorkspace('')}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-zinc-300 hover:bg-white/10 hover:text-white transition"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-primary hover:bg-neutral-soft transition"
               title="Click to switch workspace"
             >
               CitC Workspaces
             </button>
-            <Icon name="chevron-right" size={12} className="text-zinc-600" />
+            <Icon name="chevron-right" size={12} className="text-faint" />
             <button
               data-debug-id={`${debugId}-crumb-ws-root`}
               type="button"
               onClick={() => void load('')}
-              className="max-w-[160px] truncate rounded px-1.5 py-0.5 font-mono text-xs font-medium text-zinc-200 hover:bg-white/10 hover:text-white transition"
+              className="max-w-[160px] truncate rounded px-1.5 py-0.5 font-mono text-xs font-medium text-primary hover:bg-neutral-soft transition"
               title="google3 root"
             >
               {activeWorkspace} (google3)
             </button>
             {crumbs.map((c, i) => (
               <span key={c.path} className="flex items-center gap-1">
-                <Icon name="chevron-right" size={12} className="text-zinc-600" />
+                <Icon name="chevron-right" size={12} className="text-faint" />
                 <button
                   data-debug-id={`${debugId}-crumb-${i}`}
                   type="button"
                   onClick={() => void load(c.path)}
-                  className="max-w-[160px] truncate rounded px-1.5 py-0.5 font-mono text-xs text-zinc-400 hover:bg-white/10 hover:text-white transition"
+                  className="max-w-[160px] truncate rounded px-1.5 py-0.5 font-mono text-xs text-muted hover:bg-neutral-soft hover:text-primary transition"
                 >
                   {c.label}
                 </button>
@@ -517,13 +517,13 @@ export default function FigDirectoryPicker({
           </div>
 
           {/* Directory Entry List */}
-          <div data-debug-id={`${debugId}-list`} className="max-h-[220px] overflow-y-auto rounded-xl border border-white/10 bg-black/20">
+          <div data-debug-id={`${debugId}-list`} className="max-h-[220px] overflow-y-auto rounded-xl border border-subtle bg-surface">
             {listState.isFetching && entries.length === 0 ? (
-              <div data-debug-id={`${debugId}-loading`} className="p-4 text-center text-xs text-zinc-500">
+              <div data-debug-id={`${debugId}-loading`} className="p-4 text-center text-xs text-muted">
                 Loading google3 directory…
               </div>
             ) : visibleEntries.length === 0 ? (
-              <div data-debug-id={`${debugId}-empty`} className="p-4 text-center text-xs text-zinc-600">
+              <div data-debug-id={`${debugId}-empty`} className="p-4 text-center text-xs text-faint">
                 {dirFilterText ? 'No matching entries in this folder.' : 'Empty directory.'}
               </div>
             ) : (
@@ -539,17 +539,17 @@ export default function FigDirectoryPicker({
                       }
                     }}
                     disabled={!e.is_dir}
-                    className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition border-b border-white/[0.04] last:border-b-0 ${
-                      e.is_dir ? 'hover:bg-white/[0.04] cursor-pointer group' : 'cursor-default opacity-60'
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition border-b border-subtle last:border-b-0 ${
+                      e.is_dir ? 'hover:bg-surface-raised cursor-pointer group' : 'cursor-default opacity-60'
                     }`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <Icon
                         name={e.is_dir ? 'folder' : 'file'}
                         size={15}
-                        className={`shrink-0 ${e.is_dir ? 'text-amber-400 group-hover:scale-105 transition-transform' : 'text-zinc-600'}`}
+                        className={`shrink-0 ${e.is_dir ? 'text-warning group-hover:scale-105 transition-transform' : 'text-faint'}`}
                       />
-                      <span className="min-w-0 truncate font-mono text-xs text-zinc-200 group-hover:text-white transition-colors">{e.name}</span>
+                      <span className="min-w-0 truncate font-mono text-xs text-primary">{e.name}</span>
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                       {e.modified_at ? (
@@ -557,14 +557,14 @@ export default function FigDirectoryPicker({
                           {formatRelativeAge(e.modified_at)}
                         </Badge>
                       ) : null}
-                      {e.is_dir && <Icon name="chevron-right" size={14} className="shrink-0 text-zinc-600 group-hover:text-zinc-400 transition-colors" />}
+                      {e.is_dir && <Icon name="chevron-right" size={14} className="shrink-0 text-faint group-hover:text-muted transition-colors" />}
                     </div>
                   </button>
                 ))}
 
                 {/* Pagination: Load More */}
                 {hasMore ? (
-                  <div className="p-2 text-center border-t border-white/[0.06]">
+                  <div className="p-2 text-center border-t border-subtle">
                     <Button
                       data-debug-id={`${debugId}-load-more-btn`}
                       variant="secondary"
@@ -581,12 +581,12 @@ export default function FigDirectoryPicker({
             )}
           </div>
 
-          {dirError ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-xs text-red-400">{dirError}</p> : null}
+          {dirError ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-xs text-danger">{dirError}</p> : null}
 
           {/* Selected path preview and Action buttons */}
-          <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-white/10">
-            <div className="min-w-0 truncate text-xs text-zinc-400">
-              Selected: <span className="font-mono text-zinc-200">/{activeWorkspace}/google3{cwd ? `/${cwd}` : ''}</span>
+          <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-subtle">
+            <div className="min-w-0 truncate text-xs text-muted">
+              Selected: <span className="font-mono text-primary">/{activeWorkspace}/google3{cwd ? `/${cwd}` : ''}</span>
             </div>
             <div className="flex items-center gap-2">
               <Button

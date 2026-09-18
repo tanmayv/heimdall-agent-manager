@@ -240,7 +240,7 @@ function PaneCaptureOutput({ body, messageId }: { body: string; messageId: strin
     };
   }, [body, messageId]);
 
-  return <pre ref={preRef} data-debug-id={`conversation-pane-capture-pre-${messageId}`} className="chat-scrollbar max-h-[420px] max-w-full overflow-auto whitespace-pre-wrap rounded-xl bg-black/30 p-3 font-mono text-xs leading-5 text-zinc-100">{body}</pre>;
+  return <pre ref={preRef} data-debug-id={`conversation-pane-capture-pre-${messageId}`} className="chat-scrollbar max-h-[420px] max-w-full overflow-auto whitespace-pre-wrap rounded-xl border border-subtle bg-surface p-3 font-mono text-xs leading-5 text-primary">{body}</pre>;
 }
 
 function parseMessageMetadata(message: Message): any {
@@ -346,11 +346,11 @@ function runtimeIsStopping(status: string): boolean {
 
 function deliveryStatusFor(message: ChatMessage): ChatDeliveryStatus {
   if (!message.isUser) return EMPTY_DELIVERY;
-  if (message.sending) return { glyph: '…', label: 'Sending', tone: 'text-zinc-500' };
-  if (message.deliveryFailedUnixMs > 0) return { glyph: '!', label: message.deliveryError || 'Delivery failed', tone: 'text-red-300' };
-  if (message.readUnixMs > 0) return { glyph: '✓✓', label: 'Read', tone: 'text-emerald-400' };
-  if (message.deliveredUnixMs > 0) return { glyph: '✓', label: 'Delivered', tone: 'text-zinc-500' };
-  return { glyph: '✓', label: 'Sent', tone: 'text-zinc-600' };
+  if (message.sending) return { glyph: '…', label: 'Sending', tone: 'text-muted' };
+  if (message.deliveryFailedUnixMs > 0) return { glyph: '!', label: message.deliveryError || 'Delivery failed', tone: 'text-danger' };
+  if (message.readUnixMs > 0) return { glyph: '✓✓', label: 'Read', tone: 'text-success' };
+  if (message.deliveredUnixMs > 0) return { glyph: '✓', label: 'Delivered', tone: 'text-muted' };
+  return { glyph: '✓', label: 'Sent', tone: 'text-faint' };
 }
 
 function normalizeConversationMessages(rows: Message[], agentLabel: string): ChatMessage[] {
@@ -1156,15 +1156,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       const status = message.messageStatus || 'complete';
       const lineCount = Number(metadata.line_count || metadata.lineCount || 0);
       return (
-        <div data-debug-id={status === 'pending' ? `conversation-pane-capture-loading-${message.messageId}` : status === 'failed' ? `conversation-pane-capture-error-${message.messageId}` : `conversation-pane-capture-output-${message.messageId}`} className={`rounded-2xl border p-3 ${status === 'failed' ? 'border-red-400/30 bg-red-500/10 text-red-100' : 'border-sky-400/20 bg-sky-400/10 text-sky-50'}`}>
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-caption uppercase tracking-wide text-sky-100/70">
+        <div data-debug-id={status === 'pending' ? `conversation-pane-capture-loading-${message.messageId}` : status === 'failed' ? `conversation-pane-capture-error-${message.messageId}` : `conversation-pane-capture-output-${message.messageId}`} className={`rounded-2xl border p-3 ${status === 'failed' ? 'border-danger/30 bg-danger-soft text-danger' : 'border-info/30 bg-info-soft text-info'}`}>
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-caption uppercase tracking-wide text-info">
             <span>{status === 'pending' ? 'Requesting terminal pane…' : status === 'failed' ? 'Pane capture failed' : 'Terminal pane capture'}</span>
             <span>{Number(metadata.width || 80)} cols</span>
             {lineCount ? <span>{lineCount} lines</span> : null}
             {metadata.truncated ? <span>truncated</span> : null}
           </div>
-          {status === 'pending' ? <div className="text-sm text-sky-100/80">Waiting for the wrapper to resize and capture the pane…</div> : <PaneCaptureOutput body={message.body} messageId={message.messageId} />}
-          {status === 'failed' ? <button type="button" data-debug-id={`conversation-pane-capture-retry-${message.messageId}`} onClick={() => void requestPane()} disabled={paneCaptureDisabled} className="mt-2 rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-100 hover:bg-white/10 disabled:opacity-50">Retry</button> : null}
+          {status === 'pending' ? <div className="text-sm text-info">Waiting for the wrapper to resize and capture the pane…</div> : <PaneCaptureOutput body={message.body} messageId={message.messageId} />}
+          {status === 'failed' ? <button type="button" data-debug-id={`conversation-pane-capture-retry-${message.messageId}`} onClick={() => void requestPane()} disabled={paneCaptureDisabled} className="mt-2 rounded-full border border-subtle bg-surface px-3 py-1 text-xs text-primary hover:bg-surface-raised disabled:opacity-50">Retry</button> : null}
         </div>
       );
     }
@@ -1175,12 +1175,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     // card without dominating the thread.
     if (message.messageType === 'system') {
       return (
-        <div data-debug-id={`conversation-system-message-${message.messageId}`} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-zinc-400">
-          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+        <div data-debug-id={`conversation-system-message-${message.messageId}`} className="rounded-xl border border-subtle bg-surface px-3 py-2 text-muted">
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
             <Icon name="info" size={12} title="System message" />
             System
           </div>
-          <div className="text-sm text-zinc-300">
+          <div className="text-sm text-primary">
             <Markdown source={message.body} compact copyAll={false} />
           </div>
         </div>
@@ -1193,16 +1193,16 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     if (message.messageType === 'action') {
       const { summary, triggeredAt } = scheduleContextFromMetadata(message.metadata);
       return (
-        <div data-debug-id={`conversation-action-message-${message.messageId}`} className="rounded-2xl border border-amber-400/25 border-l-2 border-l-amber-400/70 bg-amber-400/[0.06] p-3">
-          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption uppercase tracking-wide text-amber-100/80">
-            <span className="inline-flex items-center gap-1.5 font-semibold text-amber-200">
+        <div data-debug-id={`conversation-action-message-${message.messageId}`} className="rounded-2xl border border-warning/30 border-l-2 border-l-warning bg-warning-soft p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption uppercase tracking-wide text-warning">
+            <span className="inline-flex items-center gap-1.5 font-semibold text-warning">
               <Icon name="clock" size={13} title="Scheduled action" />
               Scheduled action
             </span>
-            {summary ? <span className="normal-case tracking-normal text-amber-100/60">{summary}</span> : null}
+            {summary ? <span className="normal-case tracking-normal text-muted">{summary}</span> : null}
           </div>
           {triggeredAt ? (
-            <div className="mb-2 text-caption text-amber-100/50">Ran on schedule: {triggeredAt}</div>
+            <div className="mb-2 text-caption text-faint">Ran on schedule: {triggeredAt}</div>
           ) : null}
           <Markdown source={message.body} compact copyAll={false} />
           {message.artifactIds && message.artifactIds.length > 0 && (
@@ -1272,43 +1272,43 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     <div data-debug-id="conversation-runtime-controls" className="text-left">
       <input data-debug-id="conversation-provider-select" type="hidden" value={provider} readOnly />
       <input data-debug-id="conversation-tier-select" type="hidden" value={tier} readOnly />
-      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-zinc-500">Provider</div>
+      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-faint">Provider</div>
       {providerOptions.map((p) => {
         const selected = (provider || instanceProvider) === p;
         const current = instanceProvider === p;
         return (
-          <button key={p} type="button" data-debug-id={`conversation-provider-option-${p}`} onClick={() => setProvider(p)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-white/[0.06]">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 text-zinc-300"><Icon name="spark" size={16} /></span>
+          <button key={p} type="button" data-debug-id={`conversation-provider-option-${p}`} onClick={() => setProvider(p)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-neutral-soft">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><Icon name="spark" size={16} /></span>
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-white">{p}</span>
-              <span className="block truncate text-xs text-zinc-500">{current ? 'current' : 'Provider'}</span>
+              <span className="block truncate text-sm font-semibold text-primary">{p}</span>
+              <span className="block truncate text-xs text-muted">{current ? 'current' : 'Provider'}</span>
             </span>
-            {selected ? <Icon name="check" size={18} className="text-sky-400" /> : null}
+            {selected ? <Icon name="check" size={18} className="text-accent" /> : null}
           </button>
         );
       })}
-      <div className="my-1.5 border-t border-white/10" />
-      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-zinc-500">Tier</div>
+      <div className="my-1.5 border-t border-subtle" />
+      <div className="px-2 pb-1 pt-1 text-caption font-semibold uppercase tracking-wider text-faint">Tier</div>
       {tierOptions.map((t) => {
         const selected = (tier || instanceTier) === t;
         const current = instanceTier === t;
         const meta = tierMeta[t] || { icon: 'rocket' as const, blurb: 'Model tier' };
         return (
-          <button key={t} type="button" data-debug-id={`conversation-tier-option-${t}`} onClick={() => setTier(t)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-white/[0.06]">
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 text-zinc-300"><Icon name={meta.icon} size={16} /></span>
+          <button key={t} type="button" data-debug-id={`conversation-tier-option-${t}`} onClick={() => setTier(t)} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-neutral-soft">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-neutral-soft text-muted"><Icon name={meta.icon} size={16} /></span>
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-white">{t}</span>
-              <span className="block truncate text-xs text-zinc-500">{meta.blurb}{current ? ' — current' : ''}</span>
+              <span className="block truncate text-sm font-semibold text-primary">{t}</span>
+              <span className="block truncate text-xs text-muted">{meta.blurb}{current ? ' — current' : ''}</span>
             </span>
-            {selected ? <Icon name="check" size={18} className="text-sky-400" /> : null}
+            {selected ? <Icon name="check" size={18} className="text-accent" /> : null}
           </button>
         );
       })}
-      <div className="mt-1.5 flex items-center gap-2 border-t border-white/10 px-2 pt-2 text-[12px] text-zinc-500">
-        <Icon name="alert" size={14} className={pendingReconfig ? 'text-amber-400' : 'text-zinc-600'} />
-        <span><span className={`font-semibold ${pendingReconfig ? 'text-amber-300' : 'text-zinc-400'}`}>Restarts the agent</span> — applies on next send.</span>
+      <div className="mt-1.5 flex items-center gap-2 border-t border-subtle px-2 pt-2 text-[12px] text-muted">
+        <Icon name="alert" size={14} className={pendingReconfig ? 'text-warning' : 'text-faint'} />
+        <span><span className={`font-semibold ${pendingReconfig ? 'text-warning' : 'text-muted'}`}>Restarts the agent</span> — applies on next send.</span>
       </div>
-      {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="px-2 pt-1 text-caption text-zinc-400">{reconfigStatus}</div> : null}
+      {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="px-2 pt-1 text-caption text-muted">{reconfigStatus}</div> : null}
     </div>
   );
 
@@ -1316,18 +1316,18 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // by-instance fetch), show a resolving state rather than the not-found card.
   if (!conversation && convQuery.isFetching) {
     return (
-      <section data-debug-id="conversation-thread-page" className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left">
-        <div data-debug-id="conversation-thread-resolving" className="grid min-h-[220px] place-items-center text-sm text-zinc-500">Loading conversation…</div>
+      <section data-debug-id="conversation-thread-page" className="w-full max-w-4xl rounded-[2rem] border border-subtle bg-surface p-6 text-left">
+        <div data-debug-id="conversation-thread-resolving" className="grid min-h-[220px] place-items-center text-sm text-muted">Loading conversation…</div>
       </section>
     );
   }
 
   if (!conversation && !convQuery.isFetching) {
     return (
-      <section data-debug-id="conversation-thread-page" className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left">
-        <h2 className="text-xl font-semibold text-white">Conversation not found</h2>
-        <p className="mt-2 text-sm text-zinc-400">No conversation for instance <span className="font-mono">{routeInstanceId}</span> for this user.</p>
-        <a data-debug-id="conversation-thread-back-btn" href="#/conversations/new" className="mt-4 inline-flex rounded-2xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300">Start a new conversation</a>
+      <section data-debug-id="conversation-thread-page" className="w-full max-w-4xl rounded-[2rem] border border-subtle bg-surface p-6 text-left">
+        <h2 className="text-xl font-semibold text-primary">Conversation not found</h2>
+        <p className="mt-2 text-sm text-muted">No conversation for instance <span className="font-mono">{routeInstanceId}</span> for this user.</p>
+        <a data-debug-id="conversation-thread-back-btn" href="#/conversations/new" className="mt-4 inline-flex rounded-2xl bg-accent px-4 py-2 text-sm font-bold text-accent-fg hover:opacity-90">Start a new conversation</a>
       </section>
     );
   }
@@ -1356,29 +1356,29 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       : 'rundir';
     const tabBase = 'flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-1.5 text-xs font-semibold';
     return (
-      <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c]">
-        <div data-debug-id="conversation-right-panel-tabs" className="flex shrink-0 items-center gap-1 border-b border-white/10 px-2 py-2">
+      <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-surface">
+        <div data-debug-id="conversation-right-panel-tabs" className="flex shrink-0 items-center gap-1 border-b border-subtle px-2 py-2">
           {hasTasks ? (
-            <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => selectRightPanelTab('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => selectRightPanelTab('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
               <Icon name="tasks" size={15} />
               <span>Tasks</span>
-              {chainProgress.total > 0 ? <span className="rounded-full bg-black/30 px-1.5 py-0.5 text-[10px] font-bold text-sky-100">{chainProgress.done}/{chainProgress.total}</span> : null}
+              {chainProgress.total > 0 ? <span className="rounded-full bg-neutral-soft px-1.5 py-0.5 text-[10px] font-bold text-accent">{chainProgress.done}/{chainProgress.total}</span> : null}
             </button>
           ) : null}
           {hasFiles ? (
-            <button type="button" title={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => selectRightPanelTab('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" title={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => selectRightPanelTab('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
               <Icon name="folder" size={15} className="shrink-0" />
               <span className="truncate">{filesLabel}</span>
             </button>
           ) : null}
           {hasRunDir ? (
-            <button type="button" title={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" title={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
               <Icon name="folder" size={15} className="shrink-0" />
               <span className="truncate">{instanceDisplayName}</span>
             </button>
           ) : null}
           {hasJobs ? (
-            <button type="button" title="Background jobs" data-debug-id="conversation-right-panel-tab-jobs" onClick={() => selectRightPanelTab('jobs')} aria-pressed={active === 'jobs' ? 'true' : 'false'} className={`${tabBase} ${active === 'jobs' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" title="Background jobs" data-debug-id="conversation-right-panel-tab-jobs" onClick={() => selectRightPanelTab('jobs')} aria-pressed={active === 'jobs' ? 'true' : 'false'} className={`${tabBase} ${active === 'jobs' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
               <Icon name="terminal" size={15} className="shrink-0" />
               <span className="truncate">Jobs</span>
             </button>
@@ -1389,7 +1389,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             aria-label="Close side panel"
             title="Close panel"
             onClick={closeRightPanel}
-            className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+            className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
           >
             <Icon name="panel-right" size={16} />
           </button>
@@ -1429,7 +1429,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 isMobile={isMobilePanel}
               />
             ) : (
-              <div className="grid h-full place-items-center text-sm text-zinc-500">Loading tasks…</div>
+              <div className="grid h-full place-items-center text-sm text-muted">Loading tasks…</div>
             )
           ) : null}
         </div>
@@ -1449,11 +1449,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const agentPickerList = (
       <div className="max-h-64 overflow-y-auto py-1">
         {pickerProjects.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-zinc-500">No running agents</p>
+          <p className="px-3 py-2 text-xs text-muted">No running agents</p>
         ) : (
           pickerProjects.map((project) => (
             <div key={project.projectId}>
-              <div className="px-3 pt-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+              <div className="px-3 pt-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
                 {project.name || project.projectId}
               </div>
               {project.chains
@@ -1463,27 +1463,27 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                   pickerChainsRendered += 1;
                   return (
                     <div key={chain.chainId}>
-                      {showDivider && <div className="mx-3 my-1 border-t border-white/5" />}
+                      {showDivider && <div className="mx-3 my-1 border-t border-subtle" />}
                       {chain.liveAgents.map((agent) => {
                         const isCurrent = agent.agentInstanceId === agentInstanceId;
                         const textClass = isCurrent
-                          ? 'text-sky-400'
+                          ? 'text-accent font-semibold'
                           : agent.isCoordinator
-                          ? 'text-amber-300'
-                          : 'text-zinc-200';
+                          ? 'text-warning'
+                          : 'text-primary';
                         return (
                           <button
                             key={agent.agentInstanceId}
                             type="button"
                             data-debug-id={`conversation-agent-picker-item-${agent.agentInstanceId}`}
-                            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] hover:bg-white/10 ${textClass}`}
+                            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] hover:bg-neutral-soft ${textClass}`}
                             onClick={() => {
                               setAgentPickerOpen(false);
                               window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(agent.agentInstanceId), '');
                             }}
                           >
                             <span className="min-w-0 truncate">{agent.displayName || agent.agentInstanceId}</span>
-                            {isCurrent && <Icon name="check" size={14} className="ml-auto shrink-0 text-sky-400" />}
+                            {isCurrent && <Icon name="check" size={14} className="ml-auto shrink-0 text-accent" />}
                           </button>
                         );
                       })}
@@ -1504,7 +1504,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         aria-haspopup={isMobile ? 'dialog' : undefined}
         aria-expanded={isMobile ? (agentPickerOpen ? 'true' : 'false') : undefined}
         onClick={isMobile ? () => setAgentPickerOpen((open) => !open) : undefined}
-        className="inline-flex h-9 items-center gap-1.5 rounded-xl px-2.5 text-[13px] text-zinc-300 hover:bg-white/10 hover:text-white"
+        className="inline-flex h-9 items-center gap-1.5 rounded-xl px-2.5 text-[13px] text-muted hover:bg-neutral-soft hover:text-primary"
       >
         <span className="max-w-[140px] truncate font-medium">{agentDisplayName || agentInstanceId || 'Agent'}</span>
         <Icon name="chevron-down" size={13} />
@@ -1529,40 +1529,40 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
               above the composer (co-located with the working indicator). */}
           <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
-          {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
+          {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{error}</div> : null}
           {attachments.length > 0 && (
-            <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
+            <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-subtle bg-surface-raised p-2 text-xs text-primary">
               {attachments.map((a) => (
-                <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-white/10 bg-black/20 px-2.5 py-2">
+                <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-subtle bg-surface px-2.5 py-2">
                   <div className="flex min-w-0 items-center gap-2">
-                    <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
+                    <span className={a.status === 'uploaded' ? 'text-success' : a.status === 'error' ? 'text-danger' : 'text-accent'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
                     <span className="min-w-0 flex-1 truncate" title={a.name}>{a.name}</span>
-                    <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
-                    {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-200 hover:bg-white/10">Retry</button> : null}
-                    <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">Remove</button>
+                    <span className={a.status === 'uploaded' ? 'text-success' : a.status === 'error' ? 'text-danger' : 'text-accent'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
+                    {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-subtle px-2 py-0.5 text-primary hover:bg-neutral-soft">Retry</button> : null}
+                    <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-subtle px-2 py-0.5 text-muted hover:bg-neutral-soft hover:text-primary">Remove</button>
                   </div>
-                  {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
-                  {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
+                  {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-neutral-soft"><div className="h-full w-1/2 animate-pulse rounded-full bg-accent" /></div> : null}
+                  {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-danger">{a.error}</div> : null}
                 </div>
               ))}
-              {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-caption text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
-              {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-caption text-red-300">Retry or remove failed uploads before sending.</div> : null}
+              {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-caption text-muted">You can keep typing. Send unlocks when uploads finish.</div> : null}
+              {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-caption text-danger">Retry or remove failed uploads before sending.</div> : null}
             </div>
           )}
           <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
           {/* Composer card: immutable context row (bridge · project + status) on top,
               input in the middle, action toolbar (attach/terminal · model switcher ·
               send) on the bottom. */}
-          <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-white/10 bg-[#161618] px-3 py-2.5 focus-within:border-sky-400/50 sm:px-4 sm:py-3">
-          <div data-debug-id="conversation-composer-context" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-zinc-500">
+          <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-subtle bg-surface px-3 py-2.5 focus-within:border-accent sm:px-4 sm:py-3">
+          <div data-debug-id="conversation-composer-context" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted">
             <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
-              <Icon name="lock" size={12} /><span className="min-w-0 truncate font-semibold text-zinc-400">{bridgeLabel || 'no bridge'}</span>
+              <Icon name="lock" size={12} /><span className="min-w-0 truncate font-semibold text-muted">{bridgeLabel || 'no bridge'}</span>
             </span>
             {projectId ? (
               <>
                 <span className="opacity-40">·</span>
-                <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title={`Open project files — ${projectName}`} className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-white/5 hover:text-zinc-300">
-                  <Icon name="folder" size={13} /><span className="min-w-0 truncate font-semibold text-zinc-400">{projectName}</span>
+                <button type="button" data-debug-id="conversation-composer-project-chip" onClick={() => openRightPanel('files')} title={`Open project files — ${projectName}`} className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5 rounded-md px-1 py-0.5 hover:bg-neutral-soft hover:text-primary">
+                  <Icon name="folder" size={13} /><span className="min-w-0 truncate font-semibold text-muted">{projectName}</span>
                 </button>
               </>
             ) : null}
@@ -1574,7 +1574,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 open={statusMenuOpen}
                 onOpenChange={setStatusMenuOpen}
                 trigger={
-                  <button type="button" data-debug-id="conversation-runtime-status-chip" title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-caption text-zinc-300 hover:bg-white/10">
+                  <button type="button" data-debug-id="conversation-runtime-status-chip" title="Runtime status — start/stop the agent" className="inline-flex items-center gap-1.5 rounded-full border border-subtle bg-surface-raised px-2.5 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary">
                     <StatusDot size="sm" tone={runtimeStatusToTone(runtimeStatus)} label={needsStart ? 'Stopped' : runtimeStopping ? 'Stopping' : runtimeStateLabel(runtimeStateFromStatus(runtimeStatus))} />
                     {needsStart ? 'Stopped' : (runtimeStopping ? 'Stopping…' : (runtimeStateFromStatus(runtimeStatus) === 'starting' ? 'Starting…' : 'Running'))}
                   </button>
@@ -1645,12 +1645,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               onPaste={handleComposerPaste}
               rows={2}
               placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
-              className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-white outline-none placeholder:text-zinc-600 sm:text-sm"
+              className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-primary outline-none placeholder:text-muted sm:text-sm"
             />
           </div>
 
           <div className="mt-1 flex items-center gap-1.5">
-            <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white"><Icon name="plus" size={19} /></button>
+            <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="plus" size={19} /></button>
             <button
               data-debug-id="conversation-request-pane-btn"
               type="button"
@@ -1660,8 +1660,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               onClick={() => setIsPaneExpanded((prev) => !prev)}
               className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors ${
                 isPaneExpanded
-                  ? 'bg-sky-400/20 text-sky-300 border border-sky-400/40 hover:bg-sky-400/30'
-                  : 'text-zinc-400 hover:bg-white/10 hover:text-white'
+                  ? 'bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30'
+                  : 'text-muted hover:bg-neutral-soft hover:text-primary'
               }`}
             >
               <Icon name="terminal" size={18} />
@@ -1708,9 +1708,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 onOpenChange={setRuntimeMenuOpen}
                 className="w-[min(92vw,430px)]"
                 trigger={
-                  <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-2.5 text-[13px] text-zinc-100 hover:bg-white/10">
+                  <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft">
                     <span className="font-semibold">{instanceProvider || 'model'}</span>
-                    <span className="hidden text-zinc-400 sm:inline">· {instanceTier || '—'}</span>
+                    <span className="hidden text-muted sm:inline">· {instanceTier || '—'}</span>
                     <Icon name="chevron-down" size={14} />
                   </button>
                 }
@@ -1719,9 +1719,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               </Popover>
             ) : (
               <>
-                <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" aria-haspopup="dialog" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-2.5 text-[13px] text-zinc-100 hover:bg-white/10">
+                <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" aria-haspopup="dialog" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft">
                   <span className="font-semibold">{instanceProvider || 'model'}</span>
-                  <span className="hidden text-zinc-400 sm:inline">· {instanceTier || '—'}</span>
+                  <span className="hidden text-muted sm:inline">· {instanceTier || '—'}</span>
                   <Icon name="chevron-down" size={14} />
                 </button>
                 <Drawer side="bottom" title="Runtime controls" open={runtimeMenuOpen} onOpenChange={setRuntimeMenuOpen} data-debug-id="conversation-runtime-mobile-sheet">
@@ -1730,7 +1730,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               </>
             )}
 
-            <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"><Icon name="arrow-up" size={18} /></button>
+            <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"><Icon name="arrow-up" size={18} /></button>
           </div>
         </div>
       </div>
@@ -1754,19 +1754,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         agentIsWorking={isWorking}
         renderMessageBody={({ message }) => renderConversationMessageBody(message)}
         wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-        scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+        scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
         emptyState={messagesQuery.isFetching ? (
-          <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-zinc-500">Loading messages…</div>
+          <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-muted">Loading messages…</div>
         ) : (
           <div data-debug-id="conversation-thread-empty-state" className="flex h-full min-h-[220px] flex-col items-center justify-center gap-4 p-6 text-center">
-            <div data-debug-id="conversation-thread-empty-avatar" className="grid h-16 w-16 place-items-center rounded-full bg-white/[0.06] text-2xl font-semibold text-zinc-300">
+            <div data-debug-id="conversation-thread-empty-avatar" className="grid h-16 w-16 place-items-center rounded-full bg-neutral-soft text-2xl font-semibold text-primary">
               {(agentDisplayName || 'A').trim().charAt(0).toUpperCase()}
             </div>
-            <h3 data-debug-id="conversation-thread-empty-title" className="text-2xl font-semibold text-white">{agentDisplayName || 'New conversation'}</h3>
+            <h3 data-debug-id="conversation-thread-empty-title" className="text-2xl font-semibold text-primary">{agentDisplayName || 'New conversation'}</h3>
             {agentPersona ? (
-              <p data-debug-id="conversation-thread-empty-persona" className="max-w-xl whitespace-pre-line text-[15px] leading-relaxed text-zinc-400">{agentPersona}</p>
+              <p data-debug-id="conversation-thread-empty-persona" className="max-w-xl whitespace-pre-line text-[15px] leading-relaxed text-muted">{agentPersona}</p>
             ) : (
-              <p data-debug-id="conversation-thread-empty-persona" className="max-w-md text-[15px] text-zinc-500">Say something below to get started.</p>
+              <p data-debug-id="conversation-thread-empty-persona" className="max-w-md text-[15px] text-muted">Say something below to get started.</p>
             )}
           </div>
         )}
@@ -1780,11 +1780,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     <section
       data-debug-id="conversation-thread-page"
       ref={containerRef}
-      className="relative flex flex-col sm:flex-row h-full min-h-0 w-full max-w-full overflow-x-hidden bg-[#090909] p-0 text-left"
+      className="relative flex flex-col sm:flex-row h-full min-h-0 w-full max-w-full overflow-x-hidden bg-canvas p-0 text-left"
     >
       {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
       {panelOpen ? (
-        <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c] sm:hidden">
+        <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden bg-surface sm:hidden">
           {renderRightPanel(true)}
         </div>
       ) : null}
@@ -1799,18 +1799,18 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           data-debug-id="conversation-thread-header"
           className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out relative z-20 overflow-visible ${
             isMobile
-              ? `fixed top-0 inset-x-0 z-20 h-14 bg-[#0c0c0c]/90 backdrop-blur-md ${
+              ? `fixed top-0 inset-x-0 z-20 h-14 bg-surface/90 backdrop-blur-md ${
                   !chromeVisible
                     ? '-translate-y-full opacity-0 pointer-events-none'
                     : 'translate-y-0 opacity-100 pointer-events-auto'
                 }`
-              : 'max-h-16 py-2 bg-[#090909]/90 backdrop-blur-md translate-y-0 opacity-100 pointer-events-auto'
+              : 'max-h-16 py-2 bg-canvas/90 backdrop-blur-md translate-y-0 opacity-100 pointer-events-auto'
           }`}
         >
           {/* Bottom blur-fade gradient overlay: blurs and softly fades text scrolling underneath */}
           <div
             data-debug-id="conversation-topbar-blur-fade"
-            className="pointer-events-none absolute left-0 right-0 -bottom-6 h-6 bg-gradient-to-b from-[#090909]/90 via-[#090909]/50 to-transparent backdrop-blur-sm z-10"
+            className="pointer-events-none absolute left-0 right-0 -bottom-6 h-6 bg-gradient-to-b from-canvas/90 via-canvas/50 to-transparent backdrop-blur-sm z-10"
             aria-hidden="true"
           />
 
@@ -1825,20 +1825,20 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                     if (event.key === 'Enter') { event.preventDefault(); void saveConversationTitle(); }
                     if (event.key === 'Escape') { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }
                   }}
-                  className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-base font-semibold text-white outline-none focus:border-sky-400/60 sm:text-sm"
+                  className="min-h-9 min-w-0 flex-1 rounded-xl border border-subtle bg-surface px-3 py-1.5 text-base font-semibold text-primary outline-none focus:border-accent sm:text-sm"
                   autoFocus
                 />
-                <button type="button" data-debug-id="conversation-thread-title-save-btn" aria-label="Save conversation title" title="Save" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:opacity-50"><Icon name="check" size={16} /></button>
-                <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
+                <button type="button" data-debug-id="conversation-thread-title-save-btn" aria-label="Save conversation title" title="Save" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-fg hover:opacity-90 disabled:opacity-50"><Icon name="check" size={16} /></button>
+                <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-subtle bg-surface-raised text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="close" size={16} /></button>
               </div>
             ) : (
               <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
-                <span data-debug-id="conversation-breadcrumb-project" className="truncate text-zinc-400">{projectName || 'Project'}</span>
-                <span className="shrink-0 text-zinc-600">/</span>
-                <h2 data-debug-id="conversation-thread-title" className="truncate text-sm font-medium text-white">{chainTitle || title}</h2>
+                <span data-debug-id="conversation-breadcrumb-project" className="truncate text-muted">{projectName || 'Project'}</span>
+                <span className="shrink-0 text-faint">/</span>
+                <h2 data-debug-id="conversation-thread-title" className="truncate text-sm font-medium text-primary">{chainTitle || title}</h2>
               </div>
             )}
-            {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
+            {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-danger">{titleError}</div> : null}
           </div>
 
           <button
@@ -1847,7 +1847,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             aria-label="Search this conversation and its task chain"
             title="Search this conversation & chain"
             onClick={() => setSearchOpen(true)}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary"
           >
             <UiIcon name="search" size={16} />
           </button>
@@ -1865,7 +1865,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                   data-debug-id="conversation-thread-overflow-menu-btn"
                   aria-label="Conversation options"
                   title="More options"
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary"
                 >
                   <Icon name="more-horizontal" size={16} />
                 </button>
@@ -1886,7 +1886,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 <span>Refresh messages</span>
               </Menu.Item>
               <Menu.Separator />
-              <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1.5 text-caption leading-5 text-zinc-500 overflow-hidden">
+              <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1.5 text-caption leading-5 text-faint overflow-hidden">
                 <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
                 <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
                 <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
@@ -1905,13 +1905,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               title="Open panel"
               aria-pressed="false"
               onClick={toggleRightPanel}
-              className="relative grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+              className="relative grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary"
             >
               <Icon name="panel-right" size={18} />
               {chainId && chainProgress.total > 0 ? (
                 <span
                   data-debug-id="conversation-right-panel-toggle-progress"
-                  className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black"
+                  className="absolute -right-1 -top-1 rounded-full bg-accent px-1 text-[9px] font-bold leading-4 text-accent-fg"
                 >
                   {chainProgress.done}/{chainProgress.total}
                 </span>
@@ -1937,9 +1937,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           onPointerDown={handleResizerPointerDown}
           onDoubleClick={handleResizerDoubleClick}
           onKeyDown={handleResizerKeyDown}
-          className={`hidden sm:flex group relative w-1.5 cursor-col-resize shrink-0 select-none items-center justify-center border-l border-white/10 hover:border-sky-400/50 hover:bg-sky-400/10 active:bg-sky-400/20 z-10 ${isDragging ? 'bg-sky-400/20 border-sky-400' : ''}`}
+          className={`hidden sm:flex group relative w-1.5 cursor-col-resize shrink-0 select-none items-center justify-center border-l border-subtle hover:border-accent/50 hover:bg-accent/10 active:bg-accent/20 z-10 ${isDragging ? 'bg-accent/20 border-accent' : ''}`}
         >
-          <div className={`h-8 w-0.5 rounded-full ${isDragging ? 'bg-sky-400' : 'bg-white/20 group-hover:bg-sky-300'}`} />
+          <div className={`h-8 w-0.5 rounded-full ${isDragging ? 'bg-accent' : 'bg-neutral-soft group-hover:bg-accent'}`} />
         </div>
       ) : null}
 
@@ -1965,13 +1965,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           aria-label="Open side panel"
           title="Open panel"
           onClick={toggleRightPanel}
-          className="fixed top-2.5 right-2.5 z-30 bg-black/50 backdrop-blur border border-white/10 text-zinc-400 hover:text-white rounded-xl h-9 w-9 grid place-items-center transition-opacity duration-200"
+          className="fixed top-2.5 right-2.5 z-30 bg-surface-overlay/80 backdrop-blur border border-subtle text-muted hover:text-primary rounded-xl h-9 w-9 grid place-items-center transition-opacity duration-200"
         >
           <Icon name="panel-right" size={18} />
           {chainId && chainProgress.total > 0 ? (
             <span
               data-debug-id="conversation-floating-panel-toggle-progress"
-              className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black"
+              className="absolute -right-1 -top-1 rounded-full bg-accent px-1 text-[9px] font-bold leading-4 text-accent-fg"
             >
               {chainProgress.done}/{chainProgress.total}
             </span>
@@ -1988,7 +1988,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             aria-label="Switch agent"
             title={agentDisplayName || agentInstanceId || 'Agent'}
             onClick={() => setAgentPickerOpen(true)}
-            className="pointer-events-auto bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200"
+            className="pointer-events-auto bg-surface-raised/90 backdrop-blur-md border border-subtle px-3 py-1.5 rounded-full text-xs font-medium text-primary shadow-panel flex items-center gap-1.5 hover:bg-neutral-soft hover:text-primary transition-all duration-200"
           >
             <span className="max-w-[160px] truncate">{agentDisplayName || agentInstanceId || 'Agent'}</span>
             <Icon name="chevron-down" size={13} />
@@ -2001,7 +2001,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             onClick={() => {
               restoreChrome();
             }}
-            className="pointer-events-auto bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200"
+            className="pointer-events-auto bg-surface-raised/90 backdrop-blur-md border border-subtle px-3 py-1.5 rounded-full text-xs font-medium text-primary shadow-panel flex items-center gap-1.5 hover:bg-neutral-soft hover:text-primary transition-all duration-200"
           >
             Reply
           </button>

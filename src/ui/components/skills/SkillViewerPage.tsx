@@ -15,15 +15,15 @@ export default function SkillViewerPage({ slug }: SkillViewerPageProps) {
   return (
     <PageShell eyebrow="Skill" title={slug}>
       {isFetching ? (
-        <div data-debug-id="skill-viewer-loading" className="text-sm text-zinc-500">Loading…</div>
+        <div data-debug-id="skill-viewer-loading" className="text-sm text-faint">Loading…</div>
       ) : isError ? (
-        <div data-debug-id="skill-viewer-error" className="text-sm text-rose-300">Could not load this skill.</div>
+        <div data-debug-id="skill-viewer-error" className="text-sm text-danger">Could not load this skill.</div>
       ) : data && data.content ? (
-        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="rounded-2xl border border-subtle bg-surface p-4">
           <Markdown source={data.content} data-debug-id="skill-viewer-markdown" />
         </div>
       ) : (
-        <div data-debug-id="skill-viewer-empty" className="text-sm text-zinc-500">No content for this skill.</div>
+        <div data-debug-id="skill-viewer-empty" className="text-sm text-faint">No content for this skill.</div>
       )}
     </PageShell>
   );

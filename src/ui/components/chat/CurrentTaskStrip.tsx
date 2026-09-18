@@ -116,9 +116,9 @@ export default function CurrentTaskStrip({
 
   if (collapsedLocal) {
     return (
-      <div data-debug-id={`${debugPrefix}-current-task-strip`} data-current-task-status={status} className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-[#101010] px-3 py-2 text-[11.5px] text-zinc-500">
-        <span className="truncate">Current task: <span className="text-zinc-300">{title}</span></span>
-        <button type="button" data-debug-id={`${debugPrefix}-current-task-expand`} onClick={() => setCollapsedLocal(false)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">expand</button>
+      <div data-debug-id={`${debugPrefix}-current-task-strip`} data-current-task-status={status} className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-subtle bg-surface px-3 py-2 text-[11.5px] text-muted">
+        <span className="truncate">Current task: <span className="text-primary">{title}</span></span>
+        <button type="button" data-debug-id={`${debugPrefix}-current-task-expand`} onClick={() => setCollapsedLocal(false)} className="rounded-full border border-subtle px-2 py-0.5 text-muted hover:bg-neutral-soft hover:text-primary">expand</button>
       </div>
     );
   }
@@ -136,7 +136,7 @@ export default function CurrentTaskStrip({
   }
 
   return (
-    <div data-debug-id={`${debugPrefix}-current-task-strip`} data-current-task-status={status} data-task-comment-mode="true" className="mb-2 rounded-[15px] border border-teal-500/25 bg-teal-500/[0.04] px-3 py-2.5 text-[12px] text-zinc-200 shadow-[0_8px_30px_rgba(0,0,0,0.18)]">
+    <div data-debug-id={`${debugPrefix}-current-task-strip`} data-current-task-status={status} data-task-comment-mode="true" className="mb-2 rounded-[15px] border border-accent/30 bg-accent/5 px-3 py-2.5 text-[12px] text-primary shadow-panel">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -149,35 +149,35 @@ export default function CurrentTaskStrip({
                   e.preventDefault();
                   onOpenTask(taskId);
                 }}
-                className="truncate font-medium text-zinc-100 underline decoration-dotted underline-offset-2 hover:text-white"
+                className="truncate font-medium text-primary underline decoration-dotted underline-offset-2 hover:text-accent"
                 title={title}
               >
                 {title}
               </a>
             ) : (
-              <span className="truncate font-medium text-zinc-100">{title}</span>
+              <span className="truncate font-medium text-primary">{title}</span>
             )}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-caption text-zinc-500">
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-caption text-muted">
             {/* R8: explicit WORK vs REVIEW action label for the current-task role. */}
             <StatusPill tone={roleActionTone(role)} data-debug-id={`${debugPrefix}-current-task-action`} data-current-task-action={roleActionLabel(role)}>{roleActionLabel(role)}</StatusPill>
             <StatusPill tone={statusTone(status)}>{status}</StatusPill>
             {/* CT-3: P0/P1/P2 priority indicator (hidden when unknown). */}
             {(() => { const pt = priorityTone(priority); return pt ? <StatusPill tone={pt} data-debug-id={`${debugPrefix}-current-task-priority`} data-current-task-priority={priority} className="uppercase">{priority}</StatusPill> : null; })()}
-            <span>Assignee: <span className="text-zinc-300">{agentInstanceId}</span></span>
-            {reviewer ? <span>Reviewer: <span className="text-zinc-300">{reviewer}</span></span> : null}
+            <span>Assignee: <span className="text-primary">{agentInstanceId}</span></span>
+            {reviewer ? <span>Reviewer: <span className="text-primary">{reviewer}</span></span> : null}
           </div>
-          {summary ? <div data-debug-id={`${debugPrefix}-current-task-acceptance`} className="mt-1.5 truncate text-caption text-zinc-500">Acceptance: {summary}</div> : null}
+          {summary ? <div data-debug-id={`${debugPrefix}-current-task-acceptance`} className="mt-1.5 truncate text-caption text-muted">Acceptance: {summary}</div> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {onOpenTask ? <button type="button" data-debug-id={`${debugPrefix}-current-task-open`} onClick={() => onOpenTask(taskId)} className="rounded-full border border-white/10 px-2.5 py-1 text-zinc-300 hover:bg-white/10">Open</button> : null}
-          <button type="button" data-debug-id={`${debugPrefix}-current-task-collapse`} onClick={() => setCollapsedLocal(true)} className="rounded-full border border-white/10 px-2 py-1 text-zinc-500 hover:bg-white/10">−</button>
+          {onOpenTask ? <button type="button" data-debug-id={`${debugPrefix}-current-task-open`} onClick={() => onOpenTask(taskId)} className="rounded-full border border-subtle px-2.5 py-1 text-muted hover:bg-neutral-soft hover:text-primary">Open</button> : null}
+          <button type="button" data-debug-id={`${debugPrefix}-current-task-collapse`} onClick={() => setCollapsedLocal(true)} className="rounded-full border border-subtle px-2 py-1 text-muted hover:bg-neutral-soft hover:text-primary">−</button>
         </div>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {role === 'assignee' && onSubmitForReview ? (
-          <button type="button" data-debug-id={`${debugPrefix}-current-task-submit-review`} onClick={() => void onSubmitForReview(taskId)} className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2.5 py-1 text-sky-100 hover:bg-sky-400/20">Submit for review</button>
+          <button type="button" data-debug-id={`${debugPrefix}-current-task-submit-review`} onClick={() => void onSubmitForReview(taskId)} className="rounded-full border border-info/30 bg-info-soft px-2.5 py-1 text-info hover:bg-info/20">Submit for review</button>
         ) : null}
         {(role === 'reviewer' || userIsReviewer) && onVote ? (
           <>
@@ -189,7 +189,7 @@ export default function CurrentTaskStrip({
           <Button tone="warning" size="sm" data-debug-id={`${debugPrefix}-current-task-nudge`} onClick={() => void onNudge(taskId)}>Nudge</Button>
         ) : null}
         {onComment ? (
-          <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-btn`} onClick={() => setCommenting((open) => !open)} className="rounded-full border border-white/10 px-2.5 py-1 text-zinc-300 hover:bg-white/10">Comment</button>
+          <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-btn`} onClick={() => setCommenting((open) => !open)} className="rounded-full border border-subtle px-2.5 py-1 text-muted hover:bg-neutral-soft hover:text-primary">Comment</button>
         ) : null}
         {/* CT-9: manual "switch current task" control (user/coordinator). */}
         {onSwitchCurrentTask && switchableTasks && switchableTasks.length > 0 ? (
@@ -223,19 +223,19 @@ export default function CurrentTaskStrip({
       </div>
 
       {commenting ? (
-        <div data-debug-id={`${debugPrefix}-current-task-comment-composer`} className="mt-2 rounded-xl border border-white/10 bg-black/20 p-2">
+        <div data-debug-id={`${debugPrefix}-current-task-comment-composer`} className="mt-2 rounded-xl border border-subtle bg-surface-raised p-2">
           <textarea
             data-debug-id={`${debugPrefix}-current-task-comment-input`}
             value={commentBody}
             onChange={(event) => setCommentBody(event.target.value)}
             placeholder="Add a task comment (not a chat message)…"
             rows={2}
-            className="w-full resize-none rounded-lg bg-transparent px-2 py-1 text-[12px] text-zinc-100 outline-none placeholder:text-zinc-600"
+            className="w-full resize-none rounded-lg bg-transparent px-2 py-1 text-[12px] text-primary outline-none placeholder:text-muted"
             onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submitComment(); } }}
           />
           <div className="mt-1 flex items-center justify-end gap-1.5">
-            <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-cancel`} onClick={() => { setCommenting(false); setCommentBody(''); }} className="rounded-full border border-white/10 px-2 py-0.5 text-caption text-zinc-400 hover:bg-white/10">Cancel</button>
-            <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-submit`} onClick={() => void submitComment()} disabled={!commentBody.trim()} className="rounded-full border border-teal-400/30 bg-teal-400/10 px-2.5 py-0.5 text-caption text-teal-100 hover:bg-teal-400/20 disabled:opacity-40">Add comment</button>
+            <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-cancel`} onClick={() => { setCommenting(false); setCommentBody(''); }} className="rounded-full border border-subtle px-2 py-0.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary">Cancel</button>
+            <button type="button" data-debug-id={`${debugPrefix}-current-task-comment-submit`} onClick={() => void submitComment()} disabled={!commentBody.trim()} className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-0.5 text-caption text-accent hover:bg-accent/20 disabled:opacity-40">Add comment</button>
           </div>
         </div>
       ) : null}

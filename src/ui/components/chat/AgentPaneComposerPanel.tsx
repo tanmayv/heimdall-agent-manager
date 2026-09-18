@@ -280,12 +280,12 @@ export function AgentPaneComposerPanel({
   return (
     <div
       data-debug-id="agent-pane-composer-panel"
-      className={`overflow-hidden rounded-xl border border-white/10 bg-black/40 ${className}`}
+      className={`overflow-hidden rounded-xl border border-subtle bg-surface ${className}`}
     >
       {/* Header controls */}
       <div
         data-debug-id="agent-pane-composer-header"
-        className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-zinc-300"
+        className="flex items-center justify-between border-b border-subtle bg-surface-raised px-3 py-1.5 text-xs text-muted"
       >
         <div className="flex items-center gap-2">
           {/* Status indicator dot (pulsing green if updating/running) */}
@@ -294,19 +294,19 @@ export function AgentPaneComposerPanel({
             title={isUpdatingOrRunning ? 'Running / updating' : (isStopped ? 'Stopped' : 'Idle')}
             className={`h-2 w-2 rounded-full ${
               isUpdatingOrRunning
-                ? 'bg-emerald-400 animate-pulse'
+                ? 'bg-success animate-pulse'
                 : isStopped
-                ? 'bg-zinc-600'
-                : 'bg-emerald-500/70'
+                ? 'bg-faint'
+                : 'bg-success/70'
             }`}
           />
-          <span data-debug-id="agent-pane-title" className="font-semibold text-zinc-200">
+          <span data-debug-id="agent-pane-title" className="font-semibold text-primary">
             Terminal Output
           </span>
           {/* Refresh interval tag */}
           <span
             data-debug-id="agent-pane-interval-tag"
-            className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400"
+            className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] font-mono text-muted"
           >
             {intervalLabel}
           </span>
@@ -321,7 +321,7 @@ export function AgentPaneComposerPanel({
             aria-label="Refresh terminal output"
             onClick={() => refetch()}
             disabled={isLoading || isFetching}
-            className="grid h-6 w-6 place-items-center rounded text-zinc-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Icon name="refresh" size={12} className={isFetching ? 'animate-spin' : ''} />
           </button>
@@ -334,7 +334,7 @@ export function AgentPaneComposerPanel({
               title="Collapse terminal output"
               aria-label="Collapse terminal output"
               onClick={handleClose}
-              className="grid h-6 w-6 place-items-center rounded text-zinc-400 hover:bg-white/10 hover:text-white"
+              className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"
             >
               <Icon name="chevron-down" size={14} />
             </button>
@@ -363,7 +363,7 @@ export function AgentPaneComposerPanel({
         onScroll={handleScroll}
         data-debug-id="agent-pane-output"
         aria-hidden="true"
-        className="sr-only chat-scrollbar max-h-[280px] sm:max-h-[420px] overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-zinc-200"
+        className="sr-only chat-scrollbar max-h-[280px] sm:max-h-[420px] overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-primary"
       >
         {output || (isLoading ? 'Loading terminal output…' : '')}
       </pre>

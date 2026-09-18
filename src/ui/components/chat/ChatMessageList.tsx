@@ -48,7 +48,7 @@ export default function ChatMessageList({
   getDeliveryStatus = () => EMPTY_DELIVERY,
   agentIsWorking = false,
   wrapperClassName = 'relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden',
-  scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4',
+  scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-none bg-canvas px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4',
 }: {
   conversationKey: string;
   messages: ChatMessage[];
@@ -209,13 +209,13 @@ export default function ChatMessageList({
         <div data-debug-id={`${debugPrefix}-messages-container`} className="mx-auto w-full max-w-4xl space-y-3 sm:space-y-4">
           {hasMore ? (
             <div className="flex justify-center">
-              <button data-debug-id={`${debugPrefix}-load-older-messages-btn`} type="button" onClick={onLoadOlder} disabled={loadingOlder || !onLoadOlder} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">
+              <button data-debug-id={`${debugPrefix}-load-older-messages-btn`} type="button" onClick={onLoadOlder} disabled={loadingOlder || !onLoadOlder} className="rounded-full border border-subtle bg-surface px-3 py-1.5 text-xs text-muted hover:text-primary disabled:cursor-not-allowed disabled:opacity-50">
                 {loadingOlder ? 'Loading older messages…' : 'Load older messages'}
               </button>
             </div>
           ) : null}
           {messages.length === 0 ? (
-            emptyState || <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">{emptyText}</div>
+            emptyState || <div className="rounded-2xl border border-dashed border-subtle p-6 text-sm text-faint">{emptyText}</div>
           ) : messages.map((message, index) => {
             const timestamp = formatTimestamp(message.createdUnixMs);
             const delivery = getDeliveryStatus(message);
@@ -223,13 +223,13 @@ export default function ChatMessageList({
               <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-full rounded-xl outline-none focus-visible:shadow-focus ${reduceMotion ? '' : 'transition-colors duration-500'} ${message.messageId === highlightId ? 'bg-warning-soft ring-1 ring-warning' : ''} ${message.isUser ? 'justify-end' : 'justify-start'}`}>
                 <div className={`flex min-w-0 max-w-full ${message.isUser ? 'max-w-[86%] items-end sm:max-w-[78%]' : 'w-full items-start'} flex-col text-sm`}>
                   {renderMessageTop ? renderMessageTop({ message, index, messages }) : null}
-                  <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'text-zinc-200'}`}>
+                  <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-subtle bg-surface-raised px-[14px] py-[10px] text-primary' : 'text-primary'}`}>
                     {renderMessageBody ? renderMessageBody({ message, onReply: reply }) : <Markdown source={message.body} compact copyAll={false} />}
                   </div>
-                  <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`pointer-events-none h-0 overflow-visible text-[12px] text-zinc-500 ${message.isUser ? 'self-end' : 'self-start'}`}>
-                    <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="pointer-events-auto rounded-full border border-white/10 bg-black/50 px-1.5 py-0.5 shadow-lg" />
+                  <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`pointer-events-none h-0 overflow-visible text-[12px] text-muted ${message.isUser ? 'self-end' : 'self-start'}`}>
+                    <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="pointer-events-auto rounded-full border border-subtle bg-surface/80 px-1.5 py-0.5 shadow-lg" />
                   </div>
-                  <div className="mt-1 flex w-full items-center justify-end gap-1.5 text-[10px] text-zinc-500">
+                  <div className="mt-1 flex w-full items-center justify-end gap-1.5 text-[10px] text-faint">
                     {timestamp.label ? <time data-debug-id={`${debugPrefix}-message-${message.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso}>{timestamp.label}</time> : null}
                     {message.isUser && delivery.glyph ? (
                       <span data-debug-id={`${debugPrefix}-message-${message.messageId}-status`} title={delivery.label} className={delivery.tone}>{delivery.glyph} {delivery.label}</span>
@@ -241,11 +241,11 @@ export default function ChatMessageList({
           })}
           {agentIsWorking && (
             <div data-debug-id={`${debugPrefix}-working-indicator`} className="msg flex min-w-0 max-w-full justify-start">
-              <div className="flex w-full flex-col items-start text-sm text-zinc-400">
-                <div className="flex items-center gap-1.5 rounded-full border border-[#262626] bg-[#111111] px-3 py-2 shadow-sm">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500" style={{ animationDelay: '0ms' }} />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500" style={{ animationDelay: '150ms' }} />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500" style={{ animationDelay: '300ms' }} />
+              <div className="flex w-full flex-col items-start text-sm text-muted">
+                <div className="flex items-center gap-1.5 rounded-full border border-subtle bg-surface px-3 py-2 shadow-sm">
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" style={{ animationDelay: '0ms' }} />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" style={{ animationDelay: '150ms' }} />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted" style={{ animationDelay: '300ms' }} />
                 </div>
               </div>
             </div>
@@ -254,7 +254,7 @@ export default function ChatMessageList({
         <div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-56 shrink-0 sm:hidden" aria-hidden="true" />
       </div>
       {showJump ? (
-        <button data-debug-id={`${debugPrefix}-jump-latest-btn`} onClick={() => scrollToBottom('smooth')} className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-caption text-zinc-100 shadow-lg hover:bg-black">Jump to latest ↓</button>
+        <button data-debug-id={`${debugPrefix}-jump-latest-btn`} onClick={() => scrollToBottom('smooth')} className="absolute bottom-3 right-3 rounded-full border border-subtle bg-surface-raised/90 px-3 py-1 text-caption text-primary shadow-lg hover:bg-surface-raised">Jump to latest ↓</button>
       ) : null}
     </div>
   );

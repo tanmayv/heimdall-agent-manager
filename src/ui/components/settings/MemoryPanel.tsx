@@ -110,17 +110,17 @@ export const MemoryPanel: React.FC = () => {
       {createOpen && (
         <form
           onSubmit={handleCreateSubmit}
-          className="rounded-2xl border border-sky-500/30 bg-sky-950/20 p-5 space-y-4 shadow-lg"
+          className="rounded-2xl border border-info/30 bg-info-soft p-5 space-y-4 shadow-lg"
         >
-          <h3 className="text-sm font-bold text-sky-200">Create Memory Record</h3>
+          <h3 className="text-sm font-bold text-info">Create Memory Record</h3>
           {createError && (
-            <div data-debug-id="memory-create-error" id="memory-create-error" className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-xs text-red-200">
+            <div data-debug-id="memory-create-error" id="memory-create-error" className="rounded-xl border border-danger/30 bg-danger-soft p-3 text-xs text-danger">
               {createError}
             </div>
           )}
           <div className="grid grid-cols-1 gap-3">
             <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Title</label>
+              <label className="block text-xs font-medium text-muted mb-1">Title</label>
               <Input
                 data-debug-id="memory-create-title-input"
                 id="memory-create-title-input"
@@ -131,7 +131,7 @@ export const MemoryPanel: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Description (Optional)</label>
+              <label className="block text-xs font-medium text-muted mb-1">Description (Optional)</label>
               <Input
                 data-debug-id="memory-create-description-input"
                 id="memory-create-description-input"
@@ -142,7 +142,7 @@ export const MemoryPanel: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Body</label>
+              <label className="block text-xs font-medium text-muted mb-1">Body</label>
               <Textarea
                 rows={3}
                 data-debug-id="memory-create-body-textarea"
@@ -154,7 +154,7 @@ export const MemoryPanel: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Evidence (Optional)</label>
+              <label className="block text-xs font-medium text-muted mb-1">Evidence (Optional)</label>
               <Input
                 data-debug-id="memory-create-evidence-input"
                 id="memory-create-evidence-input"
@@ -165,7 +165,7 @@ export const MemoryPanel: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Type</label>
+              <label className="block text-xs font-medium text-muted mb-1">Type</label>
               <Select
                 data-debug-id="memory-create-type-select"
                 id="memory-create-type-select"
@@ -179,7 +179,7 @@ export const MemoryPanel: React.FC = () => {
               </Select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-300 mb-1">Scope & Targeting</label>
+              <label className="block text-xs font-medium text-muted mb-1">Scope & Targeting</label>
               <ScopeEditor targeting={createTargeting} catalog={catalog} onChange={setCreateTargeting} debugId="memory-create-scope" />
             </div>
           </div>
@@ -208,15 +208,15 @@ export const MemoryPanel: React.FC = () => {
       {/* Proposals Review Section */}
       <div data-debug-id="memory-proposals-panel" id="memory-proposals-panel" className="space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-bold text-amber-300 flex items-center gap-2">
+          <h3 className="text-base font-bold text-warning flex items-center gap-2">
             <span>Pending Proposals</span>
-            <span className="rounded-full bg-amber-400/20 text-amber-200 px-2 py-0.5 text-xs font-semibold">
+            <span className="rounded-full bg-warning-soft text-warning px-2 py-0.5 text-xs font-semibold">
               {pendingProposals.length}
             </span>
           </h3>
         </div>
         {pendingProposals.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-zinc-500">
+          <div className="rounded-xl border border-dashed border-subtle p-4 text-center text-xs text-muted">
             No pending memory proposals to review.
           </div>
         ) : (
@@ -229,11 +229,11 @@ export const MemoryPanel: React.FC = () => {
       </div>
 
       {/* Filter Bar */}
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-4 space-y-3">
-        <h3 className="text-sm font-semibold text-zinc-200">Filter Memories</h3>
+      <div className="rounded-2xl border border-subtle bg-surface-raised/30 p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-primary">Filter Memories</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">Status Filter</label>
+            <label className="block text-xs font-medium text-muted mb-1">Status Filter</label>
             <Select
               data-debug-id="memory-filter-status-select"
               id="memory-filter-status-select"
@@ -249,7 +249,7 @@ export const MemoryPanel: React.FC = () => {
             </Select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">Type Filter</label>
+            <label className="block text-xs font-medium text-muted mb-1">Type Filter</label>
             <Select
               data-debug-id="memory-filter-type-select"
               id="memory-filter-type-select"
@@ -267,24 +267,24 @@ export const MemoryPanel: React.FC = () => {
           </div>
         </div>
         <div className="pt-2">
-          <label className="block text-xs font-medium text-zinc-400 mb-2">Scope Filters</label>
+          <label className="block text-xs font-medium text-muted mb-2">Scope Filters</label>
           <ScopeEditor targeting={filterTargeting} catalog={catalog} onChange={setFilterTargeting} debugId="memory-filter-scope" />
         </div>
       </div>
 
       {/* Main Memories List */}
       <div className="space-y-3">
-        <h3 className="text-sm font-semibold text-zinc-300">
+        <h3 className="text-sm font-semibold text-primary">
           Memories List ({memories.length})
         </h3>
         {isLoading ? (
-          <div className="text-sm text-zinc-500 py-4">Loading memories...</div>
+          <div className="text-sm text-muted py-4">Loading memories...</div>
         ) : listError ? (
-          <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-xs text-red-200">
+          <div className="rounded-xl border border-danger/30 bg-danger-soft p-3 text-xs text-danger">
             {String((listError as any)?.data?.error || (listError as any)?.error || "Failed to load memories")}
           </div>
         ) : memories.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-white/10 p-6 text-center text-sm text-zinc-500">
+          <div className="rounded-2xl border border-dashed border-subtle p-6 text-center text-sm text-muted">
             No memories matching the selected filters.
           </div>
         ) : (
@@ -368,39 +368,39 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
     <div
       data-debug-id={`memory-proposal-${memoryId}`}
       id={`memory-proposal-${memoryId}`}
-      className="rounded-2xl border border-amber-500/30 bg-amber-950/10 p-4 space-y-3"
+      className="rounded-2xl border border-warning/30 bg-warning-soft p-4 space-y-3"
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="rounded-full bg-amber-400/20 text-amber-200 px-2 py-0.5 text-caption font-bold uppercase">
+          <span className="rounded-full bg-warning-soft text-warning px-2 py-0.5 text-caption font-bold uppercase">
             Pending Proposal
           </span>
           {isSystem && (
-            <span className="rounded-full bg-purple-500/20 text-purple-200 px-2 py-0.5 text-caption font-bold">
+            <span className="rounded-full bg-accent-soft text-accent px-2 py-0.5 text-caption font-bold">
               System Memory (Read-Only)
             </span>
           )}
         </div>
-        <span className="text-caption text-zinc-500 font-mono">{memoryId}</span>
+        <span className="text-caption text-muted font-mono">{memoryId}</span>
       </div>
 
       {msg && (
-        <div className={`rounded-xl p-2.5 text-xs ${msg.error ? "border border-red-400/30 bg-red-500/10 text-red-200" : "border border-emerald-400/30 bg-emerald-500/10 text-emerald-200"}`}>
+        <div className={`rounded-xl p-2.5 text-xs ${msg.error ? "border border-danger/30 bg-danger-soft text-danger" : "border border-success/30 bg-success-soft text-success"}`}>
           {msg.text}
         </div>
       )}
 
       {isSystem ? (
         <div className="space-y-2">
-          <h4 className="font-semibold text-white">{memory.title}</h4>
-          {memory.description && <p className="text-xs font-medium text-zinc-300">{memory.description}</p>}
-          <p className="text-xs text-zinc-300 whitespace-pre-wrap">{memory.body}</p>
-          {memory.evidence && <p className="text-xs italic text-zinc-400">Evidence: {memory.evidence}</p>}
+          <h4 className="font-semibold text-primary">{memory.title}</h4>
+          {memory.description && <p className="text-xs font-medium text-muted">{memory.description}</p>}
+          <p className="text-xs text-muted whitespace-pre-wrap">{memory.body}</p>
+          {memory.evidence && <p className="text-xs italic text-muted">Evidence: {memory.evidence}</p>}
         </div>
       ) : (
         <div className="space-y-3">
           <div>
-            <label className="block text-caption font-medium text-zinc-400 mb-1">Title</label>
+            <label className="block text-caption font-medium text-muted mb-1">Title</label>
             <Input
               data-debug-id={`memory-proposal-title-input-${memoryId}`}
               id={`memory-proposal-title-input-${memoryId}`}
@@ -411,7 +411,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
           </div>
 
           <div>
-            <label className="block text-caption font-medium text-zinc-400 mb-1">Description</label>
+            <label className="block text-caption font-medium text-muted mb-1">Description</label>
             <Input
               data-debug-id={`memory-proposal-description-input-${memoryId}`}
               id={`memory-proposal-description-input-${memoryId}`}
@@ -423,19 +423,19 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
           </div>
 
           <div>
-            <label className="block text-caption font-medium text-zinc-400 mb-1">Body</label>
+            <label className="block text-caption font-medium text-muted mb-1">Body</label>
             <textarea
               rows={3}
               data-debug-id={`memory-proposal-body-textarea-${memoryId}`}
               id={`memory-proposal-body-textarea-${memoryId}`}
               value={body}
               onChange={(e) => setBody(e.target.value)}
-              className="w-full text-sm rounded-xl border border-white/10 bg-black/40 text-white p-2 focus:border-amber-500 focus:outline-none"
+              className="w-full text-sm rounded-xl border border-subtle bg-surface-raised/40 text-primary p-2 focus:border-accent focus:outline-none"
             />
           </div>
 
           <div>
-            <label className="block text-caption font-medium text-zinc-400 mb-1">Evidence</label>
+            <label className="block text-caption font-medium text-muted mb-1">Evidence</label>
             <Input
               data-debug-id={`memory-proposal-evidence-input-${memoryId}`}
               id={`memory-proposal-evidence-input-${memoryId}`}
@@ -447,7 +447,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
 
           <div data-debug-id={`memory-proposal-scope-${memoryId}`} id={`memory-proposal-scope-${memoryId}`} className="space-y-3">
             <div>
-              <label className="block text-caption font-medium text-zinc-400 mb-1">Type</label>
+              <label className="block text-caption font-medium text-muted mb-1">Type</label>
               <Select
                 data-debug-id={`memory-proposal-type-select-${memoryId}`}
                 value={type}
@@ -460,12 +460,12 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
               </Select>
             </div>
             <div>
-              <label className="block text-caption font-medium text-zinc-400 mb-1">Scope Settings</label>
+              <label className="block text-caption font-medium text-muted mb-1">Scope Settings</label>
               <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId={`memory-proposal-scope-${memoryId}`} />
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-white/10">
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-subtle">
             <Button
               variant="secondary"
               size="sm"
@@ -533,20 +533,20 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
     <div
       data-debug-id={`settings-memory-row-${memoryId}`}
       id={`settings-memory-row-${memoryId}`}
-      className="rounded-2xl border border-white/10 bg-black/20 p-4 space-y-2 hover:border-white/20 transition"
+      className="rounded-2xl border border-subtle bg-surface-raised/30 p-4 space-y-2 hover:border-strong transition"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h4 className="font-bold text-white text-base">{memory.title || memoryId}</h4>
+            <h4 className="font-bold text-primary text-base">{memory.title || memoryId}</h4>
             <StatusPill tone={statusTone} className="uppercase">
               {memory.status}
             </StatusPill>
-            <span className="rounded-full bg-white/10 px-2 py-0.5 text-caption font-medium text-zinc-300">
+            <span className="rounded-full bg-neutral-soft px-2 py-0.5 text-caption font-medium text-muted">
               {memory.type}
             </span>
             {isSystem && (
-              <span className="rounded-full bg-purple-500/20 text-purple-200 px-2 py-0.5 text-caption font-semibold">
+              <span className="rounded-full bg-accent-soft text-accent px-2 py-0.5 text-caption font-semibold">
                 System
               </span>
             )}
@@ -554,7 +554,7 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
           <div
             data-debug-id={`memory-row-scope-${memoryId}`}
             id={`memory-row-scope-${memoryId}`}
-            className="text-xs text-zinc-400 italic"
+            className="text-xs text-muted italic"
           >
             Scope: {memory.target || "Global"}
           </div>
@@ -599,28 +599,28 @@ const MemoryRow: React.FC<{ memory: any }> = ({ memory }) => {
       </div>
 
       {memory.description ? (
-        <p className="text-xs font-medium text-zinc-300 line-clamp-2">
+        <p className="text-xs font-medium text-muted line-clamp-2">
           {memory.description}
         </p>
       ) : null}
 
-      <p className="text-xs text-zinc-300 whitespace-pre-wrap line-clamp-3">
+      <p className="text-xs text-muted whitespace-pre-wrap line-clamp-3">
         {memory.body}
       </p>
 
       {expanded && (
-        <div className="mt-3 pt-3 border-t border-white/10 space-y-2 text-xs text-zinc-400">
-          <div><span className="font-semibold text-zinc-200">Full Body:</span> {memory.body}</div>
-          {memory.description && <div><span className="font-semibold text-zinc-200">Description:</span> {memory.description}</div>}
-          {memory.evidence && <div><span className="font-semibold text-zinc-200">Evidence:</span> {memory.evidence}</div>}
-          <div><span className="font-semibold text-zinc-200">ID:</span> {memoryId}</div>
-          {memory.sourceTaskId && <div><span className="font-semibold text-zinc-200">Source Task ID:</span> {memory.sourceTaskId}</div>}
-          {memory.version > 0 && <div><span className="font-semibold text-zinc-200">Version:</span> {memory.version}</div>}
+        <div className="mt-3 pt-3 border-t border-subtle space-y-2 text-xs text-muted">
+          <div><span className="font-semibold text-primary">Full Body:</span> {memory.body}</div>
+          {memory.description && <div><span className="font-semibold text-primary">Description:</span> {memory.description}</div>}
+          {memory.evidence && <div><span className="font-semibold text-primary">Evidence:</span> {memory.evidence}</div>}
+          <div><span className="font-semibold text-primary">ID:</span> {memoryId}</div>
+          {memory.sourceTaskId && <div><span className="font-semibold text-primary">Source Task ID:</span> {memory.sourceTaskId}</div>}
+          {memory.version > 0 && <div><span className="font-semibold text-primary">Version:</span> {memory.version}</div>}
         </div>
       )}
 
       {isEditing && !isSystem && (
-        <div className="mt-3 pt-3 border-t border-white/10">
+        <div className="mt-3 pt-3 border-t border-subtle">
           <EditMemoryForm memory={memory} onClose={() => setIsEditing(false)} />
         </div>
       )}
@@ -662,11 +662,11 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
   };
 
   return (
-    <form onSubmit={handleUpdate} className="space-y-3 bg-black/40 p-3 rounded-xl border border-white/10">
-      <h5 className="text-xs font-bold text-zinc-200">Edit Memory</h5>
-      {err && <div className="text-xs text-red-300">{err}</div>}
+    <form onSubmit={handleUpdate} className="space-y-3 bg-surface-raised/40 p-3 rounded-xl border border-subtle">
+      <h5 className="text-xs font-bold text-primary">Edit Memory</h5>
+      {err && <div className="text-xs text-danger">{err}</div>}
       <div>
-        <label className="block text-caption text-zinc-400 mb-1">Title</label>
+        <label className="block text-caption text-muted mb-1">Title</label>
         <Input
           size="sm"
           data-debug-id={`memory-edit-title-input-${memoryId}`}
@@ -677,7 +677,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         />
       </div>
       <div>
-        <label className="block text-caption text-zinc-400 mb-1">Description</label>
+        <label className="block text-caption text-muted mb-1">Description</label>
         <Input
           size="sm"
           data-debug-id={`memory-edit-description-input-${memoryId}`}
@@ -689,7 +689,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         />
       </div>
       <div>
-        <label className="block text-caption text-zinc-400 mb-1">Body</label>
+        <label className="block text-caption text-muted mb-1">Body</label>
         <Textarea
           rows={2}
           data-debug-id={`memory-edit-body-textarea-${memoryId}`}
@@ -701,7 +701,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         />
       </div>
       <div>
-        <label className="block text-caption text-zinc-400 mb-1">Evidence</label>
+        <label className="block text-caption text-muted mb-1">Evidence</label>
         <Input
           size="sm"
           data-debug-id={`memory-edit-evidence-input-${memoryId}`}
@@ -713,7 +713,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
       </div>
       <div className="space-y-3">
         <div>
-          <label className="block text-caption text-zinc-400 mb-1">Type</label>
+          <label className="block text-caption text-muted mb-1">Type</label>
           <Select
             size="sm"
             data-debug-id={`memory-edit-type-select-${memoryId}`}
@@ -727,7 +727,7 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
           </Select>
         </div>
         <div>
-          <label className="block text-caption text-zinc-400 mb-1">Scope</label>
+          <label className="block text-caption text-muted mb-1">Scope</label>
           <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId={`memory-edit-scope-${memoryId}`} />
         </div>
       </div>

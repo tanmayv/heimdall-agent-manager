@@ -88,9 +88,9 @@ export default function TemplatesPanel() {
 
       <div data-debug-id="settings-templates-list" className="space-y-2">
         {templatesQuery.isLoading ? (
-          <div className="p-4 text-sm text-zinc-500">Loading templates…</div>
+          <div className="p-4 text-sm text-muted">Loading templates…</div>
         ) : templates.length === 0 ? (
-          <div data-debug-id="settings-templates-empty" className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 text-sm text-zinc-500">No templates yet.</div>
+          <div data-debug-id="settings-templates-empty" className="rounded-2xl border border-subtle bg-surface-raised/30 p-6 text-sm text-muted">No templates yet.</div>
         ) : templates.map((t) => {
           const id = str(t.template_id || t.templateId || t.id);
           const isSystem = Boolean(t.is_system ?? t.isSystem);
@@ -98,17 +98,17 @@ export default function TemplatesPanel() {
             return <TemplateEditor key={id} form={form} setForm={setForm} onSave={save} onCancel={cancel} saving={updateState.isLoading} error={error} title={`Edit ${str(t.name) || id}`} />;
           }
           return (
-            <div key={id} data-debug-id={`settings-template-row-${id}`} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            <div key={id} data-debug-id={`settings-template-row-${id}`} className="rounded-2xl border border-subtle bg-surface-raised/40 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-semibold text-white">{str(t.name) || id}</h3>
-                    {isSystem ? <span className="rounded-full bg-zinc-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-400">built-in</span> : null}
+                    <h3 className="font-semibold text-primary">{str(t.name) || id}</h3>
+                    {isSystem ? <span className="rounded-full bg-neutral-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-muted">built-in</span> : null}
                   </div>
-                  {str(t.description) ? <p className="mt-1 text-sm text-zinc-400">{t.description}</p> : null}
-                  {str(t.persona) ? <p className="mt-2 line-clamp-2 text-[13px] text-zinc-300"><span className="text-zinc-500">Persona: </span>{t.persona}</p> : null}
-                  {str(t.instructions) ? <p className="mt-1 line-clamp-2 text-[13px] text-zinc-300"><span className="text-zinc-500">Instructions: </span>{t.instructions}</p> : null}
-                  <p className="mt-2 font-mono text-caption text-zinc-600">{id}</p>
+                  {str(t.description) ? <p className="mt-1 text-sm text-muted">{t.description}</p> : null}
+                  {str(t.persona) ? <p className="mt-2 line-clamp-2 text-[13px] text-muted"><span className="text-faint">Persona: </span>{t.persona}</p> : null}
+                  {str(t.instructions) ? <p className="mt-1 line-clamp-2 text-[13px] text-muted"><span className="text-faint">Instructions: </span>{t.instructions}</p> : null}
+                  <p className="mt-2 font-mono text-caption text-faint">{id}</p>
                 </div>
                 {!isSystem ? (
                   <div className="flex shrink-0 gap-2">
@@ -136,8 +136,8 @@ export default function TemplatesPanel() {
 function TemplateEditor({ form, setForm, onSave, onCancel, saving, error, title }: { form: TemplateForm; setForm: (f: TemplateForm) => void; onSave: () => void; onCancel: () => void; saving: boolean; error: string; title: string }) {
   const set = (patch: Partial<TemplateForm>) => setForm({ ...form, ...patch });
   return (
-    <div data-debug-id="settings-template-editor" className="mb-4 rounded-2xl border border-sky-400/25 bg-sky-400/[0.04] p-4">
-      <h3 className="mb-3 text-sm font-semibold text-white">{title}</h3>
+    <div data-debug-id="settings-template-editor" className="mb-4 rounded-2xl border border-info/30 bg-info-soft p-4">
+      <h3 className="mb-3 text-sm font-semibold text-primary">{title}</h3>
       <div className="grid gap-3">
         <FormField label="Name">
           <Input data-debug-id="settings-template-name-input" value={form.name} onChange={(value) => set({ name: value })} width="full" placeholder="e.g. Researcher" />
@@ -152,7 +152,7 @@ function TemplateEditor({ form, setForm, onSave, onCancel, saving, error, title 
           <Textarea data-debug-id="settings-template-instructions-input" value={form.instructions} onChange={(v) => set({ instructions: v })} rows={4} width="full" placeholder="How the agent should work (defaults layered under per-agent instructions)." />
         </FormField>
       </div>
-      {error ? <p data-debug-id="settings-template-editor-error" className="mt-2 text-xs text-red-300">{error}</p> : null}
+      {error ? <p data-debug-id="settings-template-editor-error" className="mt-2 text-xs text-danger">{error}</p> : null}
       <div className="mt-3 flex gap-2">
         <Button variant="primary" data-debug-id="settings-template-save-btn" disabled={saving} onClick={onSave}>{saving ? 'Saving…' : 'Save'}</Button>
         <Button variant="secondary" data-debug-id="settings-template-cancel-btn" onClick={onCancel}>Cancel</Button>

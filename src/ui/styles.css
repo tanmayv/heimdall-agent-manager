@@ -7,17 +7,17 @@
 
 :root {
   color-scheme: dark;
-  --fd-primary: var(--color-text-primary, #ffffff);
-  --fd-on-primary: var(--color-accent-fg, #000000);
-  --fd-accent-blue: var(--color-accent, #0099ff);
-  --fd-ink: var(--color-text-primary, #ffffff);
-  --fd-ink-muted: var(--color-text-muted, #999999);
-  --fd-canvas: var(--color-canvas, #090909);
-  --fd-surface-1: var(--color-surface, #141414);
-  --fd-surface-2: var(--color-surface-raised, #1c1c1c);
-  --fd-hairline: var(--color-border-subtle, #262626);
-  --fd-hairline-soft: var(--color-border-subtle, #1a1a1a);
-  --fd-success: var(--color-success, #22c55e);
+  --fd-primary: var(--color-text-primary);
+  --fd-on-primary: var(--color-accent-fg);
+  --fd-accent-blue: var(--color-accent);
+  --fd-ink: var(--color-text-primary);
+  --fd-ink-muted: var(--color-text-muted);
+  --fd-canvas: var(--color-canvas);
+  --fd-surface-1: var(--color-surface);
+  --fd-surface-2: var(--color-surface-raised);
+  --fd-hairline: var(--color-border-subtle);
+  --fd-hairline-soft: var(--color-border-subtle);
+  --fd-success: var(--color-success);
   --fd-font-body: Inter, 'Inter Variable', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
   --fd-radius-xs: 4px;
@@ -68,7 +68,7 @@ body {
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: var(--color-border-strong, #525252) var(--color-surface, var(--fd-surface-1));
+  scrollbar-color: var(--color-border-strong) var(--color-surface);
 }
 
 *::-webkit-scrollbar {
@@ -77,40 +77,40 @@ body {
 }
 
 *::-webkit-scrollbar-track {
-  background: var(--color-surface, var(--fd-surface-1));
+  background: var(--color-surface);
   border-radius: var(--fd-radius-pill);
 }
 
 *::-webkit-scrollbar-thumb {
   min-height: 44px;
-  border: 2px solid var(--color-surface, var(--fd-surface-1));
+  border: 2px solid var(--color-surface);
   border-radius: var(--fd-radius-pill);
-  background: var(--color-border-strong, #525252);
+  background: var(--color-border-strong);
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-faint, #8a8a8a);
+  background: var(--color-text-faint);
 }
 
 *::-webkit-scrollbar-corner {
-  background: var(--color-canvas, var(--fd-canvas));
+  background: var(--color-canvas);
 }
 
 .chat-scrollbar {
-  scrollbar-color: var(--color-border-strong, #525252) var(--color-canvas, #090909);
+  scrollbar-color: var(--color-border-strong) var(--color-canvas);
 }
 
 .chat-scrollbar::-webkit-scrollbar-track {
-  background: var(--color-canvas, #090909);
+  background: var(--color-canvas);
 }
 
 .chat-scrollbar::-webkit-scrollbar-thumb {
-  border-color: var(--color-canvas, #090909);
-  background: var(--color-border-strong, #525252);
+  border-color: var(--color-canvas);
+  background: var(--color-border-strong);
 }
 
 .chat-scrollbar::-webkit-scrollbar-corner {
-  background: var(--color-canvas, #090909);
+  background: var(--color-canvas);
 }
 
 ::selection {
@@ -179,9 +179,9 @@ body {
 }
 
 .markdown-message blockquote {
-  border-left: 3px solid color-mix(in oklab, var(--fd-accent-blue), white 16%);
+  border-left: 3px solid var(--color-accent);
   border-radius: var(--fd-radius-md);
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-neutral-soft);
   padding: 0.65rem 0.8rem;
   color: currentColor;
 }
@@ -209,7 +209,7 @@ body {
 
 .markdown-message code {
   border-radius: var(--fd-radius-sm);
-  background: rgba(255, 255, 255, 0.16);
+  background: var(--color-neutral-soft);
   padding: 0.1rem 0.32rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
   font-size: 0.86em;
@@ -219,8 +219,8 @@ body {
   max-width: 100%;
   overflow-x: auto;
   border-radius: var(--fd-radius-lg);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(0, 0, 0, 0.34);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface);
   padding: 0.85rem;
 }
 
@@ -243,7 +243,7 @@ body {
   max-width: 100%;
   overflow-x: auto;
   border-radius: var(--fd-radius-lg);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .markdown-message table {
@@ -255,14 +255,14 @@ body {
 
 .markdown-message th,
 .markdown-message td {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-bottom: 1px solid var(--color-border-subtle);
   padding: 0.48rem 0.62rem;
   text-align: left;
   vertical-align: top;
 }
 
 .markdown-message th {
-  background: rgba(255, 255, 255, 0.13);
+  background: var(--color-neutral-soft);
   font-weight: 800;
 }
 
@@ -281,8 +281,8 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: var(--fd-radius-pill);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-neutral-soft);
   color: currentColor;
   opacity: 0;
   transition: opacity 160ms ease, background 160ms ease;
@@ -293,18 +293,18 @@ body {
 .message-copy-button:hover,
 .message-copy-button:focus-visible {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.17);
+  background: var(--color-surface-raised);
   outline: none;
 }
 
 .message-copy-button-user {
-  border-color: rgba(0, 0, 0, 0.16);
-  background: rgba(0, 0, 0, 0.08);
+  border-color: var(--color-border-subtle);
+  background: var(--color-neutral-soft);
 }
 
 .message-copy-button-user:hover,
 .message-copy-button-user:focus-visible {
-  background: rgba(0, 0, 0, 0.14);
+  background: var(--color-surface-raised);
 }
 
 .message-copy-button svg {
@@ -550,13 +550,13 @@ body {
   --sv-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --sv-font-size: 13px;
   --sv-line-height: 1.6;
-  --sv-gutter-color: #52525b;
-  --sv-cursor-color: #10b981;
-  --sv-statusline-bg: #13151c;
-  --sv-statusline-fg: #d4d4d8;
-  --sv-mode-insert-color: #38bdf8;
-  --sv-mode-visual-color: #c084fc;
-  --sv-selection-bg: rgba(16, 185, 129, 0.22);
+  --sv-gutter-color: var(--color-text-faint);
+  --sv-cursor-color: var(--color-success);
+  --sv-statusline-bg: var(--color-surface);
+  --sv-statusline-fg: var(--color-text-muted);
+  --sv-mode-insert-color: var(--color-accent);
+  --sv-mode-visual-color: var(--color-warning);
+  --sv-selection-bg: color-mix(in oklab, var(--color-success), transparent 78%);
 }
 
 .vimee-editor-container .sv-container {

@@ -379,21 +379,21 @@ export default function InstanceRunDirPanel({
 
   // ---- Render ---------------------------------------------------------------
 
-  const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-[#0b0d11]';
+  const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-surface';
 
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2 border-b border-subtle px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <Icon name="folder" size={16} className="shrink-0 text-sky-300/80" />
+          <Icon name="folder" size={16} className="shrink-0 text-accent" />
           <div className="min-w-0">
-            <div data-debug-id={`${debugPrefix}-title`} className="text-[12px] font-semibold text-zinc-100">Run dir</div>
+            <div data-debug-id={`${debugPrefix}-title`} className="text-[12px] font-semibold text-primary">Run dir</div>
             {rootAbs ? (
-              <div className="truncate font-mono text-[10px] text-zinc-600" title={`Run dir: ${rootAbs}`}>root: {rootAbs}</div>
+              <div className="truncate font-mono text-[10px] text-faint" title={`Run dir: ${rootAbs}`}>root: {rootAbs}</div>
             ) : null}
             {lastRefreshed && !viewFile ? (
-              <div data-debug-id={`${debugPrefix}-last-refreshed`} className="text-[10px] text-zinc-600">refreshed {new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+              <div data-debug-id={`${debugPrefix}-last-refreshed`} className="text-[10px] text-faint">refreshed {new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
             ) : null}
           </div>
         </div>
@@ -407,17 +407,17 @@ export default function InstanceRunDirPanel({
 
       {/* Pending review comments bar — spans ALL files in this conversation. */}
       {comments.length > 0 ? (
-        <div data-debug-id={`${debugPrefix}-comments-bar`} className="flex items-center gap-2 border-b border-sky-400/20 bg-sky-400/[0.06] px-3 py-2">
-          <div data-debug-id={`${debugPrefix}-comments-count`} className="min-w-0 flex-1 text-[11.5px] text-sky-100">
+        <div data-debug-id={`${debugPrefix}-comments-bar`} className="flex items-center gap-2 border-b border-accent/30 bg-accent/10 px-3 py-2">
+          <div data-debug-id={`${debugPrefix}-comments-count`} className="min-w-0 flex-1 text-[11.5px] text-accent">
             {comments.length} comment{comments.length === 1 ? '' : 's'} on {filesWithComments} file{filesWithComments === 1 ? '' : 's'}
-            {publishError ? <span className="ml-2 text-red-300">{publishError}</span> : null}
+            {publishError ? <span className="ml-2 text-danger">{publishError}</span> : null}
           </div>
           <button
             data-debug-id={`${debugPrefix}-comments-clear-btn`}
             type="button"
             onClick={() => { setComments([]); setPublishError(''); }}
             disabled={publishing}
-            className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-caption text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+            className="shrink-0 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
           >
             Clear
           </button>
@@ -426,7 +426,7 @@ export default function InstanceRunDirPanel({
             type="button"
             onClick={() => void publishComments()}
             disabled={publishing || !onPublishComments}
-            className="shrink-0 rounded-lg bg-sky-600 px-2.5 py-1 text-caption font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+            className="shrink-0 rounded-lg bg-accent px-2.5 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
             title={onPublishComments ? 'Send all comments to the agent' : 'Sending is unavailable here'}
           >
             {publishing ? 'Sending…' : 'Send to agent'}
@@ -435,7 +435,7 @@ export default function InstanceRunDirPanel({
       ) : null}
 
       {!agentInstanceId ? (
-        <div data-debug-id={`${debugPrefix}-no-instance`} className="grid flex-1 place-items-center p-6 text-center text-xs text-zinc-500">
+        <div data-debug-id={`${debugPrefix}-no-instance`} className="grid flex-1 place-items-center p-6 text-center text-xs text-muted">
           No agent instance is associated with this conversation.
         </div>
       ) : viewFile ? (
@@ -457,7 +457,7 @@ export default function InstanceRunDirPanel({
       ) : (
         <>
           {/* Breadcrumb */}
-          <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex flex-wrap items-center gap-0.5 border-b border-white/[0.06] px-3 py-2 text-[12px] text-zinc-400">
+          <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex flex-wrap items-center gap-0.5 border-b border-subtle px-3 py-2 text-[12px] text-muted">
             {(() => {
               const folderCount = comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length;
               return (
@@ -467,22 +467,22 @@ export default function InstanceRunDirPanel({
                   onClick={() => { setPathCommentDraft(''); setPathCommentFor({ path: cwd || '/', label: `folder: ${cwd || 'project root'}` }); }}
                   title="Comment on this folder"
                   aria-label="Comment on this folder"
-                  className={`mr-1 relative grid h-6 w-6 shrink-0 place-items-center rounded border ${folderCount > 0 ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-400 hover:bg-white/10'}`}
+                  className={`mr-1 relative grid h-6 w-6 shrink-0 place-items-center rounded border ${folderCount > 0 ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
                 >
                   <Icon name="chat" size={12} />
-                  {folderCount > 0 ? <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-sky-500 px-0.5 text-[8px] font-bold text-white">{folderCount}</span> : null}
+                  {folderCount > 0 ? <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">{folderCount}</span> : null}
                 </button>
               );
             })()}
             {crumbs.map((c, i) => (
               <span key={c.path || 'root'} className="flex items-center gap-0.5">
-                {i > 0 ? <Icon name="chevron-right" size={12} className="text-zinc-600" /> : null}
+                {i > 0 ? <Icon name="chevron-right" size={12} className="text-faint" /> : null}
                 <button
                   data-debug-id={`${debugPrefix}-crumb-${i}`}
                   type="button"
                   onClick={() => openDir(c.path)}
                   disabled={i === crumbs.length - 1}
-                  className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:text-zinc-200 disabled:hover:bg-transparent"
+                  className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
                 >
                   {c.label}
                 </button>
@@ -491,15 +491,15 @@ export default function InstanceRunDirPanel({
           </div>
 
           {/* Toolbar (read-only: hidden toggle only) */}
-          <div className="flex flex-wrap items-center gap-1.5 border-b border-white/[0.06] px-3 py-2">
-            <span className="text-[10.5px] text-zinc-600">Read-only · the agent's run context</span>
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-subtle px-3 py-2">
+            <span className="text-[10.5px] text-faint">Read-only · the agent's run context</span>
             <button
               data-debug-id={`${debugPrefix}-hidden-toggle`}
               type="button"
               onClick={() => setIncludeHidden((v) => !v)}
               aria-pressed={includeHidden ? 'true' : 'false'}
               title={includeHidden ? 'Hide dotfiles (names starting with ".")' : 'Show hidden dotfiles (names starting with ".")'}
-              className={`ml-auto rounded-lg border px-2 py-1 text-caption ${includeHidden ? 'border-sky-400/40 bg-sky-400/10 text-sky-200' : 'border-white/10 text-zinc-400 hover:bg-white/10'}`}
+              className={`ml-auto rounded-lg border px-2 py-1 text-caption ${includeHidden ? 'border-accent bg-accent/10 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
             >
               {includeHidden ? 'Hide hidden' : 'Show hidden'}
             </button>
@@ -508,20 +508,20 @@ export default function InstanceRunDirPanel({
           {/* Directory list */}
           <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto">
             {loading ? (
-              <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-zinc-500">Loading…</div>
+              <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-muted">Loading…</div>
             ) : error && sortedEntries.length === 0 ? (
               // Don't show the misleading "empty folder" placeholder when the load
               // actually FAILED (e.g. project not configured on this bridge, or the
               // bridge is offline). The error banner below carries the reason.
-              <div data-debug-id={`${debugPrefix}-load-error`} className="p-6 text-center text-xs text-zinc-500">Couldn’t load files — see the message below.</div>
+              <div data-debug-id={`${debugPrefix}-load-error`} className="p-6 text-center text-xs text-muted">Couldn’t load files — see the message below.</div>
             ) : sortedEntries.length === 0 ? (
-              <div data-debug-id={`${debugPrefix}-empty`} className="p-6 text-center text-xs text-zinc-600">This folder is empty.</div>
+              <div data-debug-id={`${debugPrefix}-empty`} className="p-6 text-center text-xs text-faint">This folder is empty.</div>
             ) : (
               <ul>
                 {sortedEntries.map((e) => {
                   const isOpening = !e.is_dir && openingPath === joinPath(cwd, e.name);
                   return (
-                  <li key={`${e.is_dir ? 'd' : 'f'}:${e.name}`} className="group flex items-center gap-2 border-b border-white/[0.04] px-3 py-1.5 hover:bg-white/[0.05]">
+                  <li key={`${e.is_dir ? 'd' : 'f'}:${e.name}`} className="group flex items-center gap-2 border-b border-subtle/40 px-3 py-1.5 hover:bg-neutral-soft">
                     <button
                       data-debug-id={`${debugPrefix}-entry-${e.name}`}
                       type="button"
@@ -530,15 +530,15 @@ export default function InstanceRunDirPanel({
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     >
                       {isOpening ? (
-                        <Icon name="refresh" size={15} className="shrink-0 animate-spin text-sky-300" title="Loading file…" />
+                        <Icon name="refresh" size={15} className="shrink-0 animate-spin text-accent" title="Loading file…" />
                       ) : (
-                        <Icon name={e.is_dir ? 'folder' : 'file'} size={15} className={`shrink-0 ${e.is_dir ? 'text-sky-300/70' : 'text-zinc-500'}`} />
+                        <Icon name={e.is_dir ? 'folder' : 'file'} size={15} className={`shrink-0 ${e.is_dir ? 'text-accent' : 'text-muted'}`} />
                       )}
-                      <span className={`min-w-0 flex-1 truncate text-[13px] ${e.hidden ? 'text-zinc-500' : 'text-zinc-200'}`}>{e.name}</span>
-                      {e.has_git ? <span className="shrink-0 rounded bg-emerald-400/15 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">git</span> : null}
-                      {!e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-zinc-600">{formatBytes(e.size)}</span> : null}
-                      {e.modified_at ? <span className="hidden shrink-0 text-[10px] text-zinc-600 sm:inline">{formatModified(e.modified_at)}</span> : null}
-                      {e.is_dir ? <Icon name="chevron-right" size={13} className="shrink-0 text-zinc-600" /> : null}
+                      <span className={`min-w-0 flex-1 truncate text-[13px] ${e.hidden ? 'text-faint' : 'text-primary'}`}>{e.name}</span>
+                      {e.has_git ? <span className="shrink-0 rounded bg-success-soft px-1.5 py-0.5 text-[9px] font-bold text-success">git</span> : null}
+                      {!e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-faint">{formatBytes(e.size)}</span> : null}
+                      {e.modified_at ? <span className="hidden shrink-0 text-[10px] text-faint sm:inline">{formatModified(e.modified_at)}</span> : null}
+                      {e.is_dir ? <Icon name="chevron-right" size={13} className="shrink-0 text-faint" /> : null}
                     </button>
                   </li>
                   );
@@ -554,14 +554,14 @@ export default function InstanceRunDirPanel({
                   type="button"
                   disabled={loadingMore}
                   onClick={() => void load(cwd, { cursor: nextCursor, append: true })}
-                  className="rounded-lg border border-white/10 px-3 py-1.5 text-caption text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+                  className="rounded-lg border border-subtle px-3 py-1.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
                 >
                   {loadingMore ? 'Loading…' : 'Load more'}
                 </button>
               </div>
             ) : null}
             {truncated ? (
-              <div data-debug-id={`${debugPrefix}-truncated`} className="px-3 pb-3 text-center text-[10px] text-amber-300/70">
+              <div data-debug-id={`${debugPrefix}-truncated`} className="px-3 pb-3 text-center text-[10px] text-warning">
                 Listing truncated to the server maximum.
               </div>
             ) : null}
@@ -571,9 +571,9 @@ export default function InstanceRunDirPanel({
 
       {/* Path-level (file/folder) comment composer overlay. */}
       {pathCommentFor ? (
-        <div className="absolute inset-x-0 bottom-0 z-10 border-t border-sky-400/20 bg-[#0b0d11] p-3 shadow-[0_-8px_24px_rgba(0,0,0,0.5)]">
+        <div className="absolute inset-x-0 bottom-0 z-10 border-t border-accent/40 bg-surface p-3 shadow-panel">
           <div data-debug-id={`${debugPrefix}-path-composer`} className="mx-auto max-w-2xl">
-            <div className="mb-1 text-caption text-zinc-400">Comment on {pathCommentFor.label}</div>
+            <div className="mb-1 text-caption text-muted">Comment on {pathCommentFor.label}</div>
             <textarea
               data-debug-id={`${debugPrefix}-path-composer-input`}
               autoFocus
@@ -589,16 +589,16 @@ export default function InstanceRunDirPanel({
               }}
               rows={3}
               placeholder={`Comment on ${pathCommentFor.label}… (Cmd/Ctrl+Enter to save)`}
-              className="w-full resize-y rounded border border-white/10 bg-black/30 p-2 text-[12px] text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+              className="w-full resize-y rounded border border-subtle bg-surface-raised p-2 text-[12px] text-primary placeholder:text-muted focus:border-accent focus:outline-none"
             />
             <div className="mt-1.5 flex justify-end gap-1.5">
-              <button data-debug-id={`${debugPrefix}-path-composer-cancel`} type="button" onClick={() => setPathCommentFor(null)} className="rounded-lg border border-white/10 px-2.5 py-1 text-caption text-zinc-300 hover:bg-white/10">Cancel</button>
+              <button data-debug-id={`${debugPrefix}-path-composer-cancel`} type="button" onClick={() => setPathCommentFor(null)} className="rounded-lg border border-subtle px-2.5 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary">Cancel</button>
               <button
                 data-debug-id={`${debugPrefix}-path-composer-save`}
                 type="button"
                 disabled={!pathCommentDraft.trim()}
                 onClick={() => { addComment(pathCommentFor.path, 0, pathCommentFor.label, pathCommentDraft); setPathCommentFor(null); }}
-                className="rounded-lg bg-sky-600 px-2.5 py-1 text-caption font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="rounded-lg bg-accent px-2.5 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 Comment
               </button>
@@ -608,7 +608,7 @@ export default function InstanceRunDirPanel({
       ) : null}
 
       {error ? (
-        <div data-debug-id={`${debugPrefix}-error`} className="border-t border-red-400/20 bg-red-400/[0.06] px-3 py-2 text-caption text-red-300">
+        <div data-debug-id={`${debugPrefix}-error`} className="border-t border-danger/30 bg-danger-soft px-3 py-2 text-caption text-danger">
           {error}
         </div>
       ) : null}
@@ -667,18 +667,18 @@ function FileView({
 
   return (
     <div data-debug-id={`${debugPrefix}-file-view`} className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-subtle px-3 py-2">
         <button
           data-debug-id={`${debugPrefix}-file-back-btn`}
           type="button"
           onClick={onBack}
-          className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-caption text-zinc-300 hover:bg-white/10"
+          className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
         >
           <Icon name="chevron-left" size={13} /> Back
         </button>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12.5px] font-semibold text-zinc-100" title={file.path}>{name}</div>
-          <div className="truncate text-[10px] text-zinc-600">
+          <div className="truncate text-[12.5px] font-semibold text-primary" title={file.path}>{name}</div>
+          <div className="truncate text-[10px] text-faint">
             {[file.mime, file.size != null ? formatBytes(file.size) : '', file.modified_at ? formatModified(file.modified_at) : '']
               .filter(Boolean)
               .join(' · ')}
@@ -691,10 +691,10 @@ function FileView({
           onClick={onCommentFile}
           title="Comment on this file"
           aria-label="Comment on this file"
-          className={`relative shrink-0 grid h-8 w-8 place-items-center rounded-lg border ${fileLevelCount > 0 ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-300 hover:bg-white/10'}`}
+          className={`relative shrink-0 grid h-8 w-8 place-items-center rounded-lg border ${fileLevelCount > 0 ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
         >
           <Icon name="chat" size={14} />
-          {fileLevelCount > 0 ? <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-sky-500 px-1 text-[9px] font-bold text-white">{fileLevelCount}</span> : null}
+          {fileLevelCount > 0 ? <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[9px] font-bold text-accent-fg">{fileLevelCount}</span> : null}
         </button>
         {/* View controls */}
         {isMarkdown ? (
@@ -702,7 +702,7 @@ function FileView({
             data-debug-id={`${debugPrefix}-file-md-toggle-btn`}
             type="button"
             onClick={() => setMdRendered((v) => !v)}
-            className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-caption text-zinc-300 hover:bg-white/10"
+            className="shrink-0 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
             title={mdRendered ? 'View source' : 'View rendered'}
           >
             {mdRendered ? 'Source' : 'Rendered'}
@@ -714,7 +714,7 @@ function FileView({
             type="button"
             onClick={() => setWrap((v) => !v)}
             aria-pressed={wrap ? 'true' : 'false'}
-            className={`shrink-0 rounded-lg border px-2 py-1 text-caption ${wrap ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-300 hover:bg-white/10'}`}
+            className={`shrink-0 rounded-lg border px-2 py-1 text-caption ${wrap ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
             title={wrap ? 'Disable soft wrap' : 'Enable soft wrap'}
           >
             Wrap
@@ -723,7 +723,7 @@ function FileView({
       </div>
 
       <div
-        className="min-h-0 flex-1 overflow-auto bg-[#090909]"
+        className="min-h-0 flex-1 overflow-auto bg-canvas"
         onScroll={(e) => {
           if (!hasMore || loadingMore) return;
           const el = e.currentTarget;
@@ -733,16 +733,16 @@ function FileView({
       >
         {/* File-level comments (line 0), shown above the content. */}
         {comments.filter((c) => c.line === 0).length > 0 ? (
-          <div data-debug-id={`${debugPrefix}-file-comments`} className="border-b border-white/[0.06] bg-white/[0.02] p-2">
+          <div data-debug-id={`${debugPrefix}-file-comments`} className="border-b border-subtle bg-surface-raised p-2">
             {comments.filter((c) => c.line === 0).map((c) => (
               <LineComment key={c.id} comment={c} debugPrefix={debugPrefix} gutterWidthCh={0} onEdit={onEditComment} onDelete={onDeleteComment} />
             ))}
           </div>
         ) : null}
         {fetching && !content ? (
-          <div className="p-4 text-center text-xs text-zinc-500">Loading…</div>
+          <div className="p-4 text-center text-xs text-muted">Loading…</div>
         ) : !file.viewable ? (
-          <div data-debug-id={`${debugPrefix}-file-unviewable`} className="grid h-full place-items-center p-6 text-center text-xs text-zinc-500">
+          <div data-debug-id={`${debugPrefix}-file-unviewable`} className="grid h-full place-items-center p-6 text-center text-xs text-muted">
             {file.error?.code === 'file_too_large'
               ? `This file is too large to preview (${formatBytes(file.size)}).`
               : file.error?.code === 'unsupported_type'
@@ -756,7 +756,7 @@ function FileView({
           </div>
         ) : isMarkdown && mdRendered ? (
           <div data-debug-id={`${debugPrefix}-file-markdown`} className="p-3">
-            <MarkdownBody source={content} className="text-zinc-200" />
+            <MarkdownBody source={content} className="text-primary" />
           </div>
         ) : (
           <>
@@ -777,7 +777,7 @@ function FileView({
                   type="button"
                   onClick={onLoadMore}
                   disabled={loadingMore}
-                  className="rounded-lg border border-white/10 px-3 py-1.5 text-caption text-zinc-300 hover:bg-white/10 disabled:opacity-50"
+                  className="rounded-lg border border-subtle px-3 py-1.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
                 >
                   {loadingMore ? 'Loading…' : 'Load more of this file'}
                 </button>
@@ -788,7 +788,7 @@ function FileView({
       </div>
 
       {file.truncated ? (
-        <div className="border-t border-amber-400/20 bg-amber-400/[0.06] px-3 py-1.5 text-center text-[10px] text-amber-300/80">
+        <div className="border-t border-warning/30 bg-warning-soft px-3 py-1.5 text-center text-[10px] text-warning">
           Preview truncated.
         </div>
       ) : null}
@@ -868,10 +868,10 @@ function CodeLines({
         const lineComments = commentsByLine.get(lineNo) || [];
         return (
           <div key={lineNo} data-debug-id={`${debugPrefix}-line-${lineNo}`}>
-            <div className="group flex items-start hover:bg-white/[0.03]">
+            <div className="group flex items-start hover:bg-neutral-soft">
               {/* Gutter: line number + hover comment button */}
               <div
-                className="relative flex shrink-0 select-none items-center justify-end border-r border-white/[0.06] bg-white/[0.02] pr-2 text-right text-zinc-600"
+                className="relative flex shrink-0 select-none items-center justify-end border-r border-subtle bg-surface pr-2 text-right text-faint"
                 style={{ width: `calc(${gutterWidthCh}ch + 22px)` }}
               >
                 <button
@@ -880,7 +880,7 @@ function CodeLines({
                   onClick={() => setComposerLine((v) => (v === lineNo ? null : lineNo))}
                   title="Comment on this line"
                   aria-label={`Comment on line ${lineNo}`}
-                  className={`absolute left-1 grid h-4 w-4 place-items-center rounded text-sky-300 ${lineComments.length > 0 ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} hover:bg-sky-400/20`}
+                  className={`absolute left-1 grid h-4 w-4 place-items-center rounded text-accent ${lineComments.length > 0 ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} hover:bg-accent/20`}
                 >
                   {lineComments.length > 0 ? (
                     <span className="text-[9px] font-bold">{lineComments.length}</span>
@@ -891,13 +891,13 @@ function CodeLines({
                 <button
                   type="button"
                   onClick={() => setComposerLine((v) => (v === lineNo ? null : lineNo))}
-                  className="cursor-pointer tabular-nums hover:text-zinc-300"
+                  className="cursor-pointer tabular-nums hover:text-primary"
                 >
                   {lineNo}
                 </button>
               </div>
               {/* Code cell */}
-              <div className={`min-w-0 flex-1 overflow-x-auto px-3 text-zinc-200 ${wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'}`}>
+              <div className={`min-w-0 flex-1 overflow-x-auto px-3 text-primary ${wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'}`}>
                 {tokens ? (
                   tokens.length > 0 ? (
                     tokens.map((t, ti) => (
@@ -963,7 +963,7 @@ function LineComment({
   const [draft, setDraft] = useState(comment.body);
   return (
     <div className="flex" style={{ paddingLeft: `calc(${gutterWidthCh}ch + 22px)` }}>
-      <div data-debug-id={`${debugPrefix}-line-comment-${comment.id}`} className="my-1 mr-3 min-w-0 flex-1 rounded-lg border border-sky-400/20 bg-sky-400/[0.06] px-2.5 py-1.5 font-sans text-[12px]">
+      <div data-debug-id={`${debugPrefix}-line-comment-${comment.id}`} className="my-1 mr-3 min-w-0 flex-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1.5 font-sans text-[12px]">
         {editing ? (
           <div>
             <textarea
@@ -971,19 +971,19 @@ function LineComment({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               rows={2}
-              className="w-full resize-y rounded border border-white/10 bg-black/30 p-1.5 text-[12px] text-zinc-100 focus:border-sky-500 focus:outline-none"
+              className="w-full resize-y rounded border border-subtle bg-surface-raised p-1.5 text-[12px] text-primary focus:border-accent focus:outline-none"
             />
             <div className="mt-1 flex justify-end gap-1.5">
-              <button type="button" onClick={() => { setDraft(comment.body); setEditing(false); }} className="rounded border border-white/10 px-2 py-0.5 text-caption text-zinc-300 hover:bg-white/10">Cancel</button>
-              <button data-debug-id={`${debugPrefix}-line-comment-edit-save-${comment.id}`} type="button" onClick={() => { onEdit(comment.id, draft); setEditing(false); }} className="rounded bg-sky-600 px-2 py-0.5 text-caption font-semibold text-white hover:bg-sky-500">Save</button>
+              <button type="button" onClick={() => { setDraft(comment.body); setEditing(false); }} className="rounded border border-subtle px-2 py-0.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary">Cancel</button>
+              <button data-debug-id={`${debugPrefix}-line-comment-edit-save-${comment.id}`} type="button" onClick={() => { onEdit(comment.id, draft); setEditing(false); }} className="rounded bg-accent px-2 py-0.5 text-caption font-semibold text-accent-fg hover:opacity-90">Save</button>
             </div>
           </div>
         ) : (
           <div className="flex items-start gap-2">
-            <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-zinc-100">{comment.body}</div>
+            <div className="min-w-0 flex-1 whitespace-pre-wrap break-words text-primary">{comment.body}</div>
             <div className="flex shrink-0 items-center gap-1">
-              <button data-debug-id={`${debugPrefix}-line-comment-edit-${comment.id}`} type="button" onClick={() => { setDraft(comment.body); setEditing(true); }} title="Edit" className="grid h-5 w-5 place-items-center rounded text-zinc-400 hover:bg-white/10 hover:text-zinc-200"><Icon name="pencil" size={12} /></button>
-              <button data-debug-id={`${debugPrefix}-line-comment-delete-${comment.id}`} type="button" onClick={() => onDelete(comment.id)} title="Delete" className="grid h-5 w-5 place-items-center rounded text-zinc-400 hover:bg-red-500/20 hover:text-red-300"><Icon name="trash" size={12} /></button>
+              <button data-debug-id={`${debugPrefix}-line-comment-edit-${comment.id}`} type="button" onClick={() => { setDraft(comment.body); setEditing(true); }} title="Edit" className="grid h-5 w-5 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="pencil" size={12} /></button>
+              <button data-debug-id={`${debugPrefix}-line-comment-delete-${comment.id}`} type="button" onClick={() => onDelete(comment.id)} title="Delete" className="grid h-5 w-5 place-items-center rounded text-muted hover:bg-danger-soft hover:text-danger"><Icon name="trash" size={12} /></button>
             </div>
           </div>
         )}
@@ -1023,11 +1023,11 @@ function LineComposer({
           }}
           rows={2}
           placeholder={`Comment on line ${lineNo}… (Cmd/Ctrl+Enter to save)`}
-          className="w-full resize-y rounded border border-white/10 bg-black/30 p-1.5 text-[12px] text-zinc-100 placeholder:text-zinc-600 focus:border-sky-500 focus:outline-none"
+          className="w-full resize-y rounded border border-subtle bg-surface-raised p-1.5 text-[12px] text-primary placeholder:text-muted focus:border-accent focus:outline-none"
         />
         <div className="mt-1 flex justify-end gap-1.5">
-          <button data-debug-id={`${debugPrefix}-line-composer-cancel-${lineNo}`} type="button" onClick={onCancel} className="rounded border border-white/10 px-2 py-0.5 text-caption text-zinc-300 hover:bg-white/10">Cancel</button>
-          <button data-debug-id={`${debugPrefix}-line-composer-save-${lineNo}`} type="button" onClick={() => { if (draft.trim()) onSave(draft); }} disabled={!draft.trim()} className="rounded bg-sky-600 px-2 py-0.5 text-caption font-semibold text-white hover:bg-sky-500 disabled:opacity-50">Comment</button>
+          <button data-debug-id={`${debugPrefix}-line-composer-cancel-${lineNo}`} type="button" onClick={onCancel} className="rounded border border-subtle px-2 py-0.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary">Cancel</button>
+          <button data-debug-id={`${debugPrefix}-line-composer-save-${lineNo}`} type="button" onClick={() => { if (draft.trim()) onSave(draft); }} disabled={!draft.trim()} className="rounded bg-accent px-2 py-0.5 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50">Comment</button>
         </div>
       </div>
     </div>

@@ -118,11 +118,11 @@ export default function BridgeDirectoryPicker({
     <Panel data-debug-id={debugId} tone="raised" padding="md" className="w-full shadow-2xl">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">
-            <Icon name="folder" size={14} className="text-sky-400" />
+          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
+            <Icon name="folder" size={14} className="text-accent" />
             <span>Browse{bridgeLabel ? ` · ${bridgeLabel}` : ''}</span>
           </div>
-          {root ? <div className="mt-0.5 truncate font-mono text-[10px] text-zinc-600" title={`Allowed root: ${root}`}>root: {root}</div> : null}
+          {root ? <div className="mt-0.5 truncate font-mono text-[10px] text-faint" title={`Allowed root: ${root}`}>root: {root}</div> : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button data-debug-id={`${debugId}-home-btn`} variant="secondary" size="sm" onClick={() => void load('')} title="Go to root">Root</Button>
@@ -131,37 +131,37 @@ export default function BridgeDirectoryPicker({
       </div>
 
       {/* breadcrumb */}
-      <div data-debug-id={`${debugId}-breadcrumb`} className="mb-2.5 flex flex-wrap items-center gap-1 text-xs text-zinc-400">
+      <div data-debug-id={`${debugId}-breadcrumb`} className="mb-2.5 flex flex-wrap items-center gap-1 text-xs text-muted">
         {crumbs.map((c, i) => (
           <span key={c.path} className="flex items-center gap-1">
-            {i > 0 ? <Icon name="chevron-right" size={12} className="text-zinc-600" /> : null}
-            <button data-debug-id={`${debugId}-crumb-${i}`} type="button" onClick={() => void load(c.path)} className="max-w-[160px] truncate rounded px-1.5 py-0.5 font-mono text-xs font-medium text-zinc-200 hover:bg-white/10 hover:text-white transition">{c.label}</button>
+            {i > 0 ? <Icon name="chevron-right" size={12} className="text-faint" /> : null}
+            <button data-debug-id={`${debugId}-crumb-${i}`} type="button" onClick={() => void load(c.path)} className="max-w-[160px] truncate rounded px-1.5 py-0.5 font-mono text-xs font-medium text-primary hover:bg-neutral-soft transition">{c.label}</button>
           </span>
         ))}
       </div>
 
       {/* directory list */}
-      <div data-debug-id={`${debugId}-list`} className="max-h-[240px] overflow-y-auto rounded-xl border border-white/10 bg-black/20 p-1 space-y-0.5">
+      <div data-debug-id={`${debugId}-list`} className="max-h-[240px] overflow-y-auto rounded-xl border border-subtle bg-surface p-1 space-y-0.5">
         {listState.isFetching ? (
-          <div data-debug-id={`${debugId}-loading`} className="p-4 text-center text-xs text-zinc-500">Loading…</div>
+          <div data-debug-id={`${debugId}-loading`} className="p-4 text-center text-xs text-muted">Loading…</div>
         ) : visibleEntries.length === 0 ? (
-          <div data-debug-id={`${debugId}-empty`} className="p-4 text-center text-xs text-zinc-600">No subfolders here.</div>
+          <div data-debug-id={`${debugId}-empty`} className="p-4 text-center text-xs text-faint">No subfolders here.</div>
         ) : visibleEntries.map((e) => (
           <button
             key={e.name}
             data-debug-id={`${debugId}-entry-${e.name}`}
             type="button"
             onClick={() => void load(cwd ? joinPath(cwd, e.name) : e.name)}
-            className="flex w-full items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-white/[0.04] transition cursor-pointer text-left group"
+            className="flex w-full items-center justify-between gap-3 px-3 py-2 rounded-lg hover:bg-surface-raised transition cursor-pointer text-left group"
           >
             <div className="flex items-center gap-2.5 min-w-0">
-              <Icon name="folder" size={15} className="shrink-0 text-sky-400 group-hover:scale-105 transition-transform" />
-              <span className="text-zinc-200 text-xs font-mono truncate group-hover:text-white transition-colors">{e.name}</span>
+              <Icon name="folder" size={15} className="shrink-0 text-accent group-hover:scale-105 transition-transform" />
+              <span className="text-primary text-xs font-mono truncate">{e.name}</span>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               {e.has_git ? <Badge tone="success" emphasis="soft" className="font-mono text-[10px]">git</Badge> : null}
               {e.hidden ? <Badge tone="neutral" emphasis="soft" className="font-mono text-[10px]">hidden</Badge> : null}
-              <Icon name="chevron-right" size={14} className="shrink-0 text-zinc-600 group-hover:text-zinc-400 transition-colors" />
+              <Icon name="chevron-right" size={14} className="shrink-0 text-faint group-hover:text-muted transition-colors" />
             </div>
           </button>
         ))}
@@ -199,7 +199,7 @@ export default function BridgeDirectoryPicker({
         />
       </div>
 
-      {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-caption text-red-300">{error}</p> : null}
+      {error ? <p data-debug-id={`${debugId}-error`} className="mt-2 text-caption text-danger">{error}</p> : null}
 
       <div className="mt-3 flex items-center justify-end gap-2">
         <Button data-debug-id={`${debugId}-create-typed-btn`} variant="secondary" onClick={createTypedPath}>Create typed path</Button>

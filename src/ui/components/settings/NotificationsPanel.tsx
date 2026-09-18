@@ -236,8 +236,8 @@ export default function NotificationsPanel() {
       <Panel>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="font-semibold text-zinc-100">Enable browser notifications</div>
-            <p className="mt-1 text-sm text-zinc-400" data-debug-id="settings-notifications-status">{statusLine}</p>
+            <div className="font-semibold text-primary">Enable browser notifications</div>
+            <p className="mt-1 text-sm text-muted" data-debug-id="settings-notifications-status">{statusLine}</p>
           </div>
           <Toggle
             checked={state.enabled}
@@ -250,13 +250,13 @@ export default function NotificationsPanel() {
       </Panel>
 
       <Panel className={state.enabled ? '' : 'opacity-50'}>
-        <div className="mb-3 text-sm font-semibold text-zinc-200">Categories</div>
+        <div className="mb-3 text-sm font-semibold text-primary">Categories</div>
         <div className="space-y-3">
           {CATEGORY_LABELS.map((cat) => (
             <div key={cat.key} className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-sm font-medium text-zinc-100">{cat.label}</div>
-                <p className="mt-0.5 text-xs text-zinc-500">{cat.description}</p>
+                <div className="text-sm font-medium text-primary">{cat.label}</div>
+                <p className="mt-0.5 text-xs text-muted">{cat.description}</p>
               </div>
               <Toggle
                 checked={categoryEnabled(state, cat.key)}
@@ -273,8 +273,8 @@ export default function NotificationsPanel() {
       <Panel>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="font-semibold text-zinc-100">Test notifications</div>
-            <p className="mt-1 text-sm text-zinc-400">
+            <div className="font-semibold text-primary">Test notifications</div>
+            <p className="mt-1 text-sm text-muted">
               Send a sample notification to confirm they appear. You will get a native OS notification when supported and
               granted (and your tab is in the background), plus an in-app toast every time so you always see a result.
             </p>
@@ -292,29 +292,29 @@ export default function NotificationsPanel() {
 
       <Panel>
         <div className="mb-3">
-          <div className="font-semibold text-zinc-100">Web Push diagnostics</div>
-          <p className="mt-1 text-sm text-zinc-400">
+          <div className="font-semibold text-primary">Web Push diagnostics</div>
+          <p className="mt-1 text-sm text-muted">
             Compare the VAPID public key your browser&apos;s active push subscription is bound to against the server&apos;s
             current key. A mismatch (e.g. after a server key rotation) causes the push service to reject deliveries.
           </p>
         </div>
 
         {!pushDiagAvailable ? (
-          <p className="text-sm text-zinc-400" data-debug-id="settings-push-unavailable">
+          <p className="text-sm text-muted" data-debug-id="settings-push-unavailable">
             Web Push isn&apos;t available in this context.
           </p>
         ) : (
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-4">
-              <span className="text-sm text-zinc-400">Status</span>
+              <span className="text-sm text-muted">Status</span>
               <span
                 data-debug-id="settings-push-match-badge"
                 className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
                   pushDiag?.status === 'MATCH'
-                    ? 'bg-emerald-400/15 text-emerald-300'
+                    ? 'bg-success-soft text-success'
                     : pushDiag?.status === 'MISMATCH'
-                      ? 'bg-red-400/15 text-red-300'
-                      : 'bg-zinc-400/15 text-zinc-300'
+                      ? 'bg-danger-soft text-danger'
+                      : 'bg-neutral-soft text-muted'
                 }`}
               >
                 {pushDiag?.status ?? '…'}
@@ -322,32 +322,32 @@ export default function NotificationsPanel() {
             </div>
 
             <div className="flex items-center justify-between gap-4">
-              <span className="text-sm text-zinc-400">Server key</span>
+              <span className="text-sm text-muted">Server key</span>
               <span
                 data-debug-id="settings-push-server-key"
                 title={pushDiag?.serverKey || ''}
-                className="font-mono text-xs text-zinc-200"
+                className="font-mono text-xs text-primary"
               >
                 {truncateKey(pushDiag?.serverKey ?? '')}
               </span>
             </div>
 
             <div className="flex items-center justify-between gap-4">
-              <span className="text-sm text-zinc-400">Frontend key</span>
+              <span className="text-sm text-muted">Frontend key</span>
               <span
                 data-debug-id="settings-push-frontend-key"
                 title={pushDiag?.frontendKey || ''}
-                className="font-mono text-xs text-zinc-200"
+                className="font-mono text-xs text-primary"
               >
                 {truncateKey(pushDiag?.frontendKey ?? '')}
               </span>
             </div>
 
             <div className="flex items-center justify-between gap-4">
-              <span className="text-sm text-zinc-400">Endpoint host</span>
+              <span className="text-sm text-muted">Endpoint host</span>
               <span
                 data-debug-id="settings-push-endpoint-host"
-                className="font-mono text-xs text-zinc-200"
+                className="font-mono text-xs text-primary"
               >
                 {pushDiag?.endpointHost || '—'}
               </span>

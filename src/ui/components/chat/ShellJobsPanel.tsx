@@ -49,15 +49,15 @@ function JobOutputSection({ agentInstanceId, execId }: { agentInstanceId: string
   const { data, isLoading, error } = useFetchShellJobOutputQuery(
     { instanceId: agentInstanceId, execId },
   );
-  if (isLoading) return <p className="mt-2 font-mono text-[11px] text-zinc-400">Loading output…</p>;
-  if (error) return <p className="mt-2 text-[11px] text-rose-400">Failed to load output</p>;
+  if (isLoading) return <p className="mt-2 font-mono text-[11px] text-muted">Loading output…</p>;
+  if (error) return <p className="mt-2 text-[11px] text-danger">Failed to load output</p>;
   if (!data) return null;
   return (
     <div className="mt-2">
       {data.truncated ? (
-        <p className="mb-1 text-[10px] text-zinc-500">Output truncated — showing last 100 lines</p>
+        <p className="mb-1 text-[10px] text-muted">Output truncated — showing last 100 lines</p>
       ) : null}
-      <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-all rounded bg-zinc-900 p-2 font-mono text-xs text-zinc-100">{data.output}</pre>
+      <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-all rounded border border-subtle bg-surface-raised p-2 font-mono text-xs text-primary">{data.output}</pre>
     </div>
   );
 }
@@ -148,17 +148,17 @@ export default function ShellJobsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastActionAt, agentInstanceId]);
 
-  const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-[#0b0d11]';
+  const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-surface';
 
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
       {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2 border-b border-subtle px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <Icon name="terminal" className="shrink-0 text-zinc-400" />
+          <Icon name="terminal" className="shrink-0 text-muted" />
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-white">Background Jobs</div>
-            {rootLabel ? <div className="truncate text-[11px] text-zinc-500">{rootLabel}</div> : null}
+            <div className="truncate text-sm font-semibold text-primary">Background Jobs</div>
+            {rootLabel ? <div className="truncate text-[11px] text-muted">{rootLabel}</div> : null}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -167,7 +167,7 @@ export default function ShellJobsPanel({
             data-debug-id={`${debugPrefix}-refresh-btn`}
             onClick={handleRefresh}
             disabled={isFetching}
-            className="rounded-lg border border-sky-400/30 px-2.5 py-1 text-xs text-sky-100 transition-colors hover:bg-sky-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isFetching ? 'Refreshing…' : 'Refresh'}
           </button>
@@ -181,18 +181,18 @@ export default function ShellJobsPanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {isLoading && accJobs.length === 0 ? (
           <div data-debug-id={`${debugPrefix}-loading`} className="animate-pulse space-y-3">
-            <div className="h-16 rounded-xl bg-white/5" />
-            <div className="h-16 rounded-xl bg-white/5" />
-            <div className="h-16 rounded-xl bg-white/5" />
+            <div className="h-16 rounded-xl bg-neutral-soft" />
+            <div className="h-16 rounded-xl bg-neutral-soft" />
+            <div className="h-16 rounded-xl bg-neutral-soft" />
           </div>
         ) : errorText ? (
-          <div data-debug-id={`${debugPrefix}-error`} className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+          <div data-debug-id={`${debugPrefix}-error`} className="rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
             {errorText}
           </div>
         ) : jobs.length === 0 ? (
-          <div data-debug-id={`${debugPrefix}-empty`} className="rounded-xl border border-dashed border-white/20 p-8 text-center">
-            <p className="text-zinc-400">No background jobs</p>
-            <p className="mt-1 text-xs text-zinc-500">Shell commands that run longer than 15s appear here.</p>
+          <div data-debug-id={`${debugPrefix}-empty`} className="rounded-xl border border-dashed border-subtle p-8 text-center">
+            <p className="text-muted">No background jobs</p>
+            <p className="mt-1 text-xs text-faint">Shell commands that run longer than 15s appear here.</p>
           </div>
         ) : (
           <div data-debug-id={`${debugPrefix}-list`} className="space-y-3">
@@ -200,22 +200,22 @@ export default function ShellJobsPanel({
               <div
                 key={job.exec_id}
                 data-debug-id={`${debugPrefix}-row`}
-                className="rounded-xl border border-white/10 bg-black/20 p-3 transition-colors hover:bg-white/[0.05]"
+                className="rounded-xl border border-subtle bg-surface-raised p-3 transition-colors hover:bg-neutral-soft"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <code className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-100" title={job.cmd}>{job.cmd || '(no command)'}</code>
+                  <code className="min-w-0 flex-1 truncate font-mono text-xs text-primary" title={job.cmd}>{job.cmd || '(no command)'}</code>
                   <StatusPill tone={statusTone(job.status)} className="shrink-0 uppercase">{job.status}</StatusPill>
                 </div>
-                <div className="mt-1 truncate font-mono text-[11px] text-zinc-500">{job.exec_id}</div>
-                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-zinc-500">
-                  <span>started <span className="text-zinc-300">{fmtTime(job.started_at)}</span></span>
-                  {job.finished_at ? <span>finished <span className="text-zinc-300">{fmtTime(job.finished_at)}</span></span> : null}
+                <div className="mt-1 truncate font-mono text-[11px] text-faint">{job.exec_id}</div>
+                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted">
+                  <span>started <span className="text-primary">{fmtTime(job.started_at)}</span></span>
+                  {job.finished_at ? <span>finished <span className="text-primary">{fmtTime(job.finished_at)}</span></span> : null}
                   {typeof job.exit_code === 'number' ? (
-                    <span>exit <span className={job.exit_code === 0 ? 'text-emerald-300' : 'text-rose-300'}>{job.exit_code}</span></span>
+                    <span>exit <span className={job.exit_code === 0 ? 'text-success' : 'text-danger'}>{job.exit_code}</span></span>
                   ) : null}
                   <button
                     type="button"
-                    className="ml-auto text-[11px] text-zinc-500 hover:text-zinc-300"
+                    className="ml-auto text-[11px] text-muted hover:text-primary"
                     onClick={() => setShowOutput((prev) => ({ ...prev, [job.exec_id]: !prev[job.exec_id] }))}
                   >
                     {showOutput[job.exec_id] ? 'Hide Output' : 'View Output'}
@@ -232,7 +232,7 @@ export default function ShellJobsPanel({
                 data-debug-id={`${debugPrefix}-load-more-btn`}
                 onClick={() => { if (data?.next_cursor) setCursor(data.next_cursor); }}
                 disabled={isFetching}
-                className="w-full rounded-lg border border-white/10 py-2 text-xs text-zinc-400 transition-colors hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full rounded-lg border border-subtle py-2 text-xs text-muted transition-colors hover:bg-neutral-soft disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isFetching ? 'Loading…' : 'Load More'}
               </button>

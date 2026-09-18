@@ -199,11 +199,11 @@ export default function ElectronDeviceAuthGate({ children }: { children: ReactNo
 
 function DeviceAuthShell({ title, body, children }: { title: string; body: string; children?: ReactNode }) {
   return (
-    <main data-debug-id="electron-device-auth" className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
-      <section className="w-full max-w-xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-8 text-center shadow-2xl">
+    <main data-debug-id="electron-device-auth" className="grid min-h-screen place-items-center bg-canvas px-6 text-primary">
+      <section className="w-full max-w-xl rounded-[2rem] border border-subtle bg-surface p-8 text-center shadow-2xl">
         <Text as="p" role="overline" tone="accent">Device authorization</Text>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">{title}</h1>
-        <p className="mt-3 text-sm leading-6 text-zinc-400">{body}</p>
+        <p className="mt-3 text-sm leading-6 text-muted">{body}</p>
         {children}
       </section>
     </main>
@@ -345,7 +345,7 @@ function ElectronDeviceAuthScreen({ onAuthenticated }: { onAuthenticated: () => 
     <DeviceAuthShell title={status === 'manual' ? 'Enter your Heimdall user token' : status === 'starting' ? 'Requesting access…' : 'Sign in from your browser'} body={message}>
       {status === 'manual' ? (
         <form data-debug-id="electron-device-auth-token-form" onSubmit={submitManualToken} className="mt-8 space-y-4 text-left">
-          <label className="block text-sm font-medium text-zinc-300">
+          <label className="block text-sm font-medium text-primary">
             User token
             <Input
               data-debug-id="electron-device-auth-token-input"
@@ -359,29 +359,29 @@ function ElectronDeviceAuthScreen({ onAuthenticated }: { onAuthenticated: () => 
               autoFocus
             />
           </label>
-          {manualError ? <div data-debug-id="electron-device-auth-token-error" className="rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{manualError}</div> : null}
-          <button data-debug-id="electron-device-auth-token-submit" type="submit" disabled={manualBusy || !tokenDraft.trim()} className="w-full rounded-2xl bg-sky-400 px-5 py-3 text-sm font-bold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{manualBusy ? 'Checking…' : 'Use token'}</button>
-          <button data-debug-id="electron-device-auth-use-browser-flow" type="button" onClick={startAuthorize} className="w-full rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-bold text-zinc-100 hover:bg-white/10">Use browser device authorization instead</button>
+          {manualError ? <div data-debug-id="electron-device-auth-token-error" className="rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{manualError}</div> : null}
+          <button data-debug-id="electron-device-auth-token-submit" type="submit" disabled={manualBusy || !tokenDraft.trim()} className="w-full rounded-2xl bg-accent px-5 py-3 text-sm font-bold text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50">{manualBusy ? 'Checking…' : 'Use token'}</button>
+          <button data-debug-id="electron-device-auth-use-browser-flow" type="button" onClick={startAuthorize} className="w-full rounded-2xl border border-subtle bg-neutral-soft px-5 py-3 text-sm font-bold text-primary hover:bg-surface-raised">Use browser device authorization instead</button>
         </form>
       ) : null}
       {flow ? (
         <div className="mt-8 space-y-5">
-          <div className="rounded-3xl border border-sky-400/30 bg-sky-400/10 p-5">
+          <div className="rounded-3xl border border-accent/30 bg-info-soft p-5">
             <Text as="p" role="overline" tone="accent">Your code</Text>
-            <button data-debug-id="electron-device-auth-copy-code" onClick={copyCode} className="mt-3 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-4 font-mono text-4xl font-black tracking-[0.18em] text-white hover:bg-black/40">
+            <button data-debug-id="electron-device-auth-copy-code" onClick={copyCode} className="mt-3 w-full rounded-2xl border border-subtle bg-surface-raised px-4 py-4 font-mono text-4xl font-black tracking-[0.18em] text-primary hover:bg-neutral-soft">
               {flow.userCode}
             </button>
-            <p className="mt-2 text-xs text-zinc-400">Click the code to copy it, then type it in the browser page.</p>
+            <p className="mt-2 text-xs text-muted">Click the code to copy it, then type it in the browser page.</p>
           </div>
-          <button data-debug-id="electron-device-auth-open-browser" onClick={openBrowser} className="inline-flex rounded-2xl bg-sky-400 px-5 py-3 text-sm font-bold text-black hover:bg-sky-300">
+          <button data-debug-id="electron-device-auth-open-browser" onClick={openBrowser} className="inline-flex rounded-2xl bg-accent px-5 py-3 text-sm font-bold text-accent-fg hover:opacity-90">
             Open browser approval page
           </button>
-          <div className="break-all rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-zinc-400">{flow.verificationUri}</div>
-          <p className="text-xs text-zinc-500">Polling every {flow.interval}s. The code expires in about {Math.ceil(flow.expiresIn / 60)} minutes. Tokens are stored with Electron safeStorage; unsigned development builds depend on local OS keychain availability.</p>
+          <div className="break-all rounded-2xl border border-subtle bg-surface-raised p-3 text-xs text-muted">{flow.verificationUri}</div>
+          <p className="text-xs text-faint">Polling every {flow.interval}s. The code expires in about {Math.ceil(flow.expiresIn / 60)} minutes. Tokens are stored with Electron safeStorage; unsigned development builds depend on local OS keychain availability.</p>
         </div>
       ) : null}
       {terminal ? (
-        <button data-debug-id="electron-device-auth-retry" onClick={startAuthorize} className="mt-6 inline-flex rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/15">
+        <button data-debug-id="electron-device-auth-retry" onClick={startAuthorize} className="mt-6 inline-flex rounded-2xl bg-surface-raised px-5 py-3 text-sm font-bold text-primary hover:bg-neutral-soft">
           Retry sign in
         </button>
       ) : null}

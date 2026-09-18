@@ -5,7 +5,7 @@
  * inline `<input>` recipes scattered across the app (see
  * `docs/ui-audit/00-findings-memo.md` and the EL-020..EL-024 cluster) into one
  * token-driven field. Every one of those recipes was some flavour of
- * `rounded border bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400`;
+ * `rounded border border-subtle bg-surface px-3 py-2 text-sm outline-none focus:border-accent`;
  * this replaces the whole family — including the bare `outline-none` that left
  * fields with no visible focus state.
  *

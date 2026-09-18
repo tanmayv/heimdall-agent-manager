@@ -178,23 +178,23 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
   }
 
   return (
-    <div data-debug-id="library-page" className="flex h-full flex-col bg-[#0a0a0a] text-zinc-100">
+    <div data-debug-id="library-page" className="flex h-full flex-col bg-canvas text-primary">
       {/* Header */}
-      <div data-debug-id="library-header" className="border-b border-white/[0.06] px-6 py-4">
+      <div data-debug-id="library-header" className="border-b border-subtle px-6 py-4">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              {onBack ? <button type="button" data-debug-id="library-back-btn" onClick={onBack} className="text-zinc-500 hover:text-zinc-200">←</button> : null}
+              {onBack ? <button type="button" data-debug-id="library-back-btn" onClick={onBack} className="text-muted hover:text-primary">←</button> : null}
               <h1 data-debug-id="library-title" className="truncate text-lg font-semibold tracking-[-0.01em]">Library</h1>
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-caption text-zinc-400">{filtered.length}{filtered.length !== artifacts.length ? ` / ${artifacts.length}` : ''}</span>
+              <span className="rounded-full border border-subtle bg-neutral-soft px-2 py-0.5 text-caption text-muted">{filtered.length}{filtered.length !== artifacts.length ? ` / ${artifacts.length}` : ''}</span>
             </div>
-            <p data-debug-id="library-subtitle" className="mt-0.5 text-[11.5px] text-zinc-500">All artifacts across conversations, chains, and projects.</p>
+            <p data-debug-id="library-subtitle" className="mt-0.5 text-[11.5px] text-muted">All artifacts across conversations, chains, and projects.</p>
           </div>
           <div className="flex items-center gap-2">
             {/* grid | list toggle */}
-            <div data-debug-id="library-view-toggle" className="flex rounded-lg border border-white/10 bg-black/30 p-0.5">
+            <div data-debug-id="library-view-toggle" className="flex rounded-lg border border-subtle bg-surface p-0.5">
               {(['grid', 'list'] as const).map((mode) => (
-                <button key={mode} type="button" data-debug-id={`library-view-${mode}`} onClick={() => setViewMode(mode)} className={`rounded-md px-2.5 py-1 text-caption ${viewMode === mode ? 'bg-white/[0.08] text-zinc-100' : 'text-zinc-500 hover:text-zinc-200'}`}>{mode}</button>
+                <button key={mode} type="button" data-debug-id={`library-view-${mode}`} onClick={() => setViewMode(mode)} className={`rounded-md px-2.5 py-1 text-caption ${viewMode === mode ? 'bg-surface-raised text-primary' : 'text-muted hover:text-primary'}`}>{mode}</button>
               ))}
             </div>
             {session?.clientToken ? (
@@ -203,7 +203,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                 context={{ originKind: 'library_upload', originRef: '' }}
                 debugIdPrefix="library-upload"
                 label="＋ Upload"
-                buttonClassName="rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-[12px] text-sky-100 hover:bg-sky-400/20"
+                buttonClassName="rounded-lg border border-accent/30 bg-info-soft px-3 py-1.5 text-[12px] text-accent hover:bg-neutral-soft"
               />
             ) : null}
           </div>
@@ -212,32 +212,32 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
         {/* Filters */}
         <div data-debug-id="library-filters" className="mt-3 flex flex-wrap items-center gap-2">
           <Input type="search" data-debug-id="library-filter-search" value={search} onChange={setSearch} placeholder="Search name / description…" size="sm" className="min-w-[12rem] flex-1" />
-          <label className="text-caption uppercase tracking-wide text-zinc-500">Kind
+          <label className="text-caption uppercase tracking-wide text-muted">Kind
             <Select data-debug-id="library-filter-kind" value={kindFilter} onChange={setKindFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {kindOptions.map((k) => <option key={k} value={k}>{k}</option>)}
             </Select>
           </label>
-          <label className="text-caption uppercase tracking-wide text-zinc-500">Agent
+          <label className="text-caption uppercase tracking-wide text-muted">Agent
             <Select data-debug-id="library-filter-agent" value={agentFilter} onChange={setAgentFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {agentsArray.map((ag: any) => <option key={ag.id || ag.agent_id} value={ag.id || ag.agent_id}>{ag.display_name || ag.displayName || ag.id || ag.agent_id}</option>)}
             </Select>
           </label>
-          <label className="text-caption uppercase tracking-wide text-zinc-500">Project
+          <label className="text-caption uppercase tracking-wide text-muted">Project
             <Select data-debug-id="library-filter-project" value={projectFilter} onChange={setProjectFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {projectsList.map((p: any) => <option key={p.project_id || p.id} value={p.project_id || p.id}>{p.name || p.project_id || p.id}</option>)}
             </Select>
           </label>
-          <label className="text-caption uppercase tracking-wide text-zinc-500">Chain
+          <label className="text-caption uppercase tracking-wide text-muted">Chain
             <Select data-debug-id="library-filter-chain" value={chainFilter} onChange={setChainFilter} size="sm" className="ml-1">
               <option value="">all</option>
               {chainsArray.map((c: any) => <option key={c.chainId || c.chain_id} value={c.chainId || c.chain_id}>{c.title || c.chainId || c.chain_id}</option>)}
             </Select>
           </label>
           {(search || kindFilter || agentFilter || projectFilter || chainFilter) ? (
-            <button type="button" data-debug-id="library-filter-clear" onClick={() => { setSearch(''); setKindFilter(''); setAgentFilter(''); setProjectFilter(''); setChainFilter(''); }} className="text-caption text-zinc-500 hover:text-zinc-200">clear</button>
+            <button type="button" data-debug-id="library-filter-clear" onClick={() => { setSearch(''); setKindFilter(''); setAgentFilter(''); setProjectFilter(''); setChainFilter(''); }} className="text-caption text-muted hover:text-primary">clear</button>
           ) : null}
         </div>
       </div>
@@ -245,10 +245,10 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
       {/* Body */}
       <div data-debug-id="library-body" className="flex-1 overflow-y-auto p-6">
         {artifactsQuery.isFetching && artifacts.length === 0 ? (
-          <div data-debug-id="library-loading" className="py-16 text-center text-sm text-zinc-500">Loading artifacts…</div>
+          <div data-debug-id="library-loading" className="py-16 text-center text-sm text-muted">Loading artifacts…</div>
         ) : filtered.length === 0 ? (
-          <div data-debug-id="library-empty" className="rounded-2xl border border-dashed border-white/10 bg-[#111111]/70 py-16 text-center text-sm text-zinc-500">
-            <div className="text-zinc-300">{artifacts.length === 0 ? 'No artifacts yet.' : 'No artifacts match your filters.'}</div>
+          <div data-debug-id="library-empty" className="rounded-2xl border border-dashed border-subtle bg-surface/70 py-16 text-center text-sm text-muted">
+            <div className="text-primary">{artifacts.length === 0 ? 'No artifacts yet.' : 'No artifacts match your filters.'}</div>
             <p className="mt-1 leading-5">{artifacts.length === 0 ? 'Upload an artifact or generate one in a conversation.' : 'Try clearing filters.'}</p>
           </div>
         ) : viewMode === 'grid' ? (
@@ -256,30 +256,30 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
             {filtered.map((a) => {
               const id = artifactId(a);
               return (
-                <div key={id} data-debug-id={`library-card-${id}`} className="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] p-3 transition hover:border-white/20 hover:bg-white/[0.04]">
+                <div key={id} data-debug-id={`library-card-${id}`} className="group relative overflow-hidden rounded-2xl border border-subtle bg-surface p-3 transition hover:border-strong hover:bg-surface-raised">
                   <button type="button" data-debug-id={`library-card-open-${id}`} onClick={() => setActiveArtifactId(id)} className="block w-full text-left">
-                    <div className="mb-2 flex h-24 items-center justify-center overflow-hidden rounded-xl bg-black/30">
+                    <div className="mb-2 flex h-24 items-center justify-center overflow-hidden rounded-xl bg-surface-raised">
                       {isImage(a) ? (
                         <ArtifactThumbnail artifactId={id} session={session} alt={a?.name || id} />
                       ) : (
                         <span className="text-3xl opacity-40">{kindIcon(kindLabel(a))}</span>
                       )}
                     </div>
-                    <div className="truncate text-sm font-medium text-zinc-100">{a?.name || id}</div>
-                    <div className="mt-0.5 flex items-center gap-2 text-caption text-zinc-500">
-                      <span className="rounded-full border border-white/10 bg-black/20 px-1.5 py-0.5 uppercase tracking-wide">{kindLabel(a)}</span>
+                    <div className="truncate text-sm font-medium text-primary">{a?.name || id}</div>
+                    <div className="mt-0.5 flex items-center gap-2 text-caption text-muted">
+                      <span className="rounded-full border border-subtle bg-surface-raised px-1.5 py-0.5 uppercase tracking-wide">{kindLabel(a)}</span>
                       <span>{formatBytes(Number(a?.size_bytes) || 0)}</span>
                       <span className="ml-auto">{timeAgo(Number(a?.updated_unix_ms || a?.created_unix_ms))}</span>
                     </div>
-                    {a?.description ? <div className="mt-1 line-clamp-2 text-[11.5px] leading-4 text-zinc-500">{a.description}</div> : null}
+                    {a?.description ? <div className="mt-1 line-clamp-2 text-[11.5px] leading-4 text-muted">{a.description}</div> : null}
                   </button>
                   {/* per-card rename / delete menu */}
                   <div className="mt-2 flex justify-end gap-1 opacity-0 transition group-hover:opacity-100">
-                    <button type="button" aria-label="Rename" title="Rename" data-debug-id={`library-card-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md border border-white/10 px-1.5 py-0.5 text-zinc-400 hover:bg-white/10"><Icon name="pencil" size={12} /></button>
-                    <button type="button" aria-label="Delete" title="Delete" data-debug-id={`library-card-delete-${id}`} onClick={() => setDeleteConfirmId(id)} className="rounded-md border border-white/10 px-1.5 py-0.5 text-rose-300 hover:bg-rose-500/10"><Icon name="trash" size={12} /></button>
+                    <button type="button" aria-label="Rename" title="Rename" data-debug-id={`library-card-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md border border-subtle px-1.5 py-0.5 text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="pencil" size={12} /></button>
+                    <button type="button" aria-label="Delete" title="Delete" data-debug-id={`library-card-delete-${id}`} onClick={() => setDeleteConfirmId(id)} className="rounded-md border border-subtle px-1.5 py-0.5 text-danger hover:bg-danger-soft"><Icon name="trash" size={12} /></button>
                   </div>
                   {renamingId === id ? (
-                    <div data-debug-id={`library-card-rename-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl bg-[#0b0d12]/95 p-3">
+                    <div data-debug-id={`library-card-rename-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl border border-subtle bg-surface/95 p-3">
                       <Input data-debug-id={`library-rename-input-${id}`} value={renameName} onChange={setRenameName} size="sm" width="full" />
                       <div className="flex justify-end gap-1">
                         <Button variant="primary" size="sm" data-debug-id={`library-rename-save-${id}`} onClick={() => void handleRename(id)}>Save</Button>
@@ -288,8 +288,8 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                     </div>
                   ) : null}
                   {deleteConfirmId === id ? (
-                    <div data-debug-id={`library-card-delete-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl bg-[#0b0d12]/95 p-3 text-center">
-                      <div className="text-xs text-rose-100">Delete this artifact? References become unavailable placeholders.</div>
+                    <div data-debug-id={`library-card-delete-panel-${id}`} className="absolute inset-0 z-10 flex flex-col justify-center gap-2 rounded-2xl border border-subtle bg-surface/95 p-3 text-center">
+                      <div className="text-xs text-danger">Delete this artifact? References become unavailable placeholders.</div>
                       <div className="flex justify-center gap-1">
                         <Button variant="danger" size="sm" data-debug-id={`library-delete-confirm-${id}`} onClick={() => void handleDelete(id)}>Delete</Button>
                         <Button variant="secondary" size="sm" data-debug-id={`library-delete-cancel-${id}`} onClick={() => setDeleteConfirmId('')}>Cancel</Button>
@@ -301,32 +301,32 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
             })}
           </div>
         ) : (
-          <div data-debug-id="library-list" className="overflow-hidden rounded-2xl border border-white/10">
-            <div className="grid grid-cols-[1fr_5rem_5rem_6rem_7rem_3rem] gap-2 border-b border-white/10 bg-white/[0.03] px-3 py-2 text-[10.5px] uppercase tracking-wide text-zinc-500">
+          <div data-debug-id="library-list" className="overflow-hidden rounded-2xl border border-subtle">
+            <div className="grid grid-cols-[1fr_5rem_5rem_6rem_7rem_3rem] gap-2 border-b border-subtle bg-surface-raised px-3 py-2 text-[10.5px] uppercase tracking-wide text-muted">
               <span>Name</span><span>Kind</span><span>Size</span><span>Project</span><span>Updated</span><span></span>
             </div>
             {filtered.map((a) => {
               const id = artifactId(a);
               const project = projectsList.find((p: any) => (p.project_id || p.id) === projectId(a));
               return (
-                <div key={id} data-debug-id={`library-row-${id}`} className="grid grid-cols-[1fr_5rem_5rem_6rem_7rem_3rem] items-center gap-2 border-b border-white/[0.04] px-3 py-2 text-sm hover:bg-white/[0.02]">
+                <div key={id} data-debug-id={`library-row-${id}`} className="grid grid-cols-[1fr_5rem_5rem_6rem_7rem_3rem] items-center gap-2 border-b border-subtle px-3 py-2 text-sm hover:bg-surface-raised">
                   <button type="button" data-debug-id={`library-row-open-${id}`} onClick={() => setActiveArtifactId(id)} className="flex min-w-0 items-center gap-2 text-left">
                     {isImage(a) ? (
-                      <span className="h-8 w-8 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-black/30">
+                      <span className="h-8 w-8 shrink-0 overflow-hidden rounded-lg border border-subtle bg-surface-raised">
                         <ArtifactThumbnail artifactId={id} session={session} alt={a?.name || id} />
                       </span>
                     ) : (
                       <span className="text-base opacity-50">{kindIcon(kindLabel(a))}</span>
                     )}
-                    <span className="min-w-0 flex-1 truncate text-zinc-100">{a?.name || id}</span>
+                    <span className="min-w-0 flex-1 truncate text-primary">{a?.name || id}</span>
                   </button>
-                  <span className="truncate text-[11.5px] text-zinc-500">{kindLabel(a)}</span>
-                  <span className="truncate text-[11.5px] text-zinc-500">{formatBytes(Number(a?.size_bytes) || 0)}</span>
-                  <span className="truncate text-[11.5px] text-zinc-500">{project?.name || projectId(a) || '—'}</span>
-                  <span className="truncate text-[11.5px] text-zinc-500">{timeAgo(Number(a?.updated_unix_ms || a?.created_unix_ms))}</span>
+                  <span className="truncate text-[11.5px] text-muted">{kindLabel(a)}</span>
+                  <span className="truncate text-[11.5px] text-muted">{formatBytes(Number(a?.size_bytes) || 0)}</span>
+                  <span className="truncate text-[11.5px] text-muted">{project?.name || projectId(a) || '—'}</span>
+                  <span className="truncate text-[11.5px] text-muted">{timeAgo(Number(a?.updated_unix_ms || a?.created_unix_ms))}</span>
                   <span className="flex justify-end gap-1">
-                    <button type="button" aria-label="Rename" title="Rename" data-debug-id={`library-row-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md px-1 text-zinc-500 hover:text-zinc-200"><Icon name="pencil" size={12} /></button>
-                    <button type="button" aria-label="Delete" title="Delete" data-debug-id={`library-row-delete-${id}`} onClick={() => setDeleteConfirmId(id)} className="rounded-md px-1 text-rose-300 hover:text-rose-100"><Icon name="trash" size={12} /></button>
+                    <button type="button" aria-label="Rename" title="Rename" data-debug-id={`library-row-rename-${id}`} onClick={() => { setRenamingId(id); setRenameName(a?.name || ''); }} className="rounded-md px-1 text-muted hover:text-primary"><Icon name="pencil" size={12} /></button>
+                    <button type="button" aria-label="Delete" title="Delete" data-debug-id={`library-row-delete-${id}`} onClick={() => setDeleteConfirmId(id)} className="rounded-md px-1 text-danger hover:opacity-80"><Icon name="trash" size={12} /></button>
                   </span>
                 </div>
               );

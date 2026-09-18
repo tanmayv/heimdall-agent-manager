@@ -37,10 +37,10 @@ export const SCOPE_DIMS: {
   debug: string;
   chip: string;
 }[] = [
-  { key: 'projectIds', label: 'Projects', allLabel: 'All projects', debug: 'project', chip: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' },
-  { key: 'agentIds', label: 'Agents', allLabel: 'All agents', debug: 'agent', chip: 'border-sky-400/30 bg-sky-400/10 text-sky-200' },
-  { key: 'bridgeIds', label: 'Bridges', allLabel: 'All bridges', debug: 'bridge', chip: 'border-violet-400/30 bg-violet-400/10 text-violet-200' },
-  { key: 'templateIds', label: 'Templates', allLabel: 'All templates', debug: 'template', chip: 'border-amber-400/30 bg-amber-400/10 text-amber-200' },
+  { key: 'projectIds', label: 'Projects', allLabel: 'All projects', debug: 'project', chip: 'border-success/30 bg-success-soft text-success' },
+  { key: 'agentIds', label: 'Agents', allLabel: 'All agents', debug: 'agent', chip: 'border-accent/30 bg-accent/10 text-accent' },
+  { key: 'bridgeIds', label: 'Bridges', allLabel: 'All bridges', debug: 'bridge', chip: 'border-info/30 bg-info-soft text-info' },
+  { key: 'templateIds', label: 'Templates', allLabel: 'All templates', debug: 'template', chip: 'border-warning/30 bg-warning-soft text-warning' },
 ];
 
 export const MEMORY_TYPES = ['fact', 'habit', 'episode', 'expertise', 'skill'];
@@ -147,7 +147,7 @@ export function ScopeChips({ targeting, catalog, debugId }: { targeting: Targeti
         const ids = targeting[dim.key];
         if (ids.length === 0) {
           return (
-            <span key={dim.key} data-debug-id={`${debugId}-${dim.debug}-all`} className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-caption text-zinc-500">
+            <span key={dim.key} data-debug-id={`${debugId}-${dim.debug}-all`} className="inline-flex items-center rounded-full border border-subtle bg-neutral-soft px-2 py-0.5 text-caption text-muted">
               {dim.allLabel}
             </span>
           );
@@ -170,7 +170,7 @@ export function ScopeEditor({ targeting, catalog, onChange, debugId, disabled = 
     <div data-debug-id={debugId} className="grid gap-3 sm:grid-cols-2">
       {SCOPE_DIMS.map((dim) => (
         <div key={dim.key} className="block">
-          <div className="mb-1 text-caption uppercase tracking-wide text-zinc-500">{dim.label}</div>
+          <div className="mb-1 text-caption uppercase tracking-wide text-faint">{dim.label}</div>
           <Combobox
             multiple
             options={catalog[dim.key].options}

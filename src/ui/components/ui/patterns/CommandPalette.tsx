@@ -409,7 +409,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
     <div
       data-debug-id="command-palette"
       role="presentation"
-      className="fixed inset-0 z-modal flex items-start justify-center bg-black/60 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[12vh]"
+      className="fixed inset-0 z-modal flex items-start justify-center bg-surface-overlay/80 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[12vh]"
       onClick={onClose}
     >
       <div
@@ -442,7 +442,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
             spellCheck={false}
           />
           {searching ? <span data-debug-id="command-palette-loading" className="text-caption text-muted">searching…</span> : null}
-          <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5 text-[10px] text-muted">esc</kbd>
+          <kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5 text-[10px] text-muted">esc</kbd>
         </div>
         {hasScope ? (
           <div data-debug-id="command-palette-scope" className="flex min-w-0 items-center gap-2 border-b border-subtle px-4 py-1.5 text-[11px] text-muted">
@@ -454,7 +454,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
                 aria-pressed={scoped}
                 onClick={() => setScoped(true)}
                 title={scope?.label || 'This chain'}
-                className={`max-w-[200px] truncate px-2 py-0.5 ${scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-white/[0.06]'}`}
+                className={`max-w-[200px] truncate px-2 py-0.5 ${scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}
               >
                 {scope?.label || 'This chain'}
               </button>
@@ -463,7 +463,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
                 data-debug-id="command-palette-scope-all"
                 aria-pressed={!scoped}
                 onClick={() => setScoped(false)}
-                className={`shrink-0 px-2 py-0.5 ${!scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-white/[0.06]'}`}
+                className={`shrink-0 px-2 py-0.5 ${!scoped ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}
               >
                 All
               </button>
@@ -517,7 +517,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
                       data-palette-index={idx}
                       onClick={() => activate(result)}
                       onMouseEnter={() => setActiveIndex(idx)}
-                      className={`flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${highlight ? 'bg-white/[0.08] text-primary' : 'text-muted hover:bg-white/[0.04]'}`}
+                      className={`flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${highlight ? 'bg-neutral-soft text-primary font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}
                     >
                       {isConvo ? (
                         <span aria-hidden="true" className="grid w-5 place-items-center">
@@ -537,7 +537,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
                         ) : null}
                       </span>
                       {result.kind === 'action' && result.badge ? (
-                        <span className="ml-2 inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-white/10 text-muted">
+                        <span className="ml-2 inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-neutral-soft text-muted">
                           {result.badge}
                         </span>
                       ) : null}
@@ -570,7 +570,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
               data-debug-id="command-palette-load-more"
               onClick={loadMore}
               disabled={loadingMore}
-              className="mt-1 w-full rounded-lg px-3 py-2 text-center text-[12px] text-muted hover:bg-white/[0.04] focus-visible:shadow-focus focus-visible:outline-none disabled:opacity-50"
+              className="mt-1 w-full rounded-lg px-3 py-2 text-center text-[12px] text-muted hover:bg-neutral-soft hover:text-primary focus-visible:shadow-focus focus-visible:outline-none disabled:opacity-50"
             >
               {loadingMore ? 'Loading…' : 'Load more results'}
             </button>
@@ -581,8 +581,8 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
             keyboard-only anyway. */}
         <div className="hidden items-center justify-between border-t border-subtle px-4 py-2 text-caption text-faint sm:flex">
           <span className="flex items-center gap-2">
-            <kbd className="rounded border border-subtle bg-white/5 px-1.5 py-0.5">↑↓</kbd> navigate
-            <kbd className="ml-2 rounded border border-subtle bg-white/5 px-1.5 py-0.5">↵</kbd> select
+            <kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5">↑↓</kbd> navigate
+            <kbd className="ml-2 rounded border border-subtle bg-neutral-soft px-1.5 py-0.5">↵</kbd> select
           </span>
           <span data-debug-id="command-palette-search-source">{trimmed ? 'Entity results: /api/v1/search' : 'Heimdall'}</span>
         </div>
