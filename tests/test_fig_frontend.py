@@ -95,6 +95,17 @@ def main() -> None:
     require("projects-create-fig-retry-btn" in projects_surface_tsx, "ProjectsSurface.tsx must have offline retry button")
     require("projects-create-fig-bridge-select" in projects_surface_tsx, "ProjectsSurface.tsx must have bridge select")
 
+    # 7. REQ-EDIT-PICKER-1, REQ-EDIT-PICKER-2, REQ-EDIT-PICKER-4: Edit Mode Directory Pickers
+    require("project-detail-edit-fig-browse-btn" in projects_surface_tsx, "ProjectsSurface.tsx AboutPanel must have project-detail-edit-fig-browse-btn")
+    require("project-detail-edit-fig-picker" in projects_surface_tsx, "ProjectsSurface.tsx AboutPanel must embed FigDirectoryPicker in edit mode")
+    require("project-detail-default-path-browse-btn" in projects_surface_tsx, "ProjectsSurface.tsx BridgePathsPanel must have project-detail-default-path-browse-btn")
+    require("project-detail-default-path-fig-picker" in projects_surface_tsx, "ProjectsSurface.tsx BridgePathsPanel must embed FigDirectoryPicker for Fig projects")
+    require("project-detail-default-path-bridge-picker" in projects_surface_tsx, "ProjectsSurface.tsx BridgePathsPanel must embed BridgeDirectoryPicker for local projects")
+    require("settings-project-edit-fig-browse-btn" in projects_panel_tsx, "ProjectsPanel.tsx edit form must have settings-project-edit-fig-browse-btn")
+    require("settings-project-edit-fig-picker" in projects_panel_tsx, "ProjectsPanel.tsx edit form must embed FigDirectoryPicker in edit mode")
+    require("/google/src/cloud/${user || '$(whoami)'}/" in projects_surface_tsx, "ProjectsSurface.tsx must format CitC default path correctly")
+    require("/google/src/cloud/${user || \"$(whoami)\"}/" in projects_panel_tsx, "ProjectsPanel.tsx must format CitC default path correctly")
+
     print("[+] FIG CITC FRONTEND & PICKER REGRESSION TESTS PASSED")
 
 

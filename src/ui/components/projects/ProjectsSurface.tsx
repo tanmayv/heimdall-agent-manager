@@ -646,6 +646,7 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
   const [relativePath, setRelativePath] = useState('');
   const [projectType, setProjectType] = useState('local');
   const [showLocalPicker, setShowLocalPicker] = useState(false);
+  const [showFigPicker, setShowFigPicker] = useState(false);
   const [selectedBridgeId, setSelectedBridgeId] = useState('');
   const [err, setErr] = useState('');
 
@@ -666,6 +667,7 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
     setRelativePath(str(project.relative_path));
     setProjectType(str(project.project_type || 'local'));
     setShowLocalPicker(false);
+    setShowFigPicker(false);
   }, [project?.project_id, project?.name, project?.description, project?.default_path, project?.workspace_name, project?.relative_path, project?.project_type]);
 
   async function save() {
@@ -681,6 +683,7 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
         relative_path: projectType === 'fig' ? relativePath.trim() || undefined : undefined,
       }).unwrap();
       setShowLocalPicker(false);
+      setShowFigPicker(false);
       setEditing(false);
     } catch (e: any) {
       setErr(str(e?.data?.error?.message || e?.error || e?.message) || 'Save failed');
@@ -725,13 +728,28 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
             <Input data-debug-id="project-detail-name-input" value={name} onChange={setName} width="full" />
           </FormField>
           {isFig ? (
-            <div className="grid gap-3 sm:grid-cols-2 rounded-[var(--radius-md)] border border-amber-500/20 bg-amber-500/[0.04] p-3">
-              <FormField label="CitC Workspace">
-                <Input value={workspaceName} onChange={setWorkspaceName} width="full" className="font-mono" />
-              </FormField>
-              <FormField label="Relative google3 Path">
-                <Input value={relativePath} onChange={setRelativePath} placeholder="e.g. cloud/security" width="full" className="font-mono" />
-              </FormField>
+            <div className="space-y-2 rounded-[var(--radius-md)] border border-amber-500/20 bg-amber-500/[0.04] p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-amber-300">CitC / Piper Settings</span>
+                <Button
+                  data-debug-id="project-detail-edit-fig-citc-browse-btn"
+                  variant="secondary"
+                  size="sm"
+                  disabled={!selectedBridgeId}
+                  onClick={() => setShowFigPicker((v) => !v)}
+                  leading={<Icon name="folder" size={14} />}
+                >
+                  {showFigPicker ? 'Hide CitC' : 'Browse CitC…'}
+                </Button>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <FormField label="CitC Workspace">
+                  <Input value={workspaceName} onChange={setWorkspaceName} width="full" className="font-mono" />
+                </FormField>
+                <FormField label="Relative google3 Path">
+                  <Input value={relativePath} onChange={setRelativePath} placeholder="e.g. cloud/security" width="full" className="font-mono" />
+                </FormField>
+              </div>
             </div>
           ) : null}
           <FormField label="Description">
@@ -751,7 +769,18 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
                 >
                   {showLocalPicker ? 'Hide Browser' : 'Browse…'}
                 </Button>
-              ) : null}
+              ) : (
+                <Button
+                  data-debug-id="project-detail-edit-fig-browse-btn"
+                  variant="secondary"
+                  size="sm"
+                  disabled={!selectedBridgeId}
+                  onClick={() => setShowFigPicker((v) => !v)}
+                  leading={<Icon name="folder" size={14} />}
+                >
+                  {showFigPicker ? 'Hide CitC' : 'Browse CitC…'}
+                </Button>
+              )}
             </div>
           </FormField>
           {!isFig && showLocalPicker && selectedBridgeId ? (
@@ -784,10 +813,34 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
               />
             </div>
           ) : null}
+          {isFig && showFigPicker && selectedBridgeId ? (
+            <div className="space-y-2 rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
+              <FigDirectoryPicker
+                debugId="project-detail-edit-fig-picker"
+                bridgeId={selectedBridgeId}
+                workspace={workspaceName}
+                initialPath={relativePath}
+                onPick={(p, ws) => {
+                  if (ws) setWorkspaceName(ws);
+                  setRelativePath(p);
+                  const targetWs = ws || workspaceName || '';
+                  const match = defaultPath.match(/\/google\/src\/cloud\/([^/]+)/);
+                  const user = match ? match[1] : '';
+                  const cleanP = p ? (p.startsWith('/') ? p.slice(1) : p) : '';
+                  setDefaultPath(`/google/src/cloud/${user || '$(whoami)'}/${targetWs}/google3${cleanP ? `/${cleanP}` : ''}`);
+                  setShowFigPicker(false);
+                }}
+                onSelectWorkspace={(ws) => {
+                  setWorkspaceName(ws);
+                }}
+                onClose={() => setShowFigPicker(false)}
+              />
+            </div>
+          ) : null}
           {err ? <p data-debug-id="project-detail-about-error" className="text-xs text-danger">{err}</p> : null}
           <div className="flex gap-2">
             <Button data-debug-id="project-detail-save-btn" variant="primary" size="md" disabled={updateState.isLoading} onClick={save}>{updateState.isLoading ? 'Saving…' : 'Save'}</Button>
-            <Button data-debug-id="project-detail-cancel-btn" variant="secondary" size="md" onClick={() => { setEditing(false); setShowLocalPicker(false); setErr(''); }}>Cancel</Button>
+            <Button data-debug-id="project-detail-cancel-btn" variant="secondary" size="md" onClick={() => { setEditing(false); setShowLocalPicker(false); setShowFigPicker(false); setErr(''); }}>Cancel</Button>
           </div>
         </div>
       )}
@@ -863,12 +916,12 @@ function MemoryPanel({ memories, loading, projectId }: { memories: any[]; loadin
   );
 }
 
-// TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; project: Project | null; bridges: any[] }) {
   const [updateProject, updateState] = useUpdateProjectMutation();
   const [setBridgePath] = useSetProjectBridgePathMutation();
   const [deleteBridgePath] = useDeleteProjectBridgePathMutation();
 
+  const isFig = project?.project_type === 'fig';
   const defaultPath = str(project?.default_path);
   const overrides = useMemo(() => {
     const map = new Map<string, string>();
@@ -884,6 +937,16 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
   // Default-path editor.
   const [defaultDraft, setDefaultDraft] = useState(defaultPath);
   const [defaultErr, setDefaultErr] = useState('');
+  const [showDefaultPicker, setShowDefaultPicker] = useState(false);
+  const [defaultPickerBridgeId, setDefaultPickerBridgeId] = useState('');
+
+  useEffect(() => {
+    if (!defaultPickerBridgeId && bridges.length > 0) {
+      const online = bridges.find(bridgeIsOnline);
+      setDefaultPickerBridgeId(bridgeId(online || bridges[0]));
+    }
+  }, [bridges, defaultPickerBridgeId]);
+
   useEffect(() => { setDefaultDraft(defaultPath); }, [defaultPath]);
   async function saveDefault() {
     setDefaultErr('');
@@ -933,9 +996,69 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
         <p className="mt-1 text-xs text-zinc-500">Used on every device unless overridden below. e.g. <span className="font-mono text-zinc-400">~/projects/my-app</span></p>
         <div className="mt-2 flex gap-2">
           <Input data-debug-id="project-detail-default-path-input" value={defaultDraft} onChange={setDefaultDraft} placeholder="~/path/to/project" className="min-w-0 flex-1 font-mono" />
+          <Button
+            data-debug-id="project-detail-default-path-browse-btn"
+            variant="secondary"
+            size="md"
+            disabled={!defaultPickerBridgeId}
+            onClick={() => setShowDefaultPicker((v) => !v)}
+            leading={<Icon name="folder" size={14} />}
+            className="shrink-0"
+          >
+            {showDefaultPicker ? 'Hide Browser' : 'Browse…'}
+          </Button>
           <Button variant="primary" size="md" data-debug-id="project-detail-default-path-save-btn" disabled={updateState.isLoading || defaultDraft.trim() === defaultPath} onClick={saveDefault} className="shrink-0">Save</Button>
         </div>
         {defaultErr ? <p data-debug-id="project-detail-default-path-error" className="mt-1 text-xs text-red-300">{defaultErr}</p> : null}
+        {showDefaultPicker && defaultPickerBridgeId ? (
+          <div className="mt-2 rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3 space-y-2">
+            {bridges.length > 1 && !isFig ? (
+              <div className="flex items-center gap-2 text-xs mb-2">
+                <span className="text-zinc-400">Bridge host:</span>
+                <Select
+                  value={defaultPickerBridgeId}
+                  onChange={(val) => setDefaultPickerBridgeId(val)}
+                >
+                  {bridges.map((b) => (
+                    <option key={bridgeId(b)} value={bridgeId(b)}>
+                      {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            ) : null}
+            {isFig ? (
+              <FigDirectoryPicker
+                debugId="project-detail-default-path-fig-picker"
+                bridgeId={defaultPickerBridgeId}
+                workspace={project?.workspace_name}
+                initialPath={project?.relative_path}
+                onPick={(p, ws) => {
+                  const targetWs = ws || project?.workspace_name || '';
+                  const match = defaultDraft.match(/\/google\/src\/cloud\/([^/]+)/);
+                  const user = match ? match[1] : '';
+                  const cleanP = p ? (p.startsWith('/') ? p.slice(1) : p) : '';
+                  const full = `/google/src/cloud/${user || '$(whoami)'}/${targetWs}/google3${cleanP ? `/${cleanP}` : ''}`;
+                  setDefaultDraft(full);
+                  setShowDefaultPicker(false);
+                }}
+                onClose={() => setShowDefaultPicker(false)}
+              />
+            ) : (
+              <BridgeDirectoryPicker
+                debugId="project-detail-default-path-bridge-picker"
+                bridgeId={defaultPickerBridgeId}
+                bridgeLabel={bridgeLabel(bridges.find((b) => bridgeId(b) === defaultPickerBridgeId))}
+                initialPath={defaultDraft}
+                onPick={(p) => {
+                  setDefaultDraft(p);
+                  setShowDefaultPicker(false);
+                }}
+                onClose={() => setShowDefaultPicker(false)}
+              />
+            )}
+          </div>
+        ) : null}
       </div>
 
       {/* Per-device presence + overrides. */}

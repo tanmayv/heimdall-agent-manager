@@ -72,6 +72,7 @@ export default function ProjectsPanel() {
   const [editWorkspaceName, setEditWorkspaceName] = useState("");
   const [editRelativePath, setEditRelativePath] = useState("");
   const [showEditLocalPicker, setShowEditLocalPicker] = useState(false);
+  const [showEditFigPicker, setShowEditFigPicker] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editSaveError, setEditSaveError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
@@ -136,6 +137,7 @@ export default function ProjectsPanel() {
       setEditWorkspaceName(selectedProject.workspace_name || "");
       setEditRelativePath(selectedProject.relative_path || "");
       setShowEditLocalPicker(false);
+      setShowEditFigPicker(false);
       setEditSaveError("");
       setBridgePathInputs({});
       setBridgeActionError({});
@@ -227,6 +229,7 @@ export default function ProjectsPanel() {
         relative_path: editProjectType === "fig" ? editRelativePath.trim() || undefined : undefined,
       }).unwrap();
       setShowEditLocalPicker(false);
+      setShowEditFigPicker(false);
       setIsEditing(false);
     } catch (err: any) {
       const msg = err?.data?.error?.message || err?.error || err?.message || String(err || "Unable to update project");
@@ -697,6 +700,7 @@ export default function ProjectsPanel() {
                 onClick={() => {
                   setIsEditing((prev) => !prev);
                   setShowEditLocalPicker(false);
+                  setShowEditFigPicker(false);
                 }}
               >
                 {isEditing ? "Cancel Edit" : "Edit Project"}
@@ -750,7 +754,18 @@ export default function ProjectsPanel() {
                             >
                               {showEditLocalPicker ? "Hide Browser" : "Browse…"}
                             </Button>
-                          ) : null}
+                          ) : (
+                            <Button
+                              data-debug-id="settings-project-edit-fig-browse-btn"
+                              variant="secondary"
+                              size="sm"
+                              disabled={!selectedBridgeId}
+                              onClick={() => setShowEditFigPicker((v) => !v)}
+                              leading={<Icon name="folder" size={14} />}
+                            >
+                              {showEditFigPicker ? "Hide CitC" : "Browse CitC…"}
+                            </Button>
+                          )}
                         </div>
                       </FormField>
                     </div>
@@ -772,24 +787,64 @@ export default function ProjectsPanel() {
                     ) : null}
 
                     {editProjectType === "fig" ? (
-                      <div className="grid gap-3 sm:grid-cols-2 rounded-xl border border-white/10 bg-white/[0.02] p-3">
-                        <FormField label="CitC Workspace" required>
-                          <Input
-                            value={editWorkspaceName}
-                            onChange={setEditWorkspaceName}
-                            width="full"
-                            className="font-mono"
-                          />
-                        </FormField>
-                        <FormField label="Relative google3 Path">
-                          <Input
-                            value={editRelativePath}
-                            onChange={setEditRelativePath}
-                            placeholder="e.g. cloud/security"
-                            width="full"
-                            className="font-mono"
-                          />
-                        </FormField>
+                      <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-amber-300">CitC / Piper Settings</span>
+                          <Button
+                            data-debug-id="settings-project-edit-fig-citc-browse-btn"
+                            variant="secondary"
+                            size="sm"
+                            disabled={!selectedBridgeId}
+                            onClick={() => setShowEditFigPicker((v) => !v)}
+                            leading={<Icon name="folder" size={14} />}
+                          >
+                            {showEditFigPicker ? "Hide CitC" : "Browse CitC…"}
+                          </Button>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <FormField label="CitC Workspace" required>
+                            <Input
+                              value={editWorkspaceName}
+                              onChange={setEditWorkspaceName}
+                              width="full"
+                              className="font-mono"
+                            />
+                          </FormField>
+                          <FormField label="Relative google3 Path">
+                            <Input
+                              value={editRelativePath}
+                              onChange={setEditRelativePath}
+                              placeholder="e.g. cloud/security"
+                              width="full"
+                              className="font-mono"
+                            />
+                          </FormField>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {editProjectType === "fig" && showEditFigPicker && selectedBridgeId ? (
+                      <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.04] p-3">
+                        <FigDirectoryPicker
+                          debugId="settings-project-edit-fig-picker"
+                          bridgeId={selectedBridgeId}
+                          workspace={editWorkspaceName}
+                          initialPath={editRelativePath}
+                          onPick={(p, ws) => {
+                            if (ws) setEditWorkspaceName(ws);
+                            setEditRelativePath(p);
+                            const targetWs = ws || editWorkspaceName || "";
+                            const match = editDefaultPath.match(/\/google\/src\/cloud\/([^/]+)/);
+                            const user = match ? match[1] : "";
+                            const cleanP = p ? (p.startsWith("/") ? p.slice(1) : p) : "";
+                            setEditDefaultPath(`/google/src/cloud/${user || "$(whoami)"}/${targetWs}/google3${cleanP ? `/${cleanP}` : ""}`);
+                            setShowEditFigPicker(false);
+                          }}
+                          onSelectWorkspace={(ws) => {
+                            setEditWorkspaceName(ws);
+                          }}
+                          onClose={() => setShowEditFigPicker(false)}
+                        />
                       </div>
                     ) : null}
 
@@ -831,7 +886,7 @@ export default function ProjectsPanel() {
                       <Button
                         variant="secondary"
                         size="sm"
-                        onClick={() => { setIsEditing(false); setShowEditLocalPicker(false); }}
+                        onClick={() => { setIsEditing(false); setShowEditLocalPicker(false); setShowEditFigPicker(false); }}
                       >
                         Cancel
                       </Button>
