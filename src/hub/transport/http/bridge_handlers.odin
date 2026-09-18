@@ -957,7 +957,8 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			delete(kind)
 		}
 	}
-	defer delete(text)
+	is_command_result := false
+	defer if !is_command_result do delete(text)
 	defer delete(type)
 
 	switch type {
@@ -1040,8 +1041,12 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(activity_status)
 	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result":
 		command_id := json_string(text, "command_id")
-		_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
-		delete(command_id)
+		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
+		if existed {
+			delete(command_id)
+		} else {
+			is_command_result = true
+		}
 	case "pane_capture_result":
 		if json_int(text, "protocol_version", 0) != 1 do return true
 		if h.content != nil {
