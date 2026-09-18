@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Badge, PageShell, Select } from '@ui';
 import Icon from '../Icon';
 import { buildRouteHash } from '../../utils/appLocation';
+import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import {
   useFetchTaskChainGroupsQuery,
   useFetchTaskChainProjectPageQuery,
@@ -122,6 +123,7 @@ function ChainGroupCard({
   onlyWithTasks,
   collapsed,
   onToggle,
+  onLaunchProject,
 }: {
   projectId: string;
   projectName: string;
@@ -132,6 +134,7 @@ function ChainGroupCard({
   onlyWithTasks: boolean;
   collapsed: boolean;
   onToggle: () => void;
+  onLaunchProject?: (project: { projectId: string; name: string }) => void;
 }) {
   const [extra, setExtra] = useState<ChainListItem[]>([]);
   const [cursor, setCursor] = useState<string>(initialNextCursor);
@@ -162,19 +165,20 @@ function ChainGroupCard({
   };
 
   const displayName = projectName || (projectId ? projectId : 'Unassigned');
+  const hasProject = Boolean(projectId && projectId !== '__unassigned__');
 
   return (
     <div
       data-debug-id={`task-chains-project-group-${projectId || 'unassigned'}`}
       className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02]"
     >
-      <button
-        type="button"
-        data-debug-id={`task-chains-project-toggle-${projectId || 'unassigned'}`}
-        onClick={onToggle}
-        className="flex w-full items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-3 text-left transition-colors hover:bg-white/[0.05]"
-      >
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-3 transition-colors hover:bg-white/[0.05]">
+        <button
+          type="button"
+          data-debug-id={`task-chains-project-toggle-${projectId || 'unassigned'}`}
+          onClick={onToggle}
+          className="flex flex-1 items-center gap-3 text-left"
+        >
           <span className="text-zinc-400">
             <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
           </span>
@@ -182,14 +186,31 @@ function ChainGroupCard({
             <Icon name="folder" size={15} className="text-sky-400" />
             <span className="text-sm font-semibold text-white">{displayName}</span>
           </div>
+        </button>
+        <div className="flex items-center gap-2">
+          {hasProject && (
+            <button
+              type="button"
+              data-debug-id={`task-chains-project-launch-btn-${projectId}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onLaunchProject?.({ projectId, name: projectName || displayName });
+              }}
+              title={`Launch agent for ${displayName}`}
+              aria-label={`Launch agent for ${displayName}`}
+              className="flex h-6 w-6 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-zinc-400 transition-colors hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
+            >
+              <Icon name="plus" size={13} />
+            </button>
+          )}
+          <span
+            data-debug-id={`task-chains-project-count-${projectId || 'unassigned'}`}
+            className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-xs text-zinc-400"
+          >
+            {totalCount} {totalCount === 1 ? 'chain' : 'chains'}
+          </span>
         </div>
-        <span
-          data-debug-id={`task-chains-project-count-${projectId || 'unassigned'}`}
-          className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-xs text-zinc-400"
-        >
-          {totalCount} {totalCount === 1 ? 'chain' : 'chains'}
-        </span>
-      </button>
+      </div>
 
       {!collapsed && (
         <div className="space-y-2 p-4">
@@ -222,6 +243,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
   // the list hides them by default; the toggle brings them back.
   const [onlyWithTasks, setOnlyWithTasks] = useState<boolean>(true);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
 
   useEffect(() => {
     setSelectedChainId(initialChainId || '');
@@ -356,11 +378,22 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
                 onlyWithTasks={onlyWithTasks}
                 collapsed={Boolean(collapsed[key])}
                 onToggle={() => toggleCollapse(group.projectId)}
+                onLaunchProject={setLaunchModalProject}
               />
             );
           })}
         </div>
       )}
+
+      <ProjectLaunchModal
+        isOpen={Boolean(launchModalProject)}
+        project={launchModalProject}
+        onClose={() => setLaunchModalProject(null)}
+        onLaunched={(instanceId) => {
+          setLaunchModalProject(null);
+          window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(instanceId), '');
+        }}
+      />
       </div>
     </PageShell>
   );
