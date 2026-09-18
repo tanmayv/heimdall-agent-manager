@@ -48,6 +48,8 @@ import {
   launchTiersFor,
   launchableBridgeRows,
 } from '../../utils/bridgeLaunchOptions';
+import { useIsMobile } from '../shell/responsive';
+import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 
 interface TaskChainOverviewProps {
   chainId: string;
@@ -2445,6 +2447,7 @@ function shellHash(path: string): string { return `#${path.startsWith('/') ? pat
 export function InstanceIdLink({ instanceId, displayName }: { instanceId: string; displayName?: string }) {
   const trimmed = String(instanceId || '').trim();
   const known = Boolean(String(displayName || '').trim());
+  const isMobile = useIsMobile();
   // Only fetch when we need a label; the href never depends on the fetch.
   const { data } = useFetchAgentInstanceQuery({ instanceId: trimmed }, { skip: !trimmed || known });
   const inst = data?.instance || null;
@@ -2459,13 +2462,21 @@ export function InstanceIdLink({ instanceId, displayName }: { instanceId: string
 
   if (!trimmed) return null;
 
-  const href = shellHash(`/conversations/${encodeURIComponent(trimmed)}?panel=tasks`);
+  const href = isMobile
+    ? shellHash(`/conversations/${encodeURIComponent(trimmed)}`)
+    : shellHash(`/conversations/${encodeURIComponent(trimmed)}?panel=tasks`);
   const title = `Open chat with ${trimmed}`;
   return (
     <a
       data-debug-id={`taskchain-instance-link-${trimmed}`}
       href={href}
       title={title}
+      onClick={() => {
+        if (isMobile) {
+          writeRightSidebarOpen(false);
+          window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
+        }
+      }}
       className="font-mono text-sky-300 underline decoration-dotted underline-offset-2 hover:text-sky-200"
     >
       {agentName}

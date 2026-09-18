@@ -53,7 +53,7 @@ import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCu
 import CurrentTaskStrip from './CurrentTaskStrip';
 import AgentActivityBubbles from './AgentActivityBubbles';
 import { switchableTasksFor, taskRoleLabel, type TaskLike } from './chainTaskInference';
-import { useViewport } from '../shell/responsive';
+import { useIsMobile } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -608,6 +608,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setMentionIndex(0);
     setTimeout(() => { ta?.focus(); const np = newBefore.length; ta?.setSelectionRange(np, np); }, 0);
   }
+  const isMobile = useIsMobile();
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
   // panel itself has Tasks / Files / RunDir tabs. 'closed' hides it entirely.
   // Initialized from ?panel= / ?sidebar= query param, falling back to UI storage.
@@ -626,7 +627,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         return readRightSidebarTab() || 'tasks';
       }
     }
-    const open = readRightSidebarOpen();
+    const open = !isMobile && readRightSidebarOpen();
     if (open) {
       return readRightSidebarTab() || 'tasks';
     }
@@ -729,8 +730,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // status / runtime / header-actions overlays are @ui Menu / Popover / Drawer —
   // they own their own outside-click / Esc / focus handling (no bespoke refs).
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const viewport = useViewport();
-  const isMobile = viewport === 'mobile';
+
 
   // Mobile scroll hide/reveal chrome tracking
   const [chromeVisible, setChromeVisible] = useState(true);
@@ -1072,6 +1072,18 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     syncUrlPanel(null);
     setRightPanel('closed');
   }
+
+  useEffect(() => {
+    const handleCloseSidebar = () => {
+      setRightPanel('closed');
+      writeRightSidebarOpen(false);
+      syncUrlPanel(null);
+    };
+    window.addEventListener('heimdall:close-sidebar', handleCloseSidebar);
+    return () => {
+      window.removeEventListener('heimdall:close-sidebar', handleCloseSidebar);
+    };
+  }, []);
 
   function selectRightPanelTab(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
     writeRightSidebarOpen(true);
