@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useListProjectsQuery,
   useFetchProjectQuery,
@@ -11,7 +11,8 @@ import {
   type ProjectBridgePath,
 } from "../../api/endpoints/projects";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
-import { Badge, Button, Input, PageShell, SectionHeader, Select, StatusDot, Text } from "@ui";
+import BridgeDirectoryPicker from "../BridgeDirectoryPicker";
+import { Badge, Button, Icon, Input, PageShell, SectionHeader, Select, StatusDot, Text } from "@ui";
 
 export default function ProjectsPanel() {
   const projectsQuery = useListProjectsQuery();
@@ -45,6 +46,8 @@ export default function ProjectsPanel() {
   const [editRepoUrl, setEditRepoUrl] = useState("");
   const [editVcsKind, setEditVcsKind] = useState("git");
   const [editDefaultPath, setEditDefaultPath] = useState("");
+  const [showEditLocalPicker, setShowEditLocalPicker] = useState(false);
+  const [selectedBridgeId, setSelectedBridgeId] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [editSaveError, setEditSaveError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
@@ -60,6 +63,21 @@ export default function ProjectsPanel() {
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const bridges: any[] = bridgesQuery.data?.bridges || [];
 
+  // Default selectedBridgeId to first online bridge (or first bridge)
+  useEffect(() => {
+    if (!selectedBridgeId && bridges.length > 0) {
+      const online = bridges.find((b) => {
+        const s = String(b?.status || b?.runtime_status || "").toLowerCase();
+        return s === "online" || s === "connected";
+      });
+      setSelectedBridgeId(String(online?.bridge_id || online?.bridgeId || online?.id || bridges[0]?.bridge_id || bridges[0]?.bridgeId || bridges[0]?.id || ""));
+    }
+  }, [bridges, selectedBridgeId]);
+
+  const selectedBridge = useMemo(() => {
+    return bridges.find((b) => String(b?.bridge_id || b?.bridgeId || b?.id || "") === selectedBridgeId) || null;
+  }, [bridges, selectedBridgeId]);
+
   // Update edit form state when selected project changes
   useEffect(() => {
     if (selectedProject) {
@@ -69,6 +87,7 @@ export default function ProjectsPanel() {
       setEditVcsKind(selectedProject.vcs_kind || "git");
       setEditDefaultPath(selectedProject.default_path || "");
       setEditSaveError("");
+      setShowEditLocalPicker(false);
       setBridgePathInputs({});
       setBridgeActionError({});
       setBridgeActionBusy({});
@@ -115,6 +134,7 @@ export default function ProjectsPanel() {
         default_path: editDefaultPath.trim(),
       }).unwrap();
       setIsEditing(false);
+      setShowEditLocalPicker(false);
     } catch (err: any) {
       const msg = err?.error || err?.message || String(err || "Unable to update project");
       setEditSaveError(msg);
@@ -304,7 +324,7 @@ export default function ProjectsPanel() {
           <div className="flex items-center justify-between border-b border-white/10 pb-3">
             <button
               type="button"
-              onClick={() => { setSelectedProjectId(null); setIsEditing(false); }}
+              onClick={() => { setSelectedProjectId(null); setIsEditing(false); setShowEditLocalPicker(false); }}
               className="text-sm text-sky-400 hover:underline flex items-center gap-1"
             >
               ← Back to all projects
@@ -314,7 +334,7 @@ export default function ProjectsPanel() {
                 variant="secondary"
                 size="sm"
                 data-debug-id={`settings-project-edit-btn-${selectedProjectId}`}
-                onClick={() => setIsEditing((prev) => !prev)}
+                onClick={() => { setIsEditing((prev) => !prev); setShowEditLocalPicker(false); }}
               >
                 {isEditing ? "Cancel Edit" : "Edit Project"}
               </Button>
@@ -350,13 +370,67 @@ export default function ProjectsPanel() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path</label>
-                        <Input
-                          value={editDefaultPath}
-                          onChange={setEditDefaultPath}
-                          width="full"
-                        />
+                        <div className="flex items-center gap-2">
+                          <Input
+                            data-debug-id={`settings-project-edit-default-path-input-${selectedProjectId}`}
+                            value={editDefaultPath}
+                            onChange={setEditDefaultPath}
+                            width="full"
+                            className="flex-1 font-mono"
+                          />
+                          <Button
+                            data-debug-id="settings-project-edit-local-browse-btn"
+                            variant="secondary"
+                            size="sm"
+                            disabled={!selectedBridgeId}
+                            onClick={() => setShowEditLocalPicker((v) => !v)}
+                            leading={<Icon name="folder" size={14} />}
+                          >
+                            {showEditLocalPicker ? "Hide Browser" : "Browse…"}
+                          </Button>
+                        </div>
                       </div>
                     </div>
+
+                    {showEditLocalPicker && selectedBridgeId ? (
+                      <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3 space-y-2">
+                        {bridges.length > 1 ? (
+                          <div className="flex items-center gap-2 text-xs mb-2">
+                            <span className="text-zinc-400">Bridge host:</span>
+                            <Select
+                              value={selectedBridgeId}
+                              onChange={(val) => setSelectedBridgeId(val)}
+                            >
+                              {bridges.map((b) => {
+                                const bid = String(b?.bridge_id || b?.bridgeId || b?.id || "");
+                                const blabel = String(b?.label || b?.machine_hostname || b?.hostname || bid);
+                                const bonline = String(b?.status || b?.runtime_status || "").toLowerCase() === "online";
+                                return (
+                                  <option key={bid} value={bid}>
+                                    {blabel} ({bonline ? '● Online' : '○ Offline'})
+                                  </option>
+                                );
+                              })}
+                            </Select>
+                          </div>
+                        ) : null}
+                        <BridgeDirectoryPicker
+                          debugId="settings-project-edit-local-picker"
+                          bridgeId={selectedBridgeId}
+                          bridgeLabel={selectedBridge?.label}
+                          initialPath={editDefaultPath}
+                          onPick={(p) => {
+                            setEditDefaultPath(p);
+                            if (!editName.trim()) {
+                              const base = p.split("/").filter(Boolean).pop();
+                              if (base) setEditName(base);
+                            }
+                            setShowEditLocalPicker(false);
+                          }}
+                          onClose={() => setShowEditLocalPicker(false)}
+                        />
+                      </div>
+                    ) : null}
 
                     <div>
                       <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
@@ -398,7 +472,7 @@ export default function ProjectsPanel() {
                       <Button
                         variant="secondary"
                         size="sm"
-                        onClick={() => setIsEditing(false)}
+                        onClick={() => { setIsEditing(false); setShowEditLocalPicker(false); }}
                       >
                         Cancel
                       </Button>

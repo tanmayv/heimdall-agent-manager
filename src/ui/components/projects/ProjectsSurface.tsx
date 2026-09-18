@@ -512,6 +512,16 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
   // Default-path editor.
   const [defaultDraft, setDefaultDraft] = useState(defaultPath);
   const [defaultErr, setDefaultErr] = useState('');
+  const [showDefaultPicker, setShowDefaultPicker] = useState(false);
+  const [defaultPickerBridgeId, setDefaultPickerBridgeId] = useState('');
+
+  useEffect(() => {
+    if (!defaultPickerBridgeId && bridges.length > 0) {
+      const online = bridges.find(bridgeIsOnline);
+      setDefaultPickerBridgeId(bridgeId(online || bridges[0]));
+    }
+  }, [bridges, defaultPickerBridgeId]);
+
   useEffect(() => { setDefaultDraft(defaultPath); }, [defaultPath]);
   async function saveDefault() {
     setDefaultErr('');
@@ -561,9 +571,50 @@ function BridgePathsPanel({ projectId, project, bridges }: { projectId: string; 
         <p className="mt-1 text-xs text-zinc-500">Used on every device unless overridden below. e.g. <span className="font-mono text-zinc-400">~/projects/my-app</span></p>
         <div className="mt-2 flex gap-2">
           <Input data-debug-id="project-detail-default-path-input" value={defaultDraft} onChange={setDefaultDraft} placeholder="~/path/to/project" className="min-w-0 flex-1 font-mono" />
+          <Button
+            data-debug-id="project-detail-default-path-browse-btn"
+            variant="secondary"
+            size="md"
+            disabled={!defaultPickerBridgeId}
+            onClick={() => setShowDefaultPicker((v) => !v)}
+            leading={<Icon name="folder" size={14} />}
+            className="shrink-0"
+          >
+            {showDefaultPicker ? 'Hide Browser' : 'Browse…'}
+          </Button>
           <Button variant="primary" size="md" data-debug-id="project-detail-default-path-save-btn" disabled={updateState.isLoading || defaultDraft.trim() === defaultPath} onClick={saveDefault} className="shrink-0">Save</Button>
         </div>
         {defaultErr ? <p data-debug-id="project-detail-default-path-error" className="mt-1 text-xs text-red-300">{defaultErr}</p> : null}
+        {showDefaultPicker && defaultPickerBridgeId ? (
+          <div className="mt-2 rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3 space-y-2">
+            {bridges.length > 1 ? (
+              <div className="flex items-center gap-2 text-xs mb-2">
+                <span className="text-zinc-400">Bridge host:</span>
+                <Select
+                  value={defaultPickerBridgeId}
+                  onChange={(val) => setDefaultPickerBridgeId(val)}
+                >
+                  {bridges.map((b) => (
+                    <option key={bridgeId(b)} value={bridgeId(b)}>
+                      {bridgeLabel(b)} ({bridgeIsOnline(b) ? '● Online' : '○ Offline'})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            ) : null}
+            <BridgeDirectoryPicker
+              debugId="project-detail-default-path-bridge-picker"
+              bridgeId={defaultPickerBridgeId}
+              bridgeLabel={bridgeLabel(bridges.find((b) => bridgeId(b) === defaultPickerBridgeId))}
+              initialPath={defaultDraft}
+              onPick={(p) => {
+                setDefaultDraft(p);
+                setShowDefaultPicker(false);
+              }}
+              onClose={() => setShowDefaultPicker(false)}
+            />
+          </div>
+        ) : null}
       </div>
 
       {/* Per-device presence + overrides. */}
