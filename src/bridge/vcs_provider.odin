@@ -14,7 +14,7 @@ package main
 // same command_id-cached, bridge_hub_send envelope as the fs_* commands.
 //
 // A provider is a proc-table struct; the registry is an ordered list and the first
-// adapter whose detect() returns true for a path wins (git before jj).
+// adapter whose detect() returns true for a path wins (fig before git before jj).
 
 import "core:os"
 import "core:strings"
@@ -83,11 +83,11 @@ vcs_init :: proc() {}
 
 // vcs_detect_provider returns the first provider that detects a VCS at `path`.
 // ok=false means no known VCS is present (or path is empty). The provider list is
-// always built as a stack-local array (git before jj), so the detector touches no
+// always built as a stack-local array (fig before git before jj), so the detector touches no
 // shared global and is safe to call from multiple threads without any prior init.
 vcs_detect_provider :: proc(path: string) -> (VCS_Provider, bool) {
 	if path == "" do return VCS_Provider{}, false
-	local := [2]VCS_Provider{vcs_git_provider(), vcs_jj_provider()}
+	local := [3]VCS_Provider{vcs_fig_provider(), vcs_git_provider(), vcs_jj_provider()}
 	providers := local[:]
 	for p in providers {
 		if p.detect != nil && p.detect(path) do return p, true
