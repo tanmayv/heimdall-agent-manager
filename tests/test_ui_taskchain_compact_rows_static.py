@@ -70,8 +70,9 @@ def main() -> None:
     require("taskchain-task-blocked-" in src, "Row 2 must keep blocked badge")
 
     # --- REQ-UI-STICKY-1: Sticky accordion behavior when expanded ---
-    require("sticky top-0 z-10 bg-[#111111] border-b border-white/5" in src,
-            "header must receive sticky top-0 z-10 bg-[#111111] border-b border-white/5 when isExpanded (REQ-UI-STICKY-1)")
+    require(("sticky top-0 z-10 bg-surface border-b border-subtle" in src) or
+            ("sticky top-0 z-10 bg-[#111111] border-b border-white/5" in src),
+            "header must receive sticky top-0 z-10 bg-surface border-b border-subtle when isExpanded (REQ-UI-STICKY-1)")
 
     # --- REQ-UI-ACTIONS-1: Contextual action buttons matching Action Matrix ---
     matrix_buttons = [

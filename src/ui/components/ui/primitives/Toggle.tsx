@@ -6,7 +6,7 @@
  * (the EL-019 / EL-030 cluster in
  * `docs/ui-audit/04-component-catalogue.md` › Checkbox · Radio · Toggle) into a
  * single token-driven switch. It renders a real `role="switch"` button with a
- * built-in focus ring — replacing the ad-hoc `bg-sky-400`/`bg-white/15` pills and
+ * built-in focus ring — replacing the ad-hoc `bg-accent`/`bg-neutral-soft` pills and
  * the `peer-focus:outline-none` variants that had no visible focus state.
  *
  * NOT for: a value submitted with a form (use `Checkbox` — a real

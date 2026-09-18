@@ -35,13 +35,13 @@ const PAGE_SIZE = 20;
 function statusBadgeClass(status: string): string {
   switch (String(status || '').toLowerCase()) {
     case 'active':
-      return 'bg-sky-400/10 text-sky-200 border-sky-400/20';
+      return 'bg-accent/10 text-accent border-accent/20';
     case 'completed':
-      return 'bg-emerald-400/10 text-emerald-200 border-emerald-400/20';
+      return 'bg-success-soft text-success border-success/20';
     case 'cancelled':
-      return 'bg-zinc-500/10 text-zinc-400 border-white/10';
+      return 'bg-neutral-soft text-muted border-subtle';
     default:
-      return 'bg-white/5 text-zinc-300 border-white/10';
+      return 'bg-neutral-soft text-muted border-subtle';
   }
 }
 
@@ -66,21 +66,21 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
       >
         {chain.status || 'unknown'}
       </span>
-      <span className="min-w-0 flex-1 truncate text-sm text-zinc-100">{chain.title || chain.chainId}</span>
+      <span className="min-w-0 flex-1 truncate text-sm text-primary">{chain.title || chain.chainId}</span>
       <span
         data-debug-id={`task-chains-row-task-count-${chain.chainId}`}
-        className="shrink-0 rounded-md border border-white/10 bg-black/40 px-1.5 py-0.5 text-caption text-zinc-400"
+        className="shrink-0 rounded-md border border-subtle bg-surface-raised px-1.5 py-0.5 text-caption text-muted"
         title={`${chain.taskCount} ${chain.taskCount === 1 ? 'task' : 'tasks'}`}
       >
         {chain.taskCount}
       </span>
       {chain.updatedAt ? (
-        <span className="shrink-0 text-caption text-zinc-500">{formatUpdatedAt(chain.updatedAt)}</span>
+        <span className="shrink-0 text-caption text-faint">{formatUpdatedAt(chain.updatedAt)}</span>
       ) : null}
     </>
   );
   const className =
-    'flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 transition-colors';
+    'flex items-center gap-3 rounded-xl border border-subtle bg-surface px-3 py-2.5 transition-colors';
   if (!coordinator) {
     return (
       <div data-debug-id={`task-chains-row-${chain.chainId}`} className={`${className} opacity-70`} title="No coordinator instance to open">
@@ -102,7 +102,7 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
           window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
         }
       }}
-      className={`${className} hover:bg-white/[0.06]`}
+      className={`${className} hover:bg-surface-raised`}
     >
       {inner}
     </a>
@@ -170,21 +170,21 @@ function ChainGroupCard({
   return (
     <div
       data-debug-id={`task-chains-project-group-${projectId || 'unassigned'}`}
-      className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02]"
+      className="overflow-hidden rounded-2xl border border-subtle bg-surface"
     >
-      <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-3 transition-colors hover:bg-white/[0.05]">
+      <div className="flex items-center justify-between border-b border-subtle bg-surface-raised px-4 py-3 transition-colors hover:bg-neutral-soft">
         <button
           type="button"
           data-debug-id={`task-chains-project-toggle-${projectId || 'unassigned'}`}
           onClick={onToggle}
           className="flex flex-1 items-center gap-3 text-left"
         >
-          <span className="text-zinc-400">
+          <span className="text-muted">
             <Icon name={collapsed ? 'chevron-right' : 'chevron-down'} size={14} />
           </span>
           <div className="flex items-center gap-2">
-            <Icon name="folder" size={15} className="text-sky-400" />
-            <span className="text-sm font-semibold text-white">{displayName}</span>
+            <Icon name="folder" size={15} className="text-accent" />
+            <span className="text-sm font-semibold text-primary">{displayName}</span>
           </div>
         </button>
         <div className="flex items-center gap-2">
@@ -198,14 +198,14 @@ function ChainGroupCard({
               }}
               title={`Launch agent for ${displayName}`}
               aria-label={`Launch agent for ${displayName}`}
-              className="flex h-6 w-6 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-zinc-400 transition-colors hover:border-white/20 hover:bg-white/[0.08] hover:text-white"
+              className="flex h-6 w-6 items-center justify-center rounded-lg border border-subtle bg-neutral-soft text-muted transition-colors hover:border-strong hover:bg-surface-raised hover:text-primary"
             >
               <Icon name="plus" size={13} />
             </button>
           )}
           <span
             data-debug-id={`task-chains-project-count-${projectId || 'unassigned'}`}
-            className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-xs text-zinc-400"
+            className="rounded-md border border-subtle bg-surface px-2 py-0.5 text-xs text-muted"
           >
             {totalCount} {totalCount === 1 ? 'chain' : 'chains'}
           </span>
@@ -215,7 +215,7 @@ function ChainGroupCard({
       {!collapsed && (
         <div className="space-y-2 p-4">
           {chains.length === 0 ? (
-            <p className="py-2 text-xs italic text-zinc-500">No task chains in this project.</p>
+            <p className="py-2 text-xs italic text-faint">No task chains in this project.</p>
           ) : (
             chains.map((chain) => <ChainRow key={chain.chainId} chain={chain} />)
           )}
@@ -225,7 +225,7 @@ function ChainGroupCard({
               data-debug-id={`task-chains-load-more-${projectId || 'unassigned'}`}
               onClick={() => void onLoadMore()}
               disabled={isFetching}
-              className="mt-1 w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-semibold text-zinc-300 transition-colors hover:bg-white/[0.06] disabled:opacity-50"
+              className="mt-1 w-full rounded-xl border border-subtle bg-surface-raised px-3 py-2 text-xs font-semibold text-muted transition-colors hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
             >
               {isFetching ? 'Loading…' : 'Load more'}
             </button>
@@ -299,7 +299,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
       <div data-debug-id="task-chains-page" className="text-left">
       {/* Project filter */}
       <div className="mb-5 flex items-center gap-2">
-        <label htmlFor="task-chains-project-filter" className="text-xs text-zinc-500">
+        <label htmlFor="task-chains-project-filter" className="text-xs text-muted">
           Project
         </label>
         <Select
@@ -319,7 +319,7 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
 
         <label
           htmlFor="task-chains-has-tasks-filter"
-          className="ml-1 inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-zinc-300"
+          className="ml-1 inline-flex min-h-[32px] cursor-pointer items-center gap-2 rounded-xl border border-subtle bg-surface px-3 py-1.5 text-sm text-muted"
         >
           <input
             id="task-chains-has-tasks-filter"
@@ -327,20 +327,20 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
             type="checkbox"
             checked={onlyWithTasks}
             onChange={(e) => setOnlyWithTasks(e.target.checked)}
-            className="h-4 w-4 accent-sky-400"
+            className="h-4 w-4 accent-accent"
           />
           Only chains with tasks
         </label>
       </div>
 
       {isLoading && (
-        <div data-debug-id="task-chains-loading" className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 text-sm text-zinc-400">
+        <div data-debug-id="task-chains-loading" className="rounded-2xl border border-subtle bg-surface p-6 text-sm text-muted">
           Loading task chains…
         </div>
       )}
 
       {!isLoading && error && (
-        <div data-debug-id="task-chains-error" className="rounded-xl border border-red-500/40 bg-red-950/20 p-5 text-sm text-red-300">
+        <div data-debug-id="task-chains-error" className="rounded-xl border border-danger/30 bg-danger-soft p-5 text-sm text-danger">
           Failed to load task chains: {String((error as any)?.error || (error as any)?.message || error)}
         </div>
       )}
@@ -348,13 +348,13 @@ export const TaskChainsPage: React.FC<TaskChainsPageProps> = ({ chainId: initial
       {!isLoading && !error && groups.length === 0 && (
         <div
           data-debug-id="task-chains-empty-state"
-          className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.01] p-12 text-center"
+          className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-subtle bg-surface/50 p-12 text-center"
         >
-          <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/5 text-zinc-400">
+          <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted">
             <Icon name="tasks" size={24} />
           </div>
-          <h3 className="text-base font-semibold text-white">No Task Chains</h3>
-          <p className="mt-1 max-w-md text-xs leading-relaxed text-zinc-400">
+          <h3 className="text-base font-semibold text-primary">No Task Chains</h3>
+          <p className="mt-1 max-w-md text-xs leading-relaxed text-muted">
             {filterProjectId
               ? 'This project has no task chains yet.'
               : 'Task chains appear here once a coordinator starts a multi-agent workflow.'}

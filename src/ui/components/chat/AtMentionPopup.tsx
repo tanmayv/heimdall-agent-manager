@@ -65,17 +65,17 @@ export default function AtMentionPopup({ query: _query, entities, activeIndex, o
     <div
       ref={rootRef}
       data-debug-id="conversation-mention-popup"
-      className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-[40vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#1c1c1f] p-1 shadow-2xl shadow-black/40"
+      className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-[40vh] overflow-y-auto rounded-2xl border border-subtle bg-surface-raised p-1 shadow-panel"
       role="listbox"
     >
       {entities.length === 0 ? (
-        <div data-debug-id="conversation-mention-empty" className="px-3 py-2.5 text-[13px] text-zinc-500">
+        <div data-debug-id="conversation-mention-empty" className="px-3 py-2.5 text-[13px] text-muted">
           No matches
         </div>
       ) : (
         groups.map((group) => (
           <div key={group.header}>
-            <div className="px-3 pt-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+            <div className="px-3 pt-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
               {group.header}
             </div>
             {group.items.map(({ entity, index }) => {
@@ -91,15 +91,15 @@ export default function AtMentionPopup({ query: _query, entities, activeIndex, o
                   // blur/outside-click handling steals it on mobile.
                   onMouseDown={(e) => { e.preventDefault(); onSelect(entity); }}
                   onTouchStart={(e) => { e.preventDefault(); onSelect(entity); }}
-                  className={`flex min-h-[44px] w-full items-center gap-2 rounded-xl px-3 py-2 text-left ${isActive ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                  className={`flex min-h-[44px] w-full items-center gap-2 rounded-xl px-3 py-2 text-left ${isActive ? 'bg-neutral-soft' : 'hover:bg-neutral-soft'}`}
                 >
                   <span className="flex min-w-0 flex-col">
-                    <span className="min-w-0 truncate text-[13px] font-semibold text-zinc-100">{entity.label || entity.id}</span>
+                    <span className="min-w-0 truncate text-[13px] font-semibold text-primary">{entity.label || entity.id}</span>
                     {entity.sublabel ? (
-                      <span className="min-w-0 truncate text-[11px] text-zinc-500">{entity.sublabel}</span>
+                      <span className="min-w-0 truncate text-[11px] text-muted">{entity.sublabel}</span>
                     ) : null}
                   </span>
-                  <span className="ml-auto shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
+                  <span className="ml-auto shrink-0 rounded-full border border-subtle bg-neutral-soft px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted">
                     {BADGE_LABEL[entity.type]}
                   </span>
                 </button>

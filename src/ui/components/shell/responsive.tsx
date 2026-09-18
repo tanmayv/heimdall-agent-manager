@@ -111,7 +111,7 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
     <nav
       data-debug-id="shell-mobile-tab-bar"
       aria-label="Mobile bottom navigation"
-      className={`ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-white/10 bg-[#101010]/95 backdrop-blur transition-transform duration-300 ease-in-out md:hidden ${className}`}
+      className={`ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-subtle bg-surface/95 backdrop-blur transition-transform duration-300 ease-in-out md:hidden ${className}`}
     >
       {TABS.slice(0, 2).map((tab) => (
         <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chains' ? chainsBadge : 0} onClick={() => onNavigate(tab.route)} />
@@ -123,7 +123,7 @@ export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge 
           data-debug-id={paletteDebugId}
           onClick={onOpenPalette}
           aria-label="Command palette"
-          className={`grid h-12 w-12 -translate-y-2 place-items-center rounded-full border border-white/15 bg-sky-400 text-black shadow-lg shadow-sky-950/40 hover:bg-sky-300 ${TOUCH_TARGET_CLASS}`}
+          className={`grid h-12 w-12 -translate-y-2 place-items-center rounded-full border border-subtle bg-accent text-accent-fg shadow-lg hover:opacity-90 ${TOUCH_TARGET_CLASS}`}
         >
           <Icon name="search" size={20} />
         </button>
@@ -142,11 +142,11 @@ function MobileTabButton({ tab, active, badge = 0, onClick }: { tab: { id: strin
       data-debug-id={`shell-mobile-tab-${tab.id}`}
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
-      className={`relative flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] ${active ? 'text-zinc-100' : 'text-zinc-500'} ${TOUCH_TARGET_CLASS}`}
+      className={`relative flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] ${active ? 'text-primary' : 'text-faint'} ${TOUCH_TARGET_CLASS}`}
     >
       <span aria-hidden="true" className="leading-none"><Icon name={tab.icon} size={20} /></span>
       <span>{tab.label}</span>
-      {badge > 0 ? <span data-debug-id={`shell-mobile-tab-${tab.id}-badge`} className="absolute right-3 top-0.5 min-w-4 rounded-full bg-sky-400 px-1 text-center text-[9px] font-bold leading-4 text-black">{badge > 99 ? '99+' : badge}</span> : null}
+      {badge > 0 ? <span data-debug-id={`shell-mobile-tab-${tab.id}-badge`} className="absolute right-3 top-0.5 min-w-4 rounded-full bg-accent px-1 text-center text-[9px] font-bold leading-4 text-accent-fg">{badge > 99 ? '99+' : badge}</span> : null}
     </button>
   );
 }
@@ -164,18 +164,18 @@ export function MobileTopBar({ title, onOpenDrawer, inspectorToggle }: MobileTop
   return (
     <header
       data-debug-id="shell-mobile-top-bar"
-      className="ui-safe-top sticky top-0 z-30 flex min-h-12 items-center gap-2 border-b border-white/10 bg-[#101010]/95 px-2 backdrop-blur md:hidden"
+      className="ui-safe-top sticky top-0 z-30 flex min-h-12 items-center gap-2 border-b border-subtle bg-surface/95 px-2 backdrop-blur md:hidden"
     >
       <button
         type="button"
         data-debug-id="shell-mobile-drawer-open"
         onClick={onOpenDrawer}
         aria-label="Open navigation"
-        className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-zinc-200 hover:bg-white/10 ${TOUCH_TARGET_CLASS}`}
+        className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-primary hover:bg-neutral-soft ${TOUCH_TARGET_CLASS}`}
       >
         <Icon name="menu" size={18} />
       </button>
-      <h1 data-debug-id="shell-mobile-title" className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100">{title}</h1>
+      <h1 data-debug-id="shell-mobile-title" className="min-w-0 flex-1 truncate text-sm font-semibold text-primary">{title}</h1>
       {inspectorToggle ? (
         <button
           type="button"
@@ -183,11 +183,11 @@ export function MobileTopBar({ title, onOpenDrawer, inspectorToggle }: MobileTop
           onClick={inspectorToggle.onToggle}
           aria-pressed={inspectorToggle.open ? 'true' : 'false'}
           aria-label={inspectorToggle.label || 'Toggle inspector'}
-          className={`relative inline-flex shrink-0 items-center gap-1 rounded-xl border px-3 text-xs font-semibold ${inspectorToggle.open ? 'border-sky-400/40 bg-sky-400/15 text-sky-100' : 'border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10'} ${TOUCH_TARGET_CLASS}`}
+          className={`relative inline-flex shrink-0 items-center gap-1 rounded-xl border px-3 text-xs font-semibold ${inspectorToggle.open ? 'border-accent/40 bg-accent/15 text-accent' : 'border-subtle bg-neutral-soft text-muted hover:bg-surface-raised'} ${TOUCH_TARGET_CLASS}`}
         >
           <span>{inspectorToggle.label || 'Inspector'}</span>
           {typeof inspectorToggle.badge === 'number' && inspectorToggle.badge > 0 ? (
-            <span data-debug-id="shell-mobile-inspector-badge" className="min-w-4 rounded-full bg-sky-400 px-1 text-center text-[9px] font-bold leading-4 text-black">{inspectorToggle.badge > 99 ? '99+' : inspectorToggle.badge}</span>
+            <span data-debug-id="shell-mobile-inspector-badge" className="min-w-4 rounded-full bg-accent px-1 text-center text-[9px] font-bold leading-4 text-accent-fg">{inspectorToggle.badge > 99 ? '99+' : inspectorToggle.badge}</span>
           ) : null}
         </button>
       ) : null}
@@ -206,17 +206,17 @@ export type MobileBackHeaderProps = {
 
 export function MobileBackHeader({ title, onBack, action }: MobileBackHeaderProps) {
   return (
-    <header data-debug-id="shell-mobile-back-header" className="ui-safe-top sticky top-0 z-30 flex min-h-12 items-center gap-2 border-b border-white/10 bg-[#101010]/95 px-2 backdrop-blur md:hidden">
+    <header data-debug-id="shell-mobile-back-header" className="ui-safe-top sticky top-0 z-30 flex min-h-12 items-center gap-2 border-b border-subtle bg-surface/95 px-2 backdrop-blur md:hidden">
       <button
         type="button"
         data-debug-id="shell-mobile-back-btn"
         onClick={onBack}
         aria-label="Back"
-        className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-zinc-200 hover:bg-white/10 ${TOUCH_TARGET_CLASS}`}
+        className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-primary hover:bg-neutral-soft ${TOUCH_TARGET_CLASS}`}
       >
         <Icon name="chevron-left" size={18} />
       </button>
-      <h2 data-debug-id="shell-mobile-back-title" className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-100">{title}</h2>
+      <h2 data-debug-id="shell-mobile-back-title" className="min-w-0 flex-1 truncate text-sm font-semibold text-primary">{title}</h2>
       {action ? <div className="shrink-0">{action}</div> : null}
     </header>
   );
@@ -257,7 +257,7 @@ export function MobileInspectorSheet({ open, onClose, title, subtitle, headerAct
         <div className="flex items-start justify-between gap-3 px-5 pb-1">
           <div className="min-w-0">
             <Text as="div" role="overline" tone="muted">Inspector</Text>
-            {subtitle ? <div className="truncate text-[11.5px] text-zinc-500">{subtitle}</div> : null}
+            {subtitle ? <div className="truncate text-[11.5px] text-muted">{subtitle}</div> : null}
           </div>
           {headerActions ? <div className="flex shrink-0 items-center gap-2">{headerActions}</div> : null}
         </div>

@@ -44,7 +44,7 @@ export default function ChatHoverCopyButton({ debugId, text, className = '' }: C
           window.setTimeout(() => setState('idle'), 1400);
         }
       }}
-      className={`opacity-0 transition-opacity hover:text-zinc-100 group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 ${className}`}
+      className={`opacity-0 transition-opacity hover:text-primary group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100 ${className}`}
     >
       {state === 'copied' ? '✓' : state === 'error' ? '!' : '⧉'}
     </button>

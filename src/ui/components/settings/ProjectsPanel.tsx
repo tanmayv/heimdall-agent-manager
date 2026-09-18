@@ -48,6 +48,7 @@ export default function ProjectsPanel() {
   const [editDefaultPath, setEditDefaultPath] = useState("");
   const [showEditLocalPicker, setShowEditLocalPicker] = useState(false);
   const [selectedBridgeId, setSelectedBridgeId] = useState("");
+
   const [isEditing, setIsEditing] = useState(false);
   const [editSaveError, setEditSaveError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
@@ -230,12 +231,12 @@ export default function ProjectsPanel() {
     >
       <div data-debug-id="settings-projects-panel" className="space-y-6 text-left">
       {/* Project Creation Form */}
-      <div data-debug-id="settings-project-create-form" className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 space-y-4">
+      <div data-debug-id="settings-project-create-form" className="rounded-2xl border border-subtle bg-surface p-4 space-y-4">
         <Text as="h3" role="overline" tone="primary">Create New Project</Text>
         <form onSubmit={handleCreateProject} className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">Project Name *</label>
+              <label className="block text-xs font-medium text-muted mb-1">Project Name *</label>
               <Input
                 data-debug-id="settings-project-name-input"
                 value={name}
@@ -247,7 +248,7 @@ export default function ProjectsPanel() {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path *</label>
+              <label className="block text-xs font-medium text-muted mb-1">Default Path *</label>
               <Input
                 data-debug-id="settings-project-default-path-input"
                 value={defaultPath}
@@ -261,7 +262,7 @@ export default function ProjectsPanel() {
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
+            <label className="block text-xs font-medium text-muted mb-1">Description</label>
             <Input
               data-debug-id="settings-project-description-input"
               value={description}
@@ -274,7 +275,7 @@ export default function ProjectsPanel() {
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">Repository URL</label>
+              <label className="block text-xs font-medium text-muted mb-1">Repository URL</label>
               <Input
                 data-debug-id="settings-project-repo-input"
                 value={repoUrl}
@@ -285,7 +286,7 @@ export default function ProjectsPanel() {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1">VCS Kind</label>
+              <label className="block text-xs font-medium text-muted mb-1">VCS Kind</label>
               <Select
                 data-debug-id="settings-project-vcs-select"
                 value={vcsKind}
@@ -301,7 +302,7 @@ export default function ProjectsPanel() {
           </div>
 
           {createError ? (
-            <div data-debug-id="settings-project-create-error" className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+            <div data-debug-id="settings-project-create-error" className="rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
               {createError}
             </div>
           ) : null}
@@ -321,11 +322,11 @@ export default function ProjectsPanel() {
       {/* Project Detail View or Project List */}
       {selectedProjectId ? (
         <div className="space-y-6">
-          <div className="flex items-center justify-between border-b border-white/10 pb-3">
+          <div className="flex items-center justify-between border-b border-subtle pb-3">
             <button
               type="button"
               onClick={() => { setSelectedProjectId(null); setIsEditing(false); setShowEditLocalPicker(false); }}
-              className="text-sm text-sky-400 hover:underline flex items-center gap-1"
+              className="text-sm text-accent hover:underline flex items-center gap-1"
             >
               ← Back to all projects
             </button>
@@ -342,11 +343,11 @@ export default function ProjectsPanel() {
           </div>
 
           {projectDetailQuery.isLoading ? (
-            <div className="text-sm text-zinc-500">Loading project details…</div>
+            <div className="text-sm text-muted">Loading project details…</div>
           ) : selectedProject ? (
             <div className="space-y-6">
               {/* Project Main Details Form / Viewer */}
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4 space-y-4">
+              <div className="rounded-2xl border border-subtle bg-surface p-4 space-y-4">
                 <SectionHeader
                   level="h3"
                   title={selectedProject.name}
@@ -358,23 +359,24 @@ export default function ProjectsPanel() {
                 />
 
                 {isEditing ? (
-                  <div className="space-y-3">
+                  <div className="space-y-4">
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">Project Name</label>
+                        <label className="block text-xs font-medium text-muted mb-1">Project Name *</label>
                         <Input
                           value={editName}
                           onChange={setEditName}
+                          required
                           width="full"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">Default Path</label>
+                        <label className="block text-xs font-medium text-muted mb-1">Default Path *</label>
                         <div className="flex items-center gap-2">
                           <Input
-                            data-debug-id={`settings-project-edit-default-path-input-${selectedProjectId}`}
                             value={editDefaultPath}
                             onChange={setEditDefaultPath}
+                            required
                             width="full"
                             className="flex-1 font-mono"
                           />
@@ -393,10 +395,10 @@ export default function ProjectsPanel() {
                     </div>
 
                     {showEditLocalPicker && selectedBridgeId ? (
-                      <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3 space-y-2">
+                      <div className="rounded-xl border border-info/30 bg-info-soft p-3 space-y-2">
                         {bridges.length > 1 ? (
                           <div className="flex items-center gap-2 text-xs mb-2">
-                            <span className="text-zinc-400">Bridge host:</span>
+                            <span className="text-muted">Bridge host:</span>
                             <Select
                               value={selectedBridgeId}
                               onChange={(val) => setSelectedBridgeId(val)}
@@ -407,7 +409,7 @@ export default function ProjectsPanel() {
                                 const bonline = String(b?.status || b?.runtime_status || "").toLowerCase() === "online";
                                 return (
                                   <option key={bid} value={bid}>
-                                    {blabel} ({bonline ? '● Online' : '○ Offline'})
+                                    {blabel} ({bonline ? "● Online" : "○ Offline"})
                                   </option>
                                 );
                               })}
@@ -433,7 +435,7 @@ export default function ProjectsPanel() {
                     ) : null}
 
                     <div>
-                      <label className="block text-xs font-medium text-zinc-400 mb-1">Description</label>
+                      <label className="block text-xs font-medium text-muted mb-1">Description</label>
                       <Input
                         value={editDescription}
                         onChange={setEditDescription}
@@ -443,7 +445,7 @@ export default function ProjectsPanel() {
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">Repo URL</label>
+                        <label className="block text-xs font-medium text-muted mb-1">Repo URL</label>
                         <Input
                           value={editRepoUrl}
                           onChange={setEditRepoUrl}
@@ -451,7 +453,7 @@ export default function ProjectsPanel() {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-medium text-zinc-400 mb-1">VCS Kind</label>
+                        <label className="block text-xs font-medium text-muted mb-1">VCS Kind</label>
                         <Select
                           value={editVcsKind}
                           onChange={setEditVcsKind}
@@ -465,7 +467,7 @@ export default function ProjectsPanel() {
                     </div>
 
                     {editSaveError ? (
-                      <div className="text-xs text-red-300">{editSaveError}</div>
+                      <div className="text-xs text-danger">{editSaveError}</div>
                     ) : null}
 
                     <div className="flex justify-end gap-2">
@@ -489,28 +491,28 @@ export default function ProjectsPanel() {
                   </div>
                 ) : (
                   <div className="space-y-2 text-sm">
-                    <div className="grid gap-2 sm:grid-cols-2 text-xs text-zinc-400">
-                      <div><strong className="text-zinc-300">Default Path:</strong> <span className="font-mono text-zinc-200">{selectedProject.default_path || "—"}</span></div>
-                      <div><strong className="text-zinc-300">VCS / Repo:</strong> {selectedProject.vcs_kind || "git"} · {selectedProject.repo_url || "no repo"}</div>
+                    <div className="grid gap-2 sm:grid-cols-2 text-xs text-muted">
+                      <div><strong className="text-muted">Default Path:</strong> <span className="font-mono text-primary">{selectedProject.default_path || "—"}</span></div>
+                      <div><strong className="text-muted">VCS / Repo:</strong> {selectedProject.vcs_kind || "git"} · {selectedProject.repo_url || "no repo"}</div>
                     </div>
                     {selectedProject.description ? (
-                      <p className="text-xs text-zinc-300 mt-1">{selectedProject.description}</p>
+                      <p className="text-xs text-muted mt-1">{selectedProject.description}</p>
                     ) : null}
                   </div>
                 )}
               </div>
 
               {/* Per-Bridge Paths Editor */}
-              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-4">
+              <div className="rounded-2xl border border-subtle bg-surface p-4 space-y-4">
                 <div>
                   <Text as="h4" role="overline" tone="primary">Per-Bridge Paths Override</Text>
-                  <p className="text-xs text-zinc-500 mt-0.5">Configure custom filesystem paths for specific bridges when they differ from the default path.</p>
+                  <p className="text-xs text-muted mt-0.5">Configure custom filesystem paths for specific bridges when they differ from the default path.</p>
                 </div>
 
                 {bridgesQuery.isLoading ? (
-                  <div className="text-sm text-zinc-500">Loading bridges…</div>
+                  <div className="text-sm text-muted">Loading bridges…</div>
                 ) : bridges.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-white/10 p-4 text-center text-xs text-zinc-500">
+                  <div className="rounded-xl border border-dashed border-subtle p-4 text-center text-xs text-muted">
                     No connected bridges available.
                   </div>
                 ) : (
@@ -536,28 +538,28 @@ export default function ProjectsPanel() {
                         <div
                           key={bridgeId}
                           data-debug-id={`settings-project-bridge-path-row-${bridgeId}`}
-                          className="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2"
+                          className="rounded-xl border border-subtle bg-surface-raised/30 p-3 space-y-2"
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex items-center gap-2">
                               <StatusDot tone={isOnline ? "success" : "neutral"} label={isOnline ? "Online" : "Offline"} />
-                              <span className="text-sm font-medium text-zinc-200">{bridgeName}</span>
-                              <span className="text-xs text-zinc-500">({bridgeId})</span>
+                              <span className="text-sm font-medium text-primary">{bridgeName}</span>
+                              <span className="text-xs text-muted">({bridgeId})</span>
                             </div>
 
                             {/* Status Indicator */}
                             <div data-debug-id={`settings-project-bridge-path-status-${bridgeId}`} className="flex items-center gap-2 text-xs">
-                              <span className={`px-2 py-0.5 rounded-full border text-[10px] ${isOnline ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-amber-400/20 bg-amber-400/5 text-amber-300"}`}>
+                              <Badge tone={isOnline ? "success" : "warning"} emphasis="soft">
                                 {isOnline ? "online" : "offline"}
-                              </span>
+                              </Badge>
                               {existingOverride?.is_validated ? (
-                                <span className="text-emerald-400 text-caption font-medium">✓ Validated</span>
+                                <span className="text-success text-caption font-medium">✓ Validated</span>
                               ) : existingOverride?.validation_error ? (
-                                <span className="text-red-400 text-caption font-medium" title={existingOverride.validation_error}>⚠ Validation failed</span>
+                                <span className="text-danger text-caption font-medium" title={existingOverride.validation_error}>⚠ Validation failed</span>
                               ) : existingOverride ? (
-                                <span className="text-amber-300 text-caption">Not validated</span>
+                                <span className="text-warning text-caption">Not validated</span>
                               ) : (
-                                <span className="text-zinc-500 text-caption">Using default path</span>
+                                <span className="text-muted text-caption">Using default path</span>
                               )}
                             </div>
                           </div>
@@ -623,13 +625,13 @@ export default function ProjectsPanel() {
                           </div>
 
                           {!isOnline ? (
-                            <div className="text-caption text-amber-300/80 flex items-center gap-1">
+                            <div className="text-caption text-warning flex items-center gap-1">
                               ⚠ Bridge is offline. Cannot validate path until bridge connects.
                             </div>
                           ) : null}
 
                           {actionError ? (
-                            <div className="text-caption text-red-300">{actionError}</div>
+                            <div className="text-caption text-danger">{actionError}</div>
                           ) : null}
                         </div>
                       );
@@ -639,18 +641,18 @@ export default function ProjectsPanel() {
               </div>
             </div>
           ) : (
-            <div className="text-sm text-zinc-500">Project not found.</div>
+            <div className="text-sm text-muted">Project not found.</div>
           )}
         </div>
       ) : (
         /* Projects List */
         <div className="space-y-3">
-          <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide">Existing Projects ({projects.length})</h3>
+          <h3 className="text-sm font-semibold text-muted uppercase tracking-wide">Existing Projects ({projects.length})</h3>
 
           {projectsQuery.isLoading ? (
-            <div className="text-sm text-zinc-500">Loading projects…</div>
+            <div className="text-sm text-muted">Loading projects…</div>
           ) : projects.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-white/10 p-5 text-center text-sm text-zinc-500">
+            <div className="rounded-xl border border-dashed border-subtle p-5 text-center text-sm text-muted">
               No projects created yet. Use the form above to add your first project.
             </div>
           ) : (
@@ -663,28 +665,28 @@ export default function ProjectsPanel() {
                   <div
                     key={projectId}
                     data-debug-id={`settings-project-row-${projectId}`}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/20 p-3.5 hover:border-white/20 transition"
+                    className="flex items-center justify-between gap-3 rounded-xl border border-subtle bg-surface-raised/30 p-3.5 hover:border-strong transition"
                   >
                     <div className="min-w-0 flex-1 space-y-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-semibold text-zinc-100 truncate">{project.name}</span>
+                        <span className="font-semibold text-primary truncate">{project.name}</span>
                         {project.is_default_conversations ? (
-                          <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[10px] font-medium text-sky-300">
+                          <Badge tone="info" emphasis="soft">
                             Default
-                          </span>
+                          </Badge>
                         ) : null}
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400">
-                        <div><strong className="text-zinc-500">Path:</strong> <span className="font-mono text-zinc-300">{project.default_path}</span></div>
-                        <div><strong className="text-zinc-500">VCS:</strong> {project.vcs_kind || "git"}</div>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                        <div><strong className="text-muted">Path:</strong> <span className="font-mono text-primary">{project.default_path}</span></div>
+                        <div><strong className="text-muted">VCS:</strong> {project.vcs_kind || "git"}</div>
                         {project.repo_url ? (
-                          <div className="truncate max-w-xs"><strong className="text-zinc-500">Repo:</strong> {project.repo_url}</div>
+                          <div className="truncate max-w-xs"><strong className="text-muted">Repo:</strong> {project.repo_url}</div>
                         ) : null}
                       </div>
 
                       {project.updated_at ? (
-                        <div className="text-[10px] text-zinc-500">
+                        <div className="text-[10px] text-muted">
                           Updated: {new Date(project.updated_at).toLocaleString()}
                         </div>
                       ) : null}

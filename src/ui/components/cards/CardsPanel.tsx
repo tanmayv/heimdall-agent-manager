@@ -345,7 +345,7 @@ export default function CardsPanel() {
           <Badge data-debug-id="cards-pending-count" tone={pendingCount > 0 ? 'warning' : 'neutral'}>
             {pendingCount} pending
           </Badge>
-          <span className="text-xs text-zinc-500 font-normal">
+          <span className="text-xs text-muted font-normal">
             ({cards.length} total)
           </span>
         </span>
@@ -372,8 +372,8 @@ export default function CardsPanel() {
             data-debug-id="cards-feedback-banner"
             className={`flex items-center justify-between rounded-xl border p-3.5 text-xs font-medium animate-fade-in ${
               feedback.type === 'success'
-                ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-300'
-                : 'border-red-500/40 bg-red-950/20 text-red-300'
+                ? 'border-success/30 bg-success-soft text-success'
+                : 'border-danger/30 bg-danger-soft text-danger'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -386,7 +386,7 @@ export default function CardsPanel() {
 
         {/* Status Filter Tabs & Search Bar */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap items-center gap-1.5 border-b border-white/10 pb-2 sm:border-none sm:pb-0">
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-subtle pb-2 sm:border-none sm:pb-0">
             {STATUS_TABS.map((tab) => {
               const active = statusFilter === tab.id;
               return (
@@ -397,13 +397,13 @@ export default function CardsPanel() {
                   onClick={() => setStatusFilter(tab.id)}
                   className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                     active
-                      ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
-                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
+                      ? 'bg-accent/20 text-accent border border-accent/40'
+                      : 'text-muted hover:text-primary hover:bg-neutral-soft border border-transparent'
                   }`}
                 >
                   {tab.label}
                   {tab.id === 'pending' && pendingCount > 0 && (
-                    <span className="ml-1.5 rounded-full bg-amber-500/30 px-1.5 py-0.2 text-[10px] text-amber-300 font-semibold">
+                    <span className="ml-1.5 rounded-full bg-warning/20 px-1.5 py-0.2 text-[10px] text-warning font-semibold">
                       {pendingCount}
                     </span>
                   )}
@@ -434,9 +434,9 @@ export default function CardsPanel() {
         {selectedCardIds.length > 0 && (
           <div
             data-debug-id="cards-batch-toolbar"
-            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sky-500/30 bg-sky-950/20 px-4 py-2.5 text-xs animate-fade-in"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent-soft px-4 py-2.5 text-xs animate-fade-in"
           >
-            <div className="flex items-center gap-2 text-sky-200 font-medium">
+            <div className="flex items-center gap-2 text-accent font-medium">
               <Icon name="check" size={14} />
               <span>{selectedCardIds.length} cards selected</span>
             </div>
@@ -485,9 +485,9 @@ export default function CardsPanel() {
 
         {/* Loading State */}
         {isLoading && (
-          <div data-debug-id="cards-loading-state" className="flex items-center justify-center p-12 text-zinc-400 text-sm">
+          <div data-debug-id="cards-loading-state" className="flex items-center justify-center p-12 text-muted text-sm">
             <div className="flex items-center gap-2">
-              <Icon name="refresh" size={14} className="animate-spin text-sky-400" />
+              <Icon name="refresh" size={14} className="animate-spin text-accent" />
               <span>Loading Action Cards...</span>
             </div>
           </div>
@@ -495,7 +495,7 @@ export default function CardsPanel() {
 
         {/* Error State */}
         {cardsError && !isLoading && (
-          <div data-debug-id="cards-error-state" className="rounded-xl border border-red-500/40 bg-red-950/20 p-5 text-sm text-red-300">
+          <div data-debug-id="cards-error-state" className="rounded-xl border border-danger/30 bg-danger-soft p-5 text-sm text-danger">
             Failed to load cards: {String((cardsError as any)?.error || (cardsError as any)?.message || cardsError)}
           </div>
         )}
@@ -504,19 +504,19 @@ export default function CardsPanel() {
         {!isLoading && !cardsError && totalFilteredCount === 0 && (
           <div
             data-debug-id="cards-empty-state"
-            className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.01] p-12 text-center"
+            className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-subtle bg-surface/50 p-12 text-center"
           >
-            <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/5 text-zinc-400">
+            <div className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted">
               <Icon name="spark" size={24} />
             </div>
-            <h3 className="text-base font-semibold text-white">
+            <h3 className="text-base font-semibold text-primary">
               {searchQuery.trim()
                 ? 'No matching cards found'
                 : statusFilter === 'pending'
                 ? 'No Pending Action Cards'
                 : `No ${statusFilter} Cards`}
             </h3>
-            <p className="mt-1 max-w-md text-xs leading-relaxed text-zinc-400">
+            <p className="mt-1 max-w-md text-xs leading-relaxed text-muted">
               {searchQuery.trim()
                 ? `No action cards match query "${searchQuery}". Try clearing the search filter.`
                 : 'Heimdall Curator analyzes project task chains, comments, memories, and agents to synthesize proactive Action Cards. As new activity occurs, recommended actions will appear here.'}
@@ -539,10 +539,10 @@ export default function CardsPanel() {
                 <div
                   key={group.id}
                   data-debug-id={`cards-project-group-${group.id}`}
-                  className="rounded-2xl border border-white/10 bg-white/[0.02] overflow-hidden"
+                  className="rounded-2xl border border-subtle bg-surface overflow-hidden"
                 >
                   {/* Collapsible Project Section Header */}
-                  <div className="w-full flex items-center justify-between px-4 py-3 bg-white/[0.03] border-b border-white/10">
+                  <div className="w-full flex items-center justify-between px-4 py-3 bg-surface-raised border-b border-subtle">
                     <div className="flex items-center gap-3">
                       <Checkbox
                         checked={allSelected}
@@ -554,10 +554,10 @@ export default function CardsPanel() {
                         type="button"
                         data-debug-id={`cards-project-toggle-${group.id}`}
                         onClick={() => toggleProjectCollapse(group.id)}
-                        className="flex items-center gap-2 hover:text-white text-zinc-300 text-left transition-colors"
+                        className="flex items-center gap-2 hover:text-primary text-muted text-left transition-colors"
                       >
-                        <Icon name={isCollapsed ? 'chevron-right' : 'chevron-down'} size={14} className="text-zinc-400" />
-                        <Icon name="folder" size={15} className="text-sky-400" />
+                        <Icon name={isCollapsed ? 'chevron-right' : 'chevron-down'} size={14} className="text-muted" />
+                        <Icon name="folder" size={15} className="text-accent" />
                         <span className="text-sm font-semibold">{group.name}</span>
                       </button>
                     </div>
@@ -565,7 +565,7 @@ export default function CardsPanel() {
                     <div className="flex items-center gap-2">
                       <span
                         data-debug-id={`cards-project-count-${group.id}`}
-                        className="rounded-md bg-black/40 border border-white/10 px-2 py-0.5 text-xs text-zinc-400"
+                        className="rounded-md bg-surface border border-subtle px-2 py-0.5 text-xs text-muted"
                       >
                         {cardCount} {cardCount === 1 ? 'card' : 'cards'}
                       </span>
@@ -634,9 +634,9 @@ function CardRow({
 
   const confidencePct = Math.round(card.confidence * 100);
   const confidenceColor =
-    confidencePct >= 80 ? 'text-emerald-400 border-emerald-500/30 bg-emerald-950/20' :
-    confidencePct >= 50 ? 'text-amber-400 border-amber-500/30 bg-amber-950/20' :
-    'text-red-400 border-red-500/30 bg-red-950/20';
+    confidencePct >= 80 ? 'text-success border-success/30 bg-success-soft' :
+    confidencePct >= 50 ? 'text-warning border-warning/30 bg-warning-soft' :
+    'text-danger border-danger/30 bg-danger-soft';
 
   const providerLabel =
     card.provider === 'curator_llm' ? 'Curator' :
@@ -658,8 +658,8 @@ function CardRow({
       data-debug-id={`card-row-${card.card_id}`}
       className={`rounded-xl border transition-all p-4 space-y-3 ${
         isSelected
-          ? 'border-sky-500/40 bg-sky-950/10'
-          : 'border-white/10 bg-black/40 hover:border-white/20'
+          ? 'border-accent/40 bg-accent/10'
+          : 'border-subtle bg-surface-raised hover:border-strong'
       }`}
     >
       {/* Top Header Row */}
@@ -678,7 +678,7 @@ function CardRow({
             type="button"
             data-debug-id={`card-expand-toggle-${card.card_id}`}
             onClick={onToggleExpand}
-            className="pt-1 text-zinc-400 hover:text-white transition-colors"
+            className="pt-1 text-muted hover:text-primary transition-colors"
             aria-label={isExpanded ? 'Collapse card details' : 'Expand card details'}
           >
             <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={15} />
@@ -689,7 +689,7 @@ function CardRow({
               <h4
                 data-debug-id={`card-title-${card.card_id}`}
                 onClick={onToggleExpand}
-                className="text-sm font-semibold text-white cursor-pointer hover:text-sky-300 transition-colors"
+                className="text-sm font-semibold text-primary cursor-pointer hover:text-accent transition-colors"
               >
                 {card.title}
               </h4>
@@ -700,12 +700,12 @@ function CardRow({
               </StatusPill>
 
               {/* Scope Badge */}
-              <span className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-caption text-zinc-300">
+              <span className="rounded-md border border-subtle bg-neutral-soft px-2 py-0.5 text-caption text-muted">
                 {card.scope || 'project'}
               </span>
 
               {/* Provider Badge */}
-              <span className="rounded-md border border-purple-500/30 bg-purple-950/20 px-2 py-0.5 text-caption text-purple-300 flex items-center gap-1">
+              <span className="rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 text-caption text-accent flex items-center gap-1">
                 <Icon name="spark" size={11} />
                 <span>{providerLabel}</span>
               </span>
@@ -716,7 +716,7 @@ function CardRow({
               </span>
 
               {/* Operations Count Badge */}
-              <span className="rounded-md border border-white/10 bg-black/40 px-1.5 py-0.5 text-[10px] text-zinc-400">
+              <span className="rounded-md border border-subtle bg-surface px-1.5 py-0.5 text-[10px] text-muted">
                 {opCount} {opCount === 1 ? 'op' : 'ops'}
               </span>
             </div>
@@ -725,7 +725,7 @@ function CardRow({
             {card.rationale && (
               <div
                 data-debug-id={`card-rationale-${card.card_id}`}
-                className="text-xs text-zinc-400 leading-relaxed max-w-3xl break-words"
+                className="text-xs text-muted leading-relaxed max-w-3xl break-words"
               >
                 <Markdown source={card.rationale} compact copyAll={false} />
               </div>
@@ -780,7 +780,7 @@ function CardRow({
           )}
 
           {!canAct && (
-            <span className="text-xs text-zinc-500 italic pr-2">
+            <span className="text-xs text-muted italic pr-2">
               Resolved as {card.status}
             </span>
           )}
@@ -791,17 +791,17 @@ function CardRow({
       {isExpanded && (
         <div
           data-debug-id={`card-expanded-details-${card.card_id}`}
-          className="mt-3 pt-3 border-t border-white/10 space-y-3 text-xs animate-fade-in"
+          className="mt-3 pt-3 border-t border-subtle space-y-3 text-xs animate-fade-in"
         >
           {/* Operations List */}
           <div className="space-y-2">
-            <h5 className="font-semibold text-zinc-300 flex items-center gap-1.5">
-              <Icon name="tasks" size={13} className="text-sky-400" />
+            <h5 className="font-semibold text-primary flex items-center gap-1.5">
+              <Icon name="tasks" size={13} className="text-accent" />
               <span>Operations Preview ({opCount})</span>
             </h5>
 
             {opCount === 0 ? (
-              <p className="text-zinc-500 italic">No automated operations attached.</p>
+              <p className="text-faint italic">No automated operations attached.</p>
             ) : (
               <div className="space-y-2">
                 {card.operations.map((op, idx) => (
@@ -813,12 +813,12 @@ function CardRow({
 
           {/* Evidence Source References */}
           {card.source_refs && card.source_refs.length > 0 && (
-            <div className="pt-2 border-t border-white/5 flex flex-wrap items-center gap-2">
-              <span className="text-zinc-500 font-medium">Evidence Sources:</span>
+            <div className="pt-2 border-t border-subtle flex flex-wrap items-center gap-2">
+              <span className="text-muted font-medium">Evidence Sources:</span>
               {card.source_refs.map((refId, i) => (
                 <span
                   key={i}
-                  className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] text-zinc-300"
+                  className="rounded-md border border-subtle bg-neutral-soft px-2 py-0.5 font-mono text-[11px] text-muted"
                 >
                   {formatSourceRef(refId)}
                 </span>
@@ -828,22 +828,22 @@ function CardRow({
 
           {/* Precondition Guard & Expiration */}
           {(card.guard?.target_type || card.ttl_at) && (
-            <div className="rounded-lg border border-amber-500/20 bg-amber-950/10 p-2.5 space-y-1 text-amber-200/90 text-[11px]">
-              <div className="flex items-center gap-1.5 font-semibold text-amber-300">
+            <div className="rounded-lg border border-warning/20 bg-warning-soft p-2.5 space-y-1 text-warning text-[11px]">
+              <div className="flex items-center gap-1.5 font-semibold text-warning">
                 <Icon name="lock" size={12} />
                 <span>Precondition Guard & TTL</span>
               </div>
               {card.guard?.target_type && (
                 <p>
-                  Target: <span className="font-mono text-white">{card.guard.target_type}:{card.guard.target_id}</span>
+                  Target: <span className="font-mono text-primary">{card.guard.target_type}:{card.guard.target_id}</span>
                   {card.guard.field_conditions && (
                     <span> (Conditions: {JSON.stringify(card.guard.field_conditions)})</span>
                   )}
                 </p>
               )}
               {card.ttl_at && (
-                <p className="text-zinc-400">
-                  Expires: <span className="font-mono text-zinc-300">{card.ttl_at}</span>
+                <p className="text-muted">
+                  Expires: <span className="font-mono text-primary">{card.ttl_at}</span>
                 </p>
               )}
             </div>
@@ -862,12 +862,12 @@ function OperationPreviewRow({ op, index }: { op: CardOperation; index: number }
 
   // Badge coloring by op category
   const opBadgeTone =
-    opName.startsWith('memory.create') ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300' :
-    opName.startsWith('memory.delete') || opName.startsWith('memory.archive') ? 'border-rose-500/30 bg-rose-950/20 text-rose-300' :
-    opName.startsWith('memory.update') ? 'border-amber-500/30 bg-amber-950/20 text-amber-300' :
-    opName.startsWith('task.vote') ? 'border-sky-500/30 bg-sky-950/20 text-sky-300' :
-    opName.startsWith('task_chain') ? 'border-indigo-500/30 bg-indigo-950/20 text-indigo-300' :
-    'border-zinc-700 bg-zinc-800/50 text-zinc-300';
+    opName.startsWith('memory.create') ? 'border-success/30 bg-success-soft text-success' :
+    opName.startsWith('memory.delete') || opName.startsWith('memory.archive') ? 'border-danger/30 bg-danger-soft text-danger' :
+    opName.startsWith('memory.update') ? 'border-warning/30 bg-warning-soft text-warning' :
+    opName.startsWith('task.vote') ? 'border-accent/30 bg-accent/10 text-accent' :
+    opName.startsWith('task_chain') ? 'border-accent/30 bg-accent/10 text-accent' :
+    'border-subtle bg-surface-raised text-muted';
 
   const getArg = (k: string) => op.args?.[k] ?? op[k];
 
@@ -886,45 +886,45 @@ function OperationPreviewRow({ op, index }: { op: CardOperation; index: number }
   return (
     <div
       data-debug-id={`card-op-preview-${index}`}
-      className="rounded-lg border border-white/5 bg-black/30 p-2.5 space-y-1.5"
+      className="rounded-lg border border-subtle bg-surface-raised p-2.5 space-y-1.5"
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className={`rounded px-1.5 py-0.5 text-[10px] font-mono border ${opBadgeTone}`}>
           {opName}
         </span>
         {/* REQ-UX-1: Human-readable label prominently shown */}
-        <span className="text-xs font-medium text-white">
+        <span className="text-xs font-medium text-primary">
           {humanLabel}
         </span>
       </div>
 
       {/* Structured details for memory/task operations (clean diff style) */}
-      <div className="pl-2 border-l border-white/10 space-y-1 text-[11px] text-zinc-400">
+      <div className="pl-2 border-l border-subtle space-y-1 text-[11px] text-muted">
         {memId && (
-          <div>Target ID: <span className="font-mono text-zinc-300">{memId}</span></div>
+          <div>Target ID: <span className="font-mono text-primary">{memId}</span></div>
         )}
         {memTitle && (
-          <div>Title: <span className="text-zinc-200 font-medium">"{memTitle}"</span></div>
+          <div>Title: <span className="text-primary font-medium">"{memTitle}"</span></div>
         )}
         {memType && (
-          <div>Type: <span className="capitalize text-zinc-300">{memType}</span></div>
+          <div>Type: <span className="capitalize text-primary">{memType}</span></div>
         )}
         {memBody && (
           <div
             data-debug-id={`card-op-body-${index}`}
-            className="text-zinc-300 bg-white/[0.02] p-1.5 rounded break-words"
+            className="text-primary bg-neutral-soft p-1.5 rounded break-words"
           >
             <Markdown source={memBody} compact copyAll={false} />
           </div>
         )}
         {taskVote && (
-          <div>Vote: <span className="font-semibold text-sky-300">{String(taskVote).toUpperCase()}</span></div>
+          <div>Vote: <span className="font-semibold text-accent">{String(taskVote).toUpperCase()}</span></div>
         )}
         {taskComment && (
-          <div>Comment: <span className="italic text-zinc-300">"{taskComment}"</span></div>
+          <div>Comment: <span className="italic text-primary">"{taskComment}"</span></div>
         )}
         {chainStatus && (
-          <div>Target Status: <span className="font-semibold text-indigo-300">{chainStatus}</span></div>
+          <div>Target Status: <span className="font-semibold text-accent">{chainStatus}</span></div>
         )}
       </div>
     </div>

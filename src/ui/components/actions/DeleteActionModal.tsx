@@ -29,12 +29,12 @@ export default function DeleteActionModal({
       data-debug-id="delete-action-modal"
     >
       <Modal.Body className="space-y-4">
-        <p className="text-sm text-zinc-300">
+        <p className="text-sm text-primary">
           Are you sure you want to delete this action? This will stop future scheduled executions and remove the action permanently.
         </p>
 
-        <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-          <p className="text-xs text-zinc-400 font-mono line-clamp-3">"{action.prompt_text}"</p>
+        <div className="rounded-lg border border-subtle bg-surface p-3">
+          <p className="text-xs text-muted font-mono line-clamp-3">"{action.prompt_text}"</p>
         </div>
       </Modal.Body>
       <Modal.Footer>

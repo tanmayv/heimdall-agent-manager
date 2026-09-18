@@ -101,14 +101,14 @@ const TaskDescription: React.FC<{ chainId: string; taskId: string; fallback?: st
   const description = String(data?.task?.description ?? fallback ?? '').trim();
   if (isFetching && !description) {
     return (
-      <div data-debug-id={`taskchain-task-description-${taskId}`} className="flex items-center gap-1.5 text-caption text-zinc-500">
+      <div data-debug-id={`taskchain-task-description-${taskId}`} className="flex items-center gap-1.5 text-caption text-muted">
         <Icon name="refresh" size={12} className="animate-spin" /> Loading description…
       </div>
     );
   }
   if (!description) return null;
   return (
-    <div data-debug-id={`taskchain-task-description-${taskId}`} className="text-[11.5px] leading-5 text-zinc-300">
+    <div data-debug-id={`taskchain-task-description-${taskId}`} className="text-[11.5px] leading-5 text-primary">
       <Markdown source={description} compact copyAll={false} />
     </div>
   );
@@ -822,14 +822,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       <div
         key={taskId}
         data-debug-id={`taskchain-task-row-${taskId}`}
-        className="rounded-lg border border-white/10 bg-[#111111] text-xs"
+        className="rounded-lg border border-subtle bg-surface text-xs"
       >
         {/* Task Card Header (Row 1 + Row 2) */}
         <div
           data-debug-id={`taskchain-task-header-${taskId}`}
           className={`p-3 ${
             isExpanded
-              ? 'sticky top-0 z-10 bg-[#111111] border-b border-white/5 rounded-t-lg'
+              ? 'sticky top-0 z-10 bg-surface border-b border-subtle rounded-t-lg'
               : 'rounded-lg'
           }`}
         >
@@ -845,13 +845,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 e.stopPropagation();
                 toggleTaskExpanded(taskId);
               }}
-              className="text-zinc-400 hover:text-white"
+              className="text-muted hover:text-primary"
             >
               {isExpanded ? '▾' : '▸'}
             </button>
             <div
               data-debug-id={`taskchain-task-title-${taskId}`}
-              className="min-w-0 flex-1 truncate font-semibold text-white cursor-pointer select-none"
+              className="min-w-0 flex-1 truncate font-semibold text-primary cursor-pointer select-none"
             >
               {task.title}
             </div>
@@ -860,23 +860,23 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           {/* Row 2: Left metadata chips + Right contextual action buttons */}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
             {/* Left: Metadata chips */}
-            <div className="flex flex-wrap items-center gap-2.5 text-caption text-zinc-400">
+            <div className="flex flex-wrap items-center gap-2.5 text-caption text-muted">
               <span data-debug-id={`taskchain-task-assignee-${taskId}`} className="inline-flex items-center gap-1">
                 {task.assigneeRef ? (
                   <>
                     assignee: {task.assigneeRef.agent_instance_id
                       ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
-                      : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
+                      : <span className="text-primary">{task.assigneeRef.user_id}</span>}
                   </>
                 ) : (
-                  <span>assignee: <span className="text-zinc-500">unassigned</span></span>
+                  <span>assignee: <span className="text-faint">unassigned</span></span>
                 )}
                 <button
                   type="button"
                   data-debug-id={`taskchain-task-edit-assignee-btn-${taskId}`}
                   title="Change assignee"
                   onClick={(e) => { e.stopPropagation(); openEditAssigneeModal(task); }}
-                  className="ml-0.5 text-zinc-400 hover:text-white"
+                  className="ml-0.5 text-muted hover:text-primary"
                 >
                   <Icon name="pencil" size={11} />
                 </button>
@@ -892,32 +892,32 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         {ri > 0 ? ', ' : ''}
                         {r.agent_instance_id
                           ? <InstanceIdLink instanceId={r.agent_instance_id} />
-                          : <span className="text-zinc-300">{r.user_id}</span>}
+                          : <span className="text-primary">{r.user_id}</span>}
                       </React.Fragment>
                     ))}
                   </span>
                 ) : (
-                  <span className="text-zinc-500">none</span>
+                  <span className="text-faint">none</span>
                 )}
                 <button
                   type="button"
                   data-debug-id={`taskchain-task-edit-reviewers-btn-${taskId}`}
                   title="Edit reviewers"
                   onClick={(e) => { e.stopPropagation(); openEditReviewersModal(task); }}
-                  className="ml-0.5 text-zinc-400 hover:text-white"
+                  className="ml-0.5 text-muted hover:text-primary"
                 >
                   <Icon name="pencil" size={11} />
                 </button>
               </span>
 
               <span data-debug-id={`taskchain-task-depends-on-${taskId}`} className="inline-flex items-center gap-1">
-                <span>depends on: <span className={task.dependsOn && task.dependsOn.length > 0 ? 'text-zinc-200' : 'text-zinc-500'}>{task.dependsOn ? task.dependsOn.length : 0}</span></span>
+                <span>depends on: <span className={task.dependsOn && task.dependsOn.length > 0 ? 'text-primary' : 'text-faint'}>{task.dependsOn ? task.dependsOn.length : 0}</span></span>
                 <button
                   type="button"
                   data-debug-id={`taskchain-task-edit-dependencies-btn-${taskId}`}
                   title="Edit dependencies"
                   onClick={(e) => { e.stopPropagation(); openEditDependenciesModal(task); }}
-                  className="ml-0.5 text-zinc-400 hover:text-white"
+                  className="ml-0.5 text-muted hover:text-primary"
                 >
                   <Icon name="pencil" size={11} />
                 </button>
@@ -926,7 +926,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               {(() => {
                 const p = String(task.priority || '').toLowerCase();
                 if (p !== 'p0' && p !== 'p1' && p !== 'p2') return null;
-                const cls = p === 'p0' ? 'bg-red-500/20 text-red-300' : p === 'p1' ? 'bg-amber-500/20 text-amber-300' : 'bg-zinc-800 text-zinc-400';
+                const cls = p === 'p0' ? 'bg-danger-soft text-danger' : p === 'p1' ? 'bg-warning-soft text-warning' : 'bg-neutral-soft text-muted';
                 return (
                   <span data-debug-id={`taskchain-task-priority-${taskId}`} title={`Priority ${p.toUpperCase()}`} className={`rounded px-1.5 py-0.5 font-mono uppercase ${cls}`}>
                     {p}
@@ -936,7 +936,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
               <span
                 data-debug-id={`taskchain-task-status-${taskId}`}
-                className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono uppercase text-zinc-300"
+                className="rounded bg-neutral-soft px-1.5 py-0.5 font-mono uppercase text-muted"
               >
                 {task.status}
               </span>
@@ -944,7 +944,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               {task.blocked && (
                 <span
                   data-debug-id={`taskchain-task-blocked-${taskId}`}
-                  className="rounded bg-amber-900/50 px-1.5 py-0.5 font-semibold text-amber-300"
+                  className="rounded bg-warning-soft px-1.5 py-0.5 font-semibold text-warning"
                 >
                   ⛔ blocked
                 </span>
@@ -964,7 +964,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         e.stopPropagation();
                         void handleStatusChange(taskId, 'assigned');
                       }}
-                      className="rounded bg-sky-600/20 px-2 py-0.5 text-xs font-semibold text-sky-400 hover:bg-sky-600/30"
+                      className="rounded bg-accent/20 px-2 py-0.5 text-xs font-semibold text-accent hover:bg-accent/30"
                     >
                       Uncancel
                     </button>
@@ -979,7 +979,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         e.stopPropagation();
                         void handleStatusChange(taskId, 'in_progress');
                       }}
-                      className="rounded bg-amber-600/20 px-2 py-0.5 text-xs font-semibold text-amber-400 hover:bg-amber-600/30"
+                      className="rounded bg-warning-soft px-2 py-0.5 text-xs font-semibold text-warning hover:opacity-80"
                     >
                       Unpause
                     </button>
@@ -995,7 +995,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleStatusChange(taskId, 'assigned');
                         }}
-                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
                       >
                         Not Complete
                       </button>
@@ -1006,7 +1006,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleStatusChange(taskId, 'in_validation');
                         }}
-                        className="rounded bg-purple-900/40 px-2 py-0.5 text-xs font-semibold text-purple-300 hover:bg-purple-800/50"
+                        className="rounded bg-accent-soft px-2 py-0.5 text-xs font-semibold text-accent hover:opacity-80"
                       >
                         Re-validate
                       </button>
@@ -1023,7 +1023,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleStatusChange(taskId, 'in_validation');
                         }}
-                        className="rounded bg-purple-600 px-2 py-0.5 text-xs font-semibold text-white hover:bg-purple-500"
+                        className="rounded bg-accent px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
                       >
                         Validate
                       </button>
@@ -1034,7 +1034,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleStatusChange(taskId, 'paused');
                         }}
-                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
                       >
                         Pause
                       </button>
@@ -1045,7 +1045,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleCancelTask(taskId);
                         }}
-                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 hover:bg-red-900/40 hover:text-red-300"
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-muted hover:bg-danger-soft hover:text-danger"
                       >
                         Cancel
                       </button>
@@ -1056,7 +1056,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleNudge(taskId);
                         }}
-                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
                       >
                         Nudge
                       </button>
@@ -1073,7 +1073,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleVote(taskId, 'lgtm');
                         }}
-                        className="rounded bg-emerald-700/60 px-2 py-0.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-600"
+                        className="rounded bg-success px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
                       >
                         LGTM
                       </button>
@@ -1084,7 +1084,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleVote(taskId, 'ngtm');
                         }}
-                        className="rounded bg-red-900/40 px-2 py-0.5 text-xs font-semibold text-red-300 hover:bg-red-800"
+                        className="rounded bg-danger-soft px-2 py-0.5 text-xs font-semibold text-danger hover:opacity-80"
                       >
                         NGTM
                       </button>
@@ -1095,7 +1095,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleStatusChange(taskId, 'paused');
                         }}
-                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
                       >
                         Pause
                       </button>
@@ -1106,7 +1106,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleCancelTask(taskId);
                         }}
-                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 hover:bg-red-900/40 hover:text-red-300"
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-muted hover:bg-danger-soft hover:text-danger"
                       >
                         Cancel
                       </button>
@@ -1117,7 +1117,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           e.stopPropagation();
                           void handleNudge(taskId);
                         }}
-                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                        className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
                       >
                         Nudge
                       </button>
@@ -1134,7 +1134,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         e.stopPropagation();
                         void handleStatusChange(taskId, 'in_progress');
                       }}
-                      className="rounded bg-sky-600 px-2 py-0.5 text-xs font-semibold text-white hover:bg-sky-500"
+                      className="rounded bg-accent px-2 py-0.5 text-xs font-semibold text-accent-fg hover:opacity-90"
                     >
                       Start
                     </button>
@@ -1145,7 +1145,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         e.stopPropagation();
                         void handleStatusChange(taskId, 'paused');
                       }}
-                      className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                      className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
                     >
                       Pause
                     </button>
@@ -1156,7 +1156,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         e.stopPropagation();
                         void handleCancelTask(taskId);
                       }}
-                      className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 hover:bg-red-900/40 hover:text-red-300"
+                      className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-muted hover:bg-danger-soft hover:text-danger"
                     >
                       Cancel
                     </button>
@@ -1167,7 +1167,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         e.stopPropagation();
                         void handleNudge(taskId);
                       }}
-                      className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                      className="rounded bg-neutral-soft px-2 py-0.5 text-xs text-primary hover:bg-surface-raised"
                     >
                       Nudge
                     </button>
@@ -1186,16 +1186,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             <TaskDescription chainId={chainId} taskId={taskId} fallback={task.description} />
             {/* end description */}
             {/* Dependencies in expanded view */}
-            <div data-debug-id={`taskchain-task-dependencies-section-${taskId}`} className="rounded border border-white/5 bg-zinc-900/40 p-2 text-caption">
+            <div data-debug-id={`taskchain-task-dependencies-section-${taskId}`} className="rounded border border-subtle bg-surface-raised/40 p-2 text-caption">
               <div className="flex items-center justify-between">
-                <span className="font-semibold text-zinc-400">
+                <span className="font-semibold text-muted">
                   Blocked on ({task.dependsOn ? task.dependsOn.length : 0}):
                 </span>
                 <button
                   type="button"
                   data-debug-id={`taskchain-task-manage-dependencies-btn-${taskId}`}
                   onClick={() => openEditDependenciesModal(task)}
-                  className="rounded bg-zinc-800 px-2 py-0.5 text-sky-400 hover:bg-zinc-700 hover:text-sky-300"
+                  className="rounded bg-neutral-soft px-2 py-0.5 text-accent hover:opacity-80"
                 >
                   Manage dependencies
                 </button>
@@ -1210,16 +1210,16 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       <div
                         key={depId}
                         data-debug-id={`taskchain-task-dependency-item-${taskId}-${depId}`}
-                        className="flex items-center justify-between rounded bg-zinc-950/60 px-2 py-1"
+                        className="flex items-center justify-between rounded bg-surface px-2 py-1"
                       >
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-mono text-zinc-400 text-[10px]">{depId}</span>
-                          <span className="truncate font-medium text-zinc-200">
+                          <span className="font-mono text-muted text-[10px]">{depId}</span>
+                          <span className="truncate font-medium text-primary">
                             {depTask ? depTask.title : depId}
                           </span>
                         </div>
                         {depTask ? (
-                          <span className="shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase font-mono text-zinc-300">
+                          <span className="shrink-0 rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] uppercase font-mono text-muted">
                             {depTask.status}
                           </span>
                         ) : null}
@@ -1228,7 +1228,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   })}
                 </div>
               ) : (
-                <p className="mt-1 text-caption text-zinc-500 italic">No dependencies configured.</p>
+                <p className="mt-1 text-caption text-faint italic">No dependencies configured.</p>
               )}
             </div>
 
@@ -1243,32 +1243,32 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               {/* Comment Composer */}
               <div className="space-y-2 pt-1">
                 {taskCommentAttachments.length > 0 ? (
-                  <div data-debug-id={`taskchain-task-comment-attachment-tray-${taskId}`} className="space-y-1 rounded border border-white/10 bg-black/20 p-2">
+                  <div data-debug-id={`taskchain-task-comment-attachment-tray-${taskId}`} className="space-y-1 rounded border border-subtle bg-surface-raised p-2">
                     {taskCommentAttachments.map((attachment) => (
-                      <div key={attachment.localId} data-debug-id={`taskchain-task-comment-attachment-${taskId}-${attachment.localId}`} className="rounded bg-zinc-950/60 px-2 py-1.5">
+                      <div key={attachment.localId} data-debug-id={`taskchain-task-comment-attachment-${taskId}-${attachment.localId}`} className="rounded bg-surface px-2 py-1.5">
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className={attachment.status === 'uploaded' ? 'text-emerald-300' : attachment.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{attachment.status === 'uploading' ? '⇧' : attachment.status === 'uploaded' ? '✓' : '!'}</span>
+                          <span className={attachment.status === 'uploaded' ? 'text-success' : attachment.status === 'error' ? 'text-danger' : 'text-accent'}>{attachment.status === 'uploading' ? '⇧' : attachment.status === 'uploaded' ? '✓' : '!'}</span>
                           <span className="min-w-0 flex-1 truncate" title={attachment.name}>{attachment.name}</span>
-                          <span className={attachment.status === 'uploaded' ? 'text-emerald-300' : attachment.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{attachment.status === 'uploading' ? 'Uploading…' : attachment.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
+                          <span className={attachment.status === 'uploaded' ? 'text-success' : attachment.status === 'error' ? 'text-danger' : 'text-accent'}>{attachment.status === 'uploading' ? 'Uploading…' : attachment.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
                           {attachment.status === 'error' ? (
-                            <button type="button" data-debug-id={`taskchain-task-comment-attachment-retry-${taskId}-${attachment.localId}`} onClick={() => void uploadCommentAttachment(taskId, attachment.file, attachment.localId)} className="rounded border border-white/10 px-2 py-0.5 text-zinc-300 hover:bg-white/10">
+                            <button type="button" data-debug-id={`taskchain-task-comment-attachment-retry-${taskId}-${attachment.localId}`} onClick={() => void uploadCommentAttachment(taskId, attachment.file, attachment.localId)} className="rounded border border-subtle px-2 py-0.5 text-primary hover:bg-surface-raised">
                               Retry
                             </button>
                           ) : null}
-                          <button type="button" data-debug-id={`taskchain-task-comment-attachment-remove-${taskId}-${attachment.localId}`} onClick={() => updateCommentAttachments(taskId, (items) => items.filter((item) => item.localId !== attachment.localId))} className="rounded border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">
+                          <button type="button" data-debug-id={`taskchain-task-comment-attachment-remove-${taskId}-${attachment.localId}`} onClick={() => updateCommentAttachments(taskId, (items) => items.filter((item) => item.localId !== attachment.localId))} className="rounded border border-subtle px-2 py-0.5 text-muted hover:bg-surface-raised">
                             Remove
                           </button>
                         </div>
-                        {attachment.status === 'uploading' ? <div data-debug-id={`taskchain-task-comment-attachment-progress-${taskId}-${attachment.localId}`} className="mt-1 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
-                        {attachment.error ? <div data-debug-id={`taskchain-task-comment-attachment-error-${taskId}-${attachment.localId}`} className="mt-1 text-red-300">{attachment.error}</div> : null}
+                        {attachment.status === 'uploading' ? <div data-debug-id={`taskchain-task-comment-attachment-progress-${taskId}-${attachment.localId}`} className="mt-1 h-1 overflow-hidden rounded-full bg-surface-raised"><div className="h-full w-1/2 animate-pulse rounded-full bg-accent" /></div> : null}
+                        {attachment.error ? <div data-debug-id={`taskchain-task-comment-attachment-error-${taskId}-${attachment.localId}`} className="mt-1 text-danger">{attachment.error}</div> : null}
                       </div>
                     ))}
-                    {taskCommentUploading ? <div data-debug-id={`taskchain-task-comment-uploading-hint-${taskId}`} className="text-caption text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
-                    {taskCommentFailed ? <div data-debug-id={`taskchain-task-comment-failed-hint-${taskId}`} className="text-caption text-red-300">Retry or remove failed uploads before sending.</div> : null}
+                    {taskCommentUploading ? <div data-debug-id={`taskchain-task-comment-uploading-hint-${taskId}`} className="text-caption text-muted">You can keep typing. Send unlocks when uploads finish.</div> : null}
+                    {taskCommentFailed ? <div data-debug-id={`taskchain-task-comment-failed-hint-${taskId}`} className="text-caption text-danger">Retry or remove failed uploads before sending.</div> : null}
                   </div>
                 ) : null}
                 <div className="flex min-w-0 gap-2">
-                  <label data-debug-id={`taskchain-task-comment-attach-btn-${taskId}`} className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded border border-white/10 bg-zinc-900 text-sm font-semibold text-zinc-400 hover:border-sky-500 hover:text-white" title="Upload attachment">
+                  <label data-debug-id={`taskchain-task-comment-attach-btn-${taskId}`} className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded border border-subtle bg-surface-raised text-sm font-semibold text-muted hover:border-accent hover:text-primary" title="Upload attachment">
                     <input
                       type="file"
                       multiple
@@ -1289,7 +1289,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     value={commentInputs[taskId] || ''}
                     onChange={(e) => setCommentInputs({ ...commentInputs, [taskId]: e.target.value })}
                     onPaste={(e) => handleCommentPaste(e, taskId)}
-                    className="min-w-0 flex-1 rounded border border-white/10 bg-zinc-900 px-2 py-1 text-base text-white placeholder-zinc-500 focus:border-sky-500 focus:outline-none sm:text-sm"
+                    className="min-w-0 flex-1 rounded border border-subtle bg-surface-raised px-2 py-1 text-base text-primary placeholder:text-muted focus:border-accent focus:outline-none sm:text-sm"
                   />
                   <button
                     type="button"
@@ -1297,7 +1297,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     disabled={!taskCommentCanSend}
                     onClick={() => handleAddComment(taskId)}
                     title={taskCommentUploading ? 'Wait for uploads to finish before sending' : taskCommentFailed ? 'Retry or remove failed uploads before sending' : 'Send comment'}
-                    className="rounded bg-sky-600 px-3 py-1 font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+                    className="rounded bg-accent px-3 py-1 font-semibold text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:bg-neutral-soft disabled:text-muted"
                   >
                     {taskCommentUploading ? 'Uploading…' : 'Send'}
                   </button>
@@ -1312,7 +1312,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
   if (!chainId) {
     return (
-      <div data-debug-id="taskchain-overview" className="p-4 text-zinc-400">
+      <div data-debug-id="taskchain-overview" className="p-4 text-muted">
         No task chain ID provided.
       </div>
     );
@@ -1320,7 +1320,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
   if (isLoading) {
     return (
-      <div data-debug-id="taskchain-overview" className="p-4 text-zinc-400">
+      <div data-debug-id="taskchain-overview" className="p-4 text-muted">
         Loading Task Chain overview...
       </div>
     );
@@ -1328,7 +1328,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
   if (error || !chain) {
     return (
-      <div data-debug-id="taskchain-overview" className="p-4 text-red-400">
+      <div data-debug-id="taskchain-overview" className="p-4 text-danger">
         Failed to load Task Chain details.
       </div>
     );
@@ -1337,19 +1337,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   return (
     <div
       data-debug-id="taskchain-overview"
-      className="flex h-full w-full flex-col overflow-y-auto bg-[#090909] text-white"
+      className="flex h-full w-full flex-col overflow-y-auto bg-canvas text-primary"
     >
       {/* Mobile Back Header (Requirement 10) */}
       {isMobile && onClose && (
         <div
           data-debug-id="taskchain-overview-back-btn-container"
-          className="sticky top-0 z-30 flex items-center justify-between border-b border-white/10 bg-[#0c0c0c] px-4 py-3 sm:hidden"
+          className="sticky top-0 z-30 flex items-center justify-between border-b border-subtle bg-surface px-4 py-3 sm:hidden"
         >
           <button
             type="button"
             data-debug-id="taskchain-overview-back-btn"
             onClick={onClose}
-            className="flex items-center gap-2 text-sm font-semibold text-sky-400 hover:text-sky-300"
+            className="flex items-center gap-2 text-sm font-semibold text-accent hover:opacity-80"
           >
             ← Back to Chat
           </button>
@@ -1374,10 +1374,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             data-debug-id="taskchain-overview-status"
             className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
               chain.status === 'completed'
-                ? 'bg-emerald-500/20 text-emerald-400'
+                ? 'bg-success-soft text-success'
                 : chain.status === 'cancelled'
-                ? 'bg-red-500/20 text-red-400'
-                : 'bg-sky-500/20 text-sky-400'
+                ? 'bg-danger-soft text-danger'
+                : 'bg-accent/20 text-accent'
             }`}
           >
             {chain.status}
@@ -1386,7 +1386,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       >
         {/* Chain meta band (description, progress, members) — unchanged markup,
             regrouped directly under the PageShell header. */}
-        <div className="border-b border-white/10 px-4 pb-4 sm:px-6 sm:pb-6">
+        <div className="border-b border-subtle px-4 pb-4 sm:px-6 sm:pb-6">
 
         {/* Collapsible Description */}
         {chain.description && (
@@ -1395,14 +1395,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               type="button"
               data-debug-id="taskchain-overview-description-toggle-btn"
               onClick={() => setDescExpanded(!descExpanded)}
-              className="flex items-center gap-1 text-xs font-semibold text-zinc-400 hover:text-zinc-200"
+              className="flex items-center gap-1 text-xs font-semibold text-muted hover:text-primary"
             >
               <span>{descExpanded ? '▾' : '▸'}</span> description
             </button>
             {descExpanded && (
               <div
                 data-debug-id="taskchain-overview-description"
-                className="mt-1 text-sm text-zinc-300"
+                className="mt-1 text-sm text-primary"
               >
                 <Markdown source={chain.description} compact copyAll={false} />
               </div>
@@ -1413,9 +1413,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         {/* Members Strip */}
         <div
           data-debug-id="taskchain-overview-members"
-          className="mt-4 flex flex-wrap items-center gap-3 border-t border-white/5 pt-3 text-xs"
+          className="mt-4 flex flex-wrap items-center gap-3 border-t border-subtle pt-3 text-xs"
         >
-          <span className="font-semibold text-zinc-400">Members:</span>
+          <span className="font-semibold text-muted">Members:</span>
           {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
           {members.map((m: any) => {
             // TODO(FIX): Replace loose fallback chain with canonical typed schema property
@@ -1424,17 +1424,17 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <div
                 key={memberId}
                 data-debug-id={`taskchain-overview-member-${memberId}`}
-                className="flex items-center gap-1 rounded bg-zinc-800 px-2 py-0.5"
+                className="flex items-center gap-1 rounded bg-surface-raised px-2 py-0.5"
               >
                 <StatusDot size="sm" tone={runtimeStatusToTone(m.runtimeStatus || 'running')} label={runtimeStateLabel(runtimeStateFromStatus(m.runtimeStatus || 'running'))} />
-                <span className="font-mono text-zinc-300">
+                <span className="font-mono text-primary">
                   {m.role}: <InstanceIdLink instanceId={memberId} displayName={m.displayName} />
                 </span>
                 <button
                   type="button"
                   data-debug-id={`taskchain-overview-member-remove-btn-${memberId}`}
                   onClick={() => handleRemoveMember(memberId)}
-                  className="ml-1 text-zinc-500 hover:text-red-400"
+                  className="ml-1 text-faint hover:text-danger"
                   title="Remove member"
                 >
                   ×
@@ -1446,7 +1446,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             type="button"
             data-debug-id="taskchain-overview-add-member-btn"
             onClick={() => setShowAddMemberModal(true)}
-            className="rounded bg-white/10 px-2 py-0.5 font-semibold text-zinc-300 hover:bg-white/20"
+            className="rounded bg-neutral-soft px-2 py-0.5 font-semibold text-primary hover:opacity-80"
           >
             + Add member
           </button>
@@ -1455,14 +1455,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
       {/* Task List Header */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
-        <h3 className="text-sm font-bold uppercase tracking-wider text-zinc-400">
+        <h3 className="text-sm font-bold uppercase tracking-wider text-muted">
           Tasks ({tasks.length})
         </h3>
         <button
           type="button"
           data-debug-id="taskchain-new-task-btn"
           onClick={() => setShowNewTaskModal(true)}
-          className="rounded bg-sky-600 px-3 py-1 text-xs font-semibold text-white hover:bg-sky-500"
+          className="rounded bg-accent px-3 py-1 text-xs font-semibold text-accent-fg hover:opacity-90"
         >
           + New task
         </button>
@@ -1471,14 +1471,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {/* Tasks List */}
       <div className="flex-1 space-y-3 px-4 pb-6 sm:px-6">
         {tasks.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-white/10 p-6 text-center text-xs text-zinc-500">
+          <div className="rounded-lg border border-dashed border-subtle p-6 text-center text-xs text-muted">
             No tasks in this chain yet. Click "+ New task" to get started.
           </div>
         ) : (
           <>
             {/* Active Tasks */}
             {activeTasks.length === 0 && completedTasks.length > 0 ? (
-              <div className="rounded-lg border border-dashed border-white/10 p-4 text-center text-xs text-zinc-500">
+              <div className="rounded-lg border border-dashed border-subtle p-4 text-center text-xs text-muted">
                 All tasks in this chain are completed.
               </div>
             ) : (
@@ -1489,25 +1489,25 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             {completedTasks.length > 0 && (
               <div
                 data-debug-id="taskchain-overview-completed-section"
-                className="mt-6 border-t border-white/10 pt-4"
+                className="mt-6 border-t border-subtle pt-4"
               >
                 <button
                   type="button"
                   data-debug-id="taskchain-overview-completed-toggle-btn"
                   onClick={() => setCompletedTasksExpanded(!completedTasksExpanded)}
-                  className="flex w-full items-center justify-between rounded-lg bg-[#111111] px-3 py-2 text-xs font-semibold text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                  className="flex w-full items-center justify-between rounded-lg bg-surface px-3 py-2 text-xs font-semibold text-muted hover:bg-surface-raised hover:text-primary"
                 >
                   <div className="flex items-center gap-2">
                     <span>{completedTasksExpanded ? '▾' : '▸'}</span>
                     <span>Completed Tasks</span>
                     <span
                       data-debug-id="taskchain-overview-completed-count"
-                      className="rounded bg-emerald-900/40 px-1.5 py-0.5 text-[10px] text-emerald-400"
+                      className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] text-success"
                     >
                       {completedTasks.length}
                     </span>
                   </div>
-                  <span className="text-caption font-normal text-zinc-500">
+                  <span className="text-caption font-normal text-faint">
                     {completedTasksExpanded ? 'Click to collapse' : 'Click to expand'}
                   </span>
                 </button>
@@ -1527,25 +1527,25 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             {cancelledTasks.length > 0 && (
               <div
                 data-debug-id="taskchain-overview-cancelled-section"
-                className="mt-6 border-t border-white/10 pt-4"
+                className="mt-6 border-t border-subtle pt-4"
               >
                 <button
                   type="button"
                   data-debug-id="taskchain-overview-cancelled-toggle-btn"
                   onClick={() => setCancelledTasksExpanded(!cancelledTasksExpanded)}
-                  className="flex w-full items-center justify-between rounded-lg bg-[#111111] px-3 py-2 text-xs font-semibold text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                  className="flex w-full items-center justify-between rounded-lg bg-surface px-3 py-2 text-xs font-semibold text-muted hover:bg-surface-raised hover:text-primary"
                 >
                   <div className="flex items-center gap-2">
                     <span>{cancelledTasksExpanded ? '▾' : '▸'}</span>
                     <span>Cancelled Tasks</span>
                     <span
                       data-debug-id="taskchain-overview-cancelled-count"
-                      className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400"
+                      className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] text-muted"
                     >
                       {cancelledTasks.length}
                     </span>
                   </div>
-                  <span className="text-caption font-normal text-zinc-500">
+                  <span className="text-caption font-normal text-faint">
                     {cancelledTasksExpanded ? 'Click to collapse' : 'Click to expand'}
                   </span>
                 </button>
@@ -1568,9 +1568,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           promotes actionable tasks, sets current-tasks, nudges idle agents. */}
       <div
         data-debug-id="taskchain-overview-reconcile-bar"
-        className="flex items-center justify-between gap-3 border-t border-white/10 px-4 py-3 sm:px-6"
+        className="flex items-center justify-between gap-3 border-t border-subtle px-4 py-3 sm:px-6"
       >
-        <div className="min-w-0 text-caption text-zinc-500">
+        <div className="min-w-0 text-caption text-muted">
           {reconcileMsg ? (
             <span data-debug-id="taskchain-overview-reconcile-status">{reconcileMsg}</span>
           ) : (
@@ -1592,7 +1592,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               setReconcileMsg(String(e?.error || e?.message || 'Reconcile failed'));
             }
           }}
-          className="shrink-0 rounded bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-50"
+          className="shrink-0 rounded bg-warning px-3 py-1.5 text-xs font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
         >
           {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}
         </button>
@@ -1602,18 +1602,18 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {showNewTaskModal && (
         <div
           data-debug-id="taskchain-new-task-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleCreateTask}
-            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border border-white/10 bg-[#141414] p-5 text-xs text-white"
+            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl border border-subtle bg-surface p-5 text-xs text-primary shadow-panel"
           >
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-white">Create New Task</h3>
+              <h3 className="text-sm font-bold text-primary">Create New Task</h3>
               <button
                 type="button"
                 onClick={() => { resetNewTaskForm(); setShowNewTaskModal(false); }}
-                className="text-zinc-400 hover:text-white"
+                className="text-muted hover:text-primary"
               >
                 ✕
               </button>
@@ -1621,39 +1621,39 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
             <div className="mt-4 space-y-4">
               <div>
-                <label className="block text-zinc-400">Title</label>
+                <label className="block text-muted">Title</label>
                 <input
                   type="text"
                   data-debug-id="taskchain-new-task-title-input"
                   required
                   value={newTaskTitle}
                   onChange={(e) => setNewTaskTitle(e.target.value)}
-                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white placeholder-zinc-500 focus:outline-none focus:border-sky-500"
+                  className="mt-1 w-full rounded border border-subtle bg-surface-raised p-2 text-primary placeholder:text-muted focus:outline-none focus:border-accent"
                   placeholder="Task title..."
                 />
               </div>
 
               <div>
-                <label className="block text-zinc-400">Description</label>
+                <label className="block text-muted">Description</label>
                 <textarea
                   data-debug-id="taskchain-new-task-desc-input"
                   value={newTaskDesc}
                   onChange={(e) => setNewTaskDesc(e.target.value)}
-                  className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white placeholder-zinc-500 focus:outline-none focus:border-sky-500"
+                  className="mt-1 w-full rounded border border-subtle bg-surface-raised p-2 text-primary placeholder:text-muted focus:outline-none focus:border-accent"
                   placeholder="Task description (optional)..."
                   rows={2}
                 />
               </div>
 
               {/* Assignee Section */}
-              <div className="rounded border border-white/10 bg-white/[0.02] p-3">
-                <label className="block font-semibold text-zinc-300 mb-2">Initial Assignee</label>
-                <div data-debug-id="taskchain-new-task-assignee-mode" className="flex gap-1 rounded bg-zinc-900 p-1 mb-3">
+              <div className="rounded border border-subtle bg-surface-raised/40 p-3">
+                <label className="block font-semibold text-primary mb-2">Initial Assignee</label>
+                <div data-debug-id="taskchain-new-task-assignee-mode" className="flex gap-1 rounded bg-surface p-1 mb-3">
                   <button
                     type="button"
                     data-debug-id="taskchain-new-task-assignee-mode-unassigned"
                     onClick={() => setNewTaskAssigneeMode('unassigned')}
-                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'unassigned' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'unassigned' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                   >
                     Unassigned
                   </button>
@@ -1661,7 +1661,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id="taskchain-new-task-assignee-mode-member"
                     onClick={() => setNewTaskAssigneeMode('member')}
-                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'member' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'member' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                   >
                     Chain member
                   </button>
@@ -1669,7 +1669,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id="taskchain-new-task-assignee-mode-existing"
                     onClick={() => setNewTaskAssigneeMode('existing')}
-                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                   >
                     Other instance
                   </button>
@@ -1677,7 +1677,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id="taskchain-new-task-assignee-mode-user"
                     onClick={() => setNewTaskAssigneeMode('user')}
-                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'user' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                    className={`rounded px-2 py-1 font-semibold ${newTaskAssigneeMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                   >
                     User
                   </button>
@@ -1700,7 +1700,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       ]}
                     />
                     {members.length === 0 && (
-                      <p className="mt-1 text-caption text-amber-300/80">No members in this task chain.</p>
+                      <p className="mt-1 text-caption text-warning">No members in this task chain.</p>
                     )}
                   </div>
                 )}
@@ -1748,29 +1748,29 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       value={newTaskAssigneeUserId}
                       onChange={(e) => setNewTaskAssigneeUserId(e.target.value)}
                       placeholder="e.g. user"
-                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                      className="w-full rounded border border-subtle bg-surface-raised p-2 text-primary focus:outline-none focus:border-accent"
                     />
                   </div>
                 )}
               </div>
 
               {/* Reviewers Section */}
-              <div className="rounded border border-white/10 bg-white/[0.02] p-3">
-                <label className="block font-semibold text-zinc-300 mb-1">Reviewers ({newTaskStagedReviewerRefs.length})</label>
+              <div className="rounded border border-subtle bg-surface-raised/40 p-3">
+                <label className="block font-semibold text-primary mb-1">Reviewers ({newTaskStagedReviewerRefs.length})</label>
                 {newTaskStagedReviewerRefs.length > 0 && (
-                  <div data-debug-id="taskchain-new-task-reviewers-list" className="mb-2 flex flex-wrap gap-1.5 rounded border border-white/10 bg-zinc-900/50 p-2">
+                  <div data-debug-id="taskchain-new-task-reviewers-list" className="mb-2 flex flex-wrap gap-1.5 rounded border border-subtle bg-surface p-2">
                     {newTaskStagedReviewerRefs.map((r, idx) => (
                       <span
                         key={r.agent_instance_id || r.user_id || idx}
                         data-debug-id={`taskchain-new-task-reviewer-chip-${idx}`}
-                        className="inline-flex items-center gap-1.5 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200"
+                        className="inline-flex items-center gap-1.5 rounded bg-neutral-soft px-2 py-1 text-xs text-primary"
                       >
                         {r.agent_instance_id ? <InstanceIdLink instanceId={r.agent_instance_id} /> : <span>{r.user_id}</span>}
                         <button
                           type="button"
                           data-debug-id={`taskchain-new-task-reviewer-remove-btn-${idx}`}
                           onClick={() => handleRemoveNewTaskStagedReviewer(idx)}
-                          className="text-zinc-400 hover:text-red-400"
+                          className="text-muted hover:text-danger"
                           title="Remove reviewer"
                         >
                           ×
@@ -1780,14 +1780,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   </div>
                 )}
 
-                <div className="mt-2 border-t border-white/10 pt-2 space-y-2">
-                  <span className="text-caption text-zinc-400">Add a reviewer:</span>
-                  <div data-debug-id="taskchain-new-task-add-reviewer-mode" className="flex gap-1 rounded bg-zinc-900 p-1">
+                <div className="mt-2 border-t border-subtle pt-2 space-y-2">
+                  <span className="text-caption text-muted">Add a reviewer:</span>
+                  <div data-debug-id="taskchain-new-task-add-reviewer-mode" className="flex gap-1 rounded bg-surface p-1">
                     <button
                       type="button"
                       data-debug-id="taskchain-new-task-add-reviewer-mode-member"
                       onClick={() => setNewTaskAddReviewerMode('member')}
-                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'member' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'member' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                     >
                       Member
                     </button>
@@ -1795,7 +1795,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       type="button"
                       data-debug-id="taskchain-new-task-add-reviewer-mode-existing"
                       onClick={() => setNewTaskAddReviewerMode('existing')}
-                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                     >
                       Other
                     </button>
@@ -1803,7 +1803,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       type="button"
                       data-debug-id="taskchain-new-task-add-reviewer-mode-user"
                       onClick={() => setNewTaskAddReviewerMode('user')}
-                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'user' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                      className={`rounded px-2 py-1 font-semibold ${newTaskAddReviewerMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                     >
                       User
                     </button>
@@ -1871,7 +1871,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                         value={newTaskAddReviewerUserId}
                         onChange={(e) => setNewTaskAddReviewerUserId(e.target.value)}
                         placeholder="e.g. user"
-                        className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                        className="w-full rounded border border-subtle bg-surface-raised p-2 text-primary focus:outline-none focus:border-accent"
                       />
                     </div>
                   )}
@@ -1881,7 +1881,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       type="button"
                       data-debug-id="taskchain-new-task-add-reviewer-btn"
                       onClick={handleAddNewTaskStagedReviewer}
-                      className="rounded bg-zinc-800 px-3 py-1 font-semibold text-sky-400 hover:bg-zinc-700"
+                      className="rounded bg-neutral-soft px-3 py-1 font-semibold text-accent hover:opacity-80"
                     >
                       + Add reviewer
                     </button>
@@ -1890,17 +1890,17 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </div>
 
               {/* Blocked-On (Depends-On) Section */}
-              <div className="rounded border border-white/10 bg-white/[0.02] p-3">
-                <label className="block font-semibold text-zinc-300 mb-1">
+              <div className="rounded border border-subtle bg-surface-raised/40 p-3">
+                <label className="block font-semibold text-primary mb-1">
                   Blocked On (Depends On) {newTaskDependsOnIds.length > 0 && `(${newTaskDependsOnIds.length})`}
                 </label>
-                <p className="text-caption text-zinc-500 mb-2">Select existing tasks that must complete before this task can begin.</p>
+                <p className="text-caption text-faint mb-2">Select existing tasks that must complete before this task can begin.</p>
                 {tasks.length === 0 ? (
-                  <p className="text-caption text-zinc-500 italic">No existing tasks in this chain yet.</p>
+                  <p className="text-caption text-faint italic">No existing tasks in this chain yet.</p>
                 ) : (
                   <div
                     data-debug-id="taskchain-new-task-depends-on-list"
-                    className="max-h-40 overflow-y-auto space-y-1.5 rounded border border-white/10 bg-zinc-900/50 p-2"
+                    className="max-h-40 overflow-y-auto space-y-1.5 rounded border border-subtle bg-surface p-2"
                   >
                     {tasks.map((t: any) => {
                       const tid = String(t.taskId || t.id);
@@ -1910,7 +1910,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           key={tid}
                           data-debug-id={`taskchain-new-task-depends-on-option-${tid}`}
                           className={`flex items-center gap-2 rounded px-2 py-1.5 cursor-pointer text-xs select-none transition-colors ${
-                            isSelected ? 'bg-sky-950/60 border border-sky-500/30 text-white' : 'hover:bg-white/5 text-zinc-300'
+                            isSelected ? 'bg-accent/20 border border-accent/40 text-primary' : 'hover:bg-surface-raised text-muted'
                           }`}
                         >
                           <Checkbox
@@ -1923,9 +1923,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                               }
                             }}
                           />
-                          <span className="font-mono text-zinc-400 text-caption">{tid}</span>
+                          <span className="font-mono text-muted text-caption">{tid}</span>
                           <span className="truncate flex-1 font-medium">{t.title}</span>
-                          <span className="text-[10px] text-zinc-500 uppercase">{t.status}</span>
+                          <span className="text-[10px] text-faint uppercase">{t.status}</span>
                         </label>
                       );
                     })}
@@ -1934,7 +1934,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </div>
 
               {newTaskError && (
-                <p data-debug-id="taskchain-new-task-error" className="text-caption text-red-300">{newTaskError}</p>
+                <p data-debug-id="taskchain-new-task-error" className="text-caption text-danger">{newTaskError}</p>
               )}
             </div>
 
@@ -1942,7 +1942,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <button
                 type="button"
                 onClick={() => { resetNewTaskForm(); setShowNewTaskModal(false); }}
-                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+                className="rounded bg-neutral-soft px-3 py-1.5 text-primary hover:bg-surface-raised"
               >
                 Cancel
               </button>
@@ -1950,7 +1950,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 type="submit"
                 data-debug-id="taskchain-new-task-submit-btn"
                 disabled={creatingTask}
-                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {creatingTask ? 'Creating…' : 'Create Task'}
               </button>
@@ -1962,20 +1962,20 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {/* Add Agent to Chain popup: launch a new instance (identity + bridge +
           provider + tier) and add it to this chain with the chosen role. */}
       {showAddMemberModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4">
           <form
             onSubmit={handleAddMember}
-            className="w-full max-w-md rounded-lg border border-white/10 bg-[#141414] p-5 text-xs text-white"
+            className="w-full max-w-md rounded-xl border border-subtle bg-surface p-5 text-xs text-primary shadow-panel"
           >
-            <h3 className="text-sm font-bold text-white">Add Member to Task Chain</h3>
-            <p className="mt-1 text-caption text-zinc-500">Add an existing agent instance to this chain, or launch a new one.</p>
+            <h3 className="text-sm font-bold text-primary">Add Member to Task Chain</h3>
+            <p className="mt-1 text-caption text-muted">Add an existing agent instance to this chain, or launch a new one.</p>
             {/* H14: mode toggle — existing instance (reliable) vs launch new. */}
-            <div data-debug-id="taskchain-add-member-mode" className="mt-3 inline-flex rounded border border-white/10 p-0.5 text-caption">
+            <div data-debug-id="taskchain-add-member-mode" className="mt-3 inline-flex rounded border border-subtle p-0.5 text-caption">
               <button
                 type="button"
                 data-debug-id="taskchain-add-member-mode-existing"
                 onClick={() => { setAddMode('existing'); setAddAgentError(''); }}
-                className={`rounded px-2 py-1 font-semibold ${addMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                className={`rounded px-2 py-1 font-semibold ${addMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
               >
                 Add existing instance
               </button>
@@ -1983,14 +1983,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 type="button"
                 data-debug-id="taskchain-add-member-mode-launch"
                 onClick={() => { setAddMode('launch'); setAddAgentError(''); }}
-                className={`rounded px-2 py-1 font-semibold ${addMode === 'launch' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                className={`rounded px-2 py-1 font-semibold ${addMode === 'launch' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
               >
                 Launch new
               </button>
             </div>
             <div className="mt-4 space-y-3">
               <div>
-                <label className="block text-zinc-400">Agent identity</label>
+                <label className="block text-muted">Agent identity</label>
                 <Select
                   data-debug-id="taskchain-add-agent-agentid-select"
                   className="mt-1"
@@ -2010,7 +2010,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               {/* H14: existing-instance picker (only in 'existing' mode). */}
               {addMode === 'existing' && (
                 <div>
-                  <label className="block text-zinc-400">Existing instance</label>
+                  <label className="block text-muted">Existing instance</label>
                   <Select
                     data-debug-id="taskchain-add-member-existing-instance-select"
                     className="mt-1"
@@ -2034,14 +2034,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     ]}
                   />
                   {addAgentId && !existingInstancesQuery.isFetching && existingInstances.length === 0 && (
-                    <p className="mt-1 text-caption text-amber-300/80">No existing instances for this agent. Switch to “Launch new” to create one.</p>
+                    <p className="mt-1 text-caption text-warning">No existing instances for this agent. Switch to “Launch new” to create one.</p>
                   )}
                 </div>
               )}
               {addMode === 'launch' && (
               <>
               <div>
-                <label className="block text-zinc-400">Bridge</label>
+                <label className="block text-muted">Bridge</label>
                 <Select
                   data-debug-id="taskchain-add-agent-bridge-select"
                   className="mt-1"
@@ -2052,10 +2052,10 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   <option value="">Choose bridge…</option>
                   {addBridgeRows.map((row) => <option key={row.bridgeId} value={row.bridgeId}>{bridgeLabel(row.bridge)}</option>)}
                 </Select>
-                {addBridgeRows.length === 0 && <p className="mt-1 text-caption text-amber-300/80">No online bridge with provider capabilities is available.</p>}
+                {addBridgeRows.length === 0 && <p className="mt-1 text-caption text-warning">No online bridge with provider capabilities is available.</p>}
               </div>
               <div>
-                <label className="block text-zinc-400">Provider</label>
+                <label className="block text-muted">Provider</label>
                 <Select
                   data-debug-id="taskchain-add-agent-provider-select"
                   className="mt-1"
@@ -2069,7 +2069,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 </Select>
               </div>
               <div>
-                <label className="block text-zinc-400">Tier</label>
+                <label className="block text-muted">Tier</label>
                 <Select
                   data-debug-id="taskchain-add-agent-tier-select"
                   className="mt-1"
@@ -2085,7 +2085,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </>
               )}
               <div>
-                <label className="block text-zinc-400">Role</label>
+                <label className="block text-muted">Role</label>
                 <Select
                   data-debug-id="taskchain-add-agent-role-select"
                   className="mt-1"
@@ -2098,13 +2098,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   <option value="coordinator">coordinator</option>
                 </Select>
               </div>
-              {addAgentError && <p data-debug-id="taskchain-add-agent-error" className="text-caption text-red-300">{addAgentError}</p>}
+              {addAgentError && <p data-debug-id="taskchain-add-agent-error" className="text-caption text-danger">{addAgentError}</p>}
             </div>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setShowAddMemberModal(false)}
-                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+                className="rounded bg-neutral-soft px-3 py-1.5 text-primary hover:bg-surface-raised"
               >
                 Cancel
               </button>
@@ -2114,7 +2114,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 disabled={addMode === 'existing'
                   ? (addingExisting || !addExistingInstanceId)
                   : (addingAgent || !addAgentId)}
-                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {addMode === 'existing'
                   ? (addingExisting ? 'Adding…' : 'Add member')
@@ -2129,33 +2129,33 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {editingAssigneeTask && (
         <div
           data-debug-id="taskchain-edit-assignee-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleSaveAssignee}
             data-debug-id="taskchain-edit-assignee-form"
-            className="w-full max-w-md rounded-xl border border-white/10 bg-[#121212] p-5 shadow-2xl"
+            className="w-full max-w-md rounded-xl border border-subtle bg-surface p-5 text-primary shadow-panel"
           >
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-white">Change Assignee</h3>
+              <h3 className="font-semibold text-primary">Change Assignee</h3>
               <button
                 type="button"
                 onClick={() => setEditingAssigneeTask(null)}
-                className="text-zinc-500 hover:text-white"
+                className="text-muted hover:text-primary"
               >
                 ✕
               </button>
             </div>
-            <p className="mt-1 text-xs text-zinc-400">
-              Task: <span className="text-zinc-200">{editingAssigneeTask.title}</span>
+            <p className="mt-1 text-xs text-muted">
+              Task: <span className="text-primary">{editingAssigneeTask.title}</span>
             </p>
 
-            <div className="mt-3 flex gap-2 border-b border-white/10 pb-2 text-xs">
+            <div className="mt-3 flex gap-2 border-b border-subtle pb-2 text-xs">
               <button
                 type="button"
                 data-debug-id="taskchain-edit-assignee-mode-member"
                 onClick={() => setEditAssigneeMode('member')}
-                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'member' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'member' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
               >
                 Chain member
               </button>
@@ -2163,7 +2163,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 type="button"
                 data-debug-id="taskchain-edit-assignee-mode-existing"
                 onClick={() => setEditAssigneeMode('existing')}
-                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
               >
                 Other instance
               </button>
@@ -2171,7 +2171,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 type="button"
                 data-debug-id="taskchain-edit-assignee-mode-user"
                 onClick={() => setEditAssigneeMode('user')}
-                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'user' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
               >
                 User
               </button>
@@ -2179,7 +2179,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 type="button"
                 data-debug-id="taskchain-edit-assignee-mode-unassigned"
                 onClick={() => setEditAssigneeMode('unassigned')}
-                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'unassigned' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                className={`rounded px-2 py-1 font-semibold ${editAssigneeMode === 'unassigned' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
               >
                 Unassigned
               </button>
@@ -2188,7 +2188,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             <div className="mt-4 space-y-3 text-xs">
               {editAssigneeMode === 'member' && (
                 <div>
-                  <label className="block text-zinc-400">Choose chain member</label>
+                  <label className="block text-muted">Choose chain member</label>
                   <Select
                     data-debug-id="taskchain-edit-assignee-member-select"
                     className="mt-1"
@@ -2205,7 +2205,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     ]}
                   />
                   {members.length === 0 && (
-                    <p className="mt-1 text-caption text-amber-300/80">No members in this task chain.</p>
+                    <p className="mt-1 text-caption text-warning">No members in this task chain.</p>
                   )}
                 </div>
               )}
@@ -2213,7 +2213,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               {editAssigneeMode === 'existing' && (
                 <>
                   <div>
-                    <label className="block text-zinc-400">Agent identity</label>
+                    <label className="block text-muted">Agent identity</label>
                     <Select
                       data-debug-id="taskchain-edit-assignee-agentid-select"
                       className="mt-1"
@@ -2231,7 +2231,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     </Select>
                   </div>
                   <div>
-                    <label className="block text-zinc-400">Existing instance</label>
+                    <label className="block text-muted">Existing instance</label>
                     <Select
                       data-debug-id="taskchain-edit-assignee-existing-instance-select"
                       className="mt-1"
@@ -2255,30 +2255,30 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
 
               {editAssigneeMode === 'user' && (
                 <div>
-                  <label className="block text-zinc-400">User ID</label>
+                  <label className="block text-muted">User ID</label>
                   <input
                     data-debug-id="taskchain-edit-assignee-userid-input"
                     type="text"
                     value={editAssigneeUserId}
                     onChange={(e) => setEditAssigneeUserId(e.target.value)}
                     placeholder="e.g. user"
-                    className="mt-1 w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                    className="mt-1 w-full rounded border border-subtle bg-surface-raised p-2 text-primary focus:outline-none focus:border-accent"
                   />
                 </div>
               )}
 
               {editAssigneeMode === 'unassigned' && (
-                <p className="text-zinc-400">The task will have no assignee.</p>
+                <p className="text-muted">The task will have no assignee.</p>
               )}
 
-              {assigneeError && <p data-debug-id="taskchain-edit-assignee-error" className="text-caption text-red-300">{assigneeError}</p>}
+              {assigneeError && <p data-debug-id="taskchain-edit-assignee-error" className="text-caption text-danger">{assigneeError}</p>}
             </div>
 
             <div className="mt-5 flex justify-end gap-2 text-xs">
               <button
                 type="button"
                 onClick={() => setEditingAssigneeTask(null)}
-                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+                className="rounded bg-neutral-soft px-3 py-1.5 text-primary hover:bg-surface-raised"
               >
                 Cancel
               </button>
@@ -2286,7 +2286,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 data-debug-id="taskchain-edit-assignee-submit"
                 type="submit"
                 disabled={savingAssignee}
-                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {savingAssignee ? 'Saving…' : 'Save Assignee'}
               </button>
@@ -2299,43 +2299,43 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {editingReviewersTask && (
         <div
           data-debug-id="taskchain-edit-reviewers-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleSaveReviewers}
             data-debug-id="taskchain-edit-reviewers-form"
-            className="w-full max-w-lg rounded-xl border border-white/10 bg-[#121212] p-5 shadow-2xl"
+            className="w-full max-w-lg rounded-xl border border-subtle bg-surface p-5 text-primary shadow-panel"
           >
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-white">Edit Reviewers</h3>
+              <h3 className="font-semibold text-primary">Edit Reviewers</h3>
               <button
                 type="button"
                 onClick={() => setEditingReviewersTask(null)}
-                className="text-zinc-500 hover:text-white"
+                className="text-muted hover:text-primary"
               >
                 ✕
               </button>
             </div>
-            <p className="mt-1 text-xs text-zinc-400">
-              Task: <span className="text-zinc-200">{editingReviewersTask.title}</span>
+            <p className="mt-1 text-xs text-muted">
+              Task: <span className="text-primary">{editingReviewersTask.title}</span>
             </p>
 
             {/* Current Reviewers List */}
             <div className="mt-3">
-              <label className="block text-xs font-semibold text-zinc-400">Current Reviewers ({stagedReviewerRefs.length})</label>
-              <div data-debug-id="taskchain-edit-reviewers-list" className="mt-1.5 flex flex-wrap gap-2 min-h-[36px] rounded border border-white/10 bg-zinc-900/50 p-2">
+              <label className="block text-xs font-semibold text-muted">Current Reviewers ({stagedReviewerRefs.length})</label>
+              <div data-debug-id="taskchain-edit-reviewers-list" className="mt-1.5 flex flex-wrap gap-2 min-h-[36px] rounded border border-subtle bg-surface-raised/40 p-2">
                 {stagedReviewerRefs.map((r: any, idx: number) => (
                   <span
                     key={r.agent_instance_id || r.user_id || idx}
                     data-debug-id={`taskchain-edit-reviewer-chip-${idx}`}
-                    className="inline-flex items-center gap-1.5 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200"
+                    className="inline-flex items-center gap-1.5 rounded bg-neutral-soft px-2 py-1 text-xs text-primary"
                   >
                     {r.agent_instance_id ? <InstanceIdLink instanceId={r.agent_instance_id} /> : <span>{r.user_id}</span>}
                     <button
                       type="button"
                       data-debug-id={`taskchain-edit-reviewer-remove-btn-${idx}`}
                       onClick={() => handleRemoveStagedReviewer(idx)}
-                      className="text-zinc-400 hover:text-red-400"
+                      className="text-muted hover:text-danger"
                       title="Remove reviewer"
                     >
                       ×
@@ -2343,20 +2343,20 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   </span>
                 ))}
                 {stagedReviewerRefs.length === 0 && (
-                  <span className="text-xs text-zinc-500">No reviewers selected</span>
+                  <span className="text-xs text-faint">No reviewers selected</span>
                 )}
               </div>
             </div>
 
             {/* Add Reviewer Section */}
-            <div className="mt-4 rounded border border-white/10 bg-white/[0.02] p-3 text-xs">
-              <span className="font-semibold text-zinc-300">Add Reviewer</span>
-              <div className="mt-2 flex gap-2 border-b border-white/10 pb-2">
+            <div className="mt-4 rounded border border-subtle bg-surface-raised/40 p-3 text-xs">
+              <span className="font-semibold text-primary">Add Reviewer</span>
+              <div className="mt-2 flex gap-2 border-b border-subtle pb-2">
                 <button
                   type="button"
                   data-debug-id="taskchain-add-reviewer-mode-member"
                   onClick={() => setAddReviewerMode('member')}
-                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'member' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'member' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                 >
                   Chain member
                 </button>
@@ -2364,7 +2364,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   type="button"
                   data-debug-id="taskchain-add-reviewer-mode-existing"
                   onClick={() => setAddReviewerMode('existing')}
-                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'existing' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'existing' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                 >
                   Other instance
                 </button>
@@ -2372,7 +2372,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                   type="button"
                   data-debug-id="taskchain-add-reviewer-mode-user"
                   onClick={() => setAddReviewerMode('user')}
-                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'user' ? 'bg-sky-600 text-white' : 'text-zinc-400 hover:text-white'}`}
+                  className={`rounded px-2 py-1 font-semibold ${addReviewerMode === 'user' ? 'bg-accent text-accent-fg' : 'text-muted hover:text-primary'}`}
                 >
                   User
                 </button>
@@ -2441,7 +2441,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       value={addReviewerUserId}
                       onChange={(e) => setAddReviewerUserId(e.target.value)}
                       placeholder="e.g. user"
-                      className="w-full rounded border border-white/10 bg-zinc-900 p-2 text-white focus:outline-none focus:border-sky-500"
+                      className="w-full rounded border border-subtle bg-surface-raised p-2 text-primary focus:outline-none focus:border-accent"
                     />
                   </div>
                 )}
@@ -2451,7 +2451,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                     type="button"
                     data-debug-id="taskchain-add-reviewer-btn"
                     onClick={handleAddStagedReviewer}
-                    className="rounded bg-zinc-800 px-3 py-1 font-semibold text-sky-400 hover:bg-zinc-700"
+                    className="rounded bg-neutral-soft px-3 py-1 font-semibold text-accent hover:opacity-80"
                   >
                     + Add to list
                   </button>
@@ -2459,13 +2459,13 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               </div>
             </div>
 
-            {reviewersError && <p data-debug-id="taskchain-edit-reviewers-error" className="mt-2 text-caption text-red-300">{reviewersError}</p>}
+            {reviewersError && <p data-debug-id="taskchain-edit-reviewers-error" className="mt-2 text-caption text-danger">{reviewersError}</p>}
 
             <div className="mt-5 flex justify-end gap-2 text-xs">
               <button
                 type="button"
                 onClick={() => setEditingReviewersTask(null)}
-                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+                className="rounded bg-neutral-soft px-3 py-1.5 text-primary hover:bg-surface-raised"
               >
                 Cancel
               </button>
@@ -2473,7 +2473,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 data-debug-id="taskchain-edit-reviewers-submit"
                 type="submit"
                 disabled={savingReviewers}
-                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {savingReviewers ? 'Saving…' : 'Save Reviewers'}
               </button>
@@ -2486,45 +2486,45 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       {editingDependenciesTask && (
         <div
           data-debug-id="taskchain-edit-dependencies-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
         >
           <form
             onSubmit={handleSaveDependencies}
             data-debug-id="taskchain-edit-dependencies-form"
-            className="w-full max-w-md rounded-xl border border-white/10 bg-[#121212] p-5 shadow-2xl"
+            className="w-full max-w-md rounded-xl border border-subtle bg-surface p-5 text-primary shadow-panel"
           >
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-white">Manage Dependencies</h3>
+              <h3 className="font-semibold text-primary">Manage Dependencies</h3>
               <button
                 type="button"
                 onClick={() => setEditingDependenciesTask(null)}
-                className="text-zinc-500 hover:text-white"
+                className="text-muted hover:text-primary"
               >
                 ✕
               </button>
             </div>
-            <p className="mt-1 text-xs text-zinc-400">
-              Task: <span className="text-zinc-200">{editingDependenciesTask.title}</span>
+            <p className="mt-1 text-xs text-muted">
+              Task: <span className="text-primary">{editingDependenciesTask.title}</span>
             </p>
 
             <div className="mt-4">
-              <label className="block text-xs font-semibold text-zinc-400">
+              <label className="block text-xs font-semibold text-muted">
                 Blocked On (Depends On) {stagedDependsOnIds.length > 0 && `(${stagedDependsOnIds.length})`}
               </label>
-              <p className="mt-0.5 text-caption text-zinc-500">
+              <p className="mt-0.5 text-caption text-faint">
                 Select tasks that must be completed before this task can start.
               </p>
 
               {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
               {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
               {tasks.filter((t: any) => String(t.taskId || t.id) !== String(editingDependenciesTask.taskId || editingDependenciesTask.id)).length === 0 ? (
-                <div className="mt-2 rounded border border-white/10 bg-zinc-900/50 p-3 text-center text-xs text-zinc-500 italic">
+                <div className="mt-2 rounded border border-subtle bg-surface p-3 text-center text-xs text-faint italic">
                   No other tasks in this chain.
                 </div>
               ) : (
                 <div
                   data-debug-id="taskchain-edit-dependencies-list"
-                  className="mt-2 max-h-56 overflow-y-auto space-y-1.5 rounded border border-white/10 bg-zinc-900/50 p-2"
+                  className="mt-2 max-h-56 overflow-y-auto space-y-1.5 rounded border border-subtle bg-surface p-2"
                 >
                   {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
                   {tasks
@@ -2540,7 +2540,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           key={tid}
                           data-debug-id={`taskchain-edit-dependency-option-${tid}`}
                           className={`flex items-center gap-2 rounded px-2 py-1.5 cursor-pointer text-xs select-none transition-colors ${
-                            isSelected ? 'bg-sky-950/60 border border-sky-500/30 text-white' : 'hover:bg-white/5 text-zinc-300'
+                            isSelected ? 'bg-accent/20 border border-accent/40 text-primary' : 'hover:bg-surface-raised text-muted'
                           }`}
                         >
                           <Checkbox
@@ -2553,9 +2553,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                               }
                             }}
                           />
-                          <span className="font-mono text-zinc-400 text-caption">{tid}</span>
+                          <span className="font-mono text-muted text-caption">{tid}</span>
                           <span className="truncate flex-1 font-medium">{t.title}</span>
-                          <span className="text-[10px] text-zinc-500 uppercase">{t.status}</span>
+                          <span className="text-[10px] text-faint uppercase">{t.status}</span>
                         </label>
                       );
                     })}
@@ -2564,7 +2564,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             </div>
 
             {dependenciesError && (
-              <p data-debug-id="taskchain-edit-dependencies-error" className="mt-2 text-caption text-red-300">
+              <p data-debug-id="taskchain-edit-dependencies-error" className="mt-2 text-caption text-danger">
                 {dependenciesError}
               </p>
             )}
@@ -2573,7 +2573,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
               <button
                 type="button"
                 onClick={() => setEditingDependenciesTask(null)}
-                className="rounded bg-zinc-800 px-3 py-1.5 text-zinc-300 hover:bg-zinc-700"
+                className="rounded bg-neutral-soft px-3 py-1.5 text-primary hover:bg-surface-raised"
               >
                 Cancel
               </button>
@@ -2581,7 +2581,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 data-debug-id="taskchain-edit-dependencies-submit"
                 type="submit"
                 disabled={savingDependencies}
-                className="rounded bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                className="rounded bg-accent px-3 py-1.5 font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
               >
                 {savingDependencies ? 'Saving…' : 'Save Dependencies'}
               </button>
@@ -2639,7 +2639,7 @@ export function InstanceIdLink({ instanceId, displayName }: { instanceId: string
           window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
         }
       }}
-      className="font-mono text-sky-300 underline decoration-dotted underline-offset-2 hover:text-sky-200"
+      className="font-mono text-accent underline decoration-dotted underline-offset-2 hover:opacity-80"
     >
       {agentName}
     </a>

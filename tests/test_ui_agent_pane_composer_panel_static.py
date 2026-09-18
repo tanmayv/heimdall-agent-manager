@@ -49,7 +49,7 @@ def main() -> None:
     # Header controls
     require('data-debug-id="agent-pane-composer-header"' in panel_src, "Header must have data-debug-id")
     require('data-debug-id="agent-pane-status-dot"' in panel_src, "Status indicator dot must have data-debug-id")
-    require("animate-pulse" in panel_src and "bg-emerald-400" in panel_src, "Status dot must pulse green when updating/running")
+    require("animate-pulse" in panel_src and ("bg-success" in panel_src or "bg-emerald-400" in panel_src), "Status dot must pulse green when updating/running")
     require("Terminal Output" in panel_src, "Header must include 'Terminal Output' title")
     require('data-debug-id="agent-pane-interval-tag"' in panel_src, "Refresh interval tag must have data-debug-id")
     require("500ms" in panel_src, "Interval tag must surface 500ms interval")
@@ -123,7 +123,8 @@ def main() -> None:
     require("Toggle terminal pane panel" in page_src, "Terminal button title/aria-label must be 'Toggle terminal pane panel'")
     require("aria-pressed={isPaneExpanded}" in page_src, "Terminal button must set aria-pressed={isPaneExpanded}")
     require("setIsPaneExpanded" in page_src, "Terminal button onClick must toggle setIsPaneExpanded")
-    require("bg-sky-400/20" in page_src and "text-sky-300" in page_src and "border-sky-400/40" in page_src,
+    require(("bg-accent/20" in page_src and "text-accent" in page_src and "border-accent/40" in page_src) or
+            ("bg-sky-400/20" in page_src and "text-sky-300" in page_src and "border-sky-400/40" in page_src),
             "Terminal button must use active highlight when isPaneExpanded is true")
 
     # Legacy chat message send removed

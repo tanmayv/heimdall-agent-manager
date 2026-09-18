@@ -274,14 +274,14 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
   // rendered only in 'agent' target mode. Mirrors the target-mode toggle styling.
   const strategyControl = (
     <div className="space-y-1.5" data-debug-id="action-editor-strategy">
-      <label className="text-xs font-semibold text-zinc-300">Instance strategy</label>
-      <div className="flex gap-2 p-1 bg-black/40 rounded-xl border border-white/10 w-fit">
+      <label className="text-xs font-semibold text-muted">Instance strategy</label>
+      <div className="flex gap-2 p-1 bg-surface-raised rounded-xl border border-subtle w-fit">
         <button
           type="button"
           data-debug-id="action-editor-strategy-reuse"
           onClick={() => setInstanceStrategy('reuse')}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-            instanceStrategy === 'reuse' ? 'bg-white/20 text-white' : 'text-zinc-400 hover:text-white'
+            instanceStrategy === 'reuse' ? 'bg-neutral-soft text-primary' : 'text-muted hover:text-primary'
           }`}
         >
           Reuse existing
@@ -291,13 +291,13 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           data-debug-id="action-editor-strategy-fresh"
           onClick={() => setInstanceStrategy('fresh_per_run')}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-            instanceStrategy === 'fresh_per_run' ? 'bg-white/20 text-white' : 'text-zinc-400 hover:text-white'
+            instanceStrategy === 'fresh_per_run' ? 'bg-neutral-soft text-primary' : 'text-muted hover:text-primary'
           }`}
         >
           Fresh per run
         </button>
       </div>
-      <p className="text-caption text-zinc-500">
+      <p className="text-caption text-muted">
         Fresh per run creates a new agent instance on each scheduled run (and stops the previous one); Reuse keeps one instance alive.
       </p>
     </div>
@@ -309,8 +309,8 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
     return (
       <PageShell width="full" title="Edit action">
         <div data-debug-id="action-editor-loading" className="space-y-4 text-left">
-          <div className="h-24 animate-pulse rounded-2xl bg-white/5" />
-          <div className="h-64 animate-pulse rounded-2xl bg-white/5" />
+          <div className="h-24 animate-pulse rounded-2xl bg-neutral-soft" />
+          <div className="h-64 animate-pulse rounded-2xl bg-neutral-soft" />
         </div>
       </PageShell>
     );
@@ -320,7 +320,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
     return (
       <PageShell width="full" title="Edit action">
         <div data-debug-id="action-editor-not-found" className="space-y-4 text-left">
-          <div className="rounded-2xl border border-red-500/40 bg-red-950/20 p-5 text-sm text-red-300">
+          <div className="rounded-2xl border border-danger/30 bg-danger-soft p-5 text-sm text-danger">
             {actionError
               ? `Failed to load action: ${String((actionError as any)?.error || (actionError as any)?.message || actionError)}`
               : 'This action could not be found. It may have been deleted.'}
@@ -328,7 +328,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           <a
             data-debug-id="action-editor-back-link"
             href={shellHash('/actions')}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+            className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-subtle bg-surface px-4 py-2 text-sm text-muted hover:bg-neutral-soft hover:text-primary"
           >
             Back to Actions
           </a>
@@ -350,7 +350,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
         <a
           data-debug-id="action-editor-header-cancel-btn"
           href={shellHash('/actions')}
-          className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+          className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-subtle bg-surface px-4 py-2 text-sm text-muted hover:bg-neutral-soft hover:text-primary"
         >
           Cancel
         </a>
@@ -358,12 +358,12 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
     >
       <div data-debug-id="action-editor-page" className="space-y-6 text-left">
       {/* Form card */}
-      <form onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-white/10 bg-white/[0.035] p-4 sm:p-5">
+      <form onSubmit={handleSubmit} className="space-y-6 rounded-2xl border border-subtle bg-surface p-4 sm:p-5">
         {/* Target section */}
         <section data-debug-id="action-editor-target-section" className="space-y-4">
           <div>
-            <h2 className="text-sm font-semibold text-white">Target</h2>
-            <p className="mt-0.5 text-xs text-zinc-500">
+            <h2 className="text-sm font-semibold text-primary">Target</h2>
+            <p className="mt-0.5 text-xs text-muted">
               {targetMode === 'instance'
                 ? 'The existing agent instance this action is dispatched to.'
                 : 'The agent identity and bridge that will launch or resolve an instance when the action runs.'}
@@ -379,38 +379,38 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
             <>
             <div
               data-debug-id="action-editor-target-locked"
-              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/30 p-3"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-subtle bg-surface-raised p-3"
             >
               {targetMode === 'instance' ? (
                 <div className="flex items-center gap-2.5">
                   <span
                     className={`h-2 w-2 rounded-full ${
-                      instanceRuntimeStatus(selectedInstance) === 'running' ? 'bg-emerald-400' : 'bg-zinc-500'
+                      instanceRuntimeStatus(selectedInstance) === 'running' ? 'bg-success' : 'bg-faint'
                     }`}
                   />
                   <div>
-                    <div className="text-sm font-semibold text-white">
+                    <div className="text-sm font-semibold text-primary">
                       {selectedInstance ? instanceDisplayName(selectedInstance) : targetInstanceId}
                     </div>
-                    <div className="font-mono text-caption text-zinc-500">{targetInstanceId}</div>
+                    <div className="font-mono text-caption text-muted">{targetInstanceId}</div>
                   </div>
                 </div>
               ) : (
                 <div className="flex items-center gap-2.5">
-                  <Icon name="bot" size={16} className="text-sky-400" />
+                  <Icon name="bot" size={16} className="text-accent" />
                   <div>
-                    <div className="text-sm font-semibold text-white">
+                    <div className="text-sm font-semibold text-primary">
                       Agent: {targetAgentId} (Bridge: {targetBridgeId})
                     </div>
                     {(targetProvider || targetTier || targetProjectId) && (
-                      <div className="font-mono text-caption text-zinc-400">
+                      <div className="font-mono text-caption text-muted">
                         {[targetProvider && `provider: ${targetProvider}`, targetTier && `tier: ${targetTier}`, targetProjectId && `project: ${targetProjectId}`].filter(Boolean).join(' • ')}
                       </div>
                     )}
                   </div>
                 </div>
               )}
-              <span className="text-caption text-zinc-500">Target cannot be changed after creation</span>
+              <span className="text-caption text-muted">Target cannot be changed after creation</span>
             </div>
             {/* Strategy IS editable after creation (agent-id targeting only). */}
             {targetMode === 'agent' && <div className="pt-1">{strategyControl}</div>}
@@ -418,15 +418,15 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
           ) : (
             <div className="space-y-4">
               {/* Target Mode Toggle */}
-              <div className="flex gap-2 p-1 bg-black/40 rounded-xl border border-white/10 w-fit">
+              <div className="flex gap-2 p-1 bg-surface-raised rounded-xl border border-subtle w-fit">
                 <button
                   type="button"
                   data-debug-id="action-editor-mode-instance"
                   onClick={() => setTargetMode('instance')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                     targetMode === 'instance'
-                      ? 'bg-white/20 text-white'
-                      : 'text-zinc-400 hover:text-white'
+                      ? 'bg-neutral-soft text-primary'
+                      : 'text-muted hover:text-primary'
                   }`}
                 >
                   Existing Instance
@@ -437,8 +437,8 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                   onClick={() => setTargetMode('agent')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                     targetMode === 'agent'
-                      ? 'bg-white/20 text-white'
-                      : 'text-zinc-400 hover:text-white'
+                      ? 'bg-neutral-soft text-primary'
+                      : 'text-muted hover:text-primary'
                   }`}
                 >
                   Agent &amp; Bridge (Launch on demand)
@@ -461,7 +461,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                 <div className="space-y-4 pt-1">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-zinc-300">Target Agent *</label>
+                      <label className="text-xs font-semibold text-muted">Target Agent *</label>
                       <Combobox
                         debugId="action-editor-agent-id-select"
                         options={agentOptions}
@@ -476,7 +476,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                     </div>
 
                     <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-zinc-300">Target Bridge *</label>
+                      <label className="text-xs font-semibold text-muted">Target Bridge *</label>
                       <Combobox
                         debugId="action-editor-bridge-id-select"
                         options={bridgeOptions}
@@ -493,7 +493,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
                     <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-zinc-400">Provider (optional)</label>
+                      <label className="text-xs font-medium text-muted">Provider (optional)</label>
                       <Input
                         data-debug-id="action-editor-provider-input"
                         value={targetProvider}
@@ -504,7 +504,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                     </div>
 
                     <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-zinc-400">Tier (optional)</label>
+                      <label className="text-xs font-medium text-muted">Tier (optional)</label>
                       <Input
                         data-debug-id="action-editor-tier-input"
                         value={targetTier}
@@ -515,7 +515,7 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
                     </div>
 
                     <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-zinc-400">Project (optional)</label>
+                      <label className="text-xs font-medium text-muted">Project (optional)</label>
                       <Combobox
                         debugId="action-editor-project-select"
                         options={projectOptions}
@@ -537,10 +537,10 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
         </section>
 
         {/* Prompt section */}
-        <section data-debug-id="action-editor-prompt-section" className="space-y-2 border-t border-white/10 pt-6">
+        <section data-debug-id="action-editor-prompt-section" className="space-y-2 border-t border-subtle pt-6">
           <div>
-            <h2 className="text-sm font-semibold text-white">Prompt</h2>
-            <p className="mt-0.5 text-xs text-zinc-500">The message dispatched to the agent when this action runs.</p>
+            <h2 className="text-sm font-semibold text-primary">Prompt</h2>
+            <p className="mt-0.5 text-xs text-muted">The message dispatched to the agent when this action runs.</p>
           </div>
           <Textarea
             data-debug-id="action-editor-prompt-input"
@@ -553,16 +553,16 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
         </section>
 
         {/* Schedule section */}
-        <section data-debug-id="action-editor-schedule-section" className="space-y-3 border-t border-white/10 pt-6">
+        <section data-debug-id="action-editor-schedule-section" className="space-y-3 border-t border-subtle pt-6">
           <div>
-            <h2 className="text-sm font-semibold text-white">Schedule</h2>
-            <p className="mt-0.5 text-xs text-zinc-500">Run automatically on a recurring schedule, or leave off for on-demand only.</p>
+            <h2 className="text-sm font-semibold text-primary">Schedule</h2>
+            <p className="mt-0.5 text-xs text-muted">Run automatically on a recurring schedule, or leave off for on-demand only.</p>
           </div>
 
-          <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          <div className="flex items-center justify-between rounded-xl border border-subtle bg-surface-raised p-3">
             <div>
-              <span className="text-xs font-semibold text-zinc-200">Scheduled recurring execution</span>
-              <p className="text-caption text-zinc-500">
+              <span className="text-xs font-semibold text-primary">Scheduled recurring execution</span>
+              <p className="text-caption text-muted">
                 {isScheduled
                   ? 'Will execute automatically according to the cron/preset schedule below.'
                   : 'On-demand only — runs when triggered via "Run now".'}
@@ -580,17 +580,17 @@ export default function ActionEditorPage({ actionId }: ActionEditorPageProps) {
         </section>
 
         {error && (
-          <div data-debug-id="action-editor-error" className="rounded-lg border border-red-500/40 bg-red-950/20 p-3 text-xs text-red-300">
+          <div data-debug-id="action-editor-error" className="rounded-lg border border-danger/30 bg-danger-soft p-3 text-xs text-danger">
             {error}
           </div>
         )}
 
         {/* Sticky footer */}
-        <div className="z-10 -mx-4 -mb-4 flex flex-col-reverse gap-2 border-t border-white/10 bg-[#0d0f14]/95 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:-mx-5 sm:-mb-5 sm:flex-row sm:justify-end sm:px-5 md:sticky md:bottom-0">
+        <div className="z-10 -mx-4 -mb-4 flex flex-col-reverse gap-2 border-t border-subtle bg-surface/95 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:-mx-5 sm:-mb-5 sm:flex-row sm:justify-end sm:px-5 md:sticky md:bottom-0">
           <a
             data-debug-id="action-editor-footer-cancel-btn"
             href={shellHash('/actions')}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+            className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-subtle bg-surface px-4 py-2 text-sm text-muted hover:bg-neutral-soft hover:text-primary"
           >
             Cancel
           </a>

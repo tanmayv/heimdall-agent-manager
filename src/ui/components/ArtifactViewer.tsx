@@ -327,7 +327,7 @@ function RegionAnnotationLayer({ contentUrl, alt, annotationMode, annotations, o
         src={contentUrl}
         alt={alt}
         draggable={false}
-        className="max-h-[70vh] max-w-full select-none rounded-2xl border border-white/10 bg-black/30"
+        className="max-h-[70vh] max-w-full select-none rounded-2xl border border-subtle bg-surface-raised"
       />
       <div className="pointer-events-none absolute inset-0">
         {regionAnnotations.map((annotation) => {
@@ -336,7 +336,7 @@ function RegionAnnotationLayer({ contentUrl, alt, annotationMode, annotations, o
             <div
               key={annotation.annotationId}
               data-debug-id={`artifact-viewer-png-annotation-overlay-${annotation.annotationId}`}
-              className="absolute rounded border-2 border-emerald-400/80 bg-emerald-400/10"
+              className="absolute rounded border-2 border-success bg-success-soft"
               style={{
                 left: `${clampPercent(ctx.xPercent)}%`,
                 top: `${clampPercent(ctx.yPercent)}%`,
@@ -344,7 +344,7 @@ function RegionAnnotationLayer({ contentUrl, alt, annotationMode, annotations, o
                 height: `${clampPercent(ctx.hPercent)}%`,
               }}
             >
-              <span className="absolute -top-5 left-0 max-w-[16rem] truncate rounded bg-emerald-400 px-1 text-[10px] font-semibold text-black">
+              <span className="absolute -top-5 left-0 max-w-[16rem] truncate rounded bg-success px-1 text-[10px] font-semibold text-accent-fg">
                 {annotation.comment.trim().slice(0, 24) || 'note'}
               </span>
             </div>
@@ -353,7 +353,7 @@ function RegionAnnotationLayer({ contentUrl, alt, annotationMode, annotations, o
         {draftRect ? (
           <div
             data-debug-id="artifact-viewer-png-annotation-draft"
-            className="absolute rounded border-2 border-dashed border-sky-300 bg-sky-300/10"
+            className="absolute rounded border-2 border-dashed border-accent bg-accent/20"
             style={{
               left: `${draftRect.left}%`,
               top: `${draftRect.top}%`,
@@ -445,7 +445,7 @@ function ZoomableImage({ contentUrl, alt }: { contentUrl: string; alt: string })
     <div
       ref={containerRef}
       data-debug-id="artifact-viewer-zoomable-image"
-      className="relative flex touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/40"
+      className="relative flex touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-subtle bg-surface-raised"
       style={{ minHeight: '40vh' }}
       onWheel={handleWheel}
       onPointerDown={handlePointerDown}
@@ -465,8 +465,8 @@ function ZoomableImage({ contentUrl, alt }: { contentUrl: string; alt: string })
         style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})`, transformOrigin: 'center center', transition: dragRef.current ? 'none' : 'transform 0.08s ease-out' }}
       />
       <div className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-2">
-        <span data-debug-id="artifact-viewer-image-zoom-label" className="rounded-full bg-black/60 px-2 py-0.5 text-[10.5px] text-zinc-300">{Math.round(scale * 100)}%</span>
-        <button type="button" data-debug-id="artifact-viewer-image-zoom-reset" onClick={reset} className="pointer-events-auto rounded-full bg-black/60 px-2 py-0.5 text-[10.5px] text-zinc-200 hover:bg-black/80">reset</button>
+        <span data-debug-id="artifact-viewer-image-zoom-label" className="rounded-full border border-subtle bg-surface/80 px-2 py-0.5 text-[10.5px] text-muted">{Math.round(scale * 100)}%</span>
+        <button type="button" data-debug-id="artifact-viewer-image-zoom-reset" onClick={reset} className="pointer-events-auto rounded-full border border-subtle bg-surface/80 px-2 py-0.5 text-[10.5px] text-primary hover:bg-neutral-soft">reset</button>
       </div>
     </div>
   );
@@ -498,12 +498,12 @@ function ArtifactCodePreview({ artifactId, versionNo, kind, daemonUrl, clientTok
     }
   }
 
-  if (textQuery.isFetching) return <div className="text-sm text-zinc-400">Loading preview…</div>;
-  if (textQuery.error) return <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">Failed to load artifact content.</div>;
+  if (textQuery.isFetching) return <div className="text-sm text-muted">Loading preview…</div>;
+  if (textQuery.error) return <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">Failed to load artifact content.</div>;
   return (
     <div data-debug-id={`artifact-viewer-${kind}-preview`} className="relative">
-      <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg bg-black/60 px-2 py-1 text-caption text-zinc-200 hover:bg-black/80">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
-      <pre data-debug-id={`artifact-viewer-${kind}-body`} className="max-h-[70vh] overflow-auto rounded-2xl border border-white/10 bg-black/40 p-4 text-[12.5px] leading-5 text-zinc-200">
+      <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg border border-subtle bg-surface/80 px-2 py-1 text-caption text-primary hover:bg-neutral-soft">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
+      <pre data-debug-id={`artifact-viewer-${kind}-body`} className="max-h-[70vh] overflow-auto rounded-2xl border border-subtle bg-surface-raised p-4 text-[12.5px] leading-5 text-primary">
         <code>{display || '(empty)'}</code>
       </pre>
     </div>
@@ -550,13 +550,13 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
   return (
     <div
       data-debug-id={`artifact-viewer-annotation-item-${annotation.annotationId}`}
-      className="rounded-2xl border border-white/10 bg-black/20 p-3"
+      className="rounded-2xl border border-subtle bg-surface-raised p-3"
     >
-      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-faint">
         <span>{annotation.context.type === 'image' ? 'Image annotation' : 'Text annotation'}</span>
-        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300">{annotationVersionLabel(annotation.versionNo, currentHeadVersionNo)}</span>
+        <span className="rounded-full border border-subtle bg-neutral-soft px-2 py-0.5 text-[10px] text-muted">{annotationVersionLabel(annotation.versionNo, currentHeadVersionNo)}</span>
       </div>
-      <div className="mt-1 text-sm text-zinc-300">{summarizeAnnotationContext(annotation)}</div>
+      <div className="mt-1 text-sm text-muted">{summarizeAnnotationContext(annotation)}</div>
       {isEditing ? (
         <div className="mt-3 space-y-2">
           <Textarea
@@ -572,7 +572,7 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
               type="button"
               data-debug-id="artifact-viewer-annotation-save-btn"
               onClick={handleSave}
-              className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300"
+              className="rounded-xl bg-accent px-3 py-2 text-sm font-semibold text-accent-fg hover:opacity-90"
             >
               Save
             </button>
@@ -580,15 +580,15 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
               type="button"
               data-debug-id="artifact-viewer-annotation-cancel-btn"
               onClick={handleCancel}
-              className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15"
+              className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80"
             >
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-sm text-zinc-100 whitespace-pre-wrap">
-          {annotation.comment.trim() || <span className="text-zinc-500">(empty comment)</span>}
+        <div className="mt-3 rounded-xl border border-subtle bg-surface px-3 py-2 text-sm text-primary whitespace-pre-wrap">
+          {annotation.comment.trim() || <span className="text-faint">(empty comment)</span>}
         </div>
       )}
       <div className="mt-3 flex flex-wrap gap-2">
@@ -597,7 +597,7 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
             type="button"
             data-debug-id="artifact-viewer-annotation-edit-btn"
             onClick={() => setIsEditing(true)}
-            className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15"
+            className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80"
           >
             Edit
           </button>
@@ -606,7 +606,7 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
           type="button"
           data-debug-id="artifact-viewer-annotation-copy-btn"
           onClick={handleCopy}
-          className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15"
+          className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80"
         >
           {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy'}
         </button>
@@ -614,7 +614,7 @@ function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSave
           type="button"
           data-debug-id="artifact-viewer-annotation-remove-btn"
           onClick={() => onRemove(annotation.annotationId)}
-          className="rounded-xl bg-rose-500/15 px-3 py-2 text-sm text-rose-100 hover:bg-rose-500/25"
+          className="rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger hover:opacity-90"
         >
           Remove
         </button>
@@ -965,25 +965,25 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   }
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div data-debug-id="artifact-viewer" className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#0b0d12] shadow-[0_40px_120px_rgba(0,0,0,0.55)]" onClick={(event) => event.stopPropagation()}>
-        <div data-debug-id="artifact-viewer-breadcrumb" className="flex items-center gap-2 border-b border-white/[0.06] bg-[#0d0f14]/80 px-5 py-2.5 text-[12px] text-zinc-500">
-          <span className="text-zinc-400">Artifact</span>
-          <span className="text-zinc-700">/</span>
-          <span className="truncate text-zinc-200">{title}</span>
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div data-debug-id="artifact-viewer" className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[22px] border border-subtle bg-surface shadow-panel" onClick={(event) => event.stopPropagation()}>
+        <div data-debug-id="artifact-viewer-breadcrumb" className="flex items-center gap-2 border-b border-subtle bg-surface-raised/80 px-5 py-2.5 text-[12px] text-faint">
+          <span className="text-muted">Artifact</span>
+          <span className="text-faint">/</span>
+          <span className="truncate text-primary">{title}</span>
         </div>
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 px-5 pb-4 pt-4">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-subtle px-5 pb-4 pt-4">
           <div className="min-w-0 flex-1">
-            <div className="truncate text-xl font-semibold tracking-[-0.01em] text-zinc-100">{title}</div>
-            <div data-debug-id="artifact-viewer-meta-strip" className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px] text-zinc-400">
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 uppercase tracking-wide text-zinc-300">{selectedArtifactMeta?.kind || 'artifact'}</span>
-              {(selectedArtifactMeta?.mime || selectedArtifactMeta?.content_type || selectedArtifactMeta?.contentType) && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}</span>}
-              {selectedArtifactMeta?.size_bytes != null && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{formatBytes(Number(selectedArtifactMeta.size_bytes))}</span>}
-              {(meta?.link || artifactId) && <span className="max-w-full truncate rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5 font-mono">{meta?.link || `artifact://${artifactId}`}</span>}
-              {currentHeadVersionNo > 0 ? <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-0.5 text-emerald-100">{selectedVersionLabel}</span> : null}
+            <div className="truncate text-xl font-semibold tracking-[-0.01em] text-primary">{title}</div>
+            <div data-debug-id="artifact-viewer-meta-strip" className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px] text-muted">
+              <span className="rounded-full border border-subtle bg-neutral-soft px-2.5 py-0.5 uppercase tracking-wide text-muted">{selectedArtifactMeta?.kind || 'artifact'}</span>
+              {(selectedArtifactMeta?.mime || selectedArtifactMeta?.content_type || selectedArtifactMeta?.contentType) && <span className="rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 text-muted">{selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}</span>}
+              {selectedArtifactMeta?.size_bytes != null && <span className="rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 text-muted">{formatBytes(Number(selectedArtifactMeta.size_bytes))}</span>}
+              {(meta?.link || artifactId) && <span className="max-w-full truncate rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 font-mono text-muted">{meta?.link || `artifact://${artifactId}`}</span>}
+              {currentHeadVersionNo > 0 ? <span className="rounded-full border border-success/30 bg-success-soft px-2.5 py-0.5 text-success">{selectedVersionLabel}</span> : null}
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <label className="text-xs uppercase tracking-wide text-zinc-500">Versions</label>
+              <label className="text-xs uppercase tracking-wide text-faint">Versions</label>
               <Select
                 data-debug-id="artifact-viewer-version-select"
                 value={versionSelectValue}
@@ -1003,7 +1003,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                 data-debug-id="artifact-viewer-rollback-btn"
                 disabled={!rollbackAllowed}
                 onClick={() => setRollbackConfirmOpen((current) => !current)}
-                className={`rounded-xl px-3 py-2 text-sm ${rollbackAllowed ? 'bg-amber-400/15 text-amber-100 hover:bg-amber-400/25' : 'cursor-not-allowed bg-white/5 text-zinc-500'}`}
+                className={`rounded-xl px-3 py-2 text-sm ${rollbackAllowed ? 'bg-warning-soft text-warning hover:opacity-90' : 'cursor-not-allowed bg-neutral-soft text-faint'}`}
               >
                 Rollback…
               </button>
@@ -1015,7 +1015,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
               data-debug-id="artifact-viewer-annotate-toggle"
               disabled={!annotationSupported}
               onClick={() => setAnnotationMode((current) => !current)}
-              className={`rounded-xl px-3 py-2 text-sm ${annotationSupported ? (annotationMode ? 'bg-emerald-400 text-black hover:bg-emerald-300' : 'bg-white/10 text-zinc-200 hover:bg-white/15') : 'cursor-not-allowed bg-white/5 text-zinc-500'}`}
+              className={`rounded-xl px-3 py-2 text-sm ${annotationSupported ? (annotationMode ? 'bg-success text-accent-fg hover:opacity-90' : 'border border-subtle bg-neutral-soft text-primary hover:bg-neutral-soft/80') : 'cursor-not-allowed bg-neutral-soft text-faint'}`}
               title={annotationSupported ? 'Toggle annotation mode' : 'Annotations are only available for Markdown/text and PNG artifacts'}
             >
               {annotationModeLabel(previewKind, annotationMode)}
@@ -1024,7 +1024,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
               type="button"
               data-debug-id="artifact-viewer-annotations-panel"
               onClick={() => setAnnotationsOpen((current) => !current)}
-              className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15"
+              className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80"
             >
               {annotationsOpen ? 'Hide' : 'Annotations'} ({annotations.length})
             </button>
@@ -1033,65 +1033,65 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
               data-debug-id="artifact-viewer-copy-all-annotations-btn"
               disabled={!annotations.length}
               onClick={handleCopyAll}
-              className={`rounded-xl px-3 py-2 text-sm ${annotations.length ? 'bg-white/10 text-zinc-200 hover:bg-white/15' : 'cursor-not-allowed bg-white/5 text-zinc-500'}`}
+              className={`rounded-xl px-3 py-2 text-sm ${annotations.length ? 'border border-subtle bg-neutral-soft text-primary hover:bg-neutral-soft/80' : 'cursor-not-allowed bg-neutral-soft text-faint'}`}
             >
               {copyAllState === 'copied' ? 'Copied all' : copyAllState === 'error' ? 'Copy failed' : 'Copy all'}
             </button>
             {contentUrl ? (
-              <a data-debug-id="artifact-viewer-download-btn" href={contentUrl} download={selectedArtifactMeta?.name || artifactId} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Download</a>
+              <a data-debug-id="artifact-viewer-download-btn" href={contentUrl} download={selectedArtifactMeta?.name || artifactId} className="rounded-xl bg-accent px-3 py-2 text-sm font-semibold text-accent-fg hover:opacity-90">Download</a>
             ) : (
-              <button type="button" data-debug-id="artifact-viewer-download-btn" disabled className="cursor-not-allowed rounded-xl bg-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-400" title={contentState.loading ? 'Artifact content is still downloading' : contentState.error || 'Artifact content is unavailable'}>{contentState.loading ? 'Downloading…' : 'Download'}</button>
+              <button type="button" data-debug-id="artifact-viewer-download-btn" disabled className="cursor-not-allowed rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm font-semibold text-faint" title={contentState.loading ? 'Artifact content is still downloading' : contentState.error || 'Artifact content is unavailable'}>{contentState.loading ? 'Downloading…' : 'Download'}</button>
             )}
             {/* UI-10: rename / edit description (PATCH) and delete (DELETE) from the viewer header. */}
-            <button type="button" data-debug-id="artifact-viewer-edit-meta-btn" onClick={openEditMeta} disabled={selectedVersionNo != null} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" title="Rename / edit description">✎ Rename</button>
-            <button type="button" data-debug-id="artifact-viewer-delete-btn" onClick={() => setDeleteConfirmOpen((current) => !current)} disabled={selectedVersionNo != null} className="rounded-xl bg-rose-500/15 px-3 py-2 text-sm text-rose-100 hover:bg-rose-500/25 disabled:cursor-not-allowed disabled:opacity-40" title="Delete artifact">🗑 Delete</button>
-            <button type="button" data-debug-id="artifact-viewer-close-btn" onClick={onClose} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Close</button>
+            <button type="button" data-debug-id="artifact-viewer-edit-meta-btn" onClick={openEditMeta} disabled={selectedVersionNo != null} className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80 disabled:cursor-not-allowed disabled:opacity-40" title="Rename / edit description">✎ Rename</button>
+            <button type="button" data-debug-id="artifact-viewer-delete-btn" onClick={() => setDeleteConfirmOpen((current) => !current)} disabled={selectedVersionNo != null} className="rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40" title="Delete artifact">🗑 Delete</button>
+            <button type="button" data-debug-id="artifact-viewer-close-btn" onClick={onClose} className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80">Close</button>
           </div>
         </div>
         <div className="overflow-auto p-5">
           <div className={`grid gap-4 ${annotationsOpen ? 'xl:grid-cols-[minmax(0,1fr)_22rem]' : ''}`}>
             <div className="space-y-4">
-              {loading && <div className="text-sm text-zinc-400">Loading artifact…</div>}
-              {!loading && error && <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">{error}</div>}
+              {loading && <div className="text-sm text-muted">Loading artifact…</div>}
+              {!loading && error && <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">{error}</div>}
               {/* UI-10: rename / edit description panel (PATCH /api/v1/artifacts/{id}). */}
               {editMetaOpen ? (
-                <div data-debug-id="artifact-viewer-edit-meta-panel" className="rounded-2xl border border-sky-400/30 bg-sky-400/10 p-4 text-sm text-sky-100">
+                <div data-debug-id="artifact-viewer-edit-meta-panel" className="rounded-2xl border border-accent/30 bg-accent/10 p-4 text-sm text-accent">
                   <div className="font-semibold">Rename / edit description</div>
-                  <div className="mt-1 text-sky-50/80">`name` is a human display label (non-unique); `artifact_id` is the identity. `description` is an optional longer note.</div>
-                  <label className="mt-3 block text-caption uppercase tracking-wide text-zinc-400">Name
+                  <div className="mt-1 text-muted">`name` is a human display label (non-unique); `artifact_id` is the identity. `description` is an optional longer note.</div>
+                  <label className="mt-3 block text-caption uppercase tracking-wide text-muted">Name
                     <Input data-debug-id="artifact-viewer-edit-name-input" value={editName} onChange={setEditName} width="full" className="mt-1" />
                   </label>
-                  <label className="mt-3 block text-caption uppercase tracking-wide text-zinc-400">Description
+                  <label className="mt-3 block text-caption uppercase tracking-wide text-muted">Description
                     <Textarea data-debug-id="artifact-viewer-edit-description-input" value={editDescription} onChange={setEditDescription} rows={3} width="full" className="mt-1" />
                   </label>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <button type="button" data-debug-id="artifact-viewer-edit-save-btn" onClick={handleSaveMeta} disabled={editBusy || !editName.trim()} className="rounded-xl bg-sky-300 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-200 disabled:cursor-not-allowed disabled:opacity-60">{editBusy ? 'Saving…' : 'Save'}</button>
-                    <button type="button" data-debug-id="artifact-viewer-edit-cancel-btn" onClick={() => setEditMetaOpen(false)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</button>
+                    <button type="button" data-debug-id="artifact-viewer-edit-save-btn" onClick={handleSaveMeta} disabled={editBusy || !editName.trim()} className="rounded-xl bg-accent px-3 py-2 text-sm font-semibold text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">{editBusy ? 'Saving…' : 'Save'}</button>
+                    <button type="button" data-debug-id="artifact-viewer-edit-cancel-btn" onClick={() => setEditMetaOpen(false)} className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80">Cancel</button>
                   </div>
                 </div>
               ) : null}
               {/* UI-10: delete confirm (DELETE /api/v1/artifacts/{id}). */}
               {deleteConfirmOpen ? (
-                <div data-debug-id="artifact-viewer-delete-panel" className="rounded-2xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm text-rose-100">
+                <div data-debug-id="artifact-viewer-delete-panel" className="rounded-2xl border border-danger/30 bg-danger-soft p-4 text-sm text-danger">
                   <div className="font-semibold">Delete artifact?</div>
-                  <div className="mt-1 text-rose-50/80">Deleted references in chat/comments render as an unavailable placeholder. This action soft-deletes the artifact.</div>
+                  <div className="mt-1 text-muted">Deleted references in chat/comments render as an unavailable placeholder. This action soft-deletes the artifact.</div>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <button type="button" data-debug-id="artifact-viewer-delete-confirm-btn" onClick={handleConfirmDelete} disabled={deleteBusy} className="rounded-xl bg-rose-400 px-3 py-2 text-sm font-semibold text-black hover:bg-rose-300 disabled:cursor-not-allowed disabled:opacity-60">{deleteBusy ? 'Deleting…' : 'Delete'}</button>
-                    <button type="button" data-debug-id="artifact-viewer-delete-cancel-btn" onClick={() => setDeleteConfirmOpen(false)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</button>
+                    <button type="button" data-debug-id="artifact-viewer-delete-confirm-btn" onClick={handleConfirmDelete} disabled={deleteBusy} className="rounded-xl bg-danger px-3 py-2 text-sm font-semibold text-primary hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">{deleteBusy ? 'Deleting…' : 'Delete'}</button>
+                    <button type="button" data-debug-id="artifact-viewer-delete-cancel-btn" onClick={() => setDeleteConfirmOpen(false)} className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80">Cancel</button>
                   </div>
                 </div>
               ) : null}
               {rollbackConfirmOpen && rollbackAllowed ? (
-                <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+                <div className="rounded-2xl border border-warning/30 bg-warning-soft p-4 text-sm text-warning">
                   <div className="font-semibold">Roll back artifact to v{selectedVersionNo}?</div>
-                  <div className="mt-1 text-amber-50">This creates a new head version using the content and metadata from v{selectedVersionNo}. History is preserved.</div>
+                  <div className="mt-1 text-muted">This creates a new head version using the content and metadata from v{selectedVersionNo}. History is preserved.</div>
                   <textarea
                     data-debug-id="artifact-viewer-rollback-reason-input"
                     value={rollbackReason}
                     onChange={(event) => setRollbackReason(event.target.value)}
                     rows={2}
                     placeholder="Reason (optional)"
-                    className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-300"
+                    className="mt-3 w-full resize-y rounded-xl border border-subtle bg-surface-raised px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-warning"
                   />
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button
@@ -1099,7 +1099,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                       data-debug-id="artifact-viewer-rollback-confirm-btn"
                       onClick={handleConfirmRollback}
                       disabled={rollbackState.isLoading}
-                      className="rounded-xl bg-amber-300 px-3 py-2 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="rounded-xl bg-warning px-3 py-2 text-sm font-semibold text-accent-fg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {rollbackState.isLoading ? 'Creating rollback…' : 'Create rollback version'}
                     </button>
@@ -1107,30 +1107,30 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                       type="button"
                       data-debug-id="artifact-viewer-rollback-cancel-btn"
                       onClick={() => setRollbackConfirmOpen(false)}
-                      className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15"
+                      className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80"
                     >
                       Cancel
                     </button>
                   </div>
                 </div>
               ) : null}
-              {actionMessage ? <div className="rounded-xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm text-sky-100">{actionMessage}</div> : null}
-              {versionHistoryUnavailable ? <div data-debug-id="artifact-viewer-versions-unavailable" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Version history is unavailable for this artifact. The current artifact preview and download remain available.</div> : null}
-              {migrationMessage ? <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">{migrationMessage}</div> : null}
+              {actionMessage ? <div className="rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">{actionMessage}</div> : null}
+              {versionHistoryUnavailable ? <div data-debug-id="artifact-viewer-versions-unavailable" className="rounded-xl border border-subtle bg-surface-raised px-4 py-3 text-sm text-muted">Version history is unavailable for this artifact. The current artifact preview and download remain available.</div> : null}
+              {migrationMessage ? <div className="rounded-xl border border-subtle bg-surface-raised px-4 py-3 text-sm text-primary">{migrationMessage}</div> : null}
               {!loading && (
-                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">
+                <div className="rounded-xl border border-subtle bg-surface-raised px-4 py-3 text-sm text-primary">
                   {supportedAnnotationHint(previewKind, annotationMode)}
-                  {annotationScopeVersionNo ? <span className="block mt-2 text-xs text-zinc-400">Showing annotations for {selectedVersionNo == null ? `head v${annotationScopeVersionNo}` : `retained version v${annotationScopeVersionNo}`}</span> : null}
+                  {annotationScopeVersionNo ? <span className="block mt-2 text-xs text-muted">Showing annotations for {selectedVersionNo == null ? `head v${annotationScopeVersionNo}` : `retained version v${annotationScopeVersionNo}`}</span> : null}
                   {!annotationSupported ? ' Existing saved annotations can still be copied, edited, or removed below if present.' : ''}
                 </div>
               )}
               {!loading && !error && selectedArtifactMeta && (
                 <div className="space-y-4">
-                  {selectedArtifactMeta.description && <div className="text-sm text-zinc-300">{selectedArtifactMeta.description}</div>}
+                  {selectedArtifactMeta.description && <div className="text-sm text-muted">{selectedArtifactMeta.description}</div>}
                   {previewKind === 'markdown' && annotationMode ? (
-                    <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+                    <div className="rounded-2xl border border-success/30 bg-success-soft p-4">
                       <Text as="div" role="overline" tone="success">Text annotation capture</Text>
-                      <div data-debug-id="artifact-viewer-text-selection-summary" className="mt-2 text-sm text-zinc-100 whitespace-pre-wrap">
+                      <div data-debug-id="artifact-viewer-text-selection-summary" className="mt-2 text-sm text-primary whitespace-pre-wrap">
                         {summarizePendingTextAnnotation(pendingTextSelection)}
                       </div>
                       <textarea
@@ -1139,11 +1139,11 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                         onChange={(event) => setNewAnnotationComment(event.target.value)}
                         rows={3}
                         placeholder="What feedback should this selection capture?"
-                        className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-300"
+                        className="mt-3 w-full resize-y rounded-xl border border-subtle bg-surface px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-success"
                       />
-                      {textAnnotationError ? <div className="mt-2 text-sm text-amber-100">{textAnnotationError}</div> : null}
+                      {textAnnotationError ? <div className="mt-2 text-sm text-warning">{textAnnotationError}</div> : null}
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <button type="button" data-debug-id="artifact-viewer-add-annotation-btn" onClick={handleAddTextAnnotation} className="rounded-xl bg-emerald-300 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-200">Add annotation</button>
+                        <button type="button" data-debug-id="artifact-viewer-add-annotation-btn" onClick={handleAddTextAnnotation} className="rounded-xl bg-success px-3 py-2 text-sm font-semibold text-accent-fg hover:opacity-90">Add annotation</button>
                         <button
                           type="button"
                           data-debug-id="artifact-viewer-clear-text-selection-btn"
@@ -1152,7 +1152,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                             setTextAnnotationError('');
                             window.getSelection?.()?.removeAllRanges();
                           }}
-                          className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15"
+                          className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80"
                         >
                           Clear selection
                         </button>
@@ -1160,11 +1160,11 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                     </div>
                   ) : null}
                   {previewKind === 'png' && annotationMode ? (
-                    <div data-debug-id="artifact-viewer-png-annotation-panel" className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+                    <div data-debug-id="artifact-viewer-png-annotation-panel" className="rounded-2xl border border-success/30 bg-success-soft p-4">
                       <Text as="div" role="overline" tone="success">Image annotation capture</Text>
                       {pendingImageRegion ? (
                         <>
-                          <div data-debug-id="artifact-viewer-png-region-summary" className="mt-2 text-sm text-zinc-100">
+                          <div data-debug-id="artifact-viewer-png-region-summary" className="mt-2 text-sm text-primary">
                             Region x={pendingImageRegion.xPercent.toFixed(1)}% y={pendingImageRegion.yPercent.toFixed(1)}% w={pendingImageRegion.wPercent.toFixed(1)}% h={pendingImageRegion.hPercent.toFixed(1)}%
                             {pendingImageNatural.width > 0 && pendingImageNatural.height > 0 ? ` · ${Math.round((pendingImageRegion.wPercent / 100) * pendingImageNatural.width)}×${Math.round((pendingImageRegion.hPercent / 100) * pendingImageNatural.height)} px` : ''}
                           </div>
@@ -1174,47 +1174,47 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                             onChange={(event) => setImageAnnotationComment(event.target.value)}
                             rows={3}
                             placeholder="What feedback should this region capture?"
-                            className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-300"
+                            className="mt-3 w-full resize-y rounded-xl border border-subtle bg-surface px-3 py-2 text-sm text-primary placeholder:text-muted outline-none focus:border-success"
                           />
                           <div className="mt-3 flex flex-wrap gap-2">
-                            <button type="button" data-debug-id="artifact-viewer-add-image-annotation-btn" disabled={!imageAnnotationComment.trim()} onClick={handleAddImageAnnotation} className={`rounded-xl px-3 py-2 text-sm font-semibold ${imageAnnotationComment.trim() ? 'bg-emerald-300 text-black hover:bg-emerald-200' : 'cursor-not-allowed bg-white/5 text-zinc-500'}`}>Add annotation</button>
-                            <button type="button" data-debug-id="artifact-viewer-clear-image-region-btn" onClick={() => { setPendingImageRegion(null); setImageAnnotationComment(''); }} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Clear region</button>
+                            <button type="button" data-debug-id="artifact-viewer-add-image-annotation-btn" disabled={!imageAnnotationComment.trim()} onClick={handleAddImageAnnotation} className={`rounded-xl px-3 py-2 text-sm font-semibold ${imageAnnotationComment.trim() ? 'bg-success text-accent-fg hover:opacity-90' : 'cursor-not-allowed bg-neutral-soft text-faint'}`}>Add annotation</button>
+                            <button type="button" data-debug-id="artifact-viewer-clear-image-region-btn" onClick={() => { setPendingImageRegion(null); setImageAnnotationComment(''); }} className="rounded-xl border border-subtle bg-neutral-soft px-3 py-2 text-sm text-primary hover:bg-neutral-soft/80">Clear region</button>
                           </div>
                         </>
                       ) : (
-                        <div data-debug-id="artifact-viewer-png-region-empty" className="mt-2 text-sm text-zinc-300">Drag on the image below to draw a bounding box, then add a comment for that region.</div>
+                        <div data-debug-id="artifact-viewer-png-region-empty" className="mt-2 text-sm text-muted">Drag on the image below to draw a bounding box, then add a comment for that region.</div>
                       )}
                     </div>
                   ) : null}
                   {loadingContent ? (
-                    <div data-debug-id="artifact-viewer-content-loading" className="grid min-h-[40vh] place-items-center rounded-2xl border border-white/10 bg-black/30 px-6 py-10 text-center">
+                    <div data-debug-id="artifact-viewer-content-loading" className="grid min-h-[40vh] place-items-center rounded-2xl border border-subtle bg-surface-raised px-6 py-10 text-center">
                       <div>
                         <Spinner size="lg" label="Downloading artifact…" className="mx-auto mb-3 text-accent" />
-                        <div className="text-sm font-medium text-zinc-200">Downloading artifact…</div>
-                        <div className="mt-1 text-xs text-zinc-500">{selectedArtifactMeta.size_bytes ? formatBytes(Number(selectedArtifactMeta.size_bytes)) : 'Preparing preview'}</div>
+                        <div className="text-sm font-medium text-primary">Downloading artifact…</div>
+                        <div className="mt-1 text-xs text-muted">{selectedArtifactMeta.size_bytes ? formatBytes(Number(selectedArtifactMeta.size_bytes)) : 'Preparing preview'}</div>
                       </div>
                     </div>
                   ) : contentError ? (
-                    <div data-debug-id="artifact-viewer-content-error" className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">{contentError}</div>
+                    <div data-debug-id="artifact-viewer-content-error" className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">{contentError}</div>
                   ) : previewKind === 'png' ? (
                     <RegionAnnotationLayer contentUrl={contentUrl} alt={selectedArtifactMeta.name || artifactId} annotationMode={annotationMode} annotations={annotations} onCreateRegion={handleCreateImageRegion} />
                   ) : previewKind === 'image' ? (
                     // UI-10: non-PNG images render with wheel/drag zoom + pinch-zoom/pan.
                     <ZoomableImage contentUrl={contentUrl} alt={selectedArtifactMeta.name || artifactId} />
                   ) : previewKind === 'markdown' ? (
-                    loadingText ? <div className="text-sm text-zinc-400">Loading preview…</div> : <MarkdownBody data-debug-id="artifact-viewer-markdown-preview" source={textContent} className="text-zinc-200" onArtifactClick={setNestedArtifactId} onTextSelectionChange={annotationMode ? handleTextSelectionChange : undefined} />
+                    loadingText ? <div className="text-sm text-muted">Loading preview…</div> : <MarkdownBody data-debug-id="artifact-viewer-markdown-preview" source={textContent} className="text-primary" onArtifactClick={setNestedArtifactId} onTextSelectionChange={annotationMode ? handleTextSelectionChange : undefined} />
                   ) : previewKind === 'json' || previewKind === 'diff' || previewKind === 'text' ? (
                     <ArtifactCodePreview artifactId={artifactId} versionNo={selectedVersionNo} kind={previewKind} {...artifactRequestAuth} />
                   ) : (
-                    <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Preview is not available for this artifact type{selectedArtifactMeta.kind ? ` (${selectedArtifactMeta.kind}${selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType ? `, ${selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}` : ''})` : ''}. Use Download to open it externally.</div>
+                    <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-subtle bg-surface-raised px-4 py-3 text-sm text-muted">Preview is not available for this artifact type{selectedArtifactMeta.kind ? ` (${selectedArtifactMeta.kind}${selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType ? `, ${selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}` : ''})` : ''}. Use Download to open it externally.</div>
                   )}
                 </div>
               )}
             </div>
             {annotationsOpen ? (
               <aside className="space-y-3 xl:sticky xl:top-0 xl:self-start">
-                {!annotationSupported ? <div data-debug-id="artifact-viewer-annotation-unavailable" className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">Annotation is unavailable for this artifact type. Annotations are available for Markdown/text and PNG artifacts only.</div> : null}
-                {!annotations.length ? <div data-debug-id="artifact-viewer-annotations-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm text-zinc-400">No annotations for this version yet.</div> : null}
+                {!annotationSupported ? <div data-debug-id="artifact-viewer-annotation-unavailable" className="rounded-2xl border border-subtle bg-surface-raised px-4 py-3 text-sm text-primary">Annotation is unavailable for this artifact type. Annotations are available for Markdown/text and PNG artifacts only.</div> : null}
+                {!annotations.length ? <div data-debug-id="artifact-viewer-annotations-empty" className="rounded-2xl border border-dashed border-subtle bg-surface-raised px-4 py-5 text-sm text-muted">No annotations for this version yet.</div> : null}
                 {annotations.map((annotation) => (
                   <AnnotationListItem key={annotation.annotationId} annotation={annotation} currentHeadVersionNo={currentHeadVersionNo} onRemove={handleRemoveAnnotation} onSaveComment={handleSaveComment} />
                 ))}

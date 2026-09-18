@@ -34,8 +34,8 @@ def test_memory_page_field() -> None:
         "MemoryPage.tsx must not use <label className=\"block\"> in Field (causes click re-dispatch to first form control)",
     )
     require(
-        '<div className="block">\n      <div className="mb-1 text-caption uppercase tracking-wide text-zinc-500">{label}</div>\n      {children}\n    </div>'
-        in src,
+        ('<div className="block">\n      <div className="mb-1 text-caption uppercase tracking-wide text-muted">{label}</div>\n      {children}\n    </div>' in src) or
+        ('<div className="block">\n      <div className="mb-1 text-caption uppercase tracking-wide text-zinc-500">{label}</div>\n      {children}\n    </div>' in src),
         "MemoryPage.tsx Field component must render a <div> wrapper instead of <label>",
     )
 

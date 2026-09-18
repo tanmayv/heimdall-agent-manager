@@ -5,7 +5,7 @@ import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import Icon, { type IconName } from '../Icon';
-import { CommandPalette, PageShell, StatusDot } from '@ui';
+import { Badge, CommandPalette, PageShell, StatusDot } from '@ui';
 import { useViewport, MobileTabBar } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
@@ -268,14 +268,14 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
 }
 
 function Breadcrumbs({ crumbs }: { crumbs: BreadcrumbCrumb[] }) {
-  return <nav data-debug-id="shell-breadcrumbs" aria-label="Breadcrumb" className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">{crumbs.map((crumb, index) => <span key={`${crumb.label}-${index}`} data-debug-id={`shell-breadcrumb-crumb-${index}`} className="inline-flex items-center gap-2">{index > 0 ? <span className="text-zinc-700">/</span> : null}{crumb.href && index < crumbs.length - 1 ? <a data-debug-id={`shell-breadcrumb-link-${index}`} href={shellHash(crumb.href)} className="font-semibold text-zinc-300 hover:text-white">{crumb.label}</a> : <span className="font-semibold text-white">{crumb.label}</span>}</span>)}</nav>;
+  return <nav data-debug-id="shell-breadcrumbs" aria-label="Breadcrumb" className="flex flex-wrap items-center gap-2 text-sm text-muted">{crumbs.map((crumb, index) => <span key={`${crumb.label}-${index}`} data-debug-id={`shell-breadcrumb-crumb-${index}`} className="inline-flex items-center gap-2">{index > 0 ? <span className="text-faint">/</span> : null}{crumb.href && index < crumbs.length - 1 ? <a data-debug-id={`shell-breadcrumb-link-${index}`} href={shellHash(crumb.href)} className="font-semibold text-muted hover:text-primary">{crumb.label}</a> : <span className="font-semibold text-primary">{crumb.label}</span>}</span>)}</nav>;
 }
 
 function SettingsSubNav({ path }: { path: string }) {
-  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex w-full max-w-full flex-nowrap gap-2 overflow-x-auto overscroll-x-contain rounded-2xl border border-white/10 bg-black/20 p-2 [-webkit-overflow-scrolling:touch] sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => {
+  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex w-full max-w-full flex-nowrap gap-2 overflow-x-auto overscroll-x-contain rounded-2xl border border-subtle bg-surface p-2 [-webkit-overflow-scrolling:touch] sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => {
     const active = path === item.path || path.startsWith(`${item.path}/`) || (path === '/settings' && item.path === '/settings/bridges');
     const debugKey = item.label.toLowerCase().replace(/\s+/g, '-');
-    return <a key={item.path} data-debug-id={`settings-sub-nav-${debugKey}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${active ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>;
+    return <a key={item.path} data-debug-id={`settings-sub-nav-${debugKey}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${active ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-raised hover:text-primary'}`}>{item.label}</a>;
   })}</nav>;
 }
 
@@ -517,13 +517,22 @@ function buildProjectConversationTree(conversations: ConversationSummary[], live
 
 function UnreadBadge({ count, debugId }: { count: number; debugId: string }) {
   if (count <= 0) return null;
-  return <span data-debug-id={debugId} className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-black text-black">{count > 99 ? '99+' : count}</span>;
+  return (
+    <Badge
+      data-debug-id={debugId}
+      tone="info"
+      emphasis="solid"
+      className="ml-auto min-w-5 justify-center font-bold"
+    >
+      {count > 99 ? '99+' : count}
+    </Badge>
+  );
 }
 
-const BRIDGE_PALETTE = ['emerald', 'sky', 'violet', 'amber', 'rose', 'teal', 'fuchsia', 'lime'] as const;
+const BRIDGE_PALETTE = ['accent', 'success', 'warning', 'info', 'danger'] as const;
 
 function bridgeColorSlot(bridgeId?: string): string {
-  if (!bridgeId) return 'zinc';
+  if (!bridgeId) return 'neutral';
   let h = 0;
   for (let i = 0; i < bridgeId.length; i++) {
     h = (h * 31 + bridgeId.charCodeAt(i)) >>> 0;
@@ -560,15 +569,12 @@ function isLiveConversation(conversation: ConversationSummary): boolean {
 }
 
 const DOT_COLOR_CLASSES: Record<string, { solid: string; half: string }> = {
-  emerald: { solid: 'bg-emerald-400', half: 'bg-emerald-400/60 border border-emerald-400' },
-  sky: { solid: 'bg-sky-400', half: 'bg-sky-400/60 border border-sky-400' },
-  violet: { solid: 'bg-violet-400', half: 'bg-violet-400/60 border border-violet-400' },
-  amber: { solid: 'bg-amber-400', half: 'bg-amber-400/60 border border-amber-400' },
-  rose: { solid: 'bg-rose-400', half: 'bg-rose-400/60 border border-rose-400' },
-  teal: { solid: 'bg-teal-400', half: 'bg-teal-400/60 border border-teal-400' },
-  fuchsia: { solid: 'bg-fuchsia-400', half: 'bg-fuchsia-400/60 border border-fuchsia-400' },
-  lime: { solid: 'bg-lime-400', half: 'bg-lime-400/60 border border-lime-400' },
-  zinc: { solid: 'bg-zinc-500', half: 'bg-zinc-500/60' },
+  accent: { solid: 'bg-accent', half: 'bg-accent/60 border border-accent' },
+  success: { solid: 'bg-success', half: 'bg-success/60 border border-success' },
+  warning: { solid: 'bg-warning', half: 'bg-warning/60 border border-warning' },
+  info: { solid: 'bg-info', half: 'bg-info/60 border border-info' },
+  danger: { solid: 'bg-danger', half: 'bg-danger/60 border border-danger' },
+  neutral: { solid: 'bg-muted', half: 'bg-muted/60' },
 };
 
 /**
@@ -600,8 +606,8 @@ function BridgeLiveDot({
   const isStarting = state === 'starting' || state === 'stopping';
   const isRunning = isLive || isStarting;
   const working = isAgentWorking(state, activityStatus);
-  const colorKey = isRunning ? bridgeColorSlot(bridgeId) : 'zinc';
-  const colorStyle = DOT_COLOR_CLASSES[colorKey] || DOT_COLOR_CLASSES.zinc;
+  const colorKey = isRunning ? bridgeColorSlot(bridgeId) : 'neutral';
+  const colorStyle = DOT_COLOR_CLASSES[colorKey] || DOT_COLOR_CLASSES.neutral;
 
   let tooltip = label ? `${label} · ` : '';
   tooltip += isRunning ? `running on ${bridgeId || 'unknown bridge'}` : 'not running';
@@ -623,7 +629,7 @@ function BridgeLiveDot({
   } else if (isStarting) {
     dot = <span className={`h-2 w-2 rounded-full ${colorStyle.half} animate-pulse`} />;
   } else {
-    dot = <span className="h-2 w-2 rounded-full border border-zinc-500 bg-transparent" />;
+    dot = <span className="h-2 w-2 rounded-full border border-subtle bg-transparent" />;
   }
 
   return (
@@ -672,16 +678,16 @@ function ProjectGroupItem({
 
   return (
     <div data-debug-id={`sidebar-project-group-${projectId}`} className="px-0.5">
-      <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-white/[0.04]">
+      <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-neutral-soft">
         <button
           type="button"
           data-debug-id={`sidebar-project-toggle-btn-${projectId}`}
           onClick={toggleCollapsed}
           aria-expanded={!collapsed}
           aria-controls={`sidebar-project-body-${projectId}`}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[13px] font-semibold text-zinc-200 hover:text-white"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[13px] font-semibold text-primary hover:text-primary"
         >
-          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-flex w-4 items-center justify-center text-sky-400">
+          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-flex w-4 items-center justify-center text-accent">
             <Icon name={collapsed ? 'folder' : 'folder-open'} size={15} />
           </span>
           <span className="truncate">{projectGroup.project.name}</span>
@@ -695,7 +701,7 @@ function ProjectGroupItem({
           }}
           title={`Launch agent for ${projectGroup.project.name}`}
           aria-label={`Launch agent for ${projectGroup.project.name}`}
-          className="flex h-5 w-5 items-center justify-center rounded-md text-zinc-400 hover:bg-white/10 hover:text-white transition-colors"
+          className="flex h-5 w-5 items-center justify-center rounded-md text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
         >
           <Icon name="plus" size={13} />
         </button>
@@ -703,7 +709,7 @@ function ProjectGroupItem({
       {!collapsed && (
         <div id={`sidebar-project-body-${projectId}`} data-debug-id={`sidebar-project-body-${projectId}`}>
           {projectGroup.conversations.length === 0 ? (
-            <div data-debug-id={`sidebar-project-empty-${projectId}`} className="px-2 py-1.5 pl-8 text-[11.5px] text-zinc-600">No conversations yet.</div>
+            <div data-debug-id={`sidebar-project-empty-${projectId}`} className="px-2 py-1.5 pl-8 text-[11.5px] text-faint">No conversations yet.</div>
           ) : (
             <div className="space-y-0.5">
               {projectGroup.conversations.map((conversation) => {
@@ -714,11 +720,11 @@ function ProjectGroupItem({
                 );
                 return (
                   <Fragment key={conversation.conversationId}>
-                  {conversation.startsNewGroup ? <div data-debug-id={`sidebar-session-group-separator-${conversation.conversationId}`} role="separator" className="mx-6 my-1 border-t border-white/5" /> : null}
+                  {conversation.startsNewGroup ? <div data-debug-id={`sidebar-session-group-separator-${conversation.conversationId}`} role="separator" className="mx-6 my-1 border-t border-subtle" /> : null}
                   <a
                     data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
                     href={shellHash(`/conversations/${encodeURIComponent(conversation.agentInstanceId)}`)}
-                    className={`flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] transition ${isSelected ? 'bg-white/[0.06] text-white' : 'text-zinc-400 hover:bg-white/[0.06] hover:text-white'}`}
+                    className={`flex items-center gap-2 rounded-lg py-1.5 pl-6 pr-2 text-[12.5px] transition ${isSelected ? 'bg-neutral-soft text-primary font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}
                   >
                     <BridgeLiveDot
                       bridgeId={conversation.bridgeId}
@@ -727,8 +733,8 @@ function ProjectGroupItem({
                       debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
                       label={conversation.agentName}
                     />
-                    <span data-debug-id={conversation.isCoordinator ? `sidebar-session-coordinator-name-${conversation.conversationId}` : undefined} className={`min-w-0 flex-1 truncate ${conversation.isCoordinator ? 'text-amber-300' : ''}`} title={conversation.isCoordinator ? 'Coordinator' : undefined}>{conversation.agentName}</span>
-                    {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
+                    <span data-debug-id={conversation.isCoordinator ? `sidebar-session-coordinator-name-${conversation.conversationId}` : undefined} className={`min-w-0 flex-1 truncate ${conversation.isCoordinator ? 'text-warning' : ''}`} title={conversation.isCoordinator ? 'Coordinator' : undefined}>{conversation.agentName}</span>
+                    {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-faint">{displayConversationMeta(conversation)}</span> : null}
                     <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
                   </a>
                   </Fragment>
@@ -763,13 +769,13 @@ function ProjectConversationTree({
   void bridges;
   return (
     <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4">
-      <div className="mb-1.5 flex items-center justify-between px-2.5 text-[10.5px] font-bold uppercase tracking-[0.16em] text-zinc-600">
+      <div className="mb-1.5 flex items-center justify-between px-2.5 text-[10.5px] font-bold uppercase tracking-[0.16em] text-faint">
         <span>Active</span>
-        {loading ? <span data-debug-id="sidebar-project-agent-session-loading" className="normal-case tracking-normal text-zinc-600">Loading…</span> : null}
+        {loading ? <span data-debug-id="sidebar-project-agent-session-loading" className="normal-case tracking-normal text-faint">Loading…</span> : null}
       </div>
-      {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-caption leading-4 text-red-100">{error}</div> : null}
+      {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-danger/30 bg-danger-soft px-2 py-1.5 text-caption leading-4 text-danger">{error}</div> : null}
       {!loading && !error && groups.length === 0 ? (
-        <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-zinc-600">No running agents. Open Search (⌘K) to start one.</div>
+        <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-faint">No running agents. Open Search (⌘K) to start one.</div>
       ) : null}
       <div className="space-y-0.5">
         {groups.map((projectGroup) => (
@@ -787,8 +793,8 @@ function ProjectConversationTree({
 
 function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; active: boolean; collapsed: boolean; badge?: number }) {
   const activeClass = active
-    ? 'bg-white/10 text-white'
-    : 'text-zinc-400 hover:bg-white/[0.06] hover:text-white';
+    ? 'bg-neutral-soft text-primary font-semibold'
+    : 'text-muted hover:bg-neutral-soft hover:text-primary';
   return (
     <a
       data-debug-id={`shell-nav-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
@@ -797,7 +803,7 @@ function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; act
       title={item.description}
       className={`group flex min-h-9 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
     >
-      <span aria-hidden="true" className={`grid h-5 w-5 shrink-0 place-items-center ${active ? 'text-sky-300' : ''}`}><Icon name={item.icon} size={17} /></span>
+      <span aria-hidden="true" className={`grid h-5 w-5 shrink-0 place-items-center ${active ? 'text-accent' : ''}`}><Icon name={item.icon} size={17} /></span>
       {!collapsed && <span className="min-w-0 flex-1 truncate">{item.label}</span>}
       {!collapsed && <UnreadBadge count={badge} debugId={`shell-nav-unread-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} />}
     </a>
@@ -883,11 +889,11 @@ function AuthGate() {
 
 function AuthStatusScreen({ debugId, title, body }: { debugId: string; title: string; body: string }) {
   return (
-    <main data-debug-id={debugId} className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
-      <section className="w-full max-w-md rounded-[2rem] border border-white/10 bg-white/[0.04] p-8 text-center shadow-2xl">
-        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10 text-zinc-400"><Icon name="search" size={22} /></div>
+    <main data-debug-id={debugId} className="grid min-h-screen place-items-center bg-canvas px-6 text-primary">
+      <section className="w-full max-w-md rounded-[2rem] border border-subtle bg-surface p-8 text-center shadow-2xl">
+        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted"><Icon name="search" size={22} /></div>
         <h1 className="text-2xl font-semibold">{title}</h1>
-        <p className="mt-3 text-sm leading-6 text-zinc-400">{body}</p>
+        <p className="mt-3 text-sm leading-6 text-muted">{body}</p>
       </section>
     </main>
   );
@@ -901,15 +907,15 @@ function UnauthenticatedLanding({ loginUrl }: { loginUrl: string }) {
     return () => window.clearTimeout(timer);
   }, [target]);
   return (
-    <main data-debug-id="unauthenticated-landing" className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
-      <section className="w-full max-w-lg rounded-[2rem] border border-white/10 bg-white/[0.04] p-8 text-center shadow-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Trusted-proxy sign in</p>
+    <main data-debug-id="unauthenticated-landing" className="grid min-h-screen place-items-center bg-canvas px-6 text-primary">
+      <section className="w-full max-w-lg rounded-[2rem] border border-subtle bg-surface p-8 text-center shadow-2xl">
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">Trusted-proxy sign in</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Redirecting to sign in…</h1>
-        <p className="mt-3 text-sm leading-6 text-zinc-400">Your session is unauthenticated. Heimdall uses the configured external identity provider; no local credentials are collected.</p>
+        <p className="mt-3 text-sm leading-6 text-muted">Your session is unauthenticated. Heimdall uses the configured external identity provider; no local credentials are collected.</p>
         {target ? (
-          <a data-debug-id="auth-login-link" href={target} className="mt-6 inline-flex rounded-2xl bg-sky-400 px-5 py-3 text-sm font-bold text-black hover:bg-sky-300">Sign in</a>
+          <a data-debug-id="auth-login-link" href={target} className="mt-6 inline-flex rounded-2xl bg-accent px-5 py-3 text-sm font-bold text-accent-fg hover:opacity-90">Sign in</a>
         ) : (
-          <div data-debug-id="auth-login-missing-config" className="mt-6 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">Login URL is missing from UI auth config.</div>
+          <div data-debug-id="auth-login-missing-config" className="mt-6 rounded-2xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">Login URL is missing from UI auth config.</div>
         )}
       </section>
     </main>
@@ -918,12 +924,12 @@ function UnauthenticatedLanding({ loginUrl }: { loginUrl: string }) {
 
 function AccessDenied() {
   return (
-    <main data-debug-id="access-denied" className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
-      <section className="w-full max-w-md rounded-[2rem] border border-red-400/20 bg-red-400/10 p-8 text-center shadow-2xl">
-        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-red-200">403 forbidden</p>
+    <main data-debug-id="access-denied" className="grid min-h-screen place-items-center bg-canvas px-6 text-primary">
+      <section className="w-full max-w-md rounded-[2rem] border border-danger/30 bg-danger-soft p-8 text-center shadow-2xl">
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-danger">403 forbidden</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Access denied</h1>
-        <p className="mt-3 text-sm leading-6 text-red-100/80">You are authenticated, but this resource is not available to your account. Heimdall will not redirect to login for 403 responses.</p>
-        <a data-debug-id="access-denied-home-link" href={shellHash('/cards')} className="mt-6 inline-flex rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/15">Back to home</a>
+        <p className="mt-3 text-sm leading-6 text-muted">You are authenticated, but this resource is not available to your account. Heimdall will not redirect to login for 403 responses.</p>
+        <a data-debug-id="access-denied-home-link" href={shellHash('/cards')} className="mt-6 inline-flex rounded-2xl border border-subtle bg-surface px-5 py-3 text-sm font-bold text-primary hover:bg-surface-raised">Back to home</a>
       </section>
     </main>
   );
@@ -946,7 +952,7 @@ function DefaultsSettingsPanel() {
     >
       <div data-debug-id="settings-defaults-panel" className="space-y-4 text-left">
       {agentsQuery.isLoading ? (
-        <div className="text-sm text-zinc-500">Loading agents…</div>
+        <div className="text-sm text-muted">Loading agents…</div>
       ) : (
         <div className="space-y-2">
           {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
@@ -954,11 +960,11 @@ function DefaultsSettingsPanel() {
             // TODO(FIX): Replace loose fallback chain with canonical typed schema property
             const agentKey = agent.agent_id || agent.agentId;
             return (
-              <div key={agentKey} data-debug-id={`settings-default-agent-row-${agentKey}`} className="rounded-xl border border-white/10 bg-black/20 p-3">
+              <div key={agentKey} data-debug-id={`settings-default-agent-row-${agentKey}`} className="rounded-xl border border-subtle bg-surface p-3">
                 {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
-                <div className="break-words font-semibold text-zinc-100">{agent.name || agent.agent_id}</div>
+                <div className="break-words font-semibold text-primary">{agent.name || agent.agent_id}</div>
                 {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
-                <div className="mt-1 break-all text-xs text-zinc-500">{agent.agent_id || agent.agentId} · template {agent.template_id || '—'} · tier {agent.default_tier || 'Bridge default'}</div>
+                <div className="mt-1 break-all text-xs text-muted">{agent.agent_id || agent.agentId} · template {agent.template_id || '—'} · tier {agent.default_tier || 'Bridge default'}</div>
               </div>
             );
           })}
@@ -994,7 +1000,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   if (isConversationThreadRoute) {
     const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
     return (
-      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-[#090909]">
+      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-canvas">
         {/* key by agentInstanceId so switching conversations REMOUNTS the page:
             all per-conversation local state (older/local messages, draft, scroll
             position, menus) resets synchronously instead of the previous
@@ -1008,7 +1014,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   }
 
   return (
-    <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto overflow-x-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
+    <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto overflow-x-hidden bg-canvas ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
       <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         <ErrorBoundary resetKey={path} label={routeTitle(path)}>
@@ -1069,12 +1075,12 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
         ) : path.startsWith('/library/artifacts/') ? (
           <ArtifactViewer artifactId={decodeURIComponent(path.slice('/library/artifacts/'.length))} daemonUrl="" clientToken="v1" onClose={() => window.history.back()} />
         ) : (
-          <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-left">
-            <div data-debug-id="shell-page-placeholder-icon" className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10 text-zinc-400"><Icon name="search" size={22} /></div>
-            {isKnownRoute ? <Breadcrumbs crumbs={crumbs} /> : <h1 data-debug-id="shell-route-title" className="text-2xl font-semibold tracking-tight text-white">Route not found</h1>}
-            <p data-debug-id="shell-route-path" className="mt-1 text-xs text-zinc-600">{path}</p>
-            <h2 className="mt-4 text-xl font-semibold text-white">{isKnownRoute ? (crumbs[crumbs.length - 1]?.label || 'Route') : 'This route is not part of the v1 shell map'}</h2>
-            <p className="mt-3 text-sm leading-6 text-zinc-400">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
+          <div className="w-full max-w-2xl rounded-2xl border border-subtle bg-surface p-5 text-left">
+            <div data-debug-id="shell-page-placeholder-icon" className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted"><Icon name="search" size={22} /></div>
+            {isKnownRoute ? <Breadcrumbs crumbs={crumbs} /> : <h1 data-debug-id="shell-route-title" className="text-2xl font-semibold tracking-tight text-primary">Route not found</h1>}
+            <p data-debug-id="shell-route-path" className="mt-1 text-xs text-faint">{path}</p>
+            <h2 className="mt-4 text-xl font-semibold text-primary">{isKnownRoute ? (crumbs[crumbs.length - 1]?.label || 'Route') : 'This route is not part of the v1 shell map'}</h2>
+            <p className="mt-3 text-sm leading-6 text-muted">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
           </div>
         )}
         </ErrorBoundary>
@@ -1276,25 +1282,25 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const sidebarLoading = conversationsQuery.isLoading || agentsLiveQuery.isLoading;
 
   return (
-    <div data-debug-id="app-shell" className="flex h-screen bg-[#090909] text-zinc-100">
+    <div data-debug-id="app-shell" className="flex h-screen bg-canvas text-primary">
       {/* UI-13: mobile drawer scrim. Closes the off-canvas sidebar on tap. */}
       {isMobile && drawerOpen ? (
         <div
           data-debug-id="shell-mobile-drawer-scrim"
           onClick={() => setDrawerOpen(false)}
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
+          className="fixed inset-0 z-40 bg-surface-overlay/80 backdrop-blur-sm md:hidden"
           aria-hidden="true"
         />
       ) : null}
       <aside
         data-debug-id={collapsed ? 'shell-left-sidebar-collapsed' : 'shell-left-sidebar-expanded'}
-        className={`flex shrink-0 flex-col border-r border-white/10 bg-[#101010] transition-[width,transform] duration-200 ${collapsed ? 'w-16' : 'w-80'} ${isMobile ? 'fixed inset-y-0 left-0 z-50 w-80 transition-transform md:static md:z-auto' : 'md:static'} ${isMobile && !drawerOpen ? '-translate-x-full md:translate-x-0' : 'translate-x-0'}`}
+        className={`flex shrink-0 flex-col border-r border-subtle bg-surface transition-[width,transform] duration-200 ${collapsed ? 'w-16' : 'w-80'} ${isMobile ? 'fixed inset-y-0 left-0 z-50 w-80 transition-transform md:static md:z-auto' : 'md:static'} ${isMobile && !drawerOpen ? '-translate-x-full md:translate-x-0' : 'translate-x-0'}`}
         aria-label="Primary navigation"
       >
         <div className={`flex items-center gap-3 p-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
           {!collapsed && (
-            <a href={shellHash('/cards')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-white/5">
-              <span className="block truncate text-sm font-black tracking-tight text-white">Heimdall</span>
+            <a href={shellHash('/cards')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-neutral-soft">
+              <span className="block truncate text-sm font-black tracking-tight text-primary">Heimdall</span>
             </a>
           )}
           <button
@@ -1303,7 +1309,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             onClick={() => isMobile ? setDrawerOpen(false) : setCollapsed((value) => !value)}
             aria-label={isMobile ? 'Close navigation' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
             title={isMobile ? 'Close navigation' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-sm text-zinc-300 hover:bg-white/10 hover:text-white"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-sm text-muted hover:bg-neutral-soft hover:text-primary"
           >
             <Icon name={isMobile ? 'close' : (collapsed ? 'chevron-right' : 'chevron-left')} size={16} />
           </button>
@@ -1320,13 +1326,13 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             title="Search (⌘K)"
             aria-label="Search"
             aria-keyshortcuts="Meta+K Control+K"
-            className={`mb-2 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 hover:text-white ${collapsed ? 'justify-center' : ''}`}
+            className={`mb-2 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-subtle bg-surface-raised px-3 py-2 text-sm text-muted hover:bg-neutral-soft hover:text-primary ${collapsed ? 'justify-center' : ''}`}
           >
             <Icon name="search" size={18} />
             {!collapsed && (
               <>
                 <span className="flex-1 text-left">Search</span>
-                <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500">⌘K</kbd>
+                <kbd className="rounded border border-subtle bg-surface px-1.5 py-0.5 text-[10px] font-medium text-faint">⌘K</kbd>
               </>
             )}
           </button>
@@ -1336,16 +1342,16 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           {!collapsed && <ProjectConversationTree groups={conversationTree} loading={sidebarLoading} error={sidebarError} currentPath={path} onLaunchProject={setLaunchModalProject} />}
         </div>
 
-        <div className="border-t border-white/10 p-3">
+        <div className="border-t border-subtle p-3">
           <nav data-debug-id="shell-secondary-nav" className="mb-2 space-y-0.5" aria-label="Settings destinations">
             {secondary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} />)}
           </nav>
           <div data-debug-id="shell-global-ownership-points" className={`flex items-center gap-2 rounded-xl px-2 py-1.5 ${collapsed ? 'justify-center' : ''}`}>
-            <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/[0.06] text-caption font-bold text-zinc-300`}>
+            <span data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title={wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'} className={`grid h-7 w-7 shrink-0 place-items-center rounded-full bg-neutral-soft text-caption font-bold text-muted`}>
               {(displayName || 'U').slice(0, 1).toUpperCase()}
               <span className="absolute ml-5 mt-5">
                 <StatusDot
-                  className="ring-2 ring-[#101010]"
+                  className="ring-2 ring-surface"
                   tone={wsConnected ? 'success' : wsStatus === 'error' ? 'danger' : 'pending'}
                   pulse={!wsConnected && wsStatus !== 'error'}
                   label={wsConnected ? 'User WS live' : wsStatus === 'error' ? 'User WS error' : 'User WS connecting'}
@@ -1354,11 +1360,11 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
             </span>
             {!collapsed && (
               <div className="min-w-0 flex-1">
-                <div data-debug-id="shell-current-user-owner" className="truncate text-[12px] font-semibold text-zinc-200">{displayName}</div>
-                <div className="truncate text-[10.5px] text-zinc-500">{user.email || user.user_id || ''}</div>
+                <div data-debug-id="shell-current-user-owner" className="truncate text-[12px] font-semibold text-primary">{displayName}</div>
+                <div className="truncate text-[10.5px] text-muted">{user.email || user.user_id || ''}</div>
               </div>
             )}
-            {logoutUrl && !collapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} title="Sign out" className="shrink-0 rounded-lg p-1.5 text-zinc-500 hover:bg-white/10 hover:text-white"><Icon name="close" size={14} /></a>}
+            {logoutUrl && !collapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} title="Sign out" className="shrink-0 rounded-lg p-1.5 text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="close" size={14} /></a>}
           </div>
         </div>
       </aside>

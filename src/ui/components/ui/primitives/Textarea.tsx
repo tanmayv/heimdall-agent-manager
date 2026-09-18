@@ -5,8 +5,8 @@
  * recipes scattered across the app (see the EL-024 cluster in
  * `docs/ui-audit/04-component-catalogue.md` › Input · Textarea) into one
  * token-driven field. Every one of those recipes was some flavour of
- * `w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm
- * outline-none focus:border-sky-400`; this replaces the whole family — including
+ * `w-full resize-y rounded-xl border border-subtle bg-surface px-3 py-2 text-sm
+ * outline-none focus:border-accent`; this replaces the whole family — including
  * the bare `outline-none` that left fields with no visible focus state.
  *
  * NOT for: single-line entry (use `Input`), choosing from a known option set

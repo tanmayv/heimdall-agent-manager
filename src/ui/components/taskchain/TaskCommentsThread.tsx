@@ -55,14 +55,14 @@ const CommentAuthor: React.FC<{ instanceId: string; displayName: string; userId:
             window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
           }
         }}
-        className="text-sky-300 hover:text-sky-200 hover:underline"
+        className="text-accent hover:underline"
       >
         @{label}
       </a>
     );
   }
   return (
-    <span data-debug-id={debugId} className="text-zinc-300">
+    <span data-debug-id={debugId} className="text-primary">
       {userId || 'user'}
     </span>
   );
@@ -90,34 +90,34 @@ export const TaskCommentsThread: React.FC<{
 
   return (
     <div data-debug-id={`taskchain-task-comments-${taskId}`} className="space-y-2">
-      <span className="font-semibold text-zinc-400">
+      <span className="font-semibold text-muted">
         Comments{count ? ` (${count})` : ''}:
       </span>
 
       {/* Summary line while the thread is loading or before any bodies arrive. */}
       {count > 0 && comments.length === 0 ? (
-        <div data-debug-id={`taskchain-task-comment-summary-${taskId}`} className="rounded bg-zinc-900/60 p-2 text-caption text-zinc-400">
+        <div data-debug-id={`taskchain-task-comment-summary-${taskId}`} className="rounded border border-subtle bg-surface-raised/60 p-2 text-caption text-muted">
           {isFetching ? 'Loading comments…' : (
             <>
-              <span className="font-semibold text-zinc-300">{summary?.lastCommentAuthorAgentInstanceId || 'user'}</span>
+              <span className="font-semibold text-primary">{summary?.lastCommentAuthorAgentInstanceId || 'user'}</span>
               {summary?.lastCommentPreview ? <>: {summary.lastCommentPreview}</> : null}
-              {summary?.lastCommentAt ? <span className="ml-1 text-zinc-600">· {summary.lastCommentAt}</span> : null}
+              {summary?.lastCommentAt ? <span className="ml-1 text-faint">· {summary.lastCommentAt}</span> : null}
             </>
           )}
         </div>
       ) : null}
 
       {count === 0 ? (
-        <div data-debug-id={`taskchain-task-comment-empty-${taskId}`} className="text-caption text-zinc-600">No comments yet.</div>
+        <div data-debug-id={`taskchain-task-comment-empty-${taskId}`} className="text-caption text-faint">No comments yet.</div>
       ) : null}
 
       {comments.map((comment: any, idx: number) => (
         <div
           key={comment.commentId || comment.comment_id || idx}
           data-debug-id={`taskchain-task-comment-${taskId}-${idx}`}
-          className="rounded bg-zinc-900 p-2 text-caption"
+          className="rounded border border-subtle bg-surface-raised p-2 text-caption"
         >
-          <div className="font-semibold text-zinc-400">
+          <div className="font-semibold text-muted">
             <CommentAuthor
               instanceId={comment.authorAgentInstanceId || comment.author_agent_instance_id || ''}
               displayName={comment.authorDisplayName || comment.author_display_name || ''}
@@ -125,7 +125,7 @@ export const TaskCommentsThread: React.FC<{
               debugId={`taskchain-task-comment-author-${taskId}-${idx}`}
             />:
           </div>
-          <div className="mt-1 text-zinc-200">
+          <div className="mt-1 text-primary">
             <Markdown source={comment.body || ''} compact copyAll={false} data-debug-id={`taskchain-task-comment-body-${taskId}-${idx}`} />
             {artifactIdsFromText(comment.body || '').length > 0 ? (
               <div data-debug-id={`taskchain-task-comment-artifacts-${taskId}-${idx}`} className="mt-2 flex flex-wrap gap-2">

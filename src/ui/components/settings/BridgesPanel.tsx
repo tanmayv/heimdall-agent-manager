@@ -168,19 +168,19 @@ export default function BridgesPanel() {
       }
     >
       <div data-debug-id="settings-bridges-panel" className="min-w-0">
-      {bridgesQuery.isError || enrollmentsQuery.isError ? <div data-debug-id="settings-bridges-load-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">Unable to load bridges. Check your trusted-proxy session and Hub connection.</div> : null}
-      {actionError ? <div data-debug-id="settings-bridges-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{actionError}</div> : null}
+      {bridgesQuery.isError || enrollmentsQuery.isError ? <div data-debug-id="settings-bridges-load-error" className="mt-3 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">Unable to load bridges. Check your trusted-proxy session and Hub connection.</div> : null}
+      {actionError ? <div data-debug-id="settings-bridges-error" className="mt-3 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{actionError}</div> : null}
 
       {/* Enrollment ceremony */}
       {enrollOpen ? (
-        <div data-debug-id="settings-bridges-enroll-panel" className="mt-3 rounded-2xl border border-sky-400/25 bg-sky-400/[0.05] p-4">
+        <div data-debug-id="settings-bridges-enroll-panel" className="mt-3 rounded-2xl border border-info/30 bg-info-soft p-4">
           {!enrollResult ? (
             <>
-              <div className="text-sm font-medium text-sky-100">Create bridge enrollment</div>
+              <div className="text-sm font-medium text-info">Create bridge enrollment</div>
               <FormField label="Label (optional; defaults to reported hostname)" className="mt-2">
                 <Input data-debug-id="settings-bridges-enroll-label" value={enrollLabel} onChange={setEnrollLabel} placeholder="MacBook" width="full" />
               </FormField>
-              {enrollError ? <div className="mt-2 text-xs text-red-300">{enrollError}</div> : null}
+              {enrollError ? <div className="mt-2 text-xs text-danger">{enrollError}</div> : null}
               <div className="mt-3 flex justify-end gap-2">
                 <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-cancel" onClick={() => setEnrollOpen(false)}>Cancel</Button>
                 <Button variant="primary" size="sm" data-debug-id="settings-bridges-enroll-create" onClick={() => void handleCreateEnrollment()} disabled={enrollBusy}>{enrollBusy ? 'Creating…' : 'Create enrollment'}</Button>
@@ -188,9 +188,9 @@ export default function BridgesPanel() {
             </>
           ) : (
             <>
-              <div data-debug-id="settings-bridges-enroll-result" className="text-sm font-medium text-sky-100">Enrollment created — run on your machine:</div>
-              <div className="mt-1 text-xs text-amber-200">⚠ Shown once. Store the token now — it is a secret. This page will poll while you connect the bridge.</div>
-              <pre data-debug-id="settings-bridges-enroll-command" className="mt-2 overflow-x-auto rounded-xl border border-white/10 bg-black/50 p-3 text-[12px] leading-5 text-emerald-200">{buildSetupCommand(enrollResult)}</pre>
+              <div data-debug-id="settings-bridges-enroll-result" className="text-sm font-medium text-info">Enrollment created — run on your machine:</div>
+              <div className="mt-1 text-xs text-warning">⚠ Shown once. Store the token now — it is a secret. This page will poll while you connect the bridge.</div>
+              <pre data-debug-id="settings-bridges-enroll-command" className="mt-2 overflow-x-auto rounded-xl border border-subtle bg-surface-raised/50 p-3 text-[12px] leading-5 text-success">{buildSetupCommand(enrollResult)}</pre>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <Button variant="secondary" size="sm" data-debug-id="settings-bridges-enroll-copy-token" onClick={() => void copyToken(enrollResult?.enrollment_token || '')}>{copiedToken ? 'Copied' : 'Copy token'}</Button>
                 <Button variant="primary" size="sm" data-debug-id="settings-bridges-enroll-done" onClick={() => { setEnrollOpen(false); setEnrollResult(null); setEnrollLabel(''); }}>Done</Button>
@@ -210,10 +210,10 @@ export default function BridgesPanel() {
               // TODO(FIX): Replace loose fallback chain with canonical typed schema property
               const id = String(enr?.enrollment_id || enr?.id || '');
               return (
-                <div key={id} data-debug-id={`settings-bridges-pending-${id}`} className="flex items-center justify-between gap-2 rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-sm">
+                <div key={id} data-debug-id={`settings-bridges-pending-${id}`} className="flex items-center justify-between gap-2 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-sm">
                   <div className="min-w-0">
-                    <div className="truncate text-zinc-200">{enr?.label || 'Unlabeled enrollment'}</div>
-                    <div className="mt-0.5 text-caption text-zinc-500">waiting for bridge to connect… · expires: {enr?.expires_at ? new Date(enr.expires_at).toLocaleString() : enr?.expires_unix_ms ? new Date(Number(enr.expires_unix_ms)).toLocaleString() : '—'}</div>
+                    <div className="truncate text-primary">{enr?.label || 'Unlabeled enrollment'}</div>
+                    <div className="mt-0.5 text-caption text-muted">waiting for bridge to connect… · expires: {enr?.expires_at ? new Date(enr.expires_at).toLocaleString() : enr?.expires_unix_ms ? new Date(Number(enr.expires_unix_ms)).toLocaleString() : '—'}</div>
                   </div>
                   <Button variant="secondary" size="sm" data-debug-id={`settings-bridges-pending-revoke-${id}`} onClick={() => void handleRevokeEnrollment(id)} className="shrink-0">Revoke</Button>
                 </div>
@@ -226,9 +226,9 @@ export default function BridgesPanel() {
       {/* Bridge list */}
       <div data-debug-id="settings-bridges-list" className="mt-4">
         <Text as="div" role="overline" tone="muted" className="mb-2">Bridges ({bridges.length})</Text>
-        {bridgesQuery.isFetching && bridges.length === 0 ? <div className="text-sm text-zinc-500">Loading bridges…</div> : null}
+        {bridgesQuery.isFetching && bridges.length === 0 ? <div className="text-sm text-muted">Loading bridges…</div> : null}
         {bridges.length === 0 && !bridgesQuery.isFetching ? (
-          <div data-debug-id="settings-bridges-empty" className="rounded-xl border border-dashed border-white/10 bg-black/20 p-4 text-center text-sm text-zinc-500">No bridges yet. Add one to connect a machine.</div>
+          <div data-debug-id="settings-bridges-empty" className="rounded-xl border border-dashed border-subtle bg-surface-raised/30 p-4 text-center text-sm text-muted">No bridges yet. Add one to connect a machine.</div>
         ) : (
           <div className="space-y-2">
             {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
@@ -238,7 +238,7 @@ export default function BridgesPanel() {
               const isRenaming = renamingId === id;
               const isRevoking = revokeConfirmId === id;
               return (
-                <div key={id} data-debug-id={`settings-bridge-row-${id}`} className="rounded-xl border border-white/10 bg-black/20 px-3 py-2.5">
+                <div key={id} data-debug-id={`settings-bridge-row-${id}`} className="rounded-xl border border-subtle bg-surface-raised/30 px-3 py-2.5">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -247,21 +247,21 @@ export default function BridgesPanel() {
                           <Input data-debug-id={`settings-bridge-rename-input-${id}`} value={renameValue} onChange={setRenameValue} size="sm" className="min-w-0 flex-1" autoFocus />
                         ) : (
                           // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                          <span className="truncate text-sm font-medium text-zinc-100">{bridge?.label || bridge?.machine_hostname || bridge?.hostname || id}</span>
+                          <span className="truncate text-sm font-medium text-primary">{bridge?.label || bridge?.machine_hostname || bridge?.hostname || id}</span>
                         )}
-                        <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeReady(bridge) ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : 'border-amber-400/20 bg-amber-400/5 text-amber-200'}`}>{bridgeReady(bridge) ? 'ready' : 'setup incomplete'}</span>
+                        <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeReady(bridge) ? 'border-success/30 bg-success-soft text-success' : 'border-warning/30 bg-warning-soft text-warning'}`}>{bridgeReady(bridge) ? 'ready' : 'setup incomplete'}</span>
                       </div>
-                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-zinc-500">
-                        <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-zinc-300">{statusLabel(bridge)}</span></span>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-muted">
+                        <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-primary">{statusLabel(bridge)}</span></span>
                         {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
-                        <span>host: <span className="text-zinc-300">{bridge?.machine_hostname || bridge?.hostname || '—'}</span></span>
+                        <span>host: <span className="text-primary">{bridge?.machine_hostname || bridge?.hostname || '—'}</span></span>
                         {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
-                        <span>os: <span className="text-zinc-300">{bridge?.machine_os || bridge?.os || '—'}</span></span>
+                        <span>os: <span className="text-primary">{bridge?.machine_os || bridge?.os || '—'}</span></span>
                         {/* TODO(FIX): Replace loose fallback chain with canonical typed schema property */}
-                        <span>arch: <span className="text-zinc-300">{bridge?.machine_arch || bridge?.arch || '—'}</span></span>
-                        <span>caps: <span data-debug-id={`settings-bridge-caps-${id}`} className="text-zinc-300">{capabilitiesLabel(bridge)}</span></span>
-                        <span>instances: <span className="text-zinc-300">{bridge?.active_instance_count ?? bridge?.instance_count ?? bridge?.instances?.length ?? 0}</span></span>
-                        <span>last seen: <span className="text-zinc-300">{bridge?.last_seen_at ? new Date(bridge.last_seen_at).toLocaleString() : '—'}</span></span>
+                        <span>arch: <span className="text-primary">{bridge?.machine_arch || bridge?.arch || '—'}</span></span>
+                        <span>caps: <span data-debug-id={`settings-bridge-caps-${id}`} className="text-primary">{capabilitiesLabel(bridge)}</span></span>
+                        <span>instances: <span className="text-primary">{bridge?.active_instance_count ?? bridge?.instance_count ?? bridge?.instances?.length ?? 0}</span></span>
+                        <span>last seen: <span className="text-primary">{bridge?.last_seen_at ? new Date(bridge.last_seen_at).toLocaleString() : '—'}</span></span>
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
@@ -290,8 +290,8 @@ export default function BridgesPanel() {
         )}
       </div>
 
-      <div data-debug-id="settings-bridges-gap-note" className="mt-4 rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2 text-caption text-zinc-500">
-        Backend gap: token rotation (<code>POST /bridges/&#123;id&#125;/rotate-token</code>) is not yet served by the Hub. Rename (PATCH) and revoke (POST /revoke) work against <code>/api/v1/bridges</code>.
+      <div data-debug-id="settings-bridges-gap-note" className="mt-4 rounded-xl border border-subtle bg-surface-raised/30 px-3 py-2 text-caption text-muted">
+        Backend gap: token rotation (<code>{"POST /bridges/{id}/rotate-token"}</code>) is not yet served by the Hub. Rename (PATCH) and revoke (POST /revoke) work against <code>/api/v1/bridges</code>.
       </div>
       </div>
     </PageShell>

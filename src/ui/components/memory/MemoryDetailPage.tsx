@@ -124,22 +124,22 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
       }
     >
       {record ? (
-        <div data-debug-id="memory-detail-page" className="text-zinc-100">
+        <div data-debug-id="memory-detail-page" className="text-primary">
           {/* Meta chips */}
           <div data-debug-id="memory-detail-header" className="flex flex-wrap items-center gap-2">
             <Badge>{record.type || 'fact'}</Badge>
-            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-caption text-zinc-300">{record.status || 'active'}</span>
-            <span className="text-caption text-zinc-600">v{record.version || 0}</span>
+            <span className="rounded-full border border-subtle bg-neutral-soft px-2 py-0.5 text-caption text-muted">{record.status || 'active'}</span>
+            <span className="text-caption text-faint">v{record.version || 0}</span>
           </div>
 
-          {error ? <div className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</div> : null}
+          {error ? <div className="mt-3 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div> : null}
 
           <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(300px,1fr)]">
             {/* Main: body */}
-            <div className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="min-w-0 rounded-2xl border border-subtle bg-surface p-5">
               {editing ? (
                 <div className="mb-4">
-                  <div className="mb-1 text-sm font-semibold text-zinc-100">Description</div>
+                  <div className="mb-1 text-sm font-semibold text-primary">Description</div>
                   <Input
                     data-debug-id="memory-detail-description-input"
                     value={description}
@@ -150,27 +150,27 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
                 </div>
               ) : null}
               <div className="mb-2 flex items-center justify-between">
-                <div className="text-sm font-semibold text-zinc-100">Body</div>
-                {editing ? <span className="text-caption text-zinc-500">Markdown</span> : null}
+                <div className="text-sm font-semibold text-primary">Body</div>
+                {editing ? <span className="text-caption text-muted">Markdown</span> : null}
               </div>
               {editing ? (
                 <Textarea data-debug-id="memory-detail-body-textarea" value={body} onChange={setBody} rows={16} placeholder="Memory body (Markdown)" width="full" />
               ) : (
-                <div data-debug-id="memory-detail-body" className="rounded-xl border border-white/10 bg-black/20 p-4">
-                  {record.body ? <Markdown source={record.body} className="text-sm text-zinc-200" /> : <div className="text-sm text-zinc-500">No body.</div>}
+                <div data-debug-id="memory-detail-body" className="rounded-xl border border-subtle bg-surface-raised p-4">
+                  {record.body ? <Markdown source={record.body} className="text-sm text-primary" /> : <div className="text-sm text-muted">No body.</div>}
                 </div>
               )}
             </div>
 
             {/* Sidebar: details + scope */}
             <div className="space-y-4">
-              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                <div className="mb-2 text-sm font-semibold text-zinc-100">Details</div>
+              <div className="rounded-2xl border border-subtle bg-surface p-4">
+                <div className="mb-2 text-sm font-semibold text-primary">Details</div>
                 <dl className="space-y-2 text-[12.5px]">
-                  <DetailRow label="ID" value={<span className="font-mono text-zinc-300">{record.memoryId}</span>} />
+                  <DetailRow label="ID" value={<span className="font-mono text-primary">{record.memoryId}</span>} />
                   {editing ? (
                     <div className="flex items-center justify-between gap-3">
-                      <dt className="text-zinc-500">Type</dt>
+                      <dt className="text-muted">Type</dt>
                       <dd>
                         <Select data-debug-id="memory-detail-type" value={type} onChange={setType}>
                           {MEMORY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -186,8 +186,8 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
                 </dl>
               </div>
 
-              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                <div className="mb-2 text-sm font-semibold text-zinc-100">Scope <span className="font-normal text-zinc-500">(empty = all)</span></div>
+              <div className="rounded-2xl border border-subtle bg-surface p-4">
+                <div className="mb-2 text-sm font-semibold text-primary">Scope <span className="font-normal text-muted">(empty = all)</span></div>
                 {editing ? (
                   <ScopeEditor targeting={targeting} catalog={catalog} onChange={setTargeting} debugId="memory-detail-scope" />
                 ) : (
@@ -200,7 +200,7 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
           {confirmDelete && record ? (
             <Modal open onOpenChange={(next) => { if (!next) setConfirmDelete(false); }} title="Delete memory" size="sm" data-debug-id="memory-detail-delete-modal">
               <Modal.Body>
-                <p className="text-sm text-zinc-300">Delete <span className="font-semibold text-zinc-100">{record.title || record.memoryId}</span>? Agents will stop receiving it.</p>
+                <p className="text-sm text-primary">Delete <span className="font-semibold text-primary">{record.title || record.memoryId}</span>? Agents will stop receiving it.</p>
                 <div className="mt-4 flex justify-end gap-2">
                   <Button variant="secondary" size="sm" data-debug-id="memory-detail-delete-cancel" onClick={() => setConfirmDelete(false)}>Cancel</Button>
                   <Button variant="danger" size="sm" data-debug-id="memory-detail-delete-confirm" onClick={remove}>Delete</Button>
@@ -217,8 +217,8 @@ export default function MemoryDetailPage({ memoryId }: { memoryId: string }) {
 function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <dt className="text-zinc-500">{label}</dt>
-      <dd className="min-w-0 truncate text-right text-zinc-200">{value}</dd>
+      <dt className="text-muted">{label}</dt>
+      <dd className="min-w-0 truncate text-right text-primary">{value}</dd>
     </div>
   );
 }

@@ -5,7 +5,7 @@
  * `<input type="checkbox">` recipes scattered across the app (the EL-028 cluster
  * in `docs/ui-audit/04-component-catalogue.md` › Checkbox · Radio · Toggle) into
  * one token-driven box. Every one of those recipes was some flavour of
- * `h-4 w-4 rounded border-zinc-700 bg-black/40 text-sky-500 focus:ring-0` — the
+ * `h-4 w-4 rounded border-subtle bg-surface text-accent focus:ring-0` — the
  * bare `focus:ring-0` being the accessibility defect this fixes (a checkbox with
  * no visible focus state).
  *

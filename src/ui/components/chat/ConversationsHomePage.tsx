@@ -86,26 +86,26 @@ export default function ConversationsHomePage() {
       {/* On mobile the shell top bar already shows the "Conversations" title, so
           keep this header compact (a slim count row + New). Desktop shows the full
           eyebrow/title block. */}
-      <header data-debug-id="conversations-home-header" className="sticky top-0 z-10 -mx-3 border-b border-white/10 bg-[#090909]/95 px-3 py-2 backdrop-blur sm:-mx-4 sm:px-4 sm:pb-3 sm:pt-2 lg:-mx-5 lg:px-5">
+      <header data-debug-id="conversations-home-header" className="sticky top-0 z-10 -mx-3 border-b border-subtle bg-canvas/95 px-3 py-2 backdrop-blur sm:-mx-4 sm:px-4 sm:pb-3 sm:pt-2 lg:-mx-5 lg:px-5">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <Text as="p" role="overline" tone="accent" className="hidden sm:block">Conversations</Text>
-            <h1 className="hidden text-2xl font-semibold tracking-tight text-white sm:mt-1 sm:block">Inbox</h1>
-            <p data-debug-id="conversations-home-subtitle" className="text-[13px] text-zinc-500 sm:mt-1 sm:text-sm">{conversations.length} loaded{unreadTotal ? ` · ${unreadTotal} unread` : ''}</p>
+            <h1 className="hidden text-2xl font-semibold tracking-tight text-primary sm:mt-1 sm:block">Inbox</h1>
+            <p data-debug-id="conversations-home-subtitle" className="text-[13px] text-muted sm:mt-1 sm:text-sm">{conversations.length} loaded{unreadTotal ? ` · ${unreadTotal} unread` : ''}</p>
           </div>
-          <a data-debug-id="conversations-home-new-btn" href={buildRouteHash('/conversations/new', '')} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-2xl bg-sky-400 px-4 py-2 text-sm font-black text-black shadow-lg shadow-sky-950/30 hover:bg-sky-300"><Icon name="plus" size={15} /> New</a>
+          <a data-debug-id="conversations-home-new-btn" href={buildRouteHash('/conversations/new', '')} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-2xl bg-accent px-4 py-2 text-sm font-bold text-accent-fg shadow-panel hover:opacity-90"><Icon name="plus" size={15} /> New</a>
         </div>
       </header>
 
       {firstPage.isError ? (
-        <div data-debug-id="conversation-inbox-error" className="mt-4 rounded-2xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{String((firstPage.error as any)?.error || 'Failed to load conversations')}</div>
+        <div data-debug-id="conversation-inbox-error" className="mt-4 rounded-2xl border border-danger/30 bg-danger-soft p-4 text-sm text-danger">{String((firstPage.error as any)?.error || 'Failed to load conversations')}</div>
       ) : null}
 
-      <section data-debug-id="conversation-inbox-list" className="mt-3 w-full divide-y divide-white/[0.06] overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
+      <section data-debug-id="conversation-inbox-list" className="mt-3 w-full divide-y divide-subtle overflow-hidden rounded-3xl border border-subtle bg-surface">
         {firstPage.isLoading && conversations.length === 0 ? (
-          <div data-debug-id="conversation-inbox-loading" className="p-5 text-sm text-zinc-500">Loading conversations…</div>
+          <div data-debug-id="conversation-inbox-loading" className="p-5 text-sm text-muted">Loading conversations…</div>
         ) : conversations.length === 0 ? (
-          <div data-debug-id="conversation-inbox-empty" className="p-6 text-sm text-zinc-500">No conversations yet. Start a new conversation to see it here.</div>
+          <div data-debug-id="conversation-inbox-empty" className="p-6 text-sm text-muted">No conversations yet. Start a new conversation to see it here.</div>
         ) : conversations.map((conversation) => {
           const title = conversationTitle(conversation);
           const last = lastMessageLabel(conversation);
@@ -115,28 +115,28 @@ export default function ConversationsHomePage() {
               key={conversation.conversationId}
               data-debug-id={`conversation-inbox-row-${conversation.conversationId}`}
               href={buildRouteHash(`/conversations/${encodeURIComponent(conversation.agentInstanceId)}`, '')}
-              className="group flex min-h-[76px] w-full touch-manipulation items-center gap-3 px-3 py-3 text-left transition hover:bg-white/[0.06] active:bg-white/[0.09] sm:min-h-[84px] sm:px-4"
+              className="group flex min-h-[76px] w-full touch-manipulation items-center gap-3 px-3 py-3 text-left transition hover:bg-neutral-soft active:bg-neutral-soft/80 sm:min-h-[84px] sm:px-4"
             >
-              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-sky-400/10 text-base font-black text-sky-200 ring-1 ring-sky-400/20 sm:h-14 sm:w-14">{title.slice(0, 1).toUpperCase() || 'C'}</div>
+              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-accent/10 text-base font-bold text-accent ring-1 ring-accent/20 sm:h-14 sm:w-14">{title.slice(0, 1).toUpperCase() || 'C'}</div>
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-2">
-                  <h2 data-debug-id={`conversation-inbox-title-${conversation.conversationId}`} className="truncate text-[15px] font-semibold text-zinc-100 sm:text-base">{title}</h2>
-                  {conversation.unreadCount > 0 ? <span data-debug-id={`conversation-inbox-unread-${conversation.conversationId}`} className="inline-flex min-w-5 shrink-0 items-center justify-center rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-black text-black">{conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}</span> : null}
+                  <h2 data-debug-id={`conversation-inbox-title-${conversation.conversationId}`} className="truncate text-[15px] font-semibold text-primary sm:text-base">{title}</h2>
+                  {conversation.unreadCount > 0 ? <span data-debug-id={`conversation-inbox-unread-${conversation.conversationId}`} className="inline-flex min-w-5 shrink-0 items-center justify-center rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-bold text-accent-fg">{conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}</span> : null}
                 </div>
-                <p data-debug-id={`conversation-inbox-last-message-${conversation.conversationId}`} className="mt-1 line-clamp-2 text-[13px] leading-5 text-zinc-400 group-hover:text-zinc-300">
-                  <span data-debug-id={`conversation-inbox-last-message-label-${conversation.conversationId}`} className="font-semibold text-zinc-300">{last.prefix}: </span>{last.preview}
+                <p data-debug-id={`conversation-inbox-last-message-${conversation.conversationId}`} className="mt-1 line-clamp-2 text-[13px] leading-5 text-muted group-hover:text-primary">
+                  <span data-debug-id={`conversation-inbox-last-message-label-${conversation.conversationId}`} className="font-semibold text-primary">{last.prefix}: </span>{last.preview}
                 </p>
               </div>
               <div className="flex h-full shrink-0 flex-col items-end justify-start gap-2 pt-1">
-                {ts ? <time data-debug-id={`conversation-inbox-timestamp-${conversation.conversationId}`} className="text-caption font-medium text-zinc-500">{ts}</time> : null}
-                <span aria-hidden="true" className="text-lg text-zinc-700 group-hover:text-zinc-400">›</span>
+                {ts ? <time data-debug-id={`conversation-inbox-timestamp-${conversation.conversationId}`} className="text-caption font-medium text-muted">{ts}</time> : null}
+                <span aria-hidden="true" className="text-lg text-faint group-hover:text-muted">›</span>
               </div>
             </a>
           );
         })}
       </section>
 
-      {loadError ? <div data-debug-id="conversation-inbox-load-error" className="mt-3 rounded-2xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-100">{loadError}</div> : null}
+      {loadError ? <div data-debug-id="conversation-inbox-load-error" className="mt-3 rounded-2xl border border-danger/30 bg-danger-soft p-3 text-sm text-danger">{loadError}</div> : null}
       {hasMore ? (
         <Button data-debug-id="conversation-inbox-load-more-btn" variant="secondary" onClick={loadMore} disabled={fetchPageResult.isFetching} className="mx-auto mt-4 min-h-11 disabled:cursor-wait">
           {fetchPageResult.isFetching ? 'Loading…' : 'Load more conversations'}
