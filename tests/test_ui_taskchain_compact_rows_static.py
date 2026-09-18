@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Static guard for H12: collapsed descriptions + compact task rows with a
-quick-actions menu in the task chain view.
+"""Static guard for task card layout overhaul: 2-row header, sticky accordion,
+action matrix, and removed pill counters (REQ-UI-LAYOUT-1, REQ-UI-STICKY-1,
+REQ-UI-ACTIONS-1, REQ-UI-PILLS-1).
 
-- Chain description collapsed by default (descExpanded=false).
-- Task description rendered ONLY inside the expanded (isExpanded) block.
-- Compact collapsed header = chevron + title + status badge + assignee.
-- A single quick-actions MENU button (taskchain-task-actions-menu-btn-<id>)
-  exposing Nudge/LGTM/NGTM/Status/Cancel, actionable without expanding, one open
-  at a time with outside-click close.
+- REQ-UI-PILLS-1: Pill counters (todo, doing, review, done, blocked) removed.
+- REQ-UI-LAYOUT-1: Two-row task card layout (Row 1 title + chevron, Row 2 chips + contextual actions).
+  Clicking Row 1 toggles expanded/collapsed state.
+- REQ-UI-STICKY-1: Sticky accordion header when isExpanded (sticky top-0 z-10 bg-[#111111] border-b border-white/5).
+- REQ-UI-ACTIONS-1: Contextual action buttons strictly implementing validated Action Matrix:
+  * cancelled: Uncancel
+  * paused: Unpause
+  * completed: Not Complete, Re-validate
+  * in_progress: Validate, Pause, Cancel, Nudge
+  * in_validation: LGTM, NGTM, Pause, Cancel, Nudge
+  * assigned/queued: Start, Pause, Cancel, Nudge
 """
 from pathlib import Path
 
@@ -30,52 +36,71 @@ def main() -> None:
             "chain description body must be gated behind descExpanded")
 
     # --- D2: task description ONLY in the expanded block ---
-    # The description paragraph must appear AFTER the isExpanded guard, not in the
-    # always-visible header.
-    # The description body was extracted into a lazy <TaskDescription> component;
-    # its render site is what must sit inside the expanded block.
     desc_idx = src.index("<TaskDescription")
     expand_guard_idx = src.index("{isExpanded && (")
     require(desc_idx > expand_guard_idx,
             "task description must render inside the isExpanded block (D2), not the header")
 
-    # --- D3: compact header keeps title, status, assignee (+ InstanceIdLink) ---
-    require("taskchain-task-title-" in src, "compact header must keep the task title")
-    require("taskchain-task-status-${taskId}" in src, "compact header must keep the status badge")
-    require("taskchain-task-assignee-" in src and "InstanceIdLink" in src,
-            "compact header must keep the assignee with InstanceIdLink (D3/H10)")
+    # --- REQ-UI-PILLS-1: Pill counters removed ---
+    require("taskchain-overview-progress-todo" not in src,
+            "progress summary pill counters must be removed from TaskChainOverview (REQ-UI-PILLS-1)")
+    require("taskchain-overview-progress-in_progress" not in src,
+            "doing counter must be removed from TaskChainOverview (REQ-UI-PILLS-1)")
+    require("taskchain-overview-progress-in_validation" not in src,
+            "review counter must be removed from TaskChainOverview (REQ-UI-PILLS-1)")
+    require("taskchain-overview-progress-validated_good" not in src,
+            "done counter must be removed from TaskChainOverview (REQ-UI-PILLS-1)")
 
-    # --- D4: single quick-actions MENU button (not the always-open strip) ---
-    require("taskchain-task-actions-menu-btn-" in src,
-            "must render a single quick-actions menu button (D4)")
-    require("actionsMenuOpenTaskId" in src,
-            "must track a single open actions menu (one-open-at-a-time, D4)")
-    # All five actions are reachable from the menu, reusing existing handlers/ids.
-    for did, handler in [
-        ("taskchain-task-nudge-btn-", "handleNudge"),
-        ("taskchain-task-lgtm-btn-", "handleVote(taskId, 'lgtm')"),
-        ("taskchain-task-ngtm-btn-", "handleVote(taskId, 'ngtm')"),
-        ("taskchain-task-status-", "handleStatusChange"),
-        ("taskchain-task-cancel-btn-", "handleCancelTask"),
-    ]:
-        require(did in src, f"menu must expose action {did} (D4)")
-        require(handler in src, f"menu action must reuse existing handler {handler} (D4)")
-    # Status sub-options preserved (rendered via a ${st} template over the list).
-    require("taskchain-task-status-${st}-btn-" in src,
-            "status options must be rendered with the ${st}-btn template")
-    for st in ["in_progress", "in_validation", "paused", "completed"]:
-        require(f"'{st}'" in src, f"status option {st} must remain in the list")
-
-    # --- D4: outside-click closes the menu; one open at a time ---
-    # The quick-actions strip is now a shared <Menu> that owns its own outside-click/
-    # Esc dismissal via onOpenChange (one open at a time via actionsMenuOpenTaskId).
-    require("onOpenChange" in src and "setActionsMenuOpenTaskId(" in src,
-            "actions menu must close on outside-click (D4)")
-
-    # --- D6: no dead InstanceIdLink / preserved ids ---
+    # --- REQ-UI-LAYOUT-1: Two-row header with chevron + title on Row 1, chips on Row 2 ---
     require("taskchain-task-row-" in src, "task row data-debug-id must be preserved")
+    require("taskchain-task-expand-btn-" in src, "Row 1 must have expand/collapse chevron")
+    require("taskchain-task-title-" in src, "Row 1 must have task title")
+    require("toggleTaskExpanded(taskId)" in src, "clicking Row 1 must toggle expand/collapse")
 
-    print("PASS: H12 taskchain compact rows + actions menu static guard")
+    # Row 2 left metadata chips + edit pencils
+    require("taskchain-task-assignee-" in src and "InstanceIdLink" in src,
+            "Row 2 must keep assignee with InstanceIdLink")
+    require("taskchain-task-edit-assignee-btn-" in src, "Row 2 must keep edit assignee button")
+    require("taskchain-task-reviewers-" in src, "Row 2 must keep reviewers chip")
+    require("taskchain-task-edit-reviewers-btn-" in src, "Row 2 must keep edit reviewers button")
+    require("taskchain-task-depends-on-" in src, "Row 2 must keep depends-on chip")
+    require("taskchain-task-edit-dependencies-btn-" in src, "Row 2 must keep edit dependencies button")
+    require("taskchain-task-priority-" in src, "Row 2 must keep priority badge")
+    require("taskchain-task-status-${taskId}" in src, "Row 2 must keep status badge")
+    require("taskchain-task-blocked-" in src, "Row 2 must keep blocked badge")
+
+    # --- REQ-UI-STICKY-1: Sticky accordion behavior when expanded ---
+    require("sticky top-0 z-10 bg-[#111111] border-b border-white/5" in src,
+            "header must receive sticky top-0 z-10 bg-[#111111] border-b border-white/5 when isExpanded (REQ-UI-STICKY-1)")
+
+    # --- REQ-UI-ACTIONS-1: Contextual action buttons matching Action Matrix ---
+    matrix_buttons = [
+        ("taskchain-task-uncancel-btn-", "Uncancel"),
+        ("taskchain-task-unpause-btn-", "Unpause"),
+        ("taskchain-task-not-complete-btn-", "Not Complete"),
+        ("taskchain-task-revalidate-btn-", "Re-validate"),
+        ("taskchain-task-validate-btn-", "Validate"),
+        ("taskchain-task-start-btn-", "Start"),
+        ("taskchain-task-pause-btn-", "Pause"),
+        ("taskchain-task-cancel-btn-", "Cancel"),
+        ("taskchain-task-nudge-btn-", "Nudge"),
+        ("taskchain-task-lgtm-btn-", "LGTM"),
+        ("taskchain-task-ngtm-btn-", "NGTM"),
+    ]
+    for did, label in matrix_buttons:
+        require(did in src, f"action matrix must render {label} button with debug-id {did} (REQ-UI-ACTIONS-1)")
+
+    # Verify action handlers wired correctly
+    require("handleStatusChange(taskId, 'assigned')" in src, "Uncancel and Not Complete must set status to assigned")
+    require("handleStatusChange(taskId, 'in_progress')" in src, "Unpause and Start must set status to in_progress")
+    require("handleStatusChange(taskId, 'in_validation')" in src, "Validate and Re-validate must set status to in_validation")
+    require("handleStatusChange(taskId, 'paused')" in src, "Pause must set status to paused")
+    require("handleCancelTask(taskId)" in src, "Cancel must invoke handleCancelTask")
+    require("handleNudge(taskId)" in src, "Nudge must invoke handleNudge")
+    require("handleVote(taskId, 'lgtm')" in src, "LGTM must cast lgtm vote")
+    require("handleVote(taskId, 'ngtm')" in src, "NGTM must cast ngtm vote")
+
+    print("PASS: Task card layout overhaul static guard (REQ-UI-LAYOUT-1, REQ-UI-STICKY-1, REQ-UI-ACTIONS-1, REQ-UI-PILLS-1)")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 
-import { Checkbox, Icon, Menu, PageShell, Select, StatusDot, Text, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { Checkbox, Icon, PageShell, Select, StatusDot, Text, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -171,9 +171,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const focusedTaskRef = useRef<string | null>(null);
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentAttachments, setCommentAttachments] = useState<Record<string, CommentAttachment[]>>({});
-  // H12: single quick-actions menu open at a time (controlled @ui Menu; the menu
-  // owns its own outside-click/Esc/focus handling).
-  const [actionsMenuOpenTaskId, setActionsMenuOpenTaskId] = useState<string | null>(null);
 
   // Modal state
   const [showNewTaskModal, setShowNewTaskModal] = useState(false);
@@ -344,15 +341,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const memberInstanceIds = new Set(members.map((m: any) => String(m.agentInstanceId || m.agent_instance_id || '')));
   const addProviderOptions = selectedAddBridge ? launchProvidersFor(selectedAddBridge) : [];
   const addTierOptions = selectedAddBridge ? launchTiersFor(selectedAddBridge, addProvider, selectedAddAgent) : [];
-
-  // Compute progress buckets
-  const progressBuckets = {
-    todo: tasks.filter((t) => t.status === 'assigned' || t.status === 'pending').length,
-    in_progress: tasks.filter((t) => t.status === 'in_progress').length,
-    in_validation: tasks.filter((t) => t.status === 'in_validation').length,
-    validated_good: tasks.filter((t) => t.status === 'validated_good' || t.status === 'completed').length,
-    blocked: tasks.filter((t) => t.blocked).length,
-  };
 
   const toggleTaskExpanded = (id: string) => {
     setExpandedTaskIds((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -834,152 +822,365 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
       <div
         key={taskId}
         data-debug-id={`taskchain-task-row-${taskId}`}
-        className="rounded-lg border border-white/10 bg-[#111111] p-3 text-xs"
+        className="rounded-lg border border-white/10 bg-[#111111] text-xs"
       >
-        {/* Main Card Header */}
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-start gap-2">
+        {/* Task Card Header (Row 1 + Row 2) */}
+        <div
+          data-debug-id={`taskchain-task-header-${taskId}`}
+          className={`p-3 ${
+            isExpanded
+              ? 'sticky top-0 z-10 bg-[#111111] border-b border-white/5 rounded-t-lg'
+              : 'rounded-lg'
+          }`}
+        >
+          {/* Row 1: Expand/collapse chevron + 1-line Task Title */}
+          <div
+            className="flex items-center gap-2 cursor-pointer select-none"
+            onClick={() => toggleTaskExpanded(taskId)}
+          >
             <button
               type="button"
               data-debug-id={`taskchain-task-expand-btn-${taskId}`}
-              onClick={() => toggleTaskExpanded(taskId)}
-              className="mt-0.5 text-zinc-400 hover:text-white"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleTaskExpanded(taskId);
+              }}
+              className="text-zinc-400 hover:text-white"
             >
               {isExpanded ? '▾' : '▸'}
             </button>
-            <div>
-              <div
-                data-debug-id={`taskchain-task-title-${taskId}`}
-                className="font-semibold text-white"
-              >
-                {task.title}
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-3 text-caption text-zinc-400">
-                <span data-debug-id={`taskchain-task-assignee-${taskId}`} className="inline-flex items-center gap-1">
-                  {task.assigneeRef ? (
-                    <>
-                      assignee: {task.assigneeRef.agent_instance_id
-                        ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
-                        : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
-                    </>
-                  ) : (
-                    <span>assignee: <span className="text-zinc-500">unassigned</span></span>
-                  )}
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-edit-assignee-btn-${taskId}`}
-                    title="Change assignee"
-                    onClick={(e) => { e.stopPropagation(); openEditAssigneeModal(task); }}
-                    className="ml-0.5 text-zinc-400 hover:text-white"
-                  >
-                    <Icon name="pencil" size={11} />
-                  </button>
-                </span>
-
-                <span data-debug-id={`taskchain-task-reviewers-${taskId}`} className="inline-flex items-center gap-1">
-                  reviewers: {task.reviewerRefs && task.reviewerRefs.length > 0 ? (
-                    <span>
-                      {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
-                      {task.reviewerRefs.map((r: any, ri: number) => (
-                        // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-                        <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
-                          {ri > 0 ? ', ' : ''}
-                          {r.agent_instance_id
-                            ? <InstanceIdLink instanceId={r.agent_instance_id} />
-                            : <span className="text-zinc-300">{r.user_id}</span>}
-                        </React.Fragment>
-                      ))}
-                    </span>
-                  ) : (
-                    <span className="text-zinc-500">none</span>
-                  )}
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-edit-reviewers-btn-${taskId}`}
-                    title="Edit reviewers"
-                    onClick={(e) => { e.stopPropagation(); openEditReviewersModal(task); }}
-                    className="ml-0.5 text-zinc-400 hover:text-white"
-                  >
-                    <Icon name="pencil" size={11} />
-                  </button>
-                </span>
-
-                <span data-debug-id={`taskchain-task-depends-on-${taskId}`} className="inline-flex items-center gap-1">
-                  <span>depends on: <span className={task.dependsOn && task.dependsOn.length > 0 ? 'text-zinc-200' : 'text-zinc-500'}>{task.dependsOn ? task.dependsOn.length : 0}</span></span>
-                  <button
-                    type="button"
-                    data-debug-id={`taskchain-task-edit-dependencies-btn-${taskId}`}
-                    title="Edit dependencies"
-                    onClick={(e) => { e.stopPropagation(); openEditDependenciesModal(task); }}
-                    className="ml-0.5 text-zinc-400 hover:text-white"
-                  >
-                    <Icon name="pencil" size={11} />
-                  </button>
-                </span>
-              </div>
+            <div
+              data-debug-id={`taskchain-task-title-${taskId}`}
+              className="min-w-0 flex-1 truncate font-semibold text-white cursor-pointer select-none"
+            >
+              {task.title}
             </div>
           </div>
 
-          {/* H12: compact right side — status/blocked badges + a single
-              quick-actions MENU button (actionable without expanding). */}
-          <div className="flex items-center gap-2">
-            {task.blocked && (
-              <span
-                data-debug-id={`taskchain-task-blocked-${taskId}`}
-                className="rounded bg-amber-900/50 px-2 py-0.5 font-semibold text-amber-300"
-              >
-                ⛔ blocked
-              </span>
-            )}
-            {(() => {
-              const p = String(task.priority || '').toLowerCase();
-              if (p !== 'p0' && p !== 'p1' && p !== 'p2') return null;
-              const cls = p === 'p0' ? 'bg-red-500/20 text-red-300' : p === 'p1' ? 'bg-amber-500/20 text-amber-300' : 'bg-zinc-800 text-zinc-400';
-              return (
-                <span data-debug-id={`taskchain-task-priority-${taskId}`} title={`Priority ${p.toUpperCase()}`} className={`rounded px-2 py-0.5 font-mono uppercase ${cls}`}>
-                  {p}
-                </span>
-              );
-            })()}
-            <span
-              data-debug-id={`taskchain-task-status-${taskId}`}
-              className="rounded bg-zinc-800 px-2 py-0.5 font-mono uppercase text-zinc-300"
-            >
-              {task.status}
-            </span>
-            <Menu
-              align="end"
-              label="Task actions"
-              open={actionsMenuOpenTaskId === taskId}
-              onOpenChange={(next) => setActionsMenuOpenTaskId(next ? taskId : null)}
-              trigger={
+          {/* Row 2: Left metadata chips + Right contextual action buttons */}
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            {/* Left: Metadata chips */}
+            <div className="flex flex-wrap items-center gap-2.5 text-caption text-zinc-400">
+              <span data-debug-id={`taskchain-task-assignee-${taskId}`} className="inline-flex items-center gap-1">
+                {task.assigneeRef ? (
+                  <>
+                    assignee: {task.assigneeRef.agent_instance_id
+                      ? <InstanceIdLink instanceId={task.assigneeRef.agent_instance_id} />
+                      : <span className="text-zinc-300">{task.assigneeRef.user_id}</span>}
+                  </>
+                ) : (
+                  <span>assignee: <span className="text-zinc-500">unassigned</span></span>
+                )}
                 <button
                   type="button"
-                  data-debug-id={`taskchain-task-actions-menu-btn-${taskId}`}
-                  title="Quick actions"
-                  className="rounded bg-zinc-800 px-2 py-0.5 text-[13px] font-semibold text-zinc-300 hover:bg-zinc-700"
+                  data-debug-id={`taskchain-task-edit-assignee-btn-${taskId}`}
+                  title="Change assignee"
+                  onClick={(e) => { e.stopPropagation(); openEditAssigneeModal(task); }}
+                  className="ml-0.5 text-zinc-400 hover:text-white"
                 >
-                  ⋯
+                  <Icon name="pencil" size={11} />
                 </button>
-              }
-            >
-              <Menu.Item data-debug-id={`taskchain-task-nudge-btn-${taskId}`} onClick={() => void handleNudge(taskId)}>Nudge</Menu.Item>
-              <Menu.Item data-debug-id={`taskchain-task-lgtm-btn-${taskId}`} className="text-success" onClick={() => void handleVote(taskId, 'lgtm')}>LGTM</Menu.Item>
-              <Menu.Item data-debug-id={`taskchain-task-ngtm-btn-${taskId}`} danger onClick={() => void handleVote(taskId, 'ngtm')}>NGTM</Menu.Item>
-              <Menu.Separator />
-              <Menu.Label>Set status</Menu.Label>
-              {['in_progress', 'in_validation', 'paused', 'completed'].map((st) => (
-                <Menu.Item key={st} data-debug-id={`taskchain-task-status-${st}-btn-${taskId}`} onClick={() => void handleStatusChange(taskId, st)}>{st}</Menu.Item>
-              ))}
-              <Menu.Separator />
-              <Menu.Item data-debug-id={`taskchain-task-cancel-btn-${taskId}`} danger onClick={() => void handleCancelTask(taskId)}>Cancel</Menu.Item>
-            </Menu>
+              </span>
+
+              <span data-debug-id={`taskchain-task-reviewers-${taskId}`} className="inline-flex items-center gap-1">
+                reviewers: {task.reviewerRefs && task.reviewerRefs.length > 0 ? (
+                  <span>
+                    {/* TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema */}
+                    {task.reviewerRefs.map((r: any, ri: number) => (
+                      // TODO(FIX): Replace loose fallback chain with canonical typed schema property
+                      <React.Fragment key={r.agent_instance_id || r.user_id || ri}>
+                        {ri > 0 ? ', ' : ''}
+                        {r.agent_instance_id
+                          ? <InstanceIdLink instanceId={r.agent_instance_id} />
+                          : <span className="text-zinc-300">{r.user_id}</span>}
+                      </React.Fragment>
+                    ))}
+                  </span>
+                ) : (
+                  <span className="text-zinc-500">none</span>
+                )}
+                <button
+                  type="button"
+                  data-debug-id={`taskchain-task-edit-reviewers-btn-${taskId}`}
+                  title="Edit reviewers"
+                  onClick={(e) => { e.stopPropagation(); openEditReviewersModal(task); }}
+                  className="ml-0.5 text-zinc-400 hover:text-white"
+                >
+                  <Icon name="pencil" size={11} />
+                </button>
+              </span>
+
+              <span data-debug-id={`taskchain-task-depends-on-${taskId}`} className="inline-flex items-center gap-1">
+                <span>depends on: <span className={task.dependsOn && task.dependsOn.length > 0 ? 'text-zinc-200' : 'text-zinc-500'}>{task.dependsOn ? task.dependsOn.length : 0}</span></span>
+                <button
+                  type="button"
+                  data-debug-id={`taskchain-task-edit-dependencies-btn-${taskId}`}
+                  title="Edit dependencies"
+                  onClick={(e) => { e.stopPropagation(); openEditDependenciesModal(task); }}
+                  className="ml-0.5 text-zinc-400 hover:text-white"
+                >
+                  <Icon name="pencil" size={11} />
+                </button>
+              </span>
+
+              {(() => {
+                const p = String(task.priority || '').toLowerCase();
+                if (p !== 'p0' && p !== 'p1' && p !== 'p2') return null;
+                const cls = p === 'p0' ? 'bg-red-500/20 text-red-300' : p === 'p1' ? 'bg-amber-500/20 text-amber-300' : 'bg-zinc-800 text-zinc-400';
+                return (
+                  <span data-debug-id={`taskchain-task-priority-${taskId}`} title={`Priority ${p.toUpperCase()}`} className={`rounded px-1.5 py-0.5 font-mono uppercase ${cls}`}>
+                    {p}
+                  </span>
+                );
+              })()}
+
+              <span
+                data-debug-id={`taskchain-task-status-${taskId}`}
+                className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono uppercase text-zinc-300"
+              >
+                {task.status}
+              </span>
+
+              {task.blocked && (
+                <span
+                  data-debug-id={`taskchain-task-blocked-${taskId}`}
+                  className="rounded bg-amber-900/50 px-1.5 py-0.5 font-semibold text-amber-300"
+                >
+                  ⛔ blocked
+                </span>
+              )}
+            </div>
+
+            {/* Right: Contextual Action Buttons / Menu strictly implementing the validated Action Matrix */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {(() => {
+                const status = String(task.status || '').toLowerCase();
+                if (status === 'cancelled') {
+                  return (
+                    <button
+                      type="button"
+                      data-debug-id={`taskchain-task-uncancel-btn-${taskId}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleStatusChange(taskId, 'assigned');
+                      }}
+                      className="rounded bg-sky-600/20 px-2 py-0.5 text-xs font-semibold text-sky-400 hover:bg-sky-600/30"
+                    >
+                      Uncancel
+                    </button>
+                  );
+                }
+                if (status === 'paused') {
+                  return (
+                    <button
+                      type="button"
+                      data-debug-id={`taskchain-task-unpause-btn-${taskId}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleStatusChange(taskId, 'in_progress');
+                      }}
+                      className="rounded bg-amber-600/20 px-2 py-0.5 text-xs font-semibold text-amber-400 hover:bg-amber-600/30"
+                    >
+                      Unpause
+                    </button>
+                  );
+                }
+                if (status === 'completed' || status === 'validated_good') {
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-not-complete-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'assigned');
+                        }}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                      >
+                        Not Complete
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-revalidate-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'in_validation');
+                        }}
+                        className="rounded bg-purple-900/40 px-2 py-0.5 text-xs font-semibold text-purple-300 hover:bg-purple-800/50"
+                      >
+                        Re-validate
+                      </button>
+                    </>
+                  );
+                }
+                if (status === 'in_progress') {
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-validate-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'in_validation');
+                        }}
+                        className="rounded bg-purple-600 px-2 py-0.5 text-xs font-semibold text-white hover:bg-purple-500"
+                      >
+                        Validate
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-pause-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'paused');
+                        }}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                      >
+                        Pause
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleCancelTask(taskId);
+                        }}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 hover:bg-red-900/40 hover:text-red-300"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleNudge(taskId);
+                        }}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                      >
+                        Nudge
+                      </button>
+                    </>
+                  );
+                }
+                if (status === 'in_validation') {
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-lgtm-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleVote(taskId, 'lgtm');
+                        }}
+                        className="rounded bg-emerald-700/60 px-2 py-0.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-600"
+                      >
+                        LGTM
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-ngtm-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleVote(taskId, 'ngtm');
+                        }}
+                        className="rounded bg-red-900/40 px-2 py-0.5 text-xs font-semibold text-red-300 hover:bg-red-800"
+                      >
+                        NGTM
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-pause-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleStatusChange(taskId, 'paused');
+                        }}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                      >
+                        Pause
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleCancelTask(taskId);
+                        }}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 hover:bg-red-900/40 hover:text-red-300"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleNudge(taskId);
+                        }}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                      >
+                        Nudge
+                      </button>
+                    </>
+                  );
+                }
+                // default for 'assigned' / 'queued' (and any other pending status):
+                return (
+                  <>
+                    <button
+                      type="button"
+                      data-debug-id={`taskchain-task-start-btn-${taskId}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleStatusChange(taskId, 'in_progress');
+                      }}
+                      className="rounded bg-sky-600 px-2 py-0.5 text-xs font-semibold text-white hover:bg-sky-500"
+                    >
+                      Start
+                    </button>
+                    <button
+                      type="button"
+                      data-debug-id={`taskchain-task-pause-btn-${taskId}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleStatusChange(taskId, 'paused');
+                      }}
+                      className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                    >
+                      Pause
+                    </button>
+                    <button
+                      type="button"
+                      data-debug-id={`taskchain-task-cancel-btn-${taskId}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleCancelTask(taskId);
+                      }}
+                      className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 hover:bg-red-900/40 hover:text-red-300"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      data-debug-id={`taskchain-task-nudge-btn-${taskId}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleNudge(taskId);
+                      }}
+                      className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                    >
+                      Nudge
+                    </button>
+                  </>
+                );
+              })()}
+            </div>
           </div>
         </div>
 
         {/* Expanded Card Details (Description, Dependencies & Comments) */}
         {isExpanded && (
-          <div className="mt-3 border-t border-white/5 pt-3 space-y-3">
+          <div className="p-3 space-y-3">
             {/* Description is lazy-fetched here (the task list omits it); this block
                 only mounts when the row is expanded, so the fetch is on-demand. */}
             <TaskDescription chainId={chainId} taskId={taskId} fallback={task.description} />
@@ -1208,45 +1409,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             )}
           </div>
         )}
-
-        {/* Progress Summary Pill Counters */}
-        <div
-          data-debug-id="taskchain-overview-progress"
-          className="mt-4 flex flex-wrap gap-2 text-xs"
-        >
-          <span
-            data-debug-id="taskchain-overview-progress-todo"
-            className="rounded bg-zinc-800 px-2 py-1 text-zinc-300"
-          >
-            todo {progressBuckets.todo}
-          </span>
-          <span
-            data-debug-id="taskchain-overview-progress-in_progress"
-            className="rounded bg-sky-900/50 px-2 py-1 text-sky-300"
-          >
-            doing {progressBuckets.in_progress}
-          </span>
-          <span
-            data-debug-id="taskchain-overview-progress-in_validation"
-            className="rounded bg-purple-900/50 px-2 py-1 text-purple-300"
-          >
-            review {progressBuckets.in_validation}
-          </span>
-          <span
-            data-debug-id="taskchain-overview-progress-validated_good"
-            className="rounded bg-emerald-900/50 px-2 py-1 text-emerald-300"
-          >
-            done {progressBuckets.validated_good}
-          </span>
-          {progressBuckets.blocked > 0 && (
-            <span
-              data-debug-id="taskchain-overview-progress-blocked"
-              className="rounded bg-amber-900/50 px-2 py-1 text-amber-300"
-            >
-              blocked {progressBuckets.blocked}
-            </span>
-          )}
-        </div>
 
         {/* Members Strip */}
         <div
