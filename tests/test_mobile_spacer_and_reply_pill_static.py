@@ -35,14 +35,18 @@ require(
     "ConversationThreadPage scrollClassName must use pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
 )
 
-# REQ-SPACER-2: handleTranscriptScroll removes isAtBottom auto-restore
+# REQ-SPACER-2: handleTranscriptScroll restores chrome at top and bottom boundaries
 require(
-    "isAtBottom" not in THREAD_PAGE,
-    "ConversationThreadPage handleTranscriptScroll must remove isAtBottom auto-restore"
+    "const BOTTOM_MARGIN = 100;" in THREAD_PAGE,
+    "ConversationThreadPage handleTranscriptScroll must define BOTTOM_MARGIN = 100"
 )
 require(
-    "if (isAtTop) {\n        restoreChrome();" in THREAD_PAGE or "if (isAtTop) {\r\n        restoreChrome();" in THREAD_PAGE,
-    "handleTranscriptScroll must still restore chrome when reaching top"
+    "const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;" in THREAD_PAGE,
+    "ConversationThreadPage handleTranscriptScroll must compute isAtBottom using distanceToBottom <= BOTTOM_MARGIN"
+)
+require(
+    "if (isAtTop || isAtBottom) {" in THREAD_PAGE or "if (isAtTop || isAtBottom) {\r\n" in THREAD_PAGE,
+    "handleTranscriptScroll must restore chrome when reaching top or bottom"
 )
 
 # REQ-SPACER-3: Floating reply pill rendered when mobile chrome hidden

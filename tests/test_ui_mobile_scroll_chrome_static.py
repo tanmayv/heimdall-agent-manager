@@ -85,12 +85,12 @@ def test_conversation_thread_page_scroll_tracking():
             "handleTranscriptScroll must define TOP_MARGIN = 60")
     require("const isAtTop = currentTop <= TOP_MARGIN;" in src,
             "handleTranscriptScroll must compute isAtTop using currentTop <= TOP_MARGIN")
-    require("isAtBottom" not in src,
-            "handleTranscriptScroll must remove isAtBottom auto-restore so scrolling down keeps full-screen reading mode")
-    require("BOTTOM_MARGIN" not in src,
-            "handleTranscriptScroll must not define BOTTOM_MARGIN")
-    require("if (isAtTop)" in src,
-            "handleTranscriptScroll must restore chrome on boundary reaching top")
+    require("const BOTTOM_MARGIN = 100;" in src,
+            "handleTranscriptScroll must define BOTTOM_MARGIN = 100")
+    require("const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;" in src,
+            "handleTranscriptScroll must compute isAtBottom using distanceToBottom <= BOTTOM_MARGIN")
+    require("if (isAtTop || isAtBottom)" in src,
+            "handleTranscriptScroll must restore chrome on boundary reaching top or bottom")
     require("restoreChrome();\n        lastScrollTopRef.current = currentTop;\n        return;" in src,
             "handleTranscriptScroll must call restoreChrome() and update lastScrollTopRef on boundary")
     require("Math.abs(delta) > 8" in src,

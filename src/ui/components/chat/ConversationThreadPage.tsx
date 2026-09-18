@@ -745,11 +745,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       if (!isMobile) return;
 
       const TOP_MARGIN = 60;
+      const BOTTOM_MARGIN = 100;
       const target = event.currentTarget;
       const currentTop = target.scrollTop;
+      const distanceToBottom = target.scrollHeight - currentTop - target.clientHeight;
       const isAtTop = currentTop <= TOP_MARGIN;
+      const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;
 
-      if (isAtTop) {
+      if (isAtTop || isAtBottom) {
         restoreChrome();
         lastScrollTopRef.current = currentTop;
         return;
