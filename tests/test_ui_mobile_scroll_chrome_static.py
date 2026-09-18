@@ -75,6 +75,7 @@ def test_conversation_thread_page_scroll_tracking():
             "handleTranscriptScroll must define BOTTOM_MARGIN = 100")
     require("const isAtTop = currentTop <= TOP_MARGIN;" in src,
             "handleTranscriptScroll must compute isAtTop using currentTop <= TOP_MARGIN")
+
     require("const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;" in src,
             "handleTranscriptScroll must compute isAtBottom using distanceToBottom <= BOTTOM_MARGIN")
     require("if (isAtTop || isAtBottom)" in src,
