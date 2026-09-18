@@ -1024,7 +1024,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   if (isConversationThreadRoute) {
     const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
     return (
-      <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-16 md:pb-0' : ''}`}>
+      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-[#090909]">
         {/* key by agentInstanceId so switching conversations REMOUNTS the page:
             all per-conversation local state (older/local messages, draft, scroll
             position, menus) resets synchronously instead of the previous
@@ -1259,7 +1259,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, liveProjects), [conversations, liveProjects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
-  const hideMobileShellChrome = isMobile && (mobileChromeSuppressed || scrollChromeSuppressed);
+  const hideMobileShellChrome = isMobile && mobileChromeSuppressed;
   const sidebarError = String((conversationsQuery.error as any)?.error || (agentsLiveQuery.error as any)?.error || '');
   const sidebarLoading = conversationsQuery.isLoading || agentsLiveQuery.isLoading;
 
@@ -1368,6 +1368,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); }}
           onOpenPalette={() => setPaletteOpen(true)}
           chatBadge={totalUnread}
+          className={scrollChromeSuppressed ? 'translate-y-full pointer-events-none' : 'translate-y-0 pointer-events-auto'}
         />
       ) : null}
 
