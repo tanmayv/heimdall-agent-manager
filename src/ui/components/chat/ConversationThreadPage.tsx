@@ -1525,34 +1525,35 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             : 'max-h-[800px] px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3 translate-y-0 opacity-100 pointer-events-auto'
         }`}
       >
-        {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
-            above the composer (co-located with the working indicator). */}
-        <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
-        {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
-        {attachments.length > 0 && (
-          <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
-            {attachments.map((a) => (
-              <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-white/10 bg-black/20 px-2.5 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
-                  <span className="min-w-0 flex-1 truncate" title={a.name}>{a.name}</span>
-                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
-                  {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-200 hover:bg-white/10">Retry</button> : null}
-                  <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">Remove</button>
+        <div className="mx-auto w-full max-w-4xl">
+          {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
+              above the composer (co-located with the working indicator). */}
+          <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
+          {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
+          {attachments.length > 0 && (
+            <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
+              {attachments.map((a) => (
+                <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-white/10 bg-black/20 px-2.5 py-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
+                    <span className="min-w-0 flex-1 truncate" title={a.name}>{a.name}</span>
+                    <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
+                    {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-200 hover:bg-white/10">Retry</button> : null}
+                    <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">Remove</button>
+                  </div>
+                  {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
+                  {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
                 </div>
-                {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
-                {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
-              </div>
-            ))}
-            {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-caption text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
-            {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-caption text-red-300">Retry or remove failed uploads before sending.</div> : null}
-          </div>
-        )}
-        <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
-        {/* Composer card: immutable context row (bridge · project + status) on top,
-            input in the middle, action toolbar (attach/terminal · model switcher ·
-            send) on the bottom. */}
-        <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-white/10 bg-[#161618] px-3 py-2.5 focus-within:border-sky-400/50 sm:px-4 sm:py-3">
+              ))}
+              {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-caption text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
+              {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-caption text-red-300">Retry or remove failed uploads before sending.</div> : null}
+            </div>
+          )}
+          <input ref={fileInputRef} data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={handleAttachmentInput} />
+          {/* Composer card: immutable context row (bridge · project + status) on top,
+              input in the middle, action toolbar (attach/terminal · model switcher ·
+              send) on the bottom. */}
+          <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-white/10 bg-[#161618] px-3 py-2.5 focus-within:border-sky-400/50 sm:px-4 sm:py-3">
           <div data-debug-id="conversation-composer-context" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-zinc-500">
             <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
               <Icon name="lock" size={12} /><span className="min-w-0 truncate font-semibold text-zinc-400">{bridgeLabel || 'no bridge'}</span>
@@ -1732,6 +1733,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"><Icon name="arrow-up" size={18} /></button>
           </div>
         </div>
+      </div>
       </form>
     );
   }
@@ -1795,16 +1797,23 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         {/* Scoped top bar in Col 1: narrows automatically when sidebar opens */}
         <header
           data-debug-id="conversation-thread-header"
-          className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
+          className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out relative z-20 overflow-visible ${
             isMobile
-              ? `fixed top-0 inset-x-0 z-20 h-14 border-b border-white/10 bg-[#0c0c0c]/90 backdrop-blur-md ${
+              ? `fixed top-0 inset-x-0 z-20 h-14 bg-[#0c0c0c]/90 backdrop-blur-md ${
                   !chromeVisible
                     ? '-translate-y-full opacity-0 pointer-events-none'
                     : 'translate-y-0 opacity-100 pointer-events-auto'
                 }`
-              : 'max-h-16 py-2 border-b border-white/10 translate-y-0 opacity-100 pointer-events-auto'
+              : 'max-h-16 py-2 bg-[#090909]/90 backdrop-blur-md translate-y-0 opacity-100 pointer-events-auto'
           }`}
         >
+          {/* Bottom blur-fade gradient overlay: blurs and softly fades text scrolling underneath */}
+          <div
+            data-debug-id="conversation-topbar-blur-fade"
+            className="pointer-events-none absolute left-0 right-0 -bottom-6 h-6 bg-gradient-to-b from-[#090909]/90 via-[#090909]/50 to-transparent backdrop-blur-sm z-10"
+            aria-hidden="true"
+          />
+
           <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5">
             {renaming ? (
               <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -1823,10 +1832,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
               </div>
             ) : (
-              <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-[16px] font-medium">
+              <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
                 <span data-debug-id="conversation-breadcrumb-project" className="truncate text-zinc-400">{projectName || 'Project'}</span>
                 <span className="shrink-0 text-zinc-600">/</span>
-                <h2 data-debug-id="conversation-thread-title" className="truncate text-[16px] font-medium text-white">{chainTitle || title}</h2>
+                <h2 data-debug-id="conversation-thread-title" className="truncate text-sm font-medium text-white">{chainTitle || title}</h2>
               </div>
             )}
             {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
@@ -1849,6 +1858,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               label="Conversation options"
               open={headerActionsOpen}
               onOpenChange={setHeaderActionsOpen}
+              className="w-64 max-w-[calc(100vw-2rem)] z-30"
               trigger={
                 <button
                   type="button"
@@ -1876,7 +1886,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 <span>Refresh messages</span>
               </Menu.Item>
               <Menu.Separator />
-              <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1 text-caption leading-5 text-zinc-500">
+              <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1.5 text-caption leading-5 text-zinc-500 overflow-hidden">
                 <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
                 <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
                 <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>

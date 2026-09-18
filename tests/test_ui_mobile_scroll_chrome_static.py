@@ -125,7 +125,7 @@ def test_transitions_and_classes():
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
     # Header Overlay classes
-    require("fixed top-0 inset-x-0 z-20 h-14 border-b border-white/10 bg-[#0c0c0c]/90 backdrop-blur-md" in src,
+    require("fixed top-0 inset-x-0 z-20 h-14 bg-[#0c0c0c]/90 backdrop-blur-md" in src,
             "Header must render as fixed top-0 overlay on mobile")
     require("-translate-y-full opacity-0 pointer-events-none" in src,
             "Header must transition with -translate-y-full opacity-0 pointer-events-none when hidden")
