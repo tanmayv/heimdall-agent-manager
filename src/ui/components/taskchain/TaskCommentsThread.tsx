@@ -2,6 +2,8 @@ import React from 'react';
 import Markdown from '../Markdown';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { useFetchChainTaskCommentsQuery } from '../../api/endpoints/tasks';
+import { useIsMobile } from '../shell/responsive';
+import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 
 // artifactIdsFromText mirrors the helper in TaskChainOverview; kept local so this
 // component is self-contained.
@@ -36,13 +38,23 @@ const CommentAuthor: React.FC<{ instanceId: string; displayName: string; userId:
   userId,
   debugId,
 }) => {
+  const isMobile = useIsMobile();
   if (instanceId) {
     const label = displayName || instanceId;
+    const href = isMobile
+      ? shellHash(`/conversations/${encodeURIComponent(instanceId)}`)
+      : shellHash(`/conversations/${encodeURIComponent(instanceId)}?panel=tasks`);
     return (
       <a
         data-debug-id={debugId}
-        href={shellHash(`/conversations/${encodeURIComponent(instanceId)}?panel=tasks`)}
+        href={href}
         title={`Open ${label} (${instanceId})`}
+        onClick={() => {
+          if (isMobile) {
+            writeRightSidebarOpen(false);
+            window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
+          }
+        }}
         className="text-sky-300 hover:text-sky-200 hover:underline"
       >
         @{label}

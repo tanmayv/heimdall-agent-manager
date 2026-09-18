@@ -1172,6 +1172,17 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setDrawerOpen(false); }, [path]);
 
+  // Close the mobile drawer on heimdall:close-sidebar event.
+  useEffect(() => {
+    const handleCloseSidebar = () => {
+      setDrawerOpen(false);
+    };
+    window.addEventListener('heimdall:close-sidebar', handleCloseSidebar);
+    return () => {
+      window.removeEventListener('heimdall:close-sidebar', handleCloseSidebar);
+    };
+  }, []);
+
   // Mobile keyboards consume most of the viewport. While focus is inside an
   // opted-in chat composer/input, hide the mobile top bar and bottom tab bar;
   // restore them as soon as focus leaves the composer. Desktop is unaffected.

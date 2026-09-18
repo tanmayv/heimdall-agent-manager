@@ -10,6 +10,8 @@ import {
   type ChainProjectGroup,
 } from '../../api/endpoints/tasks';
 import { useListProjectsQuery, type Project } from '../../api/endpoints/projects';
+import { useIsMobile } from '../shell/responsive';
+import { writeRightSidebarOpen } from '../../utils/clientPersistence';
 import { TaskChainOverview } from './TaskChainOverview';
 
 interface TaskChainsPageProps {
@@ -54,6 +56,7 @@ function formatUpdatedAt(value: string): string {
 // so no extra fetch). Rows without a coordinator render as non-clickable.
 function ChainRow({ chain }: { chain: ChainListItem }) {
   const coordinator = chain.coordinatorAgentInstanceId;
+  const isMobile = useIsMobile();
   const inner = (
     <>
       <span
@@ -84,11 +87,20 @@ function ChainRow({ chain }: { chain: ChainListItem }) {
       </div>
     );
   }
+  const href = isMobile
+    ? shellHash(`/conversations/${encodeURIComponent(coordinator)}`)
+    : shellHash(`/conversations/${encodeURIComponent(coordinator)}?panel=tasks`);
   return (
     <a
       data-debug-id={`task-chains-row-${chain.chainId}`}
-      href={shellHash(`/conversations/${encodeURIComponent(coordinator)}?panel=tasks`)}
+      href={href}
       title={`Open coordinator conversation (${coordinator})`}
+      onClick={() => {
+        if (isMobile) {
+          writeRightSidebarOpen(false);
+          window.dispatchEvent(new CustomEvent('heimdall:close-sidebar'));
+        }
+      }}
       className={`${className} hover:bg-white/[0.06]`}
     >
       {inner}
