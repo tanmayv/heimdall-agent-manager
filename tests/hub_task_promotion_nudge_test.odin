@@ -78,6 +78,10 @@ main :: proc() {
 	test_assignee_serialization()
 	test_cross_bridge_cascade()
 	test_nudge_decision()
+	test_status_transitions_and_completed_at()
+	test_manual_start_demotes_in_progress()
+	test_ngtm_rework_precedence()
+	test_pending_validation_demotes_other_tasks()
 	fmt.println("PASS: hub task promotion + nudge decision")
 }
 
@@ -237,6 +241,268 @@ test_nudge_decision :: proc() {
 	// Validated_Good targets coordinator but has no threshold -> no scheduled nudge.
 	d = taskchain_service.evaluate_nudge(cfg, .Validated_Good, now - 999_000, 0, now)
 	check(!d.should_nudge && d.reason == "no_threshold", "validated_good has no scheduled nudge threshold")
+}
+
+// --- Transitions: Paused, Cancelled, Completed and completed_at behavior ---
+test_status_transitions_and_completed_at :: proc() {
+	r: Fake_Repo
+	clock := platform.Clock{ctx = nil, now = fixed_clock_now}
+	ids := platform.ID_Generator{ctx = rawptr(&r), generate = fake_id}
+	repo := make_repo(&r)
+	service := taskchain_service.new_taskchain_service(&repo, nil, &clock, &ids)
+	auth := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "alice"}
+
+	// 1. Check valid_task_transition directly
+	check(taskchain_service.valid_task_transition(.Paused, .In_Progress), "Paused -> In_Progress must be valid")
+	check(taskchain_service.valid_task_transition(.Paused, .Assigned), "Paused -> Assigned must be valid")
+	check(taskchain_service.valid_task_transition(.Paused, .Cancelled), "Paused -> Cancelled must be valid")
+	check(!taskchain_service.valid_task_transition(.Paused, .Completed), "Paused -> Completed must be invalid")
+
+	check(taskchain_service.valid_task_transition(.Cancelled, .Assigned), "Cancelled -> Assigned must be valid (uncancel)")
+	check(!taskchain_service.valid_task_transition(.Cancelled, .In_Progress), "Cancelled -> In_Progress must be invalid")
+	check(!taskchain_service.valid_task_transition(.Cancelled, .Completed), "Cancelled -> Completed must be invalid")
+
+	check(taskchain_service.valid_task_transition(.Completed, .Assigned), "Completed -> Assigned must be valid (re-open)")
+	check(taskchain_service.valid_task_transition(.Completed, .In_Progress), "Completed -> In_Progress must be valid (re-open to work)")
+	check(taskchain_service.valid_task_transition(.Completed, .In_Validation), "Completed -> In_Validation must be valid (re-validate)")
+	check(!taskchain_service.valid_task_transition(.Completed, .Cancelled), "Completed -> Cancelled must be invalid")
+
+	// 2. Check change_task_status and completed_at behavior
+	chain := domain.Task_Chain{chain_id = "chain_trans", owner_user_id = "alice", publish_state = .Published, status = .Active}
+	chain_save(&r, chain)
+
+	task := domain.Task{
+		task_id = "task_t1",
+		chain_id = "chain_trans",
+		owner_user_id = "alice",
+		publish_state = .Published,
+		status = .In_Progress,
+		assignee_ref_json = assignee_ref("inst_worker"),
+		created_at = "2026-07-22T09:00:00Z",
+		started_at = "2026-07-22T09:00:00Z",
+	}
+	task_save(&r, task)
+
+	// In_Progress -> Paused
+	ret, ok, _ := taskchain_service.change_task_status(&service, auth, "task_t1", .Paused)
+	check(ok, "transition to Paused must succeed")
+	check(ret.status == .Paused, "returned status must be Paused")
+	check(ret.completed_at == "", "completed_at must be empty on Paused")
+	t, _, _ := task_get(&r, "task_t1")
+	check(t.status == .Paused, "persisted status must be Paused")
+	check(t.completed_at == "", "persisted completed_at must be empty on Paused")
+
+	// Paused -> Assigned (ret is Assigned; post-reconcile idle instance auto-promotes to In_Progress)
+	ret, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .Assigned)
+	check(ok, "transition Paused -> Assigned must succeed")
+	check(ret.status == .Assigned, "returned status must be Assigned")
+	check(ret.completed_at == "", "completed_at must be empty on Assigned")
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.completed_at == "", "completed_at must be empty after auto-promotion")
+
+	// In_Progress -> Cancelled
+	ret, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .Cancelled)
+	check(ok, "transition to Cancelled must succeed")
+	check(ret.status == .Cancelled, "returned status must be Cancelled")
+	check(ret.completed_at == "2026-07-22T10:00:00Z", "completed_at must be set on Cancelled")
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.status == .Cancelled, "persisted status must be Cancelled")
+	check(t.completed_at == "2026-07-22T10:00:00Z", "persisted completed_at must be set on Cancelled")
+
+	// Cancelled -> Assigned (uncancel: ret is Assigned; completed_at cleared)
+	ret, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .Assigned)
+	check(ok, "transition Cancelled -> Assigned (uncancel) must succeed")
+	check(ret.status == .Assigned, "returned status must be Assigned after uncancel")
+	check(ret.completed_at == "", "completed_at must be cleared after uncancel to Assigned")
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.completed_at == "", "persisted completed_at must be cleared after uncancel")
+
+	// In_Progress -> In_Validation -> Completed
+	_, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .In_Validation)
+	check(ok, "transition to In_Validation must succeed")
+	ret, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .Completed)
+	check(ok, "transition to Completed must succeed")
+	check(ret.status == .Completed, "returned status must be Completed")
+	check(ret.completed_at == "2026-07-22T10:00:00Z", "completed_at must be set on Completed")
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.status == .Completed, "persisted status must be Completed")
+	check(t.completed_at == "2026-07-22T10:00:00Z", "persisted completed_at must be set on Completed")
+
+	// Completed -> Assigned (re-open: ret is Assigned; completed_at cleared)
+	ret, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .Assigned)
+	check(ok, "transition Completed -> Assigned (re-open) must succeed")
+	check(ret.status == .Assigned, "returned status must be Assigned after re-open")
+	check(ret.completed_at == "", "completed_at must be cleared after re-open to Assigned")
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.completed_at == "", "persisted completed_at must be cleared after re-open")
+
+	// In_Progress -> In_Validation -> Completed
+	_, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .In_Validation)
+	_, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .Completed)
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.completed_at != "", "completed_at must be set on Completed")
+
+	// Completed -> In_Progress (re-open directly to In_Progress)
+	ret, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .In_Progress)
+	check(ok, "transition Completed -> In_Progress must succeed")
+	check(ret.status == .In_Progress, "returned status must be In_Progress")
+	check(ret.completed_at == "", "completed_at must be cleared after re-open to In_Progress")
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.status == .In_Progress, "persisted status must be In_Progress")
+	check(t.completed_at == "", "persisted completed_at must be cleared after re-open to In_Progress")
+
+	// In_Progress -> In_Validation -> Completed
+	_, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .In_Validation)
+	_, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .Completed)
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.completed_at != "", "completed_at must be set on Completed")
+
+	// Completed -> In_Validation (re-validate directly from Completed)
+	ret, ok, _ = taskchain_service.change_task_status(&service, auth, "task_t1", .In_Validation)
+	check(ok, "transition Completed -> In_Validation (re-validate) must succeed")
+	check(ret.status == .In_Validation, "returned status must be In_Validation")
+	check(ret.completed_at == "", "completed_at must be cleared after re-validate")
+	t, _, _ = task_get(&r, "task_t1")
+	check(t.status == .In_Validation, "persisted status must be In_Validation")
+	check(t.completed_at == "", "persisted completed_at must be cleared after re-validate")
+}
+
+// --- Invariant: manual start of queued task demotes previous In_Progress task to Queued ---
+test_manual_start_demotes_in_progress :: proc() {
+	r: Fake_Repo
+	clock := platform.Clock{ctx = nil, now = fixed_clock_now}
+	ids := platform.ID_Generator{ctx = rawptr(&r), generate = fake_id}
+	repo := make_repo(&r)
+	service := taskchain_service.new_taskchain_service(&repo, nil, &clock, &ids)
+	auth := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "alice"}
+
+	chain := domain.Task_Chain{chain_id = "chain_manual", owner_user_id = "alice", publish_state = .Published, status = .Active}
+	chain_save(&r, chain)
+
+	t1 := domain.Task{
+		task_id = "task_m1",
+		chain_id = "chain_manual",
+		owner_user_id = "alice",
+		publish_state = .Published,
+		status = .In_Progress,
+		assignee_ref_json = assignee_ref("inst_w"),
+		created_at = "2026-07-22T09:00:00Z",
+		started_at = "2026-07-22T09:00:00Z",
+		updated_at = "2026-07-22T09:00:00Z",
+	}
+	t2 := domain.Task{
+		task_id = "task_m2",
+		chain_id = "chain_manual",
+		owner_user_id = "alice",
+		publish_state = .Published,
+		status = .Queued,
+		assignee_ref_json = assignee_ref("inst_w"),
+		created_at = "2026-07-22T09:05:00Z",
+		updated_at = "2026-07-22T09:05:00Z",
+	}
+	task_save(&r, t1)
+	task_save(&r, t2)
+
+	// Manual start of task_m2 (queued task) to In_Progress at a later time
+	clock.now = proc(ctx: rawptr) -> string { _ = ctx; return "2026-07-22T09:10:00Z" }
+	_, ok, err := taskchain_service.change_task_status(&service, auth, "task_m2", .In_Progress)
+	check(ok, fmt.tprintf("manual start of task_m2 failed: %v", err.message))
+
+	// Verify post-reconcile invariant:
+	// task_m2 is now In_Progress, task_m1 has been demoted to Queued
+	m1, _, _ := task_get(&r, "task_m1")
+	m2, _, _ := task_get(&r, "task_m2")
+	check(m2.status == .In_Progress, "manually started task must be In_Progress")
+	check(m1.status == .Queued, "previous In_Progress task must be demoted to Queued")
+}
+
+// --- Invariant: NGTM on validation task demotes existing In_Progress task to Queued and focuses rework ---
+test_ngtm_rework_precedence :: proc() {
+	r: Fake_Repo
+	clock := platform.Clock{ctx = nil, now = fixed_clock_now}
+	ids := platform.ID_Generator{ctx = rawptr(&r), generate = fake_id}
+	repo := make_repo(&r)
+	service := taskchain_service.new_taskchain_service(&repo, nil, &clock, &ids)
+
+	chain := domain.Task_Chain{chain_id = "chain_ngtm", owner_user_id = "alice", publish_state = .Published, status = .Active}
+	chain_save(&r, chain)
+
+	t_active := domain.Task{
+		task_id = "task_active",
+		chain_id = "chain_ngtm",
+		owner_user_id = "alice",
+		publish_state = .Published,
+		status = .In_Progress,
+		priority = .P0,
+		assignee_ref_json = assignee_ref("inst_w"),
+		created_at = "2026-07-22T09:00:00Z",
+		started_at = "2026-07-22T09:00:00Z",
+		updated_at = "2026-07-22T09:00:00Z",
+	}
+	t_rework := domain.Task{
+		task_id = "task_rework",
+		chain_id = "chain_ngtm",
+		owner_user_id = "alice",
+		publish_state = .Published,
+		status = .Validated_Not_Good,
+		priority = .P2,
+		assignee_ref_json = assignee_ref("inst_w"),
+		created_at = "2026-07-22T09:05:00Z",
+		updated_at = "2026-07-22T09:05:00Z",
+	}
+	task_save(&r, t_active)
+	task_save(&r, t_rework)
+
+	// Run reconcile
+	_ = taskchain_service.recompute_chain_promotions(&service, chain)
+
+	// task_rework (Validated_Not_Good) must take precedence over task_active,
+	// promoting task_rework to In_Progress and demoting task_active to Queued.
+	act, _, _ := task_get(&r, "task_active")
+	rew, _, _ := task_get(&r, "task_rework")
+	check(rew.status == .In_Progress, "rework task must be promoted to In_Progress")
+	check(act.status == .Queued, "active task must be demoted to Queued in favor of rework")
+}
+
+// --- Invariant: instance awaiting review has 0 active In_Progress tasks ---
+test_pending_validation_demotes_other_tasks :: proc() {
+	r: Fake_Repo
+	clock := platform.Clock{ctx = nil, now = fixed_clock_now}
+	ids := platform.ID_Generator{ctx = rawptr(&r), generate = fake_id}
+	repo := make_repo(&r)
+	service := taskchain_service.new_taskchain_service(&repo, nil, &clock, &ids)
+
+	chain := domain.Task_Chain{chain_id = "chain_pv", owner_user_id = "alice", publish_state = .Published, status = .Active}
+	chain_save(&r, chain)
+
+	t_val := domain.Task{
+		task_id = "task_val",
+		chain_id = "chain_pv",
+		owner_user_id = "alice",
+		publish_state = .Published,
+		status = .In_Validation,
+		assignee_ref_json = assignee_ref("inst_w"),
+		created_at = "2026-07-22T09:00:00Z",
+	}
+	t_other := domain.Task{
+		task_id = "task_other",
+		chain_id = "chain_pv",
+		owner_user_id = "alice",
+		publish_state = .Published,
+		status = .In_Progress,
+		assignee_ref_json = assignee_ref("inst_w"),
+		created_at = "2026-07-22T09:05:00Z",
+	}
+	task_save(&r, t_val)
+	task_save(&r, t_other)
+
+	_ = taskchain_service.recompute_chain_promotions(&service, chain)
+
+	// t_other must be demoted to Queued, so inst_w has 0 active In_Progress tasks
+	val, _, _ := task_get(&r, "task_val")
+	oth, _, _ := task_get(&r, "task_other")
+	check(val.status == .In_Validation, "task_val must stay In_Validation")
+	check(oth.status == .Queued, "task_other must be demoted to Queued while awaiting review")
 }
 
 check :: proc(ok: bool, message: string) { if ok do return; fmt.eprintln("FAIL:", message); os.exit(1) }

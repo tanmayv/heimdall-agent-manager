@@ -78,15 +78,39 @@ deps_satisfied_for_task :: proc(tasks: []domain.Task, deps: []domain.Task_Depend
 	return true
 }
 
-// task_prefers is the deterministic ordering within a candidate pool: higher
-// priority (lower ordinal) wins, then earliest created_at, then lexically
-// smallest task_id. Priority is compared via explicit ordinals because the
-// Task_Priority zero-value is P0 (most urgent); all real tasks carry an explicit
-// priority (create_task defaults .P2, repo reads default p2).
-task_prefers :: proc(a, b: domain.Task) -> bool {
+work_task_activity_time :: proc(t: domain.Task) -> string {
+	if t.started_at > t.updated_at do return t.started_at
+	if t.updated_at != "" do return t.updated_at
+	return t.started_at
+}
+
+// work_task_prefers is the deterministic ordering within a work candidate pool:
+//   1. Rework preference: Validated_Not_Good (NGTM feedback) takes precedence over normal actionable work.
+//   2. Recent start preference: If multiple in_progress tasks exist for the same agent, the latest started_at/updated_at wins (respecting explicit user starts).
+//   3. Priority tier (P0 > P1 > P2).
+//   4. Active over inactive to prevent unnecessary churn.
+//   5. Tie-breaker: earliest created_at, then lexically smallest task_id.
+work_task_prefers :: proc(a, b: domain.Task) -> bool {
+	a_vng := a.status == .Validated_Not_Good
+	b_vng := b.status == .Validated_Not_Good
+	if a_vng != b_vng do return a_vng
+
+	a_prog := a.status == .In_Progress
+	b_prog := b.status == .In_Progress
+	if a_prog && b_prog {
+		a_time := work_task_activity_time(a)
+		b_time := work_task_activity_time(b)
+		if a_time != b_time do return a_time > b_time
+	}
+
 	if a.priority != b.priority do return int(a.priority) < int(b.priority)
+	if a_prog != b_prog do return a_prog
 	if a.created_at != b.created_at do return a.created_at < b.created_at
 	return string(a.task_id) < string(b.task_id)
+}
+
+task_prefers :: proc(a, b: domain.Task) -> bool {
+	return work_task_prefers(a, b)
 }
 
 // work_status_is_actionable reports whether a work (assignee) task status is one
@@ -271,6 +295,17 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 					break
 				}
 			}
+			// Demote any in_progress or assigned work tasks for this instance to Queued
+			// while awaiting review so the instance has 0 active in_progress tasks.
+			for t in tasks {
+				if t.status != .In_Progress && t.status != .Assigned do continue
+				a := primary_assignee_instance(t.assignee_ref_json)
+				is_mine := a == instance_id
+				delete(a)
+				if is_mine {
+					queue[t.task_id] = true
+				}
+			}
 			continue
 		}
 
@@ -305,19 +340,20 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 			focus[instance_id] = Instance_Focus{task_id = "", role = .None}
 		}
 
-		// Demote this instance's OTHER unblocked work tasks to Queued so exactly
-		// one work item is active. When the focus is a review task, all of the
-		// instance's actionable work tasks are demoted.
+		// Post-reconcile invariant: ensure that across all tasks assigned to an
+		// instance, only chosen_work_id remains In_Progress. Any other unblocked
+		// work tasks assigned to that instance are placed in queue map to be demoted to Queued.
 		for t in tasks {
 			if t.task_id == chosen_work_id do continue
 			a := primary_assignee_instance(t.assignee_ref_json)
 			is_mine := a == instance_id
 			delete(a)
 			if !is_mine do continue
-			if !work_task_eligible(tasks[:], deps[:], t) do continue
-			// Leave Validated_Not_Good alone: it carries reviewer feedback the
-			// assignee must act on; queuing it would erase that state.
-			if t.status == .Assigned || t.status == .In_Progress { queue[t.task_id] = true }
+			if t.status == .In_Progress {
+				queue[t.task_id] = true
+			} else if t.status == .Assigned && work_task_eligible(tasks[:], deps[:], t) {
+				queue[t.task_id] = true
+			}
 		}
 	}
 
@@ -328,6 +364,10 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		if t.status == .In_Progress && !deps_satisfied_for_task(tasks[:], deps[:], t.task_id) {
 			queue[t.task_id] = true
 		}
+	}
+
+	for q_id in queue {
+		delete_key(&promote, q_id)
 	}
 
 	// Apply task status mutations first (promotions win over demotions for the same
