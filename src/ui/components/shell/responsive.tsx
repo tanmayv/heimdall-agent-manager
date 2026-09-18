@@ -90,6 +90,7 @@ export type MobileTabBarProps = {
   // The center palette button's debug-id is owned by the shell so the palette
   // entry point has one stable, layout-independent id (also satisfies UI-12).
   paletteDebugId?: string;
+  className?: string;
 };
 
 // Bottom tabs: Home (the Action Cards home page) and Chats replace the former
@@ -104,13 +105,13 @@ const TABS: { id: string; label: string; icon: IconName; route: string }[] = [
   { id: 'settings', label: 'Settings', icon: 'gear', route: '/settings/bridges' },
 ];
 
-export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge = 0, chainsBadge = 0, paletteDebugId = 'shell-mobile-palette-button' }: MobileTabBarProps) {
+export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge = 0, chainsBadge = 0, paletteDebugId = 'shell-mobile-palette-button', className = '' }: MobileTabBarProps) {
   const isActive = (route: string) => activePath === route || activePath.startsWith(`${route}/`);
   return (
     <nav
       data-debug-id="shell-mobile-tab-bar"
       aria-label="Mobile bottom navigation"
-      className="ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-white/10 bg-[#101010]/95 backdrop-blur transition-transform duration-300 ease-in-out md:hidden"
+      className={`ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-white/10 bg-[#101010]/95 backdrop-blur transition-transform duration-300 ease-in-out md:hidden ${className}`}
     >
       {TABS.slice(0, 2).map((tab) => (
         <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chains' ? chainsBadge : 0} onClick={() => onNavigate(tab.route)} />

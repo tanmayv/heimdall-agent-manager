@@ -1511,10 +1511,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         onSubmit={submit}
         data-debug-id="conversation-composer-shell"
         data-mobile-shell-chrome="hide-on-focus"
-        className={`w-full max-w-full shrink-0 sm:px-6 sm:pb-6 sm:pt-3 transition-all duration-300 ease-in-out ${
-          isMobile && !chromeVisible
-            ? 'max-h-0 py-0 px-3 overflow-hidden translate-y-full opacity-0 pointer-events-none'
-            : 'max-h-[800px] px-3 pb-4 pt-2 translate-y-0 opacity-100 pointer-events-auto'
+        className={`w-full max-w-full shrink-0 transition-all duration-300 ease-in-out ${
+          isMobile
+            ? `fixed bottom-14 inset-x-0 z-20 px-3 pb-2 pt-0 ${
+                !chromeVisible
+                  ? 'translate-y-full opacity-0 pointer-events-none'
+                  : 'translate-y-0 opacity-100 pointer-events-auto'
+              }`
+            : 'max-h-[800px] px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3 translate-y-0 opacity-100 pointer-events-auto'
         }`}
       >
         {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
@@ -1759,10 +1763,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           composer. */}
       <header
         data-debug-id="conversation-thread-header"
-        className={`flex shrink-0 items-center gap-2 border-b px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
-          isMobile && !chromeVisible
-            ? 'max-h-0 py-0 border-transparent overflow-hidden -translate-y-full opacity-0 pointer-events-none'
-            : 'max-h-16 py-2 border-white/10 translate-y-0 opacity-100 pointer-events-auto'
+        className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
+          isMobile
+            ? `fixed top-0 inset-x-0 z-20 h-14 border-b border-white/10 bg-[#0c0c0c]/90 backdrop-blur-md ${
+                !chromeVisible
+                  ? '-translate-y-full opacity-0 pointer-events-none'
+                  : 'translate-y-0 opacity-100 pointer-events-auto'
+              }`
+            : 'max-h-16 py-2 border-b border-white/10 translate-y-0 opacity-100 pointer-events-auto'
         }`}
       >
         <div className="hidden h-9 w-9 shrink-0 sm:block" aria-hidden="true" />
@@ -1885,7 +1893,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
       {(() => {
         const transcript = (
-          <div data-debug-id="conversation-thread-transcript" className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden px-2 py-2 sm:px-4 sm:py-3">
+          <div data-debug-id="conversation-thread-transcript" className="h-full w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
             <ChatMessageList
               conversationKey={conversationId}
               messages={chatMessages}
@@ -1900,7 +1908,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               agentIsWorking={isWorking}
               renderMessageBody={({ message }) => renderConversationMessageBody(message)}
               wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-              scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-2 pb-8 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+              scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-44 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
               emptyState={messagesQuery.isFetching ? (
                 <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-zinc-500">Loading messages…</div>
               ) : (
@@ -1933,7 +1941,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
             {/* Chat pane on the left: expands to full width when sidebar is closed or on mobile */}
             <div
-              className="flex h-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px]"
+              className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px]"
             >
               {transcript}
               {renderComposer()}

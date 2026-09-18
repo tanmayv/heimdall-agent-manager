@@ -48,7 +48,7 @@ export default function ChatMessageList({
   getDeliveryStatus = () => EMPTY_DELIVERY,
   agentIsWorking = false,
   wrapperClassName = 'relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden',
-  scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-[18px] bg-[#090909] p-5',
+  scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-44 sm:space-y-4 sm:rounded-[18px] sm:p-5',
 }: {
   conversationKey: string;
   messages: ChatMessage[];

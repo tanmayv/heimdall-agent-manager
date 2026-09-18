@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
 """Static verification guard for mobile scroll hide/reveal, smooth transitions,
-persistent floating toggle, bottom agent pill, full-screen transcript layout collapsing,
-and AppShell mobile chrome suppression.
+persistent floating toggle, bottom agent pill, and True Overlay Architecture
+for invariant transcript clientHeight (REQ-OVERLAY-1 to REQ-OVERLAY-5).
 
 Requirements covered:
 - REQ-MOBILE-SCROLL-1: ChatMessageList forwards onScroll event to ConversationThreadPage
-- REQ-MOBILE-SCROLL-2: Mobile scroll down slides away top bar (-translate-y-full) and
-  composer bottom bar (translate-y-full) with smooth transitions (duration-300 ease-in-out)
+- REQ-OVERLAY-1: On mobile, header is rendered as an overlay (fixed top-0 inset-x-0 z-20 h-14
+  border-b border-white/10 bg-[#0c0c0c]/90 backdrop-blur-md) transitioning with CSS transform:
+  -translate-y-full opacity-0 pointer-events-none when hidden, translate-y-0 opacity-100 pointer-events-auto when visible.
+  No max-h-0 or py-0 collapsing.
+- REQ-OVERLAY-2: On mobile, composer form is rendered as a floating overlay above the tab bar
+  (fixed bottom-14 inset-x-0 z-20) transitioning with CSS transform:
+  translate-y-full opacity-0 pointer-events-none when hidden, translate-y-0 opacity-100 pointer-events-auto when visible.
+  No max-h-0 or py-0 collapsing.
+- REQ-OVERLAY-3: Mobile transcript container and chat pane remain permanent full-height (h-full w-full)
+  on mobile with invariant clientHeight.
+- REQ-OVERLAY-4: ChatMessageList mobile scroll container has fixed pt-16 (to clear 56px header overlay)
+  and pb-44 (to clear floating composer and tab bar) clearances.
+- REQ-OVERLAY-5: RouteOutlet for isConversationThreadRoute no longer adds dynamic pb-16 on mobile;
+  MobileTabBar uses CSS transform translate-y-full when scrollChromeSuppressed is true instead of unmounting or changing layout dimensions.
 - REQ-MOBILE-SCROLL-FLOATING-TOGGLE: Floating button at top-right (fixed top-2.5 right-2.5 z-30)
-  when chrome is hidden and right panel is closed
+  when chrome is hidden and right panel is closed.
 - REQ-MOBILE-SCROLL-COMPOSER-AGENT-PILL: Bottom agent name pill (fixed bottom-9 inset-x-0 flex justify-center z-30)
-  when composer is hidden to open agent picker
-- REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= TOP_MARGIN = 60) or bottom (distanceToBottom <= BOTTOM_MARGIN = 100) of transcript
-- REQ-SCROLL-BOUNDARY-2: Validate boundary chrome restore, test suite execution, and clean git push
-- REQ-SCROLL-MARGIN-4: Validate margin thresholds (TOP_MARGIN = 60, BOTTOM_MARGIN = 100) and bottom padding (pb-8)
-- REQ-MOBILE-FS-1: Full-screen mobile transcript: top bar & composer layout boxes collapse to 0 height
-- REQ-MOBILE-FS-2: AppShell listens to heimdall:mobile-chrome event, suppresses bottom tab bar & padding
-- REQ-MOBILE-FS-3: Scroll hide unification: hides on any Math.abs(delta) > 8, inactivity timer removed
+  when composer is hidden to open agent picker.
+- REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= TOP_MARGIN = 60)
+  or bottom (distanceToBottom <= BOTTOM_MARGIN = 100) of transcript without oscillation.
+- REQ-SCROLL-BOUNDARY-2: Validate boundary chrome restore, test suite execution, and clean git push.
 """
 from pathlib import Path
 
@@ -77,11 +86,11 @@ def test_conversation_thread_page_scroll_tracking():
     require("setChromeVisible(false);" in src,
             "handleTranscriptScroll must hide chrome when Math.abs(delta) > 8")
 
-    # Forwarding prop and bottom padding
+    # Forwarding prop and clearances
     require("onScroll={handleTranscriptScroll}" in src,
             "ChatMessageList must receive onScroll={handleTranscriptScroll}")
-    require("pb-8" in src,
-            "ChatMessageList scrollClassName must include pb-8 for bottom message padding")
+    require("pt-16 pb-44" in src,
+            "ChatMessageList scrollClassName must include pt-16 pb-44 clearances for overlays")
 
     # Typing and focus restore
     require("restoreChrome" in src,
@@ -103,19 +112,29 @@ def test_conversation_thread_page_scroll_tracking():
 def test_transitions_and_classes():
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
-    # Top Bar transition classes
-    require("max-h-0 py-0 border-transparent overflow-hidden -translate-y-full opacity-0 pointer-events-none" in src,
-            "Top Bar must collapse layout box with max-h-0 py-0 border-transparent overflow-hidden -translate-y-full opacity-0 pointer-events-none")
-    require("max-h-16 py-2 border-white/10 translate-y-0 opacity-100 pointer-events-auto" in src,
-            "Top Bar must restore with max-h-16 py-2 border-white/10 translate-y-0 opacity-100 pointer-events-auto")
+    # Header Overlay classes
+    require("fixed top-0 inset-x-0 z-20 h-14 border-b border-white/10 bg-[#0c0c0c]/90 backdrop-blur-md" in src,
+            "Header must render as fixed top-0 overlay on mobile")
+    require("-translate-y-full opacity-0 pointer-events-none" in src,
+            "Header must transition with -translate-y-full opacity-0 pointer-events-none when hidden")
+    require("translate-y-0 opacity-100 pointer-events-auto" in src,
+            "Header must transition with translate-y-0 opacity-100 pointer-events-auto when visible")
+    require("max-h-0" not in src,
+            "Header and Composer must not use max-h-0 collapsing")
     require("transition-all duration-300 ease-in-out" in src,
-            "Top Bar and Composer must have transition-all duration-300 ease-in-out")
+            "Header and Composer must have transition-all duration-300 ease-in-out")
 
-    # Composer Bottom Bar transition classes
-    require("max-h-0 py-0 px-3 overflow-hidden translate-y-full opacity-0 pointer-events-none" in src,
-            "Composer bottom bar must collapse layout box with max-h-0 py-0 px-3 overflow-hidden translate-y-full opacity-0 pointer-events-none")
-    require("max-h-[800px] px-3 pb-4 pt-2 translate-y-0 opacity-100 pointer-events-auto" in src,
-            "Composer bottom bar must restore with max-h-[800px] px-3 pb-4 pt-2 translate-y-0 opacity-100 pointer-events-auto")
+    # Composer Floating Overlay classes
+    require("fixed bottom-14 inset-x-0 z-20" in src,
+            "Composer must render as fixed bottom-14 overlay above tab bar on mobile")
+    require("translate-y-full opacity-0 pointer-events-none" in src,
+            "Composer must transition with translate-y-full opacity-0 pointer-events-none when hidden")
+
+    # Full-height transcript and chat pane
+    require('data-debug-id="conversation-thread-transcript"' in src,
+            "Transcript element must exist")
+    require('className="h-full w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3"' in src,
+            "Transcript container must remain permanent full-height on mobile")
 
 
 def test_app_shell_and_mobile_tab_bar():
@@ -128,17 +147,21 @@ def test_app_shell_and_mobile_tab_bar():
             "AppShell must listen for heimdall:mobile-chrome custom event")
     require("setScrollChromeSuppressed(true)" in shell_src and "setScrollChromeSuppressed(false)" in shell_src,
             "AppShell must toggle scrollChromeSuppressed based on visible detail")
-    require("const hideMobileShellChrome = isMobile && (mobileChromeSuppressed || scrollChromeSuppressed);" in shell_src,
-            "AppShell hideMobileShellChrome must include scrollChromeSuppressed")
     require("setScrollChromeSuppressed(false);" in shell_src,
             "AppShell route change handler must reset scrollChromeSuppressed to false")
-    require("mobileBottomPadded={isMobile && !hideMobileShellChrome}" in shell_src,
-            "AppShell must suppress bottom padding when hideMobileShellChrome is true")
-    require("!hideMobileShellChrome ? (" in shell_src,
-            "AppShell must conditionally render MobileTabBar based on hideMobileShellChrome")
+
+    # RouteOutlet for conversation thread must not add dynamic pb-16
+    require('if (isConversationThreadRoute) {\n    const agentInstanceId = decodeSegment(path.slice(\'/conversations/\'.length));\n    return (\n      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-[#090909]">' in shell_src,
+            "RouteOutlet for isConversationThreadRoute must not add dynamic pb-16")
+
+    # MobileTabBar uses CSS transform translate-y-full without unmounting on scroll hide
+    require("scrollChromeSuppressed ? 'translate-y-full pointer-events-none' : 'translate-y-0 pointer-events-auto'" in shell_src,
+            "MobileTabBar must receive translate-y-full transform class when scrollChromeSuppressed is true")
 
     require("transition-transform duration-300 ease-in-out" in responsive_src,
             "MobileTabBar must include transition-transform duration-300 ease-in-out")
+    require("className = ''" in responsive_src,
+            "MobileTabBar must accept className prop for transform transitions")
 
 
 def test_floating_toggle_button():
@@ -176,4 +199,4 @@ if __name__ == "__main__":
     test_app_shell_and_mobile_tab_bar()
     test_floating_toggle_button()
     test_bottom_agent_pill()
-    print("PASS: mobile scroll hide/reveal, smooth transitions, floating toggle, agent pill, and full-screen mobile static verification")
+    print("PASS: True Overlay Architecture static verification (REQ-OVERLAY-1 to REQ-OVERLAY-5)")
