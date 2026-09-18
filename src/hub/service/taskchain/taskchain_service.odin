@@ -725,7 +725,11 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	task.status = next
 	task.updated_at = now
 	if next == .In_Progress && task.started_at == "" do task.started_at = now
-	if next == .Completed || next == .Cancelled do task.completed_at = now
+	if next == .Completed || next == .Cancelled {
+		task.completed_at = now
+	} else {
+		task.completed_at = ""
+	}
 	task_ret, saved_ok, save_err := iface.taskchain_save_task(service.repo, task)
 	if saved_ok {
 		// Auto-promotion + auto-advance (CT-4/CT-5) runs FIRST so every instance's
@@ -873,8 +877,9 @@ valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	case .In_Validation: return next == .Validated_Good || next == .Validated_Not_Good || next == .Completed || next == .Paused || next == .Cancelled
 	case .Validated_Not_Good: return next == .In_Progress || next == .Paused || next == .Cancelled
 	case .Validated_Good: return next == .Completed || next == .Paused || next == .Cancelled
-	case .Paused: return next == .In_Progress || next == .Cancelled
-	case .Completed, .Cancelled: return false
+	case .Paused: return next == .In_Progress || next == .Assigned || next == .Cancelled
+	case .Cancelled: return next == .Assigned
+	case .Completed: return next == .Assigned || next == .In_Progress || next == .In_Validation
 	}
 	return false
 }
