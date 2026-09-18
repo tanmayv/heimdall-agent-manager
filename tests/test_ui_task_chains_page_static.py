@@ -56,6 +56,22 @@ require("/conversations/${encodeURIComponent(coordinator)}" in PAGE,
 require("conversations/${chain.conversation" not in PAGE and "conversation_id" not in PAGE,
         "chain rows must NOT use a conversation_id in the route")
 
+# --- Project Launch button and modal (REQ-PROJECT-LAUNCH-BTN-3) -----------
+require("task-chains-project-launch-btn-" in PAGE,
+        "task-chains-project-launch-btn- must be rendered in TaskChainsPage.tsx")
+require("import ProjectLaunchModal" in PAGE,
+        "ProjectLaunchModal must be imported in TaskChainsPage.tsx")
+require("<ProjectLaunchModal" in PAGE,
+        "ProjectLaunchModal must be rendered in TaskChainsPage.tsx")
+require(
+    all(prop in PAGE for prop in ("isOpen=", "project=", "onClose=", "onLaunched=")),
+    "ProjectLaunchModal must be used with isOpen, project, onClose, and onLaunched props",
+)
+require(
+    "onLaunched=" in PAGE and "/conversations/" in PAGE,
+    "onLaunched handler must route to /conversations/",
+)
+
 # --- Sidebar nav entry ----------------------------------------------------
 require("path: '/chains'" in SHELL and "label: 'Task Chains'" in SHELL,
         "AppShell NAV_ROUTES must include a Task Chains entry at /chains")
