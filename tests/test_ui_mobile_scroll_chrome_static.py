@@ -57,8 +57,8 @@ def test_chat_message_list_on_scroll():
 
 def test_chat_message_list_mobile_bottom_spacer():
     src = CHAT_LIST_FILE.read_text(encoding="utf-8")
-    require('<div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-80 shrink-0 sm:hidden" aria-hidden="true" />' in src,
-            "ChatMessageList must contain explicit DOM spacer with debugPrefix-mobile-bottom-spacer and h-80 shrink-0 sm:hidden")
+    require('<div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-56 shrink-0 sm:hidden" aria-hidden="true" />' in src,
+            "ChatMessageList must contain explicit DOM spacer with debugPrefix-mobile-bottom-spacer and h-56 shrink-0 sm:hidden")
     require("pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4" in src,
             "ChatMessageList default scrollClassName must use pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4")
 
@@ -211,8 +211,10 @@ def test_floating_reply_pill():
 
     require('data-debug-id="conversation-floating-reply-pill"' in src,
             "ConversationThreadPage must render floating reply pill with data-debug-id='conversation-floating-reply-pill'")
-    require("restoreChrome();" in src and "textareaRef.current?.focus();" in src,
-            "Floating reply pill onClick must restore chrome and focus textareaRef")
+    require("restoreChrome();" in src,
+            "Floating reply pill onClick must restore chrome")
+    require("onClick={() => {\n              restoreChrome();\n            }}" in src or "onClick={() => {\r\n              restoreChrome();\r\n            }}" in src,
+            "Floating reply pill onClick must purely restore chrome without auto-focusing input")
     require('aria-label="Reply"' in src and 'title="Reply"' in src,
             "Floating reply pill must have Reply accessibility attributes")
     require("Reply" in src,

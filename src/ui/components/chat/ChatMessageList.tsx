@@ -249,7 +249,7 @@ export default function ChatMessageList({
             </div>
           </div>
         )}
-        <div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-80 shrink-0 sm:hidden" aria-hidden="true" />
+        <div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-56 shrink-0 sm:hidden" aria-hidden="true" />
       </div>
       {showJump ? (
         <button data-debug-id={`${debugPrefix}-jump-latest-btn`} onClick={() => scrollToBottom('smooth')} className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-caption text-zinc-100 shadow-lg hover:bg-black">Jump to latest ↓</button>

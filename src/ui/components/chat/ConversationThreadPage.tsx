@@ -1898,7 +1898,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             title="Reply"
             onClick={() => {
               restoreChrome();
-              textareaRef.current?.focus();
             }}
             className="pointer-events-auto bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200"
           >

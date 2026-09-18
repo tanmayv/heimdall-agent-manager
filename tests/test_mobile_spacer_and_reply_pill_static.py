@@ -21,8 +21,8 @@ def require(condition: bool, message: str) -> None:
 
 # REQ-SPACER-1: ChatMessageList explicit DOM spacer
 require(
-    '<div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-80 shrink-0 sm:hidden" aria-hidden="true" />' in CHAT_LIST,
-    "ChatMessageList must contain explicit DOM spacer with debugPrefix-mobile-bottom-spacer and h-80 shrink-0 sm:hidden"
+    '<div data-debug-id={`${debugPrefix}-mobile-bottom-spacer`} className="h-56 shrink-0 sm:hidden" aria-hidden="true" />' in CHAT_LIST,
+    "ChatMessageList must contain explicit DOM spacer with debugPrefix-mobile-bottom-spacer and h-56 shrink-0 sm:hidden"
 )
 
 # REQ-SPACER-1: scrollClassName padding-bottom clearance
@@ -55,8 +55,12 @@ require(
     "ConversationThreadPage must render floating reply pill with data-debug-id='conversation-floating-reply-pill'"
 )
 require(
-    "restoreChrome();" in THREAD_PAGE and "textareaRef.current?.focus();" in THREAD_PAGE,
-    "Floating reply pill onClick must restore chrome and focus textareaRef"
+    'data-debug-id="conversation-floating-reply-pill"' in THREAD_PAGE and "restoreChrome();" in THREAD_PAGE,
+    "Floating reply pill must be present and restore chrome"
+)
+require(
+    "onClick={() => {\n              restoreChrome();\n            }}" in THREAD_PAGE or "onClick={() => {\r\n              restoreChrome();\r\n            }}" in THREAD_PAGE,
+    "Floating reply pill onClick must purely restore chrome without auto-focusing input"
 )
 require(
     "data-debug-id=\"conversation-floating-agent-pill\"" in THREAD_PAGE,
