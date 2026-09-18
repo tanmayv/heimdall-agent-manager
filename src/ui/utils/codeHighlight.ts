@@ -9,7 +9,65 @@
 
 import type { HighlighterCore } from 'shiki/core';
 
-const THEME = 'github-dark';
+export const THEME_TO_SHIKI: Record<string, string> = {
+  'default-dark': 'github-dark',
+  'catppuccin-mocha': 'catppuccin-mocha',
+  'catppuccin-latte': 'catppuccin-latte',
+  'tokyo-night': 'tokyo-night',
+  'tokyo-night-day': 'catppuccin-latte',
+};
+
+const SHIKI_THEME_LOADERS: Record<string, () => Promise<any>> = {
+  'github-dark': () => import('@shikijs/themes/github-dark'),
+  'catppuccin-mocha': () => import('@shikijs/themes/catppuccin-mocha'),
+  'catppuccin-latte': () => import('@shikijs/themes/catppuccin-latte'),
+  'tokyo-night': () => import('@shikijs/themes/tokyo-night'),
+};
+
+const loadedThemes = new Set<string>(['github-dark']);
+const loadingThemes = new Map<string, Promise<boolean>>();
+
+export function getActiveShikiTheme(themeId?: string): string {
+  if (themeId && THEME_TO_SHIKI[themeId]) {
+    return THEME_TO_SHIKI[themeId];
+  }
+  if (typeof document !== 'undefined') {
+    const docTheme = document.documentElement.dataset.theme;
+    if (docTheme && THEME_TO_SHIKI[docTheme]) {
+      return THEME_TO_SHIKI[docTheme];
+    }
+  }
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const saved = localStorage.getItem('heimdall-theme');
+      if (saved && THEME_TO_SHIKI[saved]) {
+        return THEME_TO_SHIKI[saved];
+      }
+    } catch {}
+  }
+  return 'github-dark';
+}
+
+async function ensureTheme(hl: HighlighterCore, shikiTheme: string): Promise<boolean> {
+  if (loadedThemes.has(shikiTheme)) return true;
+  const loader = SHIKI_THEME_LOADERS[shikiTheme];
+  if (!loader) return false;
+  let p = loadingThemes.get(shikiTheme);
+  if (!p) {
+    p = (async () => {
+      try {
+        const mod: any = await loader();
+        await hl.loadTheme(mod.default);
+        loadedThemes.add(shikiTheme);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    loadingThemes.set(shikiTheme, p);
+  }
+  return p;
+}
 
 let highlighterPromise: Promise<HighlighterCore> | null = null;
 const loadedLangs = new Set<string>();
@@ -55,6 +113,7 @@ async function getHighlighter(): Promise<HighlighterCore> {
         import('shiki/engine/javascript'),
         import('@shikijs/themes/github-dark'),
       ]);
+      loadedThemes.add('github-dark');
       return createHighlighterCore({
         themes: [theme.default],
         langs: [],
@@ -138,15 +197,17 @@ async function ensureLang(hl: HighlighterCore, lang: string): Promise<boolean> {
 // Highlight `code` for `lang`, returning Shiki's <pre class="shiki">…</pre> HTML.
 // Returns null on any failure or when the language is unsupported, so the caller
 // can fall back to a plain, un-highlighted <pre>.
-export async function highlightCode(code: string, lang: string): Promise<string | null> {
+export async function highlightCode(code: string, lang: string, themeId?: string): Promise<string | null> {
   const language = String(lang || '').trim();
   if (!language) return null;
   try {
     const hl = await getHighlighter();
+    const shikiTheme = getActiveShikiTheme(themeId);
+    await ensureTheme(hl, shikiTheme);
     if (!(await ensureLang(hl, language))) return null;
     return hl.codeToHtml(code, {
       lang: language,
-      theme: THEME,
+      theme: loadedThemes.has(shikiTheme) ? shikiTheme : 'github-dark',
       structure: 'classic',
     });
   } catch {
@@ -161,13 +222,18 @@ export type CodeToken = { content: string; color?: string };
 // comments need one row per line, which the monolithic codeToHtml can't provide).
 // Returns null when the language is unknown or highlighting fails, so the caller
 // renders plain, un-highlighted lines with the same row structure.
-export async function highlightToLines(code: string, lang: string): Promise<CodeToken[][] | null> {
+export async function highlightToLines(code: string, lang: string, themeId?: string): Promise<CodeToken[][] | null> {
   const language = String(lang || '').trim();
   if (!language) return null;
   try {
     const hl = await getHighlighter();
+    const shikiTheme = getActiveShikiTheme(themeId);
+    await ensureTheme(hl, shikiTheme);
     if (!(await ensureLang(hl, language))) return null;
-    const { tokens } = hl.codeToTokens(code, { lang: language, theme: THEME });
+    const { tokens } = hl.codeToTokens(code, {
+      lang: language,
+      theme: loadedThemes.has(shikiTheme) ? shikiTheme : 'github-dark',
+    });
     return tokens.map((line) => line.map((t) => ({ content: t.content, color: t.color })));
   } catch {
     return null;

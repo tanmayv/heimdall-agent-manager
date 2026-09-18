@@ -20,6 +20,8 @@ import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } 
 import BridgesPanel from '../settings/BridgesPanel';
 import ProjectsPanel from '../settings/ProjectsPanel';
 import TemplatesPanel from '../settings/TemplatesPanel';
+import AppearanceSettings from '../settings/AppearanceSettings';
+import { setTheme } from '../../store/themeSlice';
 import ProjectsSurface from '../projects/ProjectsSurface';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import ActionsPanel from '../actions/ActionsPanel';
@@ -189,6 +191,7 @@ function routeTitle(path: string): string {
   if (path.startsWith('/memory')) return 'Memory';
   if (path.startsWith('/skills/')) return 'Skill';
   if (path.startsWith('/settings/bridges')) return 'Bridge settings';
+  if (path.startsWith('/settings/appearance')) return 'Appearance settings';
   if (path.startsWith('/settings/user-tokens')) return 'User token settings';
   if (path.startsWith('/settings/projects')) return 'Project settings';
   if (path.startsWith('/settings/providers')) return 'Provider settings';
@@ -214,13 +217,14 @@ function routeDescription(path: string): string {
   if (path.startsWith('/library')) return 'Filterable artifact list/grid route.';
   if (path.startsWith('/memory/')) return 'Full memory record with body, scope, and edit/delete actions.';
   if (path.startsWith('/memory')) return 'Durable facts, habits and skills targeted to agents, projects, bridges, and templates. Empty scope applies to all.';
-  if (path.startsWith('/settings')) return 'Settings surface for Bridges, Providers, User tokens, Projects, Memory, and Defaults.';
+  if (path.startsWith('/settings')) return 'Settings surface for Bridges, Providers, Appearance, User tokens, Projects, Memory, and Defaults.';
   return 'Chat-first home with the routed main region ready for conversation surfaces.';
 }
 
 const SETTINGS_NAV = [
   { path: '/settings/bridges', label: 'Bridges' },
   { path: '/settings/providers', label: 'Providers' },
+  { path: '/settings/appearance', label: 'Appearance' },
   { path: '/settings/user-tokens', label: 'User tokens' },
   { path: '/settings/projects', label: 'Projects' },
   { path: '/settings/templates', label: 'Templates' },
@@ -1011,6 +1015,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
       '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/settings/bridges') ||
+      path.startsWith('/settings/appearance') ||
       path.startsWith('/settings/user-tokens') ||
       path.startsWith('/settings/projects') ||
       path.startsWith('/settings/providers') ||
@@ -1058,6 +1063,8 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
           <ConversationLaunchComposer />
         ) : path === '/settings' || path === '/settings/bridges' ? (
           <BridgesPanel />
+        ) : path === '/settings/appearance' ? (
+          <AppearanceSettings />
         ) : path === '/settings/providers' ? (
           <ProvidersPanel />
         ) : path === '/settings/user-tokens' ? (
@@ -1236,6 +1243,8 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     window.location.hash = buildRouteHash(route, '');
   };
 
+  const dispatch = useDispatch();
+
   const handlePaletteAction = (actionId: string) => {
     switch (actionId) {
       case 'new-conversation':
@@ -1250,7 +1259,15 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       case 'new-project':
         handlePaletteNavigate('/projects');
         break;
+      case 'settings-appearance':
+      case 'change-theme':
+        handlePaletteNavigate('/settings/appearance');
+        break;
       default:
+        if (actionId.startsWith('set-theme-')) {
+          const themeId = actionId.slice('set-theme-'.length);
+          dispatch(setTheme(themeId));
+        }
         break;
     }
   };

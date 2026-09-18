@@ -11,6 +11,7 @@ const fitAddonObj = fitAddonModule as Record<string, any>;
 const FitAddon = (fitAddonObj.FitAddon || fitAddonObj['default']?.FitAddon || fitAddonObj['default']) as typeof FitAddonType;
 import { useAgentPaneSubscription } from '../../hooks/useAgentPaneSubscription';
 import { useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } from '../../api/endpoints/agents';
+import { useTheme } from '../../store/themeSlice';
 import Icon from '../Icon';
 
 export interface AgentPaneComposerPanelProps {
@@ -32,6 +33,7 @@ export function AgentPaneComposerPanel({
   runtimeStatus,
   className = '',
 }: AgentPaneComposerPanelProps) {
+  const { theme } = useTheme();
   const [terminalDimensions, setTerminalDimensions] = useState<{ cols: number; rows: number }>({
     cols: 80,
     rows: 120,
@@ -94,29 +96,7 @@ export function AgentPaneComposerPanel({
       fontSize: 12,
       lineHeight: 1.25,
       scrollback: 1000,
-      theme: {
-        background: '#09090b',
-        foreground: '#e4e4e7',
-        cursor: '#38bdf8',
-        cursorAccent: '#09090b',
-        selectionBackground: 'rgba(56, 189, 248, 0.3)',
-        black: '#18181b',
-        red: '#ef4444',
-        green: '#22c55e',
-        yellow: '#eab308',
-        blue: '#3b82f6',
-        magenta: '#a855f7',
-        cyan: '#06b6d4',
-        white: '#f4f4f5',
-        brightBlack: '#71717a',
-        brightRed: '#f87171',
-        brightGreen: '#4ade80',
-        brightYellow: '#fde047',
-        brightBlue: '#60a5fa',
-        brightMagenta: '#c084fc',
-        brightCyan: '#22d3ee',
-        brightWhite: '#ffffff',
-      },
+      theme: theme.terminal,
       allowProposedApi: true,
     });
 
@@ -244,6 +224,13 @@ export function AgentPaneComposerPanel({
     };
   }, [isExpanded, sendAgentPaneInput, sendAgentPaneResize]);
 
+  // Update terminal instance with active theme's terminal palette (REQ-THEME-EXTERNALS)
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.options.theme = theme.terminal;
+    }
+  }, [theme]);
+
   // Feed incoming ANSI output into terminal
   useEffect(() => {
     const term = terminalRef.current;
@@ -366,7 +353,8 @@ export function AgentPaneComposerPanel({
         tabIndex={0}
         role="region"
         aria-label="Interactive Terminal"
-        className="chat-scrollbar relative min-h-[280px] h-[280px] sm:min-h-[360px] sm:h-[360px] max-h-[280px] sm:max-h-[420px] w-full overflow-hidden p-2 font-mono text-xs cursor-text bg-[#09090b]/80 touch-manipulation focus:outline-none [&_.xterm-cursor-layer]:!hidden [&_.xterm-cursor]:!hidden"
+        style={{ backgroundColor: theme.terminal.background }}
+        className="chat-scrollbar relative min-h-[280px] h-[280px] sm:min-h-[360px] sm:h-[360px] max-h-[280px] sm:max-h-[420px] w-full overflow-hidden p-2 font-mono text-xs cursor-text touch-manipulation focus:outline-none [&_.xterm-cursor-layer]:!hidden [&_.xterm-cursor]:!hidden"
       />
 
       {/* Accessible fallback & static verification pre element */}

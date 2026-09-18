@@ -15,6 +15,7 @@ import toastReducer from './toastSlice';
 import notificationsReducer from './notificationsSlice';
 import agentActivityReducer from './agentActivitySlice';
 import cardsReducer from './cardsSlice';
+import themeReducer from './themeSlice';
 
 export const priorUserClientStateCleared = createAction('heimdall/priorUserClientStateCleared');
 
@@ -29,6 +30,7 @@ const appReducer = combineReducers({
   toasts: toastReducer,
   notifications: notificationsReducer,
   cards: cardsReducer,
+  theme: themeReducer,
   // Ephemeral, non-cache agent activity (push-only bubbles). Reset with the rest
   // of client state on user switch via the priorUserClientStateCleared handling
   // in rootReducer below.
