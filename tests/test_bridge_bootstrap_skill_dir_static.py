@@ -52,7 +52,7 @@ def main() -> None:
     # fallback (no inline provider switch in provider_store).
     for marker in [
         "bridge_provider_default_skill_dir",
-        "if override.skill_dir_set do result.skill_dir = strings.clone(override.skill_dir)",
+        "if override.skill_dir_set do result.skill_dir = override.skill_dir",
         'return "skills"',
     ]:
         require(marker in provider_store, f"provider profile must derive/fallback skill dir: {marker}")

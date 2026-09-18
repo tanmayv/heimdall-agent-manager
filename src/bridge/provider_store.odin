@@ -636,10 +636,20 @@ bridge_provider_override_from_json_with_name :: proc(obj, fallback_name: string)
 	if v, ok := bridge_provider_json_extract_string_set(obj, "prompt_delivery"); ok { o.prompt_delivery = v; o.prompt_delivery_set = true }
 	if v, ok := bridge_provider_json_extract_int(obj, "prompt_tmux_delay_ms"); ok { o.prompt_tmux_delay_ms = v; o.prompt_tmux_delay_ms_set = true }
 	if v, ok := bridge_provider_json_extract_bool(obj, "prompt_tmux_enter"); ok { o.prompt_tmux_enter = v; o.prompt_tmux_enter_set = true }
-	if v, ok := bridge_provider_json_extract_string_set(obj, "agent_run_dir"); ok { o.agent_run_dir = bridge_expand_home(v); o.agent_run_dir_set = true }
+	if v, ok := bridge_provider_json_extract_string_set(obj, "agent_run_dir"); ok {
+		expanded := bridge_expand_home(v)
+		if expanded != v do delete(v)
+		o.agent_run_dir = expanded
+		o.agent_run_dir_set = true
+	}
 	if v, ok := bridge_provider_json_extract_bool(obj, "use_random_dir"); ok { o.use_random_dir = v; o.use_random_dir_set = true }
 	if v, ok := bridge_provider_json_extract_string_set(obj, "skill_dir"); ok { o.skill_dir = v; o.skill_dir_set = true }
-	if v, ok := bridge_provider_json_extract_string_set(obj, "bootstrap_file_name"); ok { o.bootstrap_file_name = strings.trim_space(v); o.bootstrap_file_name_set = true }
+	if v, ok := bridge_provider_json_extract_string_set(obj, "bootstrap_file_name"); ok {
+		trimmed := strings.trim_space(v)
+		o.bootstrap_file_name = strings.clone(trimmed)
+		delete(v)
+		o.bootstrap_file_name_set = true
+	}
 	if v, ok := bridge_provider_json_extract_string_set(obj, "logo"); ok { o.logo = v; o.logo_set = true }
 	if models_obj, ok := bridge_provider_json_extract_object(obj, "models"); ok {
 		if v, got := bridge_provider_json_extract_string_set(models_obj, "flag"); got { o.models.flag = v; o.models_flag_set = true }
