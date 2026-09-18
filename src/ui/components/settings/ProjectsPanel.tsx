@@ -139,6 +139,7 @@ export default function ProjectsPanel() {
       setShowEditLocalPicker(false);
       setShowEditFigPicker(false);
       setEditSaveError("");
+      setShowEditLocalPicker(false);
       setBridgePathInputs({});
       setBridgeActionError({});
       setBridgeActionBusy({});
@@ -231,6 +232,7 @@ export default function ProjectsPanel() {
       setShowEditLocalPicker(false);
       setShowEditFigPicker(false);
       setIsEditing(false);
+      setShowEditLocalPicker(false);
     } catch (err: any) {
       const msg = err?.data?.error?.message || err?.error || err?.message || String(err || "Unable to update project");
       setEditSaveError(msg);
@@ -687,7 +689,7 @@ export default function ProjectsPanel() {
           <div className="flex items-center justify-between border-b border-white/10 pb-3">
             <button
               type="button"
-              onClick={() => { setSelectedProjectId(null); setIsEditing(false); }}
+              onClick={() => { setSelectedProjectId(null); setIsEditing(false); setShowEditLocalPicker(false); }}
               className="text-sm text-sky-400 hover:underline flex items-center gap-1"
             >
               ← Back to all projects
@@ -771,7 +773,27 @@ export default function ProjectsPanel() {
                     </div>
 
                     {editProjectType === "local" && showEditLocalPicker && selectedBridgeId ? (
-                      <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3">
+                      <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.04] p-3 space-y-2">
+                        {bridges.length > 1 ? (
+                          <div className="flex items-center gap-2 text-xs mb-2">
+                            <span className="text-zinc-400">Bridge host:</span>
+                            <Select
+                              value={selectedBridgeId}
+                              onChange={(val) => setSelectedBridgeId(val)}
+                            >
+                              {bridges.map((b) => {
+                                const bid = String(b?.bridge_id || b?.bridgeId || b?.id || "");
+                                const blabel = String(b?.label || b?.machine_hostname || b?.hostname || bid);
+                                const bonline = String(b?.status || b?.runtime_status || "").toLowerCase() === "online";
+                                return (
+                                  <option key={bid} value={bid}>
+                                    {blabel} ({bonline ? '● Online' : '○ Offline'})
+                                  </option>
+                                );
+                              })}
+                            </Select>
+                          </div>
+                        ) : null}
                         <BridgeDirectoryPicker
                           debugId="settings-project-edit-local-picker"
                           bridgeId={selectedBridgeId}
@@ -779,6 +801,10 @@ export default function ProjectsPanel() {
                           initialPath={editDefaultPath}
                           onPick={(p) => {
                             setEditDefaultPath(p);
+                            if (!editName.trim()) {
+                              const base = p.split("/").filter(Boolean).pop();
+                              if (base) setEditName(base);
+                            }
                             setShowEditLocalPicker(false);
                           }}
                           onClose={() => setShowEditLocalPicker(false)}

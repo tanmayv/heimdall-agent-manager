@@ -112,8 +112,8 @@ test_bridge_launch_dedupe_idempotency :: proc(t: ^testing.T) {
 	// 2. Launch record replacement (never duplicate for same instance_id)
 	inst_id := "inst_test_dedupe"
 	launch1 := Bridge_Runtime_Launch{
-		agent_instance_id = strings.clone(inst_id),
-		command_id        = strings.clone("cmd_a"),
+		agent_instance_id = inst_id,
+		command_id        = "cmd_a",
 		pane_id           = "%1",
 	}
 	bridge_runtime_record_launch(launch1)
@@ -124,8 +124,8 @@ test_bridge_launch_dedupe_idempotency :: proc(t: ^testing.T) {
 
 	// Second launch for same instance (e.g. retry or relaunch)
 	launch2 := Bridge_Runtime_Launch{
-		agent_instance_id = strings.clone(inst_id),
-		command_id        = strings.clone("cmd_b"),
+		agent_instance_id = inst_id,
+		command_id        = "cmd_b",
 		pane_id           = "%2",
 	}
 	bridge_runtime_record_launch(launch2)
@@ -143,4 +143,6 @@ test_bridge_launch_dedupe_idempotency :: proc(t: ^testing.T) {
 	}
 	sync.mutex_unlock(&bridge_runtime_mutex)
 	testing.expect(t, count == 1, "exactly one launch record must exist (no duplicate)")
+
+	bridge_runtime_test_reset()
 }

@@ -118,7 +118,22 @@ bridge_provider_store_init :: proc() {
 bridge_provider_test_reset :: proc() {
 	sync.mutex_lock(&bridge_provider_mutex)
 	defer sync.mutex_unlock(&bridge_provider_mutex)
+	for &override in bridge_provider_overrides {
+		bridge_provider_override_destroy(&override)
+	}
 	clear(&bridge_provider_overrides)
+	if bridge_provider_store_path_value != "" {
+		delete(bridge_provider_store_path_value)
+		bridge_provider_store_path_value = ""
+	}
+	if bridge_provider_default_provider_value != "" {
+		delete(bridge_provider_default_provider_value)
+		bridge_provider_default_provider_value = ""
+	}
+	if bridge_provider_default_tier_value != "" {
+		delete(bridge_provider_default_tier_value)
+		bridge_provider_default_tier_value = ""
+	}
 	bridge_provider_store_loaded = false
 }
 
@@ -179,6 +194,7 @@ bridge_provider_upsert_override_unlocked :: proc(override: Bridge_Provider_Overr
 	if strings.trim_space(override.name) == "" do return
 	for i in 0..<len(bridge_provider_overrides) {
 		if bridge_provider_overrides[i].name == override.name {
+			bridge_provider_override_destroy(&bridge_provider_overrides[i])
 			bridge_provider_overrides[i] = override
 			return
 		}
@@ -250,33 +266,33 @@ bridge_provider_override_for_name_unlocked :: proc(name: string) -> (Bridge_Prov
 
 bridge_provider_profile_from_seed :: proc(seed: Bridge_Provider_Seed) -> Bridge_Provider_Profile {
 	return Bridge_Provider_Profile{
-		name                = strings.clone(seed.name),
+		name                = seed.name,
 		enabled             = true,
 		source              = .Seed,
-		logo                = strings.clone(seed.logo),
-		command             = bridge_clone_string_slice(seed.command),
-		prompt_flags        = bridge_clone_string_slice(seed.prompt_flags),
-		yolo_flags          = bridge_clone_string_slice(seed.yolo_flags),
-		starter_prompt      = strings.clone(seed.starter_prompt),
-		prompt_delivery     = strings.clone(seed.prompt_delivery),
-		skill_dir           = strings.clone(seed.skill_dir),
-		bootstrap_file_name = strings.clone(seed.bootstrap_file_name),
+		logo                = seed.logo,
+		command             = seed.command,
+		prompt_flags        = seed.prompt_flags,
+		yolo_flags          = seed.yolo_flags,
+		starter_prompt      = seed.starter_prompt,
+		prompt_delivery     = seed.prompt_delivery,
+		skill_dir           = seed.skill_dir,
+		bootstrap_file_name = seed.bootstrap_file_name,
 		startup_detection   = seed.startup_detection,
 		activity_detection  = cfg_lib.default_activity_detection_config(),
 	}
 }
 
 bridge_provider_default_skill_dir :: proc(provider: string) -> string {
-	name := strings.to_lower(strings.trim_space(provider))
+	trimmed := strings.trim_space(provider)
 	for seed in bridge_provider_seed_data() {
-		if strings.to_lower(seed.name) == name do return seed.skill_dir
+		if strings.equal_fold(seed.name, trimmed) do return seed.skill_dir
 	}
 	return "skills"
 }
 
 bridge_provider_profile_from_override :: proc(override: Bridge_Provider_Override) -> Bridge_Provider_Profile {
 	profile := Bridge_Provider_Profile{
-		name = strings.clone(override.name),
+		name = override.name,
 		enabled = true,
 		source = .Store,
 		skill_dir = bridge_provider_default_skill_dir(override.name),
@@ -288,30 +304,30 @@ bridge_provider_profile_from_override :: proc(override: Bridge_Provider_Override
 bridge_provider_apply_override :: proc(profile: Bridge_Provider_Profile, override: Bridge_Provider_Override) -> Bridge_Provider_Profile {
 	result := profile
 	if override.enabled_set do result.enabled = override.enabled
-	if override.command_set do result.command = bridge_clone_string_slice(override.command)
-	if override.yolo_flags_set do result.yolo_flags = bridge_clone_string_slice(override.yolo_flags)
-	if override.prompt_flags_set do result.prompt_flags = bridge_clone_string_slice(override.prompt_flags)
-	if override.starter_prompt_set do result.starter_prompt = strings.clone(override.starter_prompt)
-	if override.prompt_delivery_set do result.prompt_delivery = strings.clone(override.prompt_delivery)
+	if override.command_set do result.command = override.command
+	if override.yolo_flags_set do result.yolo_flags = override.yolo_flags
+	if override.prompt_flags_set do result.prompt_flags = override.prompt_flags
+	if override.starter_prompt_set do result.starter_prompt = override.starter_prompt
+	if override.prompt_delivery_set do result.prompt_delivery = override.prompt_delivery
 	if override.prompt_tmux_delay_ms_set do result.prompt_tmux_delay_ms = override.prompt_tmux_delay_ms
 	if override.prompt_tmux_enter_set do result.prompt_tmux_enter = override.prompt_tmux_enter
-	if override.agent_run_dir_set do result.agent_run_dir = strings.clone(override.agent_run_dir)
+	if override.agent_run_dir_set do result.agent_run_dir = override.agent_run_dir
 	if override.use_random_dir_set do result.use_random_dir = override.use_random_dir
-	if override.skill_dir_set do result.skill_dir = strings.clone(override.skill_dir)
-	if override.bootstrap_file_name_set do result.bootstrap_file_name = strings.clone(override.bootstrap_file_name)
-	if override.logo_set do result.logo = strings.clone(override.logo)
-	if override.models_flag_set do result.models.flag = strings.clone(override.models.flag)
-	if override.models_cheap_set do result.models.cheap = strings.clone(override.models.cheap)
-	if override.models_normal_set do result.models.normal = strings.clone(override.models.normal)
-	if override.models_smart_set do result.models.smart = strings.clone(override.models.smart)
+	if override.skill_dir_set do result.skill_dir = override.skill_dir
+	if override.bootstrap_file_name_set do result.bootstrap_file_name = override.bootstrap_file_name
+	if override.logo_set do result.logo = override.logo
+	if override.models_flag_set do result.models.flag = override.models.flag
+	if override.models_cheap_set do result.models.cheap = override.models.cheap
+	if override.models_normal_set do result.models.normal = override.models.normal
+	if override.models_smart_set do result.models.smart = override.models.smart
 	if override.startup_enabled_set do result.startup_detection.enabled = override.startup_detection.enabled
 	if override.startup_probe_set do result.startup_detection.startup_probe_seconds = override.startup_detection.startup_probe_seconds
 	if override.startup_capture_set do result.startup_detection.capture_interval_ms = override.startup_detection.capture_interval_ms
-	if override.startup_blocked_patterns_set do result.startup_detection.blocked_patterns = bridge_clone_string_slice(override.startup_detection.blocked_patterns)
-	if override.startup_auto_enter_patterns_set do result.startup_detection.auto_enter_patterns = bridge_clone_string_slice(override.startup_detection.auto_enter_patterns)
-	if override.startup_auto_enter_pre_keys_set do result.startup_detection.auto_enter_pre_keys = bridge_clone_string_slice(override.startup_detection.auto_enter_pre_keys)
+	if override.startup_blocked_patterns_set do result.startup_detection.blocked_patterns = override.startup_detection.blocked_patterns
+	if override.startup_auto_enter_patterns_set do result.startup_detection.auto_enter_patterns = override.startup_detection.auto_enter_patterns
+	if override.startup_auto_enter_pre_keys_set do result.startup_detection.auto_enter_pre_keys = override.startup_detection.auto_enter_pre_keys
 	if override.startup_unknown_blocked_set do result.startup_detection.startup_unknown_is_blocked = override.startup_detection.startup_unknown_is_blocked
-	if override.startup_reason_mapping_set do result.startup_detection.sanitized_reason_mapping = bridge_clone_string_slice(override.startup_detection.sanitized_reason_mapping)
+	if override.startup_reason_mapping_set do result.startup_detection.sanitized_reason_mapping = override.startup_detection.sanitized_reason_mapping
 	if override.activity_enabled_set do result.activity_detection.enabled = override.activity_detection.enabled
 	if override.activity_sample_lines_set do result.activity_detection.sample_line_count = override.activity_detection.sample_line_count
 	if override.activity_ignore_bottom_set do result.activity_detection.ignore_bottom_lines = override.activity_detection.ignore_bottom_lines
@@ -329,6 +345,7 @@ bridge_default_provider_name :: proc() -> string {
 
 bridge_default_provider_profile :: proc() -> (Bridge_Provider_Profile, bool) {
 	profiles := bridge_effective_provider_profiles()
+	defer delete(profiles)
 	if bridge_provider_default_provider_value != "" {
 		for profile in profiles {
 			if profile.name == bridge_provider_default_provider_value && profile.enabled && bridge_provider_default_tier(profile) != "" do return profile, true
@@ -342,6 +359,7 @@ bridge_default_provider_profile :: proc() -> (Bridge_Provider_Profile, bool) {
 
 bridge_provider_by_name_or_default :: proc(name: string) -> (Bridge_Provider_Profile, bool) {
 	profiles := bridge_effective_provider_profiles()
+	defer delete(profiles)
 	wanted := strings.trim_space(name)
 	if wanted != "" {
 		for profile in profiles { if profile.name == wanted do return profile, true }
@@ -360,6 +378,7 @@ bridge_provider_default_tier :: proc(profile: Bridge_Provider_Profile) -> string
 bridge_provider_set_defaults :: proc(provider, tier: string) -> (bool, string) {
 	bridge_provider_store_init()
 	profiles := bridge_effective_provider_profiles()
+	defer delete(profiles)
 	found_provider := false
 	for profile in profiles {
 		if profile.name == provider && profile.enabled && bridge_provider_default_tier(profile) != "" {
@@ -383,6 +402,7 @@ bridge_provider_model_for_tier :: proc(profile: Bridge_Provider_Profile, tier: s
 
 bridge_provider_capabilities_json :: proc() -> string {
 	profiles := bridge_effective_provider_profiles()
+	defer delete(profiles)
 	b := strings.builder_make()
 	strings.write_byte(&b, '[')
 	first_profile := true
@@ -423,6 +443,7 @@ bridge_provider_write_capability_tier :: proc(b: ^strings.Builder, first_tier: ^
 
 bridge_provider_profiles_report_json :: proc(bridge_id: string) -> string {
 	profiles := bridge_effective_provider_profiles()
+	defer delete(profiles)
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"bridge_id\":\"")
 	json_write_string(&b, bridge_id)
@@ -682,6 +703,7 @@ bridge_provider_delete_override :: proc(name: string) -> (bool, string) {
 	sync.mutex_lock(&bridge_provider_mutex)
 	for i in 0..<len(bridge_provider_overrides) {
 		if bridge_provider_overrides[i].name == trimmed {
+			bridge_provider_override_destroy(&bridge_provider_overrides[i])
 			ordered_remove(&bridge_provider_overrides, i)
 			deleted = true
 			break
@@ -881,6 +903,37 @@ bridge_clone_string_slice :: proc(values: []string) -> []string {
 	return out
 }
 
+bridge_delete_string_slice :: proc(slice: []string) {
+	if slice == nil do return
+	for s in slice {
+		delete(s)
+	}
+	delete(slice)
+}
+
+bridge_provider_override_destroy :: proc(override: ^Bridge_Provider_Override) {
+	if override == nil do return
+	if len(override.name) > 0 do delete(override.name)
+	if override.command_set do bridge_delete_string_slice(override.command)
+	if override.yolo_flags_set do bridge_delete_string_slice(override.yolo_flags)
+	if override.prompt_flags_set do bridge_delete_string_slice(override.prompt_flags)
+	if override.starter_prompt_set && len(override.starter_prompt) > 0 do delete(override.starter_prompt)
+	if override.prompt_delivery_set && len(override.prompt_delivery) > 0 do delete(override.prompt_delivery)
+	if override.agent_run_dir_set && len(override.agent_run_dir) > 0 do delete(override.agent_run_dir)
+	if override.skill_dir_set && len(override.skill_dir) > 0 do delete(override.skill_dir)
+	if override.bootstrap_file_name_set && len(override.bootstrap_file_name) > 0 do delete(override.bootstrap_file_name)
+	if override.logo_set && len(override.logo) > 0 do delete(override.logo)
+	if override.models_flag_set && len(override.models.flag) > 0 do delete(override.models.flag)
+	if override.models_cheap_set && len(override.models.cheap) > 0 do delete(override.models.cheap)
+	if override.models_normal_set && len(override.models.normal) > 0 do delete(override.models.normal)
+	if override.models_smart_set && len(override.models.smart) > 0 do delete(override.models.smart)
+	if override.startup_blocked_patterns_set do bridge_delete_string_slice(override.startup_detection.blocked_patterns)
+	if override.startup_auto_enter_patterns_set do bridge_delete_string_slice(override.startup_detection.auto_enter_patterns)
+	if override.startup_auto_enter_pre_keys_set do bridge_delete_string_slice(override.startup_detection.auto_enter_pre_keys)
+	if override.startup_reason_mapping_set do bridge_delete_string_slice(override.startup_detection.sanitized_reason_mapping)
+	override^ = {}
+}
+
 bridge_agent_runtime_profile :: proc(profile: Bridge_Provider_Profile) -> agent_runtime.Agent_Profile {
 	return agent_runtime.Agent_Profile{
 		command = profile.command,
@@ -967,6 +1020,7 @@ bridge_shell_write_quoted :: proc(b: ^strings.Builder, arg: string) {
 
 bridge_provider_startup_log :: proc() {
 	profiles := bridge_effective_provider_profiles()
+	defer delete(profiles)
 	b := strings.builder_make()
 	strings.write_string(&b, "bridge providers: ")
 	strings.write_string(&b, fmt.tprintf("%d detected [", len(profiles)))

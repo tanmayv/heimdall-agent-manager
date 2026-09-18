@@ -122,7 +122,12 @@ bridge_runtime_test_reset :: proc() {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	clear(&bridge_runtime_instances)
-	clear(&bridge_runtime_launches)
+	delete(bridge_runtime_launches)
+	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
+	for s in bridge_runtime_status_outgoing {
+		delete(s, runtime.default_allocator())
+	}
+	clear(&bridge_runtime_status_outgoing)
 }
 
 bridge_hub_runtime_worker :: proc() {
@@ -1485,6 +1490,7 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 
 bridge_hub_heartbeat_json :: proc() -> string {
 	caps := bridge_provider_capabilities_json()
+	defer delete(caps)
 	features := bridge_runtime_features_json()
 	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
@@ -1676,7 +1682,7 @@ bridge_hub_handle_get_shell_output :: proc(conn: ^ws.Connection, text: string) {
 bridge_runtime_enqueue_status_push_locked :: proc(instance_id: string) {
 	if strings.trim_space(instance_id) == "" do return
 	for id in bridge_runtime_status_outgoing do if id == instance_id do return
-	append(&bridge_runtime_status_outgoing, strings.clone(instance_id))
+	append(&bridge_runtime_status_outgoing, strings.clone(instance_id, runtime.default_allocator()))
 }
 
 // bridge_runtime_drain_status_pushes flushes queued immediate status pushes to the
@@ -1692,7 +1698,7 @@ bridge_runtime_drain_status_pushes :: proc(conn: ^ws.Connection) {
 		sync.mutex_unlock(&bridge_runtime_mutex)
 		if id == "" do return
 		payload := bridge_instance_status_json(id)
-		if payload == "" || payload == "{}" { delete(id); continue }
+		if payload == "" || payload == "{}" { delete(id, runtime.default_allocator()); continue }
 		if !bridge_hub_send(conn, payload) {
 			sync.mutex_lock(&bridge_runtime_mutex)
 			inject_at(&bridge_runtime_status_outgoing, 0, id)
@@ -1700,7 +1706,7 @@ bridge_runtime_drain_status_pushes :: proc(conn: ^ws.Connection) {
 			conn.connected = false
 			return
 		}
-		delete(id)
+		delete(id, runtime.default_allocator())
 	}
 }
 
