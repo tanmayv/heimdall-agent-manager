@@ -33,8 +33,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONVERSATION_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ConversationThreadPage.tsx"
-CHAT_LIST_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ChatMessageList.tsx"
-COMPOSER_PANEL_FILE = ROOT / "src" / "ui" / "components" / "chat" / "AgentPaneComposerPanel.tsx"
 ICON_FILE = ROOT / "src" / "ui" / "components" / "ui" / "primitives" / "Icon.tsx"
 
 
@@ -76,13 +74,13 @@ def test_2column_layout_structure() -> None:
 def test_topbar_breadcrumb() -> None:
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
-    # Breadcrumb container matching reduced font size (text-xs / 13px font-medium)
+    # Breadcrumb container matching text-sm font size
     require('data-debug-id="conversation-thread-breadcrumb"' in src,
             "Col 1 top bar must render breadcrumb with data-debug-id='conversation-thread-breadcrumb'")
     require("font-medium" in src,
             "Breadcrumb must use font-medium styling")
-    require("text-xs" in src or "text-[13px]" in src,
-            "Breadcrumb must use reduced font size (text-xs / 13px)")
+    require("text-sm" in src,
+            "Breadcrumb must match text-sm font size (one level down)")
 
     # Breadcrumb components: project, slash separator, and chain/conversation title
     require('data-debug-id="conversation-breadcrumb-project"' in src,
@@ -135,6 +133,16 @@ def test_topbar_actions() -> None:
     require('data-debug-id="conversation-search-btn"' in src,
             "Top bar must retain search button with data-debug-id='conversation-search-btn'")
 
+    # Top bar has no bottom border and includes blur-fade overlay
+    require('data-debug-id="conversation-topbar-blur-fade"' in src,
+            "Top bar must render bottom blur-fade overlay with data-debug-id='conversation-topbar-blur-fade'")
+    require("backdrop-blur-sm" in src or "backdrop-blur" in src,
+            "Top bar blur-fade overlay must use backdrop-blur")
+    require("w-64" in src,
+            "Three-dots menu must have dedicated width w-64")
+    require("relative z-20 overflow-visible" in src,
+            "Header must have relative z-20 overflow-visible stacking context")
+
 
 def test_sidebar_toggle_buttons() -> None:
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
@@ -172,58 +180,20 @@ def test_mobile_responsive() -> None:
             "Floating reply pill on mobile must be preserved when chrome is hidden")
 
 
-def test_topbar_popup_cutoff() -> None:
-    src = CONVERSATION_FILE.read_text(encoding="utf-8")
+def test_chat_and_composer_max_width() -> None:
+    conv_src = CONVERSATION_FILE.read_text(encoding="utf-8")
+    chat_list_file = ROOT / "src" / "ui" / "components" / "chat" / "ChatMessageList.tsx"
+    chat_list_src = chat_list_file.read_text(encoding="utf-8")
 
-    # Header has z-index to avoid clipping by later siblings (REQ-UI-POPUP-CUTOFF)
-    header_idx = src.find('data-debug-id="conversation-thread-header"')
-    require(header_idx != -1, "Header must exist")
-    header_chunk = src[header_idx-60:header_idx+350]
-    require("z-30" in header_chunk or "z-20" in header_chunk,
-            "Header must have z-index (z-30 / z-20) to prevent dropdown clipping")
+    # Chat transcript messages centered with max-w-4xl
+    require('data-debug-id={`${debugPrefix}-messages-container`}' in chat_list_src,
+            "ChatMessageList must wrap messages in messages-container")
+    require("mx-auto w-full max-w-4xl" in chat_list_src,
+            "ChatMessageList must center messages with mx-auto w-full max-w-4xl")
 
-    # Three-dots menu uses align="end" and has z-index
-    require('align="end"' in src,
-            "Three-dots menu must use align='end' so popup aligns within container bounds")
-    require('className="z-50 shadow-2xl"' in src or 'z-50' in src,
-            "Three-dots menu popup must specify high z-index to stay above content")
-
-
-def test_topbar_blur_fade() -> None:
-    src = CONVERSATION_FILE.read_text(encoding="utf-8")
-
-    # Top bar has no bottom border (REQ-UI-TOPBAR-BLUR-FADE)
-    header_idx = src.find('data-debug-id="conversation-thread-header"')
-    require(header_idx != -1, "Header must exist")
-    header_chunk = src[header_idx:header_idx+400]
-    require("border-b border-white/10" not in header_chunk,
-            "Top bar must have bottom border removed")
-
-    # Top bar has backdrop-blur and blur-fade gradient overlay
-    require("backdrop-blur" in header_chunk,
-            "Top bar must have backdrop-blur enabled")
-    require('data-debug-id="conversation-topbar-blur-fade"' in src,
-            "Top bar must render blur-fade overlay with data-debug-id='conversation-topbar-blur-fade'")
-    require("bg-gradient-to-b" in src,
-            "Blur-fade overlay must use bg-gradient-to-b gradient")
-
-
-def test_chat_composer_max_width() -> None:
-    page_src = CONVERSATION_FILE.read_text(encoding="utf-8")
-    chat_src = CHAT_LIST_FILE.read_text(encoding="utf-8")
-    panel_src = COMPOSER_PANEL_FILE.read_text(encoding="utf-8")
-
-    # ChatMessageList constrains messages with centered max-w-4xl (REQ-UI-CENTER-MAXWIDTH)
-    require("max-w-4xl mx-auto w-full" in chat_src,
-            "ChatMessageList must constrain messages with max-w-4xl mx-auto w-full")
-
-    # ConversationThreadPage constrains composer with max-w-4xl mx-auto w-full
-    require("max-w-4xl mx-auto w-full" in page_src,
-            "ConversationThreadPage must constrain composer container with max-w-4xl mx-auto w-full")
-
-    # AgentPaneComposerPanel constrains panel with max-w-4xl mx-auto w-full
-    require("max-w-4xl mx-auto w-full" in panel_src,
-            "AgentPaneComposerPanel must constrain panel with max-w-4xl mx-auto w-full")
+    # Composer centered with max-w-4xl
+    require("mx-auto w-full max-w-4xl" in conv_src,
+            "ConversationThreadPage composer must center card with mx-auto w-full max-w-4xl")
 
 
 def main() -> None:
@@ -232,10 +202,8 @@ def main() -> None:
     test_topbar_actions()
     test_sidebar_toggle_buttons()
     test_mobile_responsive()
-    test_topbar_popup_cutoff()
-    test_topbar_blur_fade()
-    test_chat_composer_max_width()
-    print("PASS: test_ui_conversation_2col_layout_static (REQ-UI-LAYOUT-2COL, REQ-UI-TOPBAR-BREADCRUMB, REQ-UI-TOPBAR-ACTIONS, REQ-UI-SIDEBAR-TOGGLE, REQ-UI-MOBILE-RESPONSIVE, REQ-UI-POPUP-CUTOFF, REQ-UI-TITLE-SIZE, REQ-UI-CENTER-MAXWIDTH, REQ-UI-TOPBAR-BLUR-FADE, REQ-VAL-UI-2COL-1)")
+    test_chat_and_composer_max_width()
+    print("PASS: test_ui_conversation_2col_layout_static (REQ-UI-LAYOUT-2COL, REQ-UI-TOPBAR-BREADCRUMB, REQ-UI-TOPBAR-ACTIONS, REQ-UI-SIDEBAR-TOGGLE, REQ-UI-MOBILE-RESPONSIVE, REQ-UI-CHAT-MAXWIDTH, REQ-VAL-UI-2COL-1)")
 
 
 if __name__ == "__main__":

@@ -1525,7 +1525,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             : 'max-h-[800px] px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3 translate-y-0 opacity-100 pointer-events-auto'
         }`}
       >
-        <div className="max-w-4xl mx-auto w-full">
+        <div className="mx-auto w-full max-w-4xl">
           {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
               above the composer (co-located with the working indicator). */}
           <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
@@ -1553,7 +1553,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           {/* Composer card: immutable context row (bridge · project + status) on top,
               input in the middle, action toolbar (attach/terminal · model switcher ·
               send) on the bottom. */}
-          <div data-debug-id="conversation-composer-card" className="max-w-4xl mx-auto w-full rounded-[22px] border border-white/10 bg-[#161618] px-3 py-2.5 focus-within:border-sky-400/50 sm:px-4 sm:py-3">
+          <div data-debug-id="conversation-composer-card" className="rounded-[22px] border border-white/10 bg-[#161618] px-3 py-2.5 focus-within:border-sky-400/50 sm:px-4 sm:py-3">
           <div data-debug-id="conversation-composer-context" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-zinc-500">
             <span data-debug-id="conversation-composer-bridge-chip" className="inline-flex min-w-0 max-w-[45%] items-center gap-1.5" title={`Bridge: ${bridgeLabel || '—'} (fixed for this conversation)`}>
               <Icon name="lock" size={12} /><span className="min-w-0 truncate font-semibold text-zinc-400">{bridgeLabel || 'no bridge'}</span>
@@ -1598,7 +1598,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             onToggleExpand={() => setIsPaneExpanded((prev) => !prev)}
             isActiveTab={true}
             runtimeStatus={runtimeStatus}
-            className="mb-2.5 max-w-4xl mx-auto w-full"
+            className="mb-2.5"
           />
 
           <div className="relative">
@@ -1733,13 +1733,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"><Icon name="arrow-up" size={18} /></button>
           </div>
         </div>
-        </div>
+      </div>
       </form>
     );
   }
 
   const transcript = (
-    <div data-debug-id="conversation-thread-transcript" className="h-full w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:-mt-14 sm:px-4 sm:pb-3">
+    <div data-debug-id="conversation-thread-transcript" className="h-full w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
       <ChatMessageList
         conversationKey={conversationId}
         messages={chatMessages}
@@ -1754,7 +1754,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         agentIsWorking={isWorking}
         renderMessageBody={({ message }) => renderConversationMessageBody(message)}
         wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-        scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:pt-16 sm:pb-4"
+        scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
         emptyState={messagesQuery.isFetching ? (
           <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-zinc-500">Loading messages…</div>
         ) : (
@@ -1797,21 +1797,21 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         {/* Scoped top bar in Col 1: narrows automatically when sidebar opens */}
         <header
           data-debug-id="conversation-thread-header"
-          className={`relative z-30 flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 bg-[#090909]/80 backdrop-blur-md transition-all duration-300 ease-in-out ${
+          className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out relative z-20 overflow-visible ${
             isMobile
-              ? `fixed top-0 inset-x-0 h-14 ${
+              ? `fixed top-0 inset-x-0 z-20 h-14 bg-[#0c0c0c]/90 backdrop-blur-md ${
                   !chromeVisible
                     ? '-translate-y-full opacity-0 pointer-events-none'
                     : 'translate-y-0 opacity-100 pointer-events-auto'
                 }`
-              : 'h-14 max-h-16 py-2 translate-y-0 opacity-100 pointer-events-auto'
+              : 'max-h-16 py-2 bg-[#090909]/90 backdrop-blur-md translate-y-0 opacity-100 pointer-events-auto'
           }`}
         >
-          {/* Top bar blur-fade effect overlay across the header bottom */}
+          {/* Bottom blur-fade gradient overlay: blurs and softly fades text scrolling underneath */}
           <div
             data-debug-id="conversation-topbar-blur-fade"
+            className="pointer-events-none absolute left-0 right-0 -bottom-6 h-6 bg-gradient-to-b from-[#090909]/90 via-[#090909]/50 to-transparent backdrop-blur-sm z-10"
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-full h-8 bg-gradient-to-b from-[#090909]/90 via-[#090909]/50 to-transparent backdrop-blur-sm"
           />
 
           <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5">
@@ -1825,17 +1825,17 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                     if (event.key === 'Enter') { event.preventDefault(); void saveConversationTitle(); }
                     if (event.key === 'Escape') { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }
                   }}
-                  className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-xs font-medium text-white outline-none focus:border-sky-400/60 sm:text-[13px]"
+                  className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-base font-semibold text-white outline-none focus:border-sky-400/60 sm:text-sm"
                   autoFocus
                 />
                 <button type="button" data-debug-id="conversation-thread-title-save-btn" aria-label="Save conversation title" title="Save" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:opacity-50"><Icon name="check" size={16} /></button>
                 <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
               </div>
             ) : (
-              <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-xs font-medium sm:text-[13px]">
+              <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
                 <span data-debug-id="conversation-breadcrumb-project" className="truncate text-zinc-400">{projectName || 'Project'}</span>
                 <span className="shrink-0 text-zinc-600">/</span>
-                <h2 data-debug-id="conversation-thread-title" className="truncate text-xs font-medium text-white sm:text-[13px]">{chainTitle || title}</h2>
+                <h2 data-debug-id="conversation-thread-title" className="truncate text-sm font-medium text-white">{chainTitle || title}</h2>
               </div>
             )}
             {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
@@ -1852,13 +1852,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             <UiIcon name="search" size={16} />
           </button>
 
-          <div className="relative shrink-0 z-30">
+          <div className="shrink-0">
             <Menu
               align="end"
               label="Conversation options"
               open={headerActionsOpen}
               onOpenChange={setHeaderActionsOpen}
-              className="z-50 shadow-2xl"
+              className="w-64 max-w-[calc(100vw-2rem)] z-30"
               trigger={
                 <button
                   type="button"
@@ -1886,7 +1886,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 <span>Refresh messages</span>
               </Menu.Item>
               <Menu.Separator />
-              <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1 text-caption leading-5 text-zinc-500">
+              <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1.5 text-caption leading-5 text-zinc-500 overflow-hidden">
                 <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
                 <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
                 <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
