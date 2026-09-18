@@ -1236,6 +1236,25 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     window.location.hash = buildRouteHash(route, '');
   };
 
+  const handlePaletteAction = (actionId: string) => {
+    switch (actionId) {
+      case 'new-conversation':
+        handlePaletteNavigate('/conversations/new');
+        break;
+      case 'new-agent':
+        handlePaletteNavigate('/agents/new');
+        break;
+      case 'new-chain':
+        handlePaletteNavigate('/chains');
+        break;
+      case 'new-project':
+        handlePaletteNavigate('/projects');
+        break;
+      default:
+        break;
+    }
+  };
+
   useEffect(() => {
     const handleMobileChrome = (event: Event) => {
       const customEvent = event as CustomEvent<{ visible?: boolean }>;
@@ -1383,7 +1402,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         />
       ) : null}
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, isCoordinator: c.isCoordinator, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} onAction={handlePaletteAction} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, isCoordinator: c.isCoordinator, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
       <ProjectLaunchModal
         isOpen={Boolean(launchModalProject)}
         project={launchModalProject}
