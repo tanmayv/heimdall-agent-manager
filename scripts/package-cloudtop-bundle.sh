@@ -178,6 +178,9 @@ find_port_pids() {
 check_and_resolve_conflicts() {
   local force="${1:-false}"
   local conflict_ports=(49322 49323 49325 8989)
+  if [ "${IS_STANDALONE:-false}" = true ]; then
+    conflict_ports=("$BRIDGE_PORT")
+  fi
   local occupied_pids=""
   local has_conflict=false
   local service_active_or_looping=false
@@ -188,7 +191,12 @@ check_and_resolve_conflicts() {
     is_own_unit=true
   fi
 
-  if [ "$is_own_unit" = false ] && command -v systemctl >/dev/null 2>&1; then
+  local should_check_systemd=true
+  if [ "${IS_STANDALONE:-false}" = true ] && [ "$DATA_DIR" != "$HOME/.local/share/heimdall" ]; then
+    should_check_systemd=false
+  fi
+
+  if [ "$is_own_unit" = false ] && [ "$should_check_systemd" = true ] && command -v systemctl >/dev/null 2>&1; then
     local active_state sub_state n_restarts main_pid
     active_state="$(systemctl --user show heimdall.service -p ActiveState --value 2>/dev/null || true)"
     sub_state="$(systemctl --user show heimdall.service -p SubState --value 2>/dev/null || true)"
@@ -216,7 +224,11 @@ check_and_resolve_conflicts() {
 
   # 3. Check existing pid files in RUN_DIR
   if [ -d "$RUN_DIR" ]; then
-    for pf in "$RUN_DIR"/*.pid; do
+    local pid_files=("$RUN_DIR"/*.pid)
+    if [ "${IS_STANDALONE:-false}" = true ]; then
+      pid_files=("$RUN_DIR/bridge.pid")
+    fi
+    for pf in "${pid_files[@]}"; do
       if [ -f "$pf" ]; then
         local pid
         pid="$(tr -d '[:space:]' < "$pf" 2>/dev/null || true)"
@@ -266,7 +278,7 @@ check_and_resolve_conflicts() {
   fi
 
   # Stop systemd unit if running or looping
-  if [ "$is_own_unit" = false ] && command -v systemctl >/dev/null 2>&1; then
+  if [ "$is_own_unit" = false ] && [ "$should_check_systemd" = true ] && command -v systemctl >/dev/null 2>&1; then
     echo "[conflict] Stopping systemd user service heimdall.service..."
     systemctl --user stop heimdall.service 2>/dev/null || true
   fi
@@ -291,8 +303,13 @@ check_and_resolve_conflicts() {
 
   # Clean stale pid files in RUN_DIR
   if [ -d "$RUN_DIR" ]; then
-    echo "[conflict] Cleaning stale pid files in $RUN_DIR..."
-    rm -f "$RUN_DIR"/*.pid
+    if [ "${IS_STANDALONE:-false}" = true ]; then
+      echo "[conflict] Cleaning stale pid files in $RUN_DIR..."
+      rm -f "$RUN_DIR/bridge.pid"
+    else
+      echo "[conflict] Cleaning stale pid files in $RUN_DIR..."
+      rm -f "$RUN_DIR"/*.pid
+    fi
   fi
 
   # Ensure ports are freed
@@ -353,6 +370,22 @@ if [ -f "$DATA_DIR/standalone.env" ]; then
   fi
 fi
 
+BRIDGE_PORT="${HEIMDALL_BRIDGE_PORT:-49323}"
+BRIDGE_ENDPOINT_PORT="${HEIMDALL_BRIDGE_ENDPOINT_PORT:-49324}"
+BRIDGE_RUN_DIR="${HEIMDALL_BRIDGE_RUN_DIR:-/tmp/heimdall-bridge-local}"
+
+if [ "$IS_STANDALONE" = true ]; then
+  # Detect if default port 49323 is already in use before conflict check
+  if python3 -c "import socket; s=socket.socket(); s.settimeout(0.1); exit(0 if s.connect_ex(('127.0.0.1', int('$BRIDGE_PORT'))) == 0 else 1)" 2>/dev/null || [ -n "$(find_port_pids "$BRIDGE_PORT")" ]; then
+    if [ "$BRIDGE_PORT" = "49323" ]; then
+      echo "[bridge] Port 49323 is occupied; using fallback port 49325 for standalone bridge"
+      BRIDGE_PORT=49325
+      BRIDGE_ENDPOINT_PORT=49326
+      BRIDGE_RUN_DIR="/tmp/heimdall-bridge-standalone"
+    fi
+  fi
+fi
+
 # 1.5 Inspect and resolve port / service conflicts
 check_and_resolve_conflicts "$FORCE"
 
@@ -377,20 +410,7 @@ if [ "$IS_STANDALONE" = true ]; then
 
   BRIDGE_LOG="$LOG_DIR/bridge.log"
   BRIDGE_PID_FILE="$RUN_DIR/bridge.pid"
-  BRIDGE_PORT="${HEIMDALL_BRIDGE_PORT:-49323}"
-  BRIDGE_ENDPOINT_PORT="${HEIMDALL_BRIDGE_ENDPOINT_PORT:-49324}"
-  BRIDGE_RUN_DIR="${HEIMDALL_BRIDGE_RUN_DIR:-/tmp/heimdall-bridge-local}"
   BRIDGE_TOKEN_FILE="$DATA_DIR/bridge_token_cloudtop"
-
-  # Detect if default port 49323 is already in use
-  if python3 -c "import socket; s=socket.socket(); s.settimeout(0.1); exit(0 if s.connect_ex(('127.0.0.1', int('$BRIDGE_PORT'))) == 0 else 1)" 2>/dev/null; then
-    if [ "$BRIDGE_PORT" = "49323" ]; then
-      echo "[bridge] Port 49323 is occupied; using port 49325 for bridge"
-      BRIDGE_PORT=49325
-      BRIDGE_ENDPOINT_PORT=49326
-      BRIDGE_RUN_DIR="/tmp/heimdall-bridge-standalone"
-    fi
-  fi
 
   if [ -f "$BRIDGE_PID_FILE" ] && kill -0 "$(cat "$BRIDGE_PID_FILE")" 2>/dev/null; then
     echo "[bridge] Already running (PID $(cat "$BRIDGE_PID_FILE"))"

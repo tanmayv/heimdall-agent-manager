@@ -334,9 +334,27 @@ find_port_pids() {
   echo "$found" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u || true
 }
 
+# Determine BRIDGE_PORT early in standalone mode (default 49325 if 49323 is in use, or $HEIMDALL_BRIDGE_PORT)
+BRIDGE_PORT="${HEIMDALL_BRIDGE_PORT:-}"
+if [ "${MODE:-}" = "standalone" ]; then
+  if [ -z "$BRIDGE_PORT" ]; then
+    if python3 -c "import socket; s=socket.socket(); s.settimeout(0.1); exit(0 if s.connect_ex(('127.0.0.1', 49323)) == 0 else 1)" 2>/dev/null || [ -n "$(find_port_pids 49323)" ]; then
+      echo "[install] Port 49323 is occupied; selecting fallback port 49325 for standalone bridge"
+      BRIDGE_PORT=49325
+    else
+      BRIDGE_PORT=49323
+    fi
+  fi
+else
+  BRIDGE_PORT="${BRIDGE_PORT:-49323}"
+fi
+
 check_and_resolve_conflicts() {
   local force="${1:-false}"
   local conflict_ports=(49322 49323 49325 8989)
+  if [ "${MODE:-}" = "standalone" ]; then
+    conflict_ports=("${BRIDGE_PORT:-49323}")
+  fi
   local occupied_pids=""
   local has_conflict=false
   local service_active_or_looping=false
@@ -347,7 +365,12 @@ check_and_resolve_conflicts() {
     is_own_unit=true
   fi
 
-  if [ "$is_own_unit" = false ] && command -v systemctl >/dev/null 2>&1; then
+  local should_check_systemd=true
+  if [ "${MODE:-}" = "standalone" ] && [ "${DATA_DIR:-}" != "$HOME/.local/share/heimdall" ]; then
+    should_check_systemd=false
+  fi
+
+  if [ "$is_own_unit" = false ] && [ "$should_check_systemd" = true ] && command -v systemctl >/dev/null 2>&1; then
     local active_state sub_state n_restarts main_pid
     active_state="$(systemctl --user show heimdall.service -p ActiveState --value 2>/dev/null || true)"
     sub_state="$(systemctl --user show heimdall.service -p SubState --value 2>/dev/null || true)"
@@ -375,7 +398,11 @@ check_and_resolve_conflicts() {
 
   # 3. Check existing pid files in RUN_DIR
   if [ -d "$RUN_DIR" ]; then
-    for pf in "$RUN_DIR"/*.pid; do
+    local pid_files=("$RUN_DIR"/*.pid)
+    if [ "${MODE:-}" = "standalone" ]; then
+      pid_files=("$RUN_DIR/bridge.pid")
+    fi
+    for pf in "${pid_files[@]}"; do
       if [ -f "$pf" ]; then
         local pid
         pid="$(tr -d '[:space:]' < "$pf" 2>/dev/null || true)"
@@ -425,7 +452,7 @@ check_and_resolve_conflicts() {
   fi
 
   # Stop systemd unit if running or looping
-  if [ "$is_own_unit" = false ] && command -v systemctl >/dev/null 2>&1; then
+  if [ "$is_own_unit" = false ] && [ "$should_check_systemd" = true ] && command -v systemctl >/dev/null 2>&1; then
     echo "[conflict] Stopping systemd user service heimdall.service..."
     systemctl --user stop heimdall.service 2>/dev/null || true
   fi
@@ -450,8 +477,13 @@ check_and_resolve_conflicts() {
 
   # Clean stale pid files in RUN_DIR
   if [ -d "$RUN_DIR" ]; then
-    echo "[conflict] Cleaning stale pid files in $RUN_DIR..."
-    rm -f "$RUN_DIR"/*.pid
+    if [ "${MODE:-}" = "standalone" ]; then
+      echo "[conflict] Cleaning stale pid files in $RUN_DIR..."
+      rm -f "$RUN_DIR/bridge.pid"
+    else
+      echo "[conflict] Cleaning stale pid files in $RUN_DIR..."
+      rm -f "$RUN_DIR"/*.pid
+    fi
   fi
 
   # Ensure ports are freed
@@ -562,38 +594,56 @@ HOST_FQDN="$(hostname | sed 's/\.c\.googlers\.com$//').c.googlers.com"
 
 # 5. Mode-specific configuration
 if [ "$MODE" = "standalone" ]; then
+  BRIDGE_ENDPOINT_PORT="${HEIMDALL_BRIDGE_ENDPOINT_PORT:-$([ "$BRIDGE_PORT" = "49325" ] && echo "49326" || echo "49324")}"
+  BRIDGE_RUN_DIR="${HEIMDALL_BRIDGE_RUN_DIR:-$([ "$BRIDGE_PORT" = "49325" ] && echo "/tmp/heimdall-bridge-standalone" || echo "/tmp/heimdall-bridge-local")}"
+
   # Write standalone configuration file
   cat << CONFFILE > "$DATA_DIR/standalone.env"
 # Heimdall Standalone Remote Bridge Configuration
 HEIMDALL_STANDALONE=true
 HEIMDALL_HUB_URL=$HUB_URL
+HEIMDALL_BRIDGE_PORT=$BRIDGE_PORT
+HEIMDALL_BRIDGE_ENDPOINT_PORT=$BRIDGE_ENDPOINT_PORT
+HEIMDALL_BRIDGE_RUN_DIR=$BRIDGE_RUN_DIR
 CONFFILE
   chmod 0600 "$DATA_DIR/standalone.env"
+  export HEIMDALL_BRIDGE_PORT="$BRIDGE_PORT"
+  export HEIMDALL_BRIDGE_ENDPOINT_PORT="$BRIDGE_ENDPOINT_PORT"
+  export HEIMDALL_BRIDGE_RUN_DIR="$BRIDGE_RUN_DIR"
 
   # Enroll Bridge with Central Hub
   echo "[install] Enrolling remote bridge with Central Hub at $HUB_URL..."
   BRIDGE_TOKEN_FILE="$DATA_DIR/bridge_token_cloudtop"
   export HEIMDALL_HAM_PTY_HOST_BIN="$BIN_DIR/ham-pty-host"
   export HEIMDALL_HAM_CTL_BIN="$BIN_DIR/ham-ctl"
-  "$BIN_DIR/ham-bridge" enroll     --hub "$HUB_URL"     --enrollment-token "$ENROLLMENT_TOKEN"     --name "$(hostname -s)"     --user "${USER:-$(whoami)}"     --bridge-token-file "$BRIDGE_TOKEN_FILE"
+  "$BIN_DIR/ham-bridge" enroll \
+    --hub "$HUB_URL" \
+    --enrollment-token "$ENROLLMENT_TOKEN" \
+    --name "$(hostname -s)" \
+    --user "${USER:-$(whoami)}" \
+    --bridge-token-file "$BRIDGE_TOKEN_FILE"
 
-  # Configure systemd user unit
-  if [ -f "$BUNDLE_DIR/scripts/install-systemd-service.sh" ]; then
-    echo "[install] Configuring systemd --user service..."
-    bash "$BUNDLE_DIR/scripts/install-systemd-service.sh" || true
-  elif [ -f "$ROOT_DIR/scripts/install-systemd-service.sh" ]; then
-    echo "[install] Configuring systemd --user service..."
-    bash "$ROOT_DIR/scripts/install-systemd-service.sh" || true
+  # Configure systemd user unit (only for default DATA_DIR)
+  if [ "$DATA_DIR" = "$HOME/.local/share/heimdall" ]; then
+    if [ -f "$BUNDLE_DIR/scripts/install-systemd-service.sh" ]; then
+      echo "[install] Configuring systemd --user service..."
+      bash "$BUNDLE_DIR/scripts/install-systemd-service.sh" || true
+    elif [ -f "$ROOT_DIR/scripts/install-systemd-service.sh" ]; then
+      echo "[install] Configuring systemd --user service..."
+      bash "$ROOT_DIR/scripts/install-systemd-service.sh" || true
+    fi
+  else
+    echo "[install] Custom HEIMDALL_DATA_DIR ($DATA_DIR) in use; skipping systemd user service configuration."
   fi
 
   # Launch Bridge
-  echo "[install] Launching Heimdall Remote Bridge..."
-  if command -v systemctl >/dev/null 2>&1 && [ -f "$HOME/.config/systemd/user/heimdall.service" ]; then
+  echo "[install] Launching Heimdall Remote Bridge on port $BRIDGE_PORT..."
+  if [ "$DATA_DIR" = "$HOME/.local/share/heimdall" ] && command -v systemctl >/dev/null 2>&1 && [ -f "$HOME/.config/systemd/user/heimdall.service" ]; then
     echo "[install] Starting via systemd user service..."
     systemctl --user daemon-reload || true
-    systemctl --user restart heimdall.service || systemctl --user start heimdall.service || "$BIN_DIR/start.sh" ${FORCE:+--force}
+    systemctl --user restart heimdall.service || systemctl --user start heimdall.service || "$BIN_DIR/start.sh" --standalone ${FORCE:+--force}
   else
-    "$BIN_DIR/start.sh" ${FORCE:+--force}
+    "$BIN_DIR/start.sh" --standalone ${FORCE:+--force}
   fi
 
   HUB_UI_URL="$(echo "$HUB_URL" | sed -e 's/:49322/:8989/')"
@@ -608,7 +658,7 @@ CONFFILE
   echo "  👉 Open Central Web UI to manage agents & tasks:"
   echo "    $HUB_UI_URL"
   echo ""
-  echo "  Local Bridge Status: http://127.0.0.1:49323"
+  echo "  Local Bridge Status: http://127.0.0.1:$BRIDGE_PORT"
   echo "  Data Directory:      $DATA_DIR"
   echo "  CLI Tool:            $LOCAL_BIN/ham-ctl (or 'ham-ctl' in PATH)"
   echo ""
