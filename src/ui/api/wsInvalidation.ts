@@ -198,6 +198,99 @@ function applyChatMessageToCaches(dispatch: any, message: ChatMessage, rawMessag
   }
 }
 
+type InFlightTaskEntry = {
+  inFlight: boolean;
+  pending: boolean;
+};
+
+const inFlightTasks = new Map<string, InFlightTaskEntry>();
+
+export function getInFlightTaskCount(): number {
+  return inFlightTasks.size;
+}
+
+export function resetInFlightTasksForTest(): void {
+  inFlightTasks.clear();
+}
+
+// Directly patches a task into RTK Query caches (fetchTask, fetchChainTaskDetail,
+// fetchTaskChainDetail, and fetchChainTasks) so the sidebar task chain overview and
+// thread page progress update in real time without a manual page refresh.
+export function patchTaskInChainCaches(dispatch: any, normalizedTask: any, explicitChainId?: string) {
+  if (!normalizedTask?.taskId && !normalizedTask?.id) return;
+  const taskId = String(normalizedTask.taskId || normalizedTask.id);
+  const chainId = String(explicitChainId || normalizedTask.chainId || '');
+
+  // 1. Update fetchTask query
+  dispatch(tasksApi.util.upsertQueryData('fetchTask', { taskId }, { task: normalizedTask }));
+
+  if (chainId) {
+    // 2. Update fetchChainTaskDetail query (used when task detail/description is expanded)
+    dispatch(tasksApi.util.upsertQueryData('fetchChainTaskDetail', { chainId, taskId }, { task: normalizedTask }));
+
+    // 3. Patch fetchTaskChainDetail query (used by TaskChainOverview in the sidebar and thread page)
+    dispatch(tasksApi.util.updateQueryData('fetchTaskChainDetail', { chainId }, (draft: any) => {
+      if (!draft?.chain) return;
+      const list = draft.chain.tasks || (draft.chain.tasks = []);
+      const idx = list.findIndex((t: any) => String(t.taskId || t.id) === taskId);
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], ...normalizedTask };
+      } else {
+        list.push(normalizedTask);
+      }
+    }));
+
+    // 4. Patch fetchChainTasks query
+    dispatch(tasksApi.util.updateQueryData('fetchChainTasks', { chainId }, (draft: any) => {
+      if (!draft) return;
+      upsertTaskInList(draft.tasks || (draft.tasks = []), normalizedTask);
+    }));
+  }
+}
+
+// Auto-loads the single corresponding task from the server with in-flight deduplication
+// and coalescing. If multiple WS events arrive for the same task in rapid succession,
+// exactly one request is in-flight at a time, followed by at most one pending re-fetch.
+export function autoLoadTaskFromWs(dispatch: any, chainId: string, taskId: string): void {
+  if (!taskId) return;
+  const key = `${chainId || ''}:${taskId}`;
+  const existing = inFlightTasks.get(key);
+  if (existing?.inFlight) {
+    existing.pending = true;
+    return;
+  }
+  inFlightTasks.set(key, { inFlight: true, pending: false });
+
+  const executeFetch = () => {
+    const fetchAction = chainId
+      ? tasksApi.endpoints.fetchChainTaskDetail.initiate({ chainId, taskId }, { subscribe: false, forceRefetch: true })
+      : tasksApi.endpoints.fetchTask.initiate({ taskId }, { subscribe: false, forceRefetch: true });
+
+    dispatch(fetchAction)
+      .unwrap()
+      .then((data: any) => {
+        const rawTask = data?.task;
+        if (!rawTask) return;
+        const normalized = rawTask.taskId ? rawTask : normalizeTask(rawTask);
+        patchTaskInChainCaches(dispatch, normalized, chainId);
+      })
+      .catch((_err: any) => {
+        /* silent catch: network failure or task was deleted */
+      })
+      .finally(() => {
+        const entry = inFlightTasks.get(key);
+        if (entry?.pending) {
+          entry.pending = false;
+          executeFetch();
+        } else {
+          inFlightTasks.delete(key);
+        }
+      });
+  };
+
+  executeFetch();
+}
+
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function handleTaskEvent(dispatch: any, payload: any) {
   dispatch(taskEventReceived(payload));
@@ -222,42 +315,17 @@ function handleTaskEvent(dispatch: any, payload: any) {
   const chainId = String(payload.chain_id || payload.chain?.chain_id || payload.task?.chain_id || '');
   dispatch(wsRefreshRequested(`task_event:${chainId || taskId || 'unknown'}`));
 
-  // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-  const patchTaskCaches = (normalizedTask: any) => {
-    if (!normalizedTask?.taskId) return;
-    dispatch(tasksApi.util.upsertQueryData('fetchTask', { taskId: normalizedTask.taskId }, { task: normalizedTask }));
-    if (chainId) {
-      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-      dispatch(tasksApi.util.updateQueryData('fetchChainTasks', { chainId }, (draft: any) => {
-        if (!draft) return;
-        upsertTaskInList(draft.tasks || (draft.tasks = []), normalizedTask);
-      }));
-    }
-  };
-
   if (payload.task && taskId) {
-    patchTaskCaches(normalizeTask(payload.task));
-  } else if (payload.fetch_required && taskId) {
-    // Oversized task/chain records arrive as a compact fetch_required event.
-    // In practice this is the common case (full task+chain JSON exceeds the WS
-    // inline limit for any real chain), so this path MUST fetch authoritative
-    // state. forceRefetch is required: without it RTK Query dedupes against the
-    // stale cache entry and the status/comments never change in the UI.
-    // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    dispatch(tasksApi.endpoints.fetchTask.initiate({ taskId }, { subscribe: false, forceRefetch: true })).unwrap().then((data: any) => {
-      patchTaskCaches(data?.task);
-    }).catch(() => undefined);
-    // The compact fallback omits the chain payload and comment_id, so refetch the
-    // authoritative task log (comments live here) for any open task-detail view.
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskLog', id: taskId }]));
+    patchTaskInChainCaches(dispatch, normalizeTask(payload.task), chainId);
+  } else if (taskId) {
+    autoLoadTaskFromWs(dispatch, chainId, taskId);
   }
 
-  if (chainId) {
-    dispatch(heimdallApi.util.invalidateTags([
-      { type: 'Chain', id: chainId },
-      { type: 'ChainList', id: 'ALL' },
-      { type: 'ChainTasks', id: chainId },
-    ]));
+  // Chain-level list count invalidation only. Do NOT invalidate { type: 'Chain', id: chainId }
+  // or { type: 'ChainTasks', id: chainId } to prevent reloading all tasks in the chain.
+  dispatch(heimdallApi.util.invalidateTags([{ type: 'ChainList', id: 'ALL' }]));
+  if (taskId) {
+    dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskLog', id: taskId }]));
   }
 
   if (taskId) {
@@ -465,16 +533,19 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
 
   switch (resource) {
     case 'task': {
-      // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
+      // Auto-load the specific updated task with in-flight deduplication and patch caches:
+      if (taskId) {
+        autoLoadTaskFromWs(dispatch, chainId, taskId);
+      }
+
+      // Granular tag invalidation: invalidate Task, TaskLog, TaskComments for taskId,
+      // and ChainList ('ALL') for chain-level task count rollups.
+      // We deliberately omit Chain and ChainTasks tag invalidations here to prevent refetching the entire chain.
       const tags: any[] = [{ type: 'ChainList', id: 'ALL' }];
       if (taskId) {
         tags.push({ type: 'Task', id: taskId });
         tags.push({ type: 'TaskLog', id: taskId });
         tags.push({ type: 'TaskComments', id: taskId });
-      }
-      if (chainId) {
-        tags.push({ type: 'ChainTasks', id: chainId });
-        tags.push({ type: 'Chain', id: chainId });
       }
       dispatch(heimdallApi.util.invalidateTags(tags));
       if (chainId && ctx.focusedChainId === chainId) {
@@ -484,10 +555,14 @@ function handleResourceChanged(dispatch: any, payload: any, ctx: WsCtx) {
     }
     case 'task_chain': {
       // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-      const tags: any[] = [{ type: 'ChainList', id: 'ALL' }];
+      const tags: any[] = [
+        { type: 'ChainList', id: 'ALL' },
+      ];
       if (chainId) {
-        tags.push({ type: 'Chain', id: chainId });
-        tags.push({ type: 'ChainTasks', id: chainId });
+        tags.push(
+          { type: 'Chain', id: chainId },
+          { type: 'ChainTasks', id: chainId },
+        );
       }
       dispatch(heimdallApi.util.invalidateTags(tags));
       if (chainId && ctx.focusedChainId === chainId) {
