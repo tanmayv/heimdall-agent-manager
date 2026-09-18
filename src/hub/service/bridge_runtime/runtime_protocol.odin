@@ -61,6 +61,31 @@ runtime_command_result_idempotent :: proc(registry: ^project_service.Bridge_Runt
 	return result_json, false
 }
 
+canonical_runtime_status :: proc(s: string) -> string {
+	switch s {
+	case "running": return "running"
+	case "idle": return "idle"
+	case "busy": return "busy"
+	case "launching": return "launching"
+	case "starting": return "starting"
+	case "stopping": return "stopping"
+	case "blocked": return "blocked"
+	case "stopped": return "stopped"
+	case "unreachable": return "unreachable"
+	case "failed": return "failed"
+	}
+	return s
+}
+
+canonical_activity_status :: proc(s: string) -> string {
+	switch s {
+	case "idle": return "idle"
+	case "busy": return "busy"
+	case "waiting": return "waiting"
+	}
+	return s
+}
+
 runtime_apply_state_report :: proc(registry: ^project_service.Bridge_Runtime_Registry, instance_id: string, state_seq: int, runtime_status, activity_status: string) -> bool {
 	if registry == nil || instance_id == "" do return false
 	idx := runtime_instance_index(registry, instance_id)
@@ -68,13 +93,13 @@ runtime_apply_state_report :: proc(registry: ^project_service.Bridge_Runtime_Reg
 		if registry.instance_count >= len(registry.instance_ids) do return false
 		idx = registry.instance_count
 		registry.instance_count += 1
-		registry.instance_ids[idx] = instance_id
+		registry.instance_ids[idx] = strings.clone(instance_id)
 	}
 	if state_seq <= registry.instance_state_seq[idx] do return false
 	old_runtime := registry.instance_runtime_status[idx]
 	registry.instance_state_seq[idx] = state_seq
-	registry.instance_runtime_status[idx] = runtime_status
-	registry.instance_activity_status[idx] = activity_status
+	registry.instance_runtime_status[idx] = canonical_runtime_status(runtime_status)
+	registry.instance_activity_status[idx] = canonical_activity_status(activity_status)
 	if old_runtime != "" && old_runtime != runtime_status {
 		registry.edge_event_count += 1
 		return true

@@ -482,6 +482,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }, [chainDetailQuery.data, chainTasksQuery.data]);
   const rawTitle = String(conversation?.title || '').trim();
   const editableTitle = rawTitle && !looksLikeInternalId(rawTitle) ? rawTitle : title;
+  const chainTitle = String(chainDetailQuery.data?.chain?.title || '').trim();
 
   // The instance record is the source of truth for the CONCRETE provider / tier /
   // bridge this conversation runs on (never "default"/"Auto").
@@ -1382,6 +1383,16 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <span className="truncate">Jobs</span>
             </button>
           ) : null}
+          <button
+            type="button"
+            data-debug-id="conversation-right-panel-close-btn"
+            aria-label="Close side panel"
+            title="Close panel"
+            onClick={closeRightPanel}
+            className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+          >
+            <Icon name="panel-right" size={16} />
+          </button>
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
           {active === 'files' && hasFiles ? (
@@ -1725,93 +1736,216 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     );
   }
 
+  const transcript = (
+    <div data-debug-id="conversation-thread-transcript" className="h-full w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
+      <ChatMessageList
+        conversationKey={conversationId}
+        messages={chatMessages}
+        debugPrefix="conversation-thread"
+        focusMessageId={focusMessageId}
+        hasMore={olderHasMore && Boolean(olderCursor)}
+        loadingOlder={olderMessagesState.isFetching}
+        onLoadOlder={loadOlderMessages}
+        onScroll={handleTranscriptScroll}
+        formatTimestamp={formatMessageTimestamp}
+        getDeliveryStatus={deliveryStatusFor}
+        agentIsWorking={isWorking}
+        renderMessageBody={({ message }) => renderConversationMessageBody(message)}
+        wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
+        scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+        emptyState={messagesQuery.isFetching ? (
+          <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-zinc-500">Loading messages…</div>
+        ) : (
+          <div data-debug-id="conversation-thread-empty-state" className="flex h-full min-h-[220px] flex-col items-center justify-center gap-4 p-6 text-center">
+            <div data-debug-id="conversation-thread-empty-avatar" className="grid h-16 w-16 place-items-center rounded-full bg-white/[0.06] text-2xl font-semibold text-zinc-300">
+              {(agentDisplayName || 'A').trim().charAt(0).toUpperCase()}
+            </div>
+            <h3 data-debug-id="conversation-thread-empty-title" className="text-2xl font-semibold text-white">{agentDisplayName || 'New conversation'}</h3>
+            {agentPersona ? (
+              <p data-debug-id="conversation-thread-empty-persona" className="max-w-xl whitespace-pre-line text-[15px] leading-relaxed text-zinc-400">{agentPersona}</p>
+            ) : (
+              <p data-debug-id="conversation-thread-empty-persona" className="max-w-md text-[15px] text-zinc-500">Say something below to get started.</p>
+            )}
+          </div>
+        )}
+      />
+    </div>
+  );
+
+  const panelOpen = rightPanel !== 'closed' && Boolean(chainId || projectId || agentInstanceId);
+
   return (
-    <section data-debug-id="conversation-thread-page" className="flex h-full min-h-0 w-full max-w-full flex-col overflow-visible bg-[#090909] p-0 text-left">
-      {/* Minimal top bar: centered title with inline rename + info popover ·
-          right-sidebar toggle (right). The left nav sidebar has its own toggle.
-          Runtime/model controls + immutable bridge/project context live in the
-          composer. */}
-      <header
-        data-debug-id="conversation-thread-header"
-        className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
-          isMobile
-            ? `fixed top-0 inset-x-0 z-20 h-14 border-b border-white/10 bg-[#0c0c0c]/90 backdrop-blur-md ${
-                !chromeVisible
-                  ? '-translate-y-full opacity-0 pointer-events-none'
-                  : 'translate-y-0 opacity-100 pointer-events-auto'
-              }`
-            : 'max-h-16 py-2 border-b border-white/10 translate-y-0 opacity-100 pointer-events-auto'
-        }`}
+    <section
+      data-debug-id="conversation-thread-page"
+      ref={containerRef}
+      className="relative flex flex-col sm:flex-row h-full min-h-0 w-full max-w-full overflow-x-hidden bg-[#090909] p-0 text-left"
+    >
+      {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
+      {panelOpen ? (
+        <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c] sm:hidden">
+          {renderRightPanel(true)}
+        </div>
+      ) : null}
+
+      {/* Col 1: Chat pane on the left: expands to full width when sidebar is closed or on mobile */}
+      <div
+        data-debug-id="conversation-chat-column"
+        className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px]"
       >
-        <div className="hidden h-9 w-9 shrink-0 sm:block" aria-hidden="true" />
-
-        <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5 sm:justify-center">
-          {renaming ? (
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <input
-                data-debug-id="conversation-thread-title-input"
-                value={titleDraft}
-                onChange={(event) => { setTitleDraft(event.target.value); setTitleError(''); }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') { event.preventDefault(); void saveConversationTitle(); }
-                  if (event.key === 'Escape') { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }
-                }}
-                className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-base font-semibold text-white outline-none focus:border-sky-400/60 sm:text-sm"
-                autoFocus
-              />
-              <button type="button" data-debug-id="conversation-thread-title-save-btn" aria-label="Save conversation title" title="Save" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:opacity-50"><Icon name="check" size={16} /></button>
-              <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
-            </div>
-          ) : (
-            <>
-              <h2 data-debug-id="conversation-thread-title" className="truncate text-base font-semibold text-white sm:text-lg">{title}</h2>
-              <button type="button" data-debug-id="conversation-thread-title-edit-btn" aria-label="Rename conversation" title="Rename" onClick={beginRenameFromHeader} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-zinc-200"><Icon name="pencil" size={14} /></button>
-            </>
-          )}
-          {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
-        </div>
-
-        <button
-          type="button"
-          data-debug-id="conversation-search-btn"
-          aria-label="Search this conversation and its task chain"
-          title="Search this conversation & chain"
-          onClick={() => setSearchOpen(true)}
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+        {/* Scoped top bar in Col 1: narrows automatically when sidebar opens */}
+        <header
+          data-debug-id="conversation-thread-header"
+          className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
+            isMobile
+              ? `fixed top-0 inset-x-0 z-20 h-14 border-b border-white/10 bg-[#0c0c0c]/90 backdrop-blur-md ${
+                  !chromeVisible
+                    ? '-translate-y-full opacity-0 pointer-events-none'
+                    : 'translate-y-0 opacity-100 pointer-events-auto'
+                }`
+              : 'max-h-16 py-2 border-b border-white/10 translate-y-0 opacity-100 pointer-events-auto'
+          }`}
         >
-          <UiIcon name="search" size={16} />
-        </button>
+          <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5">
+            {renaming ? (
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <input
+                  data-debug-id="conversation-thread-title-input"
+                  value={titleDraft}
+                  onChange={(event) => { setTitleDraft(event.target.value); setTitleError(''); }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') { event.preventDefault(); void saveConversationTitle(); }
+                    if (event.key === 'Escape') { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }
+                  }}
+                  className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-base font-semibold text-white outline-none focus:border-sky-400/60 sm:text-sm"
+                  autoFocus
+                />
+                <button type="button" data-debug-id="conversation-thread-title-save-btn" aria-label="Save conversation title" title="Save" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-sky-400 text-black hover:bg-sky-300 disabled:opacity-50"><Icon name="check" size={16} /></button>
+                <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10"><Icon name="close" size={16} /></button>
+              </div>
+            ) : (
+              <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-1.5 text-[16px] font-medium">
+                <span data-debug-id="conversation-breadcrumb-project" className="truncate text-zinc-400">{projectName || 'Project'}</span>
+                <span className="shrink-0 text-zinc-600">/</span>
+                <h2 data-debug-id="conversation-thread-title" className="truncate text-[16px] font-medium text-white">{chainTitle || title}</h2>
+              </div>
+            )}
+            {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-caption text-red-300">{titleError}</div> : null}
+          </div>
 
-        <div className="shrink-0">
-          <Menu
-            align="end"
-            label="Conversation details"
-            open={headerActionsOpen}
-            onOpenChange={setHeaderActionsOpen}
-            trigger={
-              <button type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="Conversation details" title="Details" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"><Icon name="info" size={16} /></button>
-            }
+          <button
+            type="button"
+            data-debug-id="conversation-search-btn"
+            aria-label="Search this conversation and its task chain"
+            title="Search this conversation & chain"
+            onClick={() => setSearchOpen(true)}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
           >
-            <Menu.Item data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader}><Icon name="refresh" size={15} /><span>Refresh messages</span></Menu.Item>
-            <Menu.Separator />
-            <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1 text-caption leading-5 text-zinc-500">
-              <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
-              <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
-              <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
-              <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
-              <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
-              {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
-            </div>
-          </Menu>
-        </div>
-
-        {(chainId || projectId || agentInstanceId) ? (
-          <button type="button" data-debug-id="conversation-right-panel-toggle-btn" aria-label={rightPanel !== 'closed' ? 'Close side panel' : 'Open side panel'} title={rightPanel !== 'closed' ? 'Close panel' : 'Open panel'} aria-pressed={rightPanel !== 'closed' ? 'true' : 'false'} onClick={toggleRightPanel} className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-xl ${rightPanel !== 'closed' ? 'text-sky-300' : 'text-zinc-400 hover:bg-white/10 hover:text-zinc-200'}`}>
-            <Icon name="panel-right" size={18} />
-            {rightPanel === 'closed' && chainId && chainProgress.total > 0 ? <span data-debug-id="conversation-right-panel-toggle-progress" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black">{chainProgress.done}/{chainProgress.total}</span> : null}
+            <UiIcon name="search" size={16} />
           </button>
-        ) : null}
-      </header>
+
+          <div className="shrink-0">
+            <Menu
+              align="end"
+              label="Conversation options"
+              open={headerActionsOpen}
+              onOpenChange={setHeaderActionsOpen}
+              trigger={
+                <button
+                  type="button"
+                  data-debug-id="conversation-thread-overflow-menu-btn"
+                  aria-label="Conversation options"
+                  title="More options"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+                >
+                  <Icon name="more-horizontal" size={16} />
+                </button>
+              }
+            >
+              <Menu.Item
+                data-debug-id="conversation-thread-rename-action"
+                onClick={beginRenameFromHeader}
+              >
+                <Icon name="pencil" size={15} />
+                <span>Rename conversation</span>
+              </Menu.Item>
+              <Menu.Item
+                data-debug-id="conversation-thread-refresh-btn"
+                onClick={refreshFromHeader}
+              >
+                <Icon name="refresh" size={15} />
+                <span>Refresh messages</span>
+              </Menu.Item>
+              <Menu.Separator />
+              <div data-debug-id="conversation-thread-overflow-details" role="presentation" className="px-3 py-1 text-caption leading-5 text-zinc-500">
+                <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
+                <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
+                <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
+                <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
+                <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
+                {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
+              </div>
+            </Menu>
+          </div>
+
+          {rightPanel === 'closed' && (chainId || projectId || agentInstanceId) ? (
+            <button
+              type="button"
+              data-debug-id="conversation-right-panel-toggle-btn"
+              aria-label="Open side panel"
+              title="Open panel"
+              aria-pressed="false"
+              onClick={toggleRightPanel}
+              className="relative grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+            >
+              <Icon name="panel-right" size={18} />
+              {chainId && chainProgress.total > 0 ? (
+                <span
+                  data-debug-id="conversation-right-panel-toggle-progress"
+                  className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black"
+                >
+                  {chainProgress.done}/{chainProgress.total}
+                </span>
+              ) : null}
+            </button>
+          ) : null}
+        </header>
+
+        {transcript}
+        {renderComposer()}
+      </div>
+
+      {/* Desktop (>= 768px) vertical resizer divider between chat view and right sidebar */}
+      {panelOpen ? (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize right sidebar"
+          aria-valuenow={sidebarWidth}
+          aria-valuemin={RIGHT_SIDEBAR_MIN_WIDTH}
+          tabIndex={0}
+          data-debug-id="conversation-right-panel-resizer"
+          onPointerDown={handleResizerPointerDown}
+          onDoubleClick={handleResizerDoubleClick}
+          onKeyDown={handleResizerKeyDown}
+          className={`hidden sm:flex group relative w-1.5 cursor-col-resize shrink-0 select-none items-center justify-center border-l border-white/10 hover:border-sky-400/50 hover:bg-sky-400/10 active:bg-sky-400/20 z-10 ${isDragging ? 'bg-sky-400/20 border-sky-400' : ''}`}
+        >
+          <div className={`h-8 w-0.5 rounded-full ${isDragging ? 'bg-sky-400' : 'bg-white/20 group-hover:bg-sky-300'}`} />
+        </div>
+      ) : null}
+
+      {/* Col 2: Desktop (>= 768px) right sidebar with smooth 200ms open/close transition & overflow clipping */}
+      <div
+        data-debug-id="conversation-right-panel-resizable-container"
+        style={{ width: panelOpen ? `${sidebarWidth}px` : '0px' }}
+        className={`hidden sm:flex overflow-hidden shrink-0 flex-col ${isDragging ? 'transition-none' : 'transition-[width] duration-200 ease-in-out'}`}
+      >
+        <div
+          style={{ width: `${sidebarWidth}px` }}
+          className="h-full flex flex-col min-w-[360px]"
+        >
+          {renderRightPanel(false)}
+        </div>
+      </div>
 
       {/* Subtle Top-Right Floating Toggle Button */}
       {isMobile && !chromeVisible && rightPanel === 'closed' && Boolean(chainId || projectId || agentInstanceId) ? (
@@ -1870,100 +2004,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); setSearchOpen(false); }}
         actions={[]}
         conversationGroups={chainAgentGroups}
-        scope={{ chainId, conversationId, label: chainDetailQuery.data?.chain?.title || title }}
+        scope={{ chainId, conversationId, label: chainTitle || title }}
       />
-
-      {(() => {
-        const transcript = (
-          <div data-debug-id="conversation-thread-transcript" className="h-full w-full min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden p-0 sm:px-4 sm:py-3">
-            <ChatMessageList
-              conversationKey={conversationId}
-              messages={chatMessages}
-              debugPrefix="conversation-thread"
-              focusMessageId={focusMessageId}
-              hasMore={olderHasMore && Boolean(olderCursor)}
-              loadingOlder={olderMessagesState.isFetching}
-              onLoadOlder={loadOlderMessages}
-              onScroll={handleTranscriptScroll}
-              formatTimestamp={formatMessageTimestamp}
-              getDeliveryStatus={deliveryStatusFor}
-              agentIsWorking={isWorking}
-              renderMessageBody={({ message }) => renderConversationMessageBody(message)}
-              wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-              scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
-              emptyState={messagesQuery.isFetching ? (
-                <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-zinc-500">Loading messages…</div>
-              ) : (
-                <div data-debug-id="conversation-thread-empty-state" className="flex h-full min-h-[220px] flex-col items-center justify-center gap-4 p-6 text-center">
-                  <div data-debug-id="conversation-thread-empty-avatar" className="grid h-16 w-16 place-items-center rounded-full bg-white/[0.06] text-2xl font-semibold text-zinc-300">
-                    {(agentDisplayName || 'A').trim().charAt(0).toUpperCase()}
-                  </div>
-                  <h3 data-debug-id="conversation-thread-empty-title" className="text-2xl font-semibold text-white">{agentDisplayName || 'New conversation'}</h3>
-                  {agentPersona ? (
-                    <p data-debug-id="conversation-thread-empty-persona" className="max-w-xl whitespace-pre-line text-[15px] leading-relaxed text-zinc-400">{agentPersona}</p>
-                  ) : (
-                    <p data-debug-id="conversation-thread-empty-persona" className="max-w-md text-[15px] text-zinc-500">Say something below to get started.</p>
-                  )}
-                </div>
-              )}
-            />
-          </div>
-        );
-
-        const panelOpen = rightPanel !== 'closed' && Boolean(chainId || projectId || agentInstanceId);
-
-        return (
-          <div ref={containerRef} className="relative flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
-            {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
-            {panelOpen ? (
-              <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c] sm:hidden">
-                {renderRightPanel(true)}
-              </div>
-            ) : null}
-
-            {/* Chat pane on the left: expands to full width when sidebar is closed or on mobile */}
-            <div
-              className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px]"
-            >
-              {transcript}
-              {renderComposer()}
-            </div>
-
-            {/* Desktop (>= 768px) vertical resizer divider between chat view and right sidebar */}
-            {panelOpen ? (
-              <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Resize right sidebar"
-                aria-valuenow={sidebarWidth}
-                aria-valuemin={RIGHT_SIDEBAR_MIN_WIDTH}
-                tabIndex={0}
-                data-debug-id="conversation-right-panel-resizer"
-                onPointerDown={handleResizerPointerDown}
-                onDoubleClick={handleResizerDoubleClick}
-                onKeyDown={handleResizerKeyDown}
-                className={`hidden sm:flex group relative w-1.5 cursor-col-resize shrink-0 select-none items-center justify-center border-l border-white/10 hover:border-sky-400/50 hover:bg-sky-400/10 active:bg-sky-400/20 z-10 ${isDragging ? 'bg-sky-400/20 border-sky-400' : ''}`}
-              >
-                <div className={`h-8 w-0.5 rounded-full ${isDragging ? 'bg-sky-400' : 'bg-white/20 group-hover:bg-sky-300'}`} />
-              </div>
-            ) : null}
-
-            {/* Desktop (>= 768px) right sidebar with smooth 200ms open/close transition & overflow clipping */}
-            <div
-              data-debug-id="conversation-right-panel-resizable-container"
-              style={{ width: panelOpen ? `${sidebarWidth}px` : '0px' }}
-              className={`hidden sm:flex overflow-hidden shrink-0 flex-col ${isDragging ? 'transition-none' : 'transition-[width] duration-200 ease-in-out'}`}
-            >
-              <div
-                style={{ width: `${sidebarWidth}px` }}
-                className="h-full flex flex-col min-w-[360px]"
-              >
-                {renderRightPanel(false)}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
     </section>
   );
 }

@@ -62,6 +62,8 @@ export type IconName =
   | 'alert'
   | 'info'
   | 'more'
+  | 'more-horizontal'
+  | 'more-vertical'
   | 'panel-right'
   | 'panel-left'
   | 'terminal'
@@ -195,6 +197,20 @@ const PATHS: Record<IconName, ReactElement> = {
       <circle cx={5} cy={12} r={1.8} />
       <circle cx={12} cy={12} r={1.8} />
       <circle cx={19} cy={12} r={1.8} />
+    </g>
+  ),
+  'more-horizontal': (
+    <g fill="currentColor">
+      <circle cx={5} cy={12} r={1.8} />
+      <circle cx={12} cy={12} r={1.8} />
+      <circle cx={19} cy={12} r={1.8} />
+    </g>
+  ),
+  'more-vertical': (
+    <g fill="currentColor">
+      <circle cx={12} cy={5} r={1.8} />
+      <circle cx={12} cy={12} r={1.8} />
+      <circle cx={12} cy={19} r={1.8} />
     </g>
   ),
   'panel-right': (

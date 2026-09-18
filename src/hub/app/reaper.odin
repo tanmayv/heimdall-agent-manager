@@ -1,6 +1,7 @@
 package app
 
 import "core:time"
+import domain "odin_test:hub/domain"
 import agent_service "odin_test:hub/service/agent"
 import events "odin_test:hub/service/events"
 import http "odin_test:hub/transport/http"
@@ -47,14 +48,18 @@ reaper_loop :: proc(graph: ^App_Graph) {
 // launch reaper_loop as a thread entry point.
 reaper_sweep_once :: proc(graph: ^App_Graph) {
 	if graph == nil do return
-	for inst in agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS) {
+	reaped := agent_service.reap_stale_instances(&graph.agents, REAPER_STALE_MS)
+	defer domain.agent_instances_destroy(reaped)
+	for inst in reaped {
+		summary := http.agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status)
 		events.publish_resource_changed(
 			&graph.event_bus,
 			string(inst.owner_user_id),
 			"agent_instance",
 			inst.agent_instance_id,
 			"status_changed",
-			http.agent_instance_status_summary_json(inst.runtime_status, inst.startup_status, inst.activity_status),
+			summary,
 		)
+		delete(summary)
 	}
 }

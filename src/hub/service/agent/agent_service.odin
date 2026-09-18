@@ -868,7 +868,10 @@ relaunch_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context,
 apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_id: string, state_seq: int, runtime_status, activity_status: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
-	if inst.bridge_id != bridge_id do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "agent instance not found on bridge")
+	if inst.bridge_id != bridge_id {
+		domain.agent_instance_destroy(&inst)
+		return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "agent instance not found on bridge")
+	}
 	effective_state_seq := state_seq
 	if effective_state_seq <= inst.last_applied_seq {
 		// Bridge runtime state is in-memory and can restart while ham-wrapper
@@ -877,32 +880,65 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 		if runtime_expected_active(runtime_status) && (inst.runtime_status == "unreachable" || inst.runtime_status == "launching" || inst.runtime_status == "starting") {
 			effective_state_seq = inst.last_applied_seq + 1
 		} else {
-			return inst, false, domain.Domain_Error{}
+			domain.agent_instance_destroy(&inst)
+			return domain.Agent_Instance{}, false, domain.Domain_Error{}
 		}
 	}
 	now := platform.clock_now(service.clock)
 	inst.last_applied_seq = effective_state_seq
-	if runtime_status != "" do inst.runtime_status = runtime_status
-	if activity_status != "" do inst.activity_status = activity_status
-	inst.last_seen_at = now
-	inst.updated_at = now
-	apply_runtime_startup_projection(&inst, now)
+	if runtime_status != "" {
+		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
+		inst.runtime_status = strings.clone(runtime_status)
+	}
+	if activity_status != "" {
+		if len(inst.activity_status) > 0 do delete(inst.activity_status)
+		inst.activity_status = strings.clone(activity_status)
+	}
+	if len(inst.last_seen_at) > 0 do delete(inst.last_seen_at)
+	inst.last_seen_at = strings.clone(now)
+	if len(inst.updated_at) > 0 do delete(inst.updated_at)
+	inst.updated_at = strings.clone(now)
+	switch inst.runtime_status {
+	case "running", "idle", "busy":
+		if len(inst.startup_status) > 0 do delete(inst.startup_status)
+		inst.startup_status = strings.clone("ready")
+	case "launching", "starting":
+		if len(inst.startup_status) > 0 do delete(inst.startup_status)
+		inst.startup_status = strings.clone("starting")
+	case "blocked":
+		if len(inst.startup_status) > 0 do delete(inst.startup_status)
+		inst.startup_status = strings.clone("startup_blocked")
+	case "failed":
+		if len(inst.startup_status) > 0 do delete(inst.startup_status)
+		inst.startup_status = strings.clone("startup_failed")
+		if len(inst.stopped_at) > 0 do delete(inst.stopped_at)
+		inst.stopped_at = strings.clone(now)
+		clear_instance_current_task(&inst)
+	case "stopped", "unreachable":
+		if len(inst.startup_status) > 0 do delete(inst.startup_status)
+		inst.startup_status = strings.clone("stopped")
+		if len(inst.stopped_at) > 0 do delete(inst.stopped_at)
+		inst.stopped_at = strings.clone(now)
+		clear_instance_current_task(&inst)
+	}
 	return iface.agent_save_instance(service.agents, inst)
 }
 
 reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, active_instance_ids: []string) -> int {
 	instances, err := iface.agent_list_instances_by_bridge(service.agents, bridge_id)
 	if err.code != .None do return 0
+	defer domain.agent_instances_destroy(instances)
 	changed := 0
 	now := platform.clock_now(service.clock)
 	for i in 0..<len(instances) {
 		inst := instances[i]
 		reported_active := string_slice_contains(active_instance_ids, inst.agent_instance_id)
 		if runtime_expected_active(inst.runtime_status) && !reported_active {
-			inst.runtime_status = "unreachable"
-			inst.updated_at = now
-			apply_runtime_startup_projection(&inst, now)
-			_, saved, _ := iface.agent_save_instance(service.agents, inst)
+			to_save := inst
+			to_save.runtime_status = "unreachable"
+			to_save.updated_at = now
+			apply_runtime_startup_projection(&to_save, now)
+			_, saved, _ := iface.agent_save_instance(service.agents, to_save)
 			if saved do changed += 1
 		} else if reported_active {
 			// The heartbeat's active_instance_ids IS the liveness proof for a running
@@ -913,8 +949,9 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 			// so after BRIDGE_INSTANCE_STALE_MS it was reaped despite every heartbeat
 			// reporting it active.
 			if inst.last_seen_at != now {
-				inst.last_seen_at = now
-				_, _, _ = iface.agent_save_instance(service.agents, inst)
+				to_save := inst
+				to_save.last_seen_at = now
+				_, _, _ = iface.agent_save_instance(service.agents, to_save)
 			}
 		}
 	}
@@ -937,11 +974,10 @@ detect_superseded_instances :: proc(service: ^Agent_Service, reporting_bridge_id
 	for id in active_instance_ids {
 		inst, ok, _ := iface.agent_get_instance(service.agents, id)
 		if !ok do continue
-		// Canonical owner is a different bridge => the reporting bridge holds a
-		// stale runtime for this instance and must reap it.
 		if strings.trim_space(inst.bridge_id) != "" && inst.bridge_id != reporting_bridge_id {
-			append(&out, inst.agent_instance_id)
+			append(&out, strings.clone(id))
 		}
+		domain.agent_instance_destroy(&inst)
 	}
 	return out[:]
 }
@@ -960,13 +996,32 @@ mark_bridge_instances_unreachable :: proc(service: ^Agent_Service, bridge_id: st
 	changed := make([dynamic]domain.Agent_Instance)
 	for i in 0..<len(instances) {
 		inst := instances[i]
-		if !runtime_expected_active(inst.runtime_status) do continue
-		inst.runtime_status = "unreachable"
-		inst.activity_status = "idle"
-		inst.updated_at = now
-		apply_runtime_startup_projection(&inst, now)
+		if !runtime_expected_active(inst.runtime_status) {
+			domain.agent_instance_destroy(&inst)
+			continue
+		}
+		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
+		inst.runtime_status = strings.clone("unreachable")
+		if len(inst.activity_status) > 0 do delete(inst.activity_status)
+		inst.activity_status = strings.clone("idle")
+		if len(inst.updated_at) > 0 do delete(inst.updated_at)
+		inst.updated_at = strings.clone(now)
+		if len(inst.startup_status) > 0 do delete(inst.startup_status)
+		inst.startup_status = strings.clone("stopped")
+		if len(inst.stopped_at) > 0 do delete(inst.stopped_at)
+		inst.stopped_at = strings.clone(now)
+		clear_instance_current_task(&inst)
 		saved, ok, _ := iface.agent_save_instance(service.agents, inst)
-		if ok do append(&changed, saved)
+		if ok {
+			append(&changed, saved)
+		} else {
+			domain.agent_instance_destroy(&inst)
+		}
+	}
+	delete(instances)
+	if len(changed) == 0 {
+		delete(changed)
+		return nil
 	}
 	return changed[:]
 }
@@ -986,16 +1041,41 @@ reap_stale_instances :: proc(service: ^Agent_Service, stale_after_ms: i64) -> []
 	changed := make([dynamic]domain.Agent_Instance)
 	for i in 0..<len(instances) {
 		inst := instances[i]
-		if !runtime_expected_active(inst.runtime_status) do continue
+		if !runtime_expected_active(inst.runtime_status) {
+			domain.agent_instance_destroy(&inst)
+			continue
+		}
 		seen_ms, seen_ok := rfc3339_to_unix_ms(inst.last_seen_at)
-		if !seen_ok do continue
-		if now_ms - seen_ms < stale_after_ms do continue
-		inst.runtime_status = "unreachable"
-		inst.activity_status = "idle"
-		inst.updated_at = now_str
-		apply_runtime_startup_projection(&inst, now_str)
+		if !seen_ok {
+			domain.agent_instance_destroy(&inst)
+			continue
+		}
+		if now_ms - seen_ms < stale_after_ms {
+			domain.agent_instance_destroy(&inst)
+			continue
+		}
+		if len(inst.runtime_status) > 0 do delete(inst.runtime_status)
+		inst.runtime_status = strings.clone("unreachable")
+		if len(inst.activity_status) > 0 do delete(inst.activity_status)
+		inst.activity_status = strings.clone("idle")
+		if len(inst.updated_at) > 0 do delete(inst.updated_at)
+		inst.updated_at = strings.clone(now_str)
+		if len(inst.startup_status) > 0 do delete(inst.startup_status)
+		inst.startup_status = strings.clone("stopped")
+		if len(inst.stopped_at) > 0 do delete(inst.stopped_at)
+		inst.stopped_at = strings.clone(now_str)
+		clear_instance_current_task(&inst)
 		saved, ok, _ := iface.agent_save_instance(service.agents, inst)
-		if ok do append(&changed, saved)
+		if ok {
+			append(&changed, saved)
+		} else {
+			domain.agent_instance_destroy(&inst)
+		}
+	}
+	delete(instances)
+	if len(changed) == 0 {
+		delete(changed)
+		return nil
 	}
 	return changed[:]
 }

@@ -107,7 +107,7 @@ user_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.User {
 		name = column_text(stmt, 1),
 		display_name = column_text(stmt, 2),
 		email = column_text(stmt, 3),
-		status = user_status_from_string(column_text(stmt, 4)),
+		status = user_status_from_string(column_text_unowned(stmt, 4)),
 		created_at = column_text(stmt, 5),
 		updated_at = column_text(stmt, 6),
 	}
@@ -149,6 +149,15 @@ bind_text :: proc(stmt: sqlite3_stmt, index: int, value: string) {
 		return
 	}
 	sqlite3_bind_text(stmt, c.int(index), cstring(raw_data(value)), c.int(len(value)), SQLITE_TRANSIENT)
+}
+
+column_text_unowned :: proc(stmt: sqlite3_stmt, index: int) -> string {
+	ptr := sqlite3_column_text(stmt, c.int(index))
+	if ptr == nil do return ""
+	n := int(sqlite3_column_bytes(stmt, c.int(index)))
+	if n <= 0 do return ""
+	bytes := ([^]byte)(rawptr(ptr))[:n]
+	return string(bytes)
 }
 
 column_text :: proc(stmt: sqlite3_stmt, index: int) -> string {
