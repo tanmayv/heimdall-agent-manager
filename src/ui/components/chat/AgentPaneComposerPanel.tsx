@@ -293,7 +293,7 @@ export function AgentPaneComposerPanel({
   return (
     <div
       data-debug-id="agent-pane-composer-panel"
-      className={`overflow-hidden rounded-xl border border-white/10 bg-black/40 ${className}`}
+      className={`max-w-4xl mx-auto w-full overflow-hidden rounded-xl border border-white/10 bg-black/40 ${className}`}
     >
       {/* Header controls */}
       <div

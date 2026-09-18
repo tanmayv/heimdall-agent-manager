@@ -48,7 +48,7 @@ export default function ChatMessageList({
   getDeliveryStatus = () => EMPTY_DELIVERY,
   agentIsWorking = false,
   wrapperClassName = 'relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden overflow-x-hidden',
-  scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4',
+  scrollClassName = 'chat-scrollbar h-full min-h-0 max-w-full space-y-[22px] overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-16 pb-4 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:pt-16 sm:pb-4',
 }: {
   conversationKey: string;
   messages: ChatMessage[];
@@ -207,19 +207,21 @@ export default function ChatMessageList({
       <div data-debug-id={`${debugPrefix}-focus-status`} role="status" aria-live="polite" className="sr-only">{focusAnnouncement}</div>
       <div ref={scrollRef} data-debug-id={`${debugPrefix}-scroll`} onScroll={onScroll} className={scrollClassName}>
         {hasMore ? (
-          <div className="flex justify-center">
+          <div className="flex justify-center max-w-4xl mx-auto w-full">
             <button data-debug-id={`${debugPrefix}-load-older-messages-btn`} type="button" onClick={onLoadOlder} disabled={loadingOlder || !onLoadOlder} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">
               {loadingOlder ? 'Loading older messages…' : 'Load older messages'}
             </button>
           </div>
         ) : null}
         {messages.length === 0 ? (
-          emptyState || <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">{emptyText}</div>
+          <div className="max-w-4xl mx-auto w-full">
+            {emptyState || <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">{emptyText}</div>}
+          </div>
         ) : messages.map((message, index) => {
           const timestamp = formatTimestamp(message.createdUnixMs);
           const delivery = getDeliveryStatus(message);
           return (
-            <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-full rounded-xl outline-none focus-visible:shadow-focus ${reduceMotion ? '' : 'transition-colors duration-500'} ${message.messageId === highlightId ? 'bg-warning-soft ring-1 ring-warning' : ''} ${message.isUser ? 'justify-end' : 'justify-start'}`}>
+            <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex min-w-0 max-w-4xl mx-auto w-full rounded-xl outline-none focus-visible:shadow-focus ${reduceMotion ? '' : 'transition-colors duration-500'} ${message.messageId === highlightId ? 'bg-warning-soft ring-1 ring-warning' : ''} ${message.isUser ? 'justify-end' : 'justify-start'}`}>
               <div className={`flex min-w-0 max-w-full ${message.isUser ? 'max-w-[86%] items-end sm:max-w-[78%]' : 'w-full items-start'} flex-col text-sm`}>
                 {renderMessageTop ? renderMessageTop({ message, index, messages }) : null}
                 <div className={`min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${message.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'text-zinc-200'}`}>
@@ -239,7 +241,7 @@ export default function ChatMessageList({
           );
         })}
         {agentIsWorking && (
-          <div data-debug-id={`${debugPrefix}-working-indicator`} className="msg flex min-w-0 max-w-full justify-start">
+          <div data-debug-id={`${debugPrefix}-working-indicator`} className="msg flex min-w-0 max-w-4xl mx-auto w-full justify-start">
             <div className="flex w-full flex-col items-start text-sm text-zinc-400">
               <div className="flex items-center gap-1.5 rounded-full border border-[#262626] bg-[#111111] px-3 py-2 shadow-sm">
                 <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-500" style={{ animationDelay: '0ms' }} />
