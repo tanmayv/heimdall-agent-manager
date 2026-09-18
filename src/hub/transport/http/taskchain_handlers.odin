@@ -31,18 +31,28 @@ Taskchain_Handlers :: struct {
 // RTK Query cache and update task/chain views without a manual refresh. These
 // are fire-and-forget invalidation hints; the UI refetches authoritative state.
 // event_bus may be nil in some test wirings, in which case publish is a no-op.
-publish_chain_changed :: proc(h: ^Taskchain_Handlers, owner_user_id, chain_id, change: string) {
-	if h == nil || h.event_bus == nil || owner_user_id == "" do return
+publish_chain_event :: proc(bus: ^events.User_Event_Bus, owner_user_id, chain_id, change: string) {
+	if bus == nil || owner_user_id == "" do return
 	summary := taskchain_resource_summary_json("chain_id", chain_id)
 	defer delete(summary)
-	events.publish_resource_changed(h.event_bus, owner_user_id, "task_chain", chain_id, change, summary)
+	events.publish_resource_changed(bus, owner_user_id, "task_chain", chain_id, change, summary)
+}
+
+publish_task_event :: proc(bus: ^events.User_Event_Bus, owner_user_id, task_id, chain_id, change: string) {
+	if bus == nil || owner_user_id == "" do return
+	summary := taskchain_task_summary_json(task_id, chain_id)
+	defer delete(summary)
+	events.publish_resource_changed(bus, owner_user_id, "task", task_id, change, summary)
+}
+
+publish_chain_changed :: proc(h: ^Taskchain_Handlers, owner_user_id, chain_id, change: string) {
+	if h == nil do return
+	publish_chain_event(h.event_bus, owner_user_id, chain_id, change)
 }
 
 publish_task_changed :: proc(h: ^Taskchain_Handlers, owner_user_id, task_id, chain_id, change: string) {
-	if h == nil || h.event_bus == nil || owner_user_id == "" do return
-	summary := taskchain_task_summary_json(task_id, chain_id)
-	defer delete(summary)
-	events.publish_resource_changed(h.event_bus, owner_user_id, "task", task_id, change, summary)
+	if h == nil do return
+	publish_task_event(h.event_bus, owner_user_id, task_id, chain_id, change)
 }
 
 // publish_instance_current_task_changed emits a live event on an agent instance's
@@ -630,9 +640,12 @@ patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps, has_depends_on = has_deps})
 	if !updated do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
+	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
 	b := strings.builder_make(); write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
+
+update_task_handler :: patch_task_handler
 
 publish_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
@@ -808,6 +821,12 @@ vote_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	vote, recorded, err := taskchain_service.record_task_vote(h.taskchains, auth_ctx, taskchain_service.Vote_Input{task_id = task_id, vote = json_string(req.body, "vote"), comment = json_string(req.body, "comment")})
 	if !recorded do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(vote.owner_user_id), string(vote.task_id), string(vote.chain_id), "voted")
+	publish_chain_changed(h, string(vote.owner_user_id), string(vote.chain_id), "updated")
+	if updated_task, task_ok, _ := taskchain_service.get_task(h.taskchains, auth_ctx, vote.task_id); task_ok {
+		if updated_task.status == .Completed || updated_task.status == .Validated_Not_Good {
+			publish_task_changed(h, string(vote.owner_user_id), string(vote.task_id), string(vote.chain_id), "status_changed")
+		}
+	}
 	b := strings.builder_make(); write_task_vote_json(&b, vote)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }

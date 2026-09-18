@@ -146,10 +146,14 @@ bridge_pty_host_build_spawn :: proc(instance_id, run_dir, provider, tier, agent_
 	agent_argv := bridge_runtime_agent_argv_for_profile(profile, tier, agent_token, instance_id)
 	if len(agent_argv) == 0 do return {}, false
 
+	cloned_argv := make([]string, len(agent_argv))
+	for a, i in agent_argv { cloned_argv[i] = strings.clone(a) }
+	delete(agent_argv)
+
 	detect_json := bridge_runtime_startup_detection_arg(profile.startup_detection)
 	req := Pty_Host_Spawn_Request{
 		instance         = strings.clone(instance_id),
-		argv             = agent_argv, // owned by the request now
+		argv             = cloned_argv,
 		cwd              = strings.clone(run_dir),
 		has_cwd          = true,
 		env              = bridge_pty_host_env_pairs(env),

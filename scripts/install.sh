@@ -550,9 +550,9 @@ if [ ! -f "$PROVIDERS_FILE" ] || ! grep -q '"jetski"' "$PROVIDERS_FILE" 2>/dev/n
       ],
       "models": {
         "flag": "--model",
-        "cheap": "Gemini",
-        "normal": "Gemini",
-        "smart": "Gemini"
+        "cheap": "gemini-3.5-flash-lite",
+        "normal": "gemini-3.7-flash-high",
+        "smart": "gemini-3.8-flash-high"
       },
       "prompt_flags": [
         "--prompt-interactive"

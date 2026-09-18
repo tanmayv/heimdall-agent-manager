@@ -29,9 +29,9 @@ def test_static_checks() -> None:
     # 1. install.sh must configure providers.json
     require("providers.json" in install_txt, "scripts/install.sh must reference providers.json")
     require('"jetski"' in install_txt, "scripts/install.sh must preconfigure jetski provider")
-    require('"cheap": "Gemini"' in install_txt, "scripts/install.sh must specify Gemini for cheap tier")
-    require('"normal": "Gemini"' in install_txt, "scripts/install.sh must specify Gemini for normal tier")
-    require('"smart": "Gemini"' in install_txt, "scripts/install.sh must specify Gemini for smart tier")
+    require('"cheap": "gemini-3.5-flash-lite"' in install_txt, "scripts/install.sh must specify gemini-3.5-flash-lite for cheap tier")
+    require('"normal": "gemini-3.7-flash-high"' in install_txt, "scripts/install.sh must specify gemini-3.7-flash-high for normal tier")
+    require('"smart": "gemini-3.8-flash-high"' in install_txt, "scripts/install.sh must specify gemini-3.8-flash-high for smart tier")
     require("chmod 0600" in install_txt, "scripts/install.sh must set 0600 permissions on providers.json")
 
     # 2. package-cloudtop-bundle.sh must pre-seed providers.json
@@ -88,9 +88,9 @@ def test_install_script_execution() -> None:
       "bootstrap_file_name": "AGENTS.md",
       "models": {{
         "flag": "--model",
-        "cheap": "Gemini",
-        "normal": "Gemini",
-        "smart": "Gemini"
+        "cheap": "gemini-3.5-flash-lite",
+        "normal": "gemini-3.7-flash-high",
+        "smart": "gemini-3.8-flash-high"
       }},
       "startup_detection": {{
         "enabled": false,
@@ -134,9 +134,9 @@ PROVIDERSEOF
         require("/google/bin/releases/jetski-devs/tools/cli" in jetski.get("command", []), "Command must include jetski CLI")
         
         models = jetski.get("models", {})
-        require(models.get("cheap") == "Gemini", "Cheap tier must be Gemini")
-        require(models.get("normal") == "Gemini", "Normal tier must be Gemini")
-        require(models.get("smart") == "Gemini", "Smart tier must be Gemini")
+        require(models.get("cheap") == "gemini-3.5-flash-lite", "Cheap tier must be gemini-3.5-flash-lite")
+        require(models.get("normal") == "gemini-3.7-flash-high", "Normal tier must be gemini-3.7-flash-high")
+        require(models.get("smart") == "gemini-3.8-flash-high", "Smart tier must be gemini-3.8-flash-high")
         
         mode = oct(providers_path.stat().st_mode & 0o777)
         require(mode == "0o600", f"providers.json permissions must be 0600, got {mode}")

@@ -535,6 +535,7 @@ agent_action_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response
 	comment, notified, saved, err := taskchain_service.comment_task(h.taskchains, auth, taskchain_service.Task_Comment_Input{task_id = domain.Task_ID(json_string(params, "task_id")), body = json_string(params, "body"), notify = notify})
 	if !saved do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_comment", fmt.tprintf("commented: %s", json_string(params, "body")))
+	publish_task_event(h.event_bus, string(comment.owner_user_id), string(comment.task_id), string(comment.chain_id), "commented")
 	tch := Taskchain_Handlers{auth = h.auth, taskchains = h.taskchains, agents = h.agents, event_bus = h.event_bus}
 	b := strings.builder_make()
 	write_task_comment_response_json(&b, comment, resolve_comment_author_display(&tch, auth, comment), notified)
@@ -551,6 +552,8 @@ agent_action_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	task, changed, err := taskchain_service.change_task_status(h.taskchains, auth, domain.Task_ID(json_string(params, "task_id")), status)
 	if !changed do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_status", fmt.tprintf("set status \u2192 %s", task_status_http(task.status)))
+	publish_task_event(h.event_bus, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "status_changed")
+	publish_chain_event(h.event_bus, string(task.owner_user_id), string(task.chain_id), "updated")
 	b := strings.builder_make()
 	write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -640,6 +643,8 @@ agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	})
 	if !created do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_create", fmt.tprintf("created task \"%s\"", task.title))
+	publish_task_event(h.event_bus, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "created")
+	publish_chain_event(h.event_bus, string(task.owner_user_id), string(task.chain_id), "updated")
 	b := strings.builder_make()
 	write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
@@ -683,6 +688,8 @@ agent_action_task_update_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	})
 	if !updated do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_update", "updated a task")
+	publish_task_event(h.event_bus, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "updated")
+	publish_chain_event(h.event_bus, string(task.owner_user_id), string(task.chain_id), "updated")
 	b := strings.builder_make()
 	write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
@@ -706,6 +713,8 @@ agent_action_task_depend_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	dep, added, err := taskchain_service.add_task_dependency(h.taskchains, auth, task_id, depends_on_task_id)
 	if !added do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_depend", "linked a task dependency")
+	publish_task_event(h.event_bus, string(inst.owner_user_id), string(dep.task_id), string(inst.chain_id), "updated")
+	publish_chain_event(h.event_bus, string(inst.owner_user_id), string(inst.chain_id), "updated")
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"task_id\":\""); write_handler_json_string(&b, string(dep.task_id)); strings.write_string(&b, "\",\"depends_on_task_id\":\""); write_handler_json_string(&b, string(dep.depends_on_task_id)); strings.write_string(&b, "\"}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
@@ -724,6 +733,13 @@ agent_action_task_vote_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !recorded do return respond_error(err, req.request_id)
 	vote_label := result == "lgtm" ? "LGTM" : (result == "ngtm" ? "NGTM" : result)
 	publish_agent_action(h, inst, "task_vote", fmt.tprintf("voted %s", vote_label))
+	publish_task_event(h.event_bus, string(vote.owner_user_id), string(vote.task_id), string(vote.chain_id), "voted")
+	publish_chain_event(h.event_bus, string(vote.owner_user_id), string(vote.chain_id), "updated")
+	if updated_task, task_ok, _ := taskchain_service.get_task(h.taskchains, auth, vote.task_id); task_ok {
+		if updated_task.status == .Completed || updated_task.status == .Validated_Not_Good {
+			publish_task_event(h.event_bus, string(vote.owner_user_id), string(vote.task_id), string(vote.chain_id), "status_changed")
+		}
+	}
 	b := strings.builder_make()
 	write_task_vote_json(&b, vote)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)

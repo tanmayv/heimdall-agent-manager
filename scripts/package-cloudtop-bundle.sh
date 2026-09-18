@@ -67,9 +67,9 @@ cat << 'PROVIDERSEOF' > "$BUNDLE_DIR/bridge/providers.json"
       ],
       "models": {
         "flag": "--model",
-        "cheap": "Gemini",
-        "normal": "Gemini",
-        "smart": "Gemini"
+        "cheap": "gemini-3.5-flash-lite",
+        "normal": "gemini-3.7-flash-high",
+        "smart": "gemini-3.8-flash-high"
       },
       "prompt_flags": [
         "--prompt-interactive"
@@ -418,7 +418,7 @@ if [ "$IS_STANDALONE" = true ]; then
     echo "[bridge] Starting ham-bridge connected to Central Hub at $STANDALONE_HUB_URL..."
     export HEIMDALL_HAM_PTY_HOST_BIN="$BIN_DIR/ham-pty-host"
     export HEIMDALL_HAM_CTL_BIN="$BIN_DIR/ham-ctl"
-    nohup "$BIN_DIR/ham-bridge"       --bind-host 127.0.0.1       --port "$BRIDGE_PORT"       --local-endpoint-port "$BRIDGE_ENDPOINT_PORT"       --hub "$STANDALONE_HUB_URL"       --local-run-dir "$BRIDGE_RUN_DIR"       --bridge-token-file "$BRIDGE_TOKEN_FILE" > "$BRIDGE_LOG" 2>&1 &
+    nohup "$BIN_DIR/ham-bridge"       --bind-host 127.0.0.1       --port "$BRIDGE_PORT"       --local-endpoint-port "$BRIDGE_ENDPOINT_PORT"       --hub "$STANDALONE_HUB_URL"       --local-run-dir "$BRIDGE_RUN_DIR"       --bridge-token-file "$BRIDGE_TOKEN_FILE" >> "$BRIDGE_LOG" 2>&1 &
     PID=$!
     echo $PID > "$BRIDGE_PID_FILE"
     disown $PID 2>/dev/null || true
@@ -483,7 +483,7 @@ if [ -f "$HUB_PID_FILE" ] && kill -0 "$(cat "$HUB_PID_FILE")" 2>/dev/null; then
   echo "[hub] Already running (PID $(cat "$HUB_PID_FILE"))"
 else
   echo "[hub] Starting ham-hub on 127.0.0.1:49322..."
-  nohup "$BIN_DIR/ham-hub" --listen 127.0.0.1:49322 --db "$DATA_DIR/hub.db" --migrations-dir "$MIGRATIONS_DIR" $HUB_SECRET_FLAG > "$HUB_LOG" 2>&1 &
+  nohup "$BIN_DIR/ham-hub" --listen 127.0.0.1:49322 --db "$DATA_DIR/hub.db" --migrations-dir "$MIGRATIONS_DIR" $HUB_SECRET_FLAG >> "$HUB_LOG" 2>&1 &
   PID=$!
   echo $PID > "$HUB_PID_FILE"
   disown $PID 2>/dev/null || true
@@ -543,7 +543,7 @@ else
   echo "[bridge] Starting ham-bridge on 127.0.0.1:$BRIDGE_PORT..."
   export HEIMDALL_HAM_PTY_HOST_BIN="$BIN_DIR/ham-pty-host"
   export HEIMDALL_HAM_CTL_BIN="$BIN_DIR/ham-ctl"
-  nohup "$BIN_DIR/ham-bridge" --daemon-id brg_local --bind-host 127.0.0.1 --port "$BRIDGE_PORT" --local-endpoint-port "$BRIDGE_ENDPOINT_PORT" --hub http://127.0.0.1:49322 --local-run-dir "$BRIDGE_RUN_DIR" --bridge-token-file "$BRIDGE_TOKEN_FILE" > "$BRIDGE_LOG" 2>&1 &
+  nohup "$BIN_DIR/ham-bridge" --daemon-id brg_local --bind-host 127.0.0.1 --port "$BRIDGE_PORT" --local-endpoint-port "$BRIDGE_ENDPOINT_PORT" --hub http://127.0.0.1:49322 --local-run-dir "$BRIDGE_RUN_DIR" --bridge-token-file "$BRIDGE_TOKEN_FILE" >> "$BRIDGE_LOG" 2>&1 &
   PID=$!
   echo $PID > "$BRIDGE_PID_FILE"
   disown $PID 2>/dev/null || true
@@ -589,7 +589,7 @@ if [ -f "$PROXY_PID_FILE" ] && kill -0 "$(cat "$PROXY_PID_FILE")" 2>/dev/null; t
   echo "[proxy] Already running (PID $(cat "$PROXY_PID_FILE"))"
 else
   echo "[proxy] Starting ham-dev-proxy on 0.0.0.0:8989..."
-  nohup "$BIN_DIR/ham-dev-proxy" --listen 0.0.0.0:8989 --hub-url http://127.0.0.1:49322 --vite-url http://127.0.0.1:5173 $PROXY_SECRET_FLAG $STATIC_UI_FLAG > "$PROXY_LOG" 2>&1 &
+  nohup "$BIN_DIR/ham-dev-proxy" --listen 0.0.0.0:8989 --hub-url http://127.0.0.1:49322 --vite-url http://127.0.0.1:5173 $PROXY_SECRET_FLAG $STATIC_UI_FLAG >> "$PROXY_LOG" 2>&1 &
   PID=$!
   echo $PID > "$PROXY_PID_FILE"
   disown $PID 2>/dev/null || true
@@ -618,7 +618,7 @@ else
     fi
     if [ -d "$UI_DIR" ] && [ -f "$UI_DIR/package.json" ]; then
       echo "[ui] Starting Vite dev server in $UI_DIR on 127.0.0.1:5173..."
-      nohup bash -c "cd '$UI_DIR' && HEIMDALL_DEV_PROXY_URL='http://127.0.0.1:8989' exec npx vite --host 127.0.0.1 --port 5173" > "$VITE_LOG" 2>&1 &
+      nohup bash -c "cd '$UI_DIR' && HEIMDALL_DEV_PROXY_URL='http://127.0.0.1:8989' exec npx vite --host 127.0.0.1 --port 5173" >> "$VITE_LOG" 2>&1 &
       PID=$!
       echo $PID > "$VITE_PID_FILE"
       disown $PID 2>/dev/null || true
