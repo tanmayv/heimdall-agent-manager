@@ -449,13 +449,17 @@ fn run_attach(socket: String, debug: bool, instance: Option<String>) -> Result<(
     if !path.exists() {
         bail!("socket {socket} does not exist (is the host/daemon running?)");
     }
-    // HOST-3: no --instance + no --debug => the multi-agent dashboard against
-    // the daemon (agent sidebar + selected agent's live pane).
-    if instance.is_none() && !debug {
-        ham_pty_host::dashboard_ui::run(&path)?;
-        eprintln!("[ham-pty-host] dashboard exited (agents still running)");
-        return Ok(());
-    }
+    // REQ-PTY-1: no --instance + no --debug => alternate buffer interactive
+    // agent selector overlay. Selecting an agent attaches directly in raw
+    // passthrough mode; cancelling (Esc or Ctrl-C) exits cleanly with code 0.
+    let instance = if instance.is_none() && !debug {
+        match ham_pty_host::dclient::select_instance(&path)? {
+            Some(inst) => Some(inst),
+            None => return Ok(()),
+        }
+    } else {
+        instance
+    };
     if debug {
         // PTYH-3: in-app ratatui split-screen debug TUI.
         ham_pty_host::debug_ui::run(&path)?;

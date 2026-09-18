@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import MarkdownBody from '../MarkdownBody';
+import ProjectVcsPanel from './ProjectVcsPanel';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
 import { Icon, IconButton } from '@ui';
 import {
@@ -34,6 +35,7 @@ import {
   type FsListResult,
   type FsReadFileResult,
 } from '../../api/endpoints/projectFs';
+import { useLazyGetVcsCapabilitiesQuery } from '../../api/endpoints/projectVcs';
 
 function str(v: any): string {
   return String(v ?? '').trim();
@@ -156,6 +158,13 @@ export default function ProjectFilesPanel({
 }: ProjectFilesPanelProps) {
   const [listDir] = useLazyListProjectDirQuery();
   const [readFile, readState] = useLazyReadProjectFileQuery();
+  const [getVcsCapabilities] = useLazyGetVcsCapabilitiesQuery();
+
+  // Sub-tab state: the file tree ('files') vs the VCS Changes view ('changes').
+  // The Changes tab is only offered when the project root has a detected VCS
+  // provider (probed once on mount / project change).
+  const [activeTab, setActiveTab] = useState<'files' | 'changes'>('files');
+  const [vcsProvider, setVcsProvider] = useState('');
   const [createFile, createFileState] = useCreateProjectFileMutation();
   const [createDir, createDirState] = useCreateProjectDirMutation();
   const [movePath, moveState] = useMoveProjectPathMutation();
@@ -284,6 +293,27 @@ export default function ProjectFilesPanel({
     void load('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, bridgeId]);
+
+  // Probe VCS capabilities once per project/bridge to decide whether the "Changes"
+  // sub-tab is offered. Reset to the file tree when the project/bridge changes so a
+  // stale Changes selection never carries over to a project without VCS.
+  useEffect(() => {
+    let cancelled = false;
+    setActiveTab('files');
+    setVcsProvider('');
+    if (!projectId) return;
+    (async () => {
+      try {
+        const res = await getVcsCapabilities({ projectId, bridgeId }).unwrap();
+        if (!cancelled && res.ok && str(res.provider)) setVcsProvider(res.provider);
+      } catch {
+        // No VCS / bridge offline: leave the Changes tab hidden.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, bridgeId, getVcsCapabilities]);
 
   // Show/hide-hidden refetches the CURRENT directory in place (Spec 4.2/4.3) —
   // it must not jump back to root. Skip the initial mount so this doesn't
@@ -488,6 +518,37 @@ export default function ProjectFilesPanel({
         </div>
       </div>
 
+      {/* Sub-tabs: file tree vs VCS Changes. The Changes pill is only offered
+          when the project root has a detected VCS provider. */}
+      {vcsProvider ? (
+        <div data-debug-id={`${debugPrefix}-subtabs`} className="flex items-center gap-1.5 border-b border-white/[0.06] px-3 py-2">
+          <button
+            data-debug-id={`${debugPrefix}-tab-files`}
+            type="button"
+            onClick={() => setActiveTab('files')}
+            aria-pressed={activeTab === 'files' ? 'true' : 'false'}
+            className={`rounded-full border px-2.5 py-1 text-caption ${activeTab === 'files' ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-400 hover:bg-white/10'}`}
+          >
+            📁 Files
+          </button>
+          <button
+            data-debug-id={`${debugPrefix}-tab-changes`}
+            type="button"
+            onClick={() => setActiveTab('changes')}
+            aria-pressed={activeTab === 'changes' ? 'true' : 'false'}
+            className={`rounded-full border px-2.5 py-1 text-caption ${activeTab === 'changes' ? 'border-sky-400/50 bg-sky-400/20 text-sky-100' : 'border-white/10 text-zinc-400 hover:bg-white/10'}`}
+          >
+            ± Changes
+          </button>
+        </div>
+      ) : null}
+
+      {activeTab === 'changes' && vcsProvider ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <ProjectVcsPanel projectId={projectId} bridgeId={bridgeId} onClose={onClose ?? (() => {})} isMobile={isMobile} />
+        </div>
+      ) : (
+      <>
       {/* Pending review comments bar — spans ALL files in this conversation. */}
       {comments.length > 0 ? (
         <div data-debug-id={`${debugPrefix}-comments-bar`} className="flex items-center gap-2 border-b border-sky-400/20 bg-sky-400/[0.06] px-3 py-2">
@@ -760,6 +821,8 @@ export default function ProjectFilesPanel({
           {error}
         </div>
       ) : null}
+      </>
+      )}
     </div>
   );
 }

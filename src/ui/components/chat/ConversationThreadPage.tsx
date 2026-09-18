@@ -1,7 +1,10 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
 import ProjectFilesPanel from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
-import { type ClipboardEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ShellJobsPanel from './ShellJobsPanel';
+import AtMentionPopup, { type MentionEntity } from './AtMentionPopup';
+import AgentPaneComposerPanel from './AgentPaneComposerPanel';
+import { type ClipboardEvent, type FormEvent, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
   useFetchConversationMessagesQuery,
@@ -20,6 +23,7 @@ import {
 } from '../../api/endpoints/agents';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { useFetchProjectQuery } from '../../api/endpoints/projects';
+import { useGetAgentsLiveQuery } from '../../api/endpoints/agentsLive';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import {
   normalizeBridgeCapabilities,
@@ -30,7 +34,20 @@ import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import { CommandPalette, Drawer, Icon as UiIcon, Menu, Popover, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
-import { buildRouteHash } from '../../utils/appLocation';
+import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
+import {
+  CHAT_VIEW_MIN_WIDTH,
+  RIGHT_SIDEBAR_DEFAULT_WIDTH,
+  RIGHT_SIDEBAR_MIN_WIDTH,
+  clampRightSidebarWidth,
+  readRightSidebarOpen,
+  readRightSidebarTab,
+  readRightSidebarWidth,
+  writeRightSidebarOpen,
+  writeRightSidebarTab,
+  writeRightSidebarWidth,
+  type RightSidebarTab,
+} from '../../utils/clientPersistence';
 import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery, useSetInstanceCurrentTaskMutation } from '../../api/endpoints/tasks';
 import CurrentTaskStrip from './CurrentTaskStrip';
@@ -482,6 +499,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // reconfigure invalidates AgentInstances, and the poll below is the backstop.
   const instanceQuery = useFetchAgentInstanceQuery({ instanceId: agentInstanceId }, { skip: !agentInstanceId, pollingInterval: instancePollInterval, skipPollingIfUnfocused: true });
   const instance = instanceQuery.data?.instance || null;
+  // Currently running agents across all projects/chains, for the composer's
+  // agent-switcher picker (grouped by project → chain like the sidebar). Polled
+  // slowly (the picker is a convenience, not a live surface).
+  const { data: liveProjects } = useGetAgentsLiveQuery(undefined, { pollingInterval: 30000, skipPollingIfUnfocused: true });
   // Agent identity (name + persona/instructions) — used for the empty-state
   // welcome so a fresh conversation shows who you're talking to.
   const agentIdentityQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
@@ -536,17 +557,145 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [olderCursor, setOlderCursor] = useState('');
   const [olderHasMore, setOlderHasMore] = useState(false);
   const [draft, setDraft] = useState('');
+  const [isPaneExpanded, setIsPaneExpanded] = useState<boolean>(false);
+  // @-mention popup state: mentionQuery is the fragment typed after '@' (null when
+  // the popup is closed); mentionIndex is the highlighted row for arrow-key nav.
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState('');
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
+  // Flatten the live projects->chains->agents tree into a single @-mention list
+  // (agents, projects, and task chains). liveProjects is LiveProject[] with the
+  // camelCase shape from api/endpoints/agentsLive.ts.
+  const mentionEntities = useMemo<MentionEntity[]>(() => {
+    const items: MentionEntity[] = [];
+    for (const proj of (liveProjects ?? [])) {
+      const projectName = String(proj.name || proj.projectId || '');
+      items.push({ type: 'project', id: String(proj.projectId || ''), label: projectName, sublabel: 'project' });
+      for (const chain of (proj.chains ?? [])) {
+        items.push({ type: 'chain', id: String(chain.chainId || ''), label: String(chain.title || chain.chainId || ''), sublabel: projectName });
+        for (const agent of (chain.liveAgents ?? [])) {
+          items.push({ type: 'agent', id: String(agent.agentInstanceId || ''), label: String(agent.displayName || agent.agentInstanceId || ''), sublabel: String(chain.title || '') });
+        }
+      }
+    }
+    return items;
+  }, [liveProjects]);
+  // Client-side fuzzy filter (label or id contains the query, case-insensitive),
+  // capped at 8 items. Empty query shows the first 8 entities.
+  const filteredMentions = useMemo(() => {
+    if (mentionQuery === null) return [] as MentionEntity[];
+    const q = mentionQuery.toLowerCase();
+    return mentionEntities
+      .filter((e) => !q || e.label.toLowerCase().includes(q) || e.id.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [mentionEntities, mentionQuery]);
+  // Replace the '@fragment' immediately before the caret with '@<id>' and restore
+  // focus/caret after React re-renders the textarea value.
+  function handleMentionSelect(entity: MentionEntity) {
+    const ta = textareaRef.current;
+    const pos = ta?.selectionStart ?? draft.length;
+    const before = draft.slice(0, pos);
+    const after = draft.slice(pos);
+    const newBefore = before.replace(/@([^\s@]*)$/, `@${entity.id}`);
+    setDraft(newBefore + after);
+    setMentionQuery(null);
+    setMentionIndex(0);
+    setTimeout(() => { ta?.focus(); const np = newBefore.length; ta?.setSelectionRange(np, np); }, 0);
+  }
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
-  // panel itself has Tasks / Files tabs. 'closed' hides it entirely. Tasks and
-  // Files are the two tabs (not mutually-exclusive split peers anymore).
-  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files' | 'rundir'>('closed');
+  // panel itself has Tasks / Files / RunDir tabs. 'closed' hides it entirely.
+  // Initialized from ?panel= / ?sidebar= query param, falling back to UI storage.
+  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files' | 'rundir' | 'jobs'>(() => {
+    const search = getRouteSearch();
+    const params = new URLSearchParams(search.replace(/^\?/, ''));
+    const param = params.get('panel') || params.get('sidebar');
+    if (param) {
+      const norm = param.trim().toLowerCase();
+      if (norm === 'tasks') return 'tasks';
+      if (norm === 'files') return 'files';
+      if (norm === 'rundir') return 'rundir';
+      if (norm === 'jobs') return 'jobs';
+      if (norm === 'closed' || norm === 'false' || norm === '0') return 'closed';
+      if (norm === 'open' || norm === 'true' || norm === '1') {
+        return readRightSidebarTab() || 'tasks';
+      }
+    }
+    const open = readRightSidebarOpen();
+    if (open) {
+      return readRightSidebarTab() || 'tasks';
+    }
+    return 'closed';
+  });
+
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readRightSidebarWidth());
+  const [isDragging, setIsDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Sync state if hash/search changes while mounted (e.g. browser back/forward or internal navigation)
+  useEffect(() => {
+    const handleLocationChange = () => {
+      const search = getRouteSearch();
+      const params = new URLSearchParams(search.replace(/^\?/, ''));
+      const param = params.get('panel') || params.get('sidebar');
+      if (param) {
+        const norm = param.trim().toLowerCase();
+        if (norm === 'tasks') {
+          setRightPanel('tasks');
+          writeRightSidebarOpen(true);
+          writeRightSidebarTab('tasks');
+        } else if (norm === 'files') {
+          setRightPanel('files');
+          writeRightSidebarOpen(true);
+          writeRightSidebarTab('files');
+        } else if (norm === 'rundir') {
+          setRightPanel('rundir');
+          writeRightSidebarOpen(true);
+          writeRightSidebarTab('rundir');
+        } else if (norm === 'jobs') {
+          setRightPanel('jobs');
+          writeRightSidebarOpen(true);
+          writeRightSidebarTab('jobs');
+        } else if (norm === 'closed' || norm === 'false' || norm === '0') {
+          setRightPanel('closed');
+          writeRightSidebarOpen(false);
+        }
+      } else {
+        setRightPanel('closed');
+        writeRightSidebarOpen(false);
+      }
+    };
+    window.addEventListener('hashchange', handleLocationChange);
+    window.addEventListener('popstate', handleLocationChange);
+    return () => {
+      window.removeEventListener('hashchange', handleLocationChange);
+      window.removeEventListener('popstate', handleLocationChange);
+    };
+  }, []);
+
+  // Guardrail: adjust sidebar width on window resize so chat view never violates CHAT_VIEW_MIN_WIDTH
+  useEffect(() => {
+    const handleWindowResize = () => {
+      if (!containerRef.current) return;
+      const containerWidth = containerRef.current.getBoundingClientRect().width;
+      const maxAllowedWidth = Math.max(RIGHT_SIDEBAR_MIN_WIDTH, containerWidth - CHAT_VIEW_MIN_WIDTH);
+      setSidebarWidth((prev) => {
+        if (prev > maxAllowedWidth) {
+          return maxAllowedWidth;
+        }
+        return prev;
+      });
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, []);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -582,6 +731,61 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const viewport = useViewport();
   const isMobile = viewport === 'mobile';
+
+  // Mobile scroll hide/reveal chrome tracking
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const lastScrollTopRef = useRef(0);
+
+  const restoreChrome = useCallback(() => {
+    setChromeVisible(true);
+  }, []);
+
+  const handleTranscriptScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      if (!isMobile) return;
+
+      const TOP_MARGIN = 60;
+      const BOTTOM_MARGIN = 100;
+      const target = event.currentTarget;
+      const currentTop = target.scrollTop;
+      const distanceToBottom = target.scrollHeight - currentTop - target.clientHeight;
+      const isAtTop = currentTop <= TOP_MARGIN;
+      const isAtBottom = distanceToBottom <= BOTTOM_MARGIN;
+
+      if (isAtTop || isAtBottom) {
+        restoreChrome();
+        lastScrollTopRef.current = currentTop;
+        return;
+      }
+
+      const delta = currentTop - lastScrollTopRef.current;
+      if (Math.abs(delta) > 8) {
+        setChromeVisible(false);
+        lastScrollTopRef.current = currentTop;
+      }
+    },
+    [isMobile, restoreChrome],
+  );
+
+  useEffect(() => {
+    if (!isMobile) {
+      restoreChrome();
+    }
+  }, [isMobile, restoreChrome]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && isMobile) {
+      window.dispatchEvent(new CustomEvent('heimdall:mobile-chrome', { detail: { visible: chromeVisible } }));
+    }
+  }, [chromeVisible, isMobile]);
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('heimdall:mobile-chrome', { detail: { visible: true } }));
+      }
+    };
+  }, []);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
@@ -636,7 +840,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setOlderHasMore(false);
     setLocalMessages([]);
     setAttachments([]);
-  }, [conversationId]);
+    restoreChrome();
+    lastScrollTopRef.current = 0;
+  }, [conversationId, restoreChrome]);
   useEffect(() => {
     if (baseMessages.length === 0 || localMessages.length === 0) return;
     const serverIds = new Set(baseMessages.map((message, index) => msgId(message, index)));
@@ -792,10 +998,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     }
   }
 
-  function requestPaneFromComposer() {
-    if (!paneCaptureDisabled) void requestPane();
-  }
-
   function beginRenameFromHeader() {
     setHeaderActionsOpen(false);
     setTitleDraft(editableTitle);
@@ -810,26 +1012,149 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   // Default the panel's active tab based on what this conversation has: prefer
   // Tasks when linked to a chain, else Files when it has a project.
-  function defaultPanelTab(): 'tasks' | 'files' | 'rundir' {
+  function defaultPanelTab(): 'tasks' | 'files' | 'rundir' | 'jobs' {
     if (chainId) return 'tasks';
     if (projectId) return 'files';
     if (agentInstanceId) return 'rundir';
     return 'tasks';
   }
 
+  // Sync ?panel=<tab> to route hash search on panel open/tab switch, or clean it up on close
+  function syncUrlPanel(tab: 'tasks' | 'files' | 'rundir' | 'jobs' | null) {
+    if (typeof window === 'undefined') return;
+    try {
+      const search = getRouteSearch();
+      const params = new URLSearchParams(search.replace(/^\?/, ''));
+      if (tab) {
+        params.set('panel', tab);
+        params.delete('sidebar');
+      } else {
+        params.delete('panel');
+        params.delete('sidebar');
+      }
+      const nextSearch = params.toString();
+      const nextHash = buildRouteHash(getRoutePathname(), nextSearch);
+      if (window.location.hash !== nextHash) {
+        window.history.replaceState(window.history.state || {}, '', nextHash);
+      }
+    } catch {
+      // Best-effort URL query parameter synchronization
+    }
+  }
+
   // Top-right toggle: open to the default tab, or close if already open.
   function toggleRightPanel() {
     setHeaderActionsOpen(false);
-    setRightPanel((cur) => (cur === 'closed' ? defaultPanelTab() : 'closed'));
+    setRightPanel((cur) => {
+      if (cur === 'closed') {
+        const targetTab = readRightSidebarTab() || defaultPanelTab();
+        writeRightSidebarOpen(true);
+        writeRightSidebarTab(targetTab);
+        syncUrlPanel(targetTab);
+        return targetTab;
+      } else {
+        writeRightSidebarOpen(false);
+        syncUrlPanel(null);
+        return 'closed';
+      }
+    });
   }
 
   // Open the panel focused on a specific tab (e.g. the composer project chip
   // opens Files; a current-task link opens Tasks).
-  function openRightPanel(tab: 'tasks' | 'files' | 'rundir') {
+  function openRightPanel(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
     setHeaderActionsOpen(false);
+    writeRightSidebarOpen(true);
+    writeRightSidebarTab(tab);
+    syncUrlPanel(tab);
     setRightPanel(tab);
   }
-  function closeRightPanel() { setRightPanel('closed'); }
+
+  function closeRightPanel() {
+    writeRightSidebarOpen(false);
+    syncUrlPanel(null);
+    setRightPanel('closed');
+  }
+
+  function selectRightPanelTab(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
+    writeRightSidebarOpen(true);
+    writeRightSidebarTab(tab);
+    syncUrlPanel(tab);
+    setRightPanel(tab);
+  }
+
+  const handleResizerPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    const container = containerRef.current;
+    const containerWidth = container ? container.getBoundingClientRect().width : window.innerWidth;
+    const maxAllowedWidth = Math.max(RIGHT_SIDEBAR_MIN_WIDTH, containerWidth - CHAT_VIEW_MIN_WIDTH);
+
+    let latestWidth = startWidth;
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      moveEvent.preventDefault();
+      const deltaX = startX - moveEvent.clientX;
+      const rawWidth = startWidth + deltaX;
+      const clampedWidth = clampRightSidebarWidth(rawWidth, maxAllowedWidth);
+      latestWidth = clampedWidth;
+      setSidebarWidth(clampedWidth);
+    };
+
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      upEvent.preventDefault();
+      setIsDragging(false);
+      writeRightSidebarWidth(latestWidth);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+  };
+
+  const handleResizerDoubleClick = () => {
+    setSidebarWidth(RIGHT_SIDEBAR_DEFAULT_WIDTH);
+    writeRightSidebarWidth(RIGHT_SIDEBAR_DEFAULT_WIDTH);
+  };
+
+  const handleResizerKeyDown = (event: React.KeyboardEvent) => {
+    const step = event.shiftKey ? 40 : 10;
+    const containerWidth = containerRef.current?.getBoundingClientRect().width || window.innerWidth;
+    const maxAllowedWidth = Math.max(RIGHT_SIDEBAR_MIN_WIDTH, containerWidth - CHAT_VIEW_MIN_WIDTH);
+
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setSidebarWidth((prev) => {
+        const next = clampRightSidebarWidth(prev + step, maxAllowedWidth);
+        writeRightSidebarWidth(next);
+        return next;
+      });
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setSidebarWidth((prev) => {
+        const next = clampRightSidebarWidth(prev - step, maxAllowedWidth);
+        writeRightSidebarWidth(next);
+        return next;
+      });
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setSidebarWidth(RIGHT_SIDEBAR_MIN_WIDTH);
+      writeRightSidebarWidth(RIGHT_SIDEBAR_MIN_WIDTH);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setSidebarWidth(maxAllowedWidth);
+      writeRightSidebarWidth(maxAllowedWidth);
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      handleResizerDoubleClick();
+    }
+  };
 
   function renderConversationMessageBody(message: ChatMessage) {
     if (message.messageType === 'pane_capture') {
@@ -1021,14 +1346,17 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const hasTasks = Boolean(chainId);
     const hasFiles = Boolean(projectId);
     const hasRunDir = Boolean(agentInstanceId);
+    const hasJobs = Boolean(agentInstanceId);
     // The two file-explorer tabs are labeled with a folder icon + the resource
     // name (project name for Files, instance display name for Run dir) and
     // truncate when long. Tasks keeps its fixed label.
     const instanceDisplayName = String(instance?.display_name || (instance as any)?.displayName || title || agentId || agentInstanceId || 'instance').trim();
     const filesLabel = projectName || 'Files';
-    const active: 'tasks' | 'files' | 'rundir' =
+    const active: 'tasks' | 'files' | 'rundir' | 'jobs' =
       rightPanel === 'files' && hasFiles ? 'files'
       : rightPanel === 'rundir' && hasRunDir ? 'rundir'
+      : rightPanel === 'jobs' && hasJobs ? 'jobs'
+      : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
       : hasTasks ? 'tasks'
       : hasFiles ? 'files'
       : 'rundir';
@@ -1037,22 +1365,28 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c]">
         <div data-debug-id="conversation-right-panel-tabs" className="flex shrink-0 items-center gap-1 border-b border-white/10 px-2 py-2">
           {hasTasks ? (
-            <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => setRightPanel('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => selectRightPanelTab('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
               <Icon name="tasks" size={15} />
               <span>Tasks</span>
               {chainProgress.total > 0 ? <span className="rounded-full bg-black/30 px-1.5 py-0.5 text-[10px] font-bold text-sky-100">{chainProgress.done}/{chainProgress.total}</span> : null}
             </button>
           ) : null}
           {hasFiles ? (
-            <button type="button" title={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => setRightPanel('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" title={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => selectRightPanelTab('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
               <Icon name="folder" size={15} className="shrink-0" />
               <span className="truncate">{filesLabel}</span>
             </button>
           ) : null}
           {hasRunDir ? (
-            <button type="button" title={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => setRightPanel('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+            <button type="button" title={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
               <Icon name="folder" size={15} className="shrink-0" />
               <span className="truncate">{instanceDisplayName}</span>
+            </button>
+          ) : null}
+          {hasJobs ? (
+            <button type="button" title="Background jobs" data-debug-id="conversation-right-panel-tab-jobs" onClick={() => selectRightPanelTab('jobs')} aria-pressed={active === 'jobs' ? 'true' : 'false'} className={`${tabBase} ${active === 'jobs' ? 'bg-sky-400/20 text-sky-100' : 'text-zinc-400 hover:bg-white/5'}`}>
+              <Icon name="terminal" size={15} className="shrink-0" />
+              <span className="truncate">Jobs</span>
             </button>
           ) : null}
         </div>
@@ -1076,12 +1410,23 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
             />
-          ) : hasTasks ? (
-            <TaskChainOverview
-              chainId={chainId}
+          ) : active === 'jobs' && hasJobs ? (
+            <ShellJobsPanel
+              agentInstanceId={agentInstanceId}
+              rootLabel={instanceDisplayName}
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
             />
+          ) : active === 'tasks' ? (
+            chainId ? (
+              <TaskChainOverview
+                chainId={chainId}
+                onClose={closeRightPanel}
+                isMobile={isMobilePanel}
+              />
+            ) : (
+              <div className="grid h-full place-items-center text-sm text-zinc-500">Loading tasks…</div>
+            )
           ) : null}
         </div>
       </div>
@@ -1089,11 +1434,92 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   function renderComposer() {
+    // Group running agents by project → chain, mirroring the sidebar: project
+    // header labels, a subtle divider before every chain group except the first,
+    // and amber-300 coordinators. The current agent keeps sky-400 + check and
+    // always wins over the coordinator color.
+    const pickerProjects = (liveProjects ?? []).filter((p) =>
+      p.chains.some((c) => c.liveAgents.length > 0)
+    );
+    let pickerChainsRendered = 0;
+    const agentPickerList = (
+      <div className="max-h-64 overflow-y-auto py-1">
+        {pickerProjects.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-zinc-500">No running agents</p>
+        ) : (
+          pickerProjects.map((project) => (
+            <div key={project.projectId}>
+              <div className="px-3 pt-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                {project.name || project.projectId}
+              </div>
+              {project.chains
+                .filter((chain) => chain.liveAgents.length > 0)
+                .map((chain) => {
+                  const showDivider = pickerChainsRendered > 0;
+                  pickerChainsRendered += 1;
+                  return (
+                    <div key={chain.chainId}>
+                      {showDivider && <div className="mx-3 my-1 border-t border-white/5" />}
+                      {chain.liveAgents.map((agent) => {
+                        const isCurrent = agent.agentInstanceId === agentInstanceId;
+                        const textClass = isCurrent
+                          ? 'text-sky-400'
+                          : agent.isCoordinator
+                          ? 'text-amber-300'
+                          : 'text-zinc-200';
+                        return (
+                          <button
+                            key={agent.agentInstanceId}
+                            type="button"
+                            data-debug-id={`conversation-agent-picker-item-${agent.agentInstanceId}`}
+                            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] hover:bg-white/10 ${textClass}`}
+                            onClick={() => {
+                              setAgentPickerOpen(false);
+                              window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(agent.agentInstanceId), '');
+                            }}
+                          >
+                            <span className="min-w-0 truncate">{agent.displayName || agent.agentInstanceId}</span>
+                            {isCurrent && <Icon name="check" size={14} className="ml-auto shrink-0 text-sky-400" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+            </div>
+          ))
+        )}
+      </div>
+    );
+    const agentPickerTrigger = (
+      <button
+        type="button"
+        data-debug-id="conversation-agent-picker-btn"
+        aria-label="Current agent — click to switch"
+        title={agentDisplayName || agentInstanceId || 'Agent'}
+        aria-haspopup={isMobile ? 'dialog' : undefined}
+        aria-expanded={isMobile ? (agentPickerOpen ? 'true' : 'false') : undefined}
+        onClick={isMobile ? () => setAgentPickerOpen((open) => !open) : undefined}
+        className="inline-flex h-9 items-center gap-1.5 rounded-xl px-2.5 text-[13px] text-zinc-300 hover:bg-white/10 hover:text-white"
+      >
+        <span className="max-w-[140px] truncate font-medium">{agentDisplayName || agentInstanceId || 'Agent'}</span>
+        <Icon name="chevron-down" size={13} />
+      </button>
+    );
     return (
-      <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 px-3 pb-4 pt-2 sm:px-6 sm:pb-6 sm:pt-3">
+      <form
+        onSubmit={submit}
+        data-debug-id="conversation-composer-shell"
+        data-mobile-shell-chrome="hide-on-focus"
+        className={`w-full max-w-full shrink-0 sm:px-6 sm:pb-6 sm:pt-3 transition-all duration-300 ease-in-out ${
+          isMobile && !chromeVisible
+            ? 'max-h-0 py-0 px-3 overflow-hidden translate-y-full opacity-0 pointer-events-none'
+            : 'max-h-[800px] px-3 pb-4 pt-2 translate-y-0 opacity-100 pointer-events-auto'
+        }`}
+      >
         {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
             above the composer (co-located with the working indicator). */}
-        <AgentActivityBubbles instanceId={agentInstanceId} />
+        <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
         {currentTask ? (
           <CurrentTaskStrip
             task={currentTask}
@@ -1178,20 +1604,110 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             </div>
           </div>
 
-          <textarea
-            data-debug-id="conversation-composer-input"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); } }}
-            onPaste={handleComposerPaste}
-            rows={2}
-            placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
-            className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-white outline-none placeholder:text-zinc-600 sm:text-sm"
+          {/* Terminal pane panel above composer textarea when isPaneExpanded is true */}
+          <AgentPaneComposerPanel
+            agentInstanceId={agentInstanceId}
+            isExpanded={isPaneExpanded}
+            onClose={() => setIsPaneExpanded(false)}
+            onToggleExpand={() => setIsPaneExpanded((prev) => !prev)}
+            isActiveTab={true}
+            runtimeStatus={runtimeStatus}
+            className="mb-2.5"
           />
+
+          <div className="relative">
+            {mentionQuery !== null && (
+              <AtMentionPopup
+                query={mentionQuery}
+                entities={filteredMentions}
+                activeIndex={mentionIndex}
+                onSelect={handleMentionSelect}
+                onClose={() => setMentionQuery(null)}
+              />
+            )}
+            <textarea
+              ref={textareaRef}
+              data-debug-id="conversation-composer-input"
+              value={draft}
+              onFocus={() => {
+                restoreChrome();
+              }}
+              onChange={(e) => {
+                restoreChrome();
+                setDraft(e.target.value);
+                const val = e.target.value;
+                const pos = e.target.selectionStart ?? val.length;
+                const before = val.slice(0, pos);
+                const match = before.match(/@([^\s@]*)$/);
+                if (match) {
+                  setMentionQuery(match[1]);
+                  setMentionIndex(0);
+                } else {
+                  setMentionQuery(null);
+                }
+              }}
+              onKeyDown={(e) => {
+                restoreChrome();
+                if (mentionQuery !== null && filteredMentions.length > 0) {
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex((i) => (i + 1) % filteredMentions.length); return; }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length); return; }
+                  if (e.key === 'Enter') { e.preventDefault(); handleMentionSelect(filteredMentions[mentionIndex]); return; }
+                  if (e.key === 'Escape') { e.preventDefault(); setMentionQuery(null); return; }
+                }
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); }
+              }}
+              onPaste={handleComposerPaste}
+              rows={2}
+              placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
+              className="min-h-[44px] w-full resize-none bg-transparent px-1 py-1 text-base text-white outline-none placeholder:text-zinc-600 sm:text-sm"
+            />
+          </div>
 
           <div className="mt-1 flex items-center gap-1.5">
             <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white"><Icon name="plus" size={19} /></button>
-            <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={requestPaneFromComposer} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"><Icon name="terminal" size={18} /></button>
+            <button
+              data-debug-id="conversation-request-pane-btn"
+              type="button"
+              aria-pressed={isPaneExpanded}
+              title="Toggle terminal pane panel"
+              aria-label="Toggle terminal pane panel"
+              onClick={() => setIsPaneExpanded((prev) => !prev)}
+              className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors ${
+                isPaneExpanded
+                  ? 'bg-sky-400/20 text-sky-300 border border-sky-400/40 hover:bg-sky-400/30'
+                  : 'text-zinc-400 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              <Icon name="terminal" size={18} />
+            </button>
+
+            <div className="flex-1" />
+
+            {/* Agent chip: shows the current agent's display name, centered
+                between the pane-capture controls and the model switcher. Clicking
+                it opens a picker of all running agents to switch conversations.
+                Desktop uses a Popover; mobile uses a bottom Drawer (matching the
+                runtime menu pattern below). */}
+            {!isMobile ? (
+              <Popover
+                side="top"
+                align="start"
+                label="Switch agent"
+                open={agentPickerOpen}
+                onOpenChange={setAgentPickerOpen}
+                className="w-[min(92vw,320px)]"
+                trigger={agentPickerTrigger}
+              >
+                {agentPickerList}
+              </Popover>
+            ) : (
+              <>
+                {agentPickerTrigger}
+                <Drawer side="bottom" title="Switch agent" open={agentPickerOpen} onOpenChange={setAgentPickerOpen} data-debug-id="conversation-agent-picker-mobile-sheet">
+                  <Drawer.Body>{agentPickerList}</Drawer.Body>
+                </Drawer>
+              </>
+            )}
 
             <div className="flex-1" />
 
@@ -1241,7 +1757,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           right-sidebar toggle (right). The left nav sidebar has its own toggle.
           Runtime/model controls + immutable bridge/project context live in the
           composer. */}
-      <header data-debug-id="conversation-thread-header" className="flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2 sm:gap-3 sm:px-4">
+      <header
+        data-debug-id="conversation-thread-header"
+        className={`flex shrink-0 items-center gap-2 border-b px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out ${
+          isMobile && !chromeVisible
+            ? 'max-h-0 py-0 border-transparent overflow-hidden -translate-y-full opacity-0 pointer-events-none'
+            : 'max-h-16 py-2 border-white/10 translate-y-0 opacity-100 pointer-events-auto'
+        }`}
+      >
         <div className="hidden h-9 w-9 shrink-0 sm:block" aria-hidden="true" />
 
         <div className="flex min-w-0 flex-1 items-center justify-start gap-1.5 sm:justify-center">
@@ -1304,13 +1827,52 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           </Menu>
         </div>
 
-        {(chainId || projectId) ? (
+        {(chainId || projectId || agentInstanceId) ? (
           <button type="button" data-debug-id="conversation-right-panel-toggle-btn" aria-label={rightPanel !== 'closed' ? 'Close side panel' : 'Open side panel'} title={rightPanel !== 'closed' ? 'Close panel' : 'Open panel'} aria-pressed={rightPanel !== 'closed' ? 'true' : 'false'} onClick={toggleRightPanel} className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-xl ${rightPanel !== 'closed' ? 'text-sky-300' : 'text-zinc-400 hover:bg-white/10 hover:text-zinc-200'}`}>
             <Icon name="panel-right" size={18} />
             {rightPanel === 'closed' && chainId && chainProgress.total > 0 ? <span data-debug-id="conversation-right-panel-toggle-progress" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black">{chainProgress.done}/{chainProgress.total}</span> : null}
           </button>
         ) : null}
       </header>
+
+      {/* Subtle Top-Right Floating Toggle Button */}
+      {isMobile && !chromeVisible && rightPanel === 'closed' && Boolean(chainId || projectId || agentInstanceId) ? (
+        <button
+          type="button"
+          data-debug-id="conversation-floating-panel-toggle-btn"
+          aria-label="Open side panel"
+          title="Open panel"
+          onClick={toggleRightPanel}
+          className="fixed top-2.5 right-2.5 z-30 bg-black/50 backdrop-blur border border-white/10 text-zinc-400 hover:text-white rounded-xl h-9 w-9 grid place-items-center transition-opacity duration-200"
+        >
+          <Icon name="panel-right" size={18} />
+          {chainId && chainProgress.total > 0 ? (
+            <span
+              data-debug-id="conversation-floating-panel-toggle-progress"
+              className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1 text-[9px] font-bold leading-4 text-black"
+            >
+              {chainProgress.done}/{chainProgress.total}
+            </span>
+          ) : null}
+        </button>
+      ) : null}
+
+      {/* Subtle Bottom Agent Name Pill */}
+      {isMobile && !chromeVisible ? (
+        <div className="fixed bottom-9 inset-x-0 flex justify-center z-30 pointer-events-none">
+          <button
+            type="button"
+            data-debug-id="conversation-floating-agent-pill"
+            aria-label="Switch agent"
+            title={agentDisplayName || agentInstanceId || 'Agent'}
+            onClick={() => setAgentPickerOpen(true)}
+            className="pointer-events-auto bg-[#161618]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-full text-xs font-medium text-zinc-300 shadow-lg flex items-center gap-1.5 hover:bg-white/10 hover:text-white transition-all duration-200"
+          >
+            <span className="max-w-[160px] truncate">{agentDisplayName || agentInstanceId || 'Agent'}</span>
+            <Icon name="chevron-down" size={13} />
+          </button>
+        </div>
+      ) : null}
 
       <CommandPalette
         open={searchOpen}
@@ -1332,12 +1894,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               hasMore={olderHasMore && Boolean(olderCursor)}
               loadingOlder={olderMessagesState.isFetching}
               onLoadOlder={loadOlderMessages}
+              onScroll={handleTranscriptScroll}
               formatTimestamp={formatMessageTimestamp}
               getDeliveryStatus={deliveryStatusFor}
               agentIsWorking={isWorking}
               renderMessageBody={({ message }) => renderConversationMessageBody(message)}
               wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
-              scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+              scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 pt-2 pb-8 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
               emptyState={messagesQuery.isFetching ? (
                 <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center p-6 text-sm text-zinc-500">Loading messages…</div>
               ) : (
@@ -1357,24 +1920,54 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           </div>
         );
 
-        const panelOpen = rightPanel !== 'closed' && (chainId || projectId || agentInstanceId);
-        if (!panelOpen) {
-          return (<>{transcript}{renderComposer()}</>);
-        }
+        const panelOpen = rightPanel !== 'closed' && Boolean(chainId || projectId || agentInstanceId);
 
         return (
-          <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
-            {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it. */}
-            <div className="flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden sm:hidden">
-              {renderRightPanel(true)}
-            </div>
-            {/* Desktop (>= 768px): chat on the left, sidebar (~40%) on the right. */}
-            <div className="hidden h-full min-h-0 w-full max-w-full flex-row overflow-x-hidden sm:flex">
-              <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col border-r border-white/10">
-                {transcript}
-                {renderComposer()}
+          <div ref={containerRef} className="relative flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
+            {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
+            {panelOpen ? (
+              <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden bg-[#0c0c0c] sm:hidden">
+                {renderRightPanel(true)}
               </div>
-              <div className="flex h-full min-h-0 w-1/2 min-w-[360px] flex-col overflow-x-hidden">
+            ) : null}
+
+            {/* Chat pane on the left: expands to full width when sidebar is closed or on mobile */}
+            <div
+              className="flex h-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px]"
+            >
+              {transcript}
+              {renderComposer()}
+            </div>
+
+            {/* Desktop (>= 768px) vertical resizer divider between chat view and right sidebar */}
+            {panelOpen ? (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize right sidebar"
+                aria-valuenow={sidebarWidth}
+                aria-valuemin={RIGHT_SIDEBAR_MIN_WIDTH}
+                tabIndex={0}
+                data-debug-id="conversation-right-panel-resizer"
+                onPointerDown={handleResizerPointerDown}
+                onDoubleClick={handleResizerDoubleClick}
+                onKeyDown={handleResizerKeyDown}
+                className={`hidden sm:flex group relative w-1.5 cursor-col-resize shrink-0 select-none items-center justify-center border-l border-white/10 hover:border-sky-400/50 hover:bg-sky-400/10 active:bg-sky-400/20 z-10 ${isDragging ? 'bg-sky-400/20 border-sky-400' : ''}`}
+              >
+                <div className={`h-8 w-0.5 rounded-full ${isDragging ? 'bg-sky-400' : 'bg-white/20 group-hover:bg-sky-300'}`} />
+              </div>
+            ) : null}
+
+            {/* Desktop (>= 768px) right sidebar with smooth 200ms open/close transition & overflow clipping */}
+            <div
+              data-debug-id="conversation-right-panel-resizable-container"
+              style={{ width: panelOpen ? `${sidebarWidth}px` : '0px' }}
+              className={`hidden sm:flex overflow-hidden shrink-0 flex-col ${isDragging ? 'transition-none' : 'transition-[width] duration-200 ease-in-out'}`}
+            >
+              <div
+                style={{ width: `${sidebarWidth}px` }}
+                className="h-full flex flex-col min-w-[360px]"
+              >
                 {renderRightPanel(false)}
               </div>
             </div>

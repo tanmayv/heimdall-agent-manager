@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { ReactNode, UIEvent } from 'react';
 import Markdown from '../Markdown';
 import ChatHoverCopyButton from '../ChatHoverCopyButton';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -40,6 +40,7 @@ export default function ChatMessageList({
   hasMore = false,
   loadingOlder = false,
   onLoadOlder,
+  onScroll: onScrollProp,
   onReply,
   renderMessageTop,
   renderMessageBody,
@@ -61,6 +62,7 @@ export default function ChatMessageList({
   hasMore?: boolean;
   loadingOlder?: boolean;
   onLoadOlder?: () => void;
+  onScroll?: (event: UIEvent<HTMLDivElement>) => void;
   onReply?: (reply: string) => void;
   renderMessageTop?: (args: { message: ChatMessage; index: number; messages: ChatMessage[] }) => React.ReactNode;
   renderMessageBody?: (args: { message: ChatMessage; onReply: (reply: string) => void }) => React.ReactNode;
@@ -188,14 +190,15 @@ export default function ChatMessageList({
     }
   }, [focusMessageId, messages, debugPrefix, hasMore, loadingOlder, onLoadOlder, reduceMotion]);
 
-  const onScroll = useCallback(() => {
+  const onScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    onScrollProp?.(event);
     const node = scrollRef.current;
     if (!node) return;
     const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    const nearBottom = distance < 48;
+    const nearBottom = distance < 64;
     stickyRef.current = nearBottom;
     setShowJump(!nearBottom && messages.length > 0);
-  }, [messages.length]);
+  }, [messages.length, onScrollProp]);
 
   return (
     <div className={wrapperClassName}>

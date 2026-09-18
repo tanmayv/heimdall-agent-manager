@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Intro to Heimdall: Beyond the Single Chat Window</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0a0f1d;
+      --bg-card: #131b2e;
+      --bg-card-hover: #1a253e;
+      --bg-surface: #1e2942;
+      --border-color: #243452;
+      --border-subtle: #1b263b;
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-cyan: #06b6d4;
+      --accent-cyan-glow: rgba(6, 182, 212, 0.25);
+      --accent-emerald: #10b981;
+      --accent-emerald-glow: rgba(16, 185, 129, 0.25);
+      --accent-purple: #8b5cf6;
+      --accent-purple-glow: rgba(139, 92, 246, 0.25);
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+    }
+
+    /* Presentation Header */
+    header {
+      height: 56px;
+      background: rgba(10, 15, 29, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 50;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 1.1rem;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-badge {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 800;
+      padding: 4px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .nav-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+
+    .btn:hover {
+      background: var(--bg-card-hover);
+      color: var(--text-primary);
+      border-color: var(--accent-cyan);
+    }
+
+    .btn-active {
+      background: var(--accent-cyan-glow);
+      border-color: var(--accent-cyan);
+      color: var(--accent-cyan);
+    }
+
+    .slide-counter {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      min-width: 90px;
+      text-align: center;
+    }
+
+    /* Main Slide Stage */
+    main {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      padding: 32px 48px;
+    }
+
+    .slide-deck {
+      position: relative;
+      width: 100%;
+      max-width: 1400px;
+      height: 100%;
+      max-height: 820px;
+    }
+
+    .slide {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      visibility: hidden;
+      transform: scale(0.98) translateY(12px);
+      transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.35s;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 48px 56px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.03);
+      overflow-y: auto;
+    }
+
+    .slide.active {
+      opacity: 1;
+      visibility: visible;
+      transform: scale(1) translateY(0);
+      z-index: 10;
+    }
+
+    /* Slide Typography & Elements */
+    .slide-header {
+      margin-bottom: 32px;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+
+    .slide-tag {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 8px;
+    }
+
+    .slide-title {
+      font-size: 2.2rem;
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+      color: #fff;
+    }
+
+    .slide-subtitle {
+      font-size: 1.1rem;
+      color: var(--text-secondary);
+      font-weight: 400;
+      margin-top: 6px;
+    }
+
+    .slide-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      justify-content: center;
+    }
+
+    /* Layout Grids */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+      align-items: stretch;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card.danger {
+      border-color: rgba(244, 63, 94, 0.4);
+      background: linear-gradient(180deg, rgba(244, 63, 94, 0.08) 0%, var(--bg-surface) 100%);
+    }
+
+    .card.success {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: linear-gradient(180deg, rgba(16, 185, 129, 0.08) 0%, var(--bg-surface) 100%);
+    }
+
+    .card.accent {
+      border-color: rgba(6, 182, 212, 0.4);
+      background: linear-gradient(180deg, rgba(6, 182, 212, 0.08) 0%, var(--bg-surface) 100%);
+    }
+
+    .card-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .card-title {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .card-body {
+      font-size: 0.95rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    /* Tables */
+    .table-container {
+      width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.95rem;
+    }
+
+    th {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      padding: 14px 18px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    td {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+    }
+
+    .tag-red { background: rgba(244, 63, 94, 0.2); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3); }
+    .tag-green { background: rgba(16, 185, 129, 0.2); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .tag-blue { background: rgba(6, 182, 212, 0.2); color: var(--accent-cyan); border: 1px solid rgba(6, 182, 212, 0.3); }
+    .tag-purple { background: rgba(139, 92, 246, 0.2); color: var(--accent-purple); border: 1px solid rgba(139, 92, 246, 0.3); }
+
+    /* Code & Terminal Blocks */
+    pre, code {
+      font-family: var(--font-mono);
+    }
+
+    .terminal-box {
+      background: #080c16;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 16px 20px;
+      font-size: 0.88rem;
+      color: #38bdf8;
+      overflow-x: auto;
+      line-height: 1.6;
+    }
+
+    /* Speaker Notes Drawer */
+    #notes-drawer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 240px;
+      background: #080d1a;
+      border-top: 2px solid var(--accent-cyan);
+      box-shadow: 0 -12px 36px rgba(0,0,0,0.8);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      transform: translateY(100%);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    #notes-drawer.open {
+      transform: translateY(0);
+    }
+
+    .notes-header {
+      padding: 10px 24px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--accent-cyan);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .notes-content {
+      padding: 18px 24px;
+      overflow-y: auto;
+      font-size: 0.95rem;
+      line-height: 1.7;
+      color: var(--text-secondary);
+    }
+
+    .notes-content strong {
+      color: var(--text-primary);
+    }
+
+    /* Presentation Footer / Progress */
+    footer {
+      height: 48px;
+      background: var(--bg-dark);
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 40;
+    }
+
+    .progress-bar-container {
+      flex: 1;
+      height: 4px;
+      background: var(--border-color);
+      margin: 0 24px;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+      width: 8.33%;
+      transition: width 0.3s ease;
+    }
+
+    .shortcuts-hint {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      display: flex;
+      gap: 16px;
+    }
+
+    .key {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+
+    /* Interactive Demo Simulator */
+    .demo-container {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 20px;
+      height: 440px;
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .demo-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+    }
+
+    .demo-step-btn {
+      text-align: left;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .demo-step-btn:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--accent-cyan);
+    }
+
+    .demo-step-btn.active {
+      background: rgba(6, 182, 212, 0.12);
+      border-color: var(--accent-cyan);
+    }
+
+    .demo-step-title {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .demo-step-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .demo-screen {
+      background: #080c16;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+    }
+
+    .demo-badge-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .demo-log {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      line-height: 1.7;
+      color: #94a3b8;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header Navigation -->
+  <header>
+    <div class="brand">
+      <span>HEIMDALL</span>
+      <span class="brand-badge">Architecture</span>
+      <span style="color: var(--text-muted); font-size: 0.9rem; font-weight: 400;">Intro to Heimdall</span>
+    </div>
+    <div class="nav-controls">
+      <button class="btn" id="prev-btn" title="Previous (Left Arrow)">‹ Prev</button>
+      <div class="slide-counter" id="slide-num">Slide 1 / 12</div>
+      <button class="btn" id="next-btn" title="Next (Right Arrow)">Next ›</button>
+      <button class="btn" id="notes-btn" title="Toggle Speaker Notes (S key)">Notes [S]</button>
+      <button class="btn" id="fullscreen-btn" title="Toggle Fullscreen (F key)">Fullscreen [F]</button>
+    </div>
+  </header>
+
+  <!-- Main Slide Stage -->
+  <main>
+    <div class="slide-deck">
+
+      <!-- SLIDE 1: Title & Executive Summary -->
+      <div class="slide active" data-slide="1">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Executive Briefing & Architecture</div>
+            <h1 class="slide-title">Beyond the Single Chat Window</h1>
+            <p class="slide-subtitle">Orchestrating Autonomous, Accountable AI Fleets with Heimdall</p>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <span class="tag tag-blue">Provider Agnostic</span>
+            <span class="tag tag-green">Multi-Agent First</span>
+            <span class="tag tag-purple">Auditable DAGs</span>
+          </div>
+        </div>
+        <div class="slide-content">
+          <div class="grid-3" style="margin-top: 10px;">
+            <div class="card accent">
+              <div class="card-icon">⚡</div>
+              <div class="card-title">The Central Challenge</div>
+              <div class="card-body">
+                Single terminal chats (Claude Code, Cursor) feel miraculous for 5-minute edits, but break down on real-world engineering tasks due to context rot, zero concurrency, and lost audit trails.
+              </div>
+            </div>
+            <div class="card success">
+              <div class="card-icon">🛡️</div>
+              <div class="card-title">The Heimdall Paradigm</div>
+              <div class="card-body">
+                Transform solitary AI chats into a structured, accountable engineering fleet: one Coordinator, specialized workers with clean-context restarts, and independent review gates.
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-icon">📈</div>
+              <div class="card-title">Executive ROI</div>
+              <div class="card-body">
+                Predictable engineering velocity, auditable ticket-style progress, cross-machine remote fleets, and zero token waste from runaway agent echo chambers.
+              </div>
+            </div>
+          </div>
+          <div style="background: rgba(6, 182, 212, 0.08); border: 1px solid rgba(6, 182, 212, 0.25); border-radius: 12px; padding: 18px 24px; display: flex; align-items: center; justify-content: space-between;">
+            <div style="font-size: 0.95rem; color: var(--text-primary);">
+              💡 <strong>Core Premise:</strong> The next 10x multiplier in software engineering is not a bigger context window or a smarter prompt—it is <strong>organizational discipline</strong> for autonomous agents.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 2: The Status Quo -->
+      <div class="slide" data-slide="2">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">The Baseline Experience</div>
+            <h1 class="slide-title">The Status Quo: The Solitary Coder</h1>
+            <p class="slide-subtitle">Why developers love single-window Claude Code—and where it hits the wall</p>
+          </div>
+          <span class="tag tag-red">Single Point of Failure</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-icon" style="color: var(--accent-emerald);">✨</div>
+              <div class="card-title">Why Developers Start Here</div>
+              <div class="card-body">
+                <ul style="padding-left: 20px; display: flex; flex-direction: column; gap: 10px;">
+                  <li><strong>Zero friction:</strong> Open a terminal in a repo root, type a prompt, and get code.</li>
+                  <li><strong>Rapid tactical wins:</strong> Great at fixing typos, creating boilerplate, and small bug fixes.</li>
+                  <li><strong>Immediate conversational feel:</strong> The illusion of talking to a senior pair programmer.</li>
+                </ul>
+              </div>
+            </div>
+            <div class="card danger">
+              <div class="card-icon" style="color: var(--accent-rose);">⚠️</div>
+              <div class="card-title">The Rapidly Approaching Ceiling</div>
+              <div class="card-body">
+                <ul style="padding-left: 20px; display: flex; flex-direction: column; gap: 10px;">
+                  <li><strong>Single-threaded:</strong> While it refactors a module, developer is blocked from doing other AI tasks.</li>
+                  <li><strong>Trapped on localhost:</strong> Tied to the active terminal process; close the laptop and the run aborts.</li>
+                  <li><strong>Zero team visibility:</strong> Management or teammates have no idea what the agent did without reading 1,000 lines of terminal logs.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <div class="terminal-box">
+            $ claude "Refactor user authentication, add token rotation, write unit tests, and update DB schema"<br>
+            <span style="color: #64748b;">// Turn 1..10: Great progress on schema...</span><br>
+            <span style="color: #f59e0b;">// Turn 25: Memory warning. Compiler error logs fill 60,000 tokens of context...</span><br>
+            <span style="color: #f43f5e;">// Turn 42: Agent hallucinates old API signature from Turn 3, deletes working test harness, and stalls.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 3: The Breakdown (The Trap) -->
+      <div class="slide" data-slide="3">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Failure Mode Analysis</div>
+            <h1 class="slide-title">The 4 Fatal Traps of Single-Window Chat</h1>
+            <p class="slide-subtitle">The systemic blockers that prevent single LLM sessions from scaling</p>
+          </div>
+          <span class="tag tag-red">Root Causes</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-4">
+            <div class="card danger">
+              <div class="card-title" style="font-size: 1.05rem; color: var(--accent-rose);">1. Context Rot</div>
+              <div class="card-body" style="font-size: 0.88rem;">
+                Past message 30, obsolete compiler errors, discarded code snippets, and conversational tangents poison the attention window ("lost in the middle"). Hallucinations spike exponentially.
+              </div>
+            </div>
+            <div class="card danger">
+              <div class="card-title" style="font-size: 1.05rem; color: var(--accent-rose);">2. Non-Reproducible State</div>
+              <div class="card-body" style="font-size: 0.88rem;">
+                An agent's mental state depends entirely on the exact conversational path. A simple markdown handoff cannot recreate its latent attention. Killing the chat means amnesia.
+              </div>
+            </div>
+            <div class="card danger">
+              <div class="card-title" style="font-size: 1.05rem; color: var(--accent-rose);">3. Prompt Pollution</div>
+              <div class="card-body" style="font-size: 0.88rem;">
+                Dumping every architecture doc, style rule, and build command into a giant <code>CLAUDE.md</code> forces every prompt to carry irrelevant cognitive load, confusing the model.
+              </div>
+            </div>
+            <div class="card danger">
+              <div class="card-title" style="font-size: 1.05rem; color: var(--accent-rose);">4. Zero Auditability</div>
+              <div class="card-body" style="font-size: 0.88rem;">
+                Progress is buried in an unstructured 200-message terminal scrollback. Did tests actually pass or did the LLM just claim they did? There is no verified audit trail.
+              </div>
+            </div>
+          </div>
+          <div class="card" style="background: rgba(244, 63, 94, 0.06); border-color: rgba(244, 63, 94, 0.3);">
+            <div style="font-size: 0.95rem; color: var(--text-primary);">
+              🚨 <strong>The Leadership Dilemma:</strong> When a single Claude session derails after 45 minutes of work, the developer has to wipe the slate clean, losing all intermediate momentum. It is unscalable and unpredictable.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 4: Swarms vs Discipline -->
+      <div class="slide" data-slide="4">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Architectural Philosophy</div>
+            <h1 class="slide-title">Swarms vs. Discipline</h1>
+            <p class="slide-subtitle">Why "insect swarms" burn tokens while human engineering structures succeed</p>
+          </div>
+          <span class="tag tag-purple">Core Principle</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-2">
+            <div class="card danger">
+              <div class="card-title" style="color: var(--accent-rose);">The "Swarm" Trap (CrewAI, AutoGen, Naive Demos)</div>
+              <div class="card-body">
+                <ul style="padding-left: 20px; display: flex; flex-direction: column; gap: 10px;">
+                  <li><strong>Uncontrolled Peer Chatter:</strong> Agents talk freely in circles (<code>A &lt;=&gt; B &lt;=&gt; C</code>), agreeing with each other's mistakes.</li>
+                  <li><strong>Diffusion of Responsibility:</strong> No single agent owns the ticket. When the build breaks, who is held accountable?</li>
+                  <li><strong>Token Inferno:</strong> Every agent consumes the full conversational history of every other agent, burning budgets in minutes.</li>
+                  <li><strong>"Vibes-Based" Completion:</strong> Stops when someone says "looks good to me" with zero programmatic proof.</li>
+                </ul>
+              </div>
+            </div>
+            <div class="card success">
+              <div class="card-title" style="color: var(--accent-emerald);">Heimdall's "Discipline" Model</div>
+              <div class="card-body">
+                <ul style="padding-left: 20px; display: flex; flex-direction: column; gap: 10px;">
+                  <li><strong>Single Coordinator Point-of-Contact:</strong> User talks to one Coordinator who plans and decomposes work into a DAG.</li>
+                  <li><strong>Task-Centric Auditing:</strong> Agents communicate via <strong>Task Comments</strong> on durable tickets, not noisy chat transcripts.</li>
+                  <li><strong>Asymmetric Roles:</strong> Coordinators plan, specialized Workers code, independent Reviewers evaluate.</li>
+                  <li><strong>Deterministic State Engine:</strong> Backed by an Odin daemon and SQLite append-only log with automated deadlock prevention (<code>reconcile</code>).</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 5: The Architectural Shift: Orchestrator + Specialist -->
+      <div class="slide" data-slide="5">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">System Design Pattern</div>
+            <h1 class="slide-title">Orchestrator + Specialist Architecture</h1>
+            <p class="slide-subtitle">Decomposing complex goals into an auditable Directed Acyclic Graph (DAG)</p>
+          </div>
+          <span class="tag tag-blue">Design Pattern</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-2">
+            <div class="card accent">
+              <div class="card-title">Dual-Layer Human Steering</div>
+              <div class="card-body">
+                <p style="margin-bottom: 12px;">Heimdall gives users the best of both worlds:</p>
+                <ol style="padding-left: 20px; display: flex; flex-direction: column; gap: 12px;">
+                  <li><strong>Macro Steering (Coordinator Chat):</strong> Give high-level goals ("Add OAuth2 Google login"). Coordinator designs the tasks, sets dependencies, and oversees execution.</li>
+                  <li><strong>Micro Steering (Direct Worker Chat):</strong> Notice a worker making an awkward stylistic choice? Open that worker's direct chat and guide it in real time—without disrupting the coordinator's DAG plan.</li>
+                </ol>
+              </div>
+            </div>
+            <div class="card" style="background: #080d1a;">
+              <div class="card-title" style="font-size: 1rem; color: var(--accent-cyan);">Heimdall Task DAG Topology</div>
+              <div class="terminal-box" style="font-size: 0.82rem; border-color: var(--border-color);">
+                [User Prompt: "Ship OAuth Feature"]<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;│<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;▼<br>
+                [Coordinator Agent (inst_coord)]<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;│── Creates Task 1: DB Schema Migration<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;│── Creates Task 2: Backend OAuth Endpoints (depends on 1)<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;└── Creates Task 3: Frontend Login Button (depends on 1)<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▼ (Parallel Execution)<br>
+                [Worker inst_backend] &nbsp;&nbsp;&nbsp;&nbsp; [Worker inst_frontend]<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▼ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▼<br>
+                [Reviewer inst_rev1] &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; [Reviewer inst_rev2]<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│ (LGTM Quorum) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│ (LGTM Quorum)<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▼ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▼<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─────────► [Completed & Merged]
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 6: Context Hygiene: The Clean Restart Secret -->
+      <div class="slide" data-slide="6">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Reliability Breakthrough</div>
+            <h1 class="slide-title">Context Hygiene: The Clean Restart Secret</h1>
+            <p class="slide-subtitle">Why wiping worker context between tasks completely eliminates context rot</p>
+          </div>
+          <span class="tag tag-green">Zero Context Rot</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-3">
+            <div class="card danger">
+              <div class="card-title" style="color: var(--accent-rose);">Monolithic Claude Session</div>
+              <div class="card-body">
+                <div style="font-size: 2.2rem; font-weight: 800; color: var(--accent-rose); margin-bottom: 8px;">160k Tokens</div>
+                <p>Accumulates 40 turns of compiler failures, outdated grep output, and dead-end experiments. Attention degrades; performance plummets.</p>
+              </div>
+            </div>
+            <div class="card success">
+              <div class="card-title" style="color: var(--accent-emerald);">Heimdall Task-Restart Model</div>
+              <div class="card-body">
+                <div style="font-size: 2.2rem; font-weight: 800; color: var(--accent-emerald); margin-bottom: 8px;">8k Tokens</div>
+                <p>Worker agent restarts fresh per task. It receives <em>only</em> the task description, acceptance checklist, and scoped memory facts. Zero baggage.</p>
+              </div>
+            </div>
+            <div class="card accent">
+              <div class="card-title">Deterministic Checkpointing</div>
+              <div class="card-body">
+                <p style="margin-bottom: 10px;">Tasks follow a formal state machine:</p>
+                <div style="font-family: var(--font-mono); font-size: 0.85rem; line-height: 1.8;">
+                  queued<br>
+                  &nbsp;&nbsp;└─► in_progress<br>
+                  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─► in_validation<br>
+                  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─► completed
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.3);">
+            <div style="font-size: 0.95rem; color: var(--text-primary);">
+              💡 <strong>The Secret:</strong> If a task fails or crashes, you don't lose the project. Heimdall's <code>reconcile</code> loop re-evaluates the DAG, restarts the worker with clean state, and resumes from the exact boundary.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 7: Memory Architecture -->
+      <div class="slide" data-slide="7">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Federated State Management</div>
+            <h1 class="slide-title">Memory Architecture: Scoped & Governed</h1>
+            <p class="slide-subtitle">Self-learning agents without context drift or prompt pollution</p>
+          </div>
+          <span class="tag tag-purple">5 Scopes</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-title">The 5 Scopes of Heimdall Memory</div>
+              <div class="card-body">
+                <ul style="padding-left: 20px; display: flex; flex-direction: column; gap: 10px;">
+                  <li><strong>Agent Scope (<code>agent_id</code>):</strong> Reusable habits, specialized skills, and behavioral traits across sessions.</li>
+                  <li><strong>Project Scope (<code>project_id</code>):</strong> Codebase conventions, test rules, repository boundaries.</li>
+                  <li><strong>Bridge Scope (<code>bridge_id</code>):</strong> Host machine specifics, tool paths, OS environment variables.</li>
+                  <li><strong>Template Scope:</strong> Reusable persona archetypes (e.g. "Senior Security Reviewer").</li>
+                  <li><strong>Global Scope:</strong> Universal engineering facts across all workspaces.</li>
+                </ul>
+              </div>
+            </div>
+            <div class="card success">
+              <div class="card-title" style="color: var(--accent-emerald);">The Proposal & Approval Lifecycle</div>
+              <div class="card-body">
+                <p style="margin-bottom: 12px;">In naive systems, agents directly overwrite global files, causing hallucination feedback loops. In Heimdall:</p>
+                <div class="terminal-box" style="font-size: 0.82rem;">
+                  [Agent Discovers Fact/Habit]<br>
+                  &nbsp;&nbsp;&nbsp;&nbsp;│<br>
+                  &nbsp;&nbsp;&nbsp;&nbsp;▼<br>
+                  ham-ctl memory propose --scope project --type fact<br>
+                  &nbsp;&nbsp;&nbsp;&nbsp;│ (State: Proposed, unapplied)<br>
+                  &nbsp;&nbsp;&nbsp;&nbsp;▼<br>
+                  [Human / Operator Review]<br>
+                  &nbsp;&nbsp;&nbsp;&nbsp;│ (Approved!)<br>
+                  &nbsp;&nbsp;&nbsp;&nbsp;▼<br>
+                  [Active Memory: Automatically injected into future agent bootstrap context]
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 8: Continuous Evals & Review Gates -->
+      <div class="slide" data-slide="8">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Quality Assurance</div>
+            <h1 class="slide-title">Continuous Evals & Review Gates</h1>
+            <p class="slide-subtitle">Transforming LLM-as-Judge and Regression Harnesses into built-in gates</p>
+          </div>
+          <span class="tag tag-blue">Critic + Refiner</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-3">
+            <div class="card accent">
+              <div class="card-icon">⚖️</div>
+              <div class="card-title">LLM-as-Judge Reviewers</div>
+              <div class="card-body">
+                Assign dedicated reviewer agents. When a worker submits a task, the reviewer runs the code, checks tests, and evaluates against explicit acceptance criteria before voting.
+              </div>
+            </div>
+            <div class="card success">
+              <div class="card-icon">🧪</div>
+              <div class="card-title">Regression Harnesses</div>
+              <div class="card-body">
+                Every Heimdall task description includes a mandatory <code>How to VERIFY</code> block with copy-pasteable commands. Reviewers don't guess; they execute.
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-icon">🔄</div>
+              <div class="card-title">The LGTM Quorum Gate</div>
+              <div class="card-body">
+                A task cannot complete on the worker's say-so. A vote of <code>lgtm</code> with verified evidence auto-finalizes the task and unblocks downstream dependents. An <code>ngtm</code> routes to rework.
+              </div>
+            </div>
+          </div>
+          <div class="terminal-box" style="margin-top: 10px;">
+            $ ham-ctl task vote task_backend_jwt --result lgtm --comment "Verified test suite passes (42 tests ok), token refresh handles clock skew properly, SQL migrations clean."
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 9: Distributed Fleets & Remote Tools -->
+      <div class="slide" data-slide="9">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Infrastructure & Scaling</div>
+            <h1 class="slide-title">Distributed Fleets & Remote Power Tools</h1>
+            <p class="slide-subtitle">Unlocking multi-device execution and safe remote workspace management</p>
+          </div>
+          <span class="tag tag-purple">Multi-Bridge</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-3">
+            <div class="card">
+              <div class="card-icon">🌐</div>
+              <div class="card-title">Cross-Device Fleet</div>
+              <div class="card-body">
+                Agents aren't locked to your laptop. Run a Coordinator on Cloudtop, Workers on local Linux boxes, and a test runner on a remote GPU server—all talking to the same Hub.
+              </div>
+            </div>
+            <div class="card accent">
+              <div class="card-icon">📁</div>
+              <div class="card-title">Remote FS Exploration</div>
+              <div class="card-body">
+                Explore remote filesystems, read code diffs, and inspect artifacts directly from the dashboard or CLI without SSHing into individual instances.
+              </div>
+            </div>
+            <div class="card success">
+              <div class="card-icon">⚙️</div>
+              <div class="card-title">Async Background Jobs</div>
+              <div class="card-body">
+                Long builds or test suites run asynchronously via <code>ham-ctl shell-cmd</code>. Prevents agent blocking, and smart output truncation protects token budgets.
+              </div>
+            </div>
+          </div>
+          <div style="background: rgba(139, 92, 246, 0.08); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 12px; padding: 18px 24px;">
+            <div style="font-size: 0.95rem; color: var(--text-primary);">
+              🚀 <strong>The Fleet Advantage:</strong> Move heavy build, test, and model workloads to where the compute lives, while controlling and monitoring everything from a single unified control surface.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 10: Step-by-Step User Demo Flow -->
+      <div class="slide" data-slide="10">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Interactive Walkthrough</div>
+            <h1 class="slide-title">A Day in the Life: User Demo Flow</h1>
+            <p class="slide-subtitle">Click the steps below to simulate the end-to-end Heimdall experience</p>
+          </div>
+          <span class="tag tag-green">Interactive Demo</span>
+        </div>
+        <div class="slide-content">
+          <div class="demo-container">
+            <div class="demo-steps">
+              <div class="demo-step-btn active" onclick="setDemoStep(1)">
+                <div class="demo-step-title">1. User Prompts Coordinator</div>
+                <div class="demo-step-subtitle">Single high-level goal input</div>
+              </div>
+              <div class="demo-step-btn" onclick="setDemoStep(2)">
+                <div class="demo-step-title">2. Plan & Task DAG Created</div>
+                <div class="demo-step-subtitle">Decomposition & dependencies</div>
+              </div>
+              <div class="demo-step-btn" onclick="setDemoStep(3)">
+                <div class="demo-step-title">3. Worker Dispatched</div>
+                <div class="demo-step-subtitle">Clean restart & execution</div>
+              </div>
+              <div class="demo-step-btn" onclick="setDemoStep(4)">
+                <div class="demo-step-title">4. User On-The-Fly Steering</div>
+                <div class="demo-step-subtitle">Direct worker intervention</div>
+              </div>
+              <div class="demo-step-btn" onclick="setDemoStep(5)">
+                <div class="demo-step-title">5. Reviewer Gate & LGTM</div>
+                <div class="demo-step-subtitle">Verification & auto-completion</div>
+              </div>
+              <div class="demo-step-btn" onclick="setDemoStep(6)">
+                <div class="demo-step-title">6. Memory Proposed & Retained</div>
+                <div class="demo-step-subtitle">Durable self-learning saved</div>
+              </div>
+            </div>
+            <div class="demo-screen">
+              <div class="demo-badge-row">
+                <span class="tag tag-blue" id="demo-role-badge">Role: Coordinator</span>
+                <span class="tag tag-green" id="demo-status-badge">Status: Active</span>
+                <span style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-muted);" id="demo-time">Step 1 of 6</span>
+              </div>
+              <div class="demo-log" id="demo-log-content">
+$ ham-ctl chat send --to coordinator --body "We need to migrate our auth service to JWT with refresh token rotation and full test coverage."
+
+[Heimdall Hub] Message delivered to coordinator instance (inst_coordinator).
+[Coordinator] Acknowledged. Inspecting repository structure and analyzing dependencies...
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 11: Head-to-Head Comparison Matrix -->
+      <div class="slide" data-slide="11">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Feature Analysis</div>
+            <h1 class="slide-title">Head-to-Head: Claude Code vs. Heimdall</h1>
+            <p class="slide-subtitle">A direct comparison of engineering capabilities across both models</p>
+          </div>
+          <span class="tag tag-cyan">Scorecard</span>
+        </div>
+        <div class="slide-content">
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Capability Dimension</th>
+                  <th>Single Claude Code Session</th>
+                  <th>Heimdall Multi-Agent Fleet</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Context Longevity</strong></td>
+                  <td><span class="tag tag-red">Degrades after 30 turns</span> (Context rot)</td>
+                  <td><span class="tag tag-green">Infinite</span> (Clean restart per task)</td>
+                </tr>
+                <tr>
+                  <td><strong>Auditability & Progress</strong></td>
+                  <td>Buried in ephemeral terminal scrollback</td>
+                  <td>Structured Task Board with auditable comments & history</td>
+                </tr>
+                <tr>
+                  <td><strong>Concurrency & Parallelism</strong></td>
+                  <td>Single-threaded serialized execution</td>
+                  <td>Parallel workers across independent DAG branches</td>
+                </tr>
+                <tr>
+                  <td><strong>Quality & Verification</strong></td>
+                  <td>Self-reporting ("I checked and it works")</td>
+                  <td>Independent Reviewer quorums & explicit verification commands</td>
+                </tr>
+                <tr>
+                  <td><strong>Institutional Memory</strong></td>
+                  <td>Flat, monolithic <code>CLAUDE.md</code> dumped everywhere</td>
+                  <td>5-Tier Scoped Memory with proposal/approval governance</td>
+                </tr>
+                <tr>
+                  <td><strong>Fleet & Compute</strong></td>
+                  <td>Local terminal only</td>
+                  <td>Multi-machine distributed bridges (laptops, cloud, GPU servers)</td>
+                </tr>
+                <tr>
+                  <td><strong>Deadlock & Crash Recovery</strong></td>
+                  <td>Must kill process and start over</td>
+                  <td>Deterministic state engine + automated <code>reconcile</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- SLIDE 12: Takeaways & Getting Started -->
+      <div class="slide" data-slide="12">
+        <div class="slide-header">
+          <div>
+            <div class="slide-tag">Conclusion & Action Plan</div>
+            <h1 class="slide-title">Key Takeaways & Getting Started</h1>
+            <p class="slide-subtitle">Bringing enterprise predictability and velocity to AI software engineering</p>
+          </div>
+          <span class="tag tag-green">Next Steps</span>
+        </div>
+        <div class="slide-content">
+          <div class="grid-3">
+            <div class="card success">
+              <div class="card-icon">1</div>
+              <div class="card-title">From Prompts to Systems</div>
+              <div class="card-body">
+                Stop trying to craft the "perfect prompt" or wrestling with 200k token context windows. Success requires organizational structure, task decomposition, and review gates.
+              </div>
+            </div>
+            <div class="card accent">
+              <div class="card-icon">2</div>
+              <div class="card-title">Clean Restarts = Reliability</div>
+              <div class="card-body">
+                Restarting agents fresh on each task with scoped memory eliminates context pollution and gives teams predictable, reproducible results.
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-icon">3</div>
+              <div class="card-title">Auditable by Default</div>
+              <div class="card-body">
+                Leadership gains complete visibility into task progress, blockers, and reviewer evidence without having to parse chaotic LLM transcripts.
+              </div>
+            </div>
+          </div>
+          <div class="terminal-box" style="margin-top: 10px;">
+            # Quickstart with Heimdall<br>
+            $ ham-ctl agent start-success<br>
+            $ ham-ctl task-chain reconcile &lt;chain-id&gt;<br>
+            $ ham-ctl chat send --to coordinator --body "Let's build."
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Speaker Notes Drawer (Collapsible) -->
+  <div id="notes-drawer">
+    <div class="notes-header">
+      <span>Speaker Notes — Slide <span id="notes-slide-indicator">1</span></span>
+      <button class="btn" style="padding: 2px 8px; font-size: 0.75rem;" onclick="toggleNotes()">Close [S]</button>
+    </div>
+    <div class="notes-content" id="notes-body">
+      <!-- Injected by JavaScript -->
+    </div>
+  </div>
+
+  <!-- Bottom Navigation & Status Bar -->
+  <footer>
+    <div class="shortcuts-hint">
+      <span><span class="key">←</span> / <span class="key">→</span> Navigate</span>
+      <span><span class="key">S</span> Speaker Notes</span>
+      <span><span class="key">F</span> Fullscreen</span>
+    </div>
+    <div class="progress-bar-container">
+      <div class="progress-bar" id="progress-indicator"></div>
+    </div>
+    <div style="font-size: 0.8rem; color: var(--text-muted);">
+      Heimdall Agent Manager v2.0
+    </div>
+  </footer>
+
+  <!-- Slide Controller Script -->
+  <script>
+    const slides = document.querySelectorAll('.slide');
+    const totalSlides = slides.length;
+    let currentSlide = 1;
+    let notesOpen = false;
+
+    // Comprehensive Speaker Notes for Each Slide
+    const speakerNotes = {
+      1: "<strong>Opening & Executive Thesis:</strong> Welcome everyone. Today we are addressing the defining bottleneck in modern AI-assisted software development. Every engineer in our organization has used tools like Claude Code or Cursor, and the initial reaction is awe. But when we try to hand these tools complex, multi-day features, they hit an invisible wall. Today, we introduce Heimdall—not as another chatbot, but as an enterprise-grade orchestrator that brings engineering discipline to autonomous agent fleets.",
+      2: "<strong>The Solitary Coder Reality:</strong> Validate the audience's current experience. Claude Code is fantastic for 5-minute single-file edits. But notice how it operates: it's a single serialized terminal prompt inside a git directory. It's locked to the developer's laptop, completely invisible to the rest of the team, and fragile when tasks require hours of sustained reasoning.",
+      3: "<strong>Diving into the 4 Traps:</strong> This is the core pain point slide. Walk through the math of Context Rot: as an LLM conversation reaches 30+ turns, old compiler logs and discarded code crowd out working memory. Explain why a naive 'hand-off document' fails: model attention is non-reproducible across long conversations. When a session derails, developers are forced to restart from scratch.",
+      4: "<strong>Swarms vs Discipline:</strong> Crucial philosophical contrast. Many people think 'multi-agent' means academic swarms like AutoGen or CrewAI where agents chat in circles. Make it clear that Heimdall rejects this chaotic model. Heimdall is modeled after high-performing human engineering teams: one Coordinator, formal ticket tasks, and deterministic state transitions.",
+      5: "<strong>Orchestrator + Specialist Pattern:</strong> Explain the user experience. The developer only ever talks to one Coordinator agent. The Coordinator decomposes the goal into a DAG of tasks. Highlight the Dual-Layer steering: developers can direct the coordinator at a macro level, but can also drop into a specific worker's chat to guide it without breaking the overall plan.",
+      6: "<strong>The Clean Restart Secret:</strong> This is Heimdall's most elegant architectural breakthrough. Instead of letting one agent run for 50 turns until its context window bloats to 160k tokens, Heimdall worker agents restart with clean context on every task. They receive only the exact task description, vetted memories, and tools. Context rot is eliminated by design.",
+      7: "<strong>Memory Architecture:</strong> Contrast Heimdall's 5 memory scopes with monolithic prompt dumps like CLAUDE.md. Explain the proposal-approval lifecycle: agents can propose memories when they discover conventions, but only human-approved memories enter the durable system. This prevents memory contamination.",
+      8: "<strong>Continuous Evals as Review Gates:</strong> Frame evals as real-world engineering discipline. In Heimdall, no task is marked complete simply because the worker claimed it was done. It must move to in_validation, where an independent Reviewer agent runs the test suite and checks acceptance criteria before issuing an LGTM quorum vote.",
+      9: "<strong>Distributed Fleets & Remote Tools:</strong> Show how Heimdall breaks free from localhost. Agents can run across different machines and bridges—laptops, cloud workstations, and GPU clusters—while sharing the same task DAG. Remote FS exploration and async background jobs allow developers to control their fleet from anywhere.",
+      10: "<strong>Interactive Demo Walkthrough:</strong> Use the interactive widget on this slide! Walk through the 6-step lifecycle: Prompt -> Plan DAG -> Worker Dispatch -> On-The-Fly Steering -> Reviewer Gate -> Memory Propose. Show how each step updates task state and audit logs.",
+      11: "<strong>The Head-to-Head Scorecard:</strong> Summarize the contrast across 7 concrete engineering dimensions. Emphasize that Heimdall is not replacing the underlying LLM; it is providing the robust operating system that makes LLMs usable for complex software engineering.",
+      12: "<strong>Closing & Call to Action:</strong> Conclude with the leadership ROI: higher reliability, complete auditability, and team scalability. Open the floor for questions and direct the team to the Heimdall repository and quickstart CLI."
+    };
+
+    function updateSlide(newSlide) {
+      if (newSlide < 1 || newSlide > totalSlides) return;
+      slides.forEach(s => s.classList.remove('active'));
+      const activeSlide = document.querySelector(`.slide[data-slide="${newSlide}"]`);
+      if (activeSlide) activeSlide.classList.add('active');
+      currentSlide = newSlide;
+
+      // Update Header & Footer Counters
+      document.getElementById('slide-num').textContent = `Slide ${currentSlide} / ${totalSlides}`;
+      document.getElementById('progress-indicator').style.width = `${(currentSlide / totalSlides) * 100}%`;
+
+      // Update Notes
+      document.getElementById('notes-slide-indicator').textContent = currentSlide;
+      document.getElementById('notes-body').innerHTML = speakerNotes[currentSlide] || 'No speaker notes for this slide.';
+    }
+
+    function toggleNotes() {
+      notesOpen = !notesOpen;
+      const drawer = document.getElementById('notes-drawer');
+      const btn = document.getElementById('notes-btn');
+      if (notesOpen) {
+        drawer.classList.add('open');
+        btn.classList.add('btn-active');
+      } else {
+        drawer.classList.remove('open');
+        btn.classList.remove('btn-active');
+      }
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(err => {});
+      } else {
+        if (document.exitFullscreen) document.exitFullscreen();
+      }
+    }
+
+    // Keyboard Navigation
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+        e.preventDefault();
+        updateSlide(currentSlide + 1);
+      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        e.preventDefault();
+        updateSlide(currentSlide - 1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        updateSlide(1);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        updateSlide(totalSlides);
+      } else if (e.key === 's' || e.key === 'S' || e.key === 'n' || e.key === 'N') {
+        toggleNotes();
+      } else if (e.key === 'f' || e.key === 'F') {
+        toggleFullscreen();
+      } else if (e.key === 'd' || e.key === 'D') {
+        updateSlide(10); // Jump to interactive demo
+      }
+    });
+
+    document.getElementById('next-btn').addEventListener('click', () => updateSlide(currentSlide + 1));
+    document.getElementById('prev-btn').addEventListener('click', () => updateSlide(currentSlide - 1));
+    document.getElementById('notes-btn').addEventListener('click', toggleNotes);
+    document.getElementById('fullscreen-btn').addEventListener('click', toggleFullscreen);
+
+    // Interactive Demo Simulation Data
+    const demoSteps = {
+      1: {
+        role: "Coordinator",
+        status: "Active",
+        time: "Step 1 of 6",
+        log: `$ ham-ctl chat send --to coordinator --body "We need to migrate our auth service to JWT with refresh token rotation and full test coverage."\n\n[Heimdall Hub] Message delivered to coordinator instance (inst_coordinator).\n[Coordinator] Acknowledged. Inspecting repository structure and analyzing dependencies...`
+      },
+      2: {
+        role: "Coordinator",
+        status: "Decomposing DAG",
+        time: "Step 2 of 6",
+        log: `[Coordinator] Creating structured Task DAG:\n - Task 1: Add RefreshToken table migration (Assignee: inst_backend, Reviewer: inst_reviewer)\n - Task 2: Implement JWT issuance & rotation middleware (Depends on: Task 1)\n - Task 3: Add integration tests & regression harness (Depends on: Task 2)\n\n$ ham-ctl task-chain reconcile chain_auth_migration\n[Hub Engine] Topological sort verified. No circular deadlocks found. Ready for execution.`
+      },
+      3: {
+        role: "Worker (inst_backend)",
+        status: "in_progress",
+        time: "Step 3 of 6",
+        log: `[Hub Engine] Starting Task 1 on worker inst_backend.\n[Worker Context] Worker booted with FRESH CONTEXT (7.8k tokens). Injected with Project Memory: 'Use PostgreSQL syntax'.\n[Worker inst_backend] Executing database migration schema in src/db/migrations/004_jwt.sql...\n[Worker inst_backend] Running async background check:\n$ ham-ctl shell-cmd exec --cmd "nix develop --command db-migrate up"\n[Shell Job] Job job_9281 exited with code 0.`
+      },
+      4: {
+        role: "User Direct Steering",
+        status: "Micro-Intervention",
+        time: "Step 4 of 6",
+        log: `[User via Dashboard] Opening direct private chat with worker inst_backend...\n$ ham-ctl chat send --to inst_backend --body "Make sure the token secret uses the crypto/rand wrapper from src/security/keys.odin."\n\n[Worker inst_backend] Understood! Adjusting token secret generator to use src/security/keys.odin. Coordinator DAG remains completely uninterrupted.`
+      },
+      5: {
+        role: "Reviewer (inst_reviewer)",
+        status: "in_validation",
+        time: "Step 5 of 6",
+        log: `[Worker inst_backend] Work complete. Moving task to in_validation:\n$ ham-ctl task status task_auth_migration --status in_validation\n\n[Reviewer inst_reviewer] Running verification harness:\n$ ham-ctl shell-cmd exec --cmd "odin test tests/auth_test.odin"\n[Reviewer inst_reviewer] All 14 tests pass. Verified cryptographic entropy.\n$ ham-ctl task vote task_auth_migration --result lgtm --comment "Clean implementation and tests pass."\n\n[Hub Engine] LGTM Quorum reached! Task 1 auto-completed. Unblocking Task 2.`
+      },
+      6: {
+        role: "Self-Learning Memory",
+        status: "Completed",
+        time: "Step 6 of 6",
+        log: `[Worker inst_backend] Proposing durable project memory:\n$ ham-ctl memory propose --scope project --type fact --title "JWT Expiry Policy" --body "Refresh tokens rotate every 7 days; access tokens expire in 15 minutes."\n\n[Hub Memory Engine] Memory proposal registered for human review.\n[Chain Coordinator] All DAG tasks completed successfully. Final summary reported to user chat.\n[Result] Feature shipped with 100% auditability and ZERO context bloat.`
+      }
+    };
+
+    function setDemoStep(stepNum) {
+      document.querySelectorAll('.demo-step-btn').forEach((btn, idx) => {
+        btn.classList.toggle('active', idx + 1 === stepNum);
+      });
+      const data = demoSteps[stepNum];
+      document.getElementById('demo-role-badge').textContent = `Role: ${data.role}`;
+      document.getElementById('demo-status-badge').textContent = `Status: ${data.status}`;
+      document.getElementById('demo-time').textContent = data.time;
+      document.getElementById('demo-log-content').textContent = data.log;
+    }
+
+    // Initialize Slide 1
+    updateSlide(1);
+  </script>
+</body>
+</html>

@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 import contracts "odin_test:contracts"
 import app "odin_test:hub/app"
+import auth_service "odin_test:hub/service/auth"
 import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import project_service "odin_test:hub/service/project"
@@ -18,6 +19,17 @@ check :: proc(ok: bool, msg: string) {
 	if ok do return
 	fmt.eprintln("FAIL:", msg)
 	os.exit(1)
+}
+
+// Capture the checkpoint-1 (bare_token_shared_endpoint) audit event so the test
+// can assert it identifies the endpoint (method/path), not just that it fired.
+cp1_captured_path: string
+cp1_captured_method: string
+capture_bridge_auth_monitor :: proc(point, method, path, bridge_id, user_id, target, request_id: string) {
+	if point == "bare_token_shared_endpoint" {
+		cp1_captured_path = path
+		cp1_captured_method = method
+	}
 }
 
 extract_json_string :: proc(body, key: string) -> string {
@@ -50,6 +62,9 @@ main :: proc() {
 	})
 	check(ok, message)
 	defer app.shutdown_graph(&graph)
+
+	// Default bridge-auth mode (unset in Hub_Config) must resolve to monitor.
+	check(graph.auth.bridge_auth_mode == .Monitor, "default bridge_auth_mode must be monitor")
 
 	alice := [?]contracts.HTTP_Header{
 		{name = "X-authentik-username", value = "alice"},
@@ -271,7 +286,7 @@ main :: proc() {
 	exec_resp := api_http.router_dispatch(&graph.router, api_http.Request{
 		method = "POST",
 		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", act1_id),
-		body = "{\"target_run_at\":\"2026-09-04T12:00:00Z\"}",
+		body = "{\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
 		request_id = "req_exec",
 		remote_addr = "127.0.0.1",
 		headers = bridge1_headers[:],
@@ -389,6 +404,383 @@ main :: proc() {
 	})
 	check(sp_list.status == 200, fmt.tprintf("backward compat list failed: %s", sp_list.body))
 	check(strings.contains(sp_list.body, act1_id), "backward compat list contains act1")
+
+	// ==========================================
+	// Test 9: Agent-targeted actions (REQ-SCHED-1)
+	// ==========================================
+	// 9a. Target validation
+	// Neither target specified
+	resp_no_target := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = "{\"prompt_text\":\"no target\"}",
+		request_id = "req_no_target",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_no_target.status == 400, fmt.tprintf("expected 400 for no target, got %d: %s", resp_no_target.status, resp_no_target.body))
+
+	// Both instance and agent target specified
+	both_targets_body := strings.concatenate({"{\"target_instance_id\":\"inst_ac_1\",\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"both targets\"}"})
+	defer delete(both_targets_body)
+	resp_both_target := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = both_targets_body,
+		request_id = "req_both_targets",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_both_target.status == 400, fmt.tprintf("expected 400 for both targets, got %d: %s", resp_both_target.status, resp_both_target.body))
+
+	// Incomplete agent target: agent_id without bridge_id
+	resp_no_bridge := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = "{\"target_agent_id\":\"agt_ac_1\",\"prompt_text\":\"no bridge\"}",
+		request_id = "req_no_bridge",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_no_bridge.status == 400, fmt.tprintf("expected 400 for missing bridge_id, got %d: %s", resp_no_bridge.status, resp_no_bridge.body))
+
+	// Incomplete agent target: bridge_id without agent_id
+	no_agent_body := strings.concatenate({"{\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"no agent\"}"})
+	defer delete(no_agent_body)
+	resp_no_agent := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = no_agent_body,
+		request_id = "req_no_agent",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(resp_no_agent.status == 400, fmt.tprintf("expected 400 for missing agent_id, got %d: %s", resp_no_agent.status, resp_no_agent.body))
+
+	// 9b. Create valid agent-targeted action
+	create_agent_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"target_provider\":\"claude\",\"target_tier\":\"normal\",\"prompt_text\":\"Curator recurring prompt\",\"cron_expr\":\"0 9 * * 1-5\"}"})
+	defer delete(create_agent_body)
+	create_agent_action_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = create_agent_body,
+		request_id = "req_create_agent_act",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(create_agent_action_resp.status == 201, fmt.tprintf("create agent-targeted action failed: %s", create_agent_action_resp.body))
+	agent_act_id := extract_json_string(create_agent_action_resp.body, "id")
+	check(agent_act_id != "", "agent action id must not be empty")
+	check(strings.contains(create_agent_action_resp.body, "\"target_agent_id\":\"agt_ac_1\""), "target_agent_id in response")
+	check(strings.contains(create_agent_action_resp.body, bridge1_id), "target_bridge_id in response")
+	check(strings.contains(create_agent_action_resp.body, "\"target_provider\":\"claude\""), "target_provider in response")
+	check(strings.contains(create_agent_action_resp.body, "\"target_tier\":\"normal\""), "target_tier in response")
+
+	// 9c. Bridge actions sync includes agent-targeted action
+	bridge_sync_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/bridge/actions",
+		request_id = "req_bridge_sync_agent_act",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_sync_resp.status == 200, fmt.tprintf("bridge sync failed: %s", bridge_sync_resp.body))
+	check(strings.contains(bridge_sync_resp.body, agent_act_id), "bridge actions sync returned agent-targeted action")
+	check(strings.contains(bridge_sync_resp.body, "Curator recurring prompt"), "prompt text in bridge sync")
+
+	// 9d. Bridge execute with dynamically resolved instance_id in body
+	// Set target_run_at to past so it's eligible
+	agent_act_rec, _, _ := graph.repos.actions.get(graph.repos.actions.ctx, domain.Action_ID(agent_act_id))
+	agent_act_rec.target_run_at = "2020-01-01T00:00:00Z"
+	agent_act_rec.in_flight = false
+	agent_act_rec.state = .Active
+	_, _, _ = graph.repos.actions.save(graph.repos.actions.ctx, agent_act_rec)
+
+	bridge_exec_agent_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", agent_act_id),
+		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
+		request_id = "req_bridge_exec_agent",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_exec_agent_resp.status == 200, fmt.tprintf("bridge execute agent action failed: %s", bridge_exec_agent_resp.body))
+	agent_act_msg_id := extract_json_string(bridge_exec_agent_resp.body, "message_id")
+	check(agent_act_msg_id != "", "message_id in bridge execute agent response")
+
+	delivered_agent_msg, got_agent_msg, _ := graph.repos.content.get_message(graph.repos.content.ctx, agent_act_msg_id)
+	check(got_agent_msg, "chat message found for executed agent action")
+	check(delivered_agent_msg.body == "Curator recurring prompt", "message body mismatch")
+	check(delivered_agent_msg.message_type == "action", "message_type mismatch")
+
+	// 9e. Run-Now resolves existing live instance of that agent
+	run_agent_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/actions/%s/run", agent_act_id),
+		body = "{}",
+		request_id = "req_run_agent_act",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(run_agent_resp.status == 200, fmt.tprintf("run-now agent action failed: %s", run_agent_resp.body))
+	run_agent_msg_id := extract_json_string(run_agent_resp.body, "message_id")
+	check(run_agent_msg_id != "", "message_id in run-now agent response")
+
+	// ==========================================
+	// Test 9f: Instance strategy (REQ-SCHED-2) — fresh_per_run opt-in + validation
+	// ==========================================
+	// 9f-i. Default: an agent-targeted action with no instance_strategy defaults to "reuse".
+	strat_default_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"default strategy\",\"cron_expr\":\"0 9 * * 1-5\"}"})
+	defer delete(strat_default_body)
+	strat_default_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = strat_default_body,
+		request_id = "req_strat_default",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_default_resp.status == 201, fmt.tprintf("create default-strategy action failed: %s", strat_default_resp.body))
+	check(strings.contains(strat_default_resp.body, "\"instance_strategy\":\"reuse\""), fmt.tprintf("default instance_strategy must be reuse: %s", strat_default_resp.body))
+
+	// 9f-ii. Opt-in: fresh_per_run persists through create and GET.
+	strat_fresh_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"fresh strategy\",\"cron_expr\":\"0 9 * * 1-5\",\"instance_strategy\":\"fresh_per_run\"}"})
+	defer delete(strat_fresh_body)
+	strat_fresh_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = strat_fresh_body,
+		request_id = "req_strat_fresh",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_fresh_resp.status == 201, fmt.tprintf("create fresh_per_run action failed: %s", strat_fresh_resp.body))
+	strat_fresh_id := extract_json_string(strat_fresh_resp.body, "id")
+	check(strat_fresh_id != "", "fresh_per_run action id must not be empty")
+	check(strings.contains(strat_fresh_resp.body, "\"instance_strategy\":\"fresh_per_run\""), fmt.tprintf("fresh_per_run must be in create response: %s", strat_fresh_resp.body))
+
+	strat_get_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = fmt.tprintf("/api/v1/actions/%s", strat_fresh_id),
+		request_id = "req_strat_get",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_get_resp.status == 200, fmt.tprintf("get fresh_per_run action failed: %s", strat_get_resp.body))
+	check(strings.contains(strat_get_resp.body, "\"instance_strategy\":\"fresh_per_run\""), "fresh_per_run must persist through GET")
+
+	// 9f-iii. Invalid strategy value is rejected (400), no action created.
+	strat_bad_body := strings.concatenate({"{\"target_agent_id\":\"agt_ac_1\",\"target_bridge_id\":\"", bridge1_id, "\",\"prompt_text\":\"bad strategy\",\"instance_strategy\":\"bogus\"}"})
+	defer delete(strat_bad_body)
+	strat_bad_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/actions",
+		body = strat_bad_body,
+		request_id = "req_strat_bad",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_bad_resp.status == 400, fmt.tprintf("invalid instance_strategy must be 400, got %d: %s", strat_bad_resp.status, strat_bad_resp.body))
+
+	// 9f-iv. PATCH can flip strategy, and validates the new value.
+	strat_patch_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/actions/%s", strat_fresh_id),
+		body = "{\"instance_strategy\":\"reuse\"}",
+		request_id = "req_strat_patch",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_patch_resp.status == 200, fmt.tprintf("patch instance_strategy failed: %s", strat_patch_resp.body))
+	check(strings.contains(strat_patch_resp.body, "\"instance_strategy\":\"reuse\""), "patch flips strategy back to reuse")
+
+	strat_patch_bad_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "PATCH",
+		path = fmt.tprintf("/api/v1/actions/%s", strat_fresh_id),
+		body = "{\"instance_strategy\":\"nope\"}",
+		request_id = "req_strat_patch_bad",
+		remote_addr = "127.0.0.1",
+		headers = alice[:],
+	})
+	check(strat_patch_bad_resp.status == 400, fmt.tprintf("patch invalid instance_strategy must be 400, got %d: %s", strat_patch_bad_resp.status, strat_patch_bad_resp.body))
+
+	// 9f-v. Bridge execute persists last_spawned_instance_id (fresh_per_run reaping bookkeeping).
+	fresh_exec_rec, _, _ := graph.repos.actions.get(graph.repos.actions.ctx, domain.Action_ID(strat_fresh_id))
+	fresh_exec_rec.target_run_at = "2020-01-01T00:00:00Z"
+	fresh_exec_rec.in_flight = false
+	fresh_exec_rec.state = .Active
+	_, _, _ = graph.repos.actions.save(graph.repos.actions.ctx, fresh_exec_rec)
+
+	fresh_exec_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", strat_fresh_id),
+		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\",\"last_spawned_instance_id\":\"inst_ac_1\"}",
+		request_id = "req_fresh_exec",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(fresh_exec_resp.status == 200, fmt.tprintf("bridge execute fresh action failed: %s", fresh_exec_resp.body))
+	check(strings.contains(fresh_exec_resp.body, "\"last_spawned_instance_id\":\"inst_ac_1\""), "execute response carries persisted last_spawned_instance_id")
+
+	fresh_after_rec, fresh_after_ok, _ := graph.repos.actions.get(graph.repos.actions.ctx, domain.Action_ID(strat_fresh_id))
+	check(fresh_after_ok, "fresh action still present after execute")
+	check(string(fresh_after_rec.last_spawned_instance_id) == "inst_ac_1", "last_spawned_instance_id persisted on the action row")
+
+	// 10. Security & Bridge Auth Isolation Tests — 10a–10g asserted under ENFORCE mode.
+	graph.auth.bridge_auth_mode = .Enforce
+	// 10a. Negative Test: Bare hbr_ token REJECTED on user endpoint (GET /api/v1/task-chains)
+	bare_bridge_tc_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/task-chains",
+		request_id = "req_bare_bridge_tc",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bare_bridge_tc_resp.status != 200, fmt.tprintf("bare bridge token must NOT access task-chains; got status: %d body: %s", bare_bridge_tc_resp.status, bare_bridge_tc_resp.body))
+
+	// 10b. Negative Test: Bare hbr_ token REJECTED on task-chains mutation (POST /api/v1/task-chains)
+	bare_bridge_tc_post_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/task-chains",
+		body = "{\"title\":\"Rogue Chain\"}",
+		request_id = "req_bare_bridge_tc_post",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bare_bridge_tc_post_resp.status != 200 && bare_bridge_tc_post_resp.status != 201, fmt.tprintf("bare bridge token must NOT create task-chains; got status: %d body: %s", bare_bridge_tc_post_resp.status, bare_bridge_tc_post_resp.body))
+
+	// 10c. Positive Test: Bare hbr_ token SUCCEEDS on GET /api/v1/agent-instances (scoped to calling bridge)
+	bridge_list_inst_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/agent-instances",
+		query = fmt.tprintf("agent_id=%s", agt1.agent_id),
+		request_id = "req_bridge_list_inst",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_list_inst_resp.status == 200, fmt.tprintf("bridge token should list agent instances: %s", bridge_list_inst_resp.body))
+	check(strings.contains(bridge_list_inst_resp.body, "inst_ac_1"), "bridge list instances contains inst_ac_1")
+
+	// 10d. Scoping Test: Bare hbr_ token querying another bridge_id is REJECTED (403 Forbidden)
+	bridge_list_other_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/agent-instances",
+		query = "bridge_id=brg_other",
+		request_id = "req_bridge_list_other",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_list_other_resp.status == 403, fmt.tprintf("bridge listing other bridge instances must be 403: %d %s", bridge_list_other_resp.status, bridge_list_other_resp.body))
+
+	// 10e. Positive Test: Bare hbr_ token SUCCEEDS on POST /api/v1/agent-instances
+	bridge_create_body := strings.concatenate({"{\"agent_id\":\"", agt1.agent_id, "\"}"})
+	defer delete(bridge_create_body)
+	bridge_create_inst_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/agent-instances",
+		body = bridge_create_body,
+		request_id = "req_bridge_create_inst",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_create_inst_resp.status == 201, fmt.tprintf("bridge token create agent instance failed: %s", bridge_create_inst_resp.body))
+	created_inst_bridge := extract_json_string(bridge_create_inst_resp.body, "bridge_id")
+	check(created_inst_bridge == bridge1_id, fmt.tprintf("created instance bridge_id (%s) must match caller bridge_id (%s)", created_inst_bridge, bridge1_id))
+
+	// 10f. Scoping Test: Bare hbr_ token creating instance on another bridge is REJECTED (403 Forbidden)
+	bridge_create_other_body := strings.concatenate({"{\"agent_id\":\"", agt1.agent_id, "\",\"bridge_id\":\"brg_other\"}"})
+	defer delete(bridge_create_other_body)
+	bridge_create_other_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/agent-instances",
+		body = bridge_create_other_body,
+		request_id = "req_bridge_create_other",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(bridge_create_other_resp.status == 403, fmt.tprintf("bridge creating instance on other bridge must be 403: %d %s", bridge_create_other_resp.status, bridge_create_other_resp.body))
+
+	// 10g. Defense-in-depth: Bridge execute on action owned by another user is REJECTED (403 Forbidden)
+	bob := [?]contracts.HTTP_Header{
+		{name = "X-authentik-username", value = "bob"},
+		{name = "X-authentik-name", value = "Bob"},
+	}
+	enr2 := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/bridge-enrollments",
+		body = "{\"label\":\"Bridge 2 Bob\"}",
+		request_id = "req_enr2",
+		remote_addr = "127.0.0.1",
+		headers = bob[:],
+	})
+	check(enr2.status == 201, fmt.tprintf("enroll 2 failed: %s", enr2.body))
+	tok2 := extract_json_string(enr2.body, "enrollment_token")
+	enroll2_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", tok2})}}
+	b2_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = "/api/v1/bridges/enroll",
+		body = "{\"machine\":{\"hostname\":\"host2\"}}",
+		request_id = "req_b2",
+		remote_addr = "127.0.0.1",
+		headers = enroll2_headers[:],
+	})
+	check(b2_resp.status == 201, fmt.tprintf("bridge 2 exchange token failed: %s", b2_resp.body))
+	bridge2_token := extract_json_string(b2_resp.body, "bridge_token")
+	bridge2_headers := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", bridge2_token})}}
+
+	cross_exec_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", agent_act_id),
+		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
+		request_id = "req_cross_exec",
+		remote_addr = "127.0.0.1",
+		headers = bridge2_headers[:],
+	})
+	check(cross_exec_resp.status == 403, fmt.tprintf("cross-owner bridge execute must be 403: %d %s", cross_exec_resp.status, cross_exec_resp.body))
+
+	// 10h–10j. MONITOR mode: the same boundary cases now ALLOW (audit-not-enforce).
+	graph.auth.bridge_auth_mode = .Monitor
+	auth_service.bridge_auth_monitor_hook = capture_bridge_auth_monitor
+	defer auth_service.bridge_auth_monitor_hook = nil
+
+	// 10h. Bare hbr_ token on /api/v1/task-chains is ALLOWED under monitor, and the
+	// checkpoint-1 audit line must identify the endpoint (method + path).
+	cp1_captured_path = ""
+	cp1_captured_method = ""
+	mon_tc := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/task-chains",
+		request_id = "req_mon_bare_tc",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(mon_tc.status == 200, fmt.tprintf("monitor: bare bridge token should be allowed on task-chains; got %d %s", mon_tc.status, mon_tc.body))
+	check(cp1_captured_path == "/api/v1/task-chains", fmt.tprintf("monitor cp1 audit must carry the endpoint path; got '%s'", cp1_captured_path))
+	check(cp1_captured_method == "GET", fmt.tprintf("monitor cp1 audit must carry the method; got '%s'", cp1_captured_method))
+
+	// 10i. Cross-bridge list is ALLOWED under monitor (not 403).
+	mon_list_other := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "GET",
+		path = "/api/v1/agent-instances",
+		query = "bridge_id=brg_other",
+		request_id = "req_mon_list_other",
+		remote_addr = "127.0.0.1",
+		headers = bridge1_headers[:],
+	})
+	check(mon_list_other.status != 403, fmt.tprintf("monitor: cross-bridge list must NOT be 403; got %d %s", mon_list_other.status, mon_list_other.body))
+
+	// 10j. Cross-owner bridge execute bypasses the owner gate under monitor
+	// (no "does not belong to bridge owner" rejection; an unrelated same-bridge
+	// check may still apply downstream, which is fine).
+	mon_cross_exec := api_http.router_dispatch(&graph.router, api_http.Request{
+		method = "POST",
+		path = fmt.tprintf("/api/v1/bridge/actions/%s/execute", agent_act_id),
+		body = "{\"instance_id\":\"inst_ac_1\",\"target_run_at\":\"2029-01-01T00:00:00Z\"}",
+		request_id = "req_mon_cross_exec",
+		remote_addr = "127.0.0.1",
+		headers = bridge2_headers[:],
+	})
+	check(!strings.contains(mon_cross_exec.body, "does not belong to bridge owner"), fmt.tprintf("monitor: cross-owner execute must bypass the owner gate; got %d %s", mon_cross_exec.status, mon_cross_exec.body))
 
 	fmt.println("ALL ACTIONS API TESTS PASSED")
 }

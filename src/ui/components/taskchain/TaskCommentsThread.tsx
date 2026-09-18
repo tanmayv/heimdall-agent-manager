@@ -41,7 +41,7 @@ const CommentAuthor: React.FC<{ instanceId: string; displayName: string; userId:
     return (
       <a
         data-debug-id={debugId}
-        href={shellHash(`/conversations/${encodeURIComponent(instanceId)}`)}
+        href={shellHash(`/conversations/${encodeURIComponent(instanceId)}?panel=tasks`)}
         title={`Open ${label} (${instanceId})`}
         className="text-sky-300 hover:text-sky-200 hover:underline"
       >

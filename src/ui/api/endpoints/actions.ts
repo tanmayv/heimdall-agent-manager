@@ -3,10 +3,23 @@ import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 
 export type ActionState = 'active' | 'in_flight' | 'completed';
 
+// REQ-SCHED-2: how the scheduler provides the instance for a durable agent-id
+// target. 'reuse' keeps a single instance alive across runs; 'fresh_per_run'
+// launches a new instance each run (stopping the previous). Only meaningful when
+// targeting an agent-id (not an explicit instance). Mirrors the backend
+// action.instance_strategy field (default 'reuse').
+export type ActionInstanceStrategy = 'reuse' | 'fresh_per_run';
+
 export type Action = {
   id: string;
   owner_user_id: string;
-  target_instance_id: string;
+  target_instance_id?: string;
+  target_agent_id?: string;
+  target_bridge_id?: string;
+  target_provider?: string;
+  target_tier?: string;
+  target_project_id?: string;
+  instance_strategy?: ActionInstanceStrategy;
   prompt_text: string;
   cron_expr?: string;
   timezone?: string;
@@ -23,7 +36,13 @@ export type Action = {
 };
 
 export type CreateActionInput = {
-  target_instance_id: string;
+  target_instance_id?: string;
+  target_agent_id?: string;
+  target_bridge_id?: string;
+  target_provider?: string;
+  target_tier?: string;
+  target_project_id?: string;
+  instance_strategy?: ActionInstanceStrategy;
   prompt_text: string;
   cron_expr?: string;
   timezone?: string;
@@ -35,6 +54,13 @@ export type CreateActionInput = {
 };
 
 export type PatchActionInput = {
+  target_instance_id?: string;
+  target_agent_id?: string;
+  target_bridge_id?: string;
+  target_provider?: string;
+  target_tier?: string;
+  target_project_id?: string;
+  instance_strategy?: ActionInstanceStrategy;
   prompt_text?: string;
   cron_expr?: string;
   timezone?: string;
@@ -168,7 +194,7 @@ export const actionsApi = heimdallApi.injectEndpoints({
       queryFn: async () => {
         try {
           const data = await cookieJsonFetch('/agent-instances?limit=200');
-          const instances = Array.isArray(data) ? data : (data?.data || []);
+          const instances = Array.isArray(data) ? data : (data?.instances || []);
           return { data: { instances } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

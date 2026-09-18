@@ -194,15 +194,84 @@ impl Screen {
 
     /// Snapshot the current screen state.
     pub fn capture(&self) -> Capture {
+        use std::fmt::Write;
         let mut lines = Vec::with_capacity(self.rows);
         for r in 0..self.rows {
-            let mut line = String::with_capacity(self.cols);
-            for c in 0..self.cols {
-                line.push(self.grid[self.idx(r, c)].c);
+            let mut end_col = self.cols;
+            while end_col > 0 {
+                let cell = self.grid[self.idx(r, end_col - 1)];
+                if cell.c != ' ' || cell.bg != Color::Default {
+                    break;
+                }
+                end_col -= 1;
             }
-            // Trim trailing spaces for readability (styled grid keeps full data).
-            let trimmed = line.trim_end_matches(' ').to_string();
-            lines.push(trimmed);
+
+            let mut line = String::with_capacity(self.cols);
+            let mut active_fg = Color::Default;
+            let mut active_bg = Color::Default;
+            let mut active_bold = false;
+
+            for c in 0..end_col {
+                let cell = self.grid[self.idx(r, c)];
+                if cell.fg == Color::Default && cell.bg == Color::Default && !cell.bold {
+                    if active_fg != Color::Default || active_bg != Color::Default || active_bold {
+                        line.push_str("\x1b[0m");
+                        active_fg = Color::Default;
+                        active_bg = Color::Default;
+                        active_bold = false;
+                    }
+                } else {
+                    if cell.bold != active_bold {
+                        if cell.bold {
+                            line.push_str("\x1b[1m");
+                        } else {
+                            line.push_str("\x1b[22m");
+                        }
+                        active_bold = cell.bold;
+                    }
+                    if cell.fg != active_fg {
+                        match cell.fg {
+                            Color::Default => line.push_str("\x1b[39m"),
+                            Color::Indexed(n) if n < 8 => {
+                                let _ = write!(line, "\x1b[{}m", 30 + n);
+                            }
+                            Color::Indexed(n) if n < 16 => {
+                                let _ = write!(line, "\x1b[{}m", 90 + (n - 8));
+                            }
+                            Color::Indexed(n) => {
+                                let _ = write!(line, "\x1b[38;5;{}m", n);
+                            }
+                            Color::Rgb(r, g, b) => {
+                                let _ = write!(line, "\x1b[38;2;{};{};{}m", r, g, b);
+                            }
+                        }
+                        active_fg = cell.fg;
+                    }
+                    if cell.bg != active_bg {
+                        match cell.bg {
+                            Color::Default => line.push_str("\x1b[49m"),
+                            Color::Indexed(n) if n < 8 => {
+                                let _ = write!(line, "\x1b[{}m", 40 + n);
+                            }
+                            Color::Indexed(n) if n < 16 => {
+                                let _ = write!(line, "\x1b[{}m", 100 + (n - 8));
+                            }
+                            Color::Indexed(n) => {
+                                let _ = write!(line, "\x1b[48;5;{}m", n);
+                            }
+                            Color::Rgb(r, g, b) => {
+                                let _ = write!(line, "\x1b[48;2;{};{};{}m", r, g, b);
+                            }
+                        }
+                        active_bg = cell.bg;
+                    }
+                }
+                line.push(cell.c);
+            }
+            if active_fg != Color::Default || active_bg != Color::Default || active_bold {
+                line.push_str("\x1b[0m");
+            }
+            lines.push(line);
         }
         Capture {
             rows: self.rows,
@@ -555,8 +624,8 @@ mod tests {
         // Red foreground, bold, then a char, then reset.
         feed(&mut e, "\x1b[1;31mR\x1b[0mx");
         let cap = e.capture();
-        // The text must be the rendered chars, NOT the escape bytes.
-        assert_eq!(cap.lines[0], "Rx");
+        // Screen capture preserves ANSI SGR sequences.
+        assert_eq!(cap.lines[0], "\x1b[1m\x1b[31mR\x1b[0mx");
         let red = cap.cell_at(0, 0).unwrap();
         assert_eq!(red.c, 'R');
         assert_eq!(red.fg, Color::Indexed(1));
@@ -565,6 +634,38 @@ mod tests {
         assert_eq!(plain.c, 'x');
         assert_eq!(plain.fg, Color::Default);
         assert!(!plain.bold);
+    }
+
+    #[test]
+    fn capture_preserves_ansi_colors_and_bold() {
+        let mut e = VtEngine::new(2, 40);
+        feed(&mut e, "\x1b[31mred\x1b[0m \x1b[1mbold\x1b[0m \x1b[32mgreen\x1b[0m");
+        let cap = e.capture();
+        assert_eq!(cap.lines[0], "\x1b[31mred\x1b[0m \x1b[1mbold\x1b[0m \x1b[32mgreen\x1b[0m");
+    }
+
+    #[test]
+    fn capture_preserves_truecolor_and_256_color() {
+        let mut e = VtEngine::new(2, 40);
+        feed(&mut e, "\x1b[38;2;10;20;30mRGB\x1b[0m \x1b[38;5;123m256\x1b[0m");
+        let cap = e.capture();
+        assert_eq!(cap.lines[0], "\x1b[38;2;10;20;30mRGB\x1b[0m \x1b[38;5;123m256\x1b[0m");
+    }
+
+    #[test]
+    fn capture_preserves_background_color() {
+        let mut e = VtEngine::new(2, 20);
+        feed(&mut e, "\x1b[42mgreenbg\x1b[0m");
+        let cap = e.capture();
+        assert_eq!(cap.lines[0], "\x1b[42mgreenbg\x1b[0m");
+    }
+
+    #[test]
+    fn capture_resets_attributes_at_end_of_line() {
+        let mut e = VtEngine::new(2, 20);
+        feed(&mut e, "\x1b[34mblue");
+        let cap = e.capture();
+        assert_eq!(cap.lines[0], "\x1b[34mblue\x1b[0m");
     }
 
     #[test]

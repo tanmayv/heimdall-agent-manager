@@ -10,4 +10,6 @@ export * from './settings';
 export * from './artifacts';
 export * from './sidebar';
 export * from './actions';
+export * from './cards';
+export * from './shellJobs';
 export * from './bridgeFig';

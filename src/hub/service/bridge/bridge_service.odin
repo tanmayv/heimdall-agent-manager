@@ -8,11 +8,13 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
+import project_service "odin_test:hub/service/project"
 
 Bridge_Service :: struct {
 	repo: ^iface.Bridge_Repository,
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
+	bridge_command_sink: project_service.Bridge_Command_Sink,
 }
 
 Create_Enrollment_Result :: struct {
@@ -45,6 +47,10 @@ Enroll_Bridge_Input :: struct {
 
 new_bridge_service :: proc(repo: ^iface.Bridge_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Bridge_Service {
 	return Bridge_Service{repo = repo, clock = clock, ids = ids}
+}
+
+new_bridge_service_with_runtime :: proc(repo: ^iface.Bridge_Repository, bridge_command_sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Bridge_Service {
+	return Bridge_Service{repo = repo, bridge_command_sink = bridge_command_sink, clock = clock, ids = ids}
 }
 
 create_enrollment :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, input: Create_Enrollment_Input) -> (Create_Enrollment_Result, bool, domain.Domain_Error) {
@@ -434,4 +440,124 @@ hash_token :: proc(token: string) -> string {
 		acc = (acc ~ u64(b)) * 1099511628211
 	}
 	return fmt.tprintf("h_%016x", acc)
+}
+
+write_service_json_string :: proc(b: ^strings.Builder, value: string) {
+	contracts.write_json_string(b, value)
+}
+
+shell_pty_input_command_json :: proc(command_id, shell_id, data: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_pty_input\",\"command_id\":\"")
+	write_service_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"shell_id\":\"")
+	write_service_json_string(&b, shell_id)
+	strings.write_string(&b, "\",\"agent_instance_id\":\"")
+	write_service_json_string(&b, shell_id)
+	strings.write_string(&b, "\",\"data\":\"")
+	write_service_json_string(&b, data)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+shell_pty_resize_command_json :: proc(command_id, shell_id: string, rows, cols: int) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_pty_resize\",\"command_id\":\"")
+	write_service_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"shell_id\":\"")
+	write_service_json_string(&b, shell_id)
+	strings.write_string(&b, "\",\"agent_instance_id\":\"")
+	write_service_json_string(&b, shell_id)
+	strings.write_string(&b, "\",\"rows\":")
+	strings.write_int(&b, rows)
+	strings.write_string(&b, ",\"cols\":")
+	strings.write_int(&b, cols)
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+send_shell_input :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, shell_id, data: string, sink_override: project_service.Bridge_Command_Sink = {}) -> (bool, domain.Domain_Error) {
+	if strings.trim_space(shell_id) == "" {
+		return false, domain.domain_error(.Validation_Failed, "shell_id is required")
+	}
+	bridge, ok, err := get_bridge(service, auth, bridge_id)
+	if !ok do return false, err
+
+	if bridge.status == .Revoked {
+		return false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	}
+	if bridge.status != .Online {
+		return false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	}
+
+	sink := service.bridge_command_sink
+	if sink.send_runtime_command == nil && sink_override.send_runtime_command != nil {
+		sink = sink_override
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_sh_input_")
+	}
+
+	cmd_json := shell_pty_input_command_json(cmd_id, shell_id, data)
+	defer delete(cmd_json)
+
+	sent, send_err := project_service.bridge_command_send_runtime(
+		sink,
+		project_service.Runtime_Command{
+			bridge_id = bridge.bridge_id,
+			command_id = cmd_id,
+			body_json = cmd_json,
+		},
+	)
+	if !sent do return false, send_err
+	return true, domain.Domain_Error{}
+}
+
+send_shell_resize :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, shell_id: string, rows, cols: int, sink_override: project_service.Bridge_Command_Sink = {}) -> (bool, domain.Domain_Error) {
+	if strings.trim_space(shell_id) == "" {
+		return false, domain.domain_error(.Validation_Failed, "shell_id is required")
+	}
+	if rows < 1 || cols < 1 {
+		return false, domain.domain_error(.Validation_Failed, "rows and cols must be at least 1")
+	}
+	bridge, ok, err := get_bridge(service, auth, bridge_id)
+	if !ok do return false, err
+
+	if bridge.status == .Revoked {
+		return false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	}
+	if bridge.status != .Online {
+		return false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	}
+
+	r := rows
+	c := cols
+	if r > 65535 do r = 65535
+	if c > 65535 do c = 65535
+
+	sink := service.bridge_command_sink
+	if sink.send_runtime_command == nil && sink_override.send_runtime_command != nil {
+		sink = sink_override
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_sh_resize_")
+	}
+
+	cmd_json := shell_pty_resize_command_json(cmd_id, shell_id, r, c)
+	defer delete(cmd_json)
+
+	sent, send_err := project_service.bridge_command_send_runtime(
+		sink,
+		project_service.Runtime_Command{
+			bridge_id = bridge.bridge_id,
+			command_id = cmd_id,
+			body_json = cmd_json,
+		},
+	)
+	if !sent do return false, send_err
+	return true, domain.Domain_Error{}
 }

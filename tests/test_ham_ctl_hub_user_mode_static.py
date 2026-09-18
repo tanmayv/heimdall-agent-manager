@@ -3,7 +3,10 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CTL = ROOT / "src" / "ctl" / "main.odin"
+# Hub user-mode moved out of main.odin into its own hub_mode.odin; the legacy
+# daemon command paths moved into legacy/daemon_legacy.odin.
+CTL = ROOT / "src" / "ctl" / "hub_mode.odin"
+LEGACY = ROOT / "src" / "ctl" / "legacy" / "daemon_legacy.odin"
 
 
 def require(condition: bool, message: str) -> None:
@@ -12,10 +15,10 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
-    text = CTL.read_text(encoding="utf-8")
-    start = text.index("ctl_hub_user_mode :: proc")
-    end = text.index("ctl_agents_list :: proc", start)
-    hub = text[start:end]
+    text = LEGACY.read_text(encoding="utf-8")
+    # The whole hub_mode.odin file is the Hub user-mode surface (markers span
+    # several procs within it), so the segment is the entire file.
+    hub = CTL.read_text(encoding="utf-8")
 
     for marker in [
         "--hub-url",
@@ -45,9 +48,9 @@ def main() -> None:
     for legacy in [
         "contracts.ROUTE_AGENTS_START",
         "contracts.ROUTE_AGENT_RPC",
-        "ctl_tasks(daemon_url",
-        "ctl_artifacts(daemon_url",
-        "ctl_chat(daemon_url",
+        "ctl_tasks :: proc(daemon_url",
+        "ctl_artifacts :: proc(daemon_url",
+        "ctl_chat :: proc(daemon_url",
     ]:
         require(legacy in text, f"legacy ctl behavior marker missing: {legacy}")
 

@@ -1,5 +1,6 @@
 package taskchain
 
+import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -7,6 +8,7 @@ import iface "odin_test:hub/repository/iface"
 import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
 import project "odin_test:hub/service/project"
+import agent "odin_test:hub/service/agent"
 
 // Auto-promotion ports the ham-daemon task_recompute_promotions behavior into the
 // lean Hub/Bridge split. It runs entirely against durable Hub state on the
@@ -104,6 +106,30 @@ work_task_eligible :: proc(tasks: []domain.Task, deps: []domain.Task_Dependency,
 	return true
 }
 
+// instance_has_pending_validation reports whether the given instance has any task
+// currently in_validation (i.e. submitted for review but not yet resolved). Used
+// as a promotion gate: an assignee should not pick up new work while review is pending.
+instance_has_pending_validation :: proc(tasks: []domain.Task, instance_id: string) -> bool {
+	for t in tasks {
+		if t.status != .In_Validation do continue
+		a := primary_assignee_instance(t.assignee_ref_json)
+		is_mine := a == instance_id
+		delete(a)
+		if is_mine do return true
+	}
+	return false
+}
+
+// instance_has_voted reports whether instance_id has already cast a vote on task_id,
+// using the pre-loaded votes_by_task map. Used to exclude already-voted tasks from
+// the review pool so reviewers stop being focused on tasks they've voted on.
+instance_has_voted :: proc(votes_by_task: map[domain.Task_ID][]string, task_id: domain.Task_ID, instance_id: string) -> bool {
+	voters, has := votes_by_task[task_id]
+	if !has do return false
+	for v in voters do if v == instance_id do return true
+	return false
+}
+
 // promotion_eligible is retained for compatibility with callers/tests that ask
 // whether a task can auto-claim into In_Progress right now (published, Assigned,
 // deps satisfied). The richer selection lives in recompute_chain_promotions.
@@ -182,6 +208,23 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		}
 	}
 
+	// Load votes for all in_validation tasks so the review pool can exclude tasks
+	// an instance has already voted on (stopping reviewers after they vote).
+	votes_by_task := make(map[domain.Task_ID][]string) // task_id -> []voter_instance_ids
+	defer {
+		for _, voters in votes_by_task do delete(voters)
+		delete(votes_by_task)
+	}
+	for t in tasks {
+		if t.status != .In_Validation do continue
+		votes, verr := iface.taskchain_list_votes_by_task(service.repo, t.task_id, chain.owner_user_id)
+		if verr.code != .None do continue
+		voter_ids := make([dynamic]string, len(votes))
+		for v, i in votes do voter_ids[i] = v.reviewer_agent_instance_id
+		votes_by_task[t.task_id] = voter_ids[:]
+		delete(votes)
+	}
+
 	// Resolve each instance's focus and collect the resulting task mutations. We
 	// stage decisions first, then apply them so the tasks slice remains a stable
 	// snapshot during selection.
@@ -202,7 +245,33 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		for t in tasks {
 			if t.status != .In_Validation do continue
 			if !instance_reviews_task(t, chain, instance_id) do continue
+			if instance_has_voted(votes_by_task, t.task_id, instance_id) do continue
 			if !have_review || task_prefers(t, best_review) { best_review = t; have_review = true }
+		}
+
+		// Block new work promotion while this instance has a task pending review.
+		if !have_review && instance_has_pending_validation(tasks[:], instance_id) {
+			// BUG-50 Fix (Bug 1): keep the assignee alive on their pending-review task
+			// instead of clearing focus to {"", .None}. Clearing produced a Focus_Change
+			// (pointer was {task_id, .Work} while In_Progress) -> stop[] -> the bridge
+			// killed the assignee mid-review, forcing a restart to receive NGTM feedback.
+			// Pointing focus at the In_Validation task keeps it as {task_id, .Work} (same
+			// as In_Progress) -> no change -> no stop[]. The 'continue' still skips the
+			// work pool below, so no next task is handed out while a validation is pending.
+			// The process ends naturally when the task resolves: completed -> focus clears
+			// (not actionable, not pending) -> stop[]; validated_not_good -> the same work
+			// focus is restored -> no change -> the running agent just receives a nudge.
+			for t in tasks {
+				if t.status != .In_Validation do continue
+				a := primary_assignee_instance(t.assignee_ref_json)
+				is_mine := a == instance_id
+				delete(a)
+				if is_mine {
+					focus[instance_id] = Instance_Focus{task_id = t.task_id, role = .Work}
+					break
+				}
+			}
+			continue
 		}
 
 		// WORK pool: actionable, unblocked tasks assigned to this instance.
@@ -289,15 +358,10 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		}
 	}
 
-	// Persist each instance's current-task pointer BEFORE notifying, so the gate
-	// sees the freshly-promoted focus. TOTAL: every instance in the candidate set
-	// gets its pointer set (to its focus) or CLEARED (no focus), and we collect
-	// which ones actually changed so we can notify only those. Also re-read the
-	// reconciled task list (statuses moved above) so focus/idle notifications use
-	// current status.
 	changed_focus := apply_instance_focus_total(service, instance_ids[:], focus)
+	defer delete(changed_focus)
 
-	// Re-read tasks so notifications reflect the just-applied status changes.
+	// Re-read tasks so notifications reflect just-applied status changes.
 	fresh_tasks, ft_err := iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	defer if ft_err.code == .None do delete(fresh_tasks)
 	lookup_task :: proc(tasks: []domain.Task, id: domain.Task_ID) -> (domain.Task, bool) {
@@ -305,45 +369,125 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		return domain.Task{}, false
 	}
 
-	// (5a) NOTIFY current-task change: for every instance whose pointer changed to
-	// a NEW task, wake it with the WORK/REVIEW label. Cleared pointers (-> none)
-	// send no nudge. Also reset the idle-nudge backoff for the new focus.
+	// Notify and act on focus changes: send the task-changed message, then emit
+	// a wake_agent run[] or stop[] for every instance whose current_task pointer
+	// moved. Unchanged pointers produce no action (idle nudge removed).
+	coordinator_id := chain.coordinator_agent_instance_id
+	runs  := make(map[string][dynamic]agent.Wake_Agent_Run_Entry)
+	stops := make(map[string][dynamic]string)
+	bridge_order := make([dynamic]string)
+	seen_bridge  := make(map[string]bool)
+	defer {
+		for _, entries in runs  do delete(entries)
+		for _, entries in stops do delete(entries)
+		delete(runs); delete(stops); delete(bridge_order); delete(seen_bridge)
+	}
+	note_bridge_local :: proc(order: ^[dynamic]string, seen: ^map[string]bool, bridge_id: string) {
+		if bridge_id == "" || seen[bridge_id] do return
+		seen[bridge_id] = true
+		append(order, bridge_id)
+	}
+
 	for cf in changed_focus {
-		if cf.new_task_id == "" do continue
 		inst, inst_ok, _ := iface.agent_get_instance(service.agents, cf.instance_id)
-		if !inst_ok do continue
-		task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], domain.Task_ID(cf.new_task_id))
-		if !task_ok do continue
-		notify_current_task_changed(service, inst, task, cf.new_role)
-		idle_nudge_reset(service, cf.instance_id, cf.new_task_id)
+		if !inst_ok {
+			// BUG-49 diagnostic: no agent record => no bridge_id/provider/etc, so no
+			// wake_agent can be built. A reviewer that reached changed_focus without a
+			// DB record lands here; surface it (previously a silent skip) so a review
+			// task that never starts is traceable to the missing instance record.
+			if cf.new_task_id != "" {
+				fmt.eprintfln("[reconcile] fan-out: instance %s (focus=%s role=%v) has no agent DB record; no wake dispatched", cf.instance_id, cf.new_task_id, cf.new_role)
+			}
+			continue
+		}
+		// Send the task-changed chat message when the new focus is non-empty.
+		if cf.new_task_id != "" {
+			task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], domain.Task_ID(cf.new_task_id))
+			if task_ok do notify_current_task_changed(service, inst, task, cf.new_role)
+		}
+		// Emit runtime wake/stop (coordinators exempt).
+		if cf.instance_id == coordinator_id do continue
+		if cf.new_task_id != "" {
+			role := "worker"
+			if cf.new_role == .Review do role = "reviewer"
+			// REQ-37: carry the full descriptor so the bridge takes the agent-keyed
+			// template bootstrap (not the header-only instance fallback). agent_name is
+			// looked up like launch_command_json_full does; the rest come from inst/chain.
+			agent_name := ""
+			if service.agents != nil && inst.agent_id != "" {
+				if ag, ag_ok, _ := iface.agent_get(service.agents, inst.agent_id); ag_ok do agent_name = ag.name
+			}
+			// BUG-49 Fix A: an instance with no bound bridge cannot receive a wake_agent
+			// command — the run[] entry would be appended under an empty bridge_id key
+			// and note_bridge_local() no-ops on "", so the entry is silently dropped and
+			// the agent (e.g. a reviewer whose task just entered in_validation) is never
+			// started. Emit a WARNING so this previously invisible condition is
+			// detectable, then skip the undeliverable entry instead of accumulating a
+			// dead runs[""] bucket that never fans out.
+			if inst.bridge_id == "" {
+				fmt.eprintfln("[reconcile] fan-out: WARNING instance %s (focus=%s role=%s) has empty bridge_id; wake_agent cannot be delivered (agent not bound to a bridge)", cf.instance_id, cf.new_task_id, role)
+				continue
+			}
+			entries := runs[inst.bridge_id]
+			append(&entries, agent.Wake_Agent_Run_Entry{
+				agent_instance_id = cf.instance_id,
+				task_id           = cf.new_task_id,
+				role              = role,
+				provider          = inst.provider,
+				tier              = inst.tier,
+				agent_id          = inst.agent_id,
+				agent_name        = agent_name,
+				chain_id          = string(chain.chain_id),
+				chain_title       = chain.title,
+				coordinator_id    = chain.coordinator_agent_instance_id,
+				project_id        = string(inst.project_id),
+				project_path      = inst.project_path,
+			})
+			runs[inst.bridge_id] = entries
+			note_bridge_local(&bridge_order, &seen_bridge, inst.bridge_id)
+		} else if instance_is_live(inst) {
+			// BUG-49 Bug 1 assessment (assignee stopped on in_validation): this stop[]
+			// is INTENTIONAL — fresh-context-per-task means an assignee whose focus just
+			// cleared (its task moved to in_validation, held pending review) is torn down
+			// so the next task boots a clean context. The apparent race (this stop is
+			// emitted synchronously during recompute, i.e. BEFORE the HTTP 200 returns to
+			// the assignee's own `ham-ctl task status ... --status in_validation` call) is
+			// benign: (1) the durable in_validation write is already persisted before we
+			// reach here, so the assignee's intent is fully recorded regardless of when it
+			// dies; and (2) the stop must traverse hub -> WS -> bridge command handler ->
+			// runtime stop, many more hops than the 200 already flushing on ham-ctl's own
+			// TCP connection, so the response wins in practice. No lifecycle change.
+			entries := stops[inst.bridge_id]
+			append(&entries, cf.instance_id)
+			stops[inst.bridge_id] = entries
+			note_bridge_local(&bridge_order, &seen_bridge, inst.bridge_id)
+		}
 	}
 
-	// (5b) NUDGE idle + actionable: an instance whose focus DID NOT change but is
-	// live+idle while holding an actionable current task gets a gentle re-nudge,
-	// rate-limited to 10 min with exponential backoff per (instance:task).
-	changed_ids := make(map[string]bool)
-	defer delete(changed_ids)
-	for cf in changed_focus do changed_ids[cf.instance_id] = true
-	for instance_id in instance_ids {
-		if changed_ids[instance_id] do continue
-		f, has := focus[instance_id]
-		if !has || f.task_id == "" do continue
-		inst, inst_ok, _ := iface.agent_get_instance(service.agents, instance_id)
-		if !inst_ok do continue
-		if !instance_is_idle(inst) do continue
-		task, task_ok := lookup_task(fresh_tasks if ft_err.code == .None else tasks[:], f.task_id)
-		if !task_ok do continue
-		if !idle_nudge_due(service, instance_id, string(f.task_id)) do continue
-		notify_current_task_changed(service, inst, task, f.role)
+	// Fan out one wake_agent command per bridge.
+	for bridge_id in bridge_order {
+		run_entries  := runs[bridge_id]
+		stop_entries := stops[bridge_id]
+		if len(run_entries) == 0 && len(stop_entries) == 0 do continue
+		cmd_id := platform.generate_id(service.ids, "cmd_")
+		body   := agent.wake_agent_command_json(string(chain.chain_id), run_entries[:], stop_entries[:])
+		_, _ = project.bridge_command_send_runtime(service.bridge_command_sink,
+			project.Runtime_Command{bridge_id = bridge_id, command_id = cmd_id, body_json = body})
 	}
 
-	// Now fan out promotion notifications. System-initiated promotion: empty auth
-	// actor so the runtime fan-out targets the assignee (no actor is excluded).
+	// Fan out promotion status-change notifications.
 	for saved in promoted_tasks {
 		notify_task_status_change(service, contracts.Auth_Context{}, saved, chain)
 	}
 
 	return promoted
+}
+
+// instance_is_live reports whether an instance currently has a running process
+// (mirrors the "live" set used by instance_is_idle). Only live instances are eligible
+// for a stop[] push; a stopped/launching instance is left alone.
+instance_is_live :: proc(inst: domain.Agent_Instance) -> bool {
+	return inst.runtime_status == "running" || inst.runtime_status == "idle" || inst.runtime_status == "busy"
 }
 
 // recompute_chain_promotions is kept as an alias so existing call sites compile;
@@ -367,10 +511,37 @@ apply_instance_focus_total :: proc(service: ^Taskchain_Service, instance_ids: []
 	changed := make([dynamic]Focus_Change)
 	if service == nil || service.agents == nil do return changed[:]
 	for instance_id in instance_ids {
-		inst, ok, _ := iface.agent_get_instance(service.agents, instance_id)
-		if !ok do continue
 		f := focus[instance_id] // zero value = {"", .None} when absent => clear
-		if inst.current_task_id == string(f.task_id) && inst.current_task_role == f.role do continue
+		inst, ok, _ := iface.agent_get_instance(service.agents, instance_id)
+		if !ok {
+			// BUG-49 Fix B: an instance with no agent DB record used to be silently
+			// skipped here, so a reviewer whose record is missing never produced a
+			// Focus_Change and was therefore never woken by the fan-out. When the
+			// desired focus is non-empty, still record the change (the fan-out logs the
+			// undeliverable wake) so the drop is visible instead of invisible. Clearing
+			// a focus for a record that does not exist is a genuine no-op, so skip that.
+			if f.task_id != "" {
+				fmt.eprintfln("[reconcile] apply_instance_focus_total: instance %s has no agent DB record, desired focus=%s role=%v; recording focus change for wake attempt", instance_id, string(f.task_id), f.role)
+				append(&changed, Focus_Change{instance_id = instance_id, new_task_id = string(f.task_id), new_role = f.role})
+			}
+			continue
+		}
+		if inst.current_task_id == string(f.task_id) && inst.current_task_role == f.role {
+			// BUG-50 Fix (Bug 2): the persisted pointer already equals the desired
+			// focus, but a pointer match does NOT imply a live process. A reviewer
+			// (or assignee) that was stopped after a prior pass keeps its pointer set
+			// to this task, so the purely pointer-based change-gate would record no
+			// Focus_Change and the fan-out would never (re)start the dead process.
+			// When the focus is a non-empty task and the instance is not live, emit a
+			// Focus_Change so the fan-out restarts it. When it IS live, the deliberate
+			// no-churn behavior is correct — just log the true no-op for visibility.
+			if f.task_id != "" && !instance_is_live(inst) {
+				append(&changed, Focus_Change{instance_id = instance_id, new_task_id = string(f.task_id), new_role = f.role})
+			} else if f.task_id != "" && instance_is_live(inst) {
+				fmt.eprintfln("[reconcile] apply_instance_focus_total: instance %s already at focus=%s role=%v and process is live (no-change; no wake emitted)", instance_id, string(f.task_id), f.role)
+			}
+			continue
+		}
 		inst.current_task_id = string(f.task_id)
 		inst.current_task_role = f.role
 		inst.updated_at = platform.clock_now(service.clock)

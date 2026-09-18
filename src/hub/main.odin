@@ -263,6 +263,10 @@ parse_args :: proc(config: ^app.Hub_Config) {
 	// env first (below) and flags second (in the loop) keeps precedence uniform
 	// across all VAPID fields, including vapid_subject which carries a default.
 	apply_vapid_env(config)
+	// Bridge-auth mode resolves default -> env -> flag (flag wins, applied in the loop).
+	if v := os.get_env_alloc("HEIMDALL_BRIDGE_AUTH_MODE", context.allocator); v != "" {
+		config.bridge_auth_mode = v
+	}
 	for i := 1; i < len(os.args); i += 1 {
 		arg := os.args[i]
 		if arg == "--listen" && i + 1 < len(os.args) {
@@ -288,6 +292,8 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			config.login_url = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--logout-url" && i + 1 < len(os.args) {
 			config.logout_url = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--bridge-auth-mode" && i + 1 < len(os.args) {
+			config.bridge_auth_mode = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--device-auth-verification-uri" && i + 1 < len(os.args) {
 			config.device_auth_verification_uri = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--reaper-interval-seconds" && i + 1 < len(os.args) {

@@ -385,6 +385,18 @@ function handleMemoryEvent(dispatch: any, payload: any) {
   patchMemoryCachesFromWs(dispatch, payload);
 }
 
+function handleCardEvent(dispatch: any, payload: any) {
+  const cardId = String(payload?.card_id || payload?.id || payload?.record?.card_id || '');
+  if (cardId) {
+    dispatch(heimdallApi.util.invalidateTags([
+      { type: 'Card', id: cardId },
+      { type: 'Cards', id: 'LIST' },
+    ]));
+  } else {
+    dispatch(heimdallApi.util.invalidateTags([{ type: 'Cards', id: 'LIST' }]));
+  }
+}
+
 // Ephemeral agent-activity bubble event (P1 wire contract:
 // { type:'agent_action', instance_id, action, summary, ts }). Routed ONLY to the
 // transient agentActivity slice — it MUST NOT touch any RTK Query cache (no
@@ -401,6 +413,7 @@ function handleAgentActionEvent(dispatch: any, payload: any) {
     action: String(payload?.action || ''),
     summary,
     ts: Number(payload?.ts) || Date.now(),
+    shellStatus: String(payload?.shell_status || ''),
   }));
 }
 
@@ -541,6 +554,14 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
       return;
     case 'memory_event':
       handleMemoryEvent(dispatch, payload);
+      return;
+    case 'card_event':
+    case 'card_created':
+    case 'card_updated':
+    case 'card_discarded':
+    case 'card_accepted':
+    case 'card_rejected':
+      handleCardEvent(dispatch, payload);
       return;
     case 'agent_action':
       handleAgentActionEvent(dispatch, payload);

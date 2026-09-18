@@ -178,7 +178,7 @@ run_replay() {
                 endpoint_call "agent.context.get" "context" >/dev/null
                 ;;
             say)
-                endpoint_call "agent.chat.send_to_user" chat send --body "$_rest" >/dev/null
+                endpoint_call "agent.chat.send" chat send --to user --body "$_rest" >/dev/null
                 ;;
             task-comment)
                 _tid="${_rest%% *}"

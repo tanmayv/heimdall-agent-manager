@@ -294,16 +294,25 @@ bridge_task_wake_if_needed :: proc(instance_id: string, now: i64) -> bool {
 	// Reuse the same launch path as a hub launch_agent command; a synthetic
 	// command_id keeps the launch idempotency/caching machinery happy.
 	//
-	// The instance id MUST live inside a "payload" object, matching the real hub
-	// launch_agent contract (agent_service.launch_command_json_full): the bootstrap
-	// descriptor is parsed from payload (bridge_bootstrap_descriptor_from_launch),
-	// so a top-level-only agent_instance_id left descriptor.instance_id empty and
-	// the launch aborted at stage=validate ("missing hub_url/bridge_token/
-	// instance_id") -- meaning a scheduled action could never wake a stopped
-	// instance. With instance_id in the payload the bridge falls back to the
-	// instance bootstrap endpoint to materialize the agent.
+	// REQ-37 (B1): the bridge knows only the instance_id locally, but a bare
+	// {agent_instance_id} payload used to leave descriptor.agent_id empty, which took
+	// the header-only instance-endpoint fallback and materialized a 6-line CLAUDE.md
+	// (all static skills/persona/instructions missing). We now first fetch the
+	// per-instance descriptor from the hub and build a FULLY-ENRICHED launch command
+	// (same payload keys as agent_service.launch_command_json_full) so the launch
+	// takes the full agent-keyed template bootstrap. If the descriptor cannot be
+	// fetched (or lacks agent_id), we ABORT the wake and retry next tick rather than
+	// materialize a degraded bootstrap -- a visible failure, never a silent one.
 	command_id := fmt.tprintf("sched_wake_%s_%d", instance_id, now)
-	command_json := strings.concatenate({"{\"type\":\"launch_agent\",\"command_id\":\"", command_id, "\",\"payload\":{\"agent_instance_id\":\"", instance_id, "\"}}"})
+	command_json, enrich_ok := bridge_scheduler_fetch_enriched_launch_json(instance_id, command_id)
+	if !enrich_ok {
+		sync.mutex_lock(&bridge_task_sched_mutex)
+		delete_key(&bridge_agent_wake, instance_id)
+		sync.mutex_unlock(&bridge_task_sched_mutex)
+		fmt.println("bridge scheduler wake aborted: could not fetch enriched descriptor (agent_id) for instance", instance_id)
+		return false
+	}
+	defer delete(command_json)
 	ok, detail := bridge_runtime_launch_agent(command_id, command_json)
 	if !ok {
 		sync.mutex_lock(&bridge_task_sched_mutex)
@@ -312,6 +321,47 @@ bridge_task_wake_if_needed :: proc(instance_id: string, now: i64) -> bool {
 		fmt.println("bridge scheduler wake failed", instance_id, detail)
 	}
 	return ok
+}
+
+// bridge_scheduler_fetch_enriched_launch_json builds a fully-enriched launch_agent
+// command for the scheduler wake path (REQ-37 B1). The scheduler only knows the
+// instance_id locally (the bridge launch record + runtime snapshot carry no
+// agent_id/chain data), so it GETs the hub instance bootstrap endpoint, which
+// returns the per-instance descriptor (agent_id, agent_name, role, chain_id,
+// chain_title, coordinator, project). Those are forwarded into the synthetic launch
+// payload so the launch takes the full agent-keyed template bootstrap instead of the
+// header-only fallback. Returns ("", false) when the hub is unreachable or the
+// descriptor lacks agent_id, so the caller aborts the wake (retry next tick) rather
+// than materialize a degraded, header-only CLAUDE.md. Transient extracted strings
+// follow the same no-free convention as bridge_hub_handle_wake_agent.
+bridge_scheduler_fetch_enriched_launch_json :: proc(instance_id, command_id: string) -> (string, bool) {
+	if strings.trim_space(bridge_config.daemon_url) == "" || strings.trim_space(bridge_config.bridge_token) == "" do return "", false
+	path := strings.concatenate({"/api/v1/bridge/agent-instances/", instance_id, "/bootstrap?format=manifest"})
+	defer delete(path)
+	auth := strings.concatenate({"Bearer ", bridge_config.bridge_token})
+	defer delete(auth)
+	headers := [?]http.Header{{name = "Authorization", value = auth}}
+	resp, ok := bridge_http_request_retry("GET", bridge_config.daemon_url, path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
+	if !ok || resp.status != 200 { delete(resp.body); return "", false }
+	defer delete(resp.body)
+	// data_obj/inst_obj are ALIASES into resp.body (not owned clones) -- do not free.
+	data_obj, data_ok := bridge_provider_json_extract_object(resp.body, "data")
+	if !data_ok do return "", false
+	inst_obj, inst_ok := bridge_provider_json_extract_object(data_obj, "instance")
+	if !inst_ok do return "", false
+	agent_id := extract_json_string(inst_obj, "agent_id", "")
+	if strings.trim_space(agent_id) == "" do return "", false
+	agent_name     := extract_json_string(inst_obj, "agent_name", "")
+	role           := extract_json_string(inst_obj, "role", "")
+	chain_id       := extract_json_string(inst_obj, "chain_id", "")
+	chain_title    := extract_json_string(inst_obj, "chain_title", "")
+	coordinator_id := extract_json_string(inst_obj, "coordinator_agent_instance_id", "")
+	project_id     := extract_json_string(inst_obj, "project_id", "")
+	project_path   := extract_json_string(inst_obj, "project_path", "")
+	// task_id/provider/tier are unknown to the scheduler wake (the agent resolves its
+	// current task after boot via reconcile; provider/tier fall back to bridge/instance
+	// defaults in bridge_runtime_launch_agent). agent_id is the load-bearing field.
+	return bridge_wake_launch_command_json(command_id, instance_id, "", role, "", "", agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path), true
 }
 
 // bridge_task_deliver_nudge pushes a nudge to the local wrapper if live. If the

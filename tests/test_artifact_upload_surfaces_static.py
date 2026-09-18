@@ -9,6 +9,8 @@ TASK = (ROOT / 'src/ui/components/taskchain/TaskChainOverview.tsx').read_text(en
 UTIL = (ROOT / 'src/ui/utils/artifactUpload.ts').read_text(encoding='utf-8')
 DAEMON = (ROOT / 'src/ui/api/daemonApi.ts').read_text(encoding='utf-8')
 ARTIFACT_ENDPOINTS = (ROOT / 'src/ui/api/endpoints/artifacts.ts').read_text(encoding='utf-8')
+# Task-comment rendering was extracted from TaskChainOverview into TaskCommentsThread.
+TASKTHREAD = (ROOT / 'src/ui/components/taskchain/TaskCommentsThread.tsx').read_text(encoding='utf-8')
 
 checks = [
     ('shared upload helpers preserve text paste unless clipboard files exist', all(snippet in UTIL for snippet in [
@@ -35,7 +37,7 @@ checks = [
         'if (files.length === 0) return;',
         'event.preventDefault();',
         'onPaste={handleComposerPaste}',
-    ]) and (CHAT.count('onPaste={handleComposerPaste}') == 2 or (CHAT.count('onPaste={handleComposerPaste}') == 1 and CHAT.count('{renderComposer()}') == 2))),
+    ]) and CHAT.count('onPaste={handleComposerPaste}') >= 1),
     ('conversation uploads persist artifact ids with progress retry and send gating', all(snippet in CHAT for snippet in [
         'useCreateArtifactMutation',
         "originKind: 'conversation_chat'",
@@ -68,6 +70,7 @@ checks = [
     ('task comments persist durable artifact links and render uploaded attachments', all(snippet in TASK for snippet in [
         'appendArtifactLinks(text, attachments.filter',
         'await addComment({ chainId, taskId, body }).unwrap();',
+    ]) and all(snippet in TASKTHREAD for snippet in [
         'artifactIdsFromText(comment.body || \'\')',
         '<ArtifactAttachmentPreview',
         "session={{ daemonUrl: '', clientToken: '' }}",

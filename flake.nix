@@ -16,7 +16,7 @@
 
       # Keep appVersion in sync with src/contracts/protocol.odin APP_VERSION.
       appVersion = "0.1.0";
-      npmDepsHash = "sha256-TMloUKbCJwOsAkU1o6P71YDcZ5qhPUrvzjB3b4T5owk=";
+      npmDepsHash = "sha256-KwqqfeXrma/a77FiSar0LHhDQbXs+Kcy835vn72r95w=";
 
       mkOdinPackage = pkgs: odin: name: srcDir: pkgs.stdenv.mkDerivation {
         pname = name;
@@ -60,6 +60,9 @@
           # `nix run .#hub` works from any CWD.
           ${if name == "ham-hub" then "mkdir -p $out/share/ham-hub && cp -r src/hub/repository/sqlite/migrations $out/share/ham-hub/migrations" else ""}
           ${if name == "ham-bridge" then "ln -s ${pkgs.openssl}/bin/openssl $out/bin/openssl" else ""}
+          # SOCAT-1: socat is the default bridge->hub TLS transport (HAM_TLS_BACKEND);
+          # openssl above stays for the s_client fallback + socat's OpenSSL engine.
+          ${if name == "ham-bridge" then "ln -s ${pkgs.socat}/bin/socat $out/bin/socat" else ""}
           ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
           runHook postBuild
         '';
@@ -162,7 +165,10 @@
         in
         {
           ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
-          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl ];
+          # SOCAT-1: socat is the DEFAULT bridge->hub TLS transport (HAM_TLS_BACKEND),
+          # openssl stays for the s_client fallback (and socat's own OpenSSL engine).
+          # Both are runtimeInputs so wrapProgram puts them on the bridge's PATH.
+          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl pkgs.socat ];
           ham-dev-proxy = mkOdinPackage pkgs odin "ham-dev-proxy" "src/dev_proxy";
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";

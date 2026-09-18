@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:net"
 import "core:os"
 import base64 "core:encoding/base64"
+import json "core:encoding/json"
 import "core:strings"
 import "core:sys/posix"
 
@@ -44,8 +45,94 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "chat", "chats": ctl_v2_chat(endpoint, token, rest, args); return
 	case "memory":        ctl_v2_memory(endpoint, token, rest, args); return
 	case "artifact", "artifacts": ctl_v2_artifact(endpoint, token, rest, args); return
+	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
+	case "search":        ctl_agentmode_search(endpoint, token, rest, args); return
+	case "shell-cmd":     ctl_agentmode_shell_cmd(endpoint, token, rest, args); return
 	}
 	print_agent_help(cmd[idx:])
+}
+
+// ---- search -------------------------------------------------------------
+// Agent-mode search routes through the agent.search RPC (POST
+// /api/v1/agent-actions/search), which accepts an agent token and scopes hits
+// to the caller's owner. Output is the raw JSON envelope (curators consume it
+// programmatically — the human pagination view of ctl_search_command is not
+// used here). The non-agent user-mode path (ctl_search_command) is untouched.
+ctl_agentmode_search :: proc(endpoint, token: string, tokens, args: []string) {
+	query := pos(tokens, 0)
+	if strings.trim_space(query) == "" {
+		fmt.println(`{"ok":false,"message":"search requires a query: ham-ctl search <query> [--scope csv] [--limit N] [--cursor C] [--task-ids csv] [--chain-ids csv] [--project-ids csv] [--conversation-ids csv] [--not-in-task-ids csv] [--not-in-chain-ids csv] [--not-in-project-ids csv] [--not-in-conversation-ids csv] [--exclude text]"}`)
+		return
+	}
+	fields := make([dynamic]string)
+	defer delete(fields)
+	append(&fields, json_kv("query", query))
+	// scopes maps to the REST `types` param; the hub reads it as `scopes`.
+	if v := option_value(args, "--scope", ""); v != "" do append(&fields, json_kv("scopes", v))
+	// limit is a JSON number (json_int on the hub); emit raw when provided.
+	if v := option_value(args, "--limit", ""); v != "" do append(&fields, json_kv_raw("limit", v))
+	if v := option_value(args, "--cursor", option_value(args, "--since", "")); v != "" do append(&fields, json_kv("cursor", v))
+	if v := option_value(args, "--task-ids", ""); v != "" do append(&fields, json_kv("task_ids", v))
+	if v := option_value(args, "--chain-ids", ""); v != "" do append(&fields, json_kv("chain_ids", v))
+	if v := option_value(args, "--project-ids", ""); v != "" do append(&fields, json_kv("project_ids", v))
+	if v := option_value(args, "--conversation-ids", ""); v != "" do append(&fields, json_kv("conversation_ids", v))
+	if v := option_value(args, "--not-in-task-ids", ""); v != "" do append(&fields, json_kv("not_in_task_ids", v))
+	if v := option_value(args, "--not-in-chain-ids", ""); v != "" do append(&fields, json_kv("not_in_chain_ids", v))
+	if v := option_value(args, "--not-in-project-ids", ""); v != "" do append(&fields, json_kv("not_in_project_ids", v))
+	if v := option_value(args, "--not-in-conversation-ids", ""); v != "" do append(&fields, json_kv("not_in_conversation_ids", v))
+	if v := option_value(args, "--exclude", ""); v != "" do append(&fields, json_kv("exclude", v))
+	ctl_agent_call(endpoint, token, "agent.search", json_object_from_slice(fields[:]))
+}
+
+// ---- shell-cmd ----------------------------------------------------------
+// Agents run shell commands on their local Bridge host via two RPCs:
+//   exec  — submit a command line for the Bridge to run locally
+//   read  — fetch the status/output of a previously submitted exec by id
+// This is the CTL-side dispatch only; the Bridge handler is REQ-14. Output is
+// the raw JSON envelope from the local endpoint (curators consume it
+// programmatically). The non-agent user-mode path is unaffected.
+ctl_agentmode_shell_cmd :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "exec":
+		cmd := option_value(args, "--cmd", "")
+		if strings.trim_space(cmd) == "" {
+			print_agent_help([]string{"shell-cmd"})
+			return
+		}
+		// --cwd is optional; empty is sent through and the Bridge treats it as
+		// "inherit my working directory" (REQ-24).
+		cwd := option_value(args, "--cwd", "")
+		ctl_agent_call(endpoint, token, "agent.shell_cmd.exec", json_object(json_kv("cmd", cmd), json_kv("cwd", cwd)))
+	case "read":
+		id := pos(tokens, 1)
+		if strings.trim_space(id) == "" {
+			print_agent_help([]string{"shell-cmd"})
+			return
+		}
+		// Optional paging (REQ-25). Defaults (offset 0, limit 100, no grep)
+		// reproduce the historic tail-100 output. offset/limit are validated as
+		// non-negative integers so a malformed flag can never emit invalid JSON.
+		offset := ctl_shell_uint_flag(args, "--offset", "0")
+		limit := ctl_shell_uint_flag(args, "--limit", "100")
+		grep := option_value(args, "--grep", "")
+		ctl_agent_call(endpoint, token, "agent.shell_cmd.read", json_object(json_kv("exec_id", id), json_kv_raw("offset_lines", offset), json_kv_raw("limit_lines", limit), json_kv("grep_pattern", grep)))
+	case:
+		print_agent_help([]string{"shell-cmd"})
+	}
+}
+
+// ctl_shell_uint_flag returns the value of a non-negative integer flag as a bare
+// numeric string suitable for json_kv_raw, falling back to `fallback` when the flag
+// is absent, empty, or not all digits — so a typo like `--offset x` degrades to the
+// default instead of producing invalid JSON on the wire.
+ctl_shell_uint_flag :: proc(args: []string, name, fallback: string) -> string {
+	v := strings.trim_space(option_value(args, name, ""))
+	if v == "" do return fallback
+	for ch in v {
+		if ch < '0' || ch > '9' do return fallback
+	}
+	return v
 }
 
 // pos returns positional token i (0-based) from the group's remaining tokens, or
@@ -172,6 +259,14 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("description", desc))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.set_description", json_object_from_slice(fields[:]))
+	case "set-status", "status":
+		status := option_value(args, "--status", pos(tokens, 1))
+		if status == "" { print_agent_help([]string{"task-chain"}); return }
+		fields := make([dynamic]string)
+		defer delete(fields)
+		append(&fields, json_kv("status", status))
+		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		ctl_agent_call(endpoint, token, "agent.task_chain.set_status", json_object_from_slice(fields[:]))
 	case "reconcile":
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
@@ -424,7 +519,12 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 	
 	if include_outgoing { append(&fields, json_kv_raw("include_outgoing", "true")) } else { append(&fields, json_kv_raw("include_outgoing", "false")) }
 	if include_debug { append(&fields, json_kv_raw("include_debug", "true")) } else { append(&fields, json_kv_raw("include_debug", "false")) }
-	
+
+	// Optional cross-agent read: read another agent's inbox (same owner user).
+	// Omitted -> the hub reads the caller's own inbox exactly as before.
+	target := option_value(args, "--agent-instance-id", "")
+	if target != "" do append(&fields, json_kv("target_instance_id", target))
+
 	ctl_agent_call(endpoint, token, "agent.chat.read", json_object_from_slice(fields[:]))
 }
 
@@ -526,6 +626,208 @@ ctl_v2_memory :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.memory.propose", ctl_agentmode_memory_propose_params(args))
 	case:
 		print_agent_help([]string{"memory"})
+	}
+}
+
+ctl_v2_cards :: proc(endpoint, token: string, tokens, args: []string) {
+	verb := pos(tokens, 0)
+	switch verb {
+	case "", "list":
+		ctl_agent_call(endpoint, token, "agent.cards.list", ctl_agentmode_cards_list_params(args))
+	case "show", "get":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
+		if card_id == "" { print_agent_help([]string{"cards"}); return }
+		if has_flag(args, "--json") || has_flag(args, "--raw") {
+			ctl_agent_call(endpoint, token, "agent.cards.show", json_object(json_kv("card_id", card_id)))
+			return
+		}
+		response, ok := ctl_agent_local_call(endpoint, token, "agent.cards.show", json_object(json_kv("card_id", card_id)))
+		if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+		render_human_card(response)
+	case "create":
+		title := option_value(args, "--title", pos(tokens, 1))
+		if title == "" {
+			fmt.println("usage: ham-ctl cards create --title <title> [--rationale <text>] [--scope <project|global>] [--provider <provider>] [--confidence <float>] [--project <id>] [--source-refs <json>] [--operations <json>] [--guard <json>]")
+			return
+		}
+		ctl_agent_call(endpoint, token, "agent.cards.create", ctl_agentmode_cards_create_params(title, args))
+	case "discard":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
+		if card_id == "" { print_agent_help([]string{"cards"}); return }
+		ctl_agent_call(endpoint, token, "agent.cards.discard", json_object(json_kv("card_id", card_id)))
+	case "accept":
+		card_id := pos(tokens, 1)
+		if card_id == "" do card_id = option_value(args, "--card-id", option_value(args, "--card", option_value(args, "--id", "")))
+		if card_id == "" { print_agent_help([]string{"cards"}); return }
+		ctl_agent_call(endpoint, token, "agent.cards.accept", json_object(json_kv("card_id", card_id)))
+	case:
+		print_agent_help([]string{"cards"})
+	}
+}
+
+ctl_agentmode_cards_list_params :: proc(args: []string) -> string {
+	fields := make([dynamic]string)
+	defer delete(fields)
+	if s := option_value(args, "--status", ""); s != "" do append(&fields, json_kv("status", s))
+	if sc := option_value(args, "--scope", ""); sc != "" do append(&fields, json_kv("scope", sc))
+	if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
+	if pid := option_value(args, "--project", option_value(args, "--project-id", "")); pid != "" do append(&fields, json_kv("project_id", pid))
+	if l := option_value(args, "--limit", ""); l != "" do append(&fields, json_kv_raw("limit", l))
+	return json_object_from_slice(fields[:])
+}
+
+ctl_agentmode_cards_create_params :: proc(title: string, args: []string) -> string {
+	fields := make([dynamic]string)
+	defer delete(fields)
+	append(&fields, json_kv("title", title))
+	if r := option_value(args, "--rationale", ""); r != "" do append(&fields, json_kv("rationale", r))
+	if sc := option_value(args, "--scope", ""); sc != "" do append(&fields, json_kv("scope", sc))
+	if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
+	if c := option_value(args, "--confidence", ""); c != "" do append(&fields, json_kv_raw("confidence", c))
+	if pid := option_value(args, "--project", option_value(args, "--project-id", "")); pid != "" do append(&fields, json_kv("project_id", pid))
+	if sr := option_value(args, "--source-refs", ""); sr != "" do append(&fields, json_kv_raw("source_refs", sr))
+	if ops := option_value(args, "--operations", ""); ops != "" do append(&fields, json_kv_raw("operations", ops))
+	if g := option_value(args, "--guard", ""); g != "" do append(&fields, json_kv_raw("guard", g))
+	if s := option_value(args, "--status", ""); s != "" do append(&fields, json_kv("status", s))
+	if su := option_value(args, "--snooze-until", ""); su != "" do append(&fields, json_kv("snooze_until", su))
+	if ttl := option_value(args, "--ttl-at", ""); ttl != "" do append(&fields, json_kv("ttl_at", ttl))
+	return json_object_from_slice(fields[:])
+}
+
+// cards_op_arg pulls a string arg from an operation object, checking args.<key>
+// then a top-level <key> (mirrors the hub's op_arg_string / the UI's getArg).
+cards_op_arg :: proc(op_item: json.Object, key: string) -> string {
+	if args, ok := op_item["args"].(json.Object); ok {
+		if v, ok2 := args[key].(json.String); ok2 do return string(v)
+	}
+	if v, ok := op_item[key].(json.String); ok do return string(v)
+	return ""
+}
+
+// cards_op_fallback_label derives a friendly CLI label for the ops that need one
+// when a card omits the per-op `label` (parity with the UI's formatOpLabel). Returns
+// "" for ops it doesn't special-case, so the caller falls back to the raw op name.
+cards_op_fallback_label :: proc(op_name: string, op_item: json.Object) -> string {
+	switch op_name {
+	case "agent.update":
+		id := cards_op_arg(op_item, "agent_id"); if id == "" do id = cards_op_arg(op_item, "id")
+		return fmt.tprintf("Edit agent %s", id) if id != "" else "Edit agent"
+	case "agent.delete":
+		id := cards_op_arg(op_item, "agent_id"); if id == "" do id = cards_op_arg(op_item, "id")
+		return fmt.tprintf("Archive agent %s", id) if id != "" else "Archive agent"
+	case "project.delete":
+		id := cards_op_arg(op_item, "project_id"); if id == "" do id = cards_op_arg(op_item, "id")
+		return fmt.tprintf("Archive project %s", id) if id != "" else "Archive project"
+	}
+	return ""
+}
+
+render_human_card :: proc(body: string) {
+	val, err := json.parse(transmute([]byte)body)
+	if err != .None {
+		fmt.println(body)
+		return
+	}
+	defer json.destroy_value(val)
+
+	root, is_obj := val.(json.Object)
+	if !is_obj {
+		fmt.println(body)
+		return
+	}
+
+	if ok_val, has_ok := root["ok"].(json.Boolean); has_ok && !bool(ok_val) {
+		fmt.println(body)
+		return
+	}
+
+	card_obj := root
+	if data_obj, has_data := root["data"].(json.Object); has_data {
+		card_obj = data_obj
+	}
+
+	card_id := ""
+	if s, ok := card_obj["card_id"].(json.String); ok do card_id = string(s)
+	if card_id == "" {
+		if s, ok := card_obj["id"].(json.String); ok do card_id = string(s)
+	}
+	if card_id == "" {
+		fmt.println(body)
+		return
+	}
+
+	title := ""
+	if s, ok := card_obj["title"].(json.String); ok do title = string(s)
+
+	status := ""
+	if s, ok := card_obj["status"].(json.String); ok do status = string(s)
+
+	scope := ""
+	if s, ok := card_obj["scope"].(json.String); ok do scope = string(s)
+
+	provider := ""
+	if s, ok := card_obj["provider"].(json.String); ok do provider = string(s)
+
+	rationale := ""
+	if s, ok := card_obj["rationale"].(json.String); ok do rationale = string(s)
+
+	project_id := ""
+	if s, ok := card_obj["project_id"].(json.String); ok do project_id = string(s)
+
+	snooze_until := ""
+	if s, ok := card_obj["snooze_until"].(json.String); ok do snooze_until = string(s)
+
+	ttl_at := ""
+	if s, ok := card_obj["ttl_at"].(json.String); ok do ttl_at = string(s)
+
+	confidence: f64 = 1.0
+	if f, ok := card_obj["confidence"].(json.Float); ok do confidence = f
+	else if i, ok := card_obj["confidence"].(json.Integer); ok do confidence = f64(i)
+
+	fmt.printfln("Card:       %s", card_id)
+	fmt.printfln("Title:      %s", title)
+	fmt.printfln("Status:     %s", status)
+	if scope != "" do fmt.printfln("Scope:      %s", scope)
+	if provider != "" do fmt.printfln("Provider:   %s", provider)
+	if confidence < 0.9999 || confidence > 1.0001 {
+		fmt.printfln("Confidence: %.2f", confidence)
+	}
+	if project_id != "" do fmt.printfln("Project:    %s", project_id)
+	if snooze_until != "" do fmt.printfln("Snoozed:    %s", snooze_until)
+	if ttl_at != "" do fmt.printfln("TTL:        %s", ttl_at)
+	if rationale != "" do fmt.printfln("Rationale:  %s", rationale)
+
+	ops, has_ops := card_obj["operations"].(json.Array)
+	if has_ops && len(ops) > 0 {
+		fmt.println("")
+		fmt.printfln("Operations (%d):", len(ops))
+		for op_val, idx in ops {
+			op_item, ok := op_val.(json.Object)
+			if !ok do continue
+			op_name := ""
+			if s, ok2 := op_item["op"].(json.String); ok2 do op_name = string(s)
+			if op_name == "" {
+				if s, ok2 := op_item["type"].(json.String); ok2 do op_name = string(s)
+			}
+			label := ""
+			if s, ok2 := op_item["label"].(json.String); ok2 do label = string(s)
+			if label == "" do label = cards_op_fallback_label(op_name, op_item)
+
+			if label != "" && op_name != "" {
+				fmt.printfln("  %d. %s [%s]", idx + 1, label, op_name)
+			} else if label != "" {
+				fmt.printfln("  %d. %s", idx + 1, label)
+			} else if op_name != "" {
+				fmt.printfln("  %d. %s", idx + 1, op_name)
+			} else {
+				fmt.printfln("  %d. (unnamed operation)", idx + 1)
+			}
+		}
+	} else {
+		fmt.println("")
+		fmt.println("Operations: (none)")
 	}
 }
 
@@ -822,6 +1124,8 @@ print_agent_help :: proc(cmd: []string) {
 	case "chat", "chats": print_help_chat(); return
 	case "artifact", "artifacts": print_help_artifact(); return
 	case "memory": print_help_memory(); return
+	case "cards", "card": print_help_cards(); return
+	case "shell-cmd": print_help_shell_cmd(); return
 	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
 	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
 	}
@@ -844,6 +1148,8 @@ print_help_overview :: proc() {
 	fmt.println("  chat        Read your inbox / send to the user or another agent")
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")
+	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
+	fmt.println("  shell-cmd   Run a shell command on your local Bridge host (exec, read)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")
 	fmt.println("")
@@ -862,6 +1168,36 @@ print_help_overview :: proc() {
 	fmt.println("  ham-ctl chat send --to inst_reviewer --body \"Can you LGTM inst_task_1?\"")
 	fmt.println("")
 	fmt.println("  ham-ctl <group> --help    # detailed help for any group")
+}
+
+print_help_shell_cmd :: proc() {
+	fmt.println("ham-ctl shell-cmd — run a shell command on your local Bridge host")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  exec --cmd <command>   Submit a shell command for the Bridge to run locally.")
+	fmt.println("                         Returns an exec id; read it back with `shell-cmd read`.")
+	fmt.println("  read <exec-id>         Fetch the status/output of a previously submitted exec.")
+	fmt.println("                         By default returns the last 100 lines; page the full log")
+	fmt.println("                         with --offset/--limit/--grep.")
+	fmt.println("")
+	fmt.println("FLAGS")
+	fmt.println("  --cmd <command>        The command line to run (required for exec).")
+	fmt.println("  --cwd <dir>            Working directory to run the command in (exec, optional).")
+	fmt.println("                         A leading ~ is expanded and the directory must exist.")
+	fmt.println("                         If omitted, the command inherits the Bridge's working")
+	fmt.println("                         directory (typically $HOME).")
+	fmt.println("  --offset <N>           read: skip the first N lines of the output (0-indexed;")
+	fmt.println("                         default 0).")
+	fmt.println("  --limit <N>            read: return at most N lines (default 100).")
+	fmt.println("  --grep <pattern>       read: return only lines containing <pattern>, each")
+	fmt.println("                         prefixed with its original line number.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl shell-cmd exec --cwd ~/heimdall-agent-manager --cmd \"odin build src/bridge\"")
+	fmt.println("  ham-ctl shell-cmd exec --cmd \"nix develop --command bash -c 'odin build src/ctl'\"")
+	fmt.println("  ham-ctl shell-cmd read exec_abc123")
+	fmt.println("  ham-ctl shell-cmd read exec_abc123 --grep error")
+	fmt.println("  ham-ctl shell-cmd read exec_abc123 --offset 200 --limit 100")
 }
 
 print_help_bridge :: proc() {
@@ -911,6 +1247,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
 	fmt.println("                                      (coordinator only; pass \"\" to clear).")
+	fmt.println("  set-status <active|completed> [--chain <id>]    Change chain status (coordinator only).")
 	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
 	fmt.println("                                      actionable tasks, set current-tasks, nudge agents.")
 	fmt.println("                                      Coordinator/owner only. Run after staging tasks/deps.")
@@ -966,6 +1303,7 @@ print_help_chat :: proc() {
 	fmt.println("")
 	fmt.println("VERBS")
 	fmt.println("  read [--limit N] [--since T] [--include-read] [--transcript]   Read messages.")
+	fmt.println("      [--agent-instance-id <inst-id>]   Read another agent's inbox (same owner). Default: your own inbox.")
 	fmt.println("  send --to <user|agent-instance-id> --body <t> | --stdin        Send a message.")
 	fmt.println("      --to is REQUIRED: `user` for the bound user, or an agent-instance-id.")
 	fmt.println("  set-title <title>                                              Rename THIS conversation.")
@@ -1019,4 +1357,45 @@ print_help_memory :: proc() {
 	fmt.println("  ham-ctl memory propose --type habit --title 'Reviewer checklist' --body '...' --template-ids tmpl_reviewer")
 	fmt.println("  ham-ctl memory propose --type fact --title 'Two agents' --body '...' --agent-ids agt_a,agt_b")
 	fmt.println("  ham-ctl memory propose --type fact --title 'Repeated' --body '...' --project-ids proj_1 --project-ids proj_2")
+}
+
+print_help_cards :: proc() {
+	fmt.println("ham-ctl cards — Curator action cards")
+	fmt.println("")
+	fmt.println("VERBS")
+	fmt.println("  list [--status <s>] [--scope <s>] [--provider <p>] [--project <id>] [--limit <n>]")
+	fmt.println("                                      List cards matching filters.")
+	fmt.println("  show    <card-id> [--json|--raw]    Show card detail (formatted or raw JSON).")
+	fmt.println("  create  --title <title>             Create a new action card.")
+	fmt.println("      [--rationale <t>] [--scope <project|global>] [--provider <p>]")
+	fmt.println("      [--confidence <float>] [--project <id>] [--source-refs <json>]")
+	fmt.println("      [--operations <json>] [--guard <json>]")
+	fmt.println("  discard <card-id>                   Discard a card without executing operations.")
+	fmt.println("  accept  <card-id>                   Accept card and atomically execute all operations.")
+	fmt.println("")
+	fmt.println("  (agent mode has no reject/snooze — those are hub/user mode only.)")
+	fmt.println("")
+	fmt.println("OPERATIONS  (a card's operation types; each carries a human `label` shown in the dashboard)")
+	fmt.println("  task.vote               Cast a review vote on a task (default lgtm).")
+	fmt.println("  memory.approve          Approve a pending memory proposal.")
+	fmt.println("  memory.reject           Reject a pending memory proposal.")
+	fmt.println("  memory.create           Create a new durable memory.")
+	fmt.println("  memory.update           Edit an existing memory's fields (incl. scope: agent/project/bridge/template ids).")
+	fmt.println("  memory.delete           Archive (soft-delete) a memory.  (alias: memory.archive)")
+	fmt.println("  project.update          Edit a project's name/description.")
+	fmt.println("  project.delete          Archive (soft-delete) a project.")
+	fmt.println("  task_chain.set_status   Change a task chain's status.")
+	fmt.println("  agent.prompt            Send a prompt/message to an agent instance's conversation.")
+	fmt.println("  agent.update            Edit a durable agent's fields (name/provider/tier/instructions/...).")
+	fmt.println("  agent.delete            Archive (soft-delete) a durable agent.")
+	fmt.println("")
+	fmt.println("  Operations run ATOMICALLY (all-or-nothing) only when a card is ACCEPTED; a single")
+	fmt.println("  card may bundle several, and accepting executes them in order under your authority.")
+	fmt.println("")
+	fmt.println("EXAMPLES")
+	fmt.println("  ham-ctl cards list")
+	fmt.println("  ham-ctl cards create --title \"Run tests\" --operations '[{\"op\":\"task.vote\",\"label\":\"Approve task\",\"args\":{\"task_id\":\"task_1\"}}]'")
+	fmt.println("  ham-ctl cards show crd_123")
+	fmt.println("  ham-ctl cards accept crd_123")
+	fmt.println("  ham-ctl cards discard crd_123")
 }

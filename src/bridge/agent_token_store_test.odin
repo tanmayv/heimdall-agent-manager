@@ -16,19 +16,21 @@ import "core:testing"
 // must not run interleaved or one test's config change makes another resolve the
 // wrong store path. In a real deployment each bridge is its own process, so this
 // only matters for the test harness; serialize them with a shared mutex.
-bridge_token_store_test_mutex: sync.Mutex
+bridge_test_config_mutex: sync.Mutex
 
 @(test)
 bridge_token_store_namespace_is_per_bridge :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_token_store_test_mutex)
-	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	saved := bridge_config.local_endpoint_run_dir
 	defer { bridge_config.local_endpoint_run_dir = saved }
 
 	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local"
 	a := bridge_agent_token_store_namespace()
+	defer delete(a)
 	bridge_config.local_endpoint_run_dir = "/tmp/heimdall-bridge-local-macbook-remote"
 	b := bridge_agent_token_store_namespace()
+	defer delete(b)
 	testing.expect(t, a != b, "distinct run dirs must yield distinct namespaces")
 	testing.expect(t, !strings.contains(a, "/"), "namespace must be a single safe path segment")
 	testing.expect(t, !strings.contains(b, "/"), "namespace must be a single safe path segment")
@@ -39,8 +41,8 @@ bridge_token_store_namespace_is_per_bridge :: proc(t: ^testing.T) {
 
 @(test)
 bridge_token_store_two_bridges_do_not_clobber :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_token_store_test_mutex)
-	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	saved_dir := bridge_config.local_endpoint_run_dir
 	saved_data := bridge_config.data_dir
 	defer {
@@ -73,8 +75,8 @@ bridge_token_store_two_bridges_do_not_clobber :: proc(t: ^testing.T) {
 
 @(test)
 bridge_token_store_save_load_roundtrip :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_token_store_test_mutex)
-	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	saved_dir := bridge_config.local_endpoint_run_dir
 	saved_data := bridge_config.data_dir
 	defer {
@@ -99,8 +101,8 @@ bridge_token_store_save_load_roundtrip :: proc(t: ^testing.T) {
 // intact, so a superseded old ham-wrapper fails its next liveness ping.
 @(test)
 bridge_token_invalidate_instance_reaps_all_roles :: proc(t: ^testing.T) {
-	sync.mutex_lock(&bridge_token_store_test_mutex)
-	defer sync.mutex_unlock(&bridge_token_store_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	saved_dir := bridge_config.local_endpoint_run_dir
 	saved_data := bridge_config.data_dir
 	defer {

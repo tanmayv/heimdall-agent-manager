@@ -112,6 +112,10 @@ def main():
             "HEIMDALL_MOCK_REPLAY": str(REPLAY_DEMO),
             "HOME": os.environ.get("HOME", "/tmp"),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            # Force the no-endpoint path deterministically even when this test is
+            # run inside a live Bridge (which exports these in the ambient env).
+            "HEIMDALL_BRIDGE_ENDPOINT": "",
+            "HEIMDALL_AGENT_TOKEN": "",
         }
         proc = subprocess.run(
             ["/bin/sh", str(MOCK)], capture_output=True, text=True,
@@ -162,7 +166,7 @@ def main():
                     pass
             require("agent.start_success" in methods, f"start-success must be called; methods={methods}")
             require("agent.context.get" in methods, f"context must be called; methods={methods}")
-            require("agent.chat.send_to_user" in methods, f"chat send must be called; methods={methods}")
+            require("agent.chat.send" in methods, f"chat send must be called; methods={methods}")
             # Token and instance from env used in the wire requests.
             for req in ep.requests:
                 parsed = json.loads(req)

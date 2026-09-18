@@ -20,6 +20,8 @@ package main
 // is layered on in BR-3; BR-2 wires the control plane + a ChildExited-to-status
 // mapping helper the subscriber will call.
 
+import crypto_hash "core:crypto/hash"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -34,8 +36,8 @@ PTY_HOST_SPAWN_MAX_ATTEMPTS :: 5
 PTY_HOST_SPAWN_BASE_BACKOFF_MS :: 100
 
 // Default VT geometry for a freshly spawned agent pane.
-PTY_HOST_DEFAULT_ROWS :: 40
-PTY_HOST_DEFAULT_COLS :: 120
+PTY_HOST_DEFAULT_ROWS :: 25
+PTY_HOST_DEFAULT_COLS :: 80
 
 // ---- runtime flag -------------------------------------------------------
 
@@ -291,6 +293,99 @@ bridge_pty_host_send_oneway :: proc(socket: string, frame: []byte) -> bool {
 	return pty_host_send_all(fd, frame)
 }
 
+// bridge_pty_host_deliver_raw_input delivers raw input bytes directly to the agent's
+// PTY stdin via CtlMsg::Input to the ham-pty-host daemon socket.
+bridge_pty_host_deliver_raw_input_socket_bytes :: proc(socket, instance: string, data: []byte) -> bool {
+	if strings.trim_space(socket) == "" || strings.trim_space(instance) == "" do return false
+	frame := pty_host_encode_input(instance, data)
+	defer delete(frame)
+	return bridge_pty_host_send_oneway(socket, frame)
+}
+
+bridge_pty_host_deliver_raw_input_socket_string :: proc(socket, instance, data: string) -> bool {
+	return bridge_pty_host_deliver_raw_input_socket_bytes(socket, instance, transmute([]byte)data)
+}
+
+bridge_pty_host_deliver_raw_input_bytes :: proc(instance: string, data: []byte) -> bool {
+	if strings.trim_space(instance) == "" do return false
+	socket, ok := bridge_pty_host_ensure_daemon()
+	if !ok do return false
+	return bridge_pty_host_deliver_raw_input_socket_bytes(socket, instance, data)
+}
+
+bridge_pty_host_deliver_raw_input_string :: proc(instance, data: string) -> bool {
+	return bridge_pty_host_deliver_raw_input_bytes(instance, transmute([]byte)data)
+}
+
+bridge_pty_host_deliver_raw_input :: proc{
+	bridge_pty_host_deliver_raw_input_bytes,
+	bridge_pty_host_deliver_raw_input_string,
+	bridge_pty_host_deliver_raw_input_socket_bytes,
+	bridge_pty_host_deliver_raw_input_socket_string,
+}
+
+// bridge_pty_host_deliver_resize delivers a window resize request directly to the
+// agent's PTY and VT screen model via CtlMsg::Resize to the ham-pty-host daemon socket.
+bridge_pty_host_deliver_resize_socket :: proc(socket, instance: string, rows, cols: u16) -> bool {
+	if strings.trim_space(socket) == "" || strings.trim_space(instance) == "" || rows == 0 || cols == 0 do return false
+	frame := pty_host_encode_resize(instance, rows, cols)
+	defer delete(frame)
+	return bridge_pty_host_send_oneway(socket, frame)
+}
+
+bridge_pty_host_deliver_resize_default :: proc(instance: string, rows, cols: u16) -> bool {
+	if strings.trim_space(instance) == "" || rows == 0 || cols == 0 do return false
+	socket, ok := bridge_pty_host_ensure_daemon()
+	if !ok do return false
+	return bridge_pty_host_deliver_resize_socket(socket, instance, rows, cols)
+}
+
+bridge_pty_host_deliver_resize :: proc{
+	bridge_pty_host_deliver_resize_default,
+	bridge_pty_host_deliver_resize_socket,
+}
+
+// bridge_pty_host_deliver_shell_input delivers raw input bytes directly to a shell's
+// PTY stdin via CtlMsg::Input to the ham-pty-host daemon socket.
+bridge_pty_host_deliver_shell_input_string :: proc(shell_id: string, data: string) -> bool {
+	return bridge_pty_host_deliver_raw_input(shell_id, data)
+}
+
+bridge_pty_host_deliver_shell_input_bytes :: proc(shell_id: string, data: []byte) -> bool {
+	return bridge_pty_host_deliver_raw_input(shell_id, data)
+}
+
+bridge_pty_host_deliver_shell_input_socket_string :: proc(socket, shell_id: string, data: string) -> bool {
+	return bridge_pty_host_deliver_raw_input(socket, shell_id, data)
+}
+
+bridge_pty_host_deliver_shell_input_socket_bytes :: proc(socket, shell_id: string, data: []byte) -> bool {
+	return bridge_pty_host_deliver_raw_input(socket, shell_id, data)
+}
+
+bridge_pty_host_deliver_shell_input :: proc{
+	bridge_pty_host_deliver_shell_input_string,
+	bridge_pty_host_deliver_shell_input_bytes,
+	bridge_pty_host_deliver_shell_input_socket_string,
+	bridge_pty_host_deliver_shell_input_socket_bytes,
+}
+
+// bridge_pty_host_deliver_shell_resize delivers a window resize request directly to a
+// shell's PTY and VT screen model via CtlMsg::Resize to the ham-pty-host daemon socket.
+bridge_pty_host_deliver_shell_resize_default :: proc(shell_id: string, rows, cols: u16) -> bool {
+	return bridge_pty_host_deliver_resize(shell_id, rows, cols)
+}
+
+bridge_pty_host_deliver_shell_resize_socket :: proc(socket, shell_id: string, rows, cols: u16) -> bool {
+	return bridge_pty_host_deliver_resize(socket, shell_id, rows, cols)
+}
+
+bridge_pty_host_deliver_shell_resize :: proc{
+	bridge_pty_host_deliver_shell_resize_default,
+	bridge_pty_host_deliver_shell_resize_socket,
+}
+
+
 // bridge_pty_host_message_notice renders the agent_message notice text (pure, so
 // it is unit-testable). Mirrors the wrapper's wrapper_bridge_deliver_message_push.
 bridge_pty_host_message_notice :: proc(sender: string) -> string {
@@ -406,6 +501,59 @@ bridge_pty_host_screen_to_output :: proc(lines: []string, line_limit: int) -> (o
 	}
 	tail := lines[start:]
 	return strings.join(tail, "\n"), len(tail), trunc
+}
+
+// bridge_pty_host_pane_hash computes the SHA256 hex string for pane content.
+// Caller owns the returned string.
+bridge_pty_host_pane_hash :: proc(s: string, allocator := context.allocator) -> string {
+	buf: [32]byte
+	crypto_hash.hash_string_to_buffer(.SHA256, s, buf[:])
+	hex_bytes := hex.encode(buf[:], allocator)
+	return string(hex_bytes)
+}
+
+// bridge_pty_host_evaluate_pane evaluates rendered screen lines against since_hash.
+// If since_hash matches the computed SHA256 hash of the output tail, returns unchanged: true
+// with empty output payload. If different or no since_hash, returns unchanged: false with
+// output, line_count, and truncated flag. Caller owns the returned hash and output strings.
+bridge_pty_host_evaluate_pane :: proc(lines: []string, line_limit: int, since_hash: string) -> (unchanged: bool, hash_val: string, output: string, line_count: int, truncated: bool) {
+	out, count, trunc := bridge_pty_host_screen_to_output(lines, line_limit)
+	h := bridge_pty_host_pane_hash(out)
+	trimmed_since := strings.trim_space(since_hash)
+	if trimmed_since != "" && (h == trimmed_since || strings.equal_fold(h, trimmed_since)) {
+		delete(out)
+		return true, h, "", 0, false
+	}
+	return false, h, out, count, trunc
+}
+
+// bridge_pty_host_get_pane proxies host.capture against the pty-host daemon,
+// computes the screen output hash, and evaluates against since_hash (REQ-PANE-2).
+// Returns (ok, unchanged, hash, output, line_count, truncated, err_msg).
+// Caller owns returned hash and output strings when present.
+bridge_pty_host_get_pane :: proc(instance_id: string, since_hash: string, line_limit: int, width: int) -> (ok: bool, unchanged: bool, hash: string, output: string, line_count: int, truncated: bool, err_msg: string) {
+	_ = width
+	trimmed_id := strings.trim_space(instance_id)
+	if trimmed_id == "" {
+		return false, false, "", "", 0, false, "missing agent_instance_id"
+	}
+
+	socket, ok_daemon := bridge_pty_host_ensure_daemon()
+	if !ok_daemon {
+		return false, false, "", "", 0, false, "The ham-pty-host daemon is not available."
+	}
+
+	frame := pty_host_encode_capture(trimmed_id)
+	defer delete(frame)
+	reply, rok := pty_host_request(socket, frame)
+	if !rok || reply.kind != .Screen {
+		if rok do pty_host_reply_delete(reply)
+		return false, false, "", "", 0, false, "No screen snapshot was returned for this agent."
+	}
+	defer pty_host_reply_delete(reply)
+
+	unchanged_val, h, out, count, trunc := bridge_pty_host_evaluate_pane(reply.screen.lines, line_limit, since_hash)
+	return true, unchanged_val, h, out, count, trunc, ""
 }
 
 // ---- event->status mapping (consumed by the BR-3 subscriber) ------------

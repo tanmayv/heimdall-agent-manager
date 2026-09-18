@@ -1,6 +1,7 @@
 package auth
 
 import "core:crypto/legacy/sha1"
+import "core:fmt"
 import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
@@ -22,6 +23,15 @@ Trusted_Proxy_Config :: struct {
 	proxy_secret: string,
 }
 
+// Bridge_Auth_Mode governs how bridge-token authorization decisions behave.
+// Monitor (default): allow the operation but emit a `bridge_auth_monitor` audit
+// line wherever enforcement WOULD deny — so we can enumerate real impact before
+// turning on blocking. Enforce: block (the strict behavior). Zero value = Monitor.
+Bridge_Auth_Mode :: enum {
+	Monitor,
+	Enforce,
+}
+
 Auth_Service :: struct {
 	config: Trusted_Proxy_Config,
 	users: ^user_service.User_Service,
@@ -30,6 +40,25 @@ Auth_Service :: struct {
 	agents: ^agent_service.Agent_Service,
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
+	bridge_auth_mode: Bridge_Auth_Mode,
+}
+
+// bridge_auth_monitor_hook, when non-nil, receives each audit event instead of
+// the default stdout logger. Tests set it to capture and assert the emitted fields.
+bridge_auth_monitor_hook: proc(point, method, path, bridge_id, user_id, target, request_id: string)
+
+// log_bridge_auth_monitor emits a single greppable audit line for a bridge-token
+// authorization decision that enforcement would have denied. `grep bridge_auth_monitor`
+// over the hub log enumerates exactly which operations flipping to enforce would block.
+log_bridge_auth_monitor :: proc(point, method, path, bridge_id, user_id, target, request_id: string) {
+	if bridge_auth_monitor_hook != nil {
+		bridge_auth_monitor_hook(point, method, path, bridge_id, user_id, target, request_id)
+		return
+	}
+	fmt.printfln(
+		"ham-hub bridge_auth_monitor point=%s method=%s path=%s bridge_id=%s user_id=%s target=%s request_id=%s",
+		point, method, path, bridge_id, user_id, target, request_id,
+	)
 }
 
 Issue_User_API_Token_Input :: struct {
@@ -112,7 +141,60 @@ resolve_auth_any :: proc(service: ^Auth_Service, req: Auth_Request) -> (contract
 	if authz != "" && strings.has_prefix(authz, "Bearer ") {
 		token := strings.trim_space(authz[len("Bearer "):])
 		if strings.has_prefix(token, "hbr_") {
+			// A bridge token that carries an instance assertion resolves via the
+			// normal Instance_Token path (unchanged in both modes). A BARE bridge
+			// token (no instance assertion) on a shared endpoint is rejected under
+			// enforce; under monitor it is accepted as a Bridge_Token and logged, so
+			// we can enumerate which shared-endpoint calls enforcement would block.
+			instance_id := ""
+			relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
+			if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
+				instance_id = relay_token[len("hit_"):]
+			}
+			if instance_id == "" {
+				instance_id = json_key_value(req.body, "agent_instance_id")
+			}
+			if instance_id != "" {
+				return resolve_bridge_instance_auth(service, req)
+			}
+			if service != nil && service.bridge_auth_mode == .Monitor && service.bridges != nil && !token_in_query_or_body(req.query, req.body) {
+				// Accept the bare bridge token; require_auth_any emits the
+				// bare_token_shared_endpoint audit line where it has the full request
+				// context (method/path/request_id), which Auth_Request lacks here.
+				ctx, ok, _ := bridge_service.verify_bridge_token(service.bridges, token)
+				if ok {
+					return ctx, true, domain.Domain_Error{}
+				}
+			}
 			return resolve_bridge_instance_auth(service, req)
+		}
+	}
+	return resolve_auth(service, req)
+}
+
+resolve_auth_or_bridge_token :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
+	authz := header_value(req.headers, "Authorization")
+	if authz != "" && strings.has_prefix(authz, "Bearer ") {
+		token := strings.trim_space(authz[len("Bearer "):])
+		if strings.has_prefix(token, "hbr_") {
+			instance_id := ""
+			relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
+			if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
+				instance_id = relay_token[len("hit_"):]
+			}
+			if instance_id == "" {
+				instance_id = json_key_value(req.body, "agent_instance_id")
+			}
+			if instance_id != "" {
+				return resolve_bridge_instance_auth(service, req)
+			}
+			if service == nil || service.bridges == nil {
+				return contracts.Auth_Context{}, false, domain.domain_error(.Internal_Error, "bridge auth service is not configured")
+			}
+			if token_in_query_or_body(req.query, req.body) {
+				return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bearer tokens must use the Authorization header")
+			}
+			return bridge_service.verify_bridge_token(service.bridges, token)
 		}
 	}
 	return resolve_auth(service, req)

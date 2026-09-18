@@ -1,7 +1,9 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -59,6 +61,11 @@ Bridge_Runtime_Launch :: struct {
 	run_dir: string,
 	pane_id: string,
 	agent_token: string,
+	// role is the action role from the wake_agent run[] entry that (re)started this
+	// instance ("worker"/"reviewer"). Empty means unknown (a launch predating this
+	// field, or a non-wake launch). Used only for the coordinator stop-exemption
+	// (defense in depth); unknown is treated as non-coordinator.
+	role: string,
 }
 
 Bridge_Pane_Capture_Pending :: struct {
@@ -83,6 +90,11 @@ bridge_runtime_results: [dynamic]Bridge_Runtime_Command_Result
 bridge_runtime_launches: [dynamic]Bridge_Runtime_Launch
 bridge_pane_capture_pending: [dynamic]Bridge_Pane_Capture_Pending
 bridge_pane_capture_outgoing: [dynamic]Bridge_Pane_Capture_Outgoing
+Bridge_Shell_Output_Outgoing :: struct {
+	command_id:  string,
+	result_json: string,
+}
+bridge_shell_output_outgoing: [dynamic]Bridge_Shell_Output_Outgoing
 // Queue of instance ids whose status changed on a BACKGROUND thread (e.g. the
 // pty-host events worker applying a ChildExited) and must be pushed to the hub
 // immediately, without waiting for the next 45s bridge_heartbeat. The hub runtime
@@ -97,11 +109,20 @@ bridge_runtime_local_endpoint_descriptor: string
 bridge_hub_runtime_init :: proc() {
 	bridge_runtime_mutex = sync.Mutex{}
 	bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
-	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result)
+	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result, runtime.default_allocator())
 	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
 	bridge_pane_capture_pending = make([dynamic]Bridge_Pane_Capture_Pending)
 	bridge_pane_capture_outgoing = make([dynamic]Bridge_Pane_Capture_Outgoing)
+	bridge_shell_output_outgoing = make([dynamic]Bridge_Shell_Output_Outgoing)
 	bridge_runtime_status_outgoing = make([dynamic]string)
+}
+
+// Reset / clear runtime instance and launch registries under lock (for tests).
+bridge_runtime_test_reset :: proc() {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	clear(&bridge_runtime_instances)
+	clear(&bridge_runtime_launches)
 }
 
 bridge_hub_runtime_worker :: proc() {
@@ -185,6 +206,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		if text, got := ws.poll_text(conn); got do bridge_hub_handle_command(conn, text)
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
+		bridge_shell_output_drain_outgoing(conn)
 		// Flush any status transitions applied on background threads (e.g. a
 		// pty-host ChildExited) so "stopped"/"unreachable" reaches the hub now,
 		// not on the next heartbeat.
@@ -429,9 +451,210 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_pane_capture_command(conn, text)
 		return
 	}
+	if type == "get_agent_pane" {
+		bridge_hub_handle_get_agent_pane(conn, text)
+		return
+	}
+	if type == "wake_agent" {
+		bridge_hub_handle_wake_agent(conn, text)
+		return
+	}
+	if type == "get_shell_output" {
+		bridge_hub_handle_get_shell_output(conn, text)
+		return
+	}
+	if type == "agent_pty_input" {
+		bridge_hub_handle_agent_pty_input(conn, text)
+		return
+	}
+	if type == "agent_pty_resize" {
+		bridge_hub_handle_agent_pty_resize(conn, text)
+		return
+	}
+	if type == "shell_pty_input" {
+		bridge_hub_handle_shell_pty_input(conn, text)
+		return
+	}
+	if type == "shell_pty_resize" {
+		bridge_hub_handle_shell_pty_resize(conn, text)
+		return
+	}
 	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_fig_handle_command(conn, type, text) do return
+	if bridge_vcs_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
+}
+
+bridge_hub_handle_agent_pty_input :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	instance_id := extract_json_string(text, "agent_instance_id", "")
+	if instance_id == "" && has_payload do instance_id = extract_json_string(payload, "agent_instance_id", "")
+
+	data := extract_json_string(text, "data", "")
+	if data == "" && has_payload do data = extract_json_string(payload, "data", "")
+
+	ok := bridge_pty_host_deliver_raw_input(instance_id, data)
+	if !ok do fmt.println("bridge agent_pty_input delivery failed for instance", instance_id)
+
+	if command_id != "" {
+		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+}
+
+bridge_hub_handle_agent_pty_resize :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	instance_id := extract_json_string(text, "agent_instance_id", "")
+	if instance_id == "" && has_payload do instance_id = extract_json_string(payload, "agent_instance_id", "")
+
+	rows_val := extract_json_int(text, "rows", 0)
+	if rows_val <= 0 && has_payload do rows_val = extract_json_int(payload, "rows", 0)
+	if rows_val <= 0 {
+		str_val := extract_json_string(text, "rows", "")
+		if str_val == "" && has_payload do str_val = extract_json_string(payload, "rows", "")
+		if str_val != "" {
+			if parsed, ok := strconv.parse_int(str_val); ok do rows_val = int(parsed)
+		}
+	}
+
+	cols_val := extract_json_int(text, "cols", 0)
+	if cols_val <= 0 && has_payload do cols_val = extract_json_int(payload, "cols", 0)
+	if cols_val <= 0 {
+		str_val := extract_json_string(text, "cols", "")
+		if str_val == "" && has_payload do str_val = extract_json_string(payload, "cols", "")
+		if str_val != "" {
+			if parsed, ok := strconv.parse_int(str_val); ok do cols_val = int(parsed)
+		}
+	}
+
+	rows: u16 = 0
+	if rows_val > 0 && rows_val <= 65535 do rows = u16(rows_val)
+	cols: u16 = 0
+	if cols_val > 0 && cols_val <= 65535 do cols = u16(cols_val)
+
+	ok := bridge_pty_host_deliver_resize(instance_id, rows, cols)
+	if !ok do fmt.println("bridge agent_pty_resize delivery failed for instance", instance_id)
+
+	if command_id != "" {
+		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+}
+
+bridge_hub_handle_shell_pty_input :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	shell_id := extract_json_string(text, "shell_id", "")
+	if shell_id == "" && has_payload do shell_id = extract_json_string(payload, "shell_id", "")
+	if shell_id == "" do shell_id = extract_json_string(text, "agent_instance_id", "")
+	if shell_id == "" && has_payload do shell_id = extract_json_string(payload, "agent_instance_id", "")
+
+	data := extract_json_string(text, "data", "")
+	if data == "" && has_payload do data = extract_json_string(payload, "data", "")
+
+	ok := bridge_pty_host_deliver_shell_input(shell_id, data)
+	if !ok do fmt.println("bridge shell_pty_input delivery failed for shell", shell_id)
+
+	if command_id != "" {
+		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+}
+
+bridge_hub_handle_shell_pty_resize :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		if conn != nil do _ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	shell_id := extract_json_string(text, "shell_id", "")
+	if shell_id == "" && has_payload do shell_id = extract_json_string(payload, "shell_id", "")
+	if shell_id == "" do shell_id = extract_json_string(text, "agent_instance_id", "")
+	if shell_id == "" && has_payload do shell_id = extract_json_string(payload, "agent_instance_id", "")
+
+	rows_val := extract_json_int(text, "rows", 0)
+	if rows_val <= 0 && has_payload do rows_val = extract_json_int(payload, "rows", 0)
+	if rows_val <= 0 {
+		str_val := extract_json_string(text, "rows", "")
+		if str_val == "" && has_payload do str_val = extract_json_string(payload, "rows", "")
+		if str_val != "" {
+			if parsed, ok := strconv.parse_int(str_val); ok do rows_val = int(parsed)
+		}
+	}
+
+	cols_val := extract_json_int(text, "cols", 0)
+	if cols_val <= 0 && has_payload do cols_val = extract_json_int(payload, "cols", 0)
+	if cols_val <= 0 {
+		str_val := extract_json_string(text, "cols", "")
+		if str_val == "" && has_payload do str_val = extract_json_string(payload, "cols", "")
+		if str_val != "" {
+			if parsed, ok := strconv.parse_int(str_val); ok do cols_val = int(parsed)
+		}
+	}
+
+	rows: u16 = 0
+	if rows_val > 0 && rows_val <= 65535 do rows = u16(rows_val)
+	cols: u16 = 0
+	if cols_val > 0 && cols_val <= 65535 do cols = u16(cols_val)
+
+	ok := bridge_pty_host_deliver_shell_resize(shell_id, rows, cols)
+	if !ok do fmt.println("bridge shell_pty_resize delivery failed for shell", shell_id)
+
+	if command_id != "" {
+		result := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "")
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+	}
+}
+
+bridge_hub_handle_get_agent_pane :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		_ = bridge_hub_send(conn, cached)
+		return
+	}
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	instance_id := extract_json_string(text, "agent_instance_id", "")
+	if instance_id == "" && has_payload do instance_id = extract_json_string(payload, "agent_instance_id", "")
+	since_hash := extract_json_string(text, "since_hash", "")
+	if since_hash == "" && has_payload do since_hash = extract_json_string(payload, "since_hash", "")
+	width := extract_json_int(text, "width", 0)
+	if width <= 0 && has_payload do width = extract_json_int(payload, "width", 0)
+	if width <= 0 do width = 80
+	line_limit := extract_json_int(text, "line_limit", 0)
+	if line_limit <= 0 && has_payload do line_limit = extract_json_int(payload, "line_limit", 0)
+	if line_limit <= 0 do line_limit = 120
+
+	ok, unchanged, h, output, line_count, truncated, err_msg := bridge_pty_host_get_pane(instance_id, since_hash, line_limit, width)
+	defer if h != "" do delete(h)
+	defer if output != "" do delete(output)
+
+	result := bridge_get_agent_pane_result_json(command_id, ok, unchanged, h, output, line_count, truncated, err_msg)
+	defer delete(result)
+	bridge_runtime_cache_command(command_id, result)
+	_ = bridge_hub_send(conn, result)
 }
 
 bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: string) {
@@ -454,6 +677,152 @@ bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: strin
 	_ = bridge_hub_send(conn, accepted)
 	result := bridge_pty_host_capture_result(pending)
 	_ = bridge_hub_send(conn, result)
+}
+
+// bridge_hub_handle_wake_agent services the ephemeral-lifecycle push from the hub
+// (REQ-10/REQ-11). The reconcile pass sends one wake_agent per (chain × bridge):
+//   {"type":"wake_agent","chain_id":"..","payload":{"run":[{"agent_instance_id":"..",
+//    "task_id":"..","role":".."}],"stop":["..",..]}}
+// run[] names the non-coordinator agents that SHOULD be running for the chain right
+// now — started fresh (full bootstrap) when we hold no launch record, or restarted
+// (process re-fork from the saved spec, reusing run_dir + token) when a record
+// exists but the process is not registered with the daemon; an already-running agent
+// is left alone. stop[] names the instances whose task is no longer actionable and
+// should be stopped. Coordinators are never emitted by the hub, but we re-check the
+// role here (both from run[] entries and from the local launch record) as defense in
+// depth so this path can never stop or churn a coordinator. The command body carries
+// no command_id and the hub fire-and-forgets the send, so there is normally nothing
+// to ack; we still ack if a command_id is ever present.
+bridge_hub_handle_wake_agent :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	payload, payload_ok := bridge_provider_json_extract_object(text, "payload")
+	if !payload_ok {
+		if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+		return
+	}
+
+	// coordinator_ids collects any instance the hub (unexpectedly) marked coordinator
+	// in run[]; combined with the local launch-record role in the stop loop below it
+	// guarantees a coordinator can never be terminated by this path.
+	coordinator_ids := make(map[string]bool)
+	defer delete(coordinator_ids)
+
+	// RUN: start fresh, restart, or no-op each entry.
+	if run_arr, run_ok := bridge_provider_json_extract_array(payload, "run"); run_ok {
+		entries := bridge_provider_json_top_level_objects(run_arr)
+		defer { for e in entries do delete(e); delete(entries) }
+		for entry in entries {
+			instance_id := extract_json_string(entry, "agent_instance_id", "")
+			role := extract_json_string(entry, "role", "")
+			if role == "coordinator" {
+				if strings.trim_space(instance_id) != "" do coordinator_ids[instance_id] = true
+				continue
+			}
+			if strings.trim_space(instance_id) == "" do continue
+			task_id  := extract_json_string(entry, "task_id", "")
+			provider := extract_json_string(entry, "provider", "")
+			tier     := extract_json_string(entry, "tier", "")
+			// REQ-37: the enriched descriptor fields the hub now carries per run[] entry.
+			// Forwarding them into the synthetic launch_agent payload makes the bridge
+			// take the full agent-keyed template bootstrap instead of the header-only
+			// instance fallback. Missing (old hub) -> empty -> launch fails loudly at the
+			// agent_id guard rather than silently producing a 6-line CLAUDE.md.
+			agent_id       := extract_json_string(entry, "agent_id", "")
+			agent_name     := extract_json_string(entry, "agent_name", "")
+			chain_id       := extract_json_string(entry, "chain_id", "")
+			chain_title    := extract_json_string(entry, "chain_title", "")
+			coordinator_id := extract_json_string(entry, "coordinator_agent_instance_id", "")
+			project_id     := extract_json_string(entry, "project_id", "")
+			project_path   := extract_json_string(entry, "project_path", "")
+
+			if _, has := bridge_runtime_get_launch(instance_id); has {
+				// A launch record exists, but restart via the pty-host's remembered
+				// spec would reuse the ORIGINAL run_dir contents — including a stale
+				// CLAUDE.md written at first launch. Re-bootstrap instead: run the full
+				// launch path (deterministic run_dir, fresh token, current bootstrap
+				// template) so template updates take effect on each reconcile restart.
+				// bridge_runtime_launch_agent_pty_host already closes any registered
+				// instance before re-spawning, so no separate is_registered check.
+				syn_command_id := fmt.tprintf("wake_restart_%s_%d", instance_id, bridge_runtime_now_ms())
+				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path)
+				defer delete(command_json)
+				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
+				if ok {
+					bridge_runtime_set_launch_role(instance_id, role)
+					fmt.println("bridge wake_agent: re-bootstrapped and restarted instance", instance_id)
+				} else {
+					fmt.eprintln("bridge wake_agent: restart via re-bootstrap failed", instance_id, detail)
+				}
+			} else {
+				// No launch record: fresh full bootstrap via the standard launch path.
+				// The instance id MUST live inside a "payload" object (matching the hub
+				// launch_agent contract) so bridge_bootstrap_descriptor_from_launch can
+				// resolve it — a top-level-only id aborts the launch at validate. This
+				// mirrors the scheduler sched_wake synthetic launch.
+				syn_command_id := fmt.tprintf("wake_launch_%s_%d", instance_id, bridge_runtime_now_ms())
+				command_json := bridge_wake_launch_command_json(syn_command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path)
+				defer delete(command_json)
+				ok, detail := bridge_runtime_launch_agent(syn_command_id, command_json)
+				if ok {
+					bridge_runtime_set_launch_role(instance_id, role)
+					fmt.println("bridge wake_agent: launched instance", instance_id)
+				} else {
+					fmt.eprintln("bridge wake_agent: launch failed", instance_id, detail)
+				}
+			}
+		}
+	}
+
+	// STOP: terminate each instance whose task is no longer actionable, honoring the
+	// coordinator exemption (defense in depth — the hub never emits coordinators).
+	if stop_ids, stop_ok := bridge_provider_json_extract_string_array(payload, "stop"); stop_ok {
+		defer delete(stop_ids)
+		for id in stop_ids {
+			if strings.trim_space(id) == "" do continue
+			if coordinator_ids[id] do continue
+			if launch, has := bridge_runtime_get_launch(id); has && launch.role == "coordinator" do continue
+			bridge_runtime_stop_agent(id)
+			fmt.println("bridge wake_agent: stopped instance", id)
+		}
+	}
+
+	if command_id != "" do _ = bridge_hub_send(conn, bridge_command_result_json(command_id, "succeeded", ""))
+}
+
+// bridge_wake_launch_command_json builds the synthetic launch_agent command the
+// wake_agent handler feeds to bridge_runtime_launch_agent. It carries the SAME
+// payload keys as the hub's launch_command_json_full so the resulting descriptor
+// (bridge_bootstrap_descriptor_from_launch) is fully populated and the launch takes
+// the agent-keyed template bootstrap path rather than the header-only fallback
+// (REQ-37). Free-text fields (agent_name, chain_title) are JSON-escaped. Fields are
+// emitted unconditionally (empty is harmless) so the descriptor is deterministic.
+bridge_wake_launch_command_json :: proc(command_id, instance_id, task_id, role, provider, tier, agent_id, agent_name, chain_id, chain_title, coordinator_id, project_id, project_path: string) -> string {
+	b := strings.builder_make()
+	write_field :: proc(b: ^strings.Builder, first: ^bool, key, val: string) {
+		if !first^ do strings.write_byte(b, ',')
+		first^ = false
+		strings.write_byte(b, '"'); strings.write_string(b, key); strings.write_string(b, "\":\"")
+		bridge_runtime_write_json_string(b, val)
+		strings.write_byte(b, '"')
+	}
+	strings.write_string(&b, "{\"type\":\"launch_agent\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"payload\":{")
+	first := true
+	write_field(&b, &first, "agent_instance_id", instance_id)
+	write_field(&b, &first, "task_id", task_id)
+	write_field(&b, &first, "role", role)
+	write_field(&b, &first, "provider", provider)
+	write_field(&b, &first, "tier", tier)
+	write_field(&b, &first, "agent_id", agent_id)
+	write_field(&b, &first, "agent_name", agent_name)
+	write_field(&b, &first, "chain_id", chain_id)
+	write_field(&b, &first, "chain_title", chain_title)
+	write_field(&b, &first, "coordinator_agent_instance_id", coordinator_id)
+	write_field(&b, &first, "project_id", project_id)
+	write_field(&b, &first, "project_path", project_path)
+	strings.write_string(&b, "}}")
+	return strings.to_string(b)
 }
 
 bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
@@ -715,6 +1084,7 @@ bridge_runtime_startup_detection_arg :: proc(sd: cfg_lib.Startup_Detection_Confi
 
 bridge_runtime_find_on_path :: proc(name: string) -> string {
 	path := os.get_env_alloc("PATH", context.allocator)
+	defer delete(path)
 	start := 0
 	for start <= len(path) {
 		end_rel := strings.index_byte(path[start:], ':')
@@ -724,9 +1094,13 @@ bridge_runtime_find_on_path :: proc(name: string) -> string {
 		if strings.trim_space(dir) != "" {
 			candidate := strings.concatenate({strings.trim_right(dir, "/"), "/", name})
 			if _, err := os.stat(candidate, context.allocator); err == nil {
-				if absolute, abs_err := os.get_absolute_path(candidate, context.allocator); abs_err == nil && strings.trim_space(absolute) != "" do return absolute
+				if absolute, abs_err := os.get_absolute_path(candidate, context.allocator); abs_err == nil && strings.trim_space(absolute) != "" {
+					delete(candidate)
+					return absolute
+				}
 				return candidate
 			}
+			delete(candidate)
 		}
 		if end_rel < 0 do break
 		start = end + 1
@@ -782,6 +1156,21 @@ bridge_runtime_update_launch_pane :: proc(instance_id, pane_id: string) {
 	for i in 0..<len(bridge_runtime_launches) {
 		if bridge_runtime_launches[i].agent_instance_id == instance_id {
 			bridge_runtime_launches[i].pane_id = strings.clone(pane_id)
+			break
+		}
+	}
+}
+
+// bridge_runtime_set_launch_role stamps the wake_agent action role onto an existing
+// launch record so a later stop[] push can honor the coordinator exemption. No-op if
+// no launch record exists for the instance yet.
+bridge_runtime_set_launch_role :: proc(instance_id, role: string) {
+	if strings.trim_space(instance_id) == "" || strings.trim_space(role) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_runtime_launches) {
+		if bridge_runtime_launches[i].agent_instance_id == instance_id {
+			bridge_runtime_launches[i].role = strings.clone(role)
 			break
 		}
 	}
@@ -1181,8 +1570,21 @@ bridge_runtime_cache_command :: proc(command_id, result_json: string) {
 	if command_id == "" do return
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for i in 0..<len(bridge_runtime_results) { if bridge_runtime_results[i].command_id == command_id { bridge_runtime_results[i].result_json = strings.clone(result_json); return } }
-	append(&bridge_runtime_results, Bridge_Runtime_Command_Result{command_id = strings.clone(command_id), result_json = strings.clone(result_json)})
+	alloc := runtime.default_allocator()
+	if bridge_runtime_results.allocator.procedure == nil {
+		bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result, alloc)
+	}
+	for i in 0..<len(bridge_runtime_results) {
+		if bridge_runtime_results[i].command_id == command_id {
+			delete(bridge_runtime_results[i].result_json, alloc)
+			bridge_runtime_results[i].result_json = strings.clone(result_json, alloc)
+			return
+		}
+	}
+	append(&bridge_runtime_results, Bridge_Runtime_Command_Result{
+		command_id = strings.clone(command_id, alloc),
+		result_json = strings.clone(result_json, alloc),
+	})
 }
 
 bridge_pane_capture_register_pending :: proc(pending: Bridge_Pane_Capture_Pending) {
@@ -1211,6 +1613,60 @@ bridge_pane_capture_enqueue_result :: proc(result_json, command_id: string) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	append(&bridge_pane_capture_outgoing, Bridge_Pane_Capture_Outgoing{command_id=strings.clone(command_id),result_json=strings.clone(result_json)})
+}
+
+bridge_shell_output_enqueue_result :: proc(result_json, command_id: string) {
+	if strings.trim_space(result_json) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	append(&bridge_shell_output_outgoing, Bridge_Shell_Output_Outgoing{command_id=strings.clone(command_id),result_json=strings.clone(result_json)})
+}
+
+bridge_shell_output_drain_outgoing :: proc(conn: ^ws.Connection) {
+	for {
+		item: Bridge_Shell_Output_Outgoing
+		have := false
+		sync.mutex_lock(&bridge_runtime_mutex)
+		if len(bridge_shell_output_outgoing) > 0 { item = bridge_shell_output_outgoing[0]; ordered_remove(&bridge_shell_output_outgoing, 0); have = true }
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		if !have do return
+		if !bridge_hub_send(conn, item.result_json) {
+			sync.mutex_lock(&bridge_runtime_mutex)
+			inject_at(&bridge_shell_output_outgoing, 0, item)
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			conn.connected = false
+			return
+		}
+	}
+}
+
+bridge_hub_handle_get_shell_output :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	exec_id := extract_json_string(text, "exec_id", "")
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"command_result\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_byte(&b, '"')
+	if command_id == "" || exec_id == "" {
+		strings.write_string(&b, ",\"ok\":false,\"error\":\"missing fields\"}")
+		bridge_shell_output_enqueue_result(strings.to_string(b), command_id)
+		return
+	}
+	strings.write_string(&b, ",\"exec_id\":\"")
+	bridge_runtime_write_json_string(&b, exec_id)
+	strings.write_byte(&b, '"')
+	output_path := bridge_shell_output_path(exec_id)
+	raw, rerr := os.read_entire_file(output_path, context.allocator)
+	defer if rerr == nil do delete(raw)
+	output_str := ""
+	if rerr == nil do output_str = string(raw)
+	tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
+	strings.write_string(&b, ",\"ok\":true,\"output\":\"")
+	bridge_runtime_write_json_string(&b, tail)
+	strings.write_string(&b, "\",\"truncated\":")
+	strings.write_string(&b, "true" if truncated else "false")
+	strings.write_byte(&b, '}')
+	bridge_shell_output_enqueue_result(strings.to_string(b), command_id)
 }
 
 // bridge_runtime_enqueue_status_push_locked records that instance_id's runtime
@@ -1282,6 +1738,39 @@ bridge_pane_capture_expire_pending :: proc() {
 bridge_pane_capture_push_json :: proc(pending: Bridge_Pane_Capture_Pending, settle_ms:int)->string{ b:=strings.builder_make(); strings.write_string(&b,"{\"push\":\"pane_capture_request\",\"payload\":{\"protocol_version\":1,\"command_id\":\""); bridge_runtime_write_json_string(&b,pending.command_id); strings.write_string(&b,"\",\"pane_capture_request_id\":\""); bridge_runtime_write_json_string(&b,pending.pane_capture_request_id); strings.write_string(&b,"\",\"message_id\":\""); bridge_runtime_write_json_string(&b,pending.message_id); strings.write_string(&b,"\",\"width\":"); strings.write_string(&b,fmt.tprintf("%d",pending.width)); strings.write_string(&b,",\"settle_ms\":"); strings.write_string(&b,fmt.tprintf("%d",settle_ms)); strings.write_string(&b,",\"line_limit\":"); strings.write_string(&b,fmt.tprintf("%d",pending.line_limit)); strings.write_string(&b,"}}\n"); return strings.to_string(b) }
 
 bridge_pane_capture_result_json :: proc(pending: Bridge_Pane_Capture_Pending, ok:bool, error_code,message,output:string,line_count:int,truncated:bool)->string{ b:=strings.builder_make(); strings.write_string(&b,"{\"type\":\"pane_capture_result\",\"protocol_version\":1,\"command_id\":\""); bridge_runtime_write_json_string(&b,pending.command_id); strings.write_string(&b,"\",\"pane_capture_request_id\":\""); bridge_runtime_write_json_string(&b,pending.pane_capture_request_id); strings.write_string(&b,"\",\"conversation_id\":\""); bridge_runtime_write_json_string(&b,pending.conversation_id); strings.write_string(&b,"\",\"message_id\":\""); bridge_runtime_write_json_string(&b,pending.message_id); strings.write_string(&b,"\",\"agent_instance_id\":\""); bridge_runtime_write_json_string(&b,pending.agent_instance_id); strings.write_string(&b,"\",\"ok\":"); strings.write_string(&b,"true" if ok else "false"); strings.write_string(&b,",\"width\":"); strings.write_string(&b,fmt.tprintf("%d",pending.width)); strings.write_string(&b,",\"line_count\":"); strings.write_string(&b,fmt.tprintf("%d",line_count)); strings.write_string(&b,",\"truncated\":"); strings.write_string(&b,"true" if truncated else "false"); if ok { strings.write_string(&b,",\"output\":\""); bridge_runtime_write_json_string(&b,output); strings.write_string(&b,"\"") } else { strings.write_string(&b,",\"error_code\":\""); bridge_runtime_write_json_string(&b,error_code); strings.write_string(&b,"\",\"message\":\""); bridge_runtime_write_json_string(&b,message); strings.write_string(&b,"\"") }; strings.write_string(&b,"}"); return strings.to_string(b) }
+
+bridge_get_agent_pane_result_json :: proc(command_id: string, ok: bool, unchanged: bool, hash_val: string, output: string, line_count: int, truncated: bool, err_msg: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"command_result\",\"protocol_version\":1,\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\"")
+	if ok {
+		strings.write_string(&b, ",\"ok\":true,\"unchanged\":")
+		strings.write_string(&b, "true" if unchanged else "false")
+		strings.write_string(&b, ",\"hash\":\"")
+		bridge_runtime_write_json_string(&b, hash_val)
+		strings.write_string(&b, "\"")
+		if !unchanged {
+			strings.write_string(&b, ",\"output\":\"")
+			bridge_runtime_write_json_string(&b, output)
+			strings.write_string(&b, "\",\"line_count\":")
+			strings.write_string(&b, fmt.tprintf("%d", line_count))
+			strings.write_string(&b, ",\"truncated\":")
+			strings.write_string(&b, "true" if truncated else "false")
+		}
+	} else {
+		strings.write_string(&b, ",\"ok\":false,\"unchanged\":false")
+		if err_msg != "" {
+			strings.write_string(&b, ",\"error\":\"")
+			bridge_runtime_write_json_string(&b, err_msg)
+			strings.write_string(&b, "\",\"message\":\"")
+			bridge_runtime_write_json_string(&b, err_msg)
+			strings.write_string(&b, "\"")
+		}
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
 
 bridge_command_result_json :: proc(command_id, status, runtime_status: string) -> string {
 	b := strings.builder_make()
@@ -1364,9 +1853,10 @@ bridge_hub_hello_json :: proc() -> string {
 	return strings.to_string(b)
 }
 
-bridge_runtime_features_json :: proc() -> string { return "[\"capture_agent_pane\"]" }
+bridge_runtime_features_json :: proc() -> string { return "[\"capture_agent_pane\",\"get_agent_pane\"]" }
 
 bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
+	logged_ctrl := false
 	for ch in value {
 		switch ch {
 		case '\\': strings.write_string(b, "\\\\")
@@ -1374,7 +1864,16 @@ bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
 		case '\n': strings.write_string(b, "\\n")
 		case '\r': strings.write_string(b, "\\r")
 		case '\t': strings.write_string(b, "\\t")
-		case: strings.write_rune(b, ch)
+		case:
+			if ch < 32 {
+				if !logged_ctrl {
+					fmt.eprintln("bridge_runtime_write_json_string: escaping control char(s); first=", fmt.tprintf("\\u%04x", u32(ch)), "in payload len=", len(value))
+					logged_ctrl = true
+				}
+				strings.write_string(b, fmt.tprintf("\\u%04x", u32(ch)))
+			} else {
+				strings.write_rune(b, ch)
+			}
 		}
 	}
 }

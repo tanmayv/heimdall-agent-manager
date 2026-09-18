@@ -42,3 +42,91 @@ export function userScopedStorageKey(baseKey: string, userId = readLastSeenUserI
   const safeBase = baseKey.replace(/[^a-zA-Z0-9._:-]+/g, '_');
   return `heimdall.user.${safeUserId}.${safeBase}`;
 }
+
+export const RIGHT_SIDEBAR_WIDTH_KEY = 'heimdall.rightSidebar.width';
+export const RIGHT_SIDEBAR_OPEN_KEY = 'heimdall.rightSidebar.open';
+export const RIGHT_SIDEBAR_TAB_KEY = 'heimdall.rightSidebar.tab';
+
+export const RIGHT_SIDEBAR_DEFAULT_WIDTH = 480;
+export const RIGHT_SIDEBAR_MIN_WIDTH = 360;
+export const CHAT_VIEW_MIN_WIDTH = 380;
+
+export type RightSidebarTab = 'tasks' | 'files' | 'rundir' | 'jobs';
+
+export function clampRightSidebarWidth(width: number, maxAllowedWidth?: number): number {
+  if (!Number.isFinite(width) || Number.isNaN(width) || width <= 0) {
+    return RIGHT_SIDEBAR_DEFAULT_WIDTH;
+  }
+  let clamped = Math.max(RIGHT_SIDEBAR_MIN_WIDTH, Math.round(width));
+  if (typeof maxAllowedWidth === 'number' && Number.isFinite(maxAllowedWidth) && maxAllowedWidth >= RIGHT_SIDEBAR_MIN_WIDTH) {
+    clamped = Math.min(clamped, Math.round(maxAllowedWidth));
+  }
+  return clamped;
+}
+
+export function readRightSidebarWidth(): number {
+  if (typeof window === 'undefined') return RIGHT_SIDEBAR_DEFAULT_WIDTH;
+  try {
+    const raw = window.localStorage.getItem(RIGHT_SIDEBAR_WIDTH_KEY);
+    if (!raw) return RIGHT_SIDEBAR_DEFAULT_WIDTH;
+    const parsed = Number(raw);
+    return clampRightSidebarWidth(parsed);
+  } catch {
+    return RIGHT_SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
+export function writeRightSidebarWidth(width: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const clamped = clampRightSidebarWidth(width);
+    window.localStorage.setItem(RIGHT_SIDEBAR_WIDTH_KEY, String(clamped));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readRightSidebarOpen(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = window.localStorage.getItem(RIGHT_SIDEBAR_OPEN_KEY);
+    if (raw === null) return false;
+    return raw === 'true' || raw === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeRightSidebarOpen(open: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(RIGHT_SIDEBAR_OPEN_KEY, open ? 'true' : 'false');
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readRightSidebarTab(): RightSidebarTab | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(RIGHT_SIDEBAR_TAB_KEY);
+    if (raw === 'tasks' || raw === 'files' || raw === 'rundir' || raw === 'jobs') {
+      return raw;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeRightSidebarTab(tab: RightSidebarTab): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (tab === 'tasks' || tab === 'files' || tab === 'rundir' || tab === 'jobs') {
+      window.localStorage.setItem(RIGHT_SIDEBAR_TAB_KEY, tab);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+

@@ -2459,7 +2459,7 @@ export function InstanceIdLink({ instanceId, displayName }: { instanceId: string
 
   if (!trimmed) return null;
 
-  const href = shellHash(`/conversations/${encodeURIComponent(trimmed)}`);
+  const href = shellHash(`/conversations/${encodeURIComponent(trimmed)}?panel=tasks`);
   const title = `Open chat with ${trimmed}`;
   return (
     <a

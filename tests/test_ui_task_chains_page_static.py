@@ -27,7 +27,7 @@ def require(condition: bool, message: str) -> None:
 # --- RTK endpoints (TC-API consumption) -----------------------------------
 require("fetchTaskChainGroups:" in TASKS_API, "tasks.ts must define the grouped task-chains query")
 require("fetchTaskChainProjectPage:" in TASKS_API, "tasks.ts must define the per-project paginated query")
-require("cookieJsonFetch('/task-chains')" in TASKS_API, "grouped query must GET /task-chains with no params")
+require("cookieJsonFetch(`/task-chains${" in TASKS_API, "grouped query must GET /task-chains with no params")
 require("project_id" in TASKS_API and "params.set('limit'" in TASKS_API and "params.set('cursor'" in TASKS_API,
         "per-project query must pass project_id + limit + cursor")
 for hook in (

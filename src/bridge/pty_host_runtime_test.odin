@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -25,6 +26,11 @@ pty_host_flag_truthy_parsing :: proc(t: ^testing.T) {
 
 @(test)
 pty_host_always_enabled :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	old_pty := bridge_config.pty_host_runtime
+	defer { bridge_config.pty_host_runtime = old_pty }
+
 	// DEL-1: ham-pty-host is the only agent-launch runtime; the tmux path was
 	// removed, so bridge_pty_host_runtime_enabled() is always true regardless of
 	// the (now no-op) config flag / env override.
@@ -69,8 +75,8 @@ pty_host_socket_path_under_run_dir :: proc(t: ^testing.T) {
 	// Shares the global bridge_config with the BR-2a socket tests; serialize on the
 	// same mutex and snapshot/restore. BR-2a made the socket name bridge-unique, so
 	// pin a known identity and assert the new <run_dir>/pty-host-<id>.sock shape.
-	sync.mutex_lock(&pty_host_socket_test_mutex)
-	defer sync.mutex_unlock(&pty_host_socket_test_mutex)
+	sync.mutex_lock(&bridge_test_config_mutex)
+	defer sync.mutex_unlock(&bridge_test_config_mutex)
 	old_dir := bridge_config.local_endpoint_run_dir
 	old_id := bridge_config.daemon_id
 	old_port := bridge_config.local_endpoint_port
@@ -185,6 +191,181 @@ pty_host_build_spawn_from_profile :: proc(t: ^testing.T) {
 	testing.expect(t, req.has_cwd, "cwd present")
 	testing.expect(t, len(req.argv) > 0, "argv non-empty")
 	testing.expect_value(t, len(req.env), 2)
+	testing.expect_value(t, req.rows, u16(25))
+	testing.expect_value(t, req.cols, u16(80))
 	testing.expect_value(t, req.rows, u16(PTY_HOST_DEFAULT_ROWS))
 	testing.expect_value(t, req.cols, u16(PTY_HOST_DEFAULT_COLS))
 }
+
+@(test)
+pty_host_raw_input_framing :: proc(t: ^testing.T) {
+	data := "echo hello\n"
+	frame := pty_host_encode_input("inst_a", transmute([]byte)data)
+	defer delete(frame)
+	ip := pty_host_test_reframe(t, frame)
+	testing.expect_value(t, ip[0], u8(PTY_HOST_T_INPUT))
+	// tag + u32 len(6) + "inst_a" + raw data bytes
+	testing.expect_value(t, len(ip), 1 + 4 + 6 + len(data))
+	// Verify raw data bytes match exactly
+	testing.expect_value(t, string(ip[11:]), data)
+}
+
+@(test)
+pty_host_deliver_raw_input_rejects_empty :: proc(t: ^testing.T) {
+	data := "test input"
+	testing.expect(t, !bridge_pty_host_deliver_raw_input("", data), "empty instance fails")
+	testing.expect(t, !bridge_pty_host_deliver_raw_input("", "inst_a", data), "empty socket fails")
+	testing.expect(t, !bridge_pty_host_deliver_raw_input("/nonexistent.sock", "", data), "empty instance with socket fails")
+}
+
+@(test)
+agent_pty_input_command_handles_payload_and_caching :: proc(t: ^testing.T) {
+	// 1. Direct top-level fields
+	cmd_top := `{"type":"agent_pty_input","command_id":"cmd_input_1","agent_instance_id":"inst_test","data":"cmd1"}`
+	bridge_runtime_cache_command("cmd_input_1", `{"command_id":"cmd_input_1","status":"cached_ok"}`)
+	bridge_hub_handle_agent_pty_input(nil, cmd_top)
+	cached, ok := bridge_runtime_cached_command("cmd_input_1")
+	testing.expect(t, ok, "cached command found")
+	testing.expect(t, strings.contains(cached, "cached_ok"), "cached result matched")
+
+	// 2. Nested payload fields
+	cmd_nested := `{"type":"agent_pty_input","command_id":"cmd_input_2","payload":{"agent_instance_id":"","data":""}}`
+	bridge_hub_handle_agent_pty_input(nil, cmd_nested)
+	res, res_ok := bridge_runtime_cached_command("cmd_input_2")
+	testing.expect(t, res_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res, "failed"), "empty instance fails gracefully")
+}
+
+@(test)
+pty_host_resize_framing :: proc(t: ^testing.T) {
+	frame := pty_host_encode_resize("inst_a", 24, 100)
+	defer delete(frame)
+	pl := pty_host_test_reframe(t, frame)
+	// Resize: tag(PTY_HOST_T_RESIZE) + u32 len(6) + "inst_a" + u16 rows(24) + u16 cols(100)
+	want := []byte{PTY_HOST_T_RESIZE, 0, 0, 0, 6, 'i', 'n', 's', 't', '_', 'a', 0, 24, 0, 100}
+	testing.expect_value(t, len(pl), len(want))
+	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])
+}
+
+@(test)
+pty_host_deliver_resize_rejects_invalid :: proc(t: ^testing.T) {
+	testing.expect(t, !bridge_pty_host_deliver_resize("", 24, 100), "empty instance fails")
+	testing.expect(t, !bridge_pty_host_deliver_resize("inst_a", 0, 100), "zero rows fails")
+	testing.expect(t, !bridge_pty_host_deliver_resize("inst_a", 24, 0), "zero cols fails")
+	testing.expect(t, !bridge_pty_host_deliver_resize("", "inst_a", 24, 100), "empty socket fails")
+	testing.expect(t, !bridge_pty_host_deliver_resize("/nonexistent.sock", "", 24, 100), "empty instance with socket fails")
+	testing.expect(t, !bridge_pty_host_deliver_resize("/nonexistent.sock", "inst_a", 0, 100), "zero rows with socket fails")
+	testing.expect(t, !bridge_pty_host_deliver_resize("/nonexistent.sock", "inst_a", 24, 0), "zero cols with socket fails")
+}
+
+@(test)
+agent_pty_resize_command_handles_payload_and_caching :: proc(t: ^testing.T) {
+	// 1. Direct top-level fields
+	cmd_top := `{"type":"agent_pty_resize","command_id":"cmd_resize_1","agent_instance_id":"inst_test","rows":24,"cols":100}`
+	bridge_runtime_cache_command("cmd_resize_1", `{"command_id":"cmd_resize_1","status":"cached_ok"}`)
+	bridge_hub_handle_agent_pty_resize(nil, cmd_top)
+	cached, ok := bridge_runtime_cached_command("cmd_resize_1")
+	testing.expect(t, ok, "cached command found")
+	testing.expect(t, strings.contains(cached, "cached_ok"), "cached result matched")
+
+	// 2. Nested payload fields
+	cmd_nested := `{"type":"agent_pty_resize","command_id":"cmd_resize_2","payload":{"agent_instance_id":"","rows":24,"cols":100}}`
+	bridge_hub_handle_agent_pty_resize(nil, cmd_nested)
+	res, res_ok := bridge_runtime_cached_command("cmd_resize_2")
+	testing.expect(t, res_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res, "failed"), "empty instance fails gracefully")
+
+	// 3. Nested payload with zero dimensions
+	cmd_zero := `{"type":"agent_pty_resize","command_id":"cmd_resize_3","payload":{"agent_instance_id":"inst_test","rows":0,"cols":100}}`
+	bridge_hub_handle_agent_pty_resize(nil, cmd_zero)
+	res3, res3_ok := bridge_runtime_cached_command("cmd_resize_3")
+	testing.expect(t, res3_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res3, "failed"), "zero rows fails gracefully")
+
+	// 4. Also verify dispatch through bridge_hub_handle_command
+	cmd_dispatch := `{"type":"agent_pty_resize","command_id":"cmd_resize_4","agent_instance_id":"","rows":24,"cols":100}`
+	bridge_hub_handle_command(nil, cmd_dispatch)
+	res4, res4_ok := bridge_runtime_cached_command("cmd_resize_4")
+	testing.expect(t, res4_ok, "command dispatched through bridge_hub_handle_command and cached")
+	testing.expect(t, strings.contains(res4, "failed"), "empty instance fails gracefully")
+}
+
+@(test)
+shell_pty_input_command_handles_payload_and_caching :: proc(t: ^testing.T) {
+	// 1. Direct top-level fields with shell_id
+	cmd_top := `{"type":"shell_pty_input","command_id":"cmd_shell_input_1","shell_id":"sh_test","data":"echo hello"}`
+	bridge_runtime_cache_command("cmd_shell_input_1", `{"command_id":"cmd_shell_input_1","status":"cached_ok"}`)
+	bridge_hub_handle_shell_pty_input(nil, cmd_top)
+	cached, ok := bridge_runtime_cached_command("cmd_shell_input_1")
+	testing.expect(t, ok, "cached command found")
+	testing.expect(t, strings.contains(cached, "cached_ok"), "cached result matched")
+
+	// 2. Nested payload fields with shell_id
+	cmd_nested := `{"type":"shell_pty_input","command_id":"cmd_shell_input_2","payload":{"shell_id":"","data":""}}`
+	bridge_hub_handle_shell_pty_input(nil, cmd_nested)
+	res, res_ok := bridge_runtime_cached_command("cmd_shell_input_2")
+	testing.expect(t, res_ok, "command executed and cached")
+	testing.expectf(t, strings.contains(res, "failed"), "empty shell_id fails gracefully, got: %s", res)
+
+	// 3. Fallback to agent_instance_id when shell_id is omitted
+	cmd_fallback := `{"type":"shell_pty_input","command_id":"cmd_shell_input_3","payload":{"agent_instance_id":"","data":""}}`
+	bridge_hub_handle_shell_pty_input(nil, cmd_fallback)
+	res3, res3_ok := bridge_runtime_cached_command("cmd_shell_input_3")
+	testing.expect(t, res3_ok, "command executed and cached")
+	testing.expectf(t, strings.contains(res3, "failed"), "empty fallback agent_instance_id fails gracefully, got: %s", res3)
+
+	// 4. Dispatch via bridge_hub_handle_command
+	cmd_dispatch := `{"type":"shell_pty_input","command_id":"cmd_shell_input_4","shell_id":"","data":"test"}`
+	bridge_hub_handle_command(nil, cmd_dispatch)
+	res4, res4_ok := bridge_runtime_cached_command("cmd_shell_input_4")
+	testing.expect(t, res4_ok, "shell_pty_input dispatched through bridge_hub_handle_command")
+	testing.expectf(t, strings.contains(res4, "failed"), "empty shell_id fails gracefully, got: %s", res4)
+}
+
+@(test)
+shell_pty_resize_command_handles_payload_and_caching :: proc(t: ^testing.T) {
+	// 1. Direct top-level fields with shell_id
+	cmd_top := `{"type":"shell_pty_resize","command_id":"cmd_shell_resize_1","shell_id":"sh_test","rows":30,"cols":120}`
+	bridge_runtime_cache_command("cmd_shell_resize_1", `{"command_id":"cmd_shell_resize_1","status":"cached_ok"}`)
+	bridge_hub_handle_shell_pty_resize(nil, cmd_top)
+	cached, ok := bridge_runtime_cached_command("cmd_shell_resize_1")
+	testing.expect(t, ok, "cached command found")
+	testing.expectf(t, strings.contains(cached, "cached_ok"), "cached result matched, got: %s", cached)
+
+	// 2. Nested payload fields with shell_id
+	cmd_nested := `{"type":"shell_pty_resize","command_id":"cmd_shell_resize_2","payload":{"shell_id":"","rows":30,"cols":120}}`
+	bridge_hub_handle_shell_pty_resize(nil, cmd_nested)
+	res, res_ok := bridge_runtime_cached_command("cmd_shell_resize_2")
+	testing.expect(t, res_ok, "command executed and cached")
+	testing.expectf(t, strings.contains(res, "failed"), "empty shell_id fails gracefully, got: %s", res)
+
+	// 3. Fallback to agent_instance_id when shell_id is omitted
+	cmd_fallback := `{"type":"shell_pty_resize","command_id":"cmd_shell_resize_3","payload":{"agent_instance_id":"","rows":30,"cols":120}}`
+	bridge_hub_handle_shell_pty_resize(nil, cmd_fallback)
+	res3, res3_ok := bridge_runtime_cached_command("cmd_shell_resize_3")
+	testing.expect(t, res3_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res3, "failed"), "empty fallback agent_instance_id fails gracefully")
+
+	// 4. Nested payload with zero dimensions
+	cmd_zero := `{"type":"shell_pty_resize","command_id":"cmd_shell_resize_4","payload":{"shell_id":"sh_test","rows":0,"cols":120}}`
+	bridge_hub_handle_shell_pty_resize(nil, cmd_zero)
+	res4, res4_ok := bridge_runtime_cached_command("cmd_shell_resize_4")
+	testing.expect(t, res4_ok, "command executed and cached")
+	testing.expect(t, strings.contains(res4, "failed"), "zero rows fails gracefully")
+
+	// 5. Dispatch via bridge_hub_handle_command
+	cmd_dispatch := `{"type":"shell_pty_resize","command_id":"cmd_shell_resize_5","shell_id":"","rows":30,"cols":120}`
+	bridge_hub_handle_command(nil, cmd_dispatch)
+	res5, res5_ok := bridge_runtime_cached_command("cmd_shell_resize_5")
+	testing.expect(t, res5_ok, "shell_pty_resize dispatched through bridge_hub_handle_command")
+	testing.expect(t, strings.contains(res5, "failed"), "empty shell_id fails gracefully")
+}
+
+@(test)
+pty_host_deliver_shell_input_and_resize_validation :: proc(t: ^testing.T) {
+	testing.expect(t, !bridge_pty_host_deliver_shell_input("", "data"), "empty shell_id fails for input")
+	testing.expect(t, !bridge_pty_host_deliver_shell_resize("", 24, 100), "empty shell_id fails for resize")
+	testing.expect(t, !bridge_pty_host_deliver_shell_resize("sh_a", 0, 100), "zero rows fails for resize")
+	testing.expect(t, !bridge_pty_host_deliver_shell_resize("sh_a", 24, 0), "zero cols fails for resize")
+}
+

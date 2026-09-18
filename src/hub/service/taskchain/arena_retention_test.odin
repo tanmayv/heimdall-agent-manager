@@ -55,29 +55,6 @@ test_nudge_debounce_key_not_in_request_arena :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_idle_nudge_key_not_in_request_arena :: proc(t: ^testing.T) {
-	svc: Taskchain_Service
-	arena: virtual.Arena
-	testing.expect(t, virtual.arena_init_growing(&arena, 64 * 1024) == nil)
-	defer virtual.arena_destroy(&arena)
-
-	prev := context.allocator
-	context.allocator = virtual.arena_allocator(&arena)
-	_ = idle_nudge_due(&svc, "inst_x", "task_y")
-	context.allocator = prev
-
-	key := first_key(svc.idle_nudge_last_unix_ms)
-	testing.expect(t, key != "", "expected a stored idle-nudge key")
-	testing.expect(t, !ptr_in_arena(&arena, rawptr(raw_data(key))),
-		"idle_nudge key retained per-request arena memory (use-after-free)")
-
-	// idle_nudge_reset frees the shared heap key and removes both map entries.
-	idle_nudge_reset(&svc, "inst_x", "task_y")
-	delete(svc.idle_nudge_last_unix_ms)
-	delete(svc.idle_nudge_interval_ms)
-}
-
-@(test)
 test_replay_bridge_key_not_in_request_arena :: proc(t: ^testing.T) {
 	svc: Taskchain_Service
 	arena: virtual.Arena

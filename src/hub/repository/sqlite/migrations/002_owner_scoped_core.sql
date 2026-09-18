@@ -189,9 +189,9 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   sender_agent_instance_id TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL,
   artifact_ids_json TEXT NOT NULL DEFAULT '[]',
-  message_type TEXT NOT NULL DEFAULT 'text',
-  message_status TEXT NOT NULL DEFAULT 'complete',
-  metadata_json TEXT NOT NULL DEFAULT '{}',
+  -- message_type, message_status, metadata_json are added by migration
+  -- 017_chat_message_types.sql (the source of truth for those columns).
+  -- Defining them here too caused "duplicate column" on fresh-DB bootstrap.
   created_at TEXT NOT NULL,
   delivered_at TEXT NOT NULL DEFAULT '',
   read_at TEXT NOT NULL DEFAULT ''

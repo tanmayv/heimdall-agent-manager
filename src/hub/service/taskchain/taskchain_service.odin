@@ -49,13 +49,6 @@ Taskchain_Service :: struct {
 	replay_last_unix_ms: map[string]i64,
 	nudge_debounce_mutex: sync.Mutex,
 	nudge_debounce_last_unix_ms: map[string]i64,
-	// idle_nudge tracks self-heal idle re-nudges per (instance:task): last send
-	// time + the current backoff interval (10m, doubling each successive idle
-	// nudge for the same task, reset when the task's focus/status changes).
-	// Guarded by idle_nudge_mutex.
-	idle_nudge_mutex: sync.Mutex,
-	idle_nudge_last_unix_ms: map[string]i64,
-	idle_nudge_interval_ms: map[string]i64,
 }
 
 Create_Chain_Input :: struct {
@@ -232,15 +225,10 @@ list_chains :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -
 	if !ok do return nil, err
 	chains, list_err := iface.taskchain_list_chains_by_owner(service.repo, owner)
 	if list_err.code != .None do return nil, list_err
-	if auth.kind == .Instance_Token {
-		filtered := make([dynamic]domain.Task_Chain)
-		for c in chains {
-			if is_instance_member_or_coordinator(service, c, auth.agent_instance_id) {
-				append(&filtered, c)
-			}
-		}
-		return filtered[:], domain.Domain_Error{}
-	}
+	// READ (REQ-SEC-3): owner-scoped, not membership-scoped. Both User_Token and
+	// Instance_Token see ALL chains of their owner; an agent may list (and then
+	// read) chains it is not a member of, as long as they belong to the same owner.
+	// owner_from_auth above already guarantees cross-owner isolation.
 	return chains, domain.Domain_Error{}
 }
 
@@ -270,8 +258,23 @@ get_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, cha
 	return chain, true, domain.Domain_Error{}
 }
 
+// get_chain_for_read (REQ-SEC-3): the READ-ONLY authorizer. It enforces ONLY
+// ownership (require_owner) — an Instance_Token may read ANY chain of its own
+// owner, even one it does not belong to (e.g. the Curator or a worker inspecting
+// another coordinator's chain). It deliberately DROPS the membership check that
+// get_chain applies; owner isolation is untouched (cross-owner still 404s via
+// require_owner). WRITES must NOT use this — they call the membership-gated
+// get_chain (plus their own coordinator/assignee guards).
+get_chain_for_read :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	chain, ok, err := iface.taskchain_get_chain(service.repo, chain_id)
+	if !ok do return domain.Task_Chain{}, false, err
+	if owner_ok, owner_err := ownership.require_owner(auth, chain.owner_user_id); !owner_ok do return domain.Task_Chain{}, false, owner_err
+	return chain, true, domain.Domain_Error{}
+}
+
 list_tasks :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task, domain.Domain_Error) {
-	chain, ok, err := get_chain(service, auth, chain_id)
+	// READ: owner-scoped, not membership-scoped (REQ-SEC-3).
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_tasks_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 }
@@ -513,8 +516,17 @@ valid_chain_transition :: proc(current, next: domain.Task_Chain_Status) -> bool 
 }
 
 create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Create_Task_Input) -> (domain.Task, bool, domain.Domain_Error) {
-	chain, ok, err := get_chain(service, auth, input.chain_id)
+	// WRITE. REQ-SEC-3 (close the create_task hole): fetch owner-scoped, then
+	// enforce membership EXPLICITLY here. create_task previously relied entirely on
+	// the shared get_chain gate; making the membership check local and independent
+	// keeps task creation restricted to chain members/coordinator regardless of how
+	// the read gate evolves. Cross-owner is rejected as Not_Found by get_chain_for_read
+	// (require_owner); a same-owner non-member is rejected as Forbidden below.
+	chain, ok, err := get_chain_for_read(service, auth, input.chain_id)
 	if !ok do return domain.Task{}, false, err
+	if auth.kind == .Instance_Token && !is_instance_member_or_coordinator(service, chain, auth.agent_instance_id) {
+		return domain.Task{}, false, domain.domain_error(.Forbidden, "only a member or coordinator of the chain can create tasks")
+	}
 	requested_owner := domain.User_ID(input.owner_user_id)
 	if requested_owner == "" do requested_owner = chain.owner_user_id
 	if same_ok, same_err := ownership.require_same_owner(chain.owner_user_id, requested_owner); !same_ok do return domain.Task{}, false, same_err
@@ -883,7 +895,8 @@ create_comment :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context
 }
 
 list_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
 }
@@ -1115,71 +1128,6 @@ should_debounce_nudge_dispatch :: proc(service: ^Taskchain_Service, instance_id,
 	// caches.
 	service.nudge_debounce_last_unix_ms[strings.clone(key, runtime.heap_allocator())] = now_ms
 	return false
-}
-
-// IDLE_NUDGE_MIN_INTERVAL_MS is the minimum gap between self-heal idle nudges for
-// the same (instance:task); the interval doubles on each successive idle nudge.
-IDLE_NUDGE_MIN_INTERVAL_MS :: 10 * 60 * 1000
-// IDLE_NUDGE_MAX_INTERVAL_MS caps the exponential backoff so it never grows
-// unbounded (10m -> 20m -> 40m -> ... -> capped).
-IDLE_NUDGE_MAX_INTERVAL_MS :: 4 * 60 * 60 * 1000
-
-// idle_nudge_due reports whether an idle+actionable agent may be re-nudged for a
-// task now, and if so records the send and doubles the next interval. First nudge
-// for a (instance:task) is always allowed; subsequent ones wait the current
-// backoff interval (starting at 10 min, doubling, capped).
-idle_nudge_due :: proc(service: ^Taskchain_Service, instance_id, task_id: string) -> bool {
-	if service == nil || instance_id == "" || task_id == "" do return false
-	key := strings.concatenate({instance_id, ":", task_id})
-	defer delete(key)
-	now_ms := time.to_unix_nanoseconds(time.now()) / 1_000_000
-
-	sync.mutex_lock(&service.idle_nudge_mutex)
-	defer sync.mutex_unlock(&service.idle_nudge_mutex)
-	if service.idle_nudge_last_unix_ms == nil {
-		service.idle_nudge_last_unix_ms = make(map[string]i64, runtime.heap_allocator())
-		service.idle_nudge_interval_ms = make(map[string]i64, runtime.heap_allocator())
-	}
-
-	last, seen := service.idle_nudge_last_unix_ms[key]
-	if seen {
-		interval := service.idle_nudge_interval_ms[key]
-		if interval <= 0 do interval = IDLE_NUDGE_MIN_INTERVAL_MS
-		if now_ms - last < interval do return false
-		next := interval * 2
-		if next > IDLE_NUDGE_MAX_INTERVAL_MS do next = IDLE_NUDGE_MAX_INTERVAL_MS
-		service.idle_nudge_interval_ms[key] = next
-		service.idle_nudge_last_unix_ms[key] = now_ms
-		return true
-	}
-	// first idle nudge for this pair. Both maps share one heap-owned key so it
-	// outlives the per-request arena (MEM-4); freed once in idle_nudge_reset.
-	ck := strings.clone(key, runtime.heap_allocator())
-	service.idle_nudge_last_unix_ms[ck] = now_ms
-	service.idle_nudge_interval_ms[ck] = IDLE_NUDGE_MIN_INTERVAL_MS
-	return true
-}
-
-// idle_nudge_reset clears the idle-nudge backoff for a (instance:task) — called
-// when the instance's focus/status for that task changes, so a re-focus starts
-// the backoff fresh rather than inheriting a long interval.
-idle_nudge_reset :: proc(service: ^Taskchain_Service, instance_id, task_id: string) {
-	if service == nil || instance_id == "" || task_id == "" do return
-	key := strings.concatenate({instance_id, ":", task_id})
-	defer delete(key)
-	sync.mutex_lock(&service.idle_nudge_mutex)
-	defer sync.mutex_unlock(&service.idle_nudge_mutex)
-	if service.idle_nudge_last_unix_ms == nil do return
-	// Capture the heap-owned stored key (shared by both maps) so we can free it
-	// after removing the entries — delete_key drops the slot but never frees the
-	// key bytes, which would otherwise leak on every reset.
-	owned_key := ""
-	for k in service.idle_nudge_last_unix_ms {
-		if k == key { owned_key = k; break }
-	}
-	delete_key(&service.idle_nudge_last_unix_ms, key)
-	delete_key(&service.idle_nudge_interval_ms, key)
-	if owned_key != "" do delete(owned_key, runtime.heap_allocator())
 }
 
 // notification_allowed_for_recipient implements CT-6 gating with a fail-open bias:
@@ -1635,7 +1583,8 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 }
 
 list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
 }
@@ -1643,7 +1592,8 @@ list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 // task_comment_summary returns the compact comment rollup (count + last comment
 // metadata + preview) for embedding on task objects. Owner-scoped via get_task.
 task_comment_summary :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> (domain.Task_Comment_Summary, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return domain.Task_Comment_Summary{}, err
 	return iface.taskchain_comment_summary_by_task(service.repo, task.task_id, task.owner_user_id)
 }
@@ -1651,7 +1601,8 @@ task_comment_summary :: proc(service: ^Taskchain_Service, auth: contracts.Auth_C
 // list_recent_task_comments returns the newest `last` comments (ascending), or
 // all when last <= 0. Owner-scoped via get_task.
 list_recent_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, last: int) -> ([]domain.Task_Comment, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_recent_comments_by_task(service.repo, task.task_id, task.owner_user_id, last)
 }
@@ -1785,7 +1736,8 @@ remove_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Co
 }
 
 list_chain_members :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Member, domain.Domain_Error) {
-	chain, ok, err := get_chain(service, auth, chain_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 }
@@ -1851,7 +1803,8 @@ remove_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth
 }
 
 list_chain_dependencies :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Dependency, domain.Domain_Error) {
-	chain, ok, err := get_chain(service, auth, chain_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_dependencies_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 }
@@ -1939,6 +1892,15 @@ record_task_vote :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 		} else {
 			_ = send_task_wake(service, updated, coord, "vote", "Changes Requested", "requested changes on", input.comment, voter_instance_id)
 		}
+	}
+
+	// Always reconcile after a vote so the reviewer is stopped once their focus
+	// clears (REQ-30 excludes already-voted tasks from the review pool). On a
+	// resolving vote, evaluate_task_quorum already called recompute above; calling
+	// it again is idempotent with snapshot-diff-act — the second diff sees no
+	// change and emits nothing.
+	if chain2, chain2_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id); chain2_ok {
+		_ = recompute_chain_promotions(service, chain2)
 	}
 
 	return saved_vote, true, domain.Domain_Error{}
@@ -2030,7 +1992,8 @@ count_required_reviewers :: proc(reviewer_refs_json: string) -> int {
 }
 
 list_task_votes :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Vote, domain.Domain_Error) {
-	task, ok, err := get_task(service, auth, task_id)
+	// READ: owner-scoped (REQ-SEC-3).
+	task, ok, err := get_task_for_read(service, auth, task_id)
 	if !ok do return nil, err
 	return iface.taskchain_list_votes_by_task(service.repo, task.task_id, task.owner_user_id)
 }
@@ -2058,6 +2021,18 @@ get_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task
 			return domain.Task{}, false, domain.domain_error(.Forbidden, "agent instance is not a member or coordinator of this task's chain")
 		}
 	}
+	return task, true, domain.Domain_Error{}
+}
+
+// get_task_for_read (REQ-SEC-3): the READ-ONLY task authorizer. Enforces ONLY
+// ownership (require_owner) — an Instance_Token may read ANY task of its own
+// owner regardless of chain membership. It drops the membership check that
+// get_task applies. Owner isolation is preserved (cross-owner still 404s).
+// WRITES must NOT use this — they call the membership-gated get_task.
+get_task_for_read :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> (domain.Task, bool, domain.Domain_Error) {
+	task, ok, err := iface.taskchain_get_task(service.repo, task_id)
+	if !ok do return domain.Task{}, false, err
+	if owner_ok, owner_err := ownership.require_owner(auth, task.owner_user_id); !owner_ok do return domain.Task{}, false, owner_err
 	return task, true, domain.Domain_Error{}
 }
 

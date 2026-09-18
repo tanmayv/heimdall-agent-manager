@@ -20,6 +20,8 @@ import push_service "odin_test:hub/service/push"
 import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
+import card_service "odin_test:hub/service/card"
+import shell_job_service "odin_test:hub/service/shell_job"
 import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
@@ -41,6 +43,8 @@ App_Graph :: struct {
 	sqlite_actions: sqlite.Action_Repo_SQLite,
 	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_push: sqlite.Push_Repo_SQLite,
+	sqlite_cards: sqlite.Card_Repo_SQLite,
+	sqlite_shell_jobs: sqlite.Shell_Job_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
 	uow_factory: iface.Unit_Of_Work_Factory,
@@ -68,6 +72,10 @@ App_Graph :: struct {
 	agent_action_handlers: http.Agent_Action_Handlers,
 	action_handlers: http.Action_Handlers,
 	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
+	cards: card_service.Card_Service,
+	shell_jobs: shell_job_service.Shell_Job_Service,
+	card_handlers: http.Card_Handlers,
+	shell_job_handlers: http.Shell_Job_Handlers,
 	action_mutex: sync.Mutex,
 	action_bridge_versions: map[string]int,
 	router: http.Router,
@@ -169,9 +177,12 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.actions = sqlite.new_action_repository(&graph.sqlite_actions, &graph.db)
 	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
+	graph.repos.cards = sqlite.new_card_repository(&graph.sqlite_cards, &graph.db)
+	graph.repos.shell_jobs = sqlite.new_shell_job_repository(&graph.sqlite_shell_jobs, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
-	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
+	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
+	graph.bridges = bridge_service.new_bridge_service_with_runtime(&graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
 	// CT-2 / CT-10: Pre-seed the loopback local bridge for zero-ceremony single-node Cloudtop operation
 	default_owner := os.get_env("HAM_CLOUDTOP_OWNER", context.allocator)
 	if default_owner == "" do default_owner = os.get_env("HEIMDALL_OWNER", context.allocator)
@@ -180,7 +191,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	default_hostname := os.get_env("HOSTNAME", context.allocator)
 	if default_hostname == "" do default_hostname = "cloudtop"
 	_, _, _, _ = bridge_service.ensure_local_loopback_bridge(&graph.bridges, default_owner, "", default_hostname)
-	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
 	graph.agents.audit_mode = cfg.audit_mode
 	graph.projects = project_service.new_project_service_with_command_sink(&graph.repos.projects, &graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
@@ -188,6 +198,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content.audit_mode = cfg.audit_mode
 	graph.content.title_nudge_cooldown_seconds = cfg.title_nudge_cooldown_seconds
 	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
+	graph.shell_jobs = shell_job_service.new_shell_job_service(&graph.repos.shell_jobs, bridge_command_sink, &graph.clock, &graph.ids, &graph.repos.agents)
 	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.push = push_service.new_push_service(&graph.repos.push_subscriptions, &graph.clock, &graph.ids, push_service.Vapid_Config{
 		public_key = cfg.vapid_public_key,
@@ -206,6 +217,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	}, &graph.users, &graph.repos.users, &graph.clock, &graph.ids)
 	graph.auth.bridges = &graph.bridges
 	graph.auth.agents = &graph.agents
+	// Bridge-token authorization mode (default monitor): only "enforce" blocks.
+	graph.auth.bridge_auth_mode = .Enforce if config.bridge_auth_mode == "enforce" else .Monitor
 	graph.device_auth_store = device_auth_service.new_grant_store(device_auth_service.Grant_Store_Config{
 		verification_uri = config.device_auth_verification_uri,
 		expires_in = config.device_auth_expires_in,
@@ -244,6 +257,21 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.scheduled_prompt_handlers = graph.action_handlers
 	graph.bridge_handlers.actions = rawptr(&graph.action_handlers)
 	graph.bridge_handlers.scheduled_prompts = rawptr(&graph.action_handlers)
+	graph.cards = card_service.new_card_service(
+		&graph.repos.cards,
+		&graph.repos.projects,
+		&graph.taskchains,
+		&graph.content,
+		&graph.projects,
+		&graph.agents,
+		&graph.uow_factory,
+		&graph.clock,
+		&graph.ids,
+	)
+	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
+	graph.agent_action_handlers.cards = &graph.cards
+	graph.agent_action_handlers.shell_jobs = &graph.shell_jobs
+	graph.shell_job_handlers = http.Shell_Job_Handlers{auth = &graph.auth, shell_jobs = &graph.shell_jobs}
 	graph.router = http.new_router()
 	register_routes(graph)
 	// Log the Web Push send status ONCE at startup. Never log the private key.
@@ -287,6 +315,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/memories", rawptr(&graph.content_handlers), http.list_memories_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/memories", rawptr(&graph.content_handlers), http.create_memory_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/memories/*", rawptr(&graph.content_handlers), http.memory_detail_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/memories/*", rawptr(&graph.content_handlers), http.patch_memory_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/memories/*/*", rawptr(&graph.content_handlers), http.memory_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/chats", rawptr(&graph.content_handlers), http.list_chats_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats", rawptr(&graph.content_handlers), http.create_chat_handler)
@@ -312,12 +341,17 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "DELETE", "/api/v1/templates/*", rawptr(&graph.content_handlers), http.delete_template_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances", rawptr(&graph.agent_handlers), http.list_agent_instances_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances", rawptr(&graph.agent_handlers), http.create_agent_instance_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/pane", rawptr(&graph.agent_handlers), http.get_agent_instance_pane_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/input", rawptr(&graph.agent_handlers), http.agent_instance_input_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/resize", rawptr(&graph.agent_handlers), http.agent_instance_resize_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*", rawptr(&graph.agent_handlers), http.agent_instance_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/agent-instances/*", rawptr(&graph.agent_handlers), http.patch_agent_instance_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/start", rawptr(&graph.agent_handlers), http.start_agent_instance_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/restart", rawptr(&graph.agent_handlers), http.restart_agent_instance_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/stop", rawptr(&graph.agent_handlers), http.stop_agent_instance_handler)
 	// Read-only agent run-dir browser (list + bounded file read), owner-scoped.
+	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/shell-jobs", rawptr(&graph.shell_job_handlers), http.list_instance_shell_jobs_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/shell-jobs/*/output", rawptr(&graph.shell_job_handlers), http.get_instance_shell_job_output_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs", rawptr(&graph.bridge_handlers), http.list_instance_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs/file", rawptr(&graph.bridge_handlers), http.read_instance_file_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents", rawptr(&graph.agent_handlers), http.list_agents_handler)
@@ -336,6 +370,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/projects", rawptr(&graph.project_handlers), http.create_project_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*", rawptr(&graph.project_handlers), http.project_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/projects/*", rawptr(&graph.project_handlers), http.update_project_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/archive", rawptr(&graph.project_handlers), http.archive_project_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/projects/*/bridge-paths/*", rawptr(&graph.project_handlers), http.put_project_bridge_path_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/projects/*/bridge-paths/*", rawptr(&graph.project_handlers), http.delete_project_bridge_path_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/bridge-paths/*/validate", rawptr(&graph.project_handlers), http.validate_project_bridge_path_handler)
@@ -346,6 +381,12 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/dir", rawptr(&graph.bridge_handlers), http.create_project_dir_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/move", rawptr(&graph.bridge_handlers), http.move_project_path_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/projects/*/fs", rawptr(&graph.bridge_handlers), http.delete_project_path_handler)
+
+	// Project-scoped VCS relay (resolves project -> bridge+root, relays vcs_* WS commands).
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/capabilities", rawptr(&graph.bridge_handlers), http.project_handle_vcs_capabilities)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/status", rawptr(&graph.bridge_handlers), http.project_handle_vcs_status)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/files", rawptr(&graph.bridge_handlers), http.project_handle_vcs_files)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/diff", rawptr(&graph.bridge_handlers), http.project_handle_vcs_diff)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.list_task_chains_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.create_task_chain_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)
@@ -376,6 +417,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/conversation/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_conversation_set_title_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-title", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_title_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-description", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_description_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/set-status", rawptr(&graph.agent_action_handlers), http.agent_action_chain_set_status_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chain/show", rawptr(&graph.agent_action_handlers), http.agent_action_chain_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/agents/live", rawptr(&graph.agent_action_handlers), http.agent_action_agents_live_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/context", rawptr(&graph.agent_action_handlers), http.agent_action_context_handler)
@@ -399,6 +441,13 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/list", rawptr(&graph.agent_action_handlers), http.agent_action_memory_list_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/show", rawptr(&graph.agent_action_handlers), http.agent_action_memory_show_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/content", rawptr(&graph.agent_action_handlers), http.agent_action_memory_content_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/create", rawptr(&graph.agent_action_handlers), http.agent_action_card_create_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/list", rawptr(&graph.agent_action_handlers), http.agent_action_card_list_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/shell-cmd/report", rawptr(&graph.agent_action_handlers), http.agent_action_shell_cmd_report_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/shell-cmd/list", rawptr(&graph.agent_action_handlers), http.agent_action_shell_cmd_list_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/show", rawptr(&graph.agent_action_handlers), http.agent_action_card_show_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/discard", rawptr(&graph.agent_action_handlers), http.agent_action_card_discard_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/cards/accept", rawptr(&graph.agent_action_handlers), http.agent_action_card_accept_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/start-success", rawptr(&graph.agent_action_handlers), http.agent_action_start_success_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.create_bridge_enrollment_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.list_bridge_enrollments_handler)
@@ -413,6 +462,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/blobs", rawptr(&graph.bridge_handlers), http.bridge_blobs_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/actionable-tasks", rawptr(&graph.bridge_handlers), http.bridge_actionable_tasks_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges", rawptr(&graph.bridge_handlers), http.list_bridges_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/shells/*/input", rawptr(&graph.bridge_handlers), http.bridge_shell_input_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/shells/*/resize", rawptr(&graph.bridge_handlers), http.bridge_shell_resize_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/fs", rawptr(&graph.bridge_handlers), http.list_bridge_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/fs/stat", rawptr(&graph.bridge_handlers), http.stat_bridge_path_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/fs/mkdir", rawptr(&graph.bridge_handlers), http.mkdir_bridge_path_handler)
@@ -445,6 +496,14 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "DELETE", "/api/v1/scheduled-prompts/*", rawptr(&graph.action_handlers), http.delete_scheduled_prompt_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge/scheduled-prompts", rawptr(&graph.action_handlers), http.bridge_list_scheduled_prompts_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge/scheduled-prompts/*/execute", rawptr(&graph.action_handlers), http.bridge_execute_scheduled_prompt_handler)
+
+	// Cards API
+	http.router_add(&graph.router, "GET", "/api/v1/cards", rawptr(&graph.card_handlers), http.list_cards_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/cards", rawptr(&graph.card_handlers), http.create_card_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.get_card_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.patch_card_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.delete_card_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/cards/*/*", rawptr(&graph.card_handlers), http.card_action_handler)
 }
 
 health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {

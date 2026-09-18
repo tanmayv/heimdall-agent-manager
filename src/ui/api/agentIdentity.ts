@@ -2,24 +2,16 @@
 //
 // Single source of truth for reading ids/labels/liveness off the many agent
 // record shapes that flow through the UI (mapped agents, raw daemon records,
-// durable identities, remote proxies). Used by AgentPickerV2 and any other
-// surface that needs to render/select agents without re-deriving field access.
-
-import { agentRemoteInfo, isRemoteProxyAgent, remoteAgentIsLive } from './agentRemote';
+// durable identities). Used by agent picker/select surfaces that need to
+// render/select agents without re-deriving field access.
 
 export type AgentEntityType = 'agent_id' | 'agent_instance_id';
-
-export interface RemoteRef {
-  daemonId: string;
-  peerId: string;
-}
 
 export interface AgentSelection {
   type: AgentEntityType;
   id: string;              // always a LOCAL id (agent_id or local agent_instance_id)
   label?: string;
   live?: boolean;
-  remote?: RemoteRef;      // display hint only; the id still addresses the local proxy
 }
 
 export function agentInstanceId(agent: any): string {
@@ -61,30 +53,13 @@ function connectionState(agent: any): string {
 }
 
 // isAgentLive mirrors the liveness rules used across the app: a stopped /
-// stopping / blocked instance is not live even if its durable state lingers;
-// remote proxies defer to the propagated origin liveness.
+// stopping / blocked instance is not live even if its durable state lingers.
 export function isAgentLive(agent: any): boolean {
-  if (isRemoteProxyAgent(agent)) return remoteAgentIsLive(agent);
   const startup = String(agent?.startupStatus || agent?.startup_status || '').toLowerCase();
   const state = String(agent?.state || agent?.status || '').toLowerCase();
   if (startup === 'stopped' || startup === 'stopping' || startup === 'startup_blocked' || startup === 'blocked') return false;
   if (agent?.connected || connectionState(agent) === 'connected') return true;
   return ['connected', 'ready', 'active', 'working', 'running', 'idle'].includes(state) && state !== 'offline';
-}
-
-// remoteRef returns the { daemonId, peerId } display hint for a remote proxy
-// agent, or null for a purely local agent.
-export function remoteRef(agent: any): RemoteRef | null {
-  if (!isRemoteProxyAgent(agent)) {
-    // durable identities may carry a lightweight remote hint
-    const daemonId = String(agent?.remoteDaemonId || agent?.remote_daemon_id || '');
-    const peerId = String(agent?.remotePeerId || agent?.remote_peer_id || '');
-    if (daemonId || peerId) return { daemonId, peerId };
-    return null;
-  }
-  const info = agentRemoteInfo(agent);
-  if (!info) return null;
-  return { daemonId: info.originDaemonId || info.peerId, peerId: info.peerId };
 }
 
 export function isUserProxy(agent: any): boolean {
@@ -109,7 +84,7 @@ export function normalizeDefaultSelection(
       const id = item.trim();
       if (id) out.push({ type: fallbackType, id });
     } else if (item && typeof item.id === 'string' && item.id.trim()) {
-      out.push({ type: item.type || fallbackType, id: item.id.trim(), label: item.label, live: item.live, remote: item.remote });
+      out.push({ type: item.type || fallbackType, id: item.id.trim(), label: item.label, live: item.live });
     }
   }
   return out;

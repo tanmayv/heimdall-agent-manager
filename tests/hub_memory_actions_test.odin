@@ -218,7 +218,80 @@ main :: proc() {
 	check(user_show.status == 200, "user show memory status 200")
 	check(strings.contains(user_show.body, "odin check src/hub"), "user show has body")
 
-	fmt.println("PASS: hub memory actions (list metadata-only, show, content)")
+	// --- MEM-PATCH-1: PATCH /api/v1/memories/{id} (memory scope edits) ---
+	// Regression guard: before the PATCH route was registered in wiring.odin this
+	// 404'd with "route not found". These assert the route is wired to
+	// patch_memory_handler AND the update semantics/guards behave: owner-only;
+	// key-present = replace that dimension, empty array = applies to all; an
+	// omitted dimension is left unchanged.
+
+	// A second owner-owned agent to use as a replacement scope target.
+	agent_id2 := "agent_memory_test_2"
+	_, agent2_saved, agent2_err := iface.agent_save(&graph.repos.agents, domain.Agent{
+		agent_id = agent_id2,
+		owner_user_id = owner,
+		name = "Memory Test Agent 2",
+		slug = "mem-agent-2",
+		default_provider = "claude",
+		default_tier = "normal",
+		state = .Active,
+		created_at = now,
+		updated_at = now,
+	})
+	check(agent2_saved, agent2_err.message)
+
+	// Test 7: route is registered (NOT 404) + an omitted dimension is unchanged.
+	patch_title := request(&graph, "PATCH", fmt.tprintf("/api/v1/memories/%s", mem1.memory_id), "{\"title\":\"Build Command v2\"}", user_headers[:])
+	check(patch_title.status == 200, fmt.tprintf("PATCH memory (route registered?) expected 200, got %d: %s", patch_title.status, patch_title.body))
+	check(strings.contains(patch_title.body, "\"title\":\"Build Command v2\""), "PATCH updated the title")
+	check(strings.contains(patch_title.body, "\"agent_ids\":[\"agent_memory_test\"]"), "omitted agent_ids dimension left unchanged")
+
+	// Test 8: scope replace — agent_ids set to exactly the new agent.
+	patch_replace := request(&graph, "PATCH", fmt.tprintf("/api/v1/memories/%s", mem1.memory_id), strings.concatenate({"{\"agent_ids\":[\"", agent_id2, "\"]}"}), user_headers[:])
+	check(patch_replace.status == 200, patch_replace.body)
+	check(strings.contains(patch_replace.body, strings.concatenate({"\"agent_ids\":[\"", agent_id2, "\"]"})), "agent scope replaced with the new agent")
+
+	// Test 9: empty array clears the dimension (applies to all).
+	patch_clear := request(&graph, "PATCH", fmt.tprintf("/api/v1/memories/%s", mem1.memory_id), "{\"agent_ids\":[]}", user_headers[:])
+	check(patch_clear.status == 200, patch_clear.body)
+	check(strings.contains(patch_clear.body, "\"agent_ids\":[]"), "empty agent_ids array clears the agent scope")
+
+	// Test 10: a foreign/unknown referenced agent id is rejected (not saved).
+	patch_foreign := request(&graph, "PATCH", fmt.tprintf("/api/v1/memories/%s", mem1.memory_id), "{\"agent_ids\":[\"nonexistent_agent_zzz\"]}", user_headers[:])
+	check(patch_foreign.status != 200, fmt.tprintf("PATCH with unknown agent id must be rejected, got %d", patch_foreign.status))
+	check(strings.contains(patch_foreign.body, "agent not found"), "unknown agent id rejected with a clear error")
+
+	// Test 11: a non-owner cannot patch someone else's memory. Ownership guards
+	// return Not_Found (404, anti-enumeration — see ownership.require_owner), the
+	// same treatment approve/archive/detail use, not 403.
+	bob_headers := [?]contracts.HTTP_Header{
+		{name = "X-authentik-username", value = "bob"},
+		{name = "X-authentik-name", value = "Bob User"},
+		{name = "X-authentik-email", value = "bob@example.com"},
+	}
+	patch_bob := request(&graph, "PATCH", fmt.tprintf("/api/v1/memories/%s", mem1.memory_id), "{\"title\":\"hijacked\"}", bob_headers[:])
+	check(patch_bob.status == 404, fmt.tprintf("non-owner PATCH must be rejected as Not_Found (404), got %d: %s", patch_bob.status, patch_bob.body))
+	// And the owner's memory is untouched by the rejected non-owner PATCH.
+	owner_recheck := request(&graph, "GET", fmt.tprintf("/api/v1/memories/%s", mem1.memory_id), "", user_headers[:])
+	check(owner_recheck.status == 200 && !strings.contains(owner_recheck.body, "hijacked"), "non-owner PATCH did not mutate the memory")
+
+	// Test 12: only pending|active memories can be patched — an archived one is rejected.
+	mem3, saved3, err3 := content_service.create_memory(&graph.content, auth, content_service.Memory_Input{
+		type = .Fact,
+		status = "active",
+		title = "Archived Fact",
+		description = "to be archived",
+		body = "archive me",
+		evidence = "e",
+	})
+	check(saved3, err3.message)
+	archived := request(&graph, "POST", fmt.tprintf("/api/v1/memories/%s/archive", mem3.memory_id), "", user_headers[:])
+	check(archived.status == 200, fmt.tprintf("archive memory expected 200, got %d: %s", archived.status, archived.body))
+	patch_archived := request(&graph, "PATCH", fmt.tprintf("/api/v1/memories/%s", mem3.memory_id), "{\"title\":\"nope\"}", user_headers[:])
+	check(patch_archived.status != 200, fmt.tprintf("PATCH on archived memory must be rejected, got %d", patch_archived.status))
+	check(strings.contains(patch_archived.body, "only pending or active"), "archived memory patch rejected with the status-guard message")
+
+	fmt.println("PASS: hub memory actions (list metadata-only, show, content, PATCH scope edits)")
 	app.shutdown_graph(&graph)
 	_ = os.remove(db_path)
 	os.exit(0)

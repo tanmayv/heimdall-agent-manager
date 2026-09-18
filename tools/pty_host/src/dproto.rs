@@ -68,6 +68,16 @@ pub struct SpawnRequest {
     pub display_name: Option<String>,
 }
 
+impl SpawnRequest {
+    pub fn instance_id(&self) -> &str {
+        &self.instance
+    }
+
+    pub fn shell_id(&self) -> &str {
+        &self.instance
+    }
+}
+
 /// A row in the `List` response: one registered agent's live state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentInfo {
@@ -84,6 +94,158 @@ pub struct AgentInfo {
     pub last_activity: u64,
     /// Human-readable agent display name (e.g. "default-agent #20").
     pub display_name: Option<String>,
+}
+
+impl AgentInfo {
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    pub fn shell_id(&self) -> &str {
+        &self.instance_id
+    }
+}
+
+/// A row in the shell listing: one registered shell's live state.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ShellInfo {
+    pub shell_id: String,
+    pub program: String,
+    pub pid: i32,
+    pub alive: bool,
+    pub exit_code: Option<i32>,
+    pub rows: u16,
+    pub cols: u16,
+    /// Unix epoch seconds when the current child was spawned.
+    pub started_at: u64,
+    /// Unix epoch seconds of the last output activity.
+    pub last_activity: u64,
+    /// Human-readable display name (e.g. "default-agent #20").
+    pub display_name: Option<String>,
+}
+
+impl ShellInfo {
+    pub fn shell_id(&self) -> &str {
+        &self.shell_id
+    }
+
+    /// Backward-compatible instance_id accessor.
+    pub fn instance_id(&self) -> &str {
+        &self.shell_id
+    }
+}
+
+/// A registered shell session entity in ham-pty-host.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Shell {
+    pub shell_id: String,
+    pub program: String,
+    pub pid: i32,
+    pub alive: bool,
+    pub exit_code: Option<i32>,
+    pub rows: u16,
+    pub cols: u16,
+    /// Unix epoch seconds when the current child was spawned.
+    pub started_at: u64,
+    /// Unix epoch seconds of the last output activity.
+    pub last_activity: u64,
+    /// Human-readable display name (e.g. "default-agent #20").
+    pub display_name: Option<String>,
+}
+
+impl Shell {
+    pub fn shell_id(&self) -> &str {
+        &self.shell_id
+    }
+
+    /// Backward-compatible instance_id accessor.
+    pub fn instance_id(&self) -> &str {
+        &self.shell_id
+    }
+
+    pub fn info(&self) -> ShellInfo {
+        ShellInfo {
+            shell_id: self.shell_id.clone(),
+            program: self.program.clone(),
+            pid: self.pid,
+            alive: self.alive,
+            exit_code: self.exit_code,
+            rows: self.rows,
+            cols: self.cols,
+            started_at: self.started_at,
+            last_activity: self.last_activity,
+            display_name: self.display_name.clone(),
+        }
+    }
+}
+
+impl From<Shell> for ShellInfo {
+    fn from(s: Shell) -> Self {
+        s.info()
+    }
+}
+
+impl From<ShellInfo> for Shell {
+    fn from(info: ShellInfo) -> Self {
+        Self {
+            shell_id: info.shell_id,
+            program: info.program,
+            pid: info.pid,
+            alive: info.alive,
+            exit_code: info.exit_code,
+            rows: info.rows,
+            cols: info.cols,
+            started_at: info.started_at,
+            last_activity: info.last_activity,
+            display_name: info.display_name,
+        }
+    }
+}
+
+impl From<AgentInfo> for ShellInfo {
+    fn from(a: AgentInfo) -> Self {
+        Self {
+            shell_id: a.instance_id,
+            program: a.program,
+            pid: a.pid,
+            alive: a.alive,
+            exit_code: a.exit_code,
+            rows: a.rows,
+            cols: a.cols,
+            started_at: a.started_at,
+            last_activity: a.last_activity,
+            display_name: a.display_name,
+        }
+    }
+}
+
+impl From<ShellInfo> for AgentInfo {
+    fn from(s: ShellInfo) -> Self {
+        Self {
+            instance_id: s.shell_id,
+            program: s.program,
+            pid: s.pid,
+            alive: s.alive,
+            exit_code: s.exit_code,
+            rows: s.rows,
+            cols: s.cols,
+            started_at: s.started_at,
+            last_activity: s.last_activity,
+            display_name: s.display_name,
+        }
+    }
+}
+
+impl From<AgentInfo> for Shell {
+    fn from(a: AgentInfo) -> Self {
+        ShellInfo::from(a).into()
+    }
+}
+
+impl From<Shell> for AgentInfo {
+    fn from(s: Shell) -> Self {
+        s.info().into()
+    }
 }
 
 /// client -> daemon.
@@ -304,6 +466,25 @@ fn get_screen(rest: &[u8], off: &mut usize) -> io::Result<ScreenSnapshot> {
 // ---- CtlMsg codec -------------------------------------------------------
 
 impl CtlMsg {
+    pub fn shell_id(&self) -> Option<&str> {
+        match self {
+            CtlMsg::Spawn(req) => Some(&req.instance),
+            CtlMsg::Close { instance } => Some(instance),
+            CtlMsg::Restart { instance } => Some(instance),
+            CtlMsg::Attach { instance } => Some(instance),
+            CtlMsg::Input { instance, .. } => Some(instance),
+            CtlMsg::Key { instance, .. } => Some(instance),
+            CtlMsg::Resize { instance, .. } => Some(instance),
+            CtlMsg::Capture { instance } => Some(instance),
+            CtlMsg::Detach { instance } => Some(instance),
+            _ => None,
+        }
+    }
+
+    pub fn instance_id(&self) -> Option<&str> {
+        self.shell_id()
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut p = Vec::new();
         match self {
@@ -452,6 +633,26 @@ impl CtlMsg {
 // ---- CtlReply codec -----------------------------------------------------
 
 impl CtlReply {
+    pub fn shell_id(&self) -> Option<&str> {
+        match self {
+            CtlReply::Spawned { instance, .. } => Some(instance),
+            CtlReply::Closed { instance } => Some(instance),
+            CtlReply::Restarted { instance, .. } => Some(instance),
+            CtlReply::Output { instance, .. } => Some(instance),
+            CtlReply::Screen { instance, .. } => Some(instance),
+            CtlReply::ChildExited { instance, .. } => Some(instance),
+            CtlReply::Error { instance, .. } => Some(instance),
+            CtlReply::StartupReady { instance } => Some(instance),
+            CtlReply::StartupBlocked { instance, .. } => Some(instance),
+            CtlReply::ScreenChanged { instance, .. } => Some(instance),
+            _ => None,
+        }
+    }
+
+    pub fn instance_id(&self) -> Option<&str> {
+        self.shell_id()
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut p = Vec::new();
         match self {
@@ -895,5 +1096,82 @@ mod tests {
         );
         assert_eq!(read_ctl_msg(&mut cur).unwrap().unwrap(), CtlMsg::Ping);
         assert!(read_ctl_msg(&mut cur).unwrap().is_none());
+    }
+
+    #[test]
+    fn shell_and_shell_info_accessors_and_conversions() {
+        let shell = Shell {
+            shell_id: "shell_123".into(),
+            program: "/bin/bash".into(),
+            pid: 456,
+            alive: true,
+            exit_code: None,
+            rows: 25,
+            cols: 80,
+            started_at: 1_700_000_000,
+            last_activity: 1_700_000_010,
+            display_name: Some("test shell".into()),
+        };
+
+        assert_eq!(shell.shell_id(), "shell_123");
+        assert_eq!(shell.instance_id(), "shell_123");
+
+        let info = shell.info();
+        assert_eq!(info.shell_id(), "shell_123");
+        assert_eq!(info.instance_id(), "shell_123");
+        assert_eq!(info.program, "/bin/bash");
+        assert_eq!(info.pid, 456);
+        assert!(info.alive);
+        assert_eq!(info.rows, 25);
+        assert_eq!(info.cols, 80);
+
+        // Conversion roundtrips
+        let from_info: Shell = info.clone().into();
+        assert_eq!(from_info, shell);
+
+        let agent_info: AgentInfo = info.clone().into();
+        assert_eq!(agent_info.instance_id(), "shell_123");
+        assert_eq!(agent_info.shell_id(), "shell_123");
+
+        let back_to_shell_info: ShellInfo = agent_info.clone().into();
+        assert_eq!(back_to_shell_info, info);
+
+        let back_to_shell: Shell = agent_info.into();
+        assert_eq!(back_to_shell, shell);
+    }
+
+    #[test]
+    fn ctl_msg_and_reply_shell_id_accessors() {
+        let msg = CtlMsg::Input {
+            instance: "sh_abc".into(),
+            data: b"ls\n".to_vec(),
+        };
+        assert_eq!(msg.shell_id(), Some("sh_abc"));
+        assert_eq!(msg.instance_id(), Some("sh_abc"));
+
+        let resize_msg = CtlMsg::Resize {
+            instance: "sh_def".into(),
+            rows: 30,
+            cols: 100,
+        };
+        assert_eq!(resize_msg.shell_id(), Some("sh_def"));
+        assert_eq!(resize_msg.instance_id(), Some("sh_def"));
+
+        let ping_msg = CtlMsg::Ping;
+        assert_eq!(ping_msg.shell_id(), None);
+
+        let reply = CtlReply::Spawned {
+            instance: "sh_1".into(),
+            pid: 999,
+        };
+        assert_eq!(reply.shell_id(), Some("sh_1"));
+        assert_eq!(reply.instance_id(), Some("sh_1"));
+
+        let err_reply = CtlReply::Error {
+            instance: "sh_err".into(),
+            message: "failed".into(),
+        };
+        assert_eq!(err_reply.shell_id(), Some("sh_err"));
+        assert_eq!(err_reply.instance_id(), Some("sh_err"));
     }
 }

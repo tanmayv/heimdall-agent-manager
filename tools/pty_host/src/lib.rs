@@ -33,7 +33,7 @@ pub mod vt;
 
 pub use daemon::{Daemon, DaemonServer};
 pub use detect::{Detector, StartupDetectionConfig, StartupOutcome};
-pub use dproto::{AgentInfo, CtlMsg, CtlReply, SpawnRequest};
+pub use dproto::{AgentInfo, CtlMsg, CtlReply, Shell, ShellInfo, SpawnRequest};
 pub use host::{PtyHost, SpawnConfig};
 pub use proto::{ClientMsg, HostMsg, NamedKey, ScreenSnapshot};
 pub use selector::{SelectorAction, SelectorItem, SelectorState};

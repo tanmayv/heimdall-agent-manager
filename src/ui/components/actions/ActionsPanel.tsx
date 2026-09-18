@@ -82,13 +82,15 @@ export default function ActionsPanel() {
       // Filter by search query if any
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
-        const inst = instanceMap.get(act.target_instance_id);
+        const inst = act.target_instance_id ? instanceMap.get(act.target_instance_id) : undefined;
         // Fold display name, instance id, and agent id into the filter so any of
         // the three finds the action (mirrors the target picker's search index).
         const instHaystack = [
           inst?.display_name,
           inst?.agent_name,
           act.target_instance_id,
+          act.target_agent_id,
+          act.target_bridge_id,
           inst?.agent_id,
         ].filter(Boolean).join(' ').toLowerCase();
         const promptMatch = act.prompt_text.toLowerCase().includes(q);
@@ -97,8 +99,8 @@ export default function ActionsPanel() {
         if (!promptMatch && !instMatch && !cronMatch) continue;
       }
 
-      const inst = instanceMap.get(act.target_instance_id);
-      const projectId = inst?.project_id;
+      const inst = act.target_instance_id ? instanceMap.get(act.target_instance_id) : undefined;
+      const projectId = inst?.project_id || act.target_project_id;
       if (projectId && groups.has(projectId)) {
         groups.get(projectId)!.actions.push(act);
       } else {
@@ -147,8 +149,8 @@ export default function ActionsPanel() {
     setFeedback(null);
     try {
       await runAction({ id: action.id }).unwrap();
-      const inst = instanceMap.get(action.target_instance_id);
-      const targetName = inst?.display_name || inst?.agent_name || action.target_instance_id;
+      const inst = action.target_instance_id ? instanceMap.get(action.target_instance_id) : undefined;
+      const targetName = inst?.display_name || inst?.agent_name || action.target_instance_id || (action.target_agent_id ? `${action.target_agent_id} (${action.target_bridge_id || 'bridge'})` : 'agent');
       setFeedback({
         type: 'success',
         message: `Action executed! Prompt dispatched to agent "${targetName}".`,
@@ -335,7 +337,7 @@ export default function ActionsPanel() {
                           <ActionCard
                             key={act.id}
                             action={act}
-                            instance={instanceMap.get(act.target_instance_id)}
+                            instance={act.target_instance_id ? instanceMap.get(act.target_instance_id) : undefined}
                             isRunning={runningActionId === act.id}
                             onRun={() => handleRunNow(act)}
                             onEdit={() => navigateTo(`/actions/${encodeURIComponent(act.id)}/edit`)}
@@ -402,7 +404,10 @@ function ActionCard({
     );
   }, [action.cron_expr, action.timezone, blackouts, action.active_from, action.active_until, isScheduled]);
 
-  const targetName = instance?.display_name || instance?.agent_name || action.target_instance_id;
+  const isAgentTargeted = !action.target_instance_id && Boolean(action.target_agent_id);
+  const targetName = isAgentTargeted
+    ? action.target_agent_id
+    : (instance?.display_name || instance?.agent_name || action.target_instance_id || 'Unknown target');
   const instanceStatus = instance?.runtime_status || 'idle';
 
   return (
@@ -414,22 +419,32 @@ function ActionCard({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 pb-2.5">
         {/* Left: Instance and state badges */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Instance badge */}
+          {/* Instance / Target badge */}
           <div
             data-debug-id={`action-instance-badge-${action.id}`}
             className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-zinc-200"
           >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                instanceStatus === 'running'
-                  ? 'bg-emerald-400'
-                  : instanceStatus === 'stopped'
-                  ? 'bg-zinc-500'
-                  : 'bg-amber-400'
-              }`}
-            />
-            <span className="font-semibold text-white">{targetName}</span>
-            <span className="text-caption text-zinc-500 font-mono">({action.target_instance_id})</span>
+            {isAgentTargeted ? (
+              <>
+                <Icon name="bot" size={12} className="text-sky-400" />
+                <span className="font-semibold text-white">Agent: {targetName}</span>
+                <span className="text-caption text-zinc-500 font-mono">({action.target_bridge_id || 'bridge'})</span>
+              </>
+            ) : (
+              <>
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    instanceStatus === 'running'
+                      ? 'bg-emerald-400'
+                      : instanceStatus === 'stopped'
+                      ? 'bg-zinc-500'
+                      : 'bg-amber-400'
+                  }`}
+                />
+                <span className="font-semibold text-white">{targetName}</span>
+                <span className="text-caption text-zinc-500 font-mono">({action.target_instance_id})</span>
+              </>
+            )}
           </div>
 
           {/* Action State badge */}

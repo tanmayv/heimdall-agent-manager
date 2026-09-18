@@ -4,8 +4,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROVIDER_STORE = ROOT / "src" / "bridge" / "provider_store.odin"
+PROVIDER_SEEDS = ROOT / "src" / "bridge" / "provider_seeds.odin"
 BOOTSTRAP = ROOT / "src" / "bridge" / "bootstrap_service.odin"
 AGENT_SERVICE = ROOT / "src" / "hub" / "service" / "agent" / "agent_service.odin"
+STATIC_SKILLS_GEN = ROOT / "src" / "hub" / "service" / "agent" / "static_skills_gen.odin"
+HAM_CTL_COMM_SKILL = ROOT / "src" / "prompts" / "skills" / "heimdall-ctl-communication" / "SKILL.md"
 TASKCHAIN_OVERVIEW = ROOT / "src" / "ui" / "components" / "taskchain" / "TaskChainOverview.tsx"
 DOMAIN_CONTENT = ROOT / "src" / "hub" / "domain" / "content.odin"
 CONTENT_REPO = ROOT / "src" / "hub" / "repository" / "sqlite" / "content_repo_sqlite.odin"
@@ -45,15 +48,18 @@ def main() -> None:
     ]:
         require(marker in providers_panel, f"UI provider editor must configure skill_dir: {marker}")
 
+    # Provider skill dir now derives from seed data with an override + generic
+    # fallback (no inline provider switch in provider_store).
     for marker in [
-        "skill_dir = bridge_provider_skill_dir_from_config(cmd)",
-        "if strings.to_lower(key) == \"skills\"",
         "bridge_provider_default_skill_dir",
-        'return ".pi/skills"',
-        'return ".agents/skills"',
+        "if override.skill_dir_set do result.skill_dir = strings.clone(override.skill_dir)",
         'return "skills"',
     ]:
         require(marker in provider_store, f"provider profile must derive/fallback skill dir: {marker}")
+
+    provider_seeds = PROVIDER_SEEDS.read_text(encoding="utf-8")
+    for marker in ['skill_dir = ".pi/skills"', 'skill_dir = ".agents/skills"']:
+        require(marker in provider_seeds, f"provider seeds must define per-provider skill dir: {marker}")
 
     for marker in [
         "bridge_bootstrap_write_skills",
@@ -65,19 +71,28 @@ def main() -> None:
     ]:
         require(marker in bootstrap, f"Bridge bootstrap must materialize all skill files: {marker}")
 
+    # Memory scoping is a LIST model now: project_ids/template_ids/bridge_ids are
+    # matched with list helpers (an empty list = applies to all).
     for marker in [
-        "write_bootstrap_skill_fields",
+        "bootstrap_append_static_skills",
+        "STATIC_SKILLS",
         "\\\"skills\\\":[",
         "m.type != .Skill",
         "bootstrap_memory_applies(m, service, owner, inst)",
         "domain.memory_type_string(m.type)",
-        "string(m.project_id) != \"\" && m.project_id != inst.project_id",
-        "agent.template_id != m.template_id",
-        "m.bridge_id != inst.bridge_id",
-        "Heimdall CLI communication basics",
-        "./.heimdall/bin/ham-ctl",
+        "memory_project_list_matches(m.project_ids, inst.project_id)",
+        "memory_list_contains(m.template_ids, agent.template_id)",
+        "memory_list_matches(m.bridge_ids, inst.bridge_id)",
     ]:
         require(marker in agent_service, f"hub bootstrap should emit scoped matching skills: {marker}")
+
+    # The former inline CLI-communication skill text now ships as a compile-time
+    # static SKILL.md served to every agent via STATIC_SKILLS (gen_static_skills).
+    static_skills_gen = STATIC_SKILLS_GEN.read_text(encoding="utf-8")
+    require("heimdall-ctl-communication" in static_skills_gen, "static skills must include the ham-ctl communication skill")
+    require("ham-ctl-reference" in static_skills_gen, "static skills must include the ham-ctl reference skill")
+    ctl_comm_skill = HAM_CTL_COMM_SKILL.read_text(encoding="utf-8")
+    require("./.heimdall/bin/ham-ctl" in ctl_comm_skill, "ham-ctl communication skill must document the managed ham-ctl path")
 
     # AGENTS.md inline memory must be fact/habit only. Skill (and other) memory
     # types are materialized as separate SKILL.md files and must NOT be dumped
@@ -105,31 +120,37 @@ def main() -> None:
     ]:
         require(marker in domain_content, f"memory kind should be enum without template kind: {marker}")
     require("Template," not in domain_content, "template must not be a memory kind")
-    require("template_id: string" in domain_content and "bridge_id: string" in domain_content, "template/bridge must be optional memory scopes")
+    require(
+        "project_ids: []Project_ID" in domain_content
+        and "template_ids: []string" in domain_content
+        and "bridge_ids: []string" in domain_content,
+        "memory scopes must be optional id LISTS (project_ids/template_ids/bridge_ids)",
+    )
 
     for marker in [
-        "project_id, template_id, bridge_id, type",
+        "agent_ids, project_ids, template_ids, bridge_ids, type",
         "domain.memory_type_string(m.type)",
         "domain.memory_type_from_string(column_text",
     ]:
         require(marker in content_repo, f"content repository must persist scoped enum memory: {marker}")
 
     for marker in [
-        "bridge_id,title",
+        "json_string_array(body,\"bridge_ids\")",
+        "json_project_id_array(body,\"project_ids\")",
         "bridge_owned",
         "domain.memory_type_from_string(json_string(body,\"type\"))",
-        "target_bridge_id",
-        "target_template_id",
+        "has_bridge_ids",
+        "validate_memory_targets",
     ]:
         require(marker in content_service + content_handlers, f"memory API must accept optional scopes: {marker}")
 
-    require("upgrade_memory_target_scope_schema" in migrations and "bridge_id" in migrations, "migration upgrade must add optional memory scopes")
+    require("upgrade_memory_target_scope_schema" in migrations and "bridge_ids" in migrations, "migration upgrade must add optional memory scope lists")
     require("targetBridgeId" in memory_catalog and "targetTemplateId" in memory_catalog, "UI memory catalog must normalize/filter bridge/template scopes")
 
     agents_md = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     require('data-debug-id={`taskchain-task-description-${taskId}`}' in overview, "chat task chain task rows must show task descriptions")
     require('taskchain-task-description-${taskId}' in agents_md, "task description debug id must be documented")
-    require('whitespace-pre-wrap' in overview, "task descriptions should preserve line breaks")
+    require('<Markdown source={description}' in overview, "task descriptions should render as markdown (preserving line breaks/formatting)")
 
     print("PASS: bridge bootstrap skills static")
 

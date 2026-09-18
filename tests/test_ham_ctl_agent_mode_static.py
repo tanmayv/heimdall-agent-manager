@@ -29,7 +29,7 @@ def main():
             "dispatch must route agent mode")
     # Agent-facing groups dispatch through agent mode without the `agent` prefix
     # when a Bridge agent context is present.
-    for group in ("bridge", "agents", "task-chain", "task", "chat", "artifact", "memory", "context"):
+    for group in ("bridge", "agents", "task-chain", "task", "chat", "artifact", "memory", "context", "cards"):
         require(f'"{group}"' in main_odin,
                 f"main dispatch must recognize the {group} group")
 
@@ -84,6 +84,11 @@ def main():
         "agent.memory.propose",
         "agent.context.get",
         "agent.start_success",
+        "agent.cards.create",
+        "agent.cards.list",
+        "agent.cards.show",
+        "agent.cards.discard",
+        "agent.cards.accept",
     ]
     for m in methods:
         require(m in ctl, f"agent mode must expose method {m}")

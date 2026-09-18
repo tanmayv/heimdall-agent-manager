@@ -45,6 +45,15 @@ Action_Queue_Item :: struct {
 	state:              string,
 	in_flight:          bool,
 	leased_at_ms:       i64,
+	target_agent_id:    string,
+	target_bridge_id:   string,
+	target_provider:    string,
+	target_tier:        string,
+	target_project_id:  string,
+	// REQ-SCHED-2: "reuse" (default) or "fresh_per_run"; last_spawned_instance_id is
+	// the instance created by the previous fresh_per_run fire, reaped on the next fire.
+	instance_strategy:        string,
+	last_spawned_instance_id: string,
 }
 
 // Backward-compatibility alias
@@ -427,6 +436,13 @@ action_queue_item_free :: proc(item: ^Action_Queue_Item) {
 	delete(item.target_run_at)
 	delete(item.interval)
 	delete(item.state)
+	delete(item.target_agent_id)
+	delete(item.target_bridge_id)
+	delete(item.target_provider)
+	delete(item.target_tier)
+	delete(item.target_project_id)
+	delete(item.instance_strategy)
+	delete(item.last_spawned_instance_id)
 }
 
 // Backward-compatibility procedure aliases
@@ -547,6 +563,13 @@ bridge_action_scheduler_sync :: proc() -> bool {
 		state := extract_json_string(obj, "state", "active")
 		in_flight := strings.contains(obj, "\"in_flight\":true")
 		leased_at := extract_json_string(obj, "leased_at", "")
+		target_agent := extract_json_string(obj, "target_agent_id", "")
+		target_bridge := extract_json_string(obj, "target_bridge_id", "")
+		target_provider := extract_json_string(obj, "target_provider", "")
+		target_tier := extract_json_string(obj, "target_tier", "")
+		target_project := extract_json_string(obj, "target_project_id", "")
+		instance_strategy := extract_json_string(obj, "instance_strategy", "reuse")
+		last_spawned := extract_json_string(obj, "last_spawned_instance_id", "")
 
 		run_at_ms, _ := action_scheduler_parse_rfc3339_ms(run_at)
 		active_from_ms, _ := action_scheduler_parse_rfc3339_ms(active_from)
@@ -599,6 +622,13 @@ bridge_action_scheduler_sync :: proc() -> bool {
 			q.interval = strings.clone(interval)
 			q.interval_seconds = interval_secs
 			q.state = strings.clone(state)
+			q.target_agent_id = strings.clone(target_agent)
+			q.target_bridge_id = strings.clone(target_bridge)
+			q.target_provider = strings.clone(target_provider)
+			q.target_tier = strings.clone(target_tier)
+			q.target_project_id = strings.clone(target_project)
+			q.instance_strategy = strings.clone(instance_strategy)
+			q.last_spawned_instance_id = strings.clone(last_spawned)
 			if is_locally_in_flight {
 				q.in_flight = true
 			} else {
@@ -624,6 +654,13 @@ bridge_action_scheduler_sync :: proc() -> bool {
 				state              = strings.clone(state),
 				in_flight          = in_flight,
 				leased_at_ms       = leased_at_ms,
+				target_agent_id    = strings.clone(target_agent),
+				target_bridge_id   = strings.clone(target_bridge),
+				target_provider    = strings.clone(target_provider),
+				target_tier        = strings.clone(target_tier),
+				target_project_id  = strings.clone(target_project),
+				instance_strategy        = strings.clone(instance_strategy),
+				last_spawned_instance_id = strings.clone(last_spawned),
 			})
 		}
 	}
@@ -666,7 +703,7 @@ bridge_action_scheduler_update_from_execute_response :: proc(action_id, next_run
 	}
 }
 
-bridge_action_scheduler_execute :: proc(action_id: string, next_target_run_at: string) -> (bool, int, string) {
+bridge_action_scheduler_execute :: proc(action_id: string, next_target_run_at: string, instance_id: string = "", last_spawned_instance_id: string = "") -> (bool, int, string) {
 	if strings.trim_space(bridge_config.bridge_token) == "" || strings.trim_space(bridge_config.daemon_url) == "" {
 		return false, 0, ""
 	}
@@ -681,14 +718,36 @@ bridge_action_scheduler_execute :: proc(action_id: string, next_target_run_at: s
 	// as format-verb delimiters, so a JSON object literal comes out corrupted
 	// (e.g. "%!(MISSING CLOSE BRACE)target_run_at..."). That corruption made the hub
 	// parse an empty target_run_at and mark cron actions completed while the bridge
-	// kept re-firing them -> the every-minute reschedule loop. next_target_run_at is
-	// a bridge-generated RFC3339 timestamp (no characters needing JSON escaping), so
-	// a plain concatenation is safe.
-	body := "{}"
+	// kept re-firing them -> the every-minute reschedule loop. All three values are
+	// bridge-generated ids/RFC3339 timestamps (no characters needing JSON escaping),
+	// so plain concatenation into the builder is safe. last_spawned_instance_id is
+	// sent only for fresh_per_run fires so the hub records it (REQ-SCHED-2).
+	sb := strings.builder_make()
+	defer strings.builder_destroy(&sb)
+	strings.write_byte(&sb, '{')
+	need_comma := false
 	if next_target_run_at != "" {
-		body = strings.concatenate({"{\"target_run_at\":\"", next_target_run_at, "\"}"})
+		strings.write_string(&sb, "\"target_run_at\":\"")
+		strings.write_string(&sb, next_target_run_at)
+		strings.write_byte(&sb, '"')
+		need_comma = true
 	}
-	defer if next_target_run_at != "" do delete(body)
+	if instance_id != "" {
+		if need_comma do strings.write_byte(&sb, ',')
+		strings.write_string(&sb, "\"instance_id\":\"")
+		strings.write_string(&sb, instance_id)
+		strings.write_byte(&sb, '"')
+		need_comma = true
+	}
+	if last_spawned_instance_id != "" {
+		if need_comma do strings.write_byte(&sb, ',')
+		strings.write_string(&sb, "\"last_spawned_instance_id\":\"")
+		strings.write_string(&sb, last_spawned_instance_id)
+		strings.write_byte(&sb, '"')
+		need_comma = true
+	}
+	strings.write_byte(&sb, '}')
+	body := strings.to_string(sb)
 	resp, ok := bridge_http_request_retry("POST", bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok do return false, 0, ""
 	return resp.status == 200, resp.status, resp.body
@@ -705,6 +764,160 @@ bridge_action_scheduler_await_ready :: proc(instance_id: string, max_wait_ms: in
 	}
 	inst, found := bridge_runtime_instance_snapshot(instance_id)
 	return found && (inst.runtime_status == "running" || inst.runtime_status == "idle")
+}
+
+// Instance_Candidate is a hub-listed instance of a durable agent-id together with the
+// bridge-local liveness the scheduler computed for it.
+Instance_Candidate :: struct {
+	id:         string,
+	bridge_id:  string,
+	project_id: string,
+	live:       bool, // running/idle in this bridge's runtime view
+}
+
+// action_scheduler_candidate_matches reports whether a candidate instance satisfies the
+// action's bridge/project targeting. An empty target field imposes no filter, keeping
+// backward-compat with actions that never specified a bridge or project (REQ-SCHED-2).
+action_scheduler_candidate_matches :: proc(cand_bridge, cand_project, target_bridge, target_project: string) -> bool {
+	if target_bridge != "" && cand_bridge != target_bridge do return false
+	if target_project != "" && cand_project != target_project do return false
+	return true
+}
+
+// action_scheduler_should_reuse decides whether a fired action reuses an existing
+// instance (REQ-SCHED-1 reuse + REQ-SCHED-2 bridge/project filter + fresh_per_run opt-in):
+//   - fresh_per_run -> never reuse (a new instance is minted every fire).
+//   - otherwise     -> reuse the first LIVE candidate matching the bridge/project target.
+action_scheduler_should_reuse :: proc(strategy, target_bridge, target_project: string, candidates: []Instance_Candidate) -> (string, bool) {
+	if strategy == "fresh_per_run" do return "", false
+	for c in candidates {
+		if !c.live do continue
+		if !action_scheduler_candidate_matches(c.bridge_id, c.project_id, target_bridge, target_project) do continue
+		return c.id, true
+	}
+	return "", false
+}
+
+// action_scheduler_reap_target returns the previous fresh_per_run instance to stop once a
+// new one is ready. Only fresh_per_run reaps, and never the newly minted instance.
+action_scheduler_reap_target :: proc(strategy, prev_last_spawned, new_instance_id: string) -> (string, bool) {
+	if strategy != "fresh_per_run" do return "", false
+	if prev_last_spawned == "" || prev_last_spawned == new_instance_id do return "", false
+	return prev_last_spawned, true
+}
+
+// bridge_action_scheduler_resolve_or_launch_instance resolves a target instance for an
+// action that does not specify target_instance_id (REQ-SCHED-1).
+// Policy:
+// 1. Reuse: check if an existing instance of target_agent_id on this bridge is live (running/idle).
+// 2. Wake: check if an existing instance of target_agent_id on this bridge is stopped, and wake it.
+// 3. Launch: if no instance exists, call POST /api/v1/agent-instances with target_agent_id,
+//    target_bridge_id, provider, tier, project_id, and await readiness.
+bridge_action_scheduler_resolve_or_launch_instance :: proc(due: Action_Queue_Item, now_ms: i64) -> (string, bool) {
+	if due.target_agent_id == "" do return "", false
+	if strings.trim_space(bridge_config.bridge_token) == "" || strings.trim_space(bridge_config.daemon_url) == "" {
+		return "", false
+	}
+
+	auth_header := strings.concatenate({"Bearer ", bridge_config.bridge_token})
+	defer delete(auth_header)
+	headers := [?]http.Header{
+		{name = "Authorization", value = auth_header},
+		{name = "Content-Type", value = "application/json"},
+	}
+
+	// For the default (reuse) strategy, enumerate existing instances of the agent-id and
+	// reuse/wake one that MATCHES the action's bridge+project targeting. fresh_per_run
+	// skips this entirely and always mints a new instance below (REQ-SCHED-2).
+	force_create := due.instance_strategy == "fresh_per_run"
+	if !force_create {
+		// 1. Check existing instances via GET /api/v1/agent-instances?agent_id=...
+		list_path := fmt.tprintf("/api/v1/agent-instances?agent_id=%s", due.target_agent_id)
+		resp, ok := bridge_http_request_retry("GET", bridge_config.daemon_url, list_path, "", headers[:], http.DEFAULT_TIMEOUT_MS)
+		if ok && resp.status == 200 {
+			defer delete(resp.body)
+			data_arr, has_data := bridge_provider_json_extract_array(resp.body, "data")
+			if has_data {
+				objects := bridge_provider_json_top_level_objects(data_arr)
+				defer {
+					for obj in objects do delete(obj)
+					delete(objects)
+				}
+				// Build the candidate set once, capturing each instance's bridge/project
+				// (from the hub list) and its bridge-local liveness (from the snapshot).
+				candidates := make([dynamic]Instance_Candidate)
+				defer delete(candidates)
+				for obj in objects {
+					cid := extract_json_string(obj, "agent_instance_id", "")
+					if cid == "" do continue
+					cbridge := extract_json_string(obj, "bridge_id", "")
+					cproject := extract_json_string(obj, "project_id", "")
+					inst, found := bridge_runtime_instance_snapshot(cid)
+					live := found && (inst.runtime_status == "running" || inst.runtime_status == "idle")
+					append(&candidates, Instance_Candidate{id = cid, bridge_id = cbridge, project_id = cproject, live = live})
+				}
+				// Reuse a live instance that matches the bridge/project target.
+				if reuse_id, reuse_ok := action_scheduler_should_reuse(due.instance_strategy, due.target_bridge_id, due.target_project_id, candidates[:]); reuse_ok {
+					return reuse_id, true
+				}
+				// Otherwise wake a matching (bridge+project) stopped instance.
+				for c in candidates {
+					if !action_scheduler_candidate_matches(c.bridge_id, c.project_id, due.target_bridge_id, due.target_project_id) do continue
+					bridge_task_wake_if_needed(c.id, now_ms)
+					if bridge_action_scheduler_await_ready(c.id, 3000) {
+						return c.id, true
+					}
+				}
+			}
+		} else if ok {
+			delete(resp.body)
+		}
+	}
+
+	// 2. No reusable instance (or fresh_per_run); launch a new one via POST /api/v1/agent-instances
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"agent_id\":\"")
+	bridge_runtime_write_json_string(&b, due.target_agent_id)
+	strings.write_string(&b, "\"")
+	if due.target_bridge_id != "" {
+		strings.write_string(&b, ",\"bridge_id\":\"")
+		bridge_runtime_write_json_string(&b, due.target_bridge_id)
+		strings.write_string(&b, "\"")
+	}
+	if due.target_provider != "" {
+		strings.write_string(&b, ",\"provider\":\"")
+		bridge_runtime_write_json_string(&b, due.target_provider)
+		strings.write_string(&b, "\"")
+	}
+	if due.target_tier != "" {
+		strings.write_string(&b, ",\"tier\":\"")
+		bridge_runtime_write_json_string(&b, due.target_tier)
+		strings.write_string(&b, "\"")
+	}
+	if due.target_project_id != "" {
+		strings.write_string(&b, ",\"project_id\":\"")
+		bridge_runtime_write_json_string(&b, due.target_project_id)
+		strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, "}")
+	payload := strings.to_string(b)
+	defer delete(payload)
+
+	launch_resp, launch_ok := bridge_http_request_retry("POST", bridge_config.daemon_url, "/api/v1/agent-instances", payload, headers[:], http.DEFAULT_TIMEOUT_MS)
+	if !launch_ok do return "", false
+	defer delete(launch_resp.body)
+
+	if launch_resp.status != 200 && launch_resp.status != 201 {
+		return "", false
+	}
+
+	new_instance_id := extract_json_string(launch_resp.body, "agent_instance_id", "")
+	if new_instance_id == "" do return "", false
+
+	if bridge_action_scheduler_await_ready(new_instance_id, 5000) {
+		return new_instance_id, true
+	}
+	return new_instance_id, true
 }
 
 bridge_action_scheduler_tick :: proc() -> int {
@@ -746,15 +959,30 @@ bridge_action_scheduler_tick :: proc() -> int {
 
 	// 3. Process due items
 	for due in due_items {
-		inst, found := bridge_runtime_instance_snapshot(due.target_instance_id)
-		is_ready := found && (inst.runtime_status == "running" || inst.runtime_status == "idle")
+		target_instance_id := due.target_instance_id
+		is_ready := false
+		is_fresh := false // fresh_per_run mint on this fire -> persist + reap after execute
 
-		if !is_ready {
-			if !found || !bridge_runtime_status_active(inst.runtime_status) {
-				bridge_task_wake_if_needed(due.target_instance_id, now_ms)
+		if target_instance_id != "" {
+			inst, found := bridge_runtime_instance_snapshot(target_instance_id)
+			is_ready = found && (inst.runtime_status == "running" || inst.runtime_status == "idle")
+
+			if !is_ready {
+				if !found || !bridge_runtime_status_active(inst.runtime_status) {
+					bridge_task_wake_if_needed(target_instance_id, now_ms)
+				}
+				if bridge_action_scheduler_await_ready(target_instance_id, 3000) {
+					is_ready = true
+				}
 			}
-			if bridge_action_scheduler_await_ready(due.target_instance_id, 3000) {
+		} else if due.target_agent_id != "" {
+			resolved_id, resolved_ok := bridge_action_scheduler_resolve_or_launch_instance(due, now_ms)
+			if resolved_ok && resolved_id != "" {
+				target_instance_id = resolved_id
 				is_ready = true
+				// fresh_per_run always mints a new instance (resolve skipped reuse/wake),
+				// so this fire owns a freshly created instance to record + reap against.
+				is_fresh = due.instance_strategy == "fresh_per_run"
 			}
 		}
 
@@ -781,11 +1009,35 @@ bridge_action_scheduler_tick :: proc() -> int {
 		next_run_ms, has_next := action_scheduler_compute_next_run(due, now_ms)
 		next_target_run_at := action_scheduler_format_rfc3339_utc(next_run_ms) if has_next else ""
 
-		ok, status, body := bridge_action_scheduler_execute(due.id, next_target_run_at)
+		// For fresh_per_run, carry the newly minted instance id so the hub records it as
+		// last_spawned_instance_id; reuse fires never send it (keeps the row untouched).
+		spawned_to_persist := target_instance_id if is_fresh else ""
+
+		ok, status, body := bridge_action_scheduler_execute(due.id, next_target_run_at, target_instance_id, spawned_to_persist)
 		if ok {
 			actions += 1
 			bridge_action_scheduler_update_from_execute_response(due.id, next_target_run_at, next_run_ms, has_next)
 			delete(body)
+
+			// REQ-SCHED-2: only AFTER the new instance is created + delivered do we reap
+			// the previous fresh_per_run instance, so a failed create never leaves the
+			// schedule with no instance. The reap uses the bridge's local lifecycle stop.
+			if is_fresh {
+				if reap_id, do_reap := action_scheduler_reap_target(due.instance_strategy, due.last_spawned_instance_id, target_instance_id); do_reap {
+					bridge_runtime_stop_agent(reap_id)
+				}
+				// Record the new instance as last_spawned locally so the next fire reaps
+				// THIS one even before the hub-side value round-trips back via sync.
+				sync.mutex_lock(&bridge_action_sched_state.mutex)
+				for i in 0..<len(bridge_action_sched_state.queue) {
+					if bridge_action_sched_state.queue[i].id == due.id {
+						delete(bridge_action_sched_state.queue[i].last_spawned_instance_id)
+						bridge_action_sched_state.queue[i].last_spawned_instance_id = strings.clone(target_instance_id)
+						break
+					}
+				}
+				sync.mutex_unlock(&bridge_action_sched_state.mutex)
+			}
 		} else {
 			if body != "" do delete(body)
 			sync.mutex_lock(&bridge_action_sched_state.mutex)

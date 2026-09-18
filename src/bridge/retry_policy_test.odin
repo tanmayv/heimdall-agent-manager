@@ -51,7 +51,6 @@ test_bridge_http_5xx_then_200_sequence :: proc(t: ^testing.T) {
 	endpoint := net.Endpoint{address = net.IP4_Loopback, port = 0}
 	listener, err := net.listen_tcp(endpoint)
 	testing.expect(t, err == nil, "listen_tcp failed")
-	defer net.close(listener)
 
 	bound_ep, ep_err := net.bound_endpoint(listener)
 	testing.expect(t, ep_err == nil, "bound_endpoint failed")
@@ -92,6 +91,7 @@ test_bridge_http_5xx_then_200_sequence :: proc(t: ^testing.T) {
 	testing.expect(t, resp.status == 200, "status must be 200 after retry")
 	testing.expect(t, strings.contains(resp.body, "restarted"), "body must contain restarted")
 
+	net.close(listener)
 	thread.join(server_thread)
 	thread.destroy(server_thread)
 }

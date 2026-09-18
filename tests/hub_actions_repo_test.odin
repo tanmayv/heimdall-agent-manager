@@ -171,8 +171,10 @@ main :: proc() {
 	check(sqlite.exec(&conn_mig, sqlite.MIGRATION_022_SCHEDULED_PROMPTS), "mig 022")
 	check(sqlite.exec(&conn_mig, "INSERT INTO scheduled_prompts (id, owner_user_id, target_instance_id, prompt_text, target_run_at, interval, state, in_flight, leased_at, deleted_at, created_at, updated_at) VALUES ('sp_legacy_1', 'usr_leg', 'inst_leg', 'legacy prompt', '2026-05-01T00:00:00Z', '30m', 'active', 0, '', '', '2026-05-01T00:00:00Z', '2026-05-01T00:00:00Z');"), "legacy insert")
 
-	// Now run migration 023
+	// Now run migration 023, 036, and 038 (the repo SELECTs read the 038 columns).
 	check(sqlite.exec(&conn_mig, sqlite.MIGRATION_023_ACTIONS), "mig 023")
+	check(sqlite.exec(&conn_mig, sqlite.MIGRATION_036_ACTION_TARGETS), "mig 036")
+	check(sqlite.exec(&conn_mig, sqlite.MIGRATION_038_ACTION_INSTANCE_STRATEGY), "mig 038")
 
 	repo_mig_impl: sqlite.Action_Repo_SQLite
 	repo_mig := sqlite.new_action_repository(&repo_mig_impl, &conn_mig)
@@ -184,6 +186,53 @@ main :: proc() {
 	check(migrated_action.cron_expr == "", "migrated cron_expr should be empty")
 	check(migrated_action.timezone == "UTC", "migrated timezone should default to UTC")
 	check(migrated_action.blackout_dates == "[]", "migrated blackout_dates should default to []")
+	check(migrated_action.instance_strategy == "reuse", "migrated instance_strategy should default to reuse")
+
+	// Test 11: Agent-targeted action and list_by_bridge
+	action_agent := domain.Action{
+		id = domain.Action_ID("act_agent_1"),
+		owner_user_id = domain.User_ID("usr_ac1"),
+		target_instance_id = "",
+		target_agent_id = domain.Agent_ID("agt_curator"),
+		target_bridge_id = domain.Bridge_ID("brg_ac1"),
+		target_provider = "vertex",
+		target_tier = "fast",
+		target_project_id = domain.Project_ID("prj_main"),
+		prompt_text = "Curator scan",
+		cron_expr = "0 0 * * *",
+		timezone = "UTC",
+		blackout_dates = "[]",
+		active_from = "",
+		active_until = "",
+		target_run_at = "2026-10-01T00:00:00Z",
+		interval = "",
+		state = .Active,
+		in_flight = false,
+		created_at = "2026-09-01T12:00:00Z",
+		updated_at = "2026-09-01T12:00:00Z",
+	}
+	saved_agt, ok_save_agt, err_save_agt := repo.save(repo.ctx, action_agent)
+	check(ok_save_agt, fmt.tprintf("save action_agent: %s", err_save_agt.message))
+	check(saved_agt.target_agent_id == "agt_curator", "saved target_agent_id mismatch")
+	check(saved_agt.target_bridge_id == "brg_ac1", "saved target_bridge_id mismatch")
+	check(saved_agt.target_provider == "vertex", "saved target_provider mismatch")
+	check(saved_agt.target_tier == "fast", "saved target_tier mismatch")
+	check(saved_agt.target_project_id == "prj_main", "saved target_project_id mismatch")
+
+	got_agt, ok_get_agt, err_get_agt := repo.get(repo.ctx, domain.Action_ID("act_agent_1"))
+	check(ok_get_agt, fmt.tprintf("get action_agent: %s", err_get_agt.message))
+	check(got_agt.target_instance_id == "", "target_instance_id should be empty")
+	check(got_agt.target_agent_id == "agt_curator", "target_agent_id mismatch")
+	check(got_agt.target_bridge_id == "brg_ac1", "target_bridge_id mismatch")
+	check(got_agt.target_provider == "vertex", "target_provider mismatch")
+	check(got_agt.target_tier == "fast", "target_tier mismatch")
+	check(got_agt.target_project_id == "prj_main", "target_project_id mismatch")
+	check(domain.action_target_mode(got_agt) == .Agent, "target_mode should be Agent")
+
+	// Test list_by_bridge: should return both instance-targeted action (act_run_1) and agent-targeted action (act_agent_1)
+	bridge_actions, err_brg := repo.list_by_bridge(repo.ctx, domain.Bridge_ID("brg_ac1"))
+	check(err_brg.code == .None, "list_by_bridge failed")
+	check(len(bridge_actions) == 2, fmt.tprintf("expected 2 actions on bridge brg_ac1, got %d", len(bridge_actions)))
 
 	fmt.println("ALL ACTIONS REPO TESTS PASSED")
 }

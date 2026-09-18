@@ -378,100 +378,93 @@ export default function ConversationLaunchComposer() {
 
 
   return (
-    <form data-debug-id="new-convo-composer-shell" onSubmit={submitFirstSend} className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left shadow-2xl">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <Text as="p" role="overline" tone="accent">Composer launch</Text>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Start a conversation</h2>
-          <p className="mt-2 text-sm leading-6 text-zinc-400">Choose an agent in the composer, keep the default Conversations project unless needed, then start to create the bound AgentInstance, ChatConversation, and TaskChain through <code>POST /api/v1/chats</code>. Once it opens, type your first message inside the thread.</p>
-        </div>
-        <span data-debug-id="launch-default-project-chip" className="shrink-0 rounded-full bg-sky-400/10 px-3 py-1.5 text-xs font-bold text-sky-200">Default project: {selectedProject.name || 'Conversations'}</span>
-      </div>
+    <div className="mx-auto w-full max-w-2xl p-3 sm:p-6">
+      <form data-debug-id="new-convo-composer-shell" onSubmit={submitFirstSend} className="w-full rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-left shadow-xl sm:p-6">
+        <h2 className="text-xl font-semibold text-white sm:text-2xl">Start a conversation</h2>
+        <p className="mt-1 text-sm text-zinc-400">Pick an agent and where to run it, then start.</p>
 
-      <div data-debug-id="launch-required-agent-control" className="mt-5 grid gap-4 md:grid-cols-2">
-        <div className="block">
-          <Text role="overline" tone="muted">Agent required</Text>
-          <Combobox
-            debugId="new-convo-agent-select"
-            options={agentSelectOptions}
-            value={agentId}
-            onChange={setAgentId}
-            placeholder="Choose an agent before sending…"
-            searchPlaceholder="Search agents by name, id or role…"
-            emptyLabel="No agents match your search."
-            loading={agentsQuery.isLoading}
-            width="full"
-            className="mt-2"
-          />
-        </div>
-        <div data-debug-id="launch-project-default-control" className="block">
-          <Text role="overline" tone="muted">Project</Text>
-          <Combobox
-            debugId="new-convo-project-select"
-            options={projectSelectOptions}
-            value={projectId}
-            onChange={setProjectId}
-            placeholder="Choose a project…"
-            searchPlaceholder="Search projects…"
-            emptyLabel="No projects match your search."
-            loading={projectsQuery.isLoading}
-            width="full"
-            className="mt-2"
-          />
-        </div>
-      </div>
-
-      <fieldset data-debug-id="launch-advanced-bridge-provider-tier-controls" className="mt-5 rounded-3xl border border-white/10 bg-black/20 p-4">
-        <legend className="px-2 text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Run location</legend>
-        <div className="grid gap-4 md:grid-cols-3">
-          <label className="block">
-            <span className="text-xs font-semibold text-zinc-400">Bridge / machine</span>
-            <Select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(value) => { setBridgeId(value); setProvider(''); setTier(''); }} disabled={!agentId} width="full" className="mt-2">
-              <option value="">Choose Bridge…</option>
-              {bridgeOptions.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{bridgeLabel(row)}</option>) }
-            </Select>
-          </label>
-          <label className="block">
-            <span className="text-xs font-semibold text-zinc-400">Provider for this launch</span>
-            <Select data-debug-id="new-convo-provider-select" value={provider} onChange={(value) => { setProvider(value); setTier(''); }} disabled={!agentId || !selectedBridge} width="full" className="mt-2">
-              {providerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </Select>
-          </label>
-          <label className="block">
-            <span className="text-xs font-semibold text-zinc-400">Tier for this launch</span>
-            <Select data-debug-id="new-convo-tier-select" value={tier} onChange={setTier} disabled={!agentId || !selectedBridge} width="full" className="mt-2">
-              {tierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </Select>
-          </label>
-        </div>
-        {effectiveBridgePathInfo && effectiveBridgePathInfo.effectivePath ? (
-          <div data-debug-id="new-convo-project-path-hint" className="mt-3 rounded-2xl bg-zinc-800/60 px-3 py-2 text-xs text-zinc-300">
-            Runs in: <code className="font-semibold text-zinc-100">{effectiveBridgePathInfo.effectivePath}</code>{' '}
-            {effectiveBridgePathInfo.isValidated ? (
-              <span className="font-semibold text-emerald-400">(✓ validated)</span>
-            ) : (
-              <span className="font-semibold text-amber-400">(⚠ path not validated on this bridge)</span>
-            )}
+        <div data-debug-id="launch-required-agent-control" className="mt-5 grid gap-4 sm:grid-cols-2">
+          <div className="block">
+            <Text role="overline" tone="muted">Agent</Text>
+            <Combobox
+              debugId="new-convo-agent-select"
+              options={agentSelectOptions}
+              value={agentId}
+              onChange={setAgentId}
+              placeholder="Choose an agent…"
+              searchPlaceholder="Search agents…"
+              emptyLabel="No agents match your search."
+              loading={agentsQuery.isLoading}
+              width="full"
+              className="mt-2"
+            />
           </div>
-        ) : null}
-        {selectedBridge ? <p data-debug-id="launch-capability-note" className={`mt-3 rounded-2xl px-3 py-2 text-xs ${launchPairSupported ? 'bg-emerald-400/10 text-emerald-100' : 'bg-amber-400/10 text-amber-100'}`}>Will launch on <span className="font-semibold">{bridgeLabel(selectedBridge)}</span> with <span className="font-semibold">{launchProvider || '—'} / {launchTier || '—'}</span>. These values start from the bridge/agent defaults; change provider or tier here to override only this instance.</p> : <p data-debug-id="launch-capability-note" className="mt-3 rounded-2xl bg-amber-400/10 px-3 py-2 text-xs text-amber-100">Choose the Bridge to run this agent on.</p>}
-      </fieldset>
+          <div data-debug-id="launch-project-default-control" className="block">
+            <Text role="overline" tone="muted">Project</Text>
+            <Combobox
+              debugId="new-convo-project-select"
+              options={projectSelectOptions}
+              value={projectId}
+              onChange={setProjectId}
+              placeholder="Choose a project…"
+              searchPlaceholder="Search projects…"
+              emptyLabel="No projects match your search."
+              loading={projectsQuery.isLoading}
+              width="full"
+              className="mt-2"
+            />
+          </div>
+        </div>
 
-      {usingSyntheticDefault && (
-        <p data-debug-id="launch-synthetic-default-project-gap" className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">Using the UI fallback Conversations project. First-send omits the synthetic project id until the backend exposes the default project marker/id documented in UI-17.</p>
-      )}
-      {!hasRunnableAgent && (
-        <p data-debug-id="new-convo-no-runnable-agent-warning" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">No runnable agents are available. Create an agent before starting a conversation.</p>
-      )}
-      {agentId && !hasCapableBridgeSupport && (
-        <p data-debug-id="new-convo-no-bridge-warning" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">Choose an online Bridge to run this agent on.</p>
-      )}
-      {error && <p data-debug-id="new-convo-error" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-100">{error}</p>}
+        <fieldset data-debug-id="launch-advanced-bridge-provider-tier-controls" className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-4">
+          <legend className="px-2 text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Run location</legend>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <label className="block">
+              <span className="text-xs font-semibold text-zinc-400">Bridge</span>
+              <Select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(value) => { setBridgeId(value); setProvider(''); setTier(''); }} disabled={!agentId} width="full" className="mt-2">
+                <option value="">Choose Bridge…</option>
+                {bridgeOptions.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{bridgeLabel(row)}</option>) }
+              </Select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-zinc-400">Provider</span>
+              <Select data-debug-id="new-convo-provider-select" value={provider} onChange={(value) => { setProvider(value); setTier(''); }} disabled={!agentId || !selectedBridge} width="full" className="mt-2">
+                {providerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+              </Select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-zinc-400">Tier</span>
+              <Select data-debug-id="new-convo-tier-select" value={tier} onChange={setTier} disabled={!agentId || !selectedBridge} width="full" className="mt-2">
+                {tierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+              </Select>
+            </label>
+          </div>
+          {effectiveBridgePathInfo && effectiveBridgePathInfo.effectivePath ? (
+            <div data-debug-id="new-convo-project-path-hint" className="mt-3 rounded-xl bg-zinc-800/60 px-3 py-2 text-xs text-zinc-300">
+              Runs in <code className="font-semibold text-zinc-100">{effectiveBridgePathInfo.effectivePath}</code>{' '}
+              {effectiveBridgePathInfo.isValidated ? (
+                <span className="font-semibold text-emerald-400">✓</span>
+              ) : (
+                <span className="font-semibold text-amber-400">⚠ not validated</span>
+              )}
+            </div>
+          ) : null}
+          {selectedBridge ? <p data-debug-id="launch-capability-note" className={`mt-3 rounded-xl px-3 py-2 text-xs ${launchPairSupported ? 'bg-emerald-400/10 text-emerald-100' : 'bg-amber-400/10 text-amber-100'}`}>Launches on <span className="font-semibold">{bridgeLabel(selectedBridge)}</span> · {launchProvider || '—'} / {launchTier || '—'}</p> : <p data-debug-id="launch-capability-note" className="mt-3 rounded-xl bg-amber-400/10 px-3 py-2 text-xs text-amber-100">Choose a Bridge to run on.</p>}
+        </fieldset>
 
-      <div className="mt-5 flex items-center justify-between gap-4">
-        <p data-debug-id="launch-send-guard" className="text-xs text-zinc-500">{!agentId ? 'Agent selection is required before starting.' : !selectedBridge ? 'Choose the Bridge to run on.' : launchPairSupported ? 'Ready to start — type your first message inside the thread once it opens.' : 'Choose a provider/tier supported by the selected Bridge.'}</p>
-        <Button data-debug-id="new-convo-send-btn" type="submit" variant="primary" size="lg" disabled={!canSend}>{status === 'sending' ? 'Starting…' : 'Start conversation'}</Button>
-      </div>
-    </form>
+        {!hasRunnableAgent && (
+          <p data-debug-id="new-convo-no-runnable-agent-warning" className="mt-3 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">No runnable agents. Create an agent first.</p>
+        )}
+        {agentId && !hasCapableBridgeSupport && (
+          <p data-debug-id="new-convo-no-bridge-warning" className="mt-3 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">Choose an online Bridge for this agent.</p>
+        )}
+        {error && <p data-debug-id="new-convo-error" className="mt-3 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-100">{error}</p>}
+
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p data-debug-id="launch-send-guard" className="text-xs text-zinc-500">{!agentId ? 'Choose an agent to start.' : !selectedBridge ? 'Choose a Bridge to run on.' : launchPairSupported ? 'Ready to start.' : 'Choose a supported provider/tier.'}</p>
+          <Button data-debug-id="new-convo-send-btn" type="submit" variant="primary" size="lg" disabled={!canSend} className="w-full sm:w-auto">{status === 'sending' ? 'Starting…' : 'Start conversation'}</Button>
+        </div>
+      </form>
+    </div>
   );
 }

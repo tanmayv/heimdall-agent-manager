@@ -45,6 +45,12 @@ update_project_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	b := strings.builder_make(); write_project_json(&b, p); return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+archive_project_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
+	p, archived, err := project_service.archive_project(h.projects, auth_ctx, domain.Project_ID(path_part(req.path, 4))); if !archived do return respond_error(err, req.request_id)
+	b := strings.builder_make(); write_project_json(&b, p); return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 put_project_bridge_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
 	path, saved, err := project_service.set_bridge_path(h.projects, auth_ctx, domain.Project_ID(path_part(req.path, 4)), path_part(req.path, 6), project_service.Bridge_Path_Input{path = json_string(req.body, "path")}); if !saved do return respond_error(err, req.request_id)
@@ -101,6 +107,7 @@ write_project_json :: proc(b: ^strings.Builder, p: domain.Project) {
 	strings.write_string(b, "\",\"repo_url\":\""); write_handler_json_string(b, p.repo_url)
 	strings.write_string(b, "\",\"vcs_kind\":\""); write_handler_json_string(b, p.vcs_kind)
 	strings.write_string(b, "\",\"default_path\":\""); write_handler_json_string(b, p.default_path)
+	strings.write_string(b, "\",\"state\":\""); write_handler_json_string(b, domain.project_state_string(p.state))
 	strings.write_string(b, "\",\"project_type\":\""); write_handler_json_string(b, p.project_type if p.project_type != "" else "local")
 	strings.write_string(b, "\",\"workspace_name\":\""); write_handler_json_string(b, p.workspace_name)
 	strings.write_string(b, "\",\"relative_path\":\""); write_handler_json_string(b, p.relative_path)
@@ -116,6 +123,7 @@ write_project_detail_json :: proc(b: ^strings.Builder, p: domain.Project, paths:
 	strings.write_string(b, "\",\"repo_url\":\""); write_handler_json_string(b, p.repo_url)
 	strings.write_string(b, "\",\"vcs_kind\":\""); write_handler_json_string(b, p.vcs_kind)
 	strings.write_string(b, "\",\"default_path\":\""); write_handler_json_string(b, p.default_path)
+	strings.write_string(b, "\",\"state\":\""); write_handler_json_string(b, domain.project_state_string(p.state))
 	strings.write_string(b, "\",\"project_type\":\""); write_handler_json_string(b, p.project_type if p.project_type != "" else "local")
 	strings.write_string(b, "\",\"workspace_name\":\""); write_handler_json_string(b, p.workspace_name)
 	strings.write_string(b, "\",\"relative_path\":\""); write_handler_json_string(b, p.relative_path)

@@ -22,8 +22,6 @@ Bridge_Config :: struct {
 	daemon_id: string,
 	bridge_token: string,
 	data_dir: string,
-	peers: [dynamic]cfg_lib.Peer_Config,
-	peer_auth_token: string,
 	chunk_bytes: int,
 	bootstrap_cache_max_bytes: int,
 	local_endpoint_port: u16,
@@ -47,21 +45,8 @@ Bridge_Config :: struct {
 	audit_mode: bool,
 }
 
-Bridge_Peer_Link_State :: struct {
-	name: string,
-	daemon_id: contracts.Daemon_ID,
-	endpoint: string,
-	status: contracts.Bridge_Reachability_Status,
-	active_sessions: int,
-	has_socket: bool,
-	ws_socket: net.TCP_Socket,
-	last_seen_unix_ms: i64,
-	last_error: string,
-}
-
 bridge_config: Bridge_Config
-bridge_peer_states: [dynamic]Bridge_Peer_Link_State
-bridge_state_mutex: sync.Mutex
+bridge_ws_send_mutex: sync.Mutex
 bridge_sequence: i64
 
 main :: proc() {
@@ -90,7 +75,9 @@ main :: proc() {
 
 	bridge_config = bridge_config_from_args(os.args)
 	bridge_fs_init(bridge_config.fs_root, bridge_config.fs_read_page_bytes)
+	vcs_init()
 	bridge_provider_store_init()
+	bridge_provider_startup_log()
 	bootstrap_cache_init(&bootstrap_global_cache, bridge_config.data_dir, bridge_config.bootstrap_cache_max_bytes)
 	if has_flag(os.args, "--bootstrap-fetch") {
 		instance_id := option_value(os.args, "--instance-id", "")
@@ -125,7 +112,6 @@ main :: proc() {
 	// CT-14: Start CitC workspace in-memory cache prefetch in background
 	fig_cache_start_prefetch()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
-	bridge_peer_state_init(bridge_config.peers[:])
 	_ = run_bridge_server(bridge_config)
 }
 
@@ -138,13 +124,13 @@ when ODIN_OS != .Windows {
 
 print_usage :: proc() {
 	fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN|--bridge-token-file PATH] [--local-endpoint-port PORT] [--local-run-dir DIR] [--agent-command CMD]")
+	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN|--bridge-token-file PATH] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--agent-command CMD]")
 	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --provider pi --tier normal --run-dir <dir> -- <agent-command>")
 	fmt.println("enroll: ham-bridge enroll [--hub http://127.0.0.1:49322] [--enrollment-token TOKEN] [--bridge-token-file PATH]")
 	fmt.println("TLS: https:// Hub URLs use HTTPS and wss:// with certificate/hostname validation; http:// tunnel URLs use ws://.")
 	fmt.println("bootstrap fetch: ham-bridge --bootstrap-fetch --daemon-url URL --bridge-token TOKEN|--bridge-token-file PATH --instance-id INST --run-dir DIR")
 	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/bridge.sock --agent-token hlat_... --agent-instance-id INST --run-dir DIR -- <agent-command>")
-	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_SEND, contracts.ROUTE_BRIDGE_REQUEST, contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH, contracts.ROUTE_BRIDGE_REACHABLE)
+	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH)
 }
 
 bridge_is_loopback_url :: proc(url_str: string) -> bool {
@@ -330,8 +316,6 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		daemon_id = "brg_local",
 		bridge_token = "",
 		data_dir = "~/.local/share/heimdall",
-		peers = make([dynamic]cfg_lib.Peer_Config),
-		peer_auth_token = "",
 		chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES,
 		bootstrap_cache_max_bytes = 256 * 1024 * 1024,
 		local_endpoint_port = 0,
@@ -376,10 +360,6 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		cfg.pty_host_runtime = loaded.config.bridge.pty_host_runtime
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
-		for peer in loaded.config.bridge.peers {
-			if strings.trim_space(peer.name) == "" || strings.trim_space(peer.endpoint) == "" || strings.trim_space(peer.token) == "" do continue
-			append(&cfg.peers, cfg_lib.Peer_Config{name = strings.clone(peer.name), endpoint = strings.clone(peer.endpoint), token = strings.clone(peer.token)})
-		}
 	}
 
 	cfg.bind_host = option_value(args, "--bind-host", cfg.bind_host)
@@ -389,7 +369,6 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	bridge_token_file := option_value(args, "--bridge-token-file", os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator))
 	if token_from_file, token_file_ok := bridge_read_token_file(bridge_token_file); token_file_ok do cfg.bridge_token = token_from_file
 	cfg.bridge_token = option_value(args, "--bridge-token", cfg.bridge_token)
-	cfg.peer_auth_token = option_value(args, "--peer-auth-token", cfg.peer_auth_token)
 	if port_s := option_value(args, "--port", ""); port_s != "" {
 		if port_i, ok := strconv.parse_int(port_s); ok do cfg.port = u16(port_i)
 	}
@@ -408,11 +387,6 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	}
 	cfg.local_endpoint_run_dir = option_value(args, "--local-run-dir", cfg.local_endpoint_run_dir)
 	cfg.agent_command = option_value(args, "--agent-command", cfg.agent_command)
-	for i in 0..<len(args) {
-		if args[i] == "--peer-ws" && i + 1 < len(args) {
-			append(&cfg.peers, cfg_lib.Peer_Config{name = fmt.tprintf("cli-peer-%d", len(cfg.peers) + 1), endpoint = strings.clone(args[i + 1]), token = strings.clone(cfg.peer_auth_token)})
-		}
-	}
 	cfg.data_dir = option_value(args, "--data-dir", cfg.data_dir)
 	// Expand a leading ~ in data_dir. The default (and typical config value) is
 	// "~/.local/share/heimdall", but nothing expanded it before, so a bridge whose
@@ -445,7 +419,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 }
 
 bridge_runtime_init :: proc() {
-	bridge_state_mutex = sync.Mutex{}
+	bridge_ws_send_mutex = sync.Mutex{}
 	bridge_sequence = 0
 }
 
@@ -453,42 +427,6 @@ bridge_next_id :: proc(prefix: string) -> string {
 	bridge_sequence += 1
 	return fmt.tprintf("%s_%d_%d", prefix, bridge_now_unix_ms(), bridge_sequence)
 }
-
-bridge_peer_state_init :: proc(peers: []cfg_lib.Peer_Config) {
-	bridge_peer_states = make([dynamic]Bridge_Peer_Link_State)
-	for peer in peers {
-		name := strings.trim_space(peer.name)
-		if name == "" do name = fmt.tprintf("peer-%d", len(bridge_peer_states) + 1)
-		append(&bridge_peer_states, Bridge_Peer_Link_State{
-			name = strings.clone(name),
-			daemon_id = contracts.Daemon_ID(strings.clone(name)),
-			endpoint = strings.clone(peer.endpoint),
-			status = .Unreachable,
-			last_seen_unix_ms = 0,
-			last_error = "",
-		})
-	}
-}
-
-bridge_peer_state_set :: proc(name: string, status: contracts.Bridge_Reachability_Status, err: string) {
-	for i in 0..<len(bridge_peer_states) {
-		if bridge_peer_states[i].name != name do continue
-		bridge_peer_states[i].status = status
-		if status == .Linked do bridge_peer_states[i].last_seen_unix_ms = bridge_now_unix_ms()
-		bridge_peer_states[i].last_error = strings.clone(err)
-		return
-	}
-}
-
-bridge_should_dial_peer :: proc(peer_name: string) -> bool {
-	self_daemon_id := strings.trim_space(bridge_config.daemon_id)
-	peer_daemon_id := strings.trim_space(peer_name)
-	if self_daemon_id == "" || peer_daemon_id == "" do return false
-	if self_daemon_id == peer_daemon_id do return false
-	if strings.has_prefix(peer_daemon_id, "cli-peer-") do return true
-	return strings.compare(self_daemon_id, peer_daemon_id) < 0
-}
-
 run_bridge_server :: proc(cfg: Bridge_Config) -> bool {
 	address := net.IP4_Loopback
 	if cfg.bind_host != "127.0.0.1" {
@@ -528,14 +466,8 @@ handle_bridge_client :: proc(client: net.TCP_Socket) {
 	switch route {
 	case contracts.ROUTE_BRIDGE_HEALTH:
 		write_response(client, 200, "OK", bridge_health_json())
-	case contracts.ROUTE_BRIDGE_SEND:
-		bridge_handle_send(client, request_body(request))
-	case contracts.ROUTE_BRIDGE_REQUEST:
-		bridge_handle_request(client, request_body(request))
 	case contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH:
 		bridge_handle_validate_project_path(client, request_body(request))
-	case contracts.ROUTE_BRIDGE_REACHABLE:
-		write_response(client, 200, "OK", bridge_reachable_json())
 	case:
 		write_response(client, 404, "Not Found", bridge_unsupported_route_json(method, route))
 	}
@@ -546,8 +478,6 @@ bridge_loopback_authorized :: proc(request: string) -> bool {
 	auth := extract_header(request, contracts.BRIDGE_LOOPBACK_AUTH_HEADER)
 	return auth == strings.concatenate({contracts.BRIDGE_AUTH_BEARER_PREFIX, bridge_config.bridge_token})
 }
-
-
 
 bridge_health_json :: proc() -> string {
 	b := strings.builder_make()
@@ -562,99 +492,6 @@ bridge_health_json :: proc() -> string {
 	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_WS_LARGE_PAYLOAD_TARGET_BYTES))
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)
-}
-
-bridge_send_stub_json :: proc() -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":false,"contract_version":`)
-	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
-	strings.write_string(&b, `,"acceptance":"`); json_write_string(&b, contracts.bridge_send_acceptance_wire(.Rejected))
-	strings.write_string(&b, `","error_code":"`); json_write_string(&b, contracts.BRIDGE_ERROR_NOT_IMPLEMENTED)
-	strings.write_string(&b, `","message":"bridge send transport scaffold only; async transit queue arrives in a later task"}`)
-	return strings.to_string(b)
-}
-
-bridge_request_stub_json :: proc() -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":false,"contract_version":`)
-	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
-	strings.write_string(&b, `,"result_kind":"`); json_write_string(&b, contracts.BRIDGE_RESULT_UNSUPPORTED_SCAFFOLD)
-	strings.write_string(&b, `","status_code":501,"status_text":"Not Implemented","error_code":"`); json_write_string(&b, contracts.BRIDGE_ERROR_NOT_IMPLEMENTED)
-	strings.write_string(&b, `","message":"bridge request transport scaffold only"}`)
-	return strings.to_string(b)
-}
-
-bridge_peer_name_for_daemon :: proc(dest_daemon_id: string) -> string {
-	trimmed := strings.trim_space(dest_daemon_id)
-	for state in bridge_peer_states {
-		if string(state.daemon_id) == trimmed || state.name == trimmed do return state.name
-	}
-	return trimmed
-}
-
-bridge_send_accepted_json :: proc(idempotency_key: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"contract_version":`)
-	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
-	strings.write_string(&b, `,"acceptance":"`); json_write_string(&b, contracts.bridge_send_acceptance_wire(.Accepted_Queued))
-	strings.write_string(&b, `","bridge_message_id":"`); json_write_string(&b, bridge_next_id("bridge_msg"))
-	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
-	strings.write_string(&b, `","message":"accepted by bridge transport"}`)
-	return strings.to_string(b)
-}
-
-bridge_send_backpressure_json :: proc(idempotency_key, message: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":false,"contract_version":`)
-	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
-	strings.write_string(&b, `,"acceptance":"`); json_write_string(&b, contracts.bridge_send_acceptance_wire(.Backpressure))
-	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
-	strings.write_string(&b, `","error_code":"backpressure","message":"`); json_write_string(&b, message)
-	strings.write_string(&b, `"}`)
-	return strings.to_string(b)
-}
-
-bridge_send_unreachable_json :: proc(idempotency_key: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":false,"contract_version":`)
-	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
-	strings.write_string(&b, `,"acceptance":"`); json_write_string(&b, contracts.bridge_send_acceptance_wire(.Destination_Unreachable))
-	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
-	strings.write_string(&b, `","error_code":"unreachable","message":"peer websocket unavailable"}`)
-	return strings.to_string(b)
-}
-
-bridge_request_transport_error_json :: proc(status_code: int, status_text, message: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":false,"contract_version":`)
-	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
-	strings.write_string(&b, `,"result_kind":"`); json_write_string(&b, contracts.BRIDGE_RESULT_TRANSPORT_ERROR)
-	strings.write_string(&b, `","status_code":`); strings.write_string(&b, fmt.tprintf("%d", status_code))
-	strings.write_string(&b, `,"status_text":"`); json_write_string(&b, status_text)
-	strings.write_string(&b, `","error_code":"transport_error","message":"`); json_write_string(&b, message)
-	strings.write_string(&b, `"}`)
-	return strings.to_string(b)
-}
-
-bridge_request_response_json :: proc(status_code: int, status_text, body: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"contract_version":`)
-	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
-	strings.write_string(&b, `,"result_kind":"`); json_write_string(&b, contracts.BRIDGE_RESULT_DESTINATION_DAEMON_HTTP_RESPONSE)
-	strings.write_string(&b, `","status_code":`); strings.write_string(&b, fmt.tprintf("%d", status_code))
-	strings.write_string(&b, `,"status_text":"`); json_write_string(&b, status_text)
-	strings.write_string(&b, `","body":"`); json_write_string(&b, body)
-	strings.write_string(&b, `"}`)
-	return strings.to_string(b)
-}
-
-bridge_handle_send :: proc(client: net.TCP_Socket, body: string) {
-	idempotency_key := extract_json_string(body, "idempotency_key", "")
-	write_response(client, 503, "Service Unavailable", bridge_send_unreachable_json(idempotency_key))
-}
-
-bridge_validate_project_path_ws_result_json :: proc(body: string) -> string {
-	return bridge_project_path_validation_result_json(body)
 }
 
 bridge_handle_validate_project_path :: proc(client: net.TCP_Socket, body: string) {
@@ -683,70 +520,6 @@ bridge_project_path_validation_result_json :: proc(body: string) -> string {
 	return result_json
 }
 
-bridge_handle_request :: proc(client: net.TCP_Socket, body: string) {
-	write_response(client, 503, "Service Unavailable", bridge_request_transport_error_json(503, "Service Unavailable", "peer websocket unavailable"))
-}
-
-bridge_reachable_json :: proc() -> string {
-	return bridge_reachable_json_with_change(false)
-}
-
-bridge_reachability_update_json :: proc() -> string {
-	return bridge_reachable_json_with_change(true)
-}
-
-bridge_peer_state_refresh_last_seen_for_linked_locked :: proc() {
-	now := bridge_now_unix_ms()
-	for i in 0..<len(bridge_peer_states) {
-		if bridge_peer_states[i].status != .Linked do continue
-		if bridge_peer_states[i].last_seen_unix_ms >= now do now = bridge_peer_states[i].last_seen_unix_ms + 1
-		bridge_peer_states[i].last_seen_unix_ms = now
-	}
-}
-
-bridge_reachable_json_with_change :: proc(include_changed: bool) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"contract_version":`)
-	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
-	strings.write_string(&b, `,"self_daemon_id":"`); json_write_string(&b, bridge_config.daemon_id)
-	strings.write_string(&b, `","reachable":[`)
-	sync.mutex_lock(&bridge_state_mutex)
-	bridge_peer_state_refresh_last_seen_for_linked_locked()
-	for i in 0..<len(bridge_peer_states) {
-		state := bridge_peer_states[i]
-		if i > 0 do strings.write_string(&b, `,`)
-		strings.write_string(&b, `{"daemon_id":"`); json_write_string(&b, string(state.daemon_id))
-		strings.write_string(&b, `","reach":"direct","next_hop_daemon_id":"`); json_write_string(&b, string(state.daemon_id))
-		strings.write_string(&b, `","hops":1,"status":"`); json_write_string(&b, bridge_reachability_status_wire(state.status))
-		strings.write_string(&b, `","via":[],"last_seen_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", state.last_seen_unix_ms))
-		strings.write_string(&b, `}`)
-	}
-	sync.mutex_unlock(&bridge_state_mutex)
-	strings.write_string(&b, `]`)
-	if include_changed {
-		strings.write_string(&b, `,"changed_unix_ms":`)
-		strings.write_string(&b, fmt.tprintf("%d", bridge_now_unix_ms()))
-	}
-	strings.write_string(&b, `}`)
-	return strings.to_string(b)
-}
-
-bridge_reachability_push_to_daemon :: proc() {
-	if strings.trim_space(bridge_config.daemon_url) == "" do return
-	headers := [?]http.Header{{name = "X-Heimdall-Daemon-ID", value = bridge_config.daemon_id}}
-	_, _ = http.request_with_headers_timeout(contracts.BRIDGE_HTTP_METHOD_POST, bridge_config.daemon_url, contracts.ROUTE_FEDERATION_REACHABILITY, bridge_reachability_update_json(), headers[:], contracts.BRIDGE_DEFAULT_REQUEST_TIMEOUT_MS)
-}
-
-bridge_reachability_status_wire :: proc(status: contracts.Bridge_Reachability_Status) -> string {
-	switch status {
-	case .Linked:
-		return contracts.BRIDGE_REACHABILITY_STATUS_LINKED
-	case .Unreachable:
-		return contracts.BRIDGE_REACHABILITY_STATUS_UNREACHABLE
-	}
-	return contracts.BRIDGE_REACHABILITY_STATUS_UNREACHABLE
-}
-
 bridge_unsupported_route_json :: proc(method, route: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":false,"error_code":"`)
@@ -759,6 +532,16 @@ bridge_unsupported_route_json :: proc(method, route: string) -> string {
 	return strings.to_string(b)
 }
 
+bridge_payload_needs_chunking :: proc(payload: []byte) -> bool {
+	return len(payload) > bridge_config.chunk_bytes
+}
+
+bridge_ws_chunk_count :: proc(total_bytes, chunk_bytes: int) -> int {
+	if total_bytes <= 0 do return 0
+	effective_chunk_bytes := chunk_bytes
+	if effective_chunk_bytes <= 0 do effective_chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
+	return (total_bytes + effective_chunk_bytes - 1) / effective_chunk_bytes
+}
 read_http_request :: proc(client: net.TCP_Socket) -> (string, bool) {
 	buf: [4096]byte
 	n, recv_err := net.recv_tcp(client, buf[:])
@@ -830,11 +613,16 @@ write_response :: proc(client: net.TCP_Socket, status: int, status_text, body: s
 
 
 
-bridge_ws_chunk_count :: proc(total_bytes, chunk_bytes: int) -> int {
-	if total_bytes <= 0 do return 0
-	effective_chunk_bytes := chunk_bytes
-	if effective_chunk_bytes <= 0 do effective_chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
-	return (total_bytes + effective_chunk_bytes - 1) / effective_chunk_bytes
+// bridge_hub_runtime_chunk_payload_bytes returns the raw bytes-per-chunk for the
+// bridge->hub runtime WS channel, gated on the TLS backend (REQ-4): the larger
+// socat payload is only safe when socat is the transport (it does not tear down on
+// multi-read bursts); the legacy s_client fallback keeps the conservative 6000-byte
+// cap. Mirrors bridge_tls_backend_is_socat / the HAM_TLS_BACKEND toggle.
+bridge_hub_runtime_chunk_payload_bytes :: proc() -> int {
+	if bridge_tls_backend_is_socat() {
+		return contracts.BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES_SOCAT
+	}
+	return contracts.BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES
 }
 
 // bridge_hub_chunk_frames returns the ordered kind:"chunk" wire frames for `text`
@@ -844,7 +632,15 @@ bridge_ws_chunk_count :: proc(total_bytes, chunk_bytes: int) -> int {
 // index order reconstructs `text` exactly. Reuses the same frame shape as the
 // federation sender (bridge_ws_chunk_json).
 bridge_hub_chunk_frames :: proc(text: string) -> []string {
-	payload := contracts.BRIDGE_WS_HUB_RUNTIME_CHUNK_PAYLOAD_BYTES
+	return bridge_hub_chunk_frames_with_payload(text, bridge_hub_runtime_chunk_payload_bytes())
+}
+
+// bridge_hub_chunk_frames_with_payload is the pure core of bridge_hub_chunk_frames
+// with the per-chunk raw byte size passed in explicitly. Splitting it out lets unit
+// tests exercise a specific payload deterministically WITHOUT mutating the global
+// HAM_TLS_BACKEND env (the Odin test runner executes tests concurrently, so env
+// mutation would race other tests' TLS transport selection).
+bridge_hub_chunk_frames_with_payload :: proc(text: string, payload: int) -> []string {
 	if len(text) <= payload do return nil
 	chunk_count := bridge_ws_chunk_count(len(text), payload)
 	chunk_id := bridge_next_id("hubchunk")
@@ -855,6 +651,7 @@ bridge_hub_chunk_frames :: proc(text: string) -> []string {
 		if end > len(text) do end = len(text)
 		fragment := base64.encode(transmute([]byte)text[start:end])
 		frames[i] = bridge_ws_chunk_json(chunk_id, i, chunk_count, len(text), fragment)
+		delete(fragment)
 	}
 	return frames
 }

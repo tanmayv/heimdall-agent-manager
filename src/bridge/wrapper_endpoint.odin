@@ -626,6 +626,7 @@ bridge_local_json_escaped :: proc(value: string) -> string {
 }
 
 bridge_local_write_json_string :: proc(builder: ^strings.Builder, value: string) {
+	logged_ctrl := false
 	for i in 0..<len(value) {
 		ch := value[i]
 		switch ch {
@@ -634,7 +635,16 @@ bridge_local_write_json_string :: proc(builder: ^strings.Builder, value: string)
 		case '\n': strings.write_string(builder, "\\n")
 		case '\r': strings.write_string(builder, "\\r")
 		case '\t': strings.write_string(builder, "\\t")
-		case: strings.write_byte(builder, ch)
+		case:
+			if ch < 32 {
+				if !logged_ctrl {
+					fmt.eprintln("bridge_local_write_json_string: escaping control char(s); first=", fmt.tprintf("\\u%04x", u32(ch)), "in payload len=", len(value))
+					logged_ctrl = true
+				}
+				strings.write_string(builder, fmt.tprintf("\\u%04x", u32(ch)))
+			} else {
+				strings.write_byte(builder, ch)
+			}
 		}
 	}
 }

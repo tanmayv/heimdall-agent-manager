@@ -169,7 +169,7 @@ export function ScopeEditor({ targeting, catalog, onChange, debugId, disabled = 
   return (
     <div data-debug-id={debugId} className="grid gap-3 sm:grid-cols-2">
       {SCOPE_DIMS.map((dim) => (
-        <label key={dim.key} className="block">
+        <div key={dim.key} className="block">
           <div className="mb-1 text-caption uppercase tracking-wide text-zinc-500">{dim.label}</div>
           <Combobox
             multiple
@@ -183,7 +183,7 @@ export function ScopeEditor({ targeting, catalog, onChange, debugId, disabled = 
             disabled={disabled}
             searchPlaceholder={`Search ${dim.label.toLowerCase()}…`}
           />
-        </label>
+        </div>
       ))}
     </div>
   );

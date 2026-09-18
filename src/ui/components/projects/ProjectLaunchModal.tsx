@@ -18,6 +18,13 @@ export type ProjectLaunchModalProps = {
   isOpen: boolean;
   project: { projectId: string; name: string } | null;
   onClose: () => void;
+  /**
+   * Called after a successful launch/start with the instance id to navigate to.
+   * When provided, the caller is responsible for closing the modal (e.g. by
+   * clearing the project that controls `isOpen`); when omitted, onClose() is
+   * still invoked so behavior is backward compatible.
+   */
+  onLaunched?: (instanceId: string) => void;
 };
 
 type TabKey = 'chain' | 'new' | 'existing';
@@ -44,6 +51,7 @@ export default function ProjectLaunchModal({
   isOpen,
   project,
   onClose,
+  onLaunched,
 }: ProjectLaunchModalProps) {
   const [activeTab, setActiveTab] = useState<TabKey>('chain');
 
@@ -299,7 +307,13 @@ export default function ProjectLaunchModal({
           alreadyRunningCount > 0 ? ` (${alreadyRunningCount} already running)` : ''
         }.`,
       });
-      onClose();
+      // Navigate to the first started instance when a handler is provided;
+      // otherwise fall back to just closing the modal (backward compatible).
+      if (onLaunched) {
+        onLaunched(ids[0]);
+      } else {
+        onClose();
+      }
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -326,15 +340,26 @@ export default function ProjectLaunchModal({
     setFeedback(null);
     try {
       const ids = Array.from(selectedNewAgentIds);
+      let firstLaunchedId = '';
       for (const agentId of ids) {
-        await launchAgentInstance({ agentId, projectId, bridgeId: selectedBridgeId }).unwrap();
+        // The POST /agent-instances response carries the new instance id at the
+        // top level; capture the first one so we can navigate to it afterwards.
+        const result: any = await launchAgentInstance({ agentId, projectId, bridgeId: selectedBridgeId }).unwrap();
+        const newId = String(result?.agent_instance_id || result?.agentInstanceId || '').trim();
+        if (newId && !firstLaunchedId) firstLaunchedId = newId;
       }
       setFeedback({
         type: 'success',
         message: `Successfully launched ${ids.length} new agent instance(s) for ${project.name}.`,
       });
       setSelectedNewAgentIds(new Set());
-      onClose();
+      // Navigate to the first launched instance when a handler is provided and
+      // we recovered an id; otherwise fall back to closing (backward compatible).
+      if (firstLaunchedId && onLaunched) {
+        onLaunched(firstLaunchedId);
+      } else {
+        onClose();
+      }
     } catch (err: any) {
       setFeedback({
         type: 'error',
@@ -395,7 +420,13 @@ export default function ProjectLaunchModal({
         }.`,
       });
       setSelectedExistingInstanceIds(new Set());
-      onClose();
+      // Navigate to the first started instance when a handler is provided;
+      // otherwise fall back to just closing the modal (backward compatible).
+      if (onLaunched) {
+        onLaunched(ids[0]);
+      } else {
+        onClose();
+      }
     } catch (err: any) {
       setFeedback({
         type: 'error',

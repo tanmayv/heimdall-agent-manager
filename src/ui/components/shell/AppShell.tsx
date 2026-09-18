@@ -23,6 +23,8 @@ import TemplatesPanel from '../settings/TemplatesPanel';
 import ProjectsSurface from '../projects/ProjectsSurface';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import ActionsPanel from '../actions/ActionsPanel';
+import CardsPanel from '../cards/CardsPanel';
+import ErrorBoundary from './ErrorBoundary';
 import ActionEditorPage from '../actions/ActionEditorPage';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
@@ -113,6 +115,7 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
   isDefaultConversations: true,
 };
 const NAV_ROUTES: ShellRoute[] = [
+  { path: '/cards', label: 'Cards', icon: 'spark', description: 'Activity-driven Action Cards feed', group: 'primary' },
   { path: '/conversations', label: 'Conversations', icon: 'chat', description: 'Chat sessions grouped by project and agent', group: 'primary' },
   { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts grouped by project', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
@@ -125,7 +128,7 @@ const NAV_ROUTES: ShellRoute[] = [
 
 function routeFromLocation(): string {
   const path = getRoutePathname();
-  if (!path || path === '/' || path === '/index.html') return '/conversations';
+  if (!path || path === '/' || path === '/index.html') return '/cards';
   return path;
 }
 
@@ -144,6 +147,7 @@ function focusMessageFromLocation(): string {
 }
 
 function isRouteActive(currentPath: string, itemPath: string): boolean {
+  if (itemPath === '/cards') return currentPath === '/cards' || currentPath.startsWith('/cards/');
   if (itemPath === '/conversations') return currentPath === '/conversations' || currentPath.startsWith('/conversations/');
   if (itemPath === '/actions') return currentPath === '/actions' || currentPath.startsWith('/actions/');
   if (itemPath === '/settings/bridges') return currentPath.startsWith('/settings');
@@ -168,6 +172,7 @@ function parseChainRoute(path: string): { chainId: string; taskId?: string } {
 }
 
 function routeTitle(path: string): string {
+  if (path === '/cards' || path.startsWith('/cards')) return 'Action Cards';
   if (path === '/conversations/new') return 'New conversation';
   if (path.startsWith('/conversations/')) return 'Conversation';
   if (path === '/actions/new') return 'New action';
@@ -197,6 +202,7 @@ function routeTitle(path: string): string {
 }
 
 function routeDescription(path: string): string {
+  if (path === '/cards' || path.startsWith('/cards')) return 'Activity-driven recommendations from Heimdall Curator. Review, accept, or reject maintenance proposals.';
   if (path === '/conversations/new') return 'Composer-first launch surface. Agent, project, Bridge, provider, and tier controls belong here in later UI tasks.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
   if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
@@ -228,6 +234,7 @@ function decodeSegment(value: string): string {
 }
 
 function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = []): BreadcrumbCrumb[] {
+  if (path === '/cards' || path.startsWith('/cards')) return [{ label: 'Cards' }];
   if (path === '/conversations/new') return [{ label: 'Conversations', href: '/conversations' }, { label: 'New Conversation' }];
   if (path.startsWith('/conversations/')) {
     const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
@@ -793,7 +800,7 @@ function ProjectConversationTree({
       </div>
       {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-caption leading-4 text-red-100">{error}</div> : null}
       {!loading && !error && groups.length === 0 ? (
-        <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-zinc-600">No running agents. Start one with New chat.</div>
+        <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-zinc-600">No running agents. Open Search (⌘K) to start one.</div>
       ) : null}
       <div className="space-y-0.5">
         {groups.map((projectGroup) => (
@@ -947,7 +954,7 @@ function AccessDenied() {
         <p className="text-xs font-semibold uppercase tracking-[0.22em] text-red-200">403 forbidden</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Access denied</h1>
         <p className="mt-3 text-sm leading-6 text-red-100/80">You are authenticated, but this resource is not available to your account. Heimdall will not redirect to login for 403 responses.</p>
-        <a data-debug-id="access-denied-home-link" href={shellHash('/conversations')} className="mt-6 inline-flex rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/15">Back to conversations</a>
+        <a data-debug-id="access-denied-home-link" href={shellHash('/cards')} className="mt-6 inline-flex rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/15">Back to home</a>
       </section>
     </main>
   );
@@ -1001,7 +1008,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
   const isKnownRoute = useMemo(() => {
     return [
-      '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
+      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/user-tokens') ||
@@ -1023,7 +1030,9 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
             position, menus) resets synchronously instead of the previous
             conversation's content painting for a frame and then swapping +
             re-scrolling. The RTK Query cache still makes revisits fast. */}
-        <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
+        <ErrorBoundary resetKey={agentInstanceId} label="Conversation">
+          <ConversationThreadPage key={agentInstanceId} agentInstanceId={agentInstanceId} focusMessageId={focusMessageId} />
+        </ErrorBoundary>
       </main>
     );
   }
@@ -1032,7 +1041,10 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
     <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto overflow-x-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
       <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
-        {path === '/conversations' ? (
+        <ErrorBoundary resetKey={path} label={routeTitle(path)}>
+        {path === '/cards' || path.startsWith('/cards') ? (
+          <CardsPanel />
+        ) : path === '/conversations' ? (
           <ConversationsHomePage />
         ) : path === '/actions/new' ? (
           <ActionEditorPage />
@@ -1093,6 +1105,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
             <p className="mt-3 text-sm leading-6 text-zinc-400">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
           </div>
         )}
+        </ErrorBoundary>
       </section>
     </main>
   );
@@ -1105,6 +1118,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
+  const [scrollChromeSuppressed, setScrollChromeSuppressed] = useState(false);
   const [launchModalProject, setLaunchModalProject] = useState<{ projectId: string; name: string } | null>(null);
   const displayName = user.display_name || user.name || user.user_id || 'Current user';
 
@@ -1212,7 +1226,26 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   };
 
   useEffect(() => {
-    const update = () => { setPath(routeFromLocation()); setFocusMessageId(focusMessageFromLocation()); };
+    const handleMobileChrome = (event: Event) => {
+      const customEvent = event as CustomEvent<{ visible?: boolean }>;
+      if (customEvent.detail?.visible === false) {
+        setScrollChromeSuppressed(true);
+      } else if (customEvent.detail?.visible === true) {
+        setScrollChromeSuppressed(false);
+      }
+    };
+    window.addEventListener('heimdall:mobile-chrome', handleMobileChrome);
+    return () => {
+      window.removeEventListener('heimdall:mobile-chrome', handleMobileChrome);
+    };
+  }, []);
+
+  useEffect(() => {
+    const update = () => {
+      setPath(routeFromLocation());
+      setFocusMessageId(focusMessageFromLocation());
+      setScrollChromeSuppressed(false);
+    };
     window.addEventListener('hashchange', update);
     window.addEventListener('popstate', update);
     update();
@@ -1226,7 +1259,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, liveProjects), [conversations, liveProjects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
-  const hideMobileShellChrome = isMobile && mobileChromeSuppressed;
+  const hideMobileShellChrome = isMobile && (mobileChromeSuppressed || scrollChromeSuppressed);
   const sidebarError = String((conversationsQuery.error as any)?.error || (agentsLiveQuery.error as any)?.error || '');
   const sidebarLoading = conversationsQuery.isLoading || agentsLiveQuery.isLoading;
 
@@ -1248,7 +1281,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       >
         <div className={`flex items-center gap-3 p-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
           {!collapsed && (
-            <a href={shellHash('/conversations')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-white/5">
+            <a href={shellHash('/cards')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-white/5">
               <span className="block truncate text-sm font-black tracking-tight text-white">Heimdall</span>
             </a>
           )}
@@ -1265,18 +1298,26 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         </div>
 
         <div className="flex-1 overflow-y-auto p-3">
-          {/* Primary action: start a new conversation. Prominent, always first. */}
-          <a
-            data-debug-id="shell-new-chat-button"
-            href={shellHash('/conversations/new')}
-            title="New chat"
-            className={`mb-2 flex min-h-11 items-center gap-2 rounded-2xl bg-sky-400 px-3 py-2 text-sm font-black text-black shadow-lg shadow-sky-950/30 hover:bg-sky-300 ${collapsed ? 'justify-center' : ''}`}
+          {/* Primary action: open the command palette (search + jump + new chat).
+              Replaces the old direct "New chat" link — the palette is the canonical
+              entry point (also Cmd/Ctrl-K on desktop, the mobile tab bar center). */}
+          <button
+            data-debug-id="shell-sidebar-search-button"
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            title="Search (⌘K)"
+            aria-label="Search"
+            aria-keyshortcuts="Meta+K Control+K"
+            className={`mb-2 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-3 py-2 text-sm text-zinc-300 hover:bg-white/10 hover:text-white ${collapsed ? 'justify-center' : ''}`}
           >
-            <Icon name="plus" size={18} />
-            {!collapsed && <span>New chat</span>}
-          </a>
-          {/* Command palette is keyboard-only on desktop (Cmd/Ctrl-K, wired globally).
-              On mobile it lives in the bottom tab bar's center button. No rail button. */}
+            <Icon name="search" size={18} />
+            {!collapsed && (
+              <>
+                <span className="flex-1 text-left">Search</span>
+                <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500">⌘K</kbd>
+              </>
+            )}
+          </button>
           <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
@@ -1335,6 +1376,10 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         isOpen={Boolean(launchModalProject)}
         project={launchModalProject}
         onClose={() => setLaunchModalProject(null)}
+        onLaunched={(instanceId) => {
+          setLaunchModalProject(null);
+          window.location.hash = buildRouteHash('/conversations/' + encodeURIComponent(instanceId), '');
+        }}
       />
     </div>
   );

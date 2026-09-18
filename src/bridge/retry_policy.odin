@@ -57,6 +57,10 @@ bridge_http_request_retry :: proc(
 		}
 		if attempt < max_attempts {
 			fmt.println("bridge http retry", "method=", method, "path=", path, "attempt=", attempt, "status=", resp.status, "ok=", ok)
+			if resp.body != "" {
+				delete(resp.body)
+				resp.body = ""
+			}
 			bridge_http_backoff_sleep(attempt, base_backoff_ms)
 		}
 	}

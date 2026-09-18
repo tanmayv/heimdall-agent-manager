@@ -1,5 +1,5 @@
 import * as daemonApi from '../daemonApi';
-import { ChatApproval, normalizeApproval, normalizeFederationPeerBlock, normalizeMergeDecision, sortApprovals } from '../attentionCatalog';
+import { ChatApproval, normalizeApproval, normalizeMergeDecision, sortApprovals } from '../attentionCatalog';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 function auth(session: any) {
@@ -37,11 +37,10 @@ export const attentionApi = heimdallApi.injectEndpoints({
     }),
     fetchAttention: build.query<any, void>({
       queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.clientToken) return { mergeDecisions: [], federationPeerBlocks: [], raw: null };
+        if (!session?.clientToken) return { mergeDecisions: [], raw: null };
         const data = await daemonApi.fetchAttention(auth(session));
         return {
           mergeDecisions: (data.merge_decisions || []).map(normalizeMergeDecision),
-          federationPeerBlocks: (data.blocked || []).filter((row: any) => (row?.kind || '') === 'federation_peer_block').map(normalizeFederationPeerBlock),
           raw: data,
         };
       }),

@@ -69,21 +69,61 @@ test_bootstrap_memory_applies_dimensions_are_anded :: proc(t: ^testing.T) {
 	testing.expect_value(t, bootstrap_memory_applies(m2, nil, "user_1", inst), true)
 }
 
+// SKILL-SCOPE-1: the agent-keyed predicate is now bridge-aware. A bridge-scoped
+// memory (empty agent_ids, non-empty bridge_ids) must materialize for ALL agents
+// whose manifest is rendered for a matching bridge, and be excluded for other
+// bridges — the same "empty list = all, non-empty = must match" rule every other
+// dimension uses. The requesting bridge_id is threaded in from the authenticated
+// bridge at render time.
 @(test)
-test_bootstrap_memory_applies_agent_variant_excludes_bridge_scoped :: proc(t: ^testing.T) {
+test_bootstrap_memory_applies_agent_bridge_scope :: proc(t: ^testing.T) {
 	agent := domain.Agent{agent_id = "agt_1", owner_user_id = "user_1", template_id = "tmpl_1"}
+	agent_other := domain.Agent{agent_id = "agt_2", owner_user_id = "user_1", template_id = "tmpl_1"}
 
-	// Bridge-scoped memories cannot be resolved for the agent-keyed manifest.
+	// agent_ids=[] + bridge_ids=[brg_1]: applies to any agent rendered for brg_1,
+	// not for brg_2. (This is the exact bug SKILL-SCOPE-1 fixes.)
 	bridge_scoped := domain.Memory{status = "active", bridge_ids = []string{"brg_1"}}
-	testing.expect_value(t, bootstrap_memory_applies_agent(bridge_scoped, agent, "user_1", domain.Project_ID("proj_1")), false)
+	testing.expect_value(t, bootstrap_memory_applies_agent(bridge_scoped, agent, "user_1", domain.Project_ID("proj_1"), "brg_1"), true)
+	testing.expect_value(t, bootstrap_memory_applies_agent(bridge_scoped, agent_other, "user_1", domain.Project_ID("proj_1"), "brg_1"), true)
+	testing.expect_value(t, bootstrap_memory_applies_agent(bridge_scoped, agent, "user_1", domain.Project_ID("proj_1"), "brg_2"), false)
+	// An unattributable request (empty bridge_id) safely excludes bridge-scoped memories.
+	testing.expect_value(t, bootstrap_memory_applies_agent(bridge_scoped, agent, "user_1", domain.Project_ID("proj_1"), ""), false)
 
-	// Empty bridge list still resolves; agent + project membership honored.
+	// agent_ids=[agt_1] + bridge_ids=[brg_1]: only (agt_1, brg_1).
+	agent_and_bridge := domain.Memory{status = "active", agent_ids = []string{"agt_1"}, bridge_ids = []string{"brg_1"}}
+	testing.expect_value(t, bootstrap_memory_applies_agent(agent_and_bridge, agent, "user_1", domain.Project_ID("proj_1"), "brg_1"), true)
+	testing.expect_value(t, bootstrap_memory_applies_agent(agent_and_bridge, agent, "user_1", domain.Project_ID("proj_1"), "brg_2"), false) // right agent, wrong bridge
+	testing.expect_value(t, bootstrap_memory_applies_agent(agent_and_bridge, agent_other, "user_1", domain.Project_ID("proj_1"), "brg_1"), false) // wrong agent, right bridge
+
+	// agent_ids=[] + bridge_ids=[]: applies to every agent on every bridge.
 	global := domain.Memory{status = "active"}
-	testing.expect_value(t, bootstrap_memory_applies_agent(global, agent, "user_1", domain.Project_ID("proj_1")), true)
+	testing.expect_value(t, bootstrap_memory_applies_agent(global, agent, "user_1", domain.Project_ID("proj_1"), "brg_1"), true)
+	testing.expect_value(t, bootstrap_memory_applies_agent(global, agent_other, "user_1", domain.Project_ID("proj_9"), ""), true)
 
-	// Template membership via the agent's template_id.
-	tmpl_member := domain.Memory{status = "active", template_ids = []string{"tmpl_1"}}
-	testing.expect_value(t, bootstrap_memory_applies_agent(tmpl_member, agent, "user_1", domain.Project_ID("proj_1")), true)
+	// project ANDs with the new bridge rule: bridge matches, project doesn't -> excluded.
+	proj_and_bridge := domain.Memory{status = "active", bridge_ids = []string{"brg_1"}, project_ids = []domain.Project_ID{domain.Project_ID("proj_1")}}
+	testing.expect_value(t, bootstrap_memory_applies_agent(proj_and_bridge, agent, "user_1", domain.Project_ID("proj_1"), "brg_1"), true)
+	testing.expect_value(t, bootstrap_memory_applies_agent(proj_and_bridge, agent, "user_1", domain.Project_ID("proj_9"), "brg_1"), false)
+
+	// template ANDs with the new bridge rule.
+	tmpl_and_bridge := domain.Memory{status = "active", template_ids = []string{"tmpl_1"}, bridge_ids = []string{"brg_1"}}
+	testing.expect_value(t, bootstrap_memory_applies_agent(tmpl_and_bridge, agent, "user_1", domain.Project_ID("proj_1"), "brg_1"), true)
+	testing.expect_value(t, bootstrap_memory_applies_agent(tmpl_and_bridge, agent, "user_1", domain.Project_ID("proj_1"), "brg_2"), false) // template ok, bridge wrong
 	tmpl_miss := domain.Memory{status = "active", template_ids = []string{"tmpl_9"}}
-	testing.expect_value(t, bootstrap_memory_applies_agent(tmpl_miss, agent, "user_1", domain.Project_ID("proj_1")), false)
+	testing.expect_value(t, bootstrap_memory_applies_agent(tmpl_miss, agent, "user_1", domain.Project_ID("proj_1"), "brg_1"), false)
+}
+
+// The agent-keyed manifest cache key must include the requesting bridge_id so a
+// bridge-scoped skill rendered for one bridge is never served to another bridge.
+@(test)
+test_bootstrap_manifest_cache_key_includes_bridge :: proc(t: ^testing.T) {
+	k1 := bootstrap_manifest_cache_key("agt_1", "worker", "pi", "proj_1", "brg_1")
+	defer delete(k1)
+	k2 := bootstrap_manifest_cache_key("agt_1", "worker", "pi", "proj_1", "brg_2")
+	defer delete(k2)
+	testing.expect(t, k1 != k2, "cache keys for different bridges must differ")
+
+	k3 := bootstrap_manifest_cache_key("agt_1", "worker", "pi", "proj_1", "brg_1")
+	defer delete(k3)
+	testing.expect_value(t, k1, k3) // same inputs -> same key
 }

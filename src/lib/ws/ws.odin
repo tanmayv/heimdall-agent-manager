@@ -273,11 +273,32 @@ send_all_file :: proc(file: ^os.File, bytes: []byte) -> bool {
 	return true
 }
 
+// tls_client_command builds the argv for the subprocess that terminates TLS for
+// the bridge->hub wss:// control channel. The transport is selected by the
+// HAM_TLS_BACKEND env toggle:
+//   - "s_client"      -> legacy `openssl s_client` (kept as an instant, no-rebuild
+//                        fallback; suffers the 16 KB multi-read teardown).
+//   - anything else   -> `socat OPENSSL-CONNECT` (the DEFAULT: a purpose-built
+//     (default socat)   full-duplex relay that does not tear down on multi-read
+//                        bursts, which is what unblocks large FS reads/artifacts).
+// SHARED CONTRACT: the exact same rule ("s_client" == legacy, else socat) is
+// duplicated in src/lib/http_client/http_client.odin and in the bridge's
+// bridge_tls_backend_is_socat (src/bridge/fs_management.odin) — keep them in sync.
 tls_client_command :: proc(host: string, port: u16) -> []string {
 	clean_host := host
 	if len(clean_host) >= 2 && clean_host[0] == '[' && clean_host[len(clean_host)-1] == ']' {
 		clean_host = clean_host[1:len(clean_host)-1]
 	}
+	ca_file := strings.trim_space(os.get_env("HAM_TLS_CA_FILE", context.temp_allocator))
+	backend := strings.to_lower(strings.trim_space(os.get_env("HAM_TLS_BACKEND", context.temp_allocator)))
+	if backend == "s_client" {
+		return openssl_s_client_command(clean_host, port, ca_file)
+	}
+	return socat_openssl_command(clean_host, port, ca_file)
+}
+
+// openssl_s_client_command is the legacy fallback transport (HAM_TLS_BACKEND=s_client).
+openssl_s_client_command :: proc(clean_host: string, port: u16, ca_file: string) -> []string {
 	cmd := make([dynamic]string)
 	append(&cmd, "openssl")
 	append(&cmd, "s_client")
@@ -287,12 +308,39 @@ tls_client_command :: proc(host: string, port: u16) -> []string {
 	append(&cmd, clean_host)
 	append(&cmd, "-verify_hostname")
 	append(&cmd, clean_host)
-	if ca_file := strings.trim_space(os.get_env("HAM_TLS_CA_FILE", context.temp_allocator)); ca_file != "" {
+	if ca_file != "" {
 		append(&cmd, "-CAfile")
 		append(&cmd, ca_file)
 	}
 	append(&cmd, "-connect")
 	append(&cmd, fmt.tprintf("%s:%d", clean_host, port))
+	return cmd[:]
+}
+
+// socat_openssl_command is the default transport. It relays STDIO <-> an OpenSSL
+// TLS connection. TLS verification is EQUIVALENT to the s_client path and MUST NOT
+// be weakened:
+//   - verify=1        : require + verify the peer certificate chain (fail closed).
+//   - commonname=<h>  : check the cert's CN/SAN against the intended host — this is
+//                       the hostname verification (mirrors s_client -verify_hostname).
+//   - snihost=<h>     : send SNI so the server presents the right cert (mirrors
+//                       s_client -servername).
+//   - cafile=<ca>     : trust anchor when HAM_TLS_CA_FILE is set; when unset, socat
+//                       uses OpenSSL's default CA store, exactly like s_client with
+//                       no -CAfile. NEVER emit verify=0.
+socat_openssl_command :: proc(clean_host: string, port: u16, ca_file: string) -> []string {
+	opts := strings.builder_make()
+	fmt.sbprintf(&opts, "OPENSSL-CONNECT:%s:%d", clean_host, port)
+	fmt.sbprintf(&opts, ",snihost=%s", clean_host)
+	strings.write_string(&opts, ",verify=1")
+	fmt.sbprintf(&opts, ",commonname=%s", clean_host)
+	if ca_file != "" {
+		fmt.sbprintf(&opts, ",cafile=%s", ca_file)
+	}
+	cmd := make([dynamic]string)
+	append(&cmd, "socat")
+	append(&cmd, "STDIO")
+	append(&cmd, strings.to_string(opts))
 	return cmd[:]
 }
 

@@ -37,7 +37,7 @@ export default function BridgesPanel() {
   const [actionError, setActionError] = useState('');
   const [copiedToken, setCopiedToken] = useState(false);
 
-  const bridges = bridgesQuery.data?.bridges || [];
+  const bridges = (bridgesQuery.data?.bridges || []).filter((b: any) => String(b?.status || b?.runtime_status || '').toLowerCase() !== 'revoked');
   const enrollments = enrollmentsQuery.data?.enrollments || [];
   const pendingEnrollments = enrollments.filter(isPendingEnrollment);
 

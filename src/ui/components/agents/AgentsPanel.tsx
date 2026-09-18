@@ -48,7 +48,7 @@ export function AgentsPanel() {
   const agentsQuery = useListAgentIdentitiesQuery();
   const [archiveAgent] = useArchiveAgentIdentityMutation();
   const [launchAgent, { isLoading: isLaunching }] = useLaunchAgentInstanceMutation();
-  const agents = agentsQuery.data?.agents || [];
+  const agents = (agentsQuery.data?.agents || []).filter((a: any) => a.state !== 'archived');
   const [errorMsg, setErrorMsg] = useState('');
   const [launchingAgentId, setLaunchingAgentId] = useState('');
 

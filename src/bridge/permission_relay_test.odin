@@ -15,6 +15,8 @@ bridge_permission_test_is_pending :: proc(agent_instance_id, request_id: string)
 	return false
 }
 
+bridge_permission_test_mutex: sync.Mutex
+
 @(test)
 bridge_permission_normalize_decision_maps_canonical :: proc(t: ^testing.T) {
 	testing.expect(t, bridge_permission_normalize_decision("allow") == "allow")
@@ -38,6 +40,10 @@ bridge_permission_clamp_timeout_bounds :: proc(t: ^testing.T) {
 
 @(test)
 bridge_permission_register_rejects_dupes :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_permission_test_mutex)
+	defer sync.mutex_unlock(&bridge_permission_test_mutex)
+	bridge_permission_test_reset()
+	defer bridge_permission_test_reset()
 	now := bridge_runtime_now_ms()
 	p := Bridge_Permission_Pending{request_id = "r1", agent_instance_id = "inst_a", tool = "bash", risk = "risky", created_unix_ms = now, deadline_unix_ms = now + 1000}
 	testing.expect(t, bridge_permission_register(p))
@@ -50,6 +56,10 @@ bridge_permission_register_rejects_dupes :: proc(t: ^testing.T) {
 
 @(test)
 bridge_permission_wait_resolves_from_reply :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_permission_test_mutex)
+	defer sync.mutex_unlock(&bridge_permission_test_mutex)
+	bridge_permission_test_reset()
+	defer bridge_permission_test_reset()
 	now := bridge_runtime_now_ms()
 	p := Bridge_Permission_Pending{request_id = "r2", agent_instance_id = "inst_b", tool = "write", risk = "risky", created_unix_ms = now, deadline_unix_ms = now + 5000}
 	testing.expect(t, bridge_permission_register(p))
@@ -67,6 +77,10 @@ bridge_permission_wait_resolves_from_reply :: proc(t: ^testing.T) {
 
 @(test)
 bridge_permission_wait_times_out_to_deny :: proc(t: ^testing.T) {
+	sync.mutex_lock(&bridge_permission_test_mutex)
+	defer sync.mutex_unlock(&bridge_permission_test_mutex)
+	bridge_permission_test_reset()
+	defer bridge_permission_test_reset()
 	now := bridge_runtime_now_ms()
 	p := Bridge_Permission_Pending{request_id = "r3", agent_instance_id = "inst_c", tool = "bash", risk = "risky", created_unix_ms = now, deadline_unix_ms = now + 50}
 	testing.expect(t, bridge_permission_register(p))

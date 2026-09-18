@@ -139,7 +139,7 @@ update_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agen
 agent_template_available :: proc(service: ^Agent_Service, owner: domain.User_ID, template_id: string) -> bool {
 	if template_id == "" do return false
 	switch template_id {
-	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID:
+	case domain.TEMPLATE_EMPTY_ID, domain.TEMPLATE_COORDINATOR_ID, domain.TEMPLATE_WORKER_ID, domain.TEMPLATE_REVIEWER_ID, domain.TEMPLATE_CURATOR_ID:
 		return true
 	}
 	if service.content == nil do return false
@@ -238,6 +238,9 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 		}
 	}
 	bridge_id := strings.trim_space(input.bridge_id)
+	if bridge_id == "" && auth.bridge_id != "" {
+		bridge_id = auth.bridge_id
+	}
 	if bridge_id == "" do return domain.Agent_Instance{}, false, domain.domain_error(.Validation_Failed, "bridge_id is required; choose the bridge to run this agent on")
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
 	if !bridge_ok do return domain.Agent_Instance{}, false, bridge_err
@@ -655,6 +658,148 @@ start_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, in
 	}
 	return relaunch_instance(service, auth, inst, inst.provider, inst.tier)
 }
+
+get_instance_pane :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, since_hash: string, width, line_limit: int) -> (string, bool, domain.Domain_Error) {
+	inst, ok, err := get_instance(service, auth, instance_id)
+	if !ok do return "", false, err
+
+	if inst.runtime_status == "stopped" || inst.runtime_status == "failed" {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"ok\":true,\"status\":\"")
+		write_service_json_string(&b, inst.runtime_status)
+		strings.write_string(&b, "\",\"unchanged\":true,\"hash\":\"\",\"output\":\"\"}")
+		return strings.to_string(b), true, domain.Domain_Error{}
+	}
+
+	if strings.trim_space(inst.bridge_id) == "" {
+		return "", false, domain.domain_error(.Bridge_Offline, "agent instance has no bridge")
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_")
+	}
+
+	cmd_b := strings.builder_make()
+	strings.write_string(&cmd_b, "{\"type\":\"get_agent_pane\",\"command_id\":\"")
+	write_service_json_string(&cmd_b, cmd_id)
+	strings.write_string(&cmd_b, "\",\"agent_instance_id\":\"")
+	write_service_json_string(&cmd_b, instance_id)
+	strings.write_string(&cmd_b, "\",\"since_hash\":\"")
+	write_service_json_string(&cmd_b, since_hash)
+	strings.write_string(&cmd_b, "\",\"width\":")
+	strings.write_int(&cmd_b, width)
+	strings.write_string(&cmd_b, ",\"line_limit\":")
+	strings.write_int(&cmd_b, line_limit)
+	strings.write_string(&cmd_b, "}")
+
+	reply, reply_ok, reply_err := project_service.bridge_command_send_runtime_wait(
+		service.bridge_command_sink,
+		project_service.Runtime_Command{
+			bridge_id = inst.bridge_id,
+			command_id = cmd_id,
+			body_json = strings.to_string(cmd_b),
+		},
+		5000,
+	)
+	if !reply_ok {
+		return "", false, reply_err
+	}
+
+	return reply, true, domain.Domain_Error{}
+}
+
+agent_pty_input_command_json :: proc(command_id, instance_id, data: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_pty_input\",\"command_id\":\"")
+	write_service_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"shell_id\":\"")
+	write_service_json_string(&b, instance_id)
+	strings.write_string(&b, "\",\"agent_instance_id\":\"")
+	write_service_json_string(&b, instance_id)
+	strings.write_string(&b, "\",\"data\":\"")
+	write_service_json_string(&b, data)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+shell_pty_input_command_json :: agent_pty_input_command_json
+
+agent_service_send_pty_input :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, data: string) -> (bool, domain.Domain_Error) {
+	inst, ok, err := get_instance(service, auth, instance_id)
+	if !ok do return false, err
+
+	if strings.trim_space(inst.bridge_id) == "" {
+		return false, domain.domain_error(.Bridge_Offline, "agent instance has no bridge")
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_input_")
+	}
+
+	cmd_json := agent_pty_input_command_json(cmd_id, instance_id, data)
+	sent, send_err := project_service.bridge_command_send_runtime(
+		service.bridge_command_sink,
+		project_service.Runtime_Command{
+			bridge_id = inst.bridge_id,
+			command_id = cmd_id,
+			body_json = cmd_json,
+		},
+	)
+	if !sent do return false, send_err
+
+	return true, domain.Domain_Error{}
+}
+
+send_pty_input :: agent_service_send_pty_input
+
+agent_pty_resize_command_json :: proc(command_id, instance_id: string, rows, cols: int) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_pty_resize\",\"command_id\":\"")
+	write_service_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"shell_id\":\"")
+	write_service_json_string(&b, instance_id)
+	strings.write_string(&b, "\",\"agent_instance_id\":\"")
+	write_service_json_string(&b, instance_id)
+	strings.write_string(&b, "\",\"rows\":")
+	strings.write_int(&b, rows)
+	strings.write_string(&b, ",\"cols\":")
+	strings.write_int(&b, cols)
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+shell_pty_resize_command_json :: agent_pty_resize_command_json
+
+agent_service_send_pty_resize :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, rows, cols: int) -> (bool, domain.Domain_Error) {
+	inst, ok, err := get_instance(service, auth, instance_id)
+	if !ok do return false, err
+
+	if strings.trim_space(inst.bridge_id) == "" {
+		return false, domain.domain_error(.Bridge_Offline, "agent instance has no bridge")
+	}
+
+	cmd_id := ""
+	if service.ids != nil {
+		cmd_id = platform.generate_id(service.ids, "cmd_resize_")
+	}
+
+	cmd_json := agent_pty_resize_command_json(cmd_id, instance_id, rows, cols)
+	sent, send_err := project_service.bridge_command_send_runtime(
+		service.bridge_command_sink,
+		project_service.Runtime_Command{
+			bridge_id = inst.bridge_id,
+			command_id = cmd_id,
+			body_json = cmd_json,
+		},
+	)
+	if !sent do return false, send_err
+
+	return true, domain.Domain_Error{}
+}
+
+send_pty_resize :: agent_service_send_pty_resize
 
 reconfigure_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string, input: Reconfigure_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := get_instance(service, auth, instance_id)
@@ -1249,6 +1394,91 @@ stop_command_json :: proc(command_id, instance_id, reason: string) -> string {
 	return strings.to_string(b)
 }
 
+// Wake_Agent_Run_Entry is one instance the bridge SHOULD have running for a chain:
+// the agent instance, the task it is focused on, and its action role ("worker" or
+// "reviewer"). Coordinators are never emitted (the reconcile pass excludes them).
+Wake_Agent_Run_Entry :: struct {
+	agent_instance_id: string,
+	task_id:           string,
+	role:              string,
+	provider:          string,
+	tier:              string,
+	// REQ-37: enriched descriptor (parity with launch_command_json_full) so the
+	// bridge's wake path forms the (agent_id, role, provider, project) key and takes
+	// the full agent-keyed template bootstrap instead of the header-only instance
+	// fallback (which, post BT-6, carries only the 6-line header). agent_id is the
+	// load-bearing field; without it the bridge cannot fetch the template manifest.
+	agent_id:          string,
+	agent_name:        string,
+	chain_id:          string,
+	chain_title:       string,
+	coordinator_id:    string,
+	project_id:        string,
+	project_path:      string,
+}
+
+// wake_agent_command_json builds the ephemeral-lifecycle push the reconcile pass
+// sends to a bridge (REQ-10): the run[] entries name the non-coordinator agents that
+// should be running (started fresh, or restarted) and stop[] names the agent
+// instances that should be stopped (were running, task no longer actionable). One
+// command is sent per (chain × bridge). Shape:
+//   {"type":"wake_agent","chain_id":"<id>","payload":{"run":[{"agent_instance_id":"..","task_id":"..","role":"..","provider":"..","tier":".."}],"stop":["..",..]}}
+// provider/tier are optional per entry (omitted when empty) so the bridge restarts
+// the instance on its saved provider/tier rather than the bridge defaults (REQ-33).
+wake_agent_command_json :: proc(chain_id: string, run: []Wake_Agent_Run_Entry, stop: []string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"wake_agent\",\"chain_id\":\""); write_service_json_string(&b, chain_id)
+	strings.write_string(&b, "\",\"payload\":{\"run\":[")
+	for entry, i in run {
+		if i > 0 do strings.write_string(&b, ",")
+		strings.write_string(&b, "{\"agent_instance_id\":\""); write_service_json_string(&b, entry.agent_instance_id)
+		strings.write_string(&b, "\",\"task_id\":\""); write_service_json_string(&b, entry.task_id)
+		strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, entry.role)
+		strings.write_string(&b, "\"")   // close role value
+		// provider/tier are emitted only when non-empty so an old bridge that
+		// ignores them, and a hub restarting an instance with no saved values,
+		// both keep the previous "fall back to bridge defaults" behavior.
+		if entry.provider != "" {
+			strings.write_string(&b, ",\"provider\":\""); write_service_json_string(&b, entry.provider); strings.write_string(&b, "\"")
+		}
+		if entry.tier != "" {
+			strings.write_string(&b, ",\"tier\":\""); write_service_json_string(&b, entry.tier); strings.write_string(&b, "\"")
+		}
+		// REQ-37: enriched descriptor fields (same JSON keys as launch_command_json_full)
+		// so the bridge takes the full agent-keyed template bootstrap. Emitted only when
+		// non-empty; an old bridge ignores unknown keys and keeps its prior behavior.
+		if entry.agent_id != "" {
+			strings.write_string(&b, ",\"agent_id\":\""); write_service_json_string(&b, entry.agent_id); strings.write_string(&b, "\"")
+		}
+		if entry.agent_name != "" {
+			strings.write_string(&b, ",\"agent_name\":\""); write_service_json_string(&b, entry.agent_name); strings.write_string(&b, "\"")
+		}
+		if entry.chain_id != "" {
+			strings.write_string(&b, ",\"chain_id\":\""); write_service_json_string(&b, entry.chain_id); strings.write_string(&b, "\"")
+		}
+		if entry.chain_title != "" {
+			strings.write_string(&b, ",\"chain_title\":\""); write_service_json_string(&b, entry.chain_title); strings.write_string(&b, "\"")
+		}
+		if entry.coordinator_id != "" {
+			strings.write_string(&b, ",\"coordinator_agent_instance_id\":\""); write_service_json_string(&b, entry.coordinator_id); strings.write_string(&b, "\"")
+		}
+		if entry.project_id != "" {
+			strings.write_string(&b, ",\"project_id\":\""); write_service_json_string(&b, entry.project_id); strings.write_string(&b, "\"")
+		}
+		if entry.project_path != "" {
+			strings.write_string(&b, ",\"project_path\":\""); write_service_json_string(&b, entry.project_path); strings.write_string(&b, "\"")
+		}
+		strings.write_string(&b, "}")   // close entry object
+	}
+	strings.write_string(&b, "],\"stop\":[")
+	for id, i in stop {
+		if i > 0 do strings.write_string(&b, ",")
+		strings.write_string(&b, "\""); write_service_json_string(&b, id); strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, "]}}")
+	return strings.to_string(b)
+}
+
 write_service_json_string :: proc(b: ^strings.Builder, value: string) {
 	contracts.write_json_string(b, value)
 }
@@ -1355,6 +1585,44 @@ bootstrap_append_identity_variables :: proc(vars: ^[dynamic]Bootstrap_Variable, 
 	add(vars, "template_persona", template_persona)
 	add(vars, "template_instructions", template_instructions)
 	add(vars, "agent_instructions", agent_instructions)
+}
+
+// bootstrap_build_memory_markdown_instance builds the {agent_memories} variable
+// value for instance-keyed launches. Only fact and habit memories are inlined;
+// skill memories are delivered as SKILL.md files. Returns "" when there are no
+// matching memories (the {agent_memories} slot renders as nothing).
+bootstrap_build_memory_markdown_instance :: proc(service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) -> string {
+	if service == nil || service.content == nil do return ""
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None do return ""
+	b := strings.builder_make()
+	written := 0
+	for m in memories {
+		if !bootstrap_memory_applies(m, service, owner, inst) do continue
+		if m.type != .Fact && m.type != .Habit do continue
+		if written == 0 do strings.write_string(&b, "## Applicable Memories")
+		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n%s", m.title, domain.memory_type_string(m.type), m.body)
+		written += 1
+	}
+	return strings.to_string(b)
+}
+
+// bootstrap_build_memory_markdown_agent is the agent-keyed variant used by
+// render_agent_manifest. Same filtering rules as the instance variant.
+bootstrap_build_memory_markdown_agent :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, project_id: domain.Project_ID, bridge_id: string) -> string {
+	if service == nil || service.content == nil do return ""
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None do return ""
+	b := strings.builder_make()
+	written := 0
+	for m in memories {
+		if !bootstrap_memory_applies_agent(m, agent, owner, project_id, bridge_id) do continue
+		if m.type != .Fact && m.type != .Habit do continue
+		if written == 0 do strings.write_string(&b, "## Applicable Memories")
+		fmt.sbprintf(&b, "\n\n### %s\nType: %s\n\n%s", m.title, domain.memory_type_string(m.type), m.body)
+		written += 1
+	}
+	return strings.to_string(b)
 }
 
 // Skill_Manifest_Item is one skill entry in the manifest skills[] array: the
@@ -1566,11 +1834,25 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 		}
 	}
 
+	// REQ-37 (B1): the instance descriptor the bridge's scheduler wake path reads to
+	// build an enriched launch command (it only knows the instance_id locally). role
+	// mirrors the wake/launch role vocabulary: coordinator > reviewer (current review
+	// focus) > worker.
+	instance_role := "worker"
+	if is_coordinator {
+		instance_role = "coordinator"
+	} else if inst.current_task_role == .Review {
+		instance_role = "reviewer"
+	}
+
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"protocol\":2,\"instance\":{\"agent_instance_id\":\"")
 	write_service_json_string(&b, inst.agent_instance_id)
 	strings.write_string(&b, "\",\"agent_id\":\""); write_service_json_string(&b, agent.agent_id)
+	strings.write_string(&b, "\",\"agent_name\":\""); write_service_json_string(&b, agent.name)
+	strings.write_string(&b, "\",\"role\":\""); write_service_json_string(&b, instance_role)
 	strings.write_string(&b, "\",\"chain_id\":\""); write_service_json_string(&b, inst.chain_id)
+	strings.write_string(&b, "\",\"chain_title\":\""); write_service_json_string(&b, chain.title)
 	strings.write_string(&b, "\",\"coordinator_agent_instance_id\":\""); write_service_json_string(&b, chain.coordinator_agent_instance_id)
 	strings.write_string(&b, "\",\"project_id\":\""); write_service_json_string(&b, string(inst.project_id))
 	strings.write_string(&b, "\",\"project_path\":\""); write_service_json_string(&b, inst.project_path)
@@ -1593,6 +1875,11 @@ bootstrap_manifest_json_for_bridge :: proc(service: ^Agent_Service, owner: domai
 	instance_variables := bootstrap_build_project_variables(project_name, project_path, project_repo, project_vcs, project_desc)
 	defer delete(instance_variables)
 	bootstrap_append_identity_variables(&instance_variables, template_persona, template_instructions, agent.instructions)
+	memories_md := bootstrap_build_memory_markdown_instance(service, owner, inst)
+	defer delete(memories_md)
+	mem_hash := bootstrap_fragment_hash(memories_md)
+	hub_fragment_cache_put(mem_hash, memories_md)
+	append(&instance_variables, Bootstrap_Variable{name = "agent_memories", value = memories_md, hash = mem_hash})
 	bootstrap_write_template_and_variables_json(&b, instance_template_hash, instance_variables[:])
 
 	strings.write_string(&b, ",\"skills\":[")
@@ -1720,8 +2007,11 @@ bootstrap_manifest_render_count :: proc() -> u64 {
 	return sync.atomic_load(&manifest_render_count)
 }
 
-bootstrap_manifest_cache_key :: proc(agent_id, role, provider, project: string) -> string {
-	return strings.concatenate({agent_id, "|", role, "|", provider, "|", project})
+bootstrap_manifest_cache_key :: proc(agent_id, role, provider, project, bridge_id: string) -> string {
+	// bridge_id is part of the key so two bridges requesting the same agent's
+	// manifest get separate cache entries — a bridge-scoped skill materialized for
+	// one bridge must never be served to instances on another bridge.
+	return strings.concatenate({agent_id, "|", role, "|", provider, "|", project, "|", bridge_id})
 }
 
 // Bootstrap_Manifest_Result carries everything the transport layer needs to emit
@@ -1740,7 +2030,7 @@ Bootstrap_Manifest_Result :: struct {
 // otherwise it returns the cached 200 body (still no render). When the epoch has
 // advanced (some memory/agent/project write) or nothing is cached, it renders
 // once, recomputes the version, and then compares.
-bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.User_ID, agent_id, role, provider, project, if_none_match: string) -> (Bootstrap_Manifest_Result, bool, domain.Domain_Error) {
+bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.User_ID, agent_id, role, provider, project, bridge_id, if_none_match: string) -> (Bootstrap_Manifest_Result, bool, domain.Domain_Error) {
 	if service == nil || service.agents == nil do return {}, false, domain.domain_error(.Internal_Error, "agent service is not configured")
 	agent, agent_ok, agent_err := iface.agent_get(service.agents, agent_id)
 	if !agent_ok do return {}, false, agent_err
@@ -1751,7 +2041,7 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 	is_coordinator := norm_role == "coordinator"
 
 	current_epoch := bootcache.content_epoch()
-	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project)
+	key := bootstrap_manifest_cache_key(agent_id, norm_role, provider, project, bridge_id)
 	defer delete(key)
 
 	sync.mutex_lock(&global_bootstrap_manifest_cache.lock)
@@ -1768,7 +2058,7 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 	if !have || entry.epoch != current_epoch {
 		// MISS: (re)render the manifest and recompute the version. This is the
 		// only path that scans memories / hashes fragments.
-		manifest_json, version := render_agent_manifest(service, owner, agent, is_coordinator, provider, project)
+		manifest_json, version := render_agent_manifest(service, owner, agent, is_coordinator, provider, project, bridge_id)
 		etag := strings.concatenate({agent_id, ":", norm_role, ":", provider, ":", project, ":", version})
 		// The cache outlives this request. render_agent_manifest and the concatenate
 		// above build these strings on the caller's per-request arena (MEM-4), which is
@@ -1817,7 +2107,7 @@ bootstrap_manifest_conditional :: proc(service: ^Agent_Service, owner: domain.Us
 // served without another render. The version is sha256 over the ordered set of
 // input fragment hashes (identity, project, tasks, role, memories, skills) so it
 // changes iff any input changes (HUB-1).
-render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, is_coordinator: bool, provider, project_id: string) -> (string, string) {
+render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, agent: domain.Agent, is_coordinator: bool, provider, project_id, bridge_id: string) -> (string, string) {
 	project_name := ""
 	project_repo := ""
 	project_vcs := ""
@@ -1844,7 +2134,7 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 		memories, err := iface.content_list_memories(service.content, owner)
 		if err.code == .None {
 			for m in memories {
-				if !bootstrap_memory_applies_agent(m, agent, owner, domain.Project_ID(project_id)) || m.type != .Skill do continue
+				if !bootstrap_memory_applies_agent(m, agent, owner, domain.Project_ID(project_id), bridge_id) || m.type != .Skill do continue
 				name, content := render_skill(m)
 				skill_hash := bootstrap_fragment_hash(content)
 				hub_fragment_cache_put(skill_hash, content)
@@ -1858,6 +2148,11 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 	variables := bootstrap_build_project_variables(project_name, project_path, project_repo, project_vcs, project_desc)
 	defer delete(variables)
 	bootstrap_append_identity_variables(&variables, template_persona, template_instructions, agent.instructions)
+	agent_memories_md := bootstrap_build_memory_markdown_agent(service, owner, agent, domain.Project_ID(project_id), bridge_id)
+	defer delete(agent_memories_md)
+	agent_mem_hash := bootstrap_fragment_hash(agent_memories_md)
+	hub_fragment_cache_put(agent_mem_hash, agent_memories_md)
+	append(&variables, Bootstrap_Variable{name = "agent_memories", value = agent_memories_md, hash = agent_mem_hash})
 
 	// bootstrap_version = sha256(concat of input hashes) in a stable order. BT-6:
 	// the per-fragment sections are gone; the version now folds each skill
@@ -1909,18 +2204,21 @@ render_agent_manifest :: proc(service: ^Agent_Service, owner: domain.User_ID, ag
 
 // bootstrap_memory_applies_agent is the agent-keyed (instance-free) variant of
 // bootstrap_memory_applies used by the manifest render. It resolves scope from
-// the agent + selected project only; bridge-scoped memories are excluded because
-// the manifest is not per-instance and no bridge is bound at render time.
-bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, owner: domain.User_ID, project_id: domain.Project_ID) -> bool {
+// the agent + selected project + the REQUESTING bridge. The manifest is not
+// per-instance, but the hub authenticates the calling bridge, so bridge_id is
+// known at render time and bridge scope is honored the same way as every other
+// dimension (empty list = applies to all; non-empty = the requesting bridge must
+// be a member). bridge_id is threaded into the cache key so a bridge-scoped skill
+// cannot bleed across bridges. An empty bridge_id (an unattributable request)
+// safely excludes any bridge-scoped memory.
+bootstrap_memory_applies_agent :: proc(m: domain.Memory, agent: domain.Agent, owner: domain.User_ID, project_id: domain.Project_ID, bridge_id: string) -> bool {
 	if m.status != "active" do return false
 	if !memory_list_matches(m.agent_ids, agent.agent_id) do return false
 	if !memory_project_list_matches(m.project_ids, project_id) do return false
 	if len(m.template_ids) > 0 {
 		if agent.owner_user_id != owner || !memory_list_contains(m.template_ids, agent.template_id) do return false
 	}
-	// Bridge-scoped memories cannot be resolved for an agent-keyed manifest:
-	// no bridge is bound at render time, so any bridge targeting excludes them.
-	if len(m.bridge_ids) > 0 do return false
+	if !memory_list_matches(m.bridge_ids, bridge_id) do return false
 	return true
 }
 

@@ -57,7 +57,7 @@ def main() -> None:
     # Id-only / compact events should invalidate only scoped RTKQ tags.
     for marker in [
         "invalidateTags([{ type: 'TaskLog', id: taskId }])",
-        "invalidateTags([{ type: 'TaskComments', id: taskId }])",
+        "{ type: 'TaskComments', id: taskId },",
         "{ type: 'Chain', id: chainId },",
         "{ type: 'ChainList', id: 'ALL' },",
         "{ type: 'ChainTasks', id: chainId },",

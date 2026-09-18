@@ -328,6 +328,17 @@ update :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_
 	return iface.project_update(service.projects, project)
 }
 
+// archive_project soft-archives a project (reversible), mirroring archive_agent:
+// ownership is enforced via get(), state flips to Archived, and the row is
+// persisted (never removed). No cascade to chains/tasks/instances.
+archive_project :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_id: domain.Project_ID) -> (domain.Project, bool, domain.Domain_Error) {
+	project, ok, err := get(service, auth, project_id)
+	if !ok do return domain.Project{}, false, err
+	project.state = .Archived
+	project.updated_at = platform.clock_now(service.clock)
+	return iface.project_update(service.projects, project)
+}
+
 set_bridge_path :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_id: domain.Project_ID, bridge_id: string, input: Bridge_Path_Input) -> (domain.Project_Bridge_Path, bool, domain.Domain_Error) {
 	project, ok, err := get(service, auth, project_id)
 	if !ok do return domain.Project_Bridge_Path{}, false, err

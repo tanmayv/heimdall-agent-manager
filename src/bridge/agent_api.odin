@@ -12,8 +12,8 @@ package main
 //              params} (the hub reads the caller from the instance token).
 //   .Raw       direct REST call (method+path) with the instance token header;
 //              params become the body for writes, query already baked into path.
-//   .Local     served by the bridge itself with NO hub round-trip (e.g. listing
-//              locally-configured peer bridges).
+//   .Local     served by the bridge itself with NO hub round-trip (e.g. the
+//              bridge.list self row).
 //
 // Auth invariant (unchanged): agent token in -> bridge authenticates + strips ->
 // forwards to hub with the bridge token + X-Heimdall-Instance-Token. Agents
@@ -116,6 +116,8 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/set-title"}
 	case "agent.task_chain.set_description":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/set-description"}
+	case "agent.task_chain.set_status":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/chain/set-status"}
 	case "agent.task_chain.reconcile":
 		// explicit self-heal kickoff / re-plan (coordinator or owner only, enforced
 		// hub-side). Needs chain_id; without it there's nothing to reconcile.
@@ -190,6 +192,24 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/artifacts/show"}
 	case "agent.artifact.content":
 		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/artifacts/content"}
+
+	// ---- cards ------------------------------------------------------------
+	case "agent.cards.create":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/create"}
+	case "agent.cards.list":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/list"}
+	case "agent.cards.show":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/show"}
+	case "agent.cards.discard":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/discard"}
+	case "agent.cards.accept":
+		return Bridge_Agent_Route{kind = .Envelope, path = "/api/v1/agent-actions/cards/accept"}
+
+	// ---- shell commands (bridge-local subprocess, output stays on this host) ---
+	case "agent.shell_cmd.exec":
+		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.exec"}
+	case "agent.shell_cmd.read":
+		return Bridge_Agent_Route{kind = .Local, local_op = "shell_cmd.read"}
 	}
 	return Bridge_Agent_Route{kind = .Unknown}
 }
@@ -214,7 +234,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.agents.instance_stop",
 	     // task-chain + task
 	     "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
-	     "agent.task_chain.set_description", "agent.task_chain.reconcile",
+	     "agent.task_chain.set_description", "agent.task_chain.set_status", "agent.task_chain.reconcile",
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.status",
 	     "agent.task.set_current", "agent.task.vote", "agent.task.nudge",
@@ -224,7 +244,12 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     "agent.memory.propose", "agent.memory.list", "agent.memory.show", "agent.memory.content",
 	     "agent.search",
 	     "agent.artifact.create", "agent.artifact.list", "agent.artifact.show",
-	     "agent.artifact.content":
+	     "agent.artifact.content",
+	     // cards
+	     "agent.cards.create", "agent.cards.list", "agent.cards.show",
+	     "agent.cards.discard", "agent.cards.accept",
+	     // shell commands (bridge-local)
+	     "agent.shell_cmd.exec", "agent.shell_cmd.read":
 		return true
 	}
 	return false
@@ -273,8 +298,8 @@ bridge_agent_rewrite_params :: proc(method, params: string) -> string {
 // ---- local op handlers (bridge-served, no hub) --------------------------
 
 // bridge_local_handle_agent_local_op fulfils .Local routes. Currently only
-// bridge.list, which merges Hub-registered bridges + locally-configured peers +
-// self, per docs/agent-api-redesign.md §2.1.
+// bridge.list, which merges Hub-registered bridges + this bridge's self row
+// (direct bridge<->bridge peers were removed in favor of the star topology).
 bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
 	if op == "bridge.list" {
 		scope := strings.trim_space(bridge_local_extract_json_string(params, "scope", "all"))
@@ -301,7 +326,9 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 			}
 		}
 
-		// Self + configured peers (scope configured|all): served locally.
+		// Self (scope configured|all): served locally. Direct bridge<->bridge
+		// peering was removed (star topology), so "configured" now returns just
+		// this bridge's self row; hub-registered bridges come from the hub above.
 		if scope == "configured" || scope == "all" {
 			// self row
 			if !first do strings.write_byte(&b, ',')
@@ -317,6 +344,8 @@ bridge_local_handle_agent_local_op :: proc(request_id, op, params: string, rec: 
 		strings.write_string(&b, "]}")
 		return bridge_local_response_data(request_id, strings.to_string(b))
 	}
+	if op == "shell_cmd.exec" do return bridge_shell_cmd_exec(request_id, params, rec)
+	if op == "shell_cmd.read" do return bridge_shell_cmd_read(request_id, params, rec)
 	return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"unknown local op: ", op}))
 }
 

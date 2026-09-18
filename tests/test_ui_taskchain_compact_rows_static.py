@@ -32,7 +32,9 @@ def main() -> None:
     # --- D2: task description ONLY in the expanded block ---
     # The description paragraph must appear AFTER the isExpanded guard, not in the
     # always-visible header.
-    desc_idx = src.index("taskchain-task-description-")
+    # The description body was extracted into a lazy <TaskDescription> component;
+    # its render site is what must sit inside the expanded block.
+    desc_idx = src.index("<TaskDescription")
     expand_guard_idx = src.index("{isExpanded && (")
     require(desc_idx > expand_guard_idx,
             "task description must render inside the isExpanded block (D2), not the header")
@@ -53,7 +55,7 @@ def main() -> None:
         ("taskchain-task-nudge-btn-", "handleNudge"),
         ("taskchain-task-lgtm-btn-", "handleVote(taskId, 'lgtm')"),
         ("taskchain-task-ngtm-btn-", "handleVote(taskId, 'ngtm')"),
-        ("taskchain-task-status-menu-btn-", "handleStatusChange"),
+        ("taskchain-task-status-", "handleStatusChange"),
         ("taskchain-task-cancel-btn-", "handleCancelTask"),
     ]:
         require(did in src, f"menu must expose action {did} (D4)")
@@ -65,7 +67,9 @@ def main() -> None:
         require(f"'{st}'" in src, f"status option {st} must remain in the list")
 
     # --- D4: outside-click closes the menu; one open at a time ---
-    require("addEventListener('mousedown'" in src and "setActionsMenuOpenTaskId(null)" in src,
+    # The quick-actions strip is now a shared <Menu> that owns its own outside-click/
+    # Esc dismissal via onOpenChange (one open at a time via actionsMenuOpenTaskId).
+    require("onOpenChange" in src and "setActionsMenuOpenTaskId(" in src,
             "actions menu must close on outside-click (D4)")
 
     # --- D6: no dead InstanceIdLink / preserved ids ---

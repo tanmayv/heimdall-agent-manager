@@ -485,7 +485,8 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
-	chain, got, err := taskchain_service.get_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
+	// READ (REQ-SEC-3): owner-scoped detail; a same-owner non-member may view it.
+	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
 	if !got do return respond_error(err, req.request_id)
 
 	tasks, _ := taskchain_service.list_tasks(h.taskchains, auth_ctx, chain.chain_id)
@@ -590,7 +591,8 @@ get_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
 	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
-	task, got, err := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
+	// READ (REQ-SEC-3): owner-scoped; a same-owner non-member may view the task.
+	task, got, err := taskchain_service.get_task_for_read(h.taskchains, auth_ctx, task_id)
 	if !got do return respond_error(err, req.request_id)
 	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth_ctx, chain_id)
 	b := strings.builder_make()
@@ -862,7 +864,8 @@ write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth
 	for d in deps {
 		if d.task_id == t.task_id {
 			append(&dep_ids, string(d.depends_on_task_id))
-			if parent, p_ok, _ := taskchain_service.get_task(h.taskchains, auth_ctx, d.depends_on_task_id); p_ok {
+			// READ (REQ-SEC-3): rendering helper, owner-scoped dependency lookup.
+			if parent, p_ok, _ := taskchain_service.get_task_for_read(h.taskchains, auth_ctx, d.depends_on_task_id); p_ok {
 				if !domain.task_status_unblocks_dependents(parent.status) do is_blocked = true
 			}
 		}
@@ -1380,8 +1383,15 @@ json_is_ws :: proc(ch: byte)->bool{ return ch==' ' || ch=='\t' || ch=='\r' || ch
 json_balanced_from :: proc(value:string, open, close:byte)->string{ depth:=0; in_string:=false; escaped:=false; for i:=0; i<len(value); i+=1{ ch:=value[i]; if in_string { if escaped { escaped=false; continue }; if ch=='\\' { escaped=true; continue }; if ch=='"' do in_string=false; continue }; if ch=='"' { in_string=true; continue }; if ch==open do depth+=1; if ch==close { depth-=1; if depth==0 do return value[:i+1] } }; return "" }
 task_matches_query :: proc(task: domain.Task, query: string) -> bool { assignee:=query_value(query,"assignee_agent_instance_id"); if assignee!="" && !strings.contains(task.assignee_ref_json, assignee) do return false; reviewer:=query_value(query,"reviewer_agent_instance_id"); if reviewer!="" && !strings.contains(task.reviewer_refs_json, reviewer) do return false; reviewer_user:=query_value(query,"reviewer_user_id"); if reviewer_user!="" && !strings.contains(task.reviewer_refs_json, reviewer_user) do return false; return true }
 
+// require_task_path_scope validates that the task exists, is owned by the caller,
+// and lives in the chain named in the path. It is a PATH-CONSISTENCY + ownership
+// precheck only — it uses the owner-scoped read authorizer (REQ-SEC-3), NOT the
+// membership gate, so read handlers work for same-owner non-members. Write
+// handlers that call this still enforce membership/coordinator at the service
+// layer (create_task/update_task/change_task_status/comment_task/record_task_vote/
+// manual_nudge/set_instance_current_task each guard independently).
 require_task_path_scope :: proc(h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, task_id: domain.Task_ID, req: Request) -> (bool, Response) {
-	task, ok, err := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
+	task, ok, err := taskchain_service.get_task_for_read(h.taskchains, auth_ctx, task_id)
 	if !ok do return false, respond_error(err, req.request_id)
 	if task.chain_id != chain_id do return false, respond_error(domain.domain_error(.Not_Found, "task not found in chain"), req.request_id)
 	return true, Response{}

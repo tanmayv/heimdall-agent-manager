@@ -5,7 +5,7 @@ def read(p): return (ROOT/p).read_text()
 def require(c,m):
     if not c: raise AssertionError(m)
 def main():
-    client=read('src/bridge/hub_runtime_client.odin')
+    client=read('src/bridge/hub_runtime_client.odin')+read('src/bridge/provider_store.odin')
     main_src=read('src/bridge/main.odin')
     for s in ['bridge_hub_runtime_worker','connect_with_bearer','/api/v1/bridge-ws','bridge_hello','capabilities','provider','tiers','default_tier','bridge_heartbeat','launch_agent','stop_agent','command_result','agent_instance_status','state_seq']:
         require(s in client, f'missing real bridge runtime support {s}')

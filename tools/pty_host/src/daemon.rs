@@ -32,6 +32,8 @@ use crate::dproto::{self, AgentInfo, CtlMsg, CtlReply, HostHeartbeatAgent, Spawn
 use crate::host::{PtyHost, SpawnConfig};
 use crate::proto::ScreenSnapshot;
 
+pub use crate::dproto::{Shell, ShellInfo};
+
 /// How long `close`/`restart` wait for a graceful SIGTERM exit before SIGKILL.
 const TERM_GRACE: Duration = Duration::from_millis(750);
 
@@ -40,6 +42,10 @@ const TERM_GRACE: Duration = Duration::from_millis(750);
 /// ticks never falsely reap a live-but-idle agent. `ChildExited` is the instant
 /// death path; this is only the silent-failure/idle backstop.
 const HOST_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// CRT resolution constants for unattached agents (REQ-CRT-1).
+pub const CRT_COLS: u16 = 80;
+pub const CRT_ROWS: u16 = 25;
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -93,6 +99,14 @@ impl Agent {
             last_activity: self.last_activity.load(Ordering::SeqCst),
             display_name: self.spec.display_name.clone(),
         }
+    }
+
+    fn shell_info(&self) -> ShellInfo {
+        self.info().into()
+    }
+
+    fn shell(&self) -> Shell {
+        self.shell_info().into()
     }
 
     /// Stop the child (SIGTERM -> grace -> SIGKILL) and join background threads.
@@ -200,8 +214,8 @@ impl Daemon {
 
     /// Build + start an [`Agent`] (PTY spawn + pump + exit watcher) from a spec.
     fn build_agent(&self, spec: SpawnRequest) -> Result<Agent> {
-        let rows = if spec.rows == 0 { 24 } else { spec.rows };
-        let cols = if spec.cols == 0 { 80 } else { spec.cols };
+        let rows = if spec.rows == 0 { CRT_ROWS } else { spec.rows };
+        let cols = if spec.cols == 0 { CRT_COLS } else { spec.cols };
         let program = spec.argv[0].clone();
         let args = spec.argv[1..].to_vec();
         let config = SpawnConfig {
@@ -360,7 +374,27 @@ impl Daemon {
             .collect()
     }
 
-    /// Whether `instance` exists and its child is alive.
+    /// Whether `shell_id` exists in the daemon.
+    pub fn has_shell(&self, shell_id: &str) -> bool {
+        self.agents.lock().unwrap().contains_key(shell_id)
+    }
+
+    /// Look up a shell by its shell_id (for agents, shell_id == agent_instance_id).
+    pub fn shell(&self, shell_id: &str) -> Option<Shell> {
+        self.agents.lock().unwrap().get(shell_id).map(|a| a.shell())
+    }
+
+    /// Enumerate all registered shells.
+    pub fn list_shells(&self) -> Vec<ShellInfo> {
+        self.agents
+            .lock()
+            .unwrap()
+            .values()
+            .map(|a| a.shell_info())
+            .collect()
+    }
+
+    /// Whether `instance` (or `shell_id`) exists and its child is alive.
     pub fn is_alive(&self, instance: &str) -> bool {
         self.agents
             .lock()
@@ -370,7 +404,7 @@ impl Daemon {
             .unwrap_or(false)
     }
 
-    /// Exit code of `instance` if it exists and has exited.
+    /// Exit code of `instance` (or `shell_id`) if it exists and has exited.
     pub fn exit_code(&self, instance: &str) -> Option<i32> {
         let agents = self.agents.lock().unwrap();
         let a = agents.get(instance)?;
@@ -381,30 +415,30 @@ impl Daemon {
         }
     }
 
-    /// Write raw bytes to an instance's stdin.
-    pub fn write_input(&self, instance: &str, bytes: &[u8]) -> Result<()> {
+    /// Write raw bytes to an instance/shell stdin.
+    pub fn write_input(&self, shell_id: &str, bytes: &[u8]) -> Result<()> {
         let agents = self.agents.lock().unwrap();
         let a = agents
-            .get(instance)
-            .ok_or_else(|| anyhow!("input: no such instance {instance}"))?;
+            .get(shell_id)
+            .ok_or_else(|| anyhow!("input: no such instance {shell_id}"))?;
         let res = a.host.lock().unwrap().write_input(bytes);
         res
     }
 
-    /// Resize an instance's PTY + VT model.
-    pub fn resize(&self, instance: &str, rows: u16, cols: u16) -> Result<()> {
+    /// Resize an instance/shell's PTY + VT model.
+    pub fn resize(&self, shell_id: &str, rows: u16, cols: u16) -> Result<()> {
         let agents = self.agents.lock().unwrap();
         let a = agents
-            .get(instance)
-            .ok_or_else(|| anyhow!("resize: no such instance {instance}"))?;
+            .get(shell_id)
+            .ok_or_else(|| anyhow!("resize: no such instance {shell_id}"))?;
         let res = a.host.lock().unwrap().resize(rows, cols);
         res
     }
 
-    /// Snapshot an instance's current screen.
-    pub fn capture(&self, instance: &str) -> Option<ScreenSnapshot> {
+    /// Snapshot an instance/shell's current screen.
+    pub fn capture(&self, shell_id: &str) -> Option<ScreenSnapshot> {
         let agents = self.agents.lock().unwrap();
-        let a = agents.get(instance)?;
+        let a = agents.get(shell_id)?;
         let cap = a.host.lock().unwrap().capture();
         Some(ScreenSnapshot {
             rows: cap.rows as u16,
@@ -413,6 +447,31 @@ impl Daemon {
             cursor_col: cap.cursor_col as u16,
             lines: cap.lines,
         })
+    }
+
+    /// Deliver input to a shell by shell_id.
+    pub fn shell_input(&self, shell_id: &str, bytes: &[u8]) -> Result<()> {
+        self.write_input(shell_id, bytes)
+    }
+
+    /// Resize a shell by shell_id.
+    pub fn shell_resize(&self, shell_id: &str, rows: u16, cols: u16) -> Result<()> {
+        self.resize(shell_id, rows, cols)
+    }
+
+    /// Capture a shell's screen by shell_id.
+    pub fn shell_capture(&self, shell_id: &str) -> Option<ScreenSnapshot> {
+        self.capture(shell_id)
+    }
+
+    /// Attach to a shell by shell_id.
+    pub fn shell_attach(&self, id: u64, shell_id: &str) -> Result<ScreenSnapshot> {
+        self.attach(id, shell_id)
+    }
+
+    /// Detach from a shell by shell_id.
+    pub fn shell_detach(&self, id: u64, shell_id: &str) {
+        self.detach(id, shell_id)
     }
 
     // ---- subscription plumbing (used by the socket server) --------------
@@ -442,21 +501,36 @@ impl Daemon {
     }
 
     /// Drop a client entirely: its sink, any active subscription, and its event
-    /// watch.
-    fn unsubscribe(&self, id: u64) {
-        self.subs.lock().unwrap().remove(&id);
+    /// watch. For any instances it was attached to that now have 0 remaining
+    /// attached subscribers, automatically resizes them to CRT resolution (80x25).
+    pub fn unsubscribe(&self, id: u64) {
+        let unattached_instances: Vec<String> = {
+            let mut subs = self.subs.lock().unwrap();
+            if let Some(sub) = subs.remove(&id) {
+                sub.instances
+                    .into_iter()
+                    .filter(|inst| !subs.values().any(|s| s.instances.contains(inst)))
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
         self.sinks.lock().unwrap().remove(&id);
         self.watchers.lock().unwrap().remove(&id);
+
+        for instance in unattached_instances {
+            let _ = self.resize(&instance, CRT_ROWS, CRT_COLS);
+        }
     }
 
-    /// Attach client `id` to `instance`'s output stream. Creates the client's
+    /// Attach client `id` to a shell's output stream. Creates the client's
     /// subscription on first attach. Returns the current screen so the client
     /// renders live state immediately. Does not affect the child. Errors if the
-    /// instance does not exist.
-    fn attach(&self, id: u64, instance: &str) -> Result<ScreenSnapshot> {
+    /// shell/instance does not exist.
+    pub fn attach(&self, id: u64, shell_id: &str) -> Result<ScreenSnapshot> {
         let snap = self
-            .capture(instance)
-            .ok_or_else(|| anyhow!("attach: no such instance {instance}"))?;
+            .capture(shell_id)
+            .ok_or_else(|| anyhow!("attach: no such instance {shell_id}"))?;
         // Look up the sink before locking subs to avoid a lock-ordering hazard.
         let tx = self
             .sinks
@@ -470,20 +544,28 @@ impl Daemon {
             tx,
             instances: HashSet::new(),
         });
-        sub.instances.insert(instance.to_string());
+        sub.instances.insert(shell_id.to_string());
         Ok(snap)
     }
 
-    /// Detach client `id` from `instance`. When it has no instances left the
+    /// Detach client `id` from a shell. When it has no shells/instances left the
     /// whole subscription is removed so it stops receiving ALL events (returns
-    /// to control-only status).
-    fn detach(&self, id: u64, instance: &str) {
-        let mut subs = self.subs.lock().unwrap();
-        if let Some(sub) = subs.get_mut(&id) {
-            sub.instances.remove(instance);
-            if sub.instances.is_empty() {
-                subs.remove(&id);
+    /// to control-only status). If no remaining subscribers are attached to
+    /// `shell_id`, automatically resizes it to CRT resolution (80x25).
+    pub fn detach(&self, id: u64, shell_id: &str) {
+        let should_resize = {
+            let mut subs = self.subs.lock().unwrap();
+            let mut removed = false;
+            if let Some(sub) = subs.get_mut(&id) {
+                removed = sub.instances.remove(shell_id);
+                if sub.instances.is_empty() {
+                    subs.remove(&id);
+                }
             }
+            removed && !subs.values().any(|sub| sub.instances.contains(shell_id))
+        };
+        if should_resize {
+            let _ = self.resize(shell_id, CRT_ROWS, CRT_COLS);
         }
     }
 
@@ -1874,4 +1956,237 @@ mod tests {
         );
         server.shutdown();
     }
+
+    #[test]
+    fn default_crt_resolution_on_zero_rows_cols() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        d.spawn(SpawnRequest {
+            instance: "crt_default".into(),
+            argv: vec![sh],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 0,
+            cols: 0,
+            display_name: None,
+        })
+        .unwrap();
+
+        let snap = d.capture("crt_default").unwrap();
+        assert_eq!(snap.rows, CRT_ROWS);
+        assert_eq!(snap.cols, CRT_COLS);
+
+        let info = find(&d.list(), "crt_default").unwrap();
+        assert_eq!(info.rows, CRT_ROWS);
+        assert_eq!(info.cols, CRT_COLS);
+
+        d.shutdown();
+    }
+
+    #[test]
+    fn detach_resizes_unattached_instance_to_crt() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        d.spawn(SpawnRequest {
+            instance: "inst1".into(),
+            argv: vec![sh],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 20,
+            cols: 60,
+            display_name: None,
+        })
+        .unwrap();
+
+        let (tx1, _rx1) = std::sync::mpsc::channel();
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        d.register_sink(1, tx1);
+        d.register_sink(2, tx2);
+
+        // Attach both client 1 and client 2.
+        d.attach(1, "inst1").unwrap();
+        d.attach(2, "inst1").unwrap();
+
+        // Dynamically resize while both are attached.
+        d.resize("inst1", 40, 100).unwrap();
+        assert_eq!(d.capture("inst1").unwrap().rows, 40);
+        assert_eq!(d.capture("inst1").unwrap().cols, 100);
+
+        // Client 1 detaches; client 2 is still attached -> should NOT resize to CRT.
+        d.detach(1, "inst1");
+        assert_eq!(d.capture("inst1").unwrap().rows, 40);
+        assert_eq!(d.capture("inst1").unwrap().cols, 100);
+
+        // Client 2 detaches; 0 subscribers remain -> automatically resizes to CRT (25, 80).
+        d.detach(2, "inst1");
+        assert_eq!(d.capture("inst1").unwrap().rows, CRT_ROWS);
+        assert_eq!(d.capture("inst1").unwrap().cols, CRT_COLS);
+
+        d.shutdown();
+    }
+
+    #[test]
+    fn unsubscribe_resizes_unattached_instances_to_crt() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        d.spawn(SpawnRequest {
+            instance: "inst_unsub".into(),
+            argv: vec![sh],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 20,
+            cols: 60,
+            display_name: None,
+        })
+        .unwrap();
+
+        let (tx1, _rx1) = std::sync::mpsc::channel();
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        d.register_sink(1, tx1);
+        d.register_sink(2, tx2);
+
+        // Attach client 1 and client 2.
+        d.attach(1, "inst_unsub").unwrap();
+        d.attach(2, "inst_unsub").unwrap();
+
+        d.resize("inst_unsub", 50, 120).unwrap();
+        assert_eq!(d.capture("inst_unsub").unwrap().rows, 50);
+        assert_eq!(d.capture("inst_unsub").unwrap().cols, 120);
+
+        // Client 1 disconnects/unsubscribes; client 2 is still attached -> no resize.
+        d.unsubscribe(1);
+        assert_eq!(d.capture("inst_unsub").unwrap().rows, 50);
+        assert_eq!(d.capture("inst_unsub").unwrap().cols, 120);
+
+        // Client 2 disconnects/unsubscribes; 0 subscribers remain -> auto-resized to CRT (25, 80).
+        d.unsubscribe(2);
+        assert_eq!(d.capture("inst_unsub").unwrap().rows, CRT_ROWS);
+        assert_eq!(d.capture("inst_unsub").unwrap().cols, CRT_COLS);
+
+        d.shutdown();
+    }
+
+    #[test]
+    fn unattached_agent_starts_at_80x25_and_detach_resizes_back_to_80x25() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        // Unattached agent starts at 80x25
+        d.spawn(SpawnRequest {
+            instance: "inst_crt_detach".into(),
+            argv: vec![sh],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 0,
+            cols: 0,
+            display_name: None,
+        })
+        .unwrap();
+
+        assert_eq!(d.capture("inst_crt_detach").unwrap().rows, CRT_ROWS);
+        assert_eq!(d.capture("inst_crt_detach").unwrap().cols, CRT_COLS);
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        d.register_sink(1, tx);
+
+        // Attaching at 40x120
+        d.attach(1, "inst_crt_detach").unwrap();
+        d.resize("inst_crt_detach", 40, 120).unwrap();
+        assert_eq!(d.capture("inst_crt_detach").unwrap().rows, 40);
+        assert_eq!(d.capture("inst_crt_detach").unwrap().cols, 120);
+
+        // Detaching automatically resizes the instance back to 80x25
+        d.detach(1, "inst_crt_detach");
+        assert_eq!(d.capture("inst_crt_detach").unwrap().rows, CRT_ROWS);
+        assert_eq!(d.capture("inst_crt_detach").unwrap().cols, CRT_COLS);
+
+        d.shutdown();
+    }
+
+    #[test]
+    fn daemon_shell_registration_lookup_input_resize_and_listing() {
+        require_pty!();
+        let sh = match shell() {
+            Some(s) => s,
+            None => return,
+        };
+        let d = Daemon::new();
+        assert!(!d.has_shell("sh_test_1"));
+        assert!(d.shell("sh_test_1").is_none());
+
+        let pid = d
+            .spawn(SpawnRequest {
+                instance: "sh_test_1".into(),
+                argv: vec![sh, "-c".into(), "while :; do sleep 1; done".into()],
+                cwd: None,
+                env: vec![],
+                detect: None,
+                rows: 25,
+                cols: 80,
+                display_name: Some("test-shell".into()),
+            })
+            .unwrap();
+
+        assert!(d.has_shell("sh_test_1"));
+        let s = d.shell("sh_test_1").expect("shell should exist");
+        assert_eq!(s.shell_id(), "sh_test_1");
+        assert_eq!(s.instance_id(), "sh_test_1");
+        assert_eq!(s.pid, pid);
+        assert!(s.alive);
+        assert_eq!(s.rows, 25);
+        assert_eq!(s.cols, 80);
+        assert_eq!(s.display_name.as_deref(), Some("test-shell"));
+
+        let shells = d.list_shells();
+        assert_eq!(shells.len(), 1);
+        assert_eq!(shells[0].shell_id(), "sh_test_1");
+        assert_eq!(shells[0].instance_id(), "sh_test_1");
+        assert_eq!(shells[0].display_name.as_deref(), Some("test-shell"));
+
+        // Resize by shell_id using both resize and shell_resize
+        d.shell_resize("sh_test_1", 30, 100).unwrap();
+        let cap = d.shell_capture("sh_test_1").unwrap();
+        assert_eq!(cap.rows, 30);
+        assert_eq!(cap.cols, 100);
+
+        d.resize("sh_test_1", 35, 110).unwrap();
+        let cap2 = d.capture("sh_test_1").unwrap();
+        assert_eq!(cap2.rows, 35);
+        assert_eq!(cap2.cols, 110);
+
+        // Input by shell_id
+        d.shell_input("sh_test_1", b"echo hello\n").unwrap();
+        d.write_input("sh_test_1", b"echo world\n").unwrap();
+
+        // Attach / detach by shell_id
+        let (tx, _rx) = std::sync::mpsc::channel();
+        d.register_sink(10, tx);
+        let screen = d.shell_attach(10, "sh_test_1").unwrap();
+        assert_eq!(screen.rows, 35);
+        assert_eq!(screen.cols, 110);
+
+        d.shell_detach(10, "sh_test_1");
+
+        d.shutdown();
+    }
 }
+

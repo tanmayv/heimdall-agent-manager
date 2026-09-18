@@ -133,16 +133,31 @@ delete_agent_support_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	// Accept user tokens AND bridge-relayed instance tokens so a running agent can
-	// list instances it owns (agent API v2 `agents instance list`). Same-owner
-	// scoping is enforced by list_instances_filtered via the auth context.
-	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	// Accept user tokens, bridge-relayed instance tokens, and bare bridge tokens
+	// (for the action scheduler). When called with a bare bridge token, instances
+	// are strictly scoped to the calling bridge.
+	auth_ctx, ok, auth_resp := require_auth_or_bridge_token(h.auth, req)
 	if !ok do return auth_resp
 	limit := query_int(req.query, "limit", 50)
 	if limit <= 0 do limit = 50
 	if limit > 200 do limit = 200
 	cursor := query_value(req.query, "cursor")
-	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status"), project_id = query_value(req.query, "project_id")}, limit, cursor)
+	filter := agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status"), project_id = query_value(req.query, "project_id")}
+	if auth_ctx.kind == .Bridge_Token {
+		req_bridge := query_value(req.query, "bridge_id")
+		cross := req_bridge != "" && req_bridge != auth_ctx.bridge_id
+		if cross && h.auth.bridge_auth_mode != .Monitor {
+			return respond_error(domain.domain_error(.Forbidden, "bridge cannot list instances of another bridge"), req.request_id)
+		}
+		if cross {
+			// monitor: allow the cross-bridge listing to proceed as requested, and log it.
+			auth_service.log_bridge_auth_monitor("cross_bridge_list", req.method, req.path, auth_ctx.bridge_id, auth_ctx.user_id, req_bridge, req.request_id)
+			filter.bridge_id = req_bridge
+		} else {
+			filter.bridge_id = auth_ctx.bridge_id
+		}
+	}
+	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, filter, limit, cursor)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
 	next_cursor := ""
@@ -154,15 +169,25 @@ list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 create_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
-	// Accept both human user tokens and bridge-relayed instance tokens so a running
-	// agent (e.g. a chain coordinator) can add/launch another agent into its chain.
-	// require_auth_any resolves the hbr_ bridge token + hit_ instance assertion into
-	// an Auth_Context carrying the owning user_id; create_instance then scopes the
-	// new instance to that same owner (bridge/agent owner-match is enforced there),
-	// so an agent can only spawn agents it already owns.
-	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	// Accept human user tokens, bridge-relayed instance tokens, and bare bridge tokens
+	// (for the action scheduler). When called with a bare bridge token, the instance
+	// MUST be created on that calling bridge.
+	auth_ctx, ok, auth_resp := require_auth_or_bridge_token(h.auth, req)
 	if !ok do return auth_resp
-	inst, created, err := agent_service.create_instance(h.agents, auth_ctx, instance_input_from_body(req.body))
+	input := instance_input_from_body(req.body)
+	if auth_ctx.kind == .Bridge_Token {
+		cross := input.bridge_id != "" && input.bridge_id != auth_ctx.bridge_id
+		if cross && h.auth.bridge_auth_mode != .Monitor {
+			return respond_error(domain.domain_error(.Forbidden, "bridge cannot create instances on another bridge"), req.request_id)
+		}
+		if cross {
+			// monitor: allow creating on the requested bridge, and log it.
+			auth_service.log_bridge_auth_monitor("cross_bridge_create", req.method, req.path, auth_ctx.bridge_id, auth_ctx.user_id, input.bridge_id, req.request_id)
+		} else {
+			input.bridge_id = auth_ctx.bridge_id
+		}
+	}
+	inst, created, err := agent_service.create_instance(h.agents, auth_ctx, input)
 	if !created do return respond_error(err, req.request_id)
 	events.publish_resource_changed(h.event_bus, string(inst.owner_user_id), "agent_instance", inst.agent_instance_id, "created", agent_instance_summary_json(inst))
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)
@@ -179,6 +204,34 @@ agent_instance_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !got do return respond_error(err, req.request_id)
 	b := strings.builder_make(); write_agent_instance_json(&b, inst)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
+get_agent_instance_pane_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	instance_id := path_part(req.path, 4)
+	if strings.contains(instance_id, "/") do return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
+	since_hash := query_value(req.query, "since_hash")
+	width := query_int(req.query, "width", 80)
+	if width <= 0 do width = 80
+	line_limit := query_int(req.query, "line_limit", 120)
+	if line_limit <= 0 do line_limit = 120
+
+	inst, got, err := agent_service.get_instance(h.agents, auth_ctx, instance_id)
+	if !got do return respond_error(err, req.request_id)
+
+	if inst.runtime_status == "stopped" || inst.runtime_status == "failed" {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"ok\":true,\"status\":\"")
+		write_handler_json_string(&b, inst.runtime_status)
+		strings.write_string(&b, "\",\"unchanged\":true,\"hash\":\"\",\"output\":\"\"}")
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+	}
+
+	reply, reply_ok, reply_err := agent_service.get_instance_pane(h.agents, auth_ctx, instance_id, since_hash, width, line_limit)
+	if !reply_ok do return respond_error(reply_err, req.request_id)
+	return respond_success(reply, req.request_id, auth_ctx_server_time(req))
 }
 
 stop_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {

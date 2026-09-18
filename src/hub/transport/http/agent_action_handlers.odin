@@ -16,6 +16,8 @@ import taskchain_service "odin_test:hub/service/taskchain"
 import search_service "odin_test:hub/service/search"
 import events "odin_test:hub/service/events"
 import push_service "odin_test:hub/service/push"
+import card_service "odin_test:hub/service/card"
+import shell_job_service "odin_test:hub/service/shell_job"
 
 Agent_Action_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
@@ -24,6 +26,8 @@ Agent_Action_Handlers :: struct {
 	content: ^content_service.Content_Service,
 	taskchains: ^taskchain_service.Taskchain_Service,
 	search: ^search_service.Search_Service,
+	cards: ^card_service.Card_Service,
+	shell_jobs: ^shell_job_service.Shell_Job_Service,
 	event_bus: ^events.User_Event_Bus,
 	// Web Push (WP-SEND): background delivery of OS notifications when the user's
 	// PWA is closed/backgrounded. public_app_origin builds the absolute click href.
@@ -178,6 +182,29 @@ agent_action_chain_set_description_handler :: proc(ctx: rawptr, req: Request) ->
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
+// agent_action_chain_set_status_handler lets a chain coordinator mutate status (REQ-CHAIN-1).
+agent_action_chain_set_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := strings.trim_space(json_string(params, "chain_id"))
+	if chain_id == "" do chain_id = inst.chain_id
+	if chain_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "chain_id is required"), req.request_id)
+	status_str := strings.trim_space(json_string(params, "status"))
+	if status_str == "" do return respond_error(domain.domain_error(.Validation_Failed, "status is required"), req.request_id)
+	if status_str != "active" && status_str != "completed" && status_str != "cancelled" {
+		return respond_error(domain.domain_error(.Validation_Failed, "invalid chain status; must be active, completed, or cancelled"), req.request_id)
+	}
+	status := taskchain_service.chain_status_from_string(status_str)
+	chain, saved, err := taskchain_service.change_chain_status(h.taskchains, auth, domain.Task_Chain_ID(chain_id), status)
+	if !saved do return respond_error(err, req.request_id)
+	publish_agent_action(h, inst, "chain_status", fmt.tprintf("changed chain status to %s", status_str))
+	b := strings.builder_make()
+	write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 // agent_action_chain_show_handler returns the full chain (incl. description).
 // chain_id is optional: defaults to the caller instance's own chain.
 agent_action_chain_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -188,7 +215,9 @@ agent_action_chain_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := strings.trim_space(json_string(params, "chain_id"))
 	if chain_id == "" do chain_id = inst.chain_id
 	if strings.trim_space(chain_id) == "" do return respond_error(domain.domain_error(.Validation_Failed, "no chain for this instance; pass chain_id"), req.request_id)
-	chain, got, err := taskchain_service.get_chain(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
+	// READ (REQ-SEC-3): owner-scoped; an agent may view any same-owner chain,
+	// including one it is not a member of (passing an explicit chain_id).
+	chain, got, err := taskchain_service.get_chain_for_read(h.taskchains, auth, domain.Task_Chain_ID(chain_id))
 	if !got do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "chain_show", "viewed the chain")
 	b := strings.builder_make()
@@ -211,7 +240,13 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	params := json_object_raw(req.body, "params")
 	limit := json_int(params, "limit", 50)
 	cursor := json_string(params, "cursor")
-	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
+	// Optional cross-agent read: a curator (same owner user) may read another
+	// agent's conversation by passing target_instance_id. get_conversation_by_instance
+	// scopes by auth.user_id, so cross-user access is blocked automatically — no extra
+	// ownership check is needed. Absent target_id falls back to the caller's own inbox.
+	target_id := json_string(params, "target_instance_id")
+	effective_instance_id := target_id != "" ? target_id : inst.agent_instance_id
+	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, effective_instance_id)
 	if !conv_ok do return respond_error(conv_err, req.request_id)
 	
 	unread_only := !strings.contains(params, "\"unread_only\":false") && !strings.contains(params, "\"unread_only\": false")
@@ -221,7 +256,7 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	mark_read := default_mark_read ? (!strings.contains(params, "\"mark_read\":false") && !strings.contains(params, "\"mark_read\": false")) : (strings.contains(params, "\"mark_read\":true") || strings.contains(params, "\"mark_read\": true"))
 
 	filter := content_service.Agent_Inbox_Filter{
-		agent_instance_id=inst.agent_instance_id, 
+		agent_instance_id=effective_instance_id,
 		unread_only=unread_only, 
 		receiver_only=receiver_only, 
 		include_outgoing=include_outgoing, 
@@ -258,8 +293,8 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 	mode_str := unread_only ? "inbox_unread" : "history"
 	
 	fmt.sbprintf(&b, "{{\"conversation\":{{\"conversation_id\":\"%s\",\"agent_instance_id\":\"%s\",\"unread_count_before\":%d,\"unread_count_after\":%d}},\"mode\":\"%s\",\"filters\":{{\"receiver_agent_instance_id\":\"%s\",\"unread_only\":%t,\"receiver_only\":%t,\"include_outgoing\":%t,\"include_debug\":%t,\"mark_read\":%t}},\"messages\":[",
-		conv.conversation_id, inst.agent_instance_id, unread_count_before, unread_count_before - marked_count, mode_str,
-		inst.agent_instance_id, unread_only, receiver_only, include_outgoing, include_debug, mark_read)
+		conv.conversation_id, effective_instance_id, unread_count_before, unread_count_before - marked_count, mode_str,
+		effective_instance_id, unread_only, receiver_only, include_outgoing, include_debug, mark_read)
 
 	next := ""
 	for msg, i in rows { if i > 0 do strings.write_byte(&b, ','); write_message_json(&b, msg, h.content); next = msg.created_at }
@@ -271,9 +306,11 @@ process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark
 
 	// Human-readable activity bubble: 'read inbox (N new)' vs 'checked messages'.
 	if default_mark_read {
-		publish_agent_action(h, inst, "chat_read", fmt.tprintf("read inbox (%d new)", unread_count_before))
+		act := target_id != "" ? fmt.tprintf("read inbox of %s (%d new)", target_id, unread_count_before) : fmt.tprintf("read inbox (%d new)", unread_count_before)
+		publish_agent_action(h, inst, "chat_read", act)
 	} else {
-		publish_agent_action(h, inst, "chat_fetch", "checked messages")
+		act := target_id != "" ? fmt.tprintf("checked messages of %s", target_id) : "checked messages"
+		publish_agent_action(h, inst, "chat_fetch", act)
 	}
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
@@ -339,6 +376,48 @@ agent_action_event_json :: proc(agent_instance_id, action, summary: string) -> s
 	return strings.to_string(b)
 }
 
+// agent_action_event_json_with_shell_status is like agent_action_event_json but
+// appends a shell_status field so the UI can adjust bubble lifetime.
+agent_action_event_json_with_shell_status :: proc(agent_instance_id, action, summary, shell_status: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"agent_action","instance_id":"`)
+	write_handler_json_string(&b, agent_instance_id)
+	strings.write_string(&b, `","action":"`)
+	write_handler_json_string(&b, action)
+	strings.write_string(&b, `","summary":"`)
+	clipped := chat_event_preview(summary, AGENT_ACTION_SUMMARY_MAX)
+	defer delete(clipped)
+	write_handler_json_string(&b, clipped)
+	strings.write_string(&b, `","shell_status":"`)
+	write_handler_json_string(&b, shell_status)
+	strings.write_string(&b, `","ts":`)
+	strings.write_string(&b, fmt.tprintf("%d", time.to_unix_nanoseconds(time.now()) / 1_000_000))
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+// publish_agent_action_shell_cmd publishes a human-friendly shell-job bubble.
+publish_agent_action_shell_cmd :: proc(h: ^Agent_Action_Handlers, inst: domain.Agent_Instance, job: domain.Shell_Job) {
+	if h == nil || h.event_bus == nil do return
+	owner := string(inst.owner_user_id)
+	if owner == "" || inst.agent_instance_id == "" do return
+	cmd_short := job.cmd[:min(len(job.cmd), 50)]
+	summary: string
+	switch job.status {
+	case "running":
+		summary = fmt.tprintf("Background job started: %s", cmd_short)
+	case "completed":
+		exit_str := fmt.tprintf("%d", job.exit_code) if job.exit_code_set else "0"
+		summary = fmt.tprintf("Background job done (exit %s): %s", exit_str, cmd_short)
+	case:
+		exit_str := fmt.tprintf("%d", job.exit_code) if job.exit_code_set else "n/a"
+		summary = fmt.tprintf("Background job failed (exit %s): %s", exit_str, cmd_short)
+	}
+	event := agent_action_event_json_with_shell_status(inst.agent_instance_id, "shell_cmd_report", summary, job.status)
+	defer delete(event)
+	events.publish_raw_to_user(h.event_bus, owner, event)
+}
+
 agent_action_agents_live_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
@@ -390,7 +469,9 @@ agent_action_task_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	params := json_object_raw(req.body, "params")
 	task_id := domain.Task_ID(json_string(params, "task_id"))
 	if strings.trim_space(string(task_id)) == "" do return respond_error(domain.domain_error(.Validation_Failed, "task_id is required"), req.request_id)
-	task, got, err := taskchain_service.get_task(h.taskchains, auth, task_id)
+	// READ (REQ-SEC-3): owner-scoped; an agent may open any same-owner task,
+	// including one in a chain it is not a member of.
+	task, got, err := taskchain_service.get_task_for_read(h.taskchains, auth, task_id)
 	if !got do return respond_error(err, req.request_id)
 	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth, task.chain_id)
 	publish_agent_action(h, inst, "task_show", "opened a task")
@@ -940,6 +1021,251 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	if note_saved { write_message_json(&b, startup_note, h.content) } else { strings.write_string(&b, "null") }
 	strings.write_byte(&b, '}')
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_card_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+
+	project_id := domain.Project_ID(json_string(params, "project_id"))
+	if project_id == "" do project_id = domain.Project_ID(inst.project_id)
+
+	provider := json_string(params, "provider")
+	if provider == "" do provider = domain.CARD_PROVIDER_CURATOR_LLM
+
+	raw_refs, _ := json_raw_field(params, "source_refs")
+	raw_ops, _ := json_raw_field(params, "operations")
+	raw_guard, _ := json_raw_field(params, "guard")
+
+	input := card_service.Card_Input{
+		project_id       = project_id,
+		title            = json_string(params, "title"),
+		rationale        = json_string(params, "rationale"),
+		scope            = json_string(params, "scope"),
+		provider         = provider,
+		confidence       = json_f32(params, "confidence", 1.0),
+		source_refs_json = raw_refs,
+		status           = json_string(params, "status"),
+		operations_json  = raw_ops,
+		guard_json       = raw_guard,
+		snooze_until     = json_string(params, "snooze_until"),
+		ttl_at           = json_string(params, "ttl_at"),
+	}
+
+	card, saved, err := card_service.create_card(h.cards, auth, input)
+	if !saved do return respond_error(err, req.request_id)
+
+	publish_agent_action(h, inst, "card_create", fmt.tprintf("created card \"%s\"", card.title))
+
+	b := strings.builder_make()
+	write_card_json(&b, card)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+agent_action_card_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	limit := json_int(params, "limit", 50)
+	if limit <= 0 do limit = 50
+	if limit > 200 do limit = 200
+
+	project_id := json_string(params, "project_id")
+	filter := card_service.Card_Filter{
+		status     = json_string(params, "status"),
+		scope      = json_string(params, "scope"),
+		provider   = json_string(params, "provider"),
+		project_id = domain.Project_ID(project_id),
+	}
+
+	cards, err := card_service.list_cards(h.cards, auth, filter, limit)
+	if err.code != .None do return respond_error(err, req.request_id)
+	defer delete(cards)
+
+	publish_agent_action(h, inst, "card_list", "listed cards")
+
+	b := strings.builder_make()
+	strings.write_byte(&b, '[')
+	for c, i in cards {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_card_json(&b, c)
+	}
+	strings.write_byte(&b, ']')
+
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = limit, has_more = len(cards) >= limit}, req.request_id, auth_ctx_server_time(req))
+}
+
+agent_action_card_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "card")
+	if card_id == "" do card_id = json_string(params, "id")
+	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)
+
+	card, got, err := card_service.get_card(h.cards, auth, domain.Card_ID(card_id))
+	if !got do return respond_error(err, req.request_id)
+
+	publish_agent_action(h, inst, "card_show", fmt.tprintf("opened card \"%s\"", card.title))
+
+	b := strings.builder_make()
+	write_card_json(&b, card)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_card_discard_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "card")
+	if card_id == "" do card_id = json_string(params, "id")
+	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)
+
+	card, discarded, err := card_service.discard_card(h.cards, auth, domain.Card_ID(card_id))
+	if !discarded do return respond_error(err, req.request_id)
+
+	publish_agent_action(h, inst, "card_discard", fmt.tprintf("discarded card \"%s\"", card.title))
+
+	b := strings.builder_make()
+	write_card_json(&b, card)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_card_accept_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	card_id := json_string(params, "card_id")
+	if card_id == "" do card_id = json_string(params, "card")
+	if card_id == "" do card_id = json_string(params, "id")
+	if card_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "card_id is required"), req.request_id)
+
+	card, accepted, err := card_service.accept_card(h.cards, auth, domain.Card_ID(card_id))
+	if !accepted do return respond_error(err, req.request_id)
+
+	publish_agent_action(h, inst, "card_accept", fmt.tprintf("accepted card \"%s\"", card.title))
+
+	b := strings.builder_make()
+	write_card_json(&b, card)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+// ---- shell command jobs (REQ-15) ----------------------------------------
+// The bridge runs shell commands locally and reports STATUS ONLY here (never
+// output). On a terminal status the service delivers a transient nudge to the
+// agent; no chat/conversation message is ever inserted.
+
+agent_action_shell_cmd_report_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	// The bridge posts this endpoint via a RAW relay (fields at the top level of the
+	// body), while agent/UI callers use the {params:{...}} envelope. Accept both.
+	params := json_object_raw(req.body, "params")
+	if params == "" do params = req.body
+
+	input := shell_job_service.Shell_Job_Report_Input{
+		exec_id           = json_string(params, "exec_id"),
+		status            = json_string(params, "status"),
+		cmd               = json_string(params, "cmd"),
+		started_at        = json_string(params, "started_at"),
+		agent_instance_id = inst.agent_instance_id,
+		bridge_id         = inst.bridge_id,
+	}
+	// Presence of the exit_code key marks it as set, so an exit of 0 is
+	// distinguishable from "still running". Parsed via strconv to accept negative
+	// sentinels (e.g. -1 for the 30-minute hard-kill) that json_int would drop.
+	if raw, has := json_raw_field(params, "exit_code"); has {
+		if v, pok := strconv.parse_int(strings.trim_space(raw)); pok {
+			input.exit_code = int(v)
+			input.exit_code_set = true
+		}
+	}
+
+	job, saved, err := shell_job_service.report_shell_job(h.shell_jobs, auth, input)
+	if !saved do return respond_error(err, req.request_id)
+
+	publish_agent_action_shell_cmd(h, inst, job)
+
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"exec_id":"`)
+	write_handler_json_string(&b, job.exec_id)
+	strings.write_string(&b, `","status":"`)
+	write_handler_json_string(&b, job.status)
+	strings.write_string(&b, `"}`)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_shell_cmd_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+
+	params := json_object_raw(req.body, "params")
+	if params == "" do params = req.body
+	limit := json_int(params, "limit", 50)
+	if limit <= 0 do limit = 50
+	if limit > 200 do limit = 200
+
+	input := shell_job_service.Shell_Job_List_Input{
+		agent_instance_id = inst.agent_instance_id,
+		status            = json_string(params, "status"),
+		limit             = limit,
+	}
+	jobs, err := shell_job_service.list_shell_jobs(h.shell_jobs, auth, input)
+	if err.code != .None do return respond_error(err, req.request_id)
+	defer delete(jobs)
+
+	publish_agent_action(h, inst, "shell_cmd_list", "listed shell jobs")
+
+	b := strings.builder_make()
+	strings.write_byte(&b, '[')
+	for job, i in jobs {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_shell_job_json(&b, job)
+	}
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = limit, has_more = len(jobs) >= limit}, req.request_id, auth_ctx_server_time(req))
+}
+
+// write_shell_job_json serializes a job WITHOUT any output field — command output
+// never leaves the bridge host.
+write_shell_job_json :: proc(b: ^strings.Builder, job: domain.Shell_Job) {
+	strings.write_string(b, `{"exec_id":"`)
+	write_handler_json_string(b, job.exec_id)
+	strings.write_string(b, `","agent_instance_id":"`)
+	write_handler_json_string(b, job.agent_instance_id)
+	strings.write_string(b, `","cmd":"`)
+	cmd_display := job.cmd[:min(len(job.cmd), 200)]
+	write_handler_json_string(b, cmd_display)
+	strings.write_string(b, `","status":"`)
+	write_handler_json_string(b, job.status)
+	strings.write_string(b, `","started_at":"`)
+	write_handler_json_string(b, job.started_at)
+	strings.write_string(b, `","finished_at":"`)
+	write_handler_json_string(b, job.finished_at)
+	strings.write_string(b, `","created_at":"`)
+	write_handler_json_string(b, job.created_at)
+	strings.write_byte(b, '"')
+	if job.exit_code_set {
+		strings.write_string(b, `,"exit_code":`)
+		strings.write_string(b, fmt.tprintf("%d", job.exit_code))
+	}
+	strings.write_byte(b, '}')
 }
 
 agent_action_accepted_handler :: proc(ctx: rawptr, req: Request) -> Response {
