@@ -35,6 +35,7 @@ import { hitRoute, renderPreview } from '../../../utils/searchHit';
 import { Icon, Spinner, StatusDot, type IconName } from '../primitives';
 import { runtimeStatusToTone } from './RuntimeChip';
 import { useDialogA11y } from '../composites/useDialogA11y';
+import { THEMES } from '../../../theme/registry';
 
 export type PaletteConversation = {
   conversationId: string;
@@ -87,13 +88,14 @@ export type PaletteAction = {
   id: string;
   label: string;
   hint?: string;
+  badge?: string;
   icon?: IconName;
   route?: string;
 };
 
 export type PaletteResult =
   | { kind: 'navigate'; label: string; hint?: string; icon?: IconName; route: string; group: 'Navigate' }
-  | { kind: 'action'; label: string; hint?: string; icon?: IconName; actionId: string; route?: string; group: 'Actions' }
+  | { kind: 'action'; label: string; hint?: string; badge?: string; icon?: IconName; actionId: string; route?: string; group: 'Actions' }
   | { kind: 'conversation'; label: string; hint?: string; route: string; group: string; convo: PaletteConversation }
   | { kind: 'entity'; label: string; hint?: string; hit: SearchHit; group: string; route?: string };
 
@@ -114,6 +116,7 @@ const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
   { label: 'Task Chains', icon: 'tasks', route: '/chains' },
   { label: 'Library', icon: 'device', route: '/library' },
   { label: 'Settings', icon: 'gear', route: '/settings/bridges' },
+  { label: 'Appearance', icon: 'spark', route: '/settings/appearance' },
 ];
 
 const DEFAULT_ACTIONS: PaletteAction[] = [
@@ -121,6 +124,14 @@ const DEFAULT_ACTIONS: PaletteAction[] = [
   { id: 'new-agent', label: 'New agent', icon: 'bot', hint: 'Create a durable identity', route: '/agents/new' },
   { id: 'new-chain', label: 'New task chain', icon: 'tasks', hint: 'Start a chain', route: '/chains' },
   { id: 'new-project', label: 'New project', icon: 'grid', hint: 'Grouping + paths', route: '/projects' },
+  { id: 'settings-appearance', label: 'Appearance & Themes', icon: 'spark', hint: 'Theme settings', route: '/settings/appearance' },
+  ...THEMES.map((t) => ({
+    id: `set-theme-${t.id}`,
+    label: `Theme: ${t.label}`,
+    hint: `Switch theme`,
+    badge: t.appearance === 'light' ? 'Light' : 'Dark',
+    icon: 'spark' as IconName,
+  })),
 ];
 
 // Search-call tuning (user-approved): a slightly longer debounce and a 2-char
@@ -285,7 +296,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
 
       const actionItems = q ? actions.filter((a) => matches(a.label, q)) : actions;
       if (actionItems.length) {
-        actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, icon: a.icon, actionId: a.id, route: a.route, group: 'Actions' }));
+        actionItems.forEach((a) => out.push({ kind: 'action', label: a.label, hint: a.hint, badge: a.badge, icon: a.icon, actionId: a.id, route: a.route, group: 'Actions' }));
       }
     }
 
@@ -525,6 +536,11 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
                           <span className="truncate text-caption text-muted">{renderPreview(result.hit.preview)}</span>
                         ) : null}
                       </span>
+                      {result.kind === 'action' && result.badge ? (
+                        <span className="ml-2 inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-white/10 text-muted">
+                          {result.badge}
+                        </span>
+                      ) : null}
                       {unread > 0 ? <span className="ml-auto shrink-0 rounded-full bg-accent px-1.5 text-center text-[10px] font-bold leading-4 text-accent-fg">{unread > 99 ? '99+' : unread}</span> : null}
                       {result.hint && !isMessage ? <span className="ml-auto shrink-0 truncate self-center pl-2 text-caption text-muted">{result.hint}</span> : null}
                     </div>

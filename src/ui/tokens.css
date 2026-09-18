@@ -194,3 +194,146 @@
    * ---------------------------------------------------------------- */
   --fd-surface-3: var(--color-surface-raised);
 }
+
+/* ================================================================ *
+ * Theme Palettes (REQ-THEME-TOKENS)                                *
+ * ================================================================ */
+
+[data-theme="default-dark"] {
+  color-scheme: dark;
+  --color-canvas: #090909;
+  --color-surface: #141414;
+  --color-surface-raised: #1c1c1c;
+  --color-surface-overlay: #0d0f14;
+  --color-border-subtle: #262626;
+  --color-border-strong: #3a3a3a;
+  --color-text-primary: #ffffff;
+  --color-text-muted: #999999;
+  --color-text-faint: #6b6b6b;
+  --color-accent: #0099ff;
+  --color-accent-fg: #000000;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #0099ff;
+
+  --color-focus-ring: color-mix(in oklab, var(--color-accent), transparent 65%);
+  --color-neutral-soft: color-mix(in oklab, var(--color-text-primary), transparent 92%);
+  --color-info-soft: color-mix(in oklab, var(--color-info), transparent 86%);
+  --color-success-soft: color-mix(in oklab, var(--color-success), transparent 86%);
+  --color-warning-soft: color-mix(in oklab, var(--color-warning), transparent 86%);
+  --color-danger-soft: color-mix(in oklab, var(--color-danger), transparent 86%);
+}
+
+[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --color-canvas: #181825;
+  --color-surface: #1e1e2e;
+  --color-surface-raised: #313244;
+  --color-surface-overlay: #11111b;
+  --color-border-subtle: #45475a;
+  --color-border-strong: #585b70;
+  --color-text-primary: #cdd6f4;
+  --color-text-muted: #a6adc8;
+  --color-text-faint: #6c7086;
+  --color-accent: #89b4fa;
+  --color-accent-fg: #1e1e2e;
+  --color-success: #a6e3a1;
+  --color-warning: #fab387;
+  --color-danger: #f38ba8;
+  --color-info: #74c7ec;
+
+  --color-focus-ring: color-mix(in oklab, var(--color-accent), transparent 65%);
+  --color-neutral-soft: color-mix(in oklab, var(--color-text-primary), transparent 92%);
+  --color-info-soft: color-mix(in oklab, var(--color-info), transparent 86%);
+  --color-success-soft: color-mix(in oklab, var(--color-success), transparent 86%);
+  --color-warning-soft: color-mix(in oklab, var(--color-warning), transparent 86%);
+  --color-danger-soft: color-mix(in oklab, var(--color-danger), transparent 86%);
+}
+
+[data-theme="catppuccin-latte"] {
+  color-scheme: light;
+  --color-canvas: #e6e9ef;
+  --color-surface: #eff1f5;
+  --color-surface-raised: #ccd0da;
+  --color-surface-overlay: #dce0e8;
+  --color-border-subtle: #bcc0cc;
+  --color-border-strong: #acb0be;
+  --color-text-primary: #4c4f69;
+  --color-text-muted: #6c6f85;
+  --color-text-faint: #9ca0b0;
+  --color-accent: #1e66f5;
+  --color-accent-fg: #eff1f5;
+  --color-success: #40a02b;
+  --color-warning: #fe640b;
+  --color-danger: #d20f39;
+  --color-info: #209fb5;
+
+  --color-focus-ring: color-mix(in oklab, var(--color-accent), transparent 65%);
+  --color-neutral-soft: color-mix(in oklab, var(--color-text-primary), transparent 90%);
+  --color-info-soft: color-mix(in oklab, var(--color-info), transparent 88%);
+  --color-success-soft: color-mix(in oklab, var(--color-success), transparent 88%);
+  --color-warning-soft: color-mix(in oklab, var(--color-warning), transparent 88%);
+  --color-danger-soft: color-mix(in oklab, var(--color-danger), transparent 88%);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-panel: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-overlay: 0 24px 64px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --color-canvas: #16161e;
+  --color-surface: #1a1b26;
+  --color-surface-raised: #292e42;
+  --color-surface-overlay: #16161e;
+  --color-border-subtle: #414868;
+  --color-border-strong: #565f89;
+  --color-text-primary: #c0caf5;
+  --color-text-muted: #a9b1d6;
+  --color-text-faint: #565f89;
+  --color-accent: #7aa2f7;
+  --color-accent-fg: #1a1b26;
+  --color-success: #9ece6a;
+  --color-warning: #ff9e64;
+  --color-danger: #f7768e;
+  --color-info: #7dcfff;
+
+  --color-focus-ring: color-mix(in oklab, var(--color-accent), transparent 65%);
+  --color-neutral-soft: color-mix(in oklab, var(--color-text-primary), transparent 92%);
+  --color-info-soft: color-mix(in oklab, var(--color-info), transparent 86%);
+  --color-success-soft: color-mix(in oklab, var(--color-success), transparent 86%);
+  --color-warning-soft: color-mix(in oklab, var(--color-warning), transparent 86%);
+  --color-danger-soft: color-mix(in oklab, var(--color-danger), transparent 86%);
+}
+
+[data-theme="tokyo-night-day"] {
+  color-scheme: light;
+  --color-canvas: #d5d6db;
+  --color-surface: #e1e2e7;
+  --color-surface-raised: #c4c8da;
+  --color-surface-overlay: #d5d6db;
+  --color-border-subtle: #8990b3;
+  --color-border-strong: #848cb5;
+  --color-text-primary: #3760bf;
+  --color-text-muted: #6172b0;
+  --color-text-faint: #848cb5;
+  --color-accent: #2e7de9;
+  --color-accent-fg: #e1e2e7;
+  --color-success: #587539;
+  --color-warning: #b15c00;
+  --color-danger: #f52a65;
+  --color-info: #007197;
+
+  --color-focus-ring: color-mix(in oklab, var(--color-accent), transparent 65%);
+  --color-neutral-soft: color-mix(in oklab, var(--color-text-primary), transparent 90%);
+  --color-info-soft: color-mix(in oklab, var(--color-info), transparent 88%);
+  --color-success-soft: color-mix(in oklab, var(--color-success), transparent 88%);
+  --color-warning-soft: color-mix(in oklab, var(--color-warning), transparent 88%);
+  --color-danger-soft: color-mix(in oklab, var(--color-danger), transparent 88%);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-panel: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-overlay: 0 24px 64px rgba(0, 0, 0, 0.12);
+}
+
