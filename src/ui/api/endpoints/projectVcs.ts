@@ -158,6 +158,33 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
         { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `diff::${file}`) },
       ],
     }),
+
+    // Live VCS status (branch, remote, ahead, behind, is_clean).
+    getProjectVcsStatus: build.query<VcsStatus, { projectId: string; bridgeId?: string } | string>({
+      queryFn: async (arg) => {
+        const projectId = typeof arg === 'string' ? arg : arg.projectId;
+        const bridgeId = typeof arg === 'string' ? '' : (arg.bridgeId || '');
+        if (!projectId) {
+          return { data: { ok: false, provider: '', branch: '', remote: '', ahead: 0, behind: 0, is_clean: true, error: { code: 'no_project', message: 'No project ID' } } };
+        }
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = await cookieJsonFetch(`${base(projectId)}/status${suffix}`);
+          return { data: data as VcsStatus };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, arg) => {
+        const projectId = typeof arg === 'string' ? arg : arg.projectId;
+        const bridgeId = typeof arg === 'string' ? '' : (arg.bridgeId || '');
+        return [
+          { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'status') },
+        ];
+      },
+    }),
   }),
 });
 
@@ -168,4 +195,6 @@ export const {
   useLazyListVcsFilesQuery,
   useGetVcsDiffQuery,
   useLazyGetVcsDiffQuery,
+  useGetProjectVcsStatusQuery,
+  useLazyGetProjectVcsStatusQuery,
 } = projectVcsApi;

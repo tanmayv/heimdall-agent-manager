@@ -99,6 +99,8 @@ type ProjectSummary = {
   projectId: string;
   name: string;
   isDefaultConversations?: boolean;
+  projectType?: string;
+  workspaceName?: string;
 };
 
 type ProjectGroup = {
@@ -383,7 +385,9 @@ function normalizeProject(raw: any): ProjectSummary {
   const hasDefaultMarker = raw?.is_default_conversations === true || raw?.isDefaultConversations === true;
   const isSyntheticFallback = projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId;
   const isDefault = hasDefaultMarker || isSyntheticFallback;
-  return { projectId: projectId || (isDefault ? DEFAULT_CONVERSATIONS_PROJECT.projectId : name), name, isDefaultConversations: isDefault };
+  const projectType = String(raw?.project_type || raw?.projectType || '').trim() || (isDefault ? undefined : 'local');
+  const workspaceName = String(raw?.workspace_name || raw?.workspaceName || '').trim() || undefined;
+  return { projectId: projectId || (isDefault ? DEFAULT_CONVERSATIONS_PROJECT.projectId : name), name, isDefaultConversations: isDefault, projectType, workspaceName };
 }
 
 // UI-14: adapt cookie-auth RTK Query sidebar data into the local tree types so
@@ -458,11 +462,17 @@ function buildProjectConversationTree(conversations: ConversationSummary[], live
   const order: string[] = [];
   const descById = new Map<string, ProjectSummary>();
   const rowsByBucket = new Map<string, ConversationSummary[]>();
-  const ensureBucket = (rawId: string, name: string) => {
+  const ensureBucket = (rawId: string, name: string, projectType?: string, workspaceName?: string) => {
     const id = bucketId(rawId);
     if (!descById.has(id)) {
       const isDefault = id === defaultProjectId;
-      descById.set(id, { projectId: id, name: isDefault ? DEFAULT_CONVERSATIONS_PROJECT.name : name, isDefaultConversations: isDefault });
+      descById.set(id, {
+        projectId: id,
+        name: isDefault ? DEFAULT_CONVERSATIONS_PROJECT.name : name,
+        isDefaultConversations: isDefault,
+        projectType,
+        workspaceName,
+      });
       order.push(id);
       rowsByBucket.set(id, []);
     }
@@ -478,7 +488,7 @@ function buildProjectConversationTree(conversations: ConversationSummary[], live
   // API order: project -> chain-group -> agent. Mark the first row of each group
   // (after the first) so the renderer inserts a separator between groups.
   liveProjects.forEach((project) => {
-    const id = ensureBucket(project.projectId, project.name);
+    const id = ensureBucket(project.projectId, project.name, (project as any).projectType, (project as any).workspaceName);
     const rows = rowsByBucket.get(id)!;
     project.chains.forEach((chain) => {
       let firstInGroup = true;
@@ -687,10 +697,26 @@ function ProjectGroupItem({
           aria-controls={`sidebar-project-body-${projectId}`}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[13px] font-semibold text-primary hover:text-primary"
         >
-          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-flex w-4 items-center justify-center text-accent">
+          <span
+            data-debug-id={`sidebar-project-chevron-${projectId}`}
+            className={`inline-flex w-4 items-center justify-center ${
+              projectGroup.project.projectType === 'fig' ? 'text-warning' : 'text-accent'
+            }`}
+          >
             <Icon name={collapsed ? 'folder' : 'folder-open'} size={15} />
           </span>
           <span className="truncate">{projectGroup.project.name}</span>
+          {projectGroup.project.projectType === 'fig' && projectGroup.project.workspaceName ? (
+            <Badge
+              data-debug-id={`sidebar-project-workspace-${projectId}`}
+              tone="warning"
+              emphasis="soft"
+              className="shrink-0 font-mono text-[10px] truncate"
+              title={`CitC Workspace: ${projectGroup.project.workspaceName}`}
+            >
+              {projectGroup.project.workspaceName}
+            </Badge>
+          ) : null}
         </button>
         <button
           type="button"
@@ -800,7 +826,7 @@ function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; act
       data-debug-id={`shell-nav-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
       href={shellHash(item.path)}
       aria-label={collapsed ? item.label : undefined}
-      title={item.description}
+      title={collapsed ? item.label : item.description}
       className={`group flex min-h-9 items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition ${activeClass} ${collapsed ? 'justify-center' : ''}`}
     >
       <span aria-hidden="true" className={`grid h-5 w-5 shrink-0 place-items-center ${active ? 'text-accent' : ''}`}><Icon name={item.icon} size={17} /></span>
@@ -980,11 +1006,14 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const isMobile = viewport === 'mobile';
   const description = routeDescription(path);
   const crumbs = routeBreadcrumbs(path, conversations);
-  const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
+  const isConversationThreadRoute =
+    (path.startsWith('/conversations/') && path !== '/conversations/new') ||
+    path.startsWith('/c/');
   const isKnownRoute = useMemo(() => {
     return [
       '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
+      path.startsWith('/c/') ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/appearance') ||
       path.startsWith('/settings/user-tokens') ||
@@ -998,7 +1027,9 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   }, [path]);
 
   if (isConversationThreadRoute) {
-    const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
+    const agentInstanceId = path.startsWith('/c/')
+      ? decodeSegment(path.slice('/c/'.length))
+      : decodeSegment(path.slice('/conversations/'.length));
     return (
       <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-canvas">
         {/* key by agentInstanceId so switching conversations REMOUNTS the page:

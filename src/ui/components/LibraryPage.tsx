@@ -5,7 +5,6 @@ import {
   useUpdateArtifactMutation,
 } from '../api/endpoints/artifacts';
 import { useListAgentsQuery } from '../api/endpoints/agents';
-import ArtifactUploadButton, { useArtifactUpload } from './ArtifactUpload';
 import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
 
@@ -82,23 +81,6 @@ function timeAgo(unixMs?: number): string {
   return new Date(unixMs).toLocaleDateString();
 }
 
-const KIND_ICON: Record<string, string> = {
-  markdown: '📝',
-  text: '📝',
-  json: '{}',
-  diff: '±',
-  png: '🖼',
-  image: '🖼',
-  jpeg: '🖼',
-  csv: '▦',
-  html: '🌍',
-  unsupported: '📎',
-};
-
-function kindIcon(kind: string): string {
-  return KIND_ICON[String(kind || '').toLowerCase()] || '📎';
-}
-
 function isImage(a: ArtifactRow): boolean {
   return isArtifactImage(a);
 }
@@ -127,7 +109,6 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
   const agentsQuery = useListAgentsQuery(undefined, { skip: !clientToken });
   const [updateArtifact] = useUpdateArtifactMutation();
   const [deleteArtifact] = useDeleteArtifactMutation();
-  const upload = useArtifactUpload({ projectId: '', originKind: 'library_upload', originRef: '' });
 
   const artifacts = useMemo(() => (artifactsQuery.data?.artifacts || []) as ArtifactRow[], [artifactsQuery.data]);
   const agents = agentsQuery?.data?.agents || agentsQuery?.data || [];
@@ -184,7 +165,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              {onBack ? <button type="button" data-debug-id="library-back-btn" onClick={onBack} className="text-muted hover:text-primary">←</button> : null}
+              {onBack ? <button type="button" data-debug-id="library-back-btn" onClick={onBack} aria-label="Back" className="text-muted hover:text-primary"><Icon name="arrow-left" size={14} /></button> : null}
               <h1 data-debug-id="library-title" className="truncate text-lg font-semibold tracking-[-0.01em]">Library</h1>
               <span className="rounded-full border border-subtle bg-neutral-soft px-2 py-0.5 text-caption text-muted">{filtered.length}{filtered.length !== artifacts.length ? ` / ${artifacts.length}` : ''}</span>
             </div>
@@ -197,15 +178,6 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                 <button key={mode} type="button" data-debug-id={`library-view-${mode}`} onClick={() => setViewMode(mode)} className={`rounded-md px-2.5 py-1 text-caption ${viewMode === mode ? 'bg-surface-raised text-primary' : 'text-muted hover:text-primary'}`}>{mode}</button>
               ))}
             </div>
-            {session?.clientToken ? (
-              <ArtifactUploadButton
-                onUploaded={() => artifactsQuery.refetch()}
-                context={{ originKind: 'library_upload', originRef: '' }}
-                debugIdPrefix="library-upload"
-                label="＋ Upload"
-                buttonClassName="rounded-lg border border-accent/30 bg-info-soft px-3 py-1.5 text-[12px] text-accent hover:bg-neutral-soft"
-              />
-            ) : null}
           </div>
         </div>
 
@@ -249,7 +221,7 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
         ) : filtered.length === 0 ? (
           <div data-debug-id="library-empty" className="rounded-2xl border border-dashed border-subtle bg-surface/70 py-16 text-center text-sm text-muted">
             <div className="text-primary">{artifacts.length === 0 ? 'No artifacts yet.' : 'No artifacts match your filters.'}</div>
-            <p className="mt-1 leading-5">{artifacts.length === 0 ? 'Upload an artifact or generate one in a conversation.' : 'Try clearing filters.'}</p>
+            <p className="mt-1 leading-5">{artifacts.length === 0 ? 'Generate an artifact in a conversation.' : 'Try clearing filters.'}</p>
           </div>
         ) : viewMode === 'grid' ? (
           <div data-debug-id="library-grid" className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -262,7 +234,9 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                       {isImage(a) ? (
                         <ArtifactThumbnail artifactId={id} session={session} alt={a?.name || id} />
                       ) : (
-                        <span className="text-3xl opacity-40">{kindIcon(kindLabel(a))}</span>
+                        <span className="flex items-center justify-center text-muted opacity-40">
+                          <Icon name="file" size={32} />
+                        </span>
                       )}
                     </div>
                     <div className="truncate text-sm font-medium text-primary">{a?.name || id}</div>
@@ -316,7 +290,9 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
                         <ArtifactThumbnail artifactId={id} session={session} alt={a?.name || id} />
                       </span>
                     ) : (
-                      <span className="text-base opacity-50">{kindIcon(kindLabel(a))}</span>
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-subtle bg-surface-raised text-muted opacity-60">
+                        <Icon name="file" size={16} />
+                      </span>
                     )}
                     <span className="min-w-0 flex-1 truncate text-primary">{a?.name || id}</span>
                   </button>

@@ -77,7 +77,8 @@ export type IconName =
   | 'maximize'
   | 'minimize'
   | 'bot'
-  | 'save';
+  | 'save'
+  | 'layers';
 
 /** Token size scale → px (the `--icon-*` sizes: 14 / 16 / 20 / 24). */
 export type IconSize = 'sm' | 'md' | 'lg' | 'xl';
@@ -243,7 +244,7 @@ const PATHS: Record<IconName, ReactElement> = {
     </g>
   ),
   spark: <path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round" />,
-  // Celebration / success flourish (replaces the 🎉 emoji strategy).
+  // Celebration / success flourish (replaces the celebration emoji strategy).
   sparkle: (
     <g fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round">
       <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" />
@@ -304,6 +305,13 @@ const PATHS: Record<IconName, ReactElement> = {
       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
       <polyline points="17 21 17 13 7 13 7 21" />
       <polyline points="7 3 7 8 15 8" />
+    </g>
+  ),
+  layers: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
     </g>
   ),
 };

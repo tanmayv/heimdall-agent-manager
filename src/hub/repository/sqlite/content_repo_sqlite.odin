@@ -122,11 +122,11 @@ content_mark_messages_read_sqlite :: proc(ctx:rawptr, owner:domain.User_ID, mess
 	impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil
 	
 	// Create an IN clause with enough ?'s
-	qs := make([dynamic]string)
+	qs := make([dynamic]string, context.temp_allocator)
 	for _ in message_ids { append(&qs, "?") }
-	in_clause := strings.join(qs[:], ",")
+	in_clause := strings.join(qs[:], ",", context.temp_allocator)
 	
-	q:=strings.concatenate({"UPDATE chat_messages SET read_at=? WHERE owner_user_id=? AND message_id IN (", in_clause, ");"})
+	q:=strings.concatenate({"UPDATE chat_messages SET read_at=? WHERE owner_user_id=? AND message_id IN (", in_clause, ");"}, context.temp_allocator)
 	if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return 0,domain.domain_error(.Internal_Error,"failed mark messages read")
 	defer sqlite3_finalize(stmt)
 	
@@ -142,7 +142,133 @@ content_mark_messages_read_sqlite :: proc(ctx:rawptr, owner:domain.User_ID, mess
 
 content_save_artifact_sqlite :: proc(ctx:rawptr, a:domain.Artifact)->(domain.Artifact,bool,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="INSERT INTO artifacts (artifact_id, owner_user_id, kind, name, description, content_type, size_bytes, blob_ref, content, agent_id, agent_instance_id, chain_id, task_id, project_id, mime, ext, sha256, origin_kind, origin_ref, deleted_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(artifact_id) DO UPDATE SET kind=excluded.kind, name=excluded.name, description=excluded.description, content_type=excluded.content_type, size_bytes=excluded.size_bytes, blob_ref=excluded.blob_ref, content=excluded.content, mime=excluded.mime, ext=excluded.ext, sha256=excluded.sha256, origin_kind=excluded.origin_kind, origin_ref=excluded.origin_ref, deleted_at=excluded.deleted_at, updated_at=excluded.updated_at;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed artifact save"); defer sqlite3_finalize(stmt); bind_artifact(stmt,a); if sqlite3_step(stmt)!=SQLITE_DONE do return {},false,domain.domain_error(.Conflict,"artifact could not be saved"); return a,true,{} }
 content_get_artifact_sqlite :: proc(ctx:rawptr,id:string)->(domain.Artifact,bool,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="SELECT artifact_id, owner_user_id, kind, name, description, content_type, size_bytes, blob_ref, content, agent_id, agent_instance_id, chain_id, task_id, project_id, mime, ext, sha256, origin_kind, origin_ref, deleted_at, created_at, updated_at FROM artifacts WHERE artifact_id=?;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed artifact lookup"); defer sqlite3_finalize(stmt); bind_text(stmt,1,id); if sqlite3_step(stmt)!=SQLITE_ROW do return {},false,domain.domain_error(.Not_Found,"artifact not found"); return artifact_from_stmt(stmt),true,{} }
-content_list_artifacts_sqlite :: proc(ctx:rawptr, owner:domain.User_ID)->([]domain.Artifact,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="SELECT artifact_id, owner_user_id, kind, name, description, content_type, size_bytes, blob_ref, content, agent_id, agent_instance_id, chain_id, task_id, project_id, mime, ext, sha256, origin_kind, origin_ref, deleted_at, created_at, updated_at FROM artifacts WHERE owner_user_id=? ORDER BY updated_at DESC;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"failed artifact list"); defer sqlite3_finalize(stmt); bind_text(stmt,1,string(owner)); out:=make([dynamic]domain.Artifact); for sqlite3_step(stmt)==SQLITE_ROW do append(&out,artifact_from_stmt(stmt)); return out[:],{} }
+content_list_artifacts_sqlite :: proc(ctx: rawptr, owner: domain.User_ID, filter: domain.Artifact_List_Filter) -> ([]domain.Artifact, domain.Domain_Error) {
+	impl := (^Content_Repo_SQLite)(ctx)
+	clauses := make([dynamic]string, context.temp_allocator)
+	bind_vals := make([dynamic]string, context.temp_allocator)
+
+	append(&clauses, "owner_user_id = ?")
+	append(&bind_vals, string(owner))
+
+	if string(filter.project_id) != "" {
+		append(&clauses, "project_id = ?")
+		append(&bind_vals, string(filter.project_id))
+	}
+	if filter.agent_instance_id != "" {
+		append(&clauses, "agent_instance_id = ?")
+		append(&bind_vals, filter.agent_instance_id)
+	}
+	if filter.agent_id != "" {
+		append(&clauses, "agent_id = ?")
+		append(&bind_vals, filter.agent_id)
+	}
+	if filter.chain_id != "" {
+		append(&clauses, "chain_id = ?")
+		append(&bind_vals, filter.chain_id)
+	}
+	if filter.task_id != "" {
+		append(&clauses, "task_id = ?")
+		append(&bind_vals, filter.task_id)
+	}
+	if filter.kind != "" {
+		append(&clauses, "kind = ?")
+		append(&bind_vals, filter.kind)
+	}
+	if filter.since != "" {
+		append(&clauses, "created_at >= ?")
+		append(&bind_vals, filter.since)
+	}
+	if filter.until != "" {
+		append(&clauses, "created_at <= ?")
+		append(&bind_vals, filter.until)
+	}
+	if !filter.include_deleted {
+		append(&clauses, "(deleted_at IS NULL OR deleted_at = '')")
+	}
+
+	sort_col := "updated_at"
+	switch strings.to_lower(strings.trim_space(filter.sort_field), context.temp_allocator) {
+	case "created_at":
+		sort_col = "created_at"
+	case "name":
+		sort_col = "name"
+	case "size_bytes":
+		sort_col = "size_bytes"
+	case:
+		sort_col = "updated_at"
+	}
+
+	is_asc := strings.to_lower(strings.trim_space(filter.sort_order), context.temp_allocator) == "asc"
+	sort_dir := "ASC" if is_asc else "DESC"
+
+	if filter.cursor != "" {
+		cursor_val := filter.cursor
+		cursor_id := ""
+		if sep := strings.index_byte(filter.cursor, '|'); sep >= 0 {
+			cursor_val = filter.cursor[:sep]
+			cursor_id = filter.cursor[sep+1:]
+		}
+		if is_asc {
+			if cursor_id != "" {
+				append(&clauses, fmt.tprintf("(%s > ? OR (%s = ? AND artifact_id > ?))", sort_col, sort_col))
+				append(&bind_vals, cursor_val)
+				append(&bind_vals, cursor_val)
+				append(&bind_vals, cursor_id)
+			} else {
+				append(&clauses, fmt.tprintf("%s > ?", sort_col))
+				append(&bind_vals, cursor_val)
+			}
+		} else {
+			if cursor_id != "" {
+				append(&clauses, fmt.tprintf("(%s < ? OR (%s = ? AND artifact_id < ?))", sort_col, sort_col))
+				append(&bind_vals, cursor_val)
+				append(&bind_vals, cursor_val)
+				append(&bind_vals, cursor_id)
+			} else {
+				append(&clauses, fmt.tprintf("%s < ?", sort_col))
+				append(&bind_vals, cursor_val)
+			}
+		}
+	}
+
+	eff_limit := filter.limit
+	if eff_limit <= 0 do eff_limit = 50
+	if eff_limit > 200 do eff_limit = 200
+
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "SELECT artifact_id, owner_user_id, kind, name, description, content_type, size_bytes, blob_ref, agent_id, agent_instance_id, chain_id, task_id, project_id, mime, ext, sha256, origin_kind, origin_ref, deleted_at, created_at, updated_at FROM artifacts WHERE ")
+	for clause, i in clauses {
+		if i > 0 do strings.write_string(&b, " AND ")
+		strings.write_string(&b, clause)
+	}
+	strings.write_string(&b, " ORDER BY ")
+	strings.write_string(&b, sort_col)
+	strings.write_string(&b, " ")
+	strings.write_string(&b, sort_dir)
+	strings.write_string(&b, ", artifact_id ")
+	strings.write_string(&b, sort_dir)
+	strings.write_string(&b, " LIMIT ?;")
+
+	append(&bind_vals, int_s(eff_limit + 1))
+
+	q := strings.to_string(b)
+	stmt: sqlite3_stmt = nil
+	q_c := strings.clone_to_cstring(q, context.temp_allocator)
+	if sqlite3_prepare_v2(impl.conn.db, q_c, -1, &stmt, nil) != SQLITE_OK {
+		return nil, domain.domain_error(.Internal_Error, "failed artifact list")
+	}
+	defer sqlite3_finalize(stmt)
+
+	for val, i in bind_vals {
+		bind_text(stmt, i + 1, val)
+	}
+
+	out := make([dynamic]domain.Artifact)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&out, artifact_summary_from_stmt(stmt))
+	}
+	return out[:], {}
+}
 content_delete_artifact_sqlite :: proc(ctx:rawptr,id:string,owner:domain.User_ID)->(bool,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="DELETE FROM artifacts WHERE artifact_id=? AND owner_user_id=?;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return false,domain.domain_error(.Internal_Error,"failed artifact delete"); defer sqlite3_finalize(stmt); bind_text(stmt,1,id); bind_text(stmt,2,string(owner)); if sqlite3_step(stmt)!=SQLITE_DONE do return false,domain.domain_error(.Internal_Error,"artifact could not be deleted"); return true,{} }
 
 content_save_template_sqlite :: proc(ctx:rawptr,t:domain.Template)->(domain.Template,bool,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="INSERT INTO templates (template_id, owner_user_id, is_system, name, description, persona, instructions, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(template_id) DO UPDATE SET name=excluded.name, description=excluded.description, persona=excluded.persona, instructions=excluded.instructions, updated_at=excluded.updated_at;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed template save"); defer sqlite3_finalize(stmt); bind_template(stmt,t); if sqlite3_step(stmt)!=SQLITE_DONE do return {},false,domain.domain_error(.Conflict,"template could not be saved"); return t,true,{} }
@@ -156,7 +282,7 @@ memory_from_stmt :: proc(s:sqlite3_stmt)->domain.Memory { return domain.Memory{m
 // memory_id_list_to_json encodes a targeting list as a JSON string array for
 // storage. An empty/nil list is stored as "[]" (meaning "applies to all").
 memory_id_list_to_json :: proc(values: []string) -> string {
-	b := strings.builder_make()
+	b := strings.builder_make(context.temp_allocator)
 	strings.write_byte(&b, '[')
 	for v, i in values {
 		if i > 0 do strings.write_byte(&b, ',')
@@ -223,7 +349,33 @@ normalize_message_defaults :: proc(m:domain.Chat_Message)->domain.Chat_Message{ 
 normalize_message_status :: proc(status:string)->string{ if strings.trim_space(status)=="" do return "complete"; return status }
 json_object_or_empty :: proc(value:string)->string{ if strings.trim_space(value)=="" do return "{}"; return value }
 bind_artifact :: proc(s:sqlite3_stmt,a:domain.Artifact){ bind_text(s,1,a.artifact_id);bind_text(s,2,string(a.owner_user_id));bind_text(s,3,a.kind);bind_text(s,4,a.name);bind_text(s,5,a.description);bind_text(s,6,a.content_type);bind_text(s,7,int_s(a.size_bytes));bind_text(s,8,a.blob_ref);bind_text(s,9,a.content);bind_text(s,10,a.agent_id);bind_text(s,11,a.agent_instance_id);bind_text(s,12,a.chain_id);bind_text(s,13,a.task_id);bind_text(s,14,string(a.project_id));bind_text(s,15,a.mime);bind_text(s,16,a.ext);bind_text(s,17,a.sha256);bind_text(s,18,a.origin_kind);bind_text(s,19,a.origin_ref);bind_text(s,20,a.deleted_at);bind_text(s,21,a.created_at);bind_text(s,22,a.updated_at) }
-artifact_from_stmt :: proc(s:sqlite3_stmt)->domain.Artifact { return domain.Artifact{artifact_id=column_text(s,0),owner_user_id=domain.User_ID(column_text(s,1)),kind=column_text(s,2),name=column_text(s,3),description=column_text(s,4),content_type=column_text(s,5),size_bytes=int_v(column_text(s,6)),blob_ref=column_text(s,7),content=column_text(s,8),agent_id=column_text(s,9),agent_instance_id=column_text(s,10),chain_id=column_text(s,11),task_id=column_text(s,12),project_id=domain.Project_ID(column_text(s,13)),mime=column_text(s,14),ext=column_text(s,15),sha256=column_text(s,16),origin_kind=column_text(s,17),origin_ref=column_text(s,18),deleted_at=column_text(s,19),created_at=column_text(s,20),updated_at=column_text(s,21)} }
+artifact_from_stmt :: proc(s:sqlite3_stmt)->domain.Artifact { return domain.Artifact{artifact_id=column_text(s,0),owner_user_id=domain.User_ID(column_text(s,1)),kind=column_text(s,2),name=column_text(s,3),description=column_text(s,4),content_type=column_text(s,5),size_bytes=int_v(column_text_unowned(s,6)),blob_ref=column_text(s,7),content=column_text(s,8),agent_id=column_text(s,9),agent_instance_id=column_text(s,10),chain_id=column_text(s,11),task_id=column_text(s,12),project_id=domain.Project_ID(column_text(s,13)),mime=column_text(s,14),ext=column_text(s,15),sha256=column_text(s,16),origin_kind=column_text(s,17),origin_ref=column_text(s,18),deleted_at=column_text(s,19),created_at=column_text(s,20),updated_at=column_text(s,21)} }
+artifact_summary_from_stmt :: proc(s: sqlite3_stmt) -> domain.Artifact {
+	return domain.Artifact{
+		artifact_id       = column_text(s, 0),
+		owner_user_id     = domain.User_ID(column_text(s, 1)),
+		kind              = column_text(s, 2),
+		name              = column_text(s, 3),
+		description       = column_text(s, 4),
+		content_type      = column_text(s, 5),
+		size_bytes        = int_v(column_text_unowned(s, 6)),
+		blob_ref          = column_text(s, 7),
+		content           = "",
+		agent_id          = column_text(s, 8),
+		agent_instance_id = column_text(s, 9),
+		chain_id          = column_text(s, 10),
+		task_id           = column_text(s, 11),
+		project_id        = domain.Project_ID(column_text(s, 12)),
+		mime              = column_text(s, 13),
+		ext               = column_text(s, 14),
+		sha256            = column_text(s, 15),
+		origin_kind       = column_text(s, 16),
+		origin_ref        = column_text(s, 17),
+		deleted_at        = column_text(s, 18),
+		created_at        = column_text(s, 19),
+		updated_at        = column_text(s, 20),
+	}
+}
 bind_template :: proc(s:sqlite3_stmt,t:domain.Template){ bind_text(s,1,t.template_id);bind_text(s,2,string(t.owner_user_id));bind_text(s,3,"1" if t.is_system else "0");bind_text(s,4,t.name);bind_text(s,5,t.description);bind_text(s,6,t.persona);bind_text(s,7,t.instructions);bind_text(s,8,t.created_at);bind_text(s,9,t.updated_at) }
 template_from_stmt :: proc(s:sqlite3_stmt)->domain.Template { return domain.Template{template_id=column_text(s,0),owner_user_id=domain.User_ID(column_text(s,1)),is_system=column_text(s,2)=="1",name=column_text(s,3),description=column_text(s,4),persona=column_text(s,5),instructions=column_text(s,6),created_at=column_text(s,7),updated_at=column_text(s,8)} }
 int_s :: proc(v:int)->string { return fmt.tprintf("%d",v) }

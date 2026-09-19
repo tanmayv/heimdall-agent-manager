@@ -646,7 +646,11 @@ MIGRATION_038_ACTION_INSTANCE_STRATEGY :: #load("migrations/038_action_instance_
 // and is never stored in the hub.
 MIGRATION_039_SHELL_JOBS :: #load("migrations/039_shell_jobs.sql", string)
 
-migration_order :: [39]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql"}
+// MIGRATION_040_ARTIFACT_LIST_INDEXES creates composite covering indexes on the
+// artifacts table for fast filtering and pagination (REQ-ARTIFACT-DB-INDEXES).
+MIGRATION_040_ARTIFACT_LIST_INDEXES :: #load("migrations/040_artifact_list_indexes.sql", string)
+
+migration_order :: [40]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -732,6 +736,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "040_artifact_list_indexes.sql" && sqlite_object_exists(conn, "idx_artifacts_owner_created") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -758,14 +766,17 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_memory_description_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory description schema upgrade failed")
 	if !upgrade_cards_schema(conn) do return false, domain.domain_error(.Internal_Error, "cards schema upgrade failed")
 	if !upgrade_projects_state_schema(conn) do return false, domain.domain_error(.Internal_Error, "projects state schema upgrade failed")
+	if !upgrade_artifact_indexes_schema(conn) do return false, domain.domain_error(.Internal_Error, "artifact indexes schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
 migration_sql :: proc(name, migrations_dir: string) -> string {
-	path := strings.concatenate({migrations_dir, "/", name})
-	data, err := os.read_entire_file(path, context.allocator)
-	if err == nil {
-		return strings.clone(string(data))
+	if migrations_dir != "" {
+		path := strings.concatenate({migrations_dir, "/", name}, context.temp_allocator)
+		data, err := os.read_entire_file(path, context.allocator)
+		if err == nil {
+			return string(data)
+		}
 	}
 	if name == "001_foundation.sql" do return strings.clone(MIGRATION_001_FOUNDATION)
 	if name == "002_owner_scoped_core.sql" do return strings.clone(MIGRATION_002_OWNER_SCOPED_CORE)
@@ -806,6 +817,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "037_project_state.sql" do return strings.clone(MIGRATION_037_PROJECT_STATE)
 	if name == "038_action_instance_strategy.sql" do return strings.clone(MIGRATION_038_ACTION_INSTANCE_STRATEGY)
 	if name == "039_shell_jobs.sql" do return strings.clone(MIGRATION_039_SHELL_JOBS)
+	if name == "040_artifact_list_indexes.sql" do return strings.clone(MIGRATION_040_ARTIFACT_LIST_INDEXES)
 	return ""
 }
 
@@ -846,7 +858,7 @@ fts5_available :: proc(conn: ^Conn) -> bool {
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	if sqlite3_step(stmt) != SQLITE_ROW do return false
-	return int_v(column_text(stmt, 0)) > 0
+	return int_v(column_text_unowned(stmt, 0)) > 0
 }
 
 // sqlite_object_exists reports whether a table/vtable/trigger of the given name
@@ -867,13 +879,13 @@ table_column_exists :: proc(conn: ^Conn, table_name, column_name: string) -> boo
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	for sqlite3_step(stmt) == SQLITE_ROW {
-		if column_text(stmt, 1) == column_name do return true
+		if column_text_unowned(stmt, 1) == column_name do return true
 	}
 	return false
 }
 
 escape_sql_literal :: proc(value: string) -> string {
-	builder := strings.builder_make()
+	builder := strings.builder_make(context.temp_allocator)
 	for ch in value {
 		if ch == '\'' {
 			strings.write_string(&builder, "''")
@@ -1085,5 +1097,13 @@ upgrade_projects_state_schema :: proc(conn: ^Conn) -> bool {
 	return true
 }
 
-
-
+// upgrade_artifact_indexes_schema idempotently ensures the composite indexes
+// for the artifacts table exist (REQ-ARTIFACT-DB-INDEXES).
+upgrade_artifact_indexes_schema :: proc(conn: ^Conn) -> bool {
+	return exec(conn, `CREATE INDEX IF NOT EXISTS idx_artifacts_owner_project_created ON artifacts(owner_user_id, project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_owner_instance_created ON artifacts(owner_user_id, agent_instance_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_owner_chain_created ON artifacts(owner_user_id, chain_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_owner_task_created ON artifacts(owner_user_id, task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_owner_created ON artifacts(owner_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_owner_updated ON artifacts(owner_user_id, updated_at DESC);`)
+}

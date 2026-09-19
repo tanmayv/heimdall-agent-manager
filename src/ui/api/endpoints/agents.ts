@@ -677,3 +677,11 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
 }
 
 export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useCreateAgentTemplateMutation, useUpdateAgentTemplateMutation, useDeleteAgentTemplateMutation, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useFetchAgentInstanceQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useStartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useGetAgentPaneQuery, useLazyGetAgentPaneQuery, useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } = agentsApi;
+
+export function useStartInstanceMutation() {
+  const [mutate, result] = useStartAgentInstanceMutation();
+  const trigger = (arg: string | { instanceId: string; agentId?: string }) => {
+    return mutate(typeof arg === 'string' ? { instanceId: arg } : arg);
+  };
+  return [trigger, result] as const;
+}

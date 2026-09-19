@@ -14,6 +14,20 @@ type ArtifactListArgs = ArtifactAuthArgs & {
   includeDeleted?: boolean;
   limit?: number;
   offset?: number;
+  agent_instance_id?: string;
+  agentInstanceId?: string;
+  agent_id?: string;
+  agentId?: string;
+  chain_id?: string;
+  chainId?: string;
+  task_id?: string;
+  taskId?: string;
+  kind?: string;
+  since?: string;
+  until?: string;
+  sort?: string;
+  order?: string;
+  cursor?: string;
 };
 
 type ArtifactCreateArgs = ArtifactAuthArgs & {
@@ -23,6 +37,13 @@ type ArtifactCreateArgs = ArtifactAuthArgs & {
   mime?: string;
   ext?: string;
   projectId?: string;
+  project_id?: string;
+  agentId?: string;
+  agent_id?: string;
+  agentInstanceId?: string;
+  agent_instance_id?: string;
+  chainId?: string;
+  chain_id?: string;
   description?: string;
   originKind?: string;
   originRef?: string;
@@ -229,30 +250,164 @@ function withoutArtifactAuthArgs<T extends ArtifactAuthArgs>(args: T): Omit<T, k
 export const artifactsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listArtifacts: build.query<any, ArtifactListArgs>({
-      queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 20, offset = 0 }, { session }) => {
-        const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit, offset });
+      queryFn: withSessionQuery(async (args, { session }) => {
+        const {
+          projectId = '',
+          creatorId = '',
+          originRef = '',
+          includeDeleted = false,
+          limit = 20,
+          offset = 0,
+          agent_instance_id,
+          agentInstanceId,
+          agent_id,
+          agentId,
+          chain_id,
+          chainId,
+          task_id,
+          taskId,
+          kind,
+          since,
+          until,
+          sort,
+          order,
+          cursor,
+        } = args || {};
+        const data = await daemonApi.listArtifacts({
+          ...auth(session),
+          projectId,
+          creatorId,
+          originRef,
+          includeDeleted,
+          limit,
+          offset,
+          agent_instance_id,
+          agentInstanceId,
+          agent_id,
+          agentId,
+          chain_id,
+          chainId,
+          task_id,
+          taskId,
+          kind,
+          since,
+          until,
+          sort,
+          order,
+          cursor,
+        });
         return { ...data, artifacts: normalizeArtifacts(data) };
       }),
-      providesTags: (result, _error, { projectId = '', originRef = '' }) => [
+      providesTags: (result, _error, { projectId = '', originRef = '', chainId = '', chain_id = '' }) => [
         { type: 'Artifact' as const, id: projectListTag(projectId) },
         ...(originRef ? [{ type: 'Artifact' as const, id: originListTag(originRef) }] : []),
+        ...(chainId || chain_id ? [{ type: 'Artifact' as const, id: `CHAIN_LIST:${chainId || chain_id}` }] : []),
         ...((result?.artifacts || []).map((artifact: any) => ({ type: 'Artifact' as const, id: artifactIdOf(artifact) })).filter((tag: any) => Boolean(tag.id))),
       ],
     }),
     fetchArtifactsPage: build.query<any, ArtifactListArgs & { offset: number }>({
-      queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 20, offset }, { session }) => {
-        const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit, offset });
+      queryFn: withSessionQuery(async (args, { session }) => {
+        const {
+          projectId = '',
+          creatorId = '',
+          originRef = '',
+          includeDeleted = false,
+          limit = 20,
+          offset = 0,
+          agent_instance_id,
+          agentInstanceId,
+          agent_id,
+          agentId,
+          chain_id,
+          chainId,
+          task_id,
+          taskId,
+          kind,
+          since,
+          until,
+          sort,
+          order,
+          cursor,
+        } = args || {};
+        const data = await daemonApi.listArtifacts({
+          ...auth(session),
+          projectId,
+          creatorId,
+          originRef,
+          includeDeleted,
+          limit,
+          offset,
+          agent_instance_id,
+          agentInstanceId,
+          agent_id,
+          agentId,
+          chain_id,
+          chainId,
+          task_id,
+          taskId,
+          kind,
+          since,
+          until,
+          sort,
+          order,
+          cursor,
+        });
         return { ...data, artifacts: normalizeArtifacts(data) };
       }),
       async onQueryStarted(arg, { dispatch, queryFulfilled }) {
         try {
           const { data } = await queryFulfilled;
-          const { projectId, creatorId, originRef, includeDeleted, limit = 20, daemonUrl, clientToken } = arg;
-          const cacheKeyArgs = { projectId, creatorId, originRef, includeDeleted, limit, daemonUrl, clientToken };
+          const {
+            projectId,
+            creatorId,
+            originRef,
+            includeDeleted,
+            limit = 20,
+            daemonUrl,
+            clientToken,
+            agent_instance_id,
+            agentInstanceId,
+            agent_id,
+            agentId,
+            chain_id,
+            chainId,
+            task_id,
+            taskId,
+            kind,
+            since,
+            until,
+            sort,
+            order,
+            cursor,
+          } = arg;
+          const cacheKeyArgs = {
+            projectId,
+            creatorId,
+            originRef,
+            includeDeleted,
+            limit,
+            daemonUrl,
+            clientToken,
+            agent_instance_id,
+            agentInstanceId,
+            agent_id,
+            agentId,
+            chain_id,
+            chainId,
+            task_id,
+            taskId,
+            kind,
+            since,
+            until,
+            sort,
+            order,
+            cursor,
+          };
           dispatch(
             artifactsApi.util.updateQueryData('listArtifacts', cacheKeyArgs, (draft) => {
               if (!draft) return;
               draft.has_more = data.has_more;
+              draft.next_cursor = data.next_cursor;
               draft.next_offset = data.next_offset;
               draft.total = data.total;
               
@@ -332,11 +487,13 @@ export const artifactsApi = heimdallApi.injectEndpoints({
         const artifact = normalizeArtifact(data?.artifact || data?.data || data);
         return { ...data, artifact, link: artifact?.link || (artifact?.artifact_id ? `artifact://${artifact.artifact_id}` : '') };
       }),
-      invalidatesTags: (result, _error, { projectId = '', originRef = '' }) => {
+      invalidatesTags: (result, _error, { projectId = '', originRef = '', chainId = '', chain_id = '' }) => {
         const artifactId = artifactIdOf(result?.artifact);
+        const resolvedChainId = chainId || chain_id || result?.artifact?.chain_id || result?.artifact?.chainId;
         return [
           { type: 'Artifact' as const, id: projectListTag(projectId || result?.artifact?.project_id || result?.artifact?.projectId || '') },
           ...(originRef || result?.artifact?.origin_ref ? [{ type: 'Artifact' as const, id: originListTag(originRef || result?.artifact?.origin_ref || result?.artifact?.originRef || '') }] : []),
+          ...(resolvedChainId ? [{ type: 'Artifact' as const, id: `CHAIN_LIST:${resolvedChainId}` }] : []),
           ...(artifactId ? [
             { type: 'Artifact' as const, id: artifactId },
             { type: 'ArtifactContent' as const, id: artifactId },

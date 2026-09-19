@@ -690,7 +690,47 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-export async function createArtifact({ daemonUrl, clientToken, file, name, kind = '', mime = '', ext = '', projectId = '', description = '', originKind = '', originRef = '', contentBase64 = '' }: { daemonUrl: string; clientToken: string; file?: File | Blob | null; name: string; kind?: string; mime?: string; ext?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string }) {
+export async function createArtifact({
+  daemonUrl,
+  clientToken,
+  file,
+  name,
+  kind = '',
+  mime = '',
+  ext = '',
+  projectId = '',
+  project_id = '',
+  agentId = '',
+  agent_id = '',
+  agentInstanceId = '',
+  agent_instance_id = '',
+  chainId = '',
+  chain_id = '',
+  description = '',
+  originKind = '',
+  originRef = '',
+  contentBase64 = '',
+}: {
+  daemonUrl: string;
+  clientToken: string;
+  file?: File | Blob | null;
+  name: string;
+  kind?: string;
+  mime?: string;
+  ext?: string;
+  projectId?: string;
+  project_id?: string;
+  agentId?: string;
+  agent_id?: string;
+  agentInstanceId?: string;
+  agent_instance_id?: string;
+  chainId?: string;
+  chain_id?: string;
+  description?: string;
+  originKind?: string;
+  originRef?: string;
+  contentBase64?: string;
+}) {
   // Use the JSON/base64 artifact API for browser-selected files. Chromium/Electron
   // may stream multipart FormData with Transfer-Encoding: chunked; the lightweight
   // Hub HTTP server is Content-Length based, so that path can fail at the network
@@ -698,13 +738,22 @@ export async function createArtifact({ daemonUrl, clientToken, file, name, kind 
   // fixed-length and works consistently in the browser, dev proxy, and Electron
   // fetch bridge while preserving the same artifact endpoint contract.
   const uploadBase64 = file ? await blobToBase64(file) : contentBase64;
+  const resolvedProjectId = sanitizeProjectId(project_id || projectId);
+  const resolvedAgentId = agent_id || agentId;
+  const resolvedAgentInstanceId = agent_instance_id || agentInstanceId;
+  const resolvedChainId = chain_id || chainId;
+
   const body: any = {
     name,
     kind,
-    project_id: sanitizeProjectId(projectId),
+    project_id: resolvedProjectId,
     description,
     content_base64: uploadBase64,
   };
+  if (resolvedAgentId) body.agent_id = resolvedAgentId;
+  if (resolvedAgentInstanceId) body.agent_instance_id = resolvedAgentInstanceId;
+  if (resolvedChainId) body.chain_id = resolvedChainId;
+
   const finalMime = mime || (file ? String((file as any).type || '') : '');
   const finalExt = ext || extensionFromNameOrMime(name, finalMime);
   if (finalMime) body.mime = finalMime;
@@ -741,13 +790,73 @@ export function artifactContentUrl({ daemonUrl, artifactId, version }: { daemonU
   return joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content${suffix}`);
 }
 
-export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100, offset = 0 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number; offset?: number }) {
+export async function listArtifacts({
+  daemonUrl,
+  clientToken,
+  projectId = '',
+  creatorId = '',
+  originRef = '',
+  includeDeleted = false,
+  limit = 100,
+  offset = 0,
+  agent_instance_id = '',
+  agentInstanceId = '',
+  agent_id = '',
+  agentId = '',
+  chain_id = '',
+  chainId = '',
+  task_id = '',
+  taskId = '',
+  kind = '',
+  since = '',
+  until = '',
+  sort = '',
+  order = '',
+  cursor = '',
+}: {
+  daemonUrl: string;
+  clientToken: string;
+  projectId?: string;
+  creatorId?: string;
+  originRef?: string;
+  includeDeleted?: boolean;
+  limit?: number;
+  offset?: number;
+  agent_instance_id?: string;
+  agentInstanceId?: string;
+  agent_id?: string;
+  agentId?: string;
+  chain_id?: string;
+  chainId?: string;
+  task_id?: string;
+  taskId?: string;
+  kind?: string;
+  since?: string;
+  until?: string;
+  sort?: string;
+  order?: string;
+  cursor?: string;
+}) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const sanitizedProjectId = sanitizeProjectId(projectId);
   if (sanitizedProjectId) params.set('project_id', sanitizedProjectId);
   if (creatorId) params.set('creator_id', creatorId);
   if (originRef) params.set('origin_ref', originRef);
   if (includeDeleted) params.set('include_deleted', 'true');
+  const resolvedAgentInstanceId = agent_instance_id || agentInstanceId;
+  if (resolvedAgentInstanceId) params.set('agent_instance_id', resolvedAgentInstanceId);
+  const resolvedAgentId = agent_id || agentId;
+  if (resolvedAgentId) params.set('agent_id', resolvedAgentId);
+  const resolvedChainId = chain_id || chainId;
+  if (resolvedChainId) params.set('chain_id', resolvedChainId);
+  const resolvedTaskId = task_id || taskId;
+  if (resolvedTaskId) params.set('task_id', resolvedTaskId);
+  if (kind) params.set('kind', kind);
+  if (since) params.set('since', since);
+  if (until) params.set('until', until);
+  if (sort) params.set('sort', sort);
+  if (order) params.set('order', order);
+  if (cursor) params.set('cursor', cursor);
   return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts?${params.toString()}`), {
     method: 'GET',
     headers: bearerHeaders(clientToken),

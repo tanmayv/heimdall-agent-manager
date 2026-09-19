@@ -770,14 +770,70 @@ agent_action_artifact_list_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
-	rows, err := content_service.list_artifacts(h.content, auth)
+
+	params := json_object_raw(req.body, "params")
+	if params == "" do params = req.body
+
+	project_id := json_string(params, "project_id")
+	agent_instance_id := json_string(params, "agent_instance_id")
+	agent_id := json_string(params, "agent_id")
+	chain_id := json_string(params, "chain_id")
+	task_id := json_string(params, "task_id")
+	kind := json_string(params, "kind")
+	since := json_string(params, "since")
+	until := json_string(params, "until")
+	include_deleted := json_bool(params, "include_deleted")
+	sort := json_string(params, "sort")
+	if sort == "" do sort = json_string(params, "sort_field")
+	order := json_string(params, "order")
+	if order == "" do order = json_string(params, "sort_order")
+	limit := json_int(params, "limit", 50)
+	cursor := json_string(params, "cursor")
+
+	filter := domain.Artifact_List_Filter{
+		project_id        = domain.Project_ID(project_id),
+		agent_instance_id = agent_instance_id,
+		agent_id          = agent_id,
+		chain_id          = chain_id,
+		task_id           = task_id,
+		kind              = kind,
+		since             = since,
+		until             = until,
+		include_deleted   = include_deleted,
+		sort_field        = sort,
+		sort_order        = order,
+		limit             = limit,
+		cursor            = cursor,
+	}
+
+	rows, err := content_service.list_artifacts(h.content, auth, filter)
 	if err.code != .None do return respond_error(err, req.request_id)
+	defer domain.artifacts_destroy(rows)
+
 	publish_agent_action(h, inst, "artifact_list", "listed artifacts")
+
+	eff_limit := limit
+	if eff_limit <= 0 do eff_limit = 50
+	if eff_limit > 200 do eff_limit = 200
+
+	has_more := len(rows) > eff_limit
+	page_count := len(rows)
+	if page_count > eff_limit do page_count = eff_limit
+
 	b := strings.builder_make()
 	strings.write_byte(&b, '[')
-	for artifact, i in rows { if i > 0 do strings.write_byte(&b, ','); write_artifact_json(&b, artifact, false) }
+	for i in 0..<page_count {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_artifact_json(&b, rows[i], false)
+	}
 	strings.write_byte(&b, ']')
-	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+
+	next_cursor := ""
+	if has_more && page_count > 0 {
+		next_cursor = artifact_page_cursor(rows[page_count - 1], filter.sort_field)
+	}
+
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = eff_limit, next_cursor = next_cursor, has_more = has_more}, req.request_id, auth_ctx_server_time(req))
 }
 
 agent_action_artifact_show_handler :: proc(ctx: rawptr, req: Request) -> Response {

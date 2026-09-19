@@ -533,7 +533,7 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 ctl_agentmode_artifacts_v2 :: proc(endpoint, token, verb: string, tokens, args: []string) {
 	switch verb {
 	case "", "list":
-		ctl_agent_call(endpoint, token, "agent.artifact.list", "{}")
+		ctl_agent_call(endpoint, token, "agent.artifact.list", ctl_agentmode_artifact_list_params(args))
 	case "create":
 		name := option_value(args, "--name", "")
 		kind := option_value(args, "--kind", "markdown")
@@ -550,6 +550,7 @@ ctl_agentmode_artifacts_v2 :: proc(endpoint, token, verb: string, tokens, args: 
 		ctl_agent_call(endpoint, token, "agent.artifact.create", json_object_from_slice(fields[:]))
 	case "show":
 		artifact_id := pos(tokens, 1)
+		if artifact_id == "" do artifact_id = option_value(args, "--artifact-id", option_value(args, "--artifact", option_value(args, "--id", "")))
 		if artifact_id == "" { print_agent_help([]string{"artifact"}); return }
 		fields := make([dynamic]string)
 		append(&fields, json_kv("artifact_id", artifact_id))
@@ -557,16 +558,37 @@ ctl_agentmode_artifacts_v2 :: proc(endpoint, token, verb: string, tokens, args: 
 		ctl_agent_call(endpoint, token, "agent.artifact.show", json_object_from_slice(fields[:]))
 	case "content", "get", "read":
 		artifact_id := pos(tokens, 1)
+		if artifact_id == "" do artifact_id = option_value(args, "--artifact-id", option_value(args, "--artifact", option_value(args, "--id", "")))
 		if artifact_id == "" { print_agent_help([]string{"artifact"}); return }
 		ctl_agent_artifact_content(endpoint, token, artifact_id)
 	case "download":
 		artifact_id := pos(tokens, 1)
+		if artifact_id == "" do artifact_id = option_value(args, "--artifact-id", option_value(args, "--artifact", option_value(args, "--id", "")))
 		dir := option_value(args, "--dir", option_value(args, "--out", ""))
 		if artifact_id == "" || dir == "" { print_agent_help([]string{"artifact"}); return }
 		ctl_agent_artifact_download(endpoint, token, artifact_id, dir)
 	case:
 		print_agent_help([]string{"artifact"})
 	}
+}
+
+ctl_agentmode_artifact_list_params :: proc(args: []string) -> string {
+	fields := make([dynamic]string)
+	defer delete(fields)
+	if p := option_value(args, "--project", option_value(args, "--project-id", "")); p != "" do append(&fields, json_kv("project_id", p))
+	if ai := option_value(args, "--agent-instance", option_value(args, "--agent-instance-id", "")); ai != "" do append(&fields, json_kv("agent_instance_id", ai))
+	if a := option_value(args, "--agent", option_value(args, "--agent-id", "")); a != "" do append(&fields, json_kv("agent_id", a))
+	if t := option_value(args, "--task", option_value(args, "--task-id", "")); t != "" do append(&fields, json_kv("task_id", t))
+	if c := option_value(args, "--chain", option_value(args, "--chain-id", "")); c != "" do append(&fields, json_kv("chain_id", c))
+	if k := option_value(args, "--kind", ""); k != "" do append(&fields, json_kv("kind", k))
+	if s := option_value(args, "--since", ""); s != "" do append(&fields, json_kv("since", s))
+	if u := option_value(args, "--until", ""); u != "" do append(&fields, json_kv("until", u))
+	if s := option_value(args, "--sort", option_value(args, "--sort-field", "")); s != "" do append(&fields, json_kv("sort", s))
+	if o := option_value(args, "--order", option_value(args, "--sort-order", "")); o != "" do append(&fields, json_kv("order", o))
+	if l := option_value(args, "--limit", ""); l != "" do append(&fields, json_kv_raw("limit", l))
+	if cur := option_value(args, "--cursor", ""); cur != "" do append(&fields, json_kv("cursor", cur))
+	if has_flag(args, "--include-deleted") do append(&fields, json_kv_raw("include_deleted", "true"))
+	return json_object_from_slice(fields[:])
 }
 
 ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string) {
@@ -1319,14 +1341,17 @@ print_help_artifact :: proc() {
 	fmt.println("ham-ctl artifact — create / read / download artifacts")
 	fmt.println("")
 	fmt.println("VERBS")
-	fmt.println("  list")
+	fmt.println("  list [--project <id>] [--agent-instance <id>] [--task <id>] [--chain <id>]")
+	fmt.println("       [--kind <kind>] [--since <ts>] [--until <ts>] [--sort <field>]")
+	fmt.println("       [--order <asc|desc>] [--limit <n>] [--cursor <c>] [--include-deleted]")
 	fmt.println("  create --name <name> [--kind <kind>] [--content <text>|--file <path>|--stdin]")
 	fmt.println("  show <artifact-id> [--with-content]")
 	fmt.println("  content <artifact-id>                Print the raw artifact content.")
 	fmt.println("  download <artifact-id> --dir <dir>   Write to a file (inferred extension).")
 	fmt.println("")
 	fmt.println("EXAMPLES")
-	fmt.println("  ham-ctl artifact list")
+	fmt.println("  ham-ctl artifact list --limit 10")
+	fmt.println("  ham-ctl artifact list --kind markdown --sort created_at --order desc")
 	fmt.println("  ham-ctl artifact create --name test-log --kind markdown --file /tmp/test.log")
 	fmt.println("  ham-ctl artifact content art_123")
 	fmt.println("  ham-ctl artifact download art_123 --dir /tmp")
