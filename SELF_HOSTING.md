@@ -248,15 +248,22 @@ cp target/release/ham-pty-host ~/bin/ham-pty-host
 
 ### 2.4 First-time enrollment
 
-The hub uses enrollment tokens to issue a durable bridge token (`hbr_…`). This only
-needs to happen once per bridge installation.
+The hub uses a one-time enrollment token to issue a durable bridge token (`hbr_…`).
+**Enrollment must be completed before the bridge can connect** — the bridge will refuse
+to start (or will immediately exit) if it has no valid token file. Once enrollment is
+done, you simply start (or restart) the bridge normally using the same token file; no
+re-enrollment is ever needed unless the token is lost or explicitly revoked.
+
+> **Order matters:** run `ham-bridge enroll` first, then start `ham-bridge`. You cannot
+> enroll through a running bridge instance — enrollment is a one-shot CLI command that
+> writes the token file and then exits.
 
 **Step 1 — Generate an enrollment token on the hub**
 
 ```bash
 # On the hub machine (or via ham-ctl pointing at hub):
 ham-ctl bridge enroll-token --new
-# → prints a one-time token like: hbe_...
+# → prints a one-time token like: hbe_...  (copy it — it is shown only once)
 ```
 
 **Step 2 — Enroll the bridge on the device**
@@ -269,24 +276,30 @@ ham-bridge enroll \
   --hub https://hub.example.com \
   --enrollment-token hbe_... \
   --bridge-token-file ~/.config/heimdall/bridge-token
-# → Writes hbr_... to ~/.config/heimdall/bridge-token (mode 0600)
+# → Contacts the hub, exchanges the enrollment token for a durable hbr_ token,
+#   and writes it to ~/.config/heimdall/bridge-token (mode 0600).
+#   The command exits when enrollment is complete.
 ```
 
-**Step 3 — Verify the enrollment**
+**Step 3 — Start (or restart) the bridge normally**
+
+After enrollment the bridge is started exactly the same way every time — just point it
+at the token file. No enrollment flags are needed again.
 
 ```bash
-# The bridge token file now holds the durable hbr_ token:
-cat ~/.config/heimdall/bridge-token   # hbr_...
-
-# Start the bridge to confirm it can connect:
 ham-bridge \
   --hub https://hub.example.com \
   --bridge-token-file ~/.config/heimdall/bridge-token \
   --port 49323
+
+# Or, if you set up the systemd/launchd service (sections 2.7–2.8):
+systemctl --user restart heimdall-bridge   # Linux
+launchctl kickstart -k gui/$(id -u)/works.earendil.heimdall-bridge  # macOS
 ```
 
-After enrollment you never need to touch the hub again for this device. The bridge
-reads its token file on every start.
+The bridge reads the token file on every start and reconnects to the hub automatically.
+You never need to touch the hub again for this device unless you deliberately revoke
+the token.
 
 ### 2.5 Bridge token file
 
