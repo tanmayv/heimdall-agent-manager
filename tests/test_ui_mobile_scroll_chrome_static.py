@@ -30,6 +30,9 @@ Requirements covered:
   when composer is hidden to open agent picker.
 - REQ-SCROLL-BOUNDARY-1: Restore top bar and composer when reaching top (currentTop <= TOP_MARGIN = 60) of transcript.
 - REQ-SCROLL-BOUNDARY-2: Validate boundary chrome restore, test suite execution, and clean git push.
+- REQ-MOBILE-TOPBAR-FIX: Header uses conditional fixed on mobile and relative on desktop
+  without unconditional relative in base classes, preventing mobile layout box cut-off.
+- REQ-VAL-MOBILE-FIX: Static assertions verifying clean positioning separation and padding clearance.
 """
 from pathlib import Path
 
@@ -125,6 +128,15 @@ def test_transitions_and_classes():
     src = CONVERSATION_FILE.read_text(encoding="utf-8")
 
     # Header Overlay classes
+    header_idx = src.find('data-debug-id="conversation-thread-header"')
+    require(header_idx != -1, "Header element must exist")
+    header_chunk = src[header_idx:header_idx + 450]
+    require("isMobile" in header_chunk, "Header classes must branch on isMobile")
+    base_classes = header_chunk.split("isMobile")[0]
+    require("relative" not in base_classes,
+            "Header base classes must not contain unconditional relative (avoids mobile fixed collision)")
+    require("relative z-20" in src,
+            "Header must use relative z-20 on desktop")
     require(("fixed top-0 inset-x-0 z-20 h-14 bg-surface/90 backdrop-blur-md" in src) or
             ("fixed top-0 inset-x-0 z-20 h-14 bg-[#0c0c0c]/90 backdrop-blur-md" in src),
             "Header must render as fixed top-0 overlay on mobile")

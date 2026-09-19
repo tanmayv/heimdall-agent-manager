@@ -26,6 +26,11 @@ Requirements covered:
 - REQ-UI-MOBILE-RESPONSIVE:
   * Mobile view (< 768px) overlays sidebar with close button.
   * Mobile scroll-hide and floating reply pill preserved when closed.
+- REQ-MOBILE-TOPBAR-FIX:
+  * <header> uses fixed on mobile and relative on desktop without class collision.
+  * Chat transcript has pt-16 top padding clearance.
+- REQ-VAL-MOBILE-FIX:
+  * Validates clean header class separation and mobile overlay semantics.
 - REQ-VAL-UI-2COL-1:
   * Validates all requirements via static pattern analysis.
 """
@@ -140,8 +145,21 @@ def test_topbar_actions() -> None:
             "Top bar blur-fade overlay must use backdrop-blur")
     require("w-64" in src,
             "Three-dots menu must have dedicated width w-64")
-    require("relative z-20 overflow-visible" in src,
-            "Header must have relative z-20 overflow-visible stacking context")
+    require("overflow-visible" in src,
+            "Header must retain overflow-visible")
+    require("relative z-20" in src,
+            "Header must have relative z-20 stacking context on desktop")
+
+    # Header positioning: conditional fixed on mobile and relative on desktop without class collision (REQ-MOBILE-TOPBAR-FIX)
+    header_start = src.find('data-debug-id="conversation-thread-header"')
+    require(header_start != -1, "Header element must exist")
+    header_chunk = src[header_start:header_start + 450]
+    require("isMobile" in header_chunk, "Header classes must branch on isMobile")
+    base_classes = header_chunk.split("isMobile")[0]
+    require("relative" not in base_classes,
+            "Header base classes must not contain unconditional relative (avoids mobile fixed collision)")
+    require("fixed top-0 inset-x-0" in header_chunk,
+            "Header must apply fixed top-0 inset-x-0 overlay positioning on mobile")
 
 
 def test_sidebar_toggle_buttons() -> None:
@@ -178,6 +196,14 @@ def test_mobile_responsive() -> None:
             "Header mobile scroll-hide transition must be preserved")
     require('data-debug-id="conversation-floating-reply-pill"' in src,
             "Floating reply pill on mobile must be preserved when chrome is hidden")
+
+    # Mobile overlay semantics and transcript padding clearance (REQ-MOBILE-TOPBAR-FIX, REQ-VAL-MOBILE-FIX)
+    require("fixed top-0 inset-x-0 z-20 h-14" in src,
+            "Header must use fixed top-0 overlay semantics on mobile")
+    require("fixed bottom-14 inset-x-0 z-20" in src,
+            "Composer must use fixed bottom-14 overlay semantics on mobile")
+    require("pt-16 pb-4" in src,
+            "Transcript scroll container must have pt-16 top padding clearance for fixed header")
 
 
 def test_chat_and_composer_max_width() -> None:

@@ -1797,14 +1797,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         {/* Scoped top bar in Col 1: narrows automatically when sidebar opens */}
         <header
           data-debug-id="conversation-thread-header"
-          className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out relative z-20 overflow-visible ${
+          className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out overflow-visible ${
             isMobile
-              ? `fixed top-0 inset-x-0 z-20 h-14 bg-surface/90 backdrop-blur-md ${
+              ? `fixed top-0 inset-x-0 z-20 h-14 bg-surface/90 backdrop-blur-md border-b border-subtle/70 shadow-sm ${
                   !chromeVisible
                     ? '-translate-y-full opacity-0 pointer-events-none'
                     : 'translate-y-0 opacity-100 pointer-events-auto'
                 }`
-              : 'max-h-16 py-2 bg-canvas/90 backdrop-blur-md translate-y-0 opacity-100 pointer-events-auto'
+              : 'relative z-20 max-h-16 py-2 bg-canvas/90 backdrop-blur-md translate-y-0 opacity-100 pointer-events-auto'
           }`}
         >
           {/* Bottom blur-fade gradient overlay: blurs and softly fades text scrolling underneath */}
