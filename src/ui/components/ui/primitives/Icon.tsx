@@ -76,7 +76,8 @@ export type IconName =
   | 'eye-off'
   | 'maximize'
   | 'minimize'
-  | 'bot';
+  | 'bot'
+  | 'save';
 
 /** Token size scale → px (the `--icon-*` sizes: 14 / 16 / 20 / 24). */
 export type IconSize = 'sm' | 'md' | 'lg' | 'xl';
@@ -296,6 +297,13 @@ const PATHS: Record<IconName, ReactElement> = {
   minimize: (
     <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
       <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+    </g>
+  ),
+  save: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+      <polyline points="17 21 17 13 7 13 7 21" />
+      <polyline points="7 3 7 8 15 8" />
     </g>
   ),
 };

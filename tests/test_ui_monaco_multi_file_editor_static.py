@@ -153,7 +153,38 @@ def main() -> None:
     require("isExplorerCollapsed" in panel_src and "setIsExplorerCollapsed" in panel_src, "Must maintain isExplorerCollapsed state")
     require("editor-empty-state" in panel_src, "Must provide empty editor state when no tabs are open")
     require("Select a file from the explorer to view or edit, or press + to create a new file" in panel_src, "Must display clean empty state prompt when openTabs is empty")
-    require("explorerWidth" in panel_src, "Must maintain explorer width (default ~260-280px / resizable)")
+    # REQ-VIM-KEYBINDINGS: Monaco Vim mode integration
+    require("initVimMode" in panel_src and "monaco-vim" in panel_src, "Must import and use initVimMode from monaco-vim")
+    require("defineEx" in panel_src, "Must define custom Ex commands with Vim.defineEx")
+    require("'write'" in panel_src or ":w" in panel_src, "Must wire :w save Ex command")
+    require("'quit'" in panel_src or ":q" in panel_src, "Must wire :q close tab Ex command")
+    require("'wq'" in panel_src or ":wq" in panel_src, "Must wire :wq save and close Ex command")
+    require("vimModeRef.current.dispose()" in panel_src or ".dispose()" in panel_src, "Must cleanly dispose Vim adapter")
+    require("vim-statusbar" in panel_src, "Must render themed Vim status bar container")
+    require("h-[22px]" in panel_src or "h-[20px]" in panel_src, "Vim status bar must be themed 20-22px")
+    require("heimdall:editor:vim_mode" in panel_src, "Vim mode toggle must be persisted in localStorage")
+    require("toggle-vim-btn" in panel_src, "Must offer Vim toggle in overflow menu")
+
+    # REQ-UI-RESPONSIVE-TOP-BAR: Responsive top bar with 3-dots overflow menu
+    require("overflow-menu-btn" in panel_src, "Must render 3-dots overflow menu button")
+    require("more-vertical" in panel_src, "Must use more-vertical icon for 3-dots overflow button")
+    require("overflow-dropdown" in panel_src, "Must render themed overflow dropdown container")
+    require("handleClickOutside" in panel_src, "Must dismiss overflow menu on outside click")
+    require("toggle-vim-btn" in panel_src, "Secondary actions must include Toggle Vim Mode")
+    require("editor-toggle-diff-btn" in panel_src, "Secondary actions must include Toggle Diff")
+    require("editor-save-all-btn" in panel_src, "Secondary actions must include Save All")
+
+    # REQ-UI-MOBILE-SINGLE-PANE: Single-pane mobile layout (<640px viewport or <480px sidebar)
+    require("viewportWidth < 640" in panel_src and "containerWidth < 480" in panel_src, "Must detect viewport <640px or sidebar/container <480px")
+    require("mobile-back-files-btn" in panel_src, "Must render mobile ← Files navigation back button")
+    require("← Files" in panel_src, "Must display '← Files' label on back button")
+    require("mobile-segmented-switcher" in panel_src, "Must render [ Files | Editor ] segmented switcher")
+    require("activePane" in panel_src, "Must manage activePane state for full-width pane switching")
+
+    # REQ-UI-MOBILE-WORD-WRAP: Line wrapping in Monaco Editor
+    require("heimdall:editor:word_wrap" in panel_src, "Must persist word wrap preference in localStorage")
+    require("toggle-word-wrap-btn" in panel_src, "Must offer Toggle Word Wrap in 3-dots overflow menu")
+    require("wordWrap: isWordWrap ? 'on' : 'off'" in panel_src or "wordWrap" in panel_src, "Must dynamically configure Monaco wordWrap")
     print("  [+] ProjectFilesPanel.tsx features verified successfully.")
 
     print("[*] 3. Checking src/ui/components/chat/ConversationThreadPage.tsx...")
@@ -183,6 +214,7 @@ def main() -> None:
     icon_src = ICON_FILE.read_text(encoding="utf-8")
     require("'maximize'" in icon_src and "'minimize'" in icon_src, "Must define maximize and minimize icons in Icon.tsx")
     require("'eye'" in icon_src and "'eye-off'" in icon_src, "Must define eye and eye-off icons in Icon.tsx")
+    require("'save'" in icon_src, "Must define save icon in Icon.tsx")
     print("  [+] Icon.tsx primitives verified successfully.")
 
     print("\n[SUCCESS] All static verification checks passed cleanly!")
