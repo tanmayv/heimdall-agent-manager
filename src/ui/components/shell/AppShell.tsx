@@ -1090,7 +1090,24 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
 }
 
 function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: string }) {
-  const [collapsed, setCollapsed] = useState(false);
+  // REQ-UI-SIDEBAR-PERSISTENCE: Left sidebar collapsed state persisted in localStorage ('heimdall:shell:sidebar-collapsed')
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('heimdall:shell:sidebar-collapsed') === 'true';
+    } catch (_err) {
+      return false;
+    }
+  });
+
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('heimdall:shell:sidebar-collapsed', String(next));
+      } catch (_err) {}
+      return next;
+    });
+  };
   const [path, setPath] = useState(routeFromLocation);
   const [focusMessageId, setFocusMessageId] = useState(focusMessageFromLocation);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -1306,7 +1323,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <button
             data-debug-id="shell-sidebar-collapse-toggle"
             type="button"
-            onClick={() => isMobile ? setDrawerOpen(false) : setCollapsed((value) => !value)}
+            onClick={() => (isMobile ? setDrawerOpen(false) : toggleCollapsed())}
             aria-label={isMobile ? 'Close navigation' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
             title={isMobile ? 'Close navigation' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
             className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-sm text-muted hover:bg-neutral-soft hover:text-primary"

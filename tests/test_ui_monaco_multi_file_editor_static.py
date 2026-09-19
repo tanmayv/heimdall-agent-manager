@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Static verification for multi-file Monaco Code Editor, unified 34px top icon bar,
 compact narrow-view explorer, fixed quick-open root path resolution, global Cmd+P,
-and sidebar maximize/minimize toggle
+sidebar maximize/minimize toggle, and sidebar localStorage persistence
 (REQ-UI-UNIFIED-ICON-BAR, REQ-UI-COMPACT-TREE, REQ-FIX-QUICK-OPEN-CWD-PATH,
  REQ-UI-GLOBAL-CMDP-EVERYWHERE, REQ-UI-SIDEBAR-MAXIMIZE-TOGGLE,
  REQ-UI-MONACO-EDITOR, REQ-UI-MULTI-FILE-TABS, REQ-UI-BATCH-SAVE-ACTION,
- REQ-UI-REMOVE-FILEVIEW, REQ-UI-DIRECT-MONACO-OPEN, REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE).
+ REQ-UI-REMOVE-FILEVIEW, REQ-UI-DIRECT-MONACO-OPEN, REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE,
+ REQ-UI-SIDEBAR-PERSISTENCE).
 """
 
 from pathlib import Path
@@ -14,6 +15,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_FS_FILE = ROOT / "src" / "ui" / "api" / "endpoints" / "projectFs.ts"
 PANEL_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ProjectFilesPanel.tsx"
+APP_SHELL_FILE = ROOT / "src" / "ui" / "components" / "shell" / "AppShell.tsx"
 THREAD_PAGE_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ConversationThreadPage.tsx"
 ICON_FILE = ROOT / "src" / "ui" / "components" / "ui" / "primitives" / "Icon.tsx"
 PACKAGE_JSON_FILE = ROOT / "package.json"
@@ -162,6 +164,11 @@ def main() -> None:
     require("explorer-pane" in panel_src, "Split container must include left-side directory explorer pane")
     require("editor-pane" in panel_src, "Split container must include right-side editor pane")
     require("isExplorerCollapsed" in panel_src and "setIsExplorerCollapsed" in panel_src, "Must maintain isExplorerCollapsed state")
+    # REQ-UI-SIDEBAR-PERSISTENCE: Explorer collapsed state persistence
+    require("heimdall:editor:explorer_collapsed" in panel_src, "Explorer collapsed state must be persisted in localStorage ('heimdall:editor:explorer_collapsed')")
+    require("localStorage.getItem('heimdall:editor:explorer_collapsed')" in panel_src, "Must read heimdall:editor:explorer_collapsed from localStorage")
+    require("localStorage.setItem('heimdall:editor:explorer_collapsed'" in panel_src, "Must persist heimdall:editor:explorer_collapsed to localStorage")
+    require("updateExplorerCollapsed" in panel_src, "Must define updateExplorerCollapsed helper for persistence")
     require("editor-empty-state" in panel_src, "Must provide empty editor state when no tabs are open")
     require("Select a file from the explorer to view or edit, or press + to create a new file" in panel_src, "Must display clean empty state prompt when openTabs is empty")
     # REQ-VIM-KEYBINDINGS: Monaco Vim mode integration
@@ -228,6 +235,17 @@ def main() -> None:
     require("'eye'" in icon_src and "'eye-off'" in icon_src, "Must define eye and eye-off icons in Icon.tsx")
     require("'save'" in icon_src, "Must define save icon in Icon.tsx")
     print("  [+] Icon.tsx primitives verified successfully.")
+
+    print("[*] 5. Checking src/ui/components/shell/AppShell.tsx for sidebar persistence (REQ-UI-SIDEBAR-PERSISTENCE)...")
+    require(APP_SHELL_FILE.exists(), "AppShell.tsx must exist")
+    shell_src = APP_SHELL_FILE.read_text(encoding="utf-8")
+    require("heimdall:shell:sidebar-collapsed" in shell_src, "AppShell sidebar collapsed state must be persisted in localStorage ('heimdall:shell:sidebar-collapsed')")
+    require("localStorage.getItem('heimdall:shell:sidebar-collapsed')" in shell_src, "Must read heimdall:shell:sidebar-collapsed from localStorage")
+    require("localStorage.setItem('heimdall:shell:sidebar-collapsed'" in shell_src, "Must persist heimdall:shell:sidebar-collapsed to localStorage")
+    require("shell-sidebar-collapse-toggle" in shell_src, "Must render shell-sidebar-collapse-toggle")
+    require("toggleCollapsed" in shell_src, "AppShell must implement toggleCollapsed handler")
+    require("setDrawerOpen(false)" in shell_src, "Must keep mobile drawer distinct from desktop collapse")
+    print("  [+] AppShell.tsx sidebar persistence verified successfully.")
 
     print("\n[SUCCESS] All static verification checks passed cleanly!")
 
