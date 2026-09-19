@@ -23,7 +23,11 @@ import {
   type VcsChangedFile,
 } from '../../api/endpoints/projectVcs';
 import { useListArtifactsQuery } from '../../api/endpoints/artifacts';
-import { useStartInstanceMutation } from '../../api/endpoints/agents';
+import {
+  useStartInstanceMutation,
+  useStopAgentInstanceMutation,
+  useRestartAgentInstanceMutation,
+} from '../../api/endpoints/agents';
 import ArtifactViewer from '../ArtifactViewer';
 import Markdown from '../Markdown';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
@@ -337,9 +341,13 @@ export default function ChainOverviewPanel({
   );
 
   const [startInstanceMutation] = useStartInstanceMutation();
+  const [stopInstanceMutation] = useStopAgentInstanceMutation();
+  const [restartInstanceMutation] = useRestartAgentInstanceMutation();
 
   // Local interaction state
   const [startingInstanceId, setStartingInstanceId] = useState<string | null>(null);
+  const [stoppingInstanceId, setStoppingInstanceId] = useState<string | null>(null);
+  const [restartingInstanceId, setRestartingInstanceId] = useState<string | null>(null);
   const [activeArtifactId, setActiveArtifactId] = useState<string>('');
   const [expandedAttentionTaskId, setExpandedAttentionTaskId] = useState<string | null>(null);
   const [openTerminalIds, setOpenTerminalIds] = useState<Record<string, boolean>>({});
@@ -406,6 +414,40 @@ export default function ChainOverviewPanel({
     [startInstanceMutation, refetchChain]
   );
 
+  // Handle stop agent instance
+  const handleStopAgent = useCallback(
+    async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
+      e?.stopPropagation();
+      try {
+        setStoppingInstanceId(instanceId);
+        await stopInstanceMutation({ instanceId, agentId: agentId || '' });
+        refetchChain();
+      } catch (err) {
+        console.error('Failed to stop agent:', err);
+      } finally {
+        setStoppingInstanceId(null);
+      }
+    },
+    [stopInstanceMutation, refetchChain]
+  );
+
+  // Handle restart agent instance
+  const handleRestartAgent = useCallback(
+    async (instanceId: string, agentId?: string, e?: React.MouseEvent) => {
+      e?.stopPropagation();
+      try {
+        setRestartingInstanceId(instanceId);
+        await restartInstanceMutation({ instanceId, agentId });
+        refetchChain();
+      } catch (err) {
+        console.error('Failed to restart agent:', err);
+      } finally {
+        setRestartingInstanceId(null);
+      }
+    },
+    [restartInstanceMutation, refetchChain]
+  );
+
   // Navigate to conversation thread
   const handleNavigateToAgent = useCallback(
     (agentInstanceId: string) => {
@@ -461,11 +503,15 @@ export default function ChainOverviewPanel({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {members.map((member) => {
                 const instId = member.agentInstanceId || member.agent_instance_id;
+                const agentId = member.agentId || member.agent_id || '';
                 const name = member.displayName || member.display_name || instId;
                 const role = member.role || 'worker';
                 const rawStatus = String(member.runtimeStatus || member.runtime_status || 'stopped').toLowerCase();
                 const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
+                const isRunning = rawStatus === 'running' || rawStatus === 'idle' || rawStatus === 'ready';
                 const isStarting = startingInstanceId === instId || rawStatus === 'starting';
+                const isStopping = stoppingInstanceId === instId;
+                const isRestarting = restartingInstanceId === instId;
                 const currentTask = memberCurrentTaskMap.get(instId);
                 const isCoordinator =
                   String(role).toLowerCase() === 'coordinator' ||
@@ -515,29 +561,58 @@ export default function ChainOverviewPanel({
                       </div>
                     </div>
 
-                    {isStopped && (
-                      <div className="shrink-0 flex justify-end">
-                        <Button
+                    <div className="shrink-0 flex items-center gap-1 justify-end" onClick={(e) => e.stopPropagation()}>
+                      {isStopped ? (
+                        <button
                           type="button"
-                          variant="primary"
-                          size="sm"
                           disabled={isStarting}
                           data-debug-id={`chain-overview-start-agent-${instId}`}
                           onClick={(e) => handleStartAgent(instId, e)}
-                          className="text-xs"
+                          title="Start Agent"
+                          aria-label="Start Agent"
+                          className="grid h-7 w-7 place-items-center rounded-md bg-accent text-accent-fg hover:opacity-90 disabled:opacity-50 transition-opacity shadow-xs"
                         >
                           {isStarting ? (
-                            <span className="flex items-center gap-1">
-                              <Spinner size="sm" /> Starting…
-                            </span>
+                            <Spinner size="sm" />
                           ) : (
-                            <span className="flex items-center gap-1">
-                              <Icon name="play" size={12} /> Start Agent
-                            </span>
+                            <Icon name="play" size={14} />
                           )}
-                        </Button>
-                      </div>
-                    )}
+                        </button>
+                      ) : isRunning ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isStopping || isRestarting}
+                            data-debug-id={`chain-overview-stop-agent-${instId}`}
+                            onClick={(e) => handleStopAgent(instId, agentId, e)}
+                            title="Stop Agent"
+                            aria-label="Stop Agent"
+                            className="grid h-7 w-7 place-items-center rounded-md border border-subtle bg-surface-raised hover:bg-neutral-soft text-muted hover:text-danger transition-colors disabled:opacity-50"
+                          >
+                            {isStopping ? (
+                              <Spinner size="sm" />
+                            ) : (
+                              <Icon name="stop" size={12} />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isStopping || isRestarting}
+                            data-debug-id={`chain-overview-restart-agent-${instId}`}
+                            onClick={(e) => handleRestartAgent(instId, agentId, e)}
+                            title="Restart Agent"
+                            aria-label="Restart Agent"
+                            className="grid h-7 w-7 place-items-center rounded-md border border-subtle bg-surface-raised hover:bg-neutral-soft text-muted hover:text-primary transition-colors disabled:opacity-50"
+                          >
+                            {isRestarting ? (
+                              <Spinner size="sm" />
+                            ) : (
+                              <Icon name="refresh" size={13} />
+                            )}
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
                   </div>
                 );
               })}
@@ -996,23 +1071,20 @@ export default function ChainOverviewPanel({
                             <p className="text-[11px] text-muted max-w-xs">
                               Start this agent to launch its container and subscribe to its interactive terminal pane feed.
                             </p>
-                            <Button
+                            <button
                               type="button"
-                              variant="primary"
-                              size="sm"
                               disabled={startingInstanceId === instId}
                               onClick={(e) => handleStartAgent(instId, e)}
+                              title="Start Agent"
+                              aria-label="Start Agent"
+                              className="grid h-8 w-8 place-items-center rounded-lg bg-accent text-accent-fg hover:opacity-90 disabled:opacity-50 transition-opacity shadow-xs"
                             >
                               {startingInstanceId === instId ? (
-                                <span className="flex items-center gap-1.5">
-                                  <Spinner size="sm" /> Starting…
-                                </span>
+                                <Spinner size="sm" />
                               ) : (
-                                <span className="flex items-center gap-1.5">
-                                  <Icon name="play" size={12} /> Start Agent
-                                </span>
+                                <Icon name="play" size={14} />
                               )}
-                            </Button>
+                            </button>
                           </div>
                         ) : (
                           <AgentPaneComposerPanel
