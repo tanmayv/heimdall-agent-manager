@@ -231,6 +231,9 @@ export type ProjectFilesPanelProps = {
   onClose?: () => void;
   isMobile?: boolean;
   debugPrefix?: string;
+  openFilePath?: string | null;
+  onFileOpened?: () => void;
+  onOpenQuickOpen?: () => void;
 };
 
 export default function ProjectFilesPanel({
@@ -242,6 +245,9 @@ export default function ProjectFilesPanel({
   onClose,
   isMobile = false,
   debugPrefix = 'project-files',
+  openFilePath,
+  onFileOpened,
+  onOpenQuickOpen,
 }: ProjectFilesPanelProps) {
   const [listDir] = useLazyListProjectDirQuery();
   const [readFile, readState] = useLazyReadProjectFileQuery();
@@ -276,6 +282,8 @@ export default function ProjectFilesPanel({
   // Split-pane & explorer collapse/resizing state (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE)
   const [isExplorerCollapsed, setIsExplorerCollapsed] = useState<boolean>(false);
   const [explorerWidth, setExplorerWidth] = useState<number>(280);
+  const isNarrowExplorer = isMobile || explorerWidth < 320;
+  const [isDiffMode, setIsDiffMode] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<boolean>(false);
   const resizerRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
@@ -478,12 +486,16 @@ export default function ProjectFilesPanel({
       if ((e.metaKey || e.ctrlKey) && (e.key === 'p' || e.key === 'P') && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
-        setIsQuickOpenOpen((prev) => !prev);
+        if (onOpenQuickOpen) {
+          onOpenQuickOpen();
+        } else {
+          setIsQuickOpenOpen((prev) => !prev);
+        }
       }
     };
     window.addEventListener('keydown', handleQuickOpenKeyDown, true);
     return () => window.removeEventListener('keydown', handleQuickOpenKeyDown, true);
-  }, [projectId]);
+  }, [projectId, onOpenQuickOpen]);
 
   const filteredQuickOpenFiles = useMemo(() => {
     if (!quickOpenQuery.trim()) return quickOpenAllFiles.slice(0, 50);
@@ -642,10 +654,7 @@ export default function ProjectFilesPanel({
   const openFileInEditor = useCallback(
     async (inputPath: string) => {
       setError('');
-      const filePath =
-        cwd && !inputPath.includes('/') && !inputPath.startsWith(cwd)
-          ? joinPath(cwd, inputPath)
-          : inputPath;
+      const filePath = inputPath;
 
       const existing = openTabs.find((t) => t.path === filePath);
       if (existing) {
@@ -680,6 +689,13 @@ export default function ProjectFilesPanel({
     },
     [cwd, openTabs, fetchAllFileContent, isMobile]
   );
+
+  useEffect(() => {
+    if (openFilePath) {
+      void openFileInEditor(openFilePath);
+      onFileOpened?.();
+    }
+  }, [openFilePath, openFileInEditor, onFileOpened]);
 
   const handleEditorNewFile = useCallback(
     async (inputPath: string) => {
@@ -1015,102 +1031,109 @@ export default function ProjectFilesPanel({
           No project is associated with this conversation.
         </div>
       ) : (
-        <div data-debug-id={`${debugPrefix}-split-container`} className="flex min-h-0 flex-1 w-full flex-row overflow-hidden">
-          {/* Left Column: Directory Explorer */}
+        <>
+          {/* Unified 34px Top Icon Bar */}
           <div
-            data-debug-id={`${debugPrefix}-explorer-pane`}
-            style={!isExplorerCollapsed && !isMobile ? { width: explorerWidth } : undefined}
-            className={`${
-              isExplorerCollapsed ? 'hidden' : 'flex'
-            } min-h-0 flex-col border-r border-subtle bg-surface shrink-0 ${isMobile ? 'w-full' : ''}`}
+            data-debug-id={`${debugPrefix}-unified-top-bar`}
+            className="flex h-[34px] min-h-[34px] max-h-[34px] w-full shrink-0 items-center justify-between border-b border-subtle bg-surface px-2 gap-1 text-[12px] select-none"
           >
-            {/* Breadcrumb */}
-            <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex items-center justify-between gap-1 border-b border-subtle px-3 py-1.5 text-[12px] text-muted">
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
-                {(() => {
-                  const folderCount = comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length;
-                  return (
-                    <button
-                      data-debug-id={`${debugPrefix}-folder-comment-btn`}
-                      type="button"
-                      onClick={() => { setPathCommentDraft(''); setPathCommentFor({ path: cwd || '/', label: `folder: ${cwd || 'project root'}` }); }}
-                      title="Comment on this folder"
-                      aria-label="Comment on this folder"
-                      className={`mr-1 relative grid h-6 w-6 shrink-0 place-items-center rounded border ${folderCount > 0 ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-                    >
-                      <Icon name="chat" size={12} />
-                      {folderCount > 0 ? <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">{folderCount}</span> : null}
-                    </button>
-                  );
-                })()}
-                {crumbs.map((c, i) => (
-                  <span key={c.path || 'root'} className="flex items-center gap-0.5">
-                    {i > 0 ? <Icon name="chevron-right" size={12} className="text-faint" /> : null}
-                    <button
-                      data-debug-id={`${debugPrefix}-crumb-${i}`}
-                      type="button"
-                      onClick={() => openDir(c.path)}
-                      disabled={i === crumbs.length - 1}
-                      className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
-                    >
-                      {c.label}
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <IconButton
-                icon="refresh"
-                label={lastRefreshed ? `Refresh (last: ${new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` : 'Refresh'}
-                variant="solid"
-                size="sm"
-                data-debug-id={`${debugPrefix}-refresh-btn`}
-                onClick={refresh}
-                className="shrink-0"
-              />
-            </div>
-
-            {/* Toolbar */}
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-subtle px-3 py-2">
+            {/* Left section: Toggle Explorer, Quick Open, New File, New Folder, Toggle Hidden, Refresh, active file path / breadcrumb */}
+            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
               <button
                 data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
                 type="button"
-                onClick={() => setIsExplorerCollapsed(true)}
-                title="Collapse file explorer (maximize editor)"
-                aria-label="Collapse file explorer"
-                className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+                onClick={() => setIsExplorerCollapsed((prev) => !prev)}
+                title={isExplorerCollapsed ? 'Expand file explorer' : 'Collapse file explorer'}
+                aria-label={isExplorerCollapsed ? 'Expand file explorer' : 'Collapse file explorer'}
+                className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
               >
-                <Icon name="panel-left" size={12} />
-                <span className="hidden sm:inline">Collapse</span>
+                <Icon name="panel-left" size={14} />
               </button>
               <button
                 data-debug-id={`${debugPrefix}-quick-open-btn`}
                 type="button"
-                onClick={() => setIsQuickOpenOpen(true)}
-                title="Quick open file by name or path (Cmd+P / Ctrl+P)"
+                onClick={() => (onOpenQuickOpen ? onOpenQuickOpen() : setIsQuickOpenOpen(true))}
+                title="Quick open file (Cmd+P / Ctrl+P)"
                 aria-label="Quick open file"
-                className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
               >
-                <Icon name="search" size={12} />
-                <span className="hidden sm:inline">Quick Open</span>
-                <kbd className="ml-0.5 rounded bg-neutral-soft px-1 text-[10px] font-mono text-faint">⌘P</kbd>
+                <Icon name="search" size={14} />
               </button>
               <button
                 data-debug-id={`${debugPrefix}-new-file-btn`}
                 type="button"
-                onClick={() => beginAction({ kind: 'new-file' })}
-                className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+                onClick={() => {
+                  if (isExplorerCollapsed) setIsExplorerCollapsed(false);
+                  beginAction({ kind: 'new-file' });
+                }}
+                title="New file"
+                aria-label="New file"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
               >
-                <Icon name="file" size={12} /> New file
+                <Icon name="plus" size={14} />
               </button>
               <button
                 data-debug-id={`${debugPrefix}-new-dir-btn`}
                 type="button"
-                onClick={() => beginAction({ kind: 'new-dir' })}
-                className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+                onClick={() => {
+                  if (isExplorerCollapsed) setIsExplorerCollapsed(false);
+                  beginAction({ kind: 'new-dir' });
+                }}
+                title="New folder"
+                aria-label="New folder"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
               >
-                <Icon name="folder" size={12} /> New folder
+                <Icon name="folder" size={14} />
               </button>
-              {openTabs.length > 0 ? (
+              <button
+                data-debug-id={`${debugPrefix}-hidden-toggle`}
+                type="button"
+                onClick={() => setIncludeHidden((v) => !v)}
+                aria-pressed={includeHidden ? 'true' : 'false'}
+                title={includeHidden ? 'Hide hidden files' : 'Show hidden files'}
+                aria-label={includeHidden ? 'Hide hidden files' : 'Show hidden files'}
+                className={`grid h-6 w-6 shrink-0 place-items-center rounded transition-colors ${
+                  includeHidden ? 'bg-accent/15 text-accent' : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                }`}
+              >
+                <Icon name={includeHidden ? 'eye' : 'eye-off'} size={14} />
+              </button>
+              <button
+                data-debug-id={`${debugPrefix}-refresh-btn`}
+                type="button"
+                onClick={refresh}
+                title={lastRefreshed ? `Refresh (last: ${new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` : 'Refresh'}
+                aria-label="Refresh"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
+              >
+                <Icon name="refresh" size={14} />
+              </button>
+
+              {/* Active file path / breadcrumb */}
+              <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 items-center gap-1 overflow-hidden truncate pl-1 text-[11.5px] text-muted">
+                {activeEditorTab ? (
+                  <span className="truncate font-mono text-[11.5px] text-primary/80" title={activeEditorTab.path}>
+                    {activeEditorTab.path}
+                  </span>
+                ) : (
+                  crumbs.map((c, i) => (
+                    <span key={c.path || 'root'} className="flex shrink-0 items-center gap-0.5">
+                      {i > 0 ? <Icon name="chevron-right" size={10} className="text-faint" /> : null}
+                      <button
+                        data-debug-id={`${debugPrefix}-crumb-${i}`}
+                        type="button"
+                        onClick={() => openDir(c.path)}
+                        disabled={i === crumbs.length - 1}
+                        className="max-w-[120px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
+                      >
+                        {c.label}
+                      </button>
+                    </span>
+                  ))
+                )}
+              </div>
+
+              {openTabs.length > 0 && !isExplorerCollapsed ? (
                 <button
                   data-debug-id={`${debugPrefix}-toolbar-editor-btn`}
                   type="button"
@@ -1118,241 +1141,369 @@ export default function ProjectFilesPanel({
                     setIsEditMode(true);
                     if (isMobile) setIsExplorerCollapsed(true);
                   }}
-                  className="inline-flex items-center gap-1 rounded-lg border border-accent/40 bg-accent/10 px-2 py-1 text-caption font-medium text-accent hover:bg-accent/20"
-                  title="Return to code editor"
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/15 shrink-0"
+                  title="Focus open editor tab"
                 >
-                  <Icon name="pencil" size={12} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
+                  <Icon name="pencil" size={11} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
                 </button>
               ) : null}
-              <button
-                data-debug-id={`${debugPrefix}-hidden-toggle`}
-                type="button"
-                onClick={() => setIncludeHidden((v) => !v)}
-                aria-pressed={includeHidden ? 'true' : 'false'}
-                title={includeHidden ? 'Hide dotfiles (names starting with ".")' : 'Show hidden dotfiles (names starting with ".")'}
-                className={`ml-auto rounded-lg border px-2 py-1 text-caption ${includeHidden ? 'border-accent bg-accent/10 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-              >
-                {includeHidden ? 'Hide hidden' : 'Show hidden'}
-              </button>
             </div>
 
-            {/* Inline create/rename input */}
-            {pending ? (
-              <div data-debug-id={`${debugPrefix}-name-editor`} className="flex items-center gap-1.5 border-b border-subtle bg-surface-raised px-3 py-2">
-                <Icon name={pending.kind === 'new-dir' ? 'folder' : 'file'} size={13} className="text-muted" />
-                <input
-                  data-debug-id={`${debugPrefix}-name-input`}
-                  autoFocus
-                  value={nameDraft}
-                  onChange={(e) => setNameDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void submitPending();
-                    if (e.key === 'Escape') { setPending(null); setNameDraft(''); }
+            {/* Right section: Comment on active file/folder, Diff toggle, Save/Save All */}
+            <div className="flex shrink-0 items-center gap-1.5 pl-2">
+              {/* Comment on active file/folder */}
+              {activeEditorTab ? (
+                <button
+                  data-debug-id={`${debugPrefix}-file-comment-btn`}
+                  type="button"
+                  onClick={() => {
+                    setPathCommentDraft('');
+                    setPathCommentFor({
+                      path: activeEditorTab.path,
+                      label: `file: ${baseName(activeEditorTab.path)}`,
+                    });
                   }}
-                  placeholder={pending.kind === 'rename' ? 'new name' : pending.kind === 'new-dir' ? 'folder name' : 'file name'}
-                  className="min-w-0 flex-1 rounded-lg border border-subtle bg-surface-raised px-2 py-1 text-[12px] text-primary placeholder:text-muted focus:border-accent focus:outline-none"
-                />
-                <button
-                  data-debug-id={`${debugPrefix}-name-submit-btn`}
-                  type="button"
-                  disabled={mutating || !nameDraft.trim()}
-                  onClick={() => void submitPending()}
-                  className="rounded-lg bg-accent px-2 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
+                  title="Comment on active file"
+                  aria-label="Comment on active file"
+                  className={`relative grid h-6 w-6 shrink-0 place-items-center rounded border ${
+                    comments.filter((c) => c.path === activeEditorTab.path && c.line === 0).length > 0
+                      ? 'border-accent bg-accent/20 text-accent'
+                      : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
+                  }`}
                 >
-                  {pending.kind === 'rename' ? 'Rename' : 'Create'}
+                  <Icon name="chat" size={12} />
+                  {comments.filter((c) => c.path === activeEditorTab.path && c.line === 0).length > 0 ? (
+                    <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">
+                      {comments.filter((c) => c.path === activeEditorTab.path && c.line === 0).length}
+                    </span>
+                  ) : null}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => { setPending(null); setNameDraft(''); }}
-                  className="rounded-lg px-1.5 py-1 text-caption text-muted hover:text-primary"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : null}
-
-            {/* Directory list */}
-            <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto">
-              {loading ? (
-                <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-muted">Loading…</div>
-              ) : error && sortedEntries.length === 0 ? (
-                // Don't show the misleading "empty folder" placeholder when the load
-                // actually FAILED (e.g. project not configured on this bridge, or the
-                // bridge is offline). The error banner below carries the reason.
-                <div data-debug-id={`${debugPrefix}-load-error`} className="p-6 text-center text-xs text-muted">Couldn’t load files — see the message below.</div>
-              ) : sortedEntries.length === 0 ? (
-                <div data-debug-id={`${debugPrefix}-empty`} className="p-6 text-center text-xs text-faint">This folder is empty.</div>
               ) : (
-                <ul>
-                  {sortedEntries.map((e) => {
-                    const isOpening = !e.is_dir && openingInEditor === joinPath(cwd, e.name);
-                    const isActiveFile = !e.is_dir && activeTabPath === joinPath(cwd, e.name);
-                    return (
-                    <li key={`${e.is_dir ? 'd' : 'f'}:${e.name}`} className={`group flex items-center gap-2 border-b border-subtle/40 px-3 py-1.5 ${isActiveFile ? 'bg-accent/10 border-accent/20' : 'hover:bg-neutral-soft'}`}>
-                      <button
-                        data-debug-id={`${debugPrefix}-entry-${e.name}`}
-                        type="button"
-                        disabled={isOpening}
-                        onClick={() => (e.is_dir ? openDir(joinPath(cwd, e.name)) : void openFileInEditor(joinPath(cwd, e.name)))}
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                      >
-                        {isOpening ? (
-                          <Icon name="refresh" size={15} className="shrink-0 animate-spin text-accent" title="Loading file…" />
-                        ) : (
-                          <Icon name={e.is_dir ? 'folder' : 'file'} size={15} className={`shrink-0 ${e.is_dir ? 'text-accent' : isActiveFile ? 'text-accent' : 'text-muted'}`} />
-                        )}
-                        <span className={`min-w-0 flex-1 truncate text-[13px] ${isActiveFile ? 'font-medium text-accent' : e.hidden ? 'text-faint' : 'text-primary'}`}>{e.name}</span>
-                        {e.has_git ? <span className="shrink-0 rounded bg-success-soft px-1.5 py-0.5 text-[9px] font-bold text-success">git</span> : null}
-                        {!e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-faint">{formatBytes(e.size)}</span> : null}
-                        {e.modified_at ? <span className="hidden shrink-0 text-[10px] text-faint sm:inline">{formatModified(e.modified_at)}</span> : null}
-                        {e.is_dir ? <Icon name="chevron-right" size={13} className="shrink-0 text-faint" /> : null}
-                      </button>
-                      {/* Row actions (edit / rename / delete) — visible on hover/focus. */}
-                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                        {!e.is_dir ? (
-                          <button
-                            data-debug-id={`${debugPrefix}-edit-${e.name}`}
-                            type="button"
-                            onClick={() => void openFileInEditor(joinPath(cwd, e.name))}
-                            title={`Edit ${e.name}`}
-                            aria-label={`Edit ${e.name}`}
-                            className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
-                          >
-                            <Icon name="pencil" size={13} />
-                          </button>
-                        ) : null}
-                        <IconButton icon="pencil" label={`Rename ${e.name}`} size="sm" data-debug-id={`${debugPrefix}-rename-${e.name}`} onClick={() => beginAction({ kind: 'rename', entry: e })} />
-                        <button
-                          data-debug-id={`${debugPrefix}-delete-${e.name}`}
-                          type="button"
-                          disabled={mutating}
-                          onClick={() => void removeEntry(e)}
-                          title={`Delete ${e.name}`}
-                          aria-label={`Delete ${e.name}`}
-                          className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-40"
-                        >
-                          <Icon name="trash" size={13} />
-                        </button>
-                      </div>
-                    </li>
-                    );
-                  })}
-                </ul>
+                <button
+                  data-debug-id={`${debugPrefix}-folder-comment-btn`}
+                  type="button"
+                  onClick={() => {
+                    setPathCommentDraft('');
+                    setPathCommentFor({
+                      path: cwd || '/',
+                      label: `folder: ${cwd || 'project root'}`,
+                    });
+                  }}
+                  title="Comment on current folder"
+                  aria-label="Comment on current folder"
+                  className={`relative grid h-6 w-6 shrink-0 place-items-center rounded border ${
+                    comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length > 0
+                      ? 'border-accent bg-accent/20 text-accent'
+                      : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
+                  }`}
+                >
+                  <Icon name="chat" size={12} />
+                  {comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length > 0 ? (
+                    <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">
+                      {comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length}
+                    </span>
+                  ) : null}
+                </button>
               )}
 
-              {/* Load more (cursor pagination) */}
-              {hasMore ? (
-                <div className="p-3 text-center">
-                  <button
-                    data-debug-id={`${debugPrefix}-load-more-btn`}
-                    type="button"
-                    disabled={loadingMore}
-                    onClick={() => void load(cwd, { cursor: nextCursor, append: true })}
-                    className="rounded-lg border border-subtle px-3 py-1.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
-                  >
-                    {loadingMore ? 'Loading…' : 'Load more'}
-                  </button>
+              {/* Diff toggle button */}
+              <button
+                data-debug-id="editor-toggle-diff-btn"
+                type="button"
+                disabled={!activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+                onClick={() => setIsDiffMode((prev) => !prev)}
+                aria-pressed={isDiffMode ? 'true' : 'false'}
+                title={isDiffMode ? 'Return to Standard Editor' : 'Compare against original buffer / Git HEAD'}
+                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors disabled:opacity-40 ${
+                  isDiffMode
+                    ? 'border border-accent bg-accent/20 text-accent font-semibold shadow-xs'
+                    : 'border border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
+                }`}
+              >
+                <span className="font-mono font-bold text-xs leading-none">±</span>
+                <span>Diff</span>
+              </button>
+
+              {/* Save toast */}
+              {saveFeedback ? (
+                <div
+                  data-debug-id={`${debugPrefix}-save-toast`}
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-all ${
+                    saveFeedback.type === 'success'
+                      ? 'bg-success-soft text-success border border-success/30'
+                      : saveFeedback.type === 'warning'
+                      ? 'bg-warning-soft text-warning border border-warning/30'
+                      : 'bg-danger-soft text-danger border border-danger/30'
+                  }`}
+                >
+                  <Icon name={saveFeedback.type === 'success' ? 'check' : 'alert'} size={11} />
+                  <span>{saveFeedback.message}</span>
                 </div>
               ) : null}
-              {truncated ? (
-                <div data-debug-id={`${debugPrefix}-truncated`} className="px-3 pb-3 text-center text-[10px] text-warning">
-                  Listing truncated to the server maximum.
-                </div>
-              ) : null}
+
+              {/* Save button */}
+              <button
+                data-debug-id="editor-save-btn"
+                type="button"
+                disabled={!activeEditorTab || writeState.isLoading || !activeEditorTab.isDirty || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+                onClick={saveActiveFile}
+                className="inline-flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11px] font-semibold text-accent-fg hover:opacity-90 disabled:opacity-40"
+                title="Save active file (Cmd+S / Ctrl+S)"
+              >
+                {writeState.isLoading ? <Icon name="refresh" size={11} className="animate-spin" /> : null}
+                Save
+              </button>
+
+              {/* Save All button */}
+              <button
+                data-debug-id="editor-save-all-btn"
+                type="button"
+                disabled={batchWriteState.isLoading || openTabs.filter((t) => t.isDirty).length === 0}
+                onClick={saveAllFiles}
+                className="inline-flex items-center gap-1 rounded border border-accent/40 bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent hover:bg-accent/20 disabled:opacity-40"
+                title="Save all modified files (Cmd+Shift+S / Ctrl+Shift+S)"
+              >
+                {batchWriteState.isLoading ? <Icon name="refresh" size={11} className="animate-spin" /> : null}
+                Save All {openTabs.filter((t) => t.isDirty).length > 0 ? `(${openTabs.filter((t) => t.isDirty).length})` : ''}
+              </button>
             </div>
           </div>
 
-          {/* Resizer Divider */}
-          {!isExplorerCollapsed && !isMobile ? (
+          {/* Split Container */}
+          <div data-debug-id={`${debugPrefix}-split-container`} className="flex min-h-0 flex-1 w-full flex-row overflow-hidden">
+            {/* Left Column: Directory Explorer */}
             <div
-              data-debug-id={`${debugPrefix}-resizer`}
-              onMouseDown={startResizing}
-              className="w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent transition-colors shrink-0 select-none bg-subtle/20"
-              title="Drag to resize explorer"
-            />
-          ) : null}
+              data-debug-id={`${debugPrefix}-explorer-pane`}
+              style={!isExplorerCollapsed && !isMobile ? { width: explorerWidth } : undefined}
+              className={`${
+                isExplorerCollapsed ? 'hidden' : 'flex'
+              } min-h-0 flex-col border-r border-subtle bg-surface shrink-0 ${isMobile ? 'w-full' : ''}`}
+            >
+              {/* Inline create/rename input */}
+              {pending ? (
+                <div data-debug-id={`${debugPrefix}-name-editor`} className="flex items-center gap-1.5 border-b border-subtle bg-surface-raised px-3 py-2">
+                  <Icon name={pending.kind === 'new-dir' ? 'folder' : 'file'} size={13} className="text-muted" />
+                  <input
+                    data-debug-id={`${debugPrefix}-name-input`}
+                    autoFocus
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void submitPending();
+                      if (e.key === 'Escape') { setPending(null); setNameDraft(''); }
+                    }}
+                    placeholder={pending.kind === 'rename' ? 'new name' : pending.kind === 'new-dir' ? 'folder name' : 'file name'}
+                    className="min-w-0 flex-1 rounded-lg border border-subtle bg-surface-raised px-2 py-1 text-[12px] text-primary placeholder:text-muted focus:border-accent focus:outline-none"
+                  />
+                  <button
+                    data-debug-id={`${debugPrefix}-name-submit-btn`}
+                    type="button"
+                    disabled={mutating || !nameDraft.trim()}
+                    onClick={() => void submitPending()}
+                    className="rounded-lg bg-accent px-2 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
+                  >
+                    {pending.kind === 'rename' ? 'Rename' : 'Create'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setPending(null); setNameDraft(''); }}
+                    className="rounded-lg px-1.5 py-1 text-caption text-muted hover:text-primary"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : null}
 
-          {/* Right Column: Monaco Editor or Empty State */}
-          <div
-            data-debug-id={`${debugPrefix}-editor-pane`}
-            className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-surface ${
-              isMobile && !isExplorerCollapsed ? 'hidden' : 'flex'
-            }`}
-          >
-            {openTabs.length > 0 && activeEditorTab ? (
-              <MonacoMultiFileEditor
-                tabs={openTabs}
-                activeTab={activeEditorTab}
-                onSelectTab={selectTab}
-                onCloseTab={closeTab}
-                onContentChange={handleContentChange}
-                onSaveActive={saveActiveFile}
-                onSaveAll={saveAllFiles}
-                isSaving={writeState.isLoading}
-                isBatchSaving={batchWriteState.isLoading}
-                saveFeedback={saveFeedback}
-                onBackToFiles={() => setIsExplorerCollapsed((prev) => !prev)}
-                onToggleExplorer={() => setIsExplorerCollapsed((prev) => !prev)}
-                isExplorerCollapsed={isExplorerCollapsed}
-                onNewFile={handleEditorNewFile}
-                cwd={cwd}
-                debugPrefix={debugPrefix}
-                themeAppearance={theme?.appearance}
-                comments={commentsForPath(activeEditorTab.path)}
-                onAddComment={(line, lineText, body) => addComment(activeEditorTab.path, line, lineText, body)}
-                onEditComment={editComment}
-                onDeleteComment={deleteComment}
-                onCommentFile={() => {
-                  setPathCommentDraft('');
-                  setPathCommentFor({
-                    path: activeEditorTab.path,
-                    label: `file: ${baseName(activeEditorTab.path)}`,
-                  });
-                }}
-              />
-            ) : (
-              <div
-                data-debug-id={`${debugPrefix}-editor-empty-state`}
-                className="flex min-h-0 flex-1 flex-col bg-surface"
-              >
-                {isExplorerCollapsed ? (
-                  <div className="flex items-center border-b border-subtle px-3 py-1.5 bg-surface">
+              {/* Directory list */}
+              <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto p-1">
+                {loading ? (
+                  <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-muted">Loading…</div>
+                ) : error && sortedEntries.length === 0 ? (
+                  <div data-debug-id={`${debugPrefix}-load-error`} className="p-6 text-center text-xs text-muted">Couldn’t load files — see the message below.</div>
+                ) : sortedEntries.length === 0 && cwd === '' ? (
+                  <div data-debug-id={`${debugPrefix}-empty`} className="p-6 text-center text-xs text-faint">This folder is empty.</div>
+                ) : (
+                  <ul className="space-y-0.5">
+                    {/* Compact .. (parent folder) row when in subfolder */}
+                    {cwd !== '' ? (
+                      <li key="..-parent-folder" className="group flex items-center h-7 py-0.5 px-2 text-[12px] hover:bg-neutral-soft rounded cursor-pointer select-none">
+                        <button
+                          data-debug-id={`${debugPrefix}-parent-dir`}
+                          type="button"
+                          onClick={() => openDir(parentPath(cwd))}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left text-muted hover:text-primary"
+                          title="Navigate to parent folder"
+                        >
+                          <Icon name="folder" size={14} className="shrink-0 text-muted" />
+                          <span className="min-w-0 flex-1 truncate font-medium">.. (parent folder)</span>
+                        </button>
+                      </li>
+                    ) : null}
+
+                    {sortedEntries.map((e) => {
+                      const isOpening = !e.is_dir && openingInEditor === joinPath(cwd, e.name);
+                      const isActiveFile = !e.is_dir && activeTabPath === joinPath(cwd, e.name);
+                      return (
+                        <li
+                          key={`${e.is_dir ? 'd' : 'f'}:${e.name}`}
+                          className={`group flex items-center h-7 py-0.5 px-2 text-[12px] rounded select-none ${
+                            isActiveFile ? 'bg-accent/10 text-accent font-medium' : 'hover:bg-neutral-soft text-primary'
+                          }`}
+                        >
+                          <button
+                            data-debug-id={`${debugPrefix}-entry-${e.name}`}
+                            type="button"
+                            disabled={isOpening}
+                            onClick={() => (e.is_dir ? openDir(joinPath(cwd, e.name)) : void openFileInEditor(joinPath(cwd, e.name)))}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          >
+                            {isOpening ? (
+                              <Icon name="refresh" size={14} className="shrink-0 animate-spin text-accent" title="Loading file…" />
+                            ) : (
+                              <Icon name={e.is_dir ? 'folder' : 'file'} size={14} className={`shrink-0 ${e.is_dir ? 'text-accent' : isActiveFile ? 'text-accent' : 'text-muted'}`} />
+                            )}
+                            <span className={`min-w-0 flex-1 truncate text-[12px] ${isActiveFile ? 'font-medium text-accent' : e.hidden ? 'text-faint' : 'text-primary'}`}>{e.name}</span>
+                            {e.has_git ? <span className="shrink-0 rounded bg-success-soft px-1.5 py-0.2 text-[9px] font-bold text-success">git</span> : null}
+                            {!isNarrowExplorer && !e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-faint">{formatBytes(e.size)}</span> : null}
+                            {!isNarrowExplorer && e.modified_at ? <span className="hidden shrink-0 text-[10px] text-faint sm:inline">{formatModified(e.modified_at)}</span> : null}
+                            {e.is_dir ? <Icon name="chevron-right" size={12} className="shrink-0 text-faint" /> : null}
+                          </button>
+                          {/* Row actions (edit / rename / delete) — visible on hover/focus. */}
+                          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                            {!e.is_dir ? (
+                              <button
+                                data-debug-id={`${debugPrefix}-edit-${e.name}`}
+                                type="button"
+                                onClick={() => void openFileInEditor(joinPath(cwd, e.name))}
+                                title={`Edit ${e.name}`}
+                                aria-label={`Edit ${e.name}`}
+                                className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"
+                              >
+                                <Icon name="pencil" size={12} />
+                              </button>
+                            ) : null}
+                            <IconButton icon="pencil" label={`Rename ${e.name}`} size="sm" data-debug-id={`${debugPrefix}-rename-${e.name}`} onClick={() => beginAction({ kind: 'rename', entry: e })} />
+                            <button
+                              data-debug-id={`${debugPrefix}-delete-${e.name}`}
+                              type="button"
+                              disabled={mutating}
+                              onClick={() => void removeEntry(e)}
+                              title={`Delete ${e.name}`}
+                              aria-label={`Delete ${e.name}`}
+                              className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-40"
+                            >
+                              <Icon name="trash" size={12} />
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+
+                {/* Load more (cursor pagination) */}
+                {hasMore ? (
+                  <div className="p-3 text-center">
                     <button
-                      data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
+                      data-debug-id={`${debugPrefix}-load-more-btn`}
                       type="button"
-                      onClick={() => setIsExplorerCollapsed(false)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-                      title="Expand file explorer"
+                      disabled={loadingMore}
+                      onClick={() => void load(cwd, { cursor: nextCursor, append: true })}
+                      className="rounded-lg border border-subtle px-3 py-1.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
                     >
-                      <Icon name="panel-left" size={13} /> Files
+                      {loadingMore ? 'Loading…' : 'Load more'}
                     </button>
                   </div>
                 ) : null}
-                <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center">
-                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-neutral-soft text-muted mb-3">
-                    <Icon name="file" size={28} />
+                {truncated ? (
+                  <div data-debug-id={`${debugPrefix}-truncated`} className="px-3 pb-3 text-center text-[10px] text-warning">
+                    Listing truncated to the server maximum.
                   </div>
-                  <h3 className="text-body font-semibold text-primary mb-1">No Files Open</h3>
-                  <p
-                    data-debug-id={`${debugPrefix}-empty-prompt`}
-                    className="max-w-md text-caption text-muted mb-4"
-                  >
-                    Select a file from the explorer to view or edit, or press + to create a new file
-                  </p>
-                  <button
-                    data-debug-id={`${debugPrefix}-empty-new-file-btn`}
-                    type="button"
-                    onClick={() => void handleEditorNewFile('untitled.txt')}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-semibold text-accent-fg hover:opacity-90"
-                    title="Create new file (+)"
-                  >
-                    <Icon name="plus" size={14} /> + New File
-                  </button>
-                </div>
+                ) : null}
               </div>
-            )}
+            </div>
+
+            {/* Resizer Divider */}
+            {!isExplorerCollapsed && !isMobile ? (
+              <div
+                data-debug-id={`${debugPrefix}-resizer`}
+                onMouseDown={startResizing}
+                className="w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent transition-colors shrink-0 select-none bg-subtle/20"
+                title="Drag to resize explorer"
+              />
+            ) : null}
+
+            {/* Right Column: Monaco Editor or Empty State */}
+            <div
+              data-debug-id={`${debugPrefix}-editor-pane`}
+              className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-surface ${
+                isMobile && !isExplorerCollapsed ? 'hidden' : 'flex'
+              }`}
+            >
+              {openTabs.length > 0 && activeEditorTab ? (
+                <MonacoMultiFileEditor
+                  tabs={openTabs}
+                  activeTab={activeEditorTab}
+                  onSelectTab={selectTab}
+                  onCloseTab={closeTab}
+                  onContentChange={handleContentChange}
+                  onSaveActive={saveActiveFile}
+                  onSaveAll={saveAllFiles}
+                  isSaving={writeState.isLoading}
+                  isBatchSaving={batchWriteState.isLoading}
+                  saveFeedback={saveFeedback}
+                  onBackToFiles={() => setIsExplorerCollapsed((prev) => !prev)}
+                  onToggleExplorer={() => setIsExplorerCollapsed((prev) => !prev)}
+                  isExplorerCollapsed={isExplorerCollapsed}
+                  onNewFile={handleEditorNewFile}
+                  cwd={cwd}
+                  debugPrefix={debugPrefix}
+                  themeAppearance={theme?.appearance}
+                  comments={commentsForPath(activeEditorTab.path)}
+                  onAddComment={(line, lineText, body) => addComment(activeEditorTab.path, line, lineText, body)}
+                  onEditComment={editComment}
+                  onDeleteComment={deleteComment}
+                  onCommentFile={() => {
+                    setPathCommentDraft('');
+                    setPathCommentFor({
+                      path: activeEditorTab.path,
+                      label: `file: ${baseName(activeEditorTab.path)}`,
+                    });
+                  }}
+                  isDiffMode={isDiffMode}
+                  onToggleDiff={() => setIsDiffMode((prev) => !prev)}
+                />
+              ) : (
+                <div
+                  data-debug-id={`${debugPrefix}-editor-empty-state`}
+                  className="flex min-h-0 flex-1 flex-col bg-surface"
+                >
+                  <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-neutral-soft text-muted mb-3">
+                      <Icon name="file" size={28} />
+                    </div>
+                    <h3 className="text-body font-semibold text-primary mb-1">No Files Open</h3>
+                    <p
+                      data-debug-id={`${debugPrefix}-empty-prompt`}
+                      className="max-w-md text-caption text-muted mb-4"
+                    >
+                      Select a file from the explorer to view or edit, or press + to create a new file
+                    </p>
+                    <button
+                      data-debug-id={`${debugPrefix}-empty-new-file-btn`}
+                      type="button"
+                      onClick={() => void handleEditorNewFile('untitled.txt')}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-semibold text-accent-fg hover:opacity-90"
+                      title="Create new file (+)"
+                    >
+                      <Icon name="plus" size={14} /> + New File
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* Path-level (file/folder) comment composer overlay. */}
@@ -1443,109 +1594,182 @@ export default function ProjectFilesPanel({
       ) : null}
 
       {/* Quick Open Modal (Cmd+P / Ctrl+P) (REQ-UI-GLOBAL-QUICK-OPEN) */}
-      {isQuickOpenOpen ? (
-        <div
-          data-debug-id="project-quick-open-modal"
-          className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/50 backdrop-blur-xs p-4"
-          onClick={() => setIsQuickOpenOpen(false)}
-        >
-          <div
-            className="w-full max-w-xl rounded-xl border border-subtle bg-surface shadow-2xl overflow-hidden flex flex-col"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center border-b border-subtle px-3 py-2 bg-surface-raised gap-2">
-              <Icon name="search" size={16} className="text-muted" />
-              <input
-                data-debug-id="project-quick-open-input"
-                type="text"
-                autoFocus
-                value={quickOpenQuery}
-                onChange={(e) => {
-                  setQuickOpenQuery(e.target.value);
-                  setQuickOpenSelectedIndex(0);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    setQuickOpenSelectedIndex((prev) =>
-                      filteredQuickOpenFiles.length > 0 ? (prev + 1) % filteredQuickOpenFiles.length : 0
-                    );
-                  } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    setQuickOpenSelectedIndex((prev) =>
-                      filteredQuickOpenFiles.length > 0
-                        ? (prev - 1 + filteredQuickOpenFiles.length) % filteredQuickOpenFiles.length
-                        : 0
-                    );
-                  } else if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (filteredQuickOpenFiles.length > 0) {
-                      const selected = filteredQuickOpenFiles[quickOpenSelectedIndex] || filteredQuickOpenFiles[0];
-                      if (selected) {
-                        setIsQuickOpenOpen(false);
-                        void openFileInEditor(selected);
-                      }
-                    }
-                  } else if (e.key === 'Escape') {
-                    e.preventDefault();
-                    setIsQuickOpenOpen(false);
+      <ProjectQuickOpenModal
+        projectId={projectId}
+        bridgeId={bridgeId}
+        isOpen={isQuickOpenOpen}
+        onClose={() => setIsQuickOpenOpen(false)}
+        onSelectFile={(file) => void openFileInEditor(file)}
+      />
+    </div>
+  );
+}
+
+export function ProjectQuickOpenModal({
+  projectId,
+  bridgeId = '',
+  isOpen,
+  onClose,
+  onSelectFile,
+}: {
+  projectId: string;
+  bridgeId?: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onSelectFile: (filePath: string) => void;
+}) {
+  const [fetchQuickOpen, quickOpenState] = useLazyQuickOpenProjectFilesQuery();
+  const [quickOpenQuery, setQuickOpenQuery] = useState('');
+  const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
+  const [quickOpenAllFiles, setQuickOpenAllFiles] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (isOpen && projectId) {
+      setQuickOpenQuery('');
+      setQuickOpenSelectedIndex(0);
+      void fetchQuickOpen({ projectId, bridgeId, query: '', limit: 1000 })
+        .unwrap()
+        .then((res) => {
+          if (res?.ok && Array.isArray(res.files)) {
+            setQuickOpenAllFiles(res.files);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isOpen, projectId, bridgeId, fetchQuickOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !projectId) return;
+    const q = quickOpenQuery.trim();
+    if (!q) return;
+    const timer = setTimeout(() => {
+      void fetchQuickOpen({ projectId, bridgeId, query: q, limit: 500 })
+        .unwrap()
+        .then((res) => {
+          if (res?.ok && Array.isArray(res.files)) {
+            setQuickOpenAllFiles((prev) => {
+              const set = new Set([...prev, ...res.files]);
+              return Array.from(set);
+            });
+          }
+        })
+        .catch(() => {});
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [quickOpenQuery, isOpen, projectId, bridgeId, fetchQuickOpen]);
+
+  const filteredQuickOpenFiles = useMemo(() => {
+    if (!quickOpenQuery.trim()) return quickOpenAllFiles.slice(0, 50);
+    const q = quickOpenQuery.trim();
+    return quickOpenAllFiles
+      .filter((file) => subsequenceFuzzyMatch(q, file))
+      .sort((a, b) => fuzzyMatchScore(q, b) - fuzzyMatchScore(q, a))
+      .slice(0, 50);
+  }, [quickOpenAllFiles, quickOpenQuery]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      data-debug-id="project-quick-open-modal"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/50 backdrop-blur-xs p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-xl rounded-xl border border-subtle bg-surface shadow-2xl overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center border-b border-subtle px-3 py-2 bg-surface-raised gap-2">
+          <Icon name="search" size={16} className="text-muted" />
+          <input
+            data-debug-id="project-quick-open-input"
+            type="text"
+            autoFocus
+            value={quickOpenQuery}
+            onChange={(e) => {
+              setQuickOpenQuery(e.target.value);
+              setQuickOpenSelectedIndex(0);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setQuickOpenSelectedIndex((prev) =>
+                  filteredQuickOpenFiles.length > 0 ? (prev + 1) % filteredQuickOpenFiles.length : 0
+                );
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setQuickOpenSelectedIndex((prev) =>
+                  filteredQuickOpenFiles.length > 0
+                    ? (prev - 1 + filteredQuickOpenFiles.length) % filteredQuickOpenFiles.length
+                    : 0
+                );
+              } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (filteredQuickOpenFiles.length > 0) {
+                  const selected = filteredQuickOpenFiles[quickOpenSelectedIndex] || filteredQuickOpenFiles[0];
+                  if (selected) {
+                    onClose();
+                    onSelectFile(selected);
                   }
-                }}
-                placeholder="Search files by name or path (Cmd+P / Ctrl+P)…"
-                className="w-full bg-transparent text-[13px] text-primary placeholder:text-muted focus:outline-none"
-              />
-              <div className="flex items-center gap-1 text-[11px] text-faint shrink-0">
-                <kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5 font-mono">Esc</kbd>
-                <span>to close</span>
-              </div>
-            </div>
-
-            <div
-              data-debug-id="project-quick-open-results"
-              className="max-h-80 overflow-y-auto divide-y divide-subtle/40"
-            >
-              {filteredQuickOpenFiles.length === 0 ? (
-                <div className="p-6 text-center text-xs text-muted">
-                  {quickOpenState.isLoading ? 'Searching project files…' : 'No matching files found.'}
-                </div>
-              ) : (
-                filteredQuickOpenFiles.map((file, idx) => {
-                  const isSelected = idx === quickOpenSelectedIndex;
-                  const name = baseName(file);
-                  const dir = parentPath(file);
-                  return (
-                    <div
-                      key={file}
-                      data-debug-id={`quick-open-item-${file}`}
-                      data-selected={isSelected ? 'true' : 'false'}
-                      onClick={() => {
-                        setIsQuickOpenOpen(false);
-                        void openFileInEditor(file);
-                      }}
-                      onMouseEnter={() => setQuickOpenSelectedIndex(idx)}
-                      className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors text-[13px] ${
-                        isSelected ? 'bg-accent/15 text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
-                      }`}
-                    >
-                      <Icon name="file" size={14} className={isSelected ? 'text-accent' : 'text-muted'} />
-                      <span className="font-medium text-primary">{name}</span>
-                      {dir ? <span className="font-mono text-[11px] text-faint truncate ml-auto">{dir}</span> : null}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            <div className="flex items-center justify-between border-t border-subtle bg-surface-raised px-3 py-1.5 text-[11px] text-muted">
-              <span>{filteredQuickOpenFiles.length} file{filteredQuickOpenFiles.length === 1 ? '' : 's'}</span>
-              <div className="flex items-center gap-2">
-                <span><kbd className="rounded border border-subtle bg-neutral-soft px-1 py-0.5 font-mono">↑↓</kbd> navigate</span>
-                <span><kbd className="rounded border border-subtle bg-neutral-soft px-1 py-0.5 font-mono">Enter</kbd> open</span>
-              </div>
-            </div>
+                }
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                onClose();
+              }
+            }}
+            placeholder="Search files by name or path (Cmd+P / Ctrl+P)…"
+            className="w-full bg-transparent text-[13px] text-primary placeholder:text-muted focus:outline-none"
+          />
+          <div className="flex items-center gap-1 text-[11px] text-faint shrink-0">
+            <kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5 font-mono">Esc</kbd>
+            <span>to close</span>
           </div>
         </div>
-      ) : null}
+
+        <div
+          data-debug-id="project-quick-open-results"
+          className="max-h-80 overflow-y-auto divide-y divide-subtle/40"
+        >
+          {filteredQuickOpenFiles.length === 0 ? (
+            <div className="p-6 text-center text-xs text-muted">
+              {quickOpenState.isLoading ? 'Searching project files…' : 'No matching files found.'}
+            </div>
+          ) : (
+            filteredQuickOpenFiles.map((file, idx) => {
+              const isSelected = idx === quickOpenSelectedIndex;
+              const name = baseName(file);
+              const dir = parentPath(file);
+              return (
+                <div
+                  key={file}
+                  data-debug-id={`quick-open-item-${file}`}
+                  data-selected={isSelected ? 'true' : 'false'}
+                  onClick={() => {
+                    onClose();
+                    onSelectFile(file);
+                  }}
+                  onMouseEnter={() => setQuickOpenSelectedIndex(idx)}
+                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors text-[13px] ${
+                    isSelected ? 'bg-accent/15 text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                  }`}
+                >
+                  <Icon name="file" size={14} className={isSelected ? 'text-accent' : 'text-muted'} />
+                  <span className="font-medium text-primary">{name}</span>
+                  {dir ? <span className="font-mono text-[11px] text-faint truncate ml-auto">{dir}</span> : null}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-subtle bg-surface-raised px-3 py-1.5 text-[11px] text-muted">
+          <span>{filteredQuickOpenFiles.length} file{filteredQuickOpenFiles.length === 1 ? '' : 's'}</span>
+          <div className="flex items-center gap-2">
+            <span><kbd className="rounded border border-subtle bg-neutral-soft px-1 py-0.5 font-mono">↑↓</kbd> navigate</span>
+            <span><kbd className="rounded border border-subtle bg-neutral-soft px-1 py-0.5 font-mono">Enter</kbd> open</span>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1580,12 +1804,12 @@ function MonacoMultiFileEditor({
   onContentChange,
   onSaveActive,
   onSaveAll,
-  isSaving,
-  isBatchSaving,
-  saveFeedback,
-  onBackToFiles,
-  onToggleExplorer,
-  isExplorerCollapsed = false,
+  isSaving: _isSaving,
+  isBatchSaving: _isBatchSaving,
+  saveFeedback: _saveFeedback,
+  onBackToFiles: _onBackToFiles,
+  onToggleExplorer: _onToggleExplorer,
+  isExplorerCollapsed: _isExplorerCollapsed = false,
   onNewFile,
   debugPrefix,
   themeAppearance,
@@ -1594,7 +1818,9 @@ function MonacoMultiFileEditor({
   onAddComment,
   onEditComment,
   onDeleteComment,
-  onCommentFile,
+  onCommentFile: _onCommentFile,
+  isDiffMode = false,
+  onToggleDiff: _onToggleDiff,
 }: {
   tabs: EditorTab[];
   activeTab: EditorTab;
@@ -1603,10 +1829,10 @@ function MonacoMultiFileEditor({
   onContentChange: (path: string, content: string) => void;
   onSaveActive: () => void;
   onSaveAll: () => void;
-  isSaving: boolean;
-  isBatchSaving: boolean;
-  saveFeedback: { type: 'success' | 'warning' | 'error'; message: string } | null;
-  onBackToFiles: () => void;
+  isSaving?: boolean;
+  isBatchSaving?: boolean;
+  saveFeedback?: { type: 'success' | 'warning' | 'error'; message: string } | null;
+  onBackToFiles?: () => void;
   onToggleExplorer?: () => void;
   isExplorerCollapsed?: boolean;
   onNewFile: (path: string) => void;
@@ -1618,15 +1844,14 @@ function MonacoMultiFileEditor({
   onEditComment?: (id: string, body: string) => void;
   onDeleteComment?: (id: string) => void;
   onCommentFile?: () => void;
+  isDiffMode?: boolean;
+  onToggleDiff?: () => void;
 }) {
   const monacoTheme = themeAppearance === 'light' ? 'light' : 'vs-dark';
   const language = useMemo(() => getLanguageForMonaco(activeTab.path), [activeTab.path]);
-  const dirtyCount = useMemo(() => tabs.filter((t) => t.isDirty).length, [tabs]);
-  const fileLevelCount = useMemo(() => comments.filter((c) => c.line === 0).length, [comments]);
 
   const [isPromptingNewFile, setIsPromptingNewFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
-  const [isDiffMode, setIsDiffMode] = useState(false);
   const diffListenerRef = useRef<{ dispose: () => void } | null>(null);
 
   useEffect(() => {
@@ -1685,107 +1910,6 @@ function MonacoMultiFileEditor({
       data-debug-id={`${debugPrefix}-monaco-editor`}
       className="flex min-h-0 flex-1 flex-col bg-surface"
     >
-      {/* Editor Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-subtle px-3 py-1.5 bg-surface">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            data-debug-id={`${debugPrefix}-editor-back-files-btn`}
-            type="button"
-            onClick={onBackToFiles}
-            className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            title={isExplorerCollapsed ? 'Show file explorer' : 'Toggle file explorer'}
-          >
-            <Icon name={isExplorerCollapsed ? 'panel-left' : 'chevron-left'} size={13} /> Files
-          </button>
-          <button
-            data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
-            type="button"
-            onClick={onToggleExplorer || onBackToFiles}
-            className="inline-flex items-center justify-center rounded-lg border border-subtle p-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            title={isExplorerCollapsed ? 'Expand file explorer' : 'Collapse file explorer (maximize editor)'}
-            aria-label={isExplorerCollapsed ? 'Expand file explorer' : 'Collapse file explorer'}
-          >
-            <Icon name="panel-left" size={13} />
-          </button>
-          <button
-            data-debug-id={`${debugPrefix}-editor-new-file-btn`}
-            type="button"
-            onClick={() => setIsPromptingNewFile(true)}
-            className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            title="Create new file"
-          >
-            <Icon name="plus" size={12} /> New
-          </button>
-          <div className="text-[12px] font-mono text-faint truncate" title={activeTab.path}>
-            {activeTab.path}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5 ml-auto">
-          {onCommentFile ? (
-            <button
-              data-debug-id={`${debugPrefix}-file-comment-btn`}
-              type="button"
-              onClick={onCommentFile}
-              title="Comment on this file"
-              aria-label="Comment on this file"
-              className={`relative shrink-0 grid h-7 w-7 place-items-center rounded-lg border ${
-                fileLevelCount > 0
-                  ? 'border-accent bg-accent/20 text-accent'
-                  : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
-              }`}
-            >
-              <Icon name="chat" size={13} />
-              {fileLevelCount > 0 ? (
-                <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">
-                  {fileLevelCount}
-                </span>
-              ) : null}
-            </button>
-          ) : null}
-
-          {saveFeedback ? (
-            <div
-              data-debug-id={`${debugPrefix}-save-toast`}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-caption font-medium transition-all ${
-                saveFeedback.type === 'success'
-                  ? 'bg-success-soft text-success border border-success/30'
-                  : saveFeedback.type === 'warning'
-                  ? 'bg-warning-soft text-warning border border-warning/30'
-                  : 'bg-danger-soft text-danger border border-danger/30'
-              }`}
-            >
-              <Icon name={saveFeedback.type === 'success' ? 'check' : 'alert'} size={12} />
-              <span>{saveFeedback.message}</span>
-            </div>
-          ) : null}
-
-          <button
-            data-debug-id={`${debugPrefix}-editor-save-btn`}
-            type="button"
-            disabled={isSaving || !activeTab.isDirty || activeTab.isImage || activeTab.isUnviewable}
-            onClick={onSaveActive}
-            className="inline-flex items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-40"
-            title="Save active file (Cmd+S / Ctrl+S)"
-          >
-            {isSaving ? <Icon name="refresh" size={12} className="animate-spin" /> : null}
-            Save
-          </button>
-
-          <button
-            data-debug-id={`${debugPrefix}-editor-save-all-btn`}
-            type="button"
-            disabled={isBatchSaving || dirtyCount === 0}
-            onClick={onSaveAll}
-            className="inline-flex items-center gap-1 rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-1 text-caption font-semibold text-accent hover:bg-accent/20 disabled:opacity-40"
-            title="Save all modified files (Cmd+Shift+S / Ctrl+Shift+S)"
-          >
-            {isBatchSaving ? <Icon name="refresh" size={12} className="animate-spin" /> : null}
-            Save All {dirtyCount > 0 ? `(${dirtyCount})` : ''}
-          </button>
-        </div>
-      </div>
-
       {/* Tab Strip */}
       <div
         data-debug-id={`${debugPrefix}-tab-strip`}
@@ -1904,26 +2028,6 @@ function MonacoMultiFileEditor({
             <Icon name="plus" size={12} />
           </button>
         )}
-
-        {/* In-editor Diff / Changes toggle button (REQ-UI-IN-EDITOR-DIFF) */}
-        <div className="ml-auto flex items-center shrink-0 pr-1">
-          <button
-            data-debug-id="editor-toggle-diff-btn"
-            type="button"
-            onClick={() => setIsDiffMode((prev) => !prev)}
-            aria-pressed={isDiffMode ? 'true' : 'false'}
-            disabled={activeTab.isImage || activeTab.isUnviewable}
-            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors disabled:opacity-40 ${
-              isDiffMode
-                ? 'border border-accent bg-accent/20 text-accent font-semibold shadow-xs'
-                : 'border border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
-            }`}
-            title={isDiffMode ? 'Return to Standard Editor' : 'Compare against original buffer / Git HEAD'}
-          >
-            <span className="font-mono font-bold text-xs leading-none">±</span>
-            <span>Diff / Changes</span>
-          </button>
-        </div>
       </div>
 
       {/* File-level & line comments for active tab */}

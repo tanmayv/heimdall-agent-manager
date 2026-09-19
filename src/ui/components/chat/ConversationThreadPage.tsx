@@ -1,5 +1,5 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
-import ProjectFilesPanel from './ProjectFilesPanel';
+import ProjectFilesPanel, { ProjectQuickOpenModal } from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
 import ShellJobsPanel from './ShellJobsPanel';
 import AtMentionPopup, { type MentionEntity } from './AtMentionPopup';
@@ -618,7 +618,29 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => readRightSidebarWidth());
   const [isDragging, setIsDragging] = useState(false);
+  const [isRightPanelMaximized, setIsRightPanelMaximized] = useState(false);
+  const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
+  const [editorFileToOpen, setEditorFileToOpen] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Global Cmd+P / Ctrl+P shortcut to trigger Quick Open across the conversation page (REQ-UI-GLOBAL-CMDP-EVERYWHERE)
+  useEffect(() => {
+    if (!projectId) return;
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'p' || e.key === 'P') && !e.shiftKey) {
+        e.preventDefault();
+        setIsQuickOpenOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [projectId]);
+
+  const handleQuickOpenSelectFile = (filePath: string) => {
+    setIsQuickOpenOpen(false);
+    selectRightPanelTab('files');
+    setEditorFileToOpen(filePath);
+  };
 
   // Sync state if hash/search changes while mounted (e.g. browser back/forward or internal navigation)
   useEffect(() => {
@@ -1035,6 +1057,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         syncUrlPanel(targetTab);
         return targetTab;
       } else {
+        setIsRightPanelMaximized(false);
         writeRightSidebarOpen(false);
         syncUrlPanel(null);
         return 'closed';
@@ -1053,6 +1076,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   function closeRightPanel() {
+    setIsRightPanelMaximized(false);
     writeRightSidebarOpen(false);
     syncUrlPanel(null);
     setRightPanel('closed');
@@ -1060,6 +1084,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   useEffect(() => {
     const handleCloseSidebar = () => {
+      setIsRightPanelMaximized(false);
       setRightPanel('closed');
       writeRightSidebarOpen(false);
       syncUrlPanel(null);
@@ -1379,16 +1404,28 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <Icon name="terminal" size={16} />
             </button>
           ) : null}
-          <button
-            type="button"
-            data-debug-id="conversation-right-panel-close-btn"
-            aria-label="Close side panel"
-            title="Close panel"
-            onClick={closeRightPanel}
-            className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
-          >
-            <Icon name="panel-right" size={16} />
-          </button>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              data-debug-id="conversation-right-panel-maximize-btn"
+              aria-label={isRightPanelMaximized ? 'Restore side panel' : 'Maximize side panel'}
+              title={isRightPanelMaximized ? 'Restore panel' : 'Maximize panel'}
+              onClick={() => setIsRightPanelMaximized((prev) => !prev)}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
+            >
+              <Icon name={isRightPanelMaximized ? 'minimize' : 'maximize'} size={16} />
+            </button>
+            <button
+              type="button"
+              data-debug-id="conversation-right-panel-close-btn"
+              aria-label="Close side panel"
+              title="Close panel"
+              onClick={closeRightPanel}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
+            >
+              <Icon name="panel-right" size={16} />
+            </button>
+          </div>
           <div className="pointer-events-none absolute inset-x-0 -bottom-6 h-6 bg-gradient-to-b from-canvas/90 via-canvas/50 to-transparent backdrop-blur-sm" aria-hidden="true" />
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
@@ -1401,6 +1438,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               onPublishComments={publishFileComments}
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
+              openFilePath={editorFileToOpen}
+              onFileOpened={() => setEditorFileToOpen(null)}
+              onOpenQuickOpen={() => setIsQuickOpenOpen(true)}
             />
           ) : active === 'rundir' && hasRunDir ? (
             <InstanceRunDirPanel
@@ -1789,7 +1829,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       {/* Col 1: Chat pane on the left: expands to full width when sidebar is closed or on mobile */}
       <div
         data-debug-id="conversation-chat-column"
-        className="flex h-full w-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px]"
+        className={`flex h-full w-full min-h-0 min-w-0 flex-1 flex-col sm:min-w-[380px] ${
+          isRightPanelMaximized && panelOpen ? 'hidden' : ''
+        }`}
       >
         {/* Scoped top bar in Col 1: narrows automatically when sidebar opens */}
         <header
@@ -1922,7 +1964,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       </div>
 
       {/* Desktop (>= 768px) vertical resizer divider between chat view and right sidebar */}
-      {panelOpen ? (
+      {panelOpen && !isRightPanelMaximized ? (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -1943,12 +1985,25 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       {/* Col 2: Desktop (>= 768px) right sidebar with smooth 200ms open/close transition & overflow clipping */}
       <div
         data-debug-id="conversation-right-panel-resizable-container"
-        style={{ width: panelOpen ? `${sidebarWidth}px` : '0px' }}
-        className={`hidden sm:flex overflow-hidden shrink-0 flex-col ${isDragging ? 'transition-none' : 'transition-[width] duration-200 ease-in-out'}`}
+        style={{
+          width:
+            !panelOpen
+              ? '0px'
+              : isRightPanelMaximized
+              ? '100%'
+              : `${sidebarWidth}px`,
+        }}
+        className={`hidden sm:flex overflow-hidden shrink-0 flex-col ${
+          isRightPanelMaximized ? 'w-full flex-1 max-w-full min-w-0' : ''
+        } ${isDragging ? 'transition-none' : 'transition-[width] duration-200 ease-in-out'}`}
       >
         <div
-          style={{ width: `${sidebarWidth}px` }}
-          className="h-full flex flex-col min-w-[360px]"
+          style={{
+            width: isRightPanelMaximized ? '100%' : `${sidebarWidth}px`,
+          }}
+          className={`h-full flex flex-col ${
+            isRightPanelMaximized ? 'w-full flex-1 min-w-0' : 'min-w-[360px]'
+          }`}
         >
           {renderRightPanel(false)}
         </div>
@@ -2013,6 +2068,16 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         conversationGroups={chainAgentGroups}
         scope={{ chainId, conversationId, label: chainTitle || title }}
       />
+
+      {projectId ? (
+        <ProjectQuickOpenModal
+          projectId={projectId}
+          bridgeId={instanceBridgeId}
+          isOpen={isQuickOpenOpen}
+          onClose={() => setIsQuickOpenOpen(false)}
+          onSelectFile={handleQuickOpenSelectFile}
+        />
+      ) : null}
     </section>
   );
 }
