@@ -646,13 +646,21 @@ delete_project_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // online guards as project_fs_relay. The bridge result JSON is returned verbatim.
 
 Project_Vcs_Command :: struct {
-	command_type: string, // vcs_capabilities | vcs_status | vcs_files | vcs_diff
-	path:         string, // file path for diff; empty for others
+	command_type: string, // vcs_capabilities | vcs_status | vcs_files | vcs_diff | vcs_targets | vcs_log | vcs_file_content | vcs_action | vcs_commit
+	path:         string, // file path for diff/file_content/action; empty for others
 	cursor:       string,
 	limit:        int,
+	target:       string,
+	action:       string,
+	message:      string,
+	amend:        bool,
 	send_path:    bool, // whether to include path in JSON body
 	send_cursor:  bool,
 	send_limit:   bool,
+	send_target:  bool,
+	send_action:  bool,
+	send_message: bool,
+	send_amend:   bool,
 }
 
 project_vcs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Vcs_Command) -> (string, bool, domain.Domain_Error) {
@@ -688,6 +696,18 @@ project_vcs_command_json :: proc(cmd: Project_Vcs_Command, command_id, root_path
 	if cmd.send_limit {
 		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.limit)
 	}
+	if cmd.send_target && cmd.target != "" {
+		strings.write_string(&b, ",\"target\":\""); write_handler_json_string(&b, cmd.target); strings.write_string(&b, "\"")
+	}
+	if cmd.send_action && cmd.action != "" {
+		strings.write_string(&b, ",\"action\":\""); write_handler_json_string(&b, cmd.action); strings.write_string(&b, "\"")
+	}
+	if cmd.send_message {
+		strings.write_string(&b, ",\"message\":\""); write_handler_json_string(&b, cmd.message); strings.write_string(&b, "\"")
+	}
+	if cmd.send_amend {
+		strings.write_string(&b, ",\"amend\":"); strings.write_string(&b, "true" if cmd.amend else "false")
+	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
@@ -706,10 +726,80 @@ project_handle_vcs_status :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+project_handle_vcs_targets :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{command_type = "vcs_targets"})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_log :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_log",
+		limit = query_int(req.query, "limit", 20),
+		send_limit = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_file_content :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	file := query_value(req.query, "file")
+	if file == "" do file = query_value(req.query, "path")
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_file_content",
+		path = file,
+		send_path = true,
+		target = query_value(req.query, "target"),
+		send_target = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_action :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	action := json_string(req.body, "action")
+	if action == "" do action = query_value(req.query, "action")
+	file := json_string(req.body, "file")
+	if file == "" do file = json_string(req.body, "path")
+	if file == "" do file = query_value(req.query, "file")
+	if file == "" do file = query_value(req.query, "path")
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_action",
+		action = action,
+		send_action = true,
+		path = file,
+		send_path = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_commit :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	message := json_string(req.body, "message")
+	if message == "" do message = query_value(req.query, "message")
+	amend := json_bool(req.body, "amend")
+	if !amend do amend = query_bool(req.query, "amend", false)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_commit",
+		message = message,
+		send_message = true,
+		amend = amend,
+		send_amend = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
 project_handle_vcs_files :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
 		command_type = "vcs_files",
+		target = query_value(req.query, "target"), send_target = true,
 		cursor = query_value(req.query, "cursor"), send_cursor = true,
 		limit = query_int(req.query, "limit", 100), send_limit = true,
 	})
@@ -719,9 +809,12 @@ project_handle_vcs_files :: proc(ctx: rawptr, req: Request) -> Response {
 
 project_handle_vcs_diff :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
+	file := query_value(req.query, "file")
+	if file == "" do file = query_value(req.query, "path")
 	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
 		command_type = "vcs_diff",
-		path = query_value(req.query, "file"), send_path = true,
+		path = file, send_path = true,
+		target = query_value(req.query, "target"), send_target = true,
 		cursor = query_value(req.query, "cursor"), send_cursor = true,
 		limit = query_int(req.query, "limit", 50), send_limit = true,
 	})

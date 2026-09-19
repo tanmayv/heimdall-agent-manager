@@ -7,6 +7,7 @@ package main
 // Detection traverses upward to locate repository or CitC workspace markers (.hg, .citc)
 // or recognizes /google/src/cloud/ paths.
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:path/filepath"
@@ -19,6 +20,13 @@ vcs_fig_provider :: proc() -> VCS_Provider {
 		status        = vcs_fig_status,
 		changed_files = vcs_fig_changed_files,
 		diff_file     = vcs_fig_diff_file,
+		diff_targets  = vcs_fig_diff_targets,
+		log           = vcs_fig_log,
+		file_content  = vcs_fig_file_content,
+		add_file      = vcs_fig_add_file,
+		revert_file   = vcs_fig_revert_file,
+		revert_all    = vcs_fig_revert_all,
+		commit        = vcs_fig_commit,
 		capabilities  = vcs_fig_capabilities,
 	}
 }
@@ -167,14 +175,23 @@ vcs_fig_parse_diffstat_into :: proc(stats: ^map[string][2]int, out: string) {
 	}
 }
 
-// vcs_fig_diffstat_into queries additions and deletions per file via `hg --cwd <path> diff --stat .`.
-vcs_fig_diffstat_into :: proc(stats: ^map[string][2]int, path: string) {
-	out, ok := vcs_run([]string{"hg", "--cwd", path, "diff", "--stat", "."})
+// vcs_fig_diffstat_into queries additions and deletions per file via `hg --cwd <path> diff --stat`.
+vcs_fig_diffstat_into :: proc(stats: ^map[string][2]int, path, target: string) {
+	eff_target := strings.trim_space(target)
+	diff_args: [dynamic]string
+	append(&diff_args, "hg", "--cwd", path, "diff", "--stat")
+	if eff_target == "pdiff" {
+		append(&diff_args, "-r", ".~1")
+	} else if eff_target != "" && eff_target != "." {
+		append(&diff_args, "-r", eff_target)
+	}
+	append(&diff_args, ".")
+	out, ok := vcs_run(diff_args[:])
 	if !ok do return
 	vcs_fig_parse_diffstat_into(stats, out)
 }
 
-// vcs_fig_parse_changed_files parses raw `hg status .` output lines into VCS_Changed_File structs.
+// vcs_fig_parse_changed_files parses raw `hg status` output lines into VCS_Changed_File structs.
 vcs_fig_parse_changed_files :: proc(out: string, stats: map[string][2]int, base_path: string = "") -> []VCS_Changed_File {
 	all := make([dynamic]VCS_Changed_File, context.allocator)
 	lines := strings.split_lines(out, context.temp_allocator)
@@ -209,25 +226,243 @@ vcs_fig_parse_changed_files :: proc(out: string, stats: map[string][2]int, base_
 	return all[:]
 }
 
-// vcs_fig_changed_files parses `hg --cwd <path> status .` scoped strictly to the selected directory,
+// vcs_fig_changed_files parses `hg --cwd <path> status` scoped strictly to the selected directory and target revision,
 // joins per-file addition/deletion counts from diffstat, and paginates.
-vcs_fig_changed_files :: proc(path, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
-	out, ok := vcs_run([]string{"hg", "--cwd", path, "status", "."})
+vcs_fig_changed_files :: proc(path, target, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
+	eff_target := strings.trim_space(target)
+	status_args: [dynamic]string
+	append(&status_args, "hg", "--cwd", path, "status")
+	if eff_target == "pdiff" {
+		append(&status_args, "--rev", ".~1")
+	} else if eff_target != "" && eff_target != "." {
+		append(&status_args, "--rev", eff_target)
+	}
+	append(&status_args, ".")
+
+	out, ok := vcs_run(status_args[:])
 	if !ok do return nil, "", false, false
 
 	stats := make(map[string][2]int, 0, context.temp_allocator)
-	vcs_fig_diffstat_into(&stats, path)
+	vcs_fig_diffstat_into(&stats, path, eff_target)
 
 	all := vcs_fig_parse_changed_files(out, stats, path)
 	page, next_cursor, has_more := vcs_paginate_files(all, cursor, limit, VCS_FILES_DEFAULT_LIMIT, VCS_FILES_MAX_LIMIT)
 	return page, next_cursor, has_more, true
 }
 
-// vcs_fig_diff_file parses `hg --cwd <path> diff <file>` into hunks, then paginates.
-vcs_fig_diff_file :: proc(path, file, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
-	out, ok := vcs_run([]string{"hg", "--cwd", path, "diff", file})
-	if !ok do return nil, "", false, false
-	hunks := vcs_parse_unified_diff(out)
+// vcs_fig_diff_file parses `hg --cwd <path> diff` into hunks, with synthetic unified diffs for added/deleted files.
+vcs_fig_diff_file :: proc(path, file, target, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
+	eff_target := strings.trim_space(target)
+	if eff_target == "pdiff" do eff_target = ".~1"
+	if eff_target == "" do eff_target = "."
+
+	full_path, jerr := filepath.join([]string{path, file}, context.temp_allocator)
+	if jerr != nil do return nil, "", false, false
+	file_exists := os.exists(full_path)
+
+	target_content, in_target := vcs_fig_file_content(path, file, eff_target)
+
+	hunks: []VCS_Diff_Hunk
+
+	if !in_target && file_exists {
+		// Newly added or untracked file -> diff against /dev/null (+ lines)
+		if content_bytes, err := os.read_entire_file(full_path, context.temp_allocator); err == nil {
+			hunks = vcs_synthetic_diff_added(string(content_bytes))
+		}
+	} else if in_target && !file_exists {
+		// Deleted file -> diff against /dev/null (- lines)
+		hunks = vcs_synthetic_diff_deleted(target_content)
+	} else {
+		diff_args: [dynamic]string
+		append(&diff_args, "hg", "--cwd", path, "diff")
+		if eff_target != "." {
+			append(&diff_args, "-r", eff_target)
+		}
+		append(&diff_args, file)
+
+		out, ok := vcs_run(diff_args[:])
+		if !ok do return nil, "", false, false
+		if strings.trim_space(out) != "" {
+			hunks = vcs_parse_unified_diff(out)
+		}
+	}
+
 	page, next_cursor, has_more := vcs_paginate_hunks(hunks, cursor, limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
 	return page, next_cursor, has_more, true
 }
+
+// vcs_fig_diff_targets collects available diff targets: current (.), parent (pdiff), p4base, p4head, and CL stack.
+vcs_fig_diff_targets :: proc(path: string) -> ([]VCS_Diff_Target, bool) {
+	targets := make([dynamic]VCS_Diff_Target, context.allocator)
+
+	// 1. Current revision (.) - default
+	append(&targets, VCS_Diff_Target{
+		id          = ".",
+		label       = "Current revision (.)",
+		description = "Changes in working copy vs current revision",
+		is_default  = true,
+	})
+
+	// 2. Parent (.~1 / pdiff)
+	append(&targets, VCS_Diff_Target{
+		id          = "pdiff",
+		label       = "Parent (.~1 / pdiff)",
+		description = "Changes vs parent revision",
+		is_default  = false,
+	})
+
+	// 3. p4base
+	append(&targets, VCS_Diff_Target{
+		id          = "p4base",
+		label       = "p4base",
+		description = "Perforce base snapshot",
+		is_default  = false,
+	})
+
+	// 4. p4head
+	append(&targets, VCS_Diff_Target{
+		id          = "p4head",
+		label       = "p4head",
+		description = "Perforce head revision",
+		is_default  = false,
+	})
+
+	// 5. CL stack entries from hg log
+	if log_out, ok := vcs_run([]string{
+		"hg", "--cwd", path, "log", "-l", "10",
+		"-T", "{rev}\\t{node|short}\\t{cl}\\t{desc|firstline}\\n",
+	}); ok {
+		lines := strings.split_lines(log_out, context.temp_allocator)
+		for line in lines {
+			trimmed := strings.trim_space(line)
+			if trimmed == "" do continue
+			parts := strings.split(trimmed, "\t", context.temp_allocator)
+			if len(parts) < 4 do continue
+			rev := strings.trim_space(parts[0])
+			node := strings.trim_space(parts[1])
+			cl := strings.trim_space(parts[2])
+			desc := strings.trim_space(parts[3])
+
+			id := node
+			label := node
+			if cl != "" {
+				id = cl
+				label = fmt.tprintf("CL %s (%s)", cl, node)
+			} else if rev != "" {
+				label = fmt.tprintf("Rev %s (%s)", rev, node)
+			}
+
+			append(&targets, VCS_Diff_Target{
+				id          = strings.clone(id),
+				label       = strings.clone(label),
+				description = strings.clone(desc),
+				is_default  = false,
+			})
+		}
+	}
+
+	return targets[:], true
+}
+
+// vcs_fig_log queries recent commits / Fig CL stack entries formatted as VCS_Log_Entry structs.
+vcs_fig_log :: proc(path: string, limit: int) -> ([]VCS_Log_Entry, bool) {
+	eff_limit := limit
+	if eff_limit <= 0 do eff_limit = 20
+	if eff_limit > 100 do eff_limit = 100
+
+	limit_str := fmt.tprintf("%d", eff_limit)
+	out, ok := vcs_run([]string{
+		"hg", "--cwd", path, "log", "-l", limit_str,
+		"-T", "{rev}\\t{node|short}\\t{cl}\\t{desc|firstline}\\t{phase}\\t{author}\\t{date|isodate}\\n",
+	})
+	if !ok do return nil, false
+
+	cur_node := ""
+	if id_out, iok := vcs_run([]string{"hg", "--cwd", path, "identify", "-i"}); iok {
+		cur_node = strings.trim_right(strings.trim_space(id_out), "+")
+	}
+
+	entries := make([dynamic]VCS_Log_Entry, context.allocator)
+	lines := strings.split_lines(out, context.temp_allocator)
+	for line in lines {
+		trimmed := strings.trim_space(line)
+		if trimmed == "" do continue
+		parts := strings.split(trimmed, "\t", context.temp_allocator)
+		if len(parts) < 5 do continue
+
+		rev := strings.trim_space(parts[0])
+		node := strings.trim_space(parts[1])
+		cl := strings.trim_space(parts[2])
+		desc := strings.trim_space(parts[3])
+		phase := strings.trim_space(parts[4])
+		author := ""
+		timestamp := ""
+		if len(parts) > 5 do author = strings.trim_space(parts[5])
+		if len(parts) > 6 do timestamp = strings.trim_space(parts[6])
+
+		is_current := (cur_node != "" && (node == cur_node || strings.has_prefix(cur_node, node) || strings.has_prefix(node, cur_node)))
+
+		append(&entries, VCS_Log_Entry{
+			revision   = strings.clone(node if node != "" else rev),
+			cl_number  = strings.clone(cl),
+			title      = strings.clone(desc),
+			author     = strings.clone(author),
+			timestamp  = strings.clone(timestamp),
+			is_current = is_current,
+			status     = strings.clone(phase),
+		})
+	}
+
+	return entries[:], true
+}
+
+// vcs_fig_file_content fetches historical file content at requested target revision via hg cat.
+vcs_fig_file_content :: proc(path, file, target: string) -> (string, bool) {
+	eff_target := target
+	if eff_target == "" do eff_target = "."
+	if eff_target == "pdiff" do eff_target = ".~1"
+	return vcs_run([]string{"hg", "--cwd", path, "cat", "-r", eff_target, file})
+}
+
+// vcs_fig_add_file adds an untracked file to Mercurial/Fig.
+vcs_fig_add_file :: proc(path, file: string) -> bool {
+	_, ok := vcs_run([]string{"hg", "--cwd", path, "add", file})
+	return ok
+}
+
+// vcs_fig_revert_file reverts changes to a tracked file or deletes an untracked file.
+vcs_fig_revert_file :: proc(path, file: string) -> bool {
+	_, tracked := vcs_run([]string{"hg", "--cwd", path, "files", file})
+	if tracked {
+		_, ok := vcs_run([]string{"hg", "--cwd", path, "revert", "--no-backup", file})
+		return ok
+	} else {
+		full_path, jerr := filepath.join([]string{path, file}, context.temp_allocator)
+		if jerr != nil do return false
+		if os.exists(full_path) {
+			rerr := os.remove(full_path)
+			return rerr == nil
+		}
+		return true
+	}
+}
+
+// vcs_fig_revert_all reverts all changes in the working copy.
+vcs_fig_revert_all :: proc(path: string) -> bool {
+	_, ok := vcs_run([]string{"hg", "--cwd", path, "revert", "--all", "--no-backup"})
+	return ok
+}
+
+// vcs_fig_commit commits changes or amends the current revision.
+vcs_fig_commit :: proc(path, message: string, amend: bool) -> (string, bool) {
+	if amend {
+		if message != "" {
+			return vcs_run([]string{"hg", "--cwd", path, "amend", "-m", message})
+		} else {
+			return vcs_run([]string{"hg", "--cwd", path, "amend"})
+		}
+	} else {
+		return vcs_run([]string{"hg", "--cwd", path, "commit", "-m", message})
+	}
+}
+

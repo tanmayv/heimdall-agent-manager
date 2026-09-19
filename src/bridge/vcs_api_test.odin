@@ -78,3 +78,73 @@ vcs_api_diff_missing_path_key_no_crash :: proc(t: ^testing.T) {
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "missing path key must return ok:false")
 }
+
+@(test)
+vcs_api_targets_empty_root_no_crash :: proc(t: ^testing.T) {
+	out := bridge_vcs_targets_json("t8", `{"command_id":"t8","root":""}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root targets must return ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root targets must return no_vcs")
+}
+
+@(test)
+vcs_api_log_empty_root_no_crash :: proc(t: ^testing.T) {
+	out := bridge_vcs_log_json("t9", `{"command_id":"t9","root":"","limit":10}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root log must return ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root log must return no_vcs")
+}
+
+@(test)
+vcs_api_file_content_empty_root_no_crash :: proc(t: ^testing.T) {
+	out := bridge_vcs_file_content_json("t10", `{"command_id":"t10","root":"","path":"README.md"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root file_content must return ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root file_content must return no_vcs")
+}
+
+@(test)
+vcs_api_action_empty_root_no_crash :: proc(t: ^testing.T) {
+	out := bridge_vcs_action_json("t11", `{"command_id":"t11","root":"","action":"revert_all"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root action must return ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root action must return no_vcs")
+}
+
+@(test)
+vcs_api_commit_empty_root_no_crash :: proc(t: ^testing.T) {
+	out := bridge_vcs_commit_json("t12", `{"command_id":"t12","root":"","message":"test"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root commit must return ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root commit must return no_vcs")
+}
+
+@(test)
+vcs_api_targets_git_repo :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_targets_json("t13", `{"command_id":"t13","root":"."}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "git targets must return ok:true")
+	testing.expect(t, strings.contains(out, `"provider":"git"`), "git targets must report provider git")
+	testing.expect(t, strings.contains(out, `"HEAD"`), "git targets must contain HEAD")
+}
+
+@(test)
+vcs_api_log_git_repo :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_log_json("t14", `{"command_id":"t14","root":".","limit":5}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "git log must return ok:true")
+	testing.expect(t, strings.contains(out, `"provider":"git"`), "git log must report provider git")
+	testing.expect(t, strings.contains(out, `"entries"`), "git log must contain entries")
+}
+
+@(test)
+vcs_api_file_content_git_repo :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_file_content_json("t15", `{"command_id":"t15","root":".","path":"README.md","target":"HEAD"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "git file_content must return ok:true")
+	testing.expect(t, strings.contains(out, `"content"`), "git file_content must contain content")
+}
+

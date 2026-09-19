@@ -389,8 +389,13 @@ register_routes :: proc(graph: ^App_Graph) {
 	// Project-scoped VCS relay (resolves project -> bridge+root, relays vcs_* WS commands).
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/capabilities", rawptr(&graph.bridge_handlers), http.project_handle_vcs_capabilities)
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/status", rawptr(&graph.bridge_handlers), http.project_handle_vcs_status)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/targets", rawptr(&graph.bridge_handlers), http.project_handle_vcs_targets)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/log", rawptr(&graph.bridge_handlers), http.project_handle_vcs_log)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/file-content", rawptr(&graph.bridge_handlers), http.project_handle_vcs_file_content)
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/files", rawptr(&graph.bridge_handlers), http.project_handle_vcs_files)
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/vcs/diff", rawptr(&graph.bridge_handlers), http.project_handle_vcs_diff)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/action", rawptr(&graph.bridge_handlers), http.project_handle_vcs_action)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/commit", rawptr(&graph.bridge_handlers), http.project_handle_vcs_commit)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.list_task_chains_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.create_task_chain_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)
