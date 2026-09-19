@@ -58,6 +58,10 @@ def test_hub_fs_handlers_and_wiring() -> None:
     require('router_add(&graph.router, "PUT", "/api/v1/projects/*/fs/files", rawptr(&graph.bridge_handlers), http.batch_write_project_files_handler)' in wiring,
             "wiring.odin missing PUT /api/v1/projects/*/fs/files route")
 
+    # Inbound WebSocket result dispatcher
+    require('"fs_write_file_result"' in handlers, "bridge_handlers.odin missing fs_write_file_result in WS result dispatcher")
+    require('"fs_batch_write_result"' in handlers, "bridge_handlers.odin missing fs_batch_write_result in WS result dispatcher")
+
 if __name__ == "__main__":
     test_bridge_fs_write()
     test_hub_fs_handlers_and_wiring()
