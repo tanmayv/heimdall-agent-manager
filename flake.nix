@@ -16,7 +16,7 @@
 
       # Keep appVersion in sync with src/contracts/protocol.odin APP_VERSION.
       appVersion = "0.1.0";
-      npmDepsHash = "sha256-KwqqfeXrma/a77FiSar0LHhDQbXs+Kcy835vn72r95w=";
+      npmDepsHash = "sha256-CMApf6JvGbGttFTHtNO9lkLToGIpykAEClVQYu8MIMc=";
 
       mkOdinPackage = pkgs: odin: name: srcDir: pkgs.stdenv.mkDerivation {
         pname = name;
