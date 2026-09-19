@@ -1784,7 +1784,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     >
       {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
       {panelOpen ? (
-        <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden bg-surface sm:hidden">
+        <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden bg-surface pb-20 sm:hidden">
           {renderRightPanel(true)}
         </div>
       ) : null}
