@@ -16,6 +16,7 @@ PROJECT_FS_FILE = ROOT / "src" / "ui" / "api" / "endpoints" / "projectFs.ts"
 PANEL_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ProjectFilesPanel.tsx"
 THREAD_PAGE_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ConversationThreadPage.tsx"
 ICON_FILE = ROOT / "src" / "ui" / "components" / "ui" / "primitives" / "Icon.tsx"
+PACKAGE_JSON_FILE = ROOT / "package.json"
 
 
 def require(condition: bool, message: str) -> None:
@@ -25,6 +26,12 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
+    print("[*] 0. Checking package.json for monaco-vim pinning (REQ-VIM-INSERT-MODE-FIX)...")
+    require(PACKAGE_JSON_FILE.exists(), "package.json must exist")
+    pkg_src = PACKAGE_JSON_FILE.read_text(encoding="utf-8")
+    require('"monaco-vim": "0.4.2"' in pkg_src, "monaco-vim must be pinned to 0.4.2 (GitHub #150 fix)")
+    print("  [+] package.json monaco-vim 0.4.2 pinning verified.")
+
     print("[*] 1. Checking src/ui/api/endpoints/projectFs.ts...")
     require(PROJECT_FS_FILE.exists(), "projectFs.ts must exist")
     pfs_src = PROJECT_FS_FILE.read_text(encoding="utf-8")
@@ -118,12 +125,16 @@ def main() -> None:
     # REQ-FIX-QUICK-OPEN-CWD-PATH: Root-relative path resolution
     require("const filePath = inputPath;" in panel_src, "openFileInEditor must use inputPath directly without flawed cwd prepending")
 
-    # Quick Open Modal & Shortcuts
+    # Quick Open Modal & Shortcuts (REQ-UI-CMD-P-MODAL-UNIFICATION)
     require("ProjectQuickOpenModal" in panel_src, "Must export ProjectQuickOpenModal component")
     require("project-quick-open-modal" in panel_src, "Must render project-quick-open-modal")
     require("project-quick-open-input" in panel_src, "Must render project-quick-open-input")
     require("project-quick-open-results" in panel_src, "Must render project-quick-open-results")
     require("subsequenceFuzzyMatch" in panel_src, "Must implement subsequenceFuzzyMatch for Quick Open")
+    require("z-modal" in panel_src, "ProjectQuickOpenModal must use z-modal token")
+    require("bg-surface-overlay" in panel_src, "ProjectQuickOpenModal must use bg-surface-overlay token")
+    require("useDialogA11y" in panel_src, "ProjectQuickOpenModal must integrate useDialogA11y")
+    require("bg-black/50" not in panel_src, "Must eliminate raw bg-black/50 backdrop")
 
     # Keyboard shortcuts & Save handlers
     require("onSaveActive" in panel_src or "saveActiveFile" in panel_src, "Must implement saveActiveFile handler")
@@ -164,6 +175,7 @@ def main() -> None:
     require("h-[22px]" in panel_src or "h-[20px]" in panel_src, "Vim status bar must be themed 20-22px")
     require("heimdall:editor:vim_mode" in panel_src, "Vim mode toggle must be persisted in localStorage")
     require("toggle-vim-btn" in panel_src, "Must offer Vim toggle in overflow menu")
+    require("editorInstance" in panel_src, "Must unify Vim lifecycle into single hook driven by editorInstance")
 
     # REQ-UI-RESPONSIVE-TOP-BAR: Responsive top bar with 3-dots overflow menu
     require("overflow-menu-btn" in panel_src, "Must render 3-dots overflow menu button")

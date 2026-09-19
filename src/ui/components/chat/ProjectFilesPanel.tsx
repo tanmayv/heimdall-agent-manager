@@ -26,6 +26,7 @@ import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
 import { useTheme } from '../../store/themeSlice';
 import { Icon, IconButton } from '@ui';
+import { useDialogA11y } from '../ui/composites/useDialogA11y';
 import {
   useLazyListProjectDirQuery,
   useLazyReadProjectFileQuery,
@@ -252,7 +253,6 @@ export default function ProjectFilesPanel({
 }: ProjectFilesPanelProps) {
   const [listDir] = useLazyListProjectDirQuery();
   const [readFile, readState] = useLazyReadProjectFileQuery();
-  const [fetchQuickOpen, quickOpenState] = useLazyQuickOpenProjectFilesQuery();
   const monaco = useMonaco();
 
   const [createFile, createFileState] = useCreateProjectFileMutation();
@@ -265,9 +265,6 @@ export default function ProjectFilesPanel({
 
   // Quick Open Modal state (Cmd+P / Ctrl+P) (REQ-UI-GLOBAL-QUICK-OPEN)
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
-  const [quickOpenQuery, setQuickOpenQuery] = useState('');
-  const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
-  const [quickOpenAllFiles, setQuickOpenAllFiles] = useState<string[]>([]);
 
   // Multi-file editor state
   const [openTabs, setOpenTabs] = useState<EditorTab[]>([]);
@@ -540,43 +537,6 @@ export default function ProjectFilesPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, bridgeId]);
 
-  // Quick Open: fetch files on open
-  useEffect(() => {
-    if (isQuickOpenOpen && projectId) {
-      setQuickOpenQuery('');
-      setQuickOpenSelectedIndex(0);
-      void fetchQuickOpen({ projectId, bridgeId, query: '', limit: 1000 })
-        .unwrap()
-        .then((res) => {
-          if (res.ok && Array.isArray(res.files)) {
-            setQuickOpenAllFiles(res.files);
-          }
-        })
-        .catch(() => {});
-    }
-  }, [isQuickOpenOpen, projectId, bridgeId, fetchQuickOpen]);
-
-  // Quick Open: query backend as user types
-  useEffect(() => {
-    if (!isQuickOpenOpen || !projectId) return;
-    const q = quickOpenQuery.trim();
-    if (!q) return;
-    const timer = setTimeout(() => {
-      void fetchQuickOpen({ projectId, bridgeId, query: q, limit: 500 })
-        .unwrap()
-        .then((res) => {
-          if (res.ok && Array.isArray(res.files)) {
-            setQuickOpenAllFiles((prev) => {
-              const set = new Set([...prev, ...res.files]);
-              return Array.from(set);
-            });
-          }
-        })
-        .catch(() => {});
-    }, 150);
-    return () => clearTimeout(timer);
-  }, [quickOpenQuery, isQuickOpenOpen, projectId, bridgeId, fetchQuickOpen]);
-
   // Global keydown listener for Quick Open (Cmd+P / Ctrl+P) scoped to current project (REQ-UI-GLOBAL-QUICK-OPEN)
   useEffect(() => {
     if (!projectId) return;
@@ -594,15 +554,6 @@ export default function ProjectFilesPanel({
     window.addEventListener('keydown', handleQuickOpenKeyDown, true);
     return () => window.removeEventListener('keydown', handleQuickOpenKeyDown, true);
   }, [projectId, onOpenQuickOpen]);
-
-  const filteredQuickOpenFiles = useMemo(() => {
-    if (!quickOpenQuery.trim()) return quickOpenAllFiles.slice(0, 50);
-    const q = quickOpenQuery.trim();
-    return quickOpenAllFiles
-      .filter((file) => subsequenceFuzzyMatch(q, file))
-      .sort((a, b) => fuzzyMatchScore(q, b) - fuzzyMatchScore(q, a))
-      .slice(0, 50);
-  }, [quickOpenAllFiles, quickOpenQuery]);
 
   // Show/hide-hidden refetches the CURRENT directory in place (Spec 4.2/4.3) —
   // it must not jump back to root. Skip the initial mount so this doesn't
@@ -1906,15 +1857,21 @@ export function ProjectQuickOpenModal({
   onClose: () => void;
   onSelectFile: (filePath: string) => void;
 }) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const [fetchQuickOpen, quickOpenState] = useLazyQuickOpenProjectFilesQuery();
   const [quickOpenQuery, setQuickOpenQuery] = useState('');
   const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
   const [quickOpenAllFiles, setQuickOpenAllFiles] = useState<string[]>([]);
 
+  useDialogA11y(isOpen, onClose, panelRef);
+
   useEffect(() => {
     if (isOpen && projectId) {
       setQuickOpenQuery('');
       setQuickOpenSelectedIndex(0);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
       void fetchQuickOpen({ projectId, bridgeId, query: '', limit: 1000 })
         .unwrap()
         .then((res) => {
@@ -1946,6 +1903,12 @@ export function ProjectQuickOpenModal({
     return () => clearTimeout(timer);
   }, [quickOpenQuery, isOpen, projectId, bridgeId, fetchQuickOpen]);
 
+  useEffect(() => {
+    if (!listRef.current) return;
+    const el = listRef.current.querySelector<HTMLElement>(`[data-quick-open-index="${quickOpenSelectedIndex}"]`);
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [quickOpenSelectedIndex]);
+
   const filteredQuickOpenFiles = useMemo(() => {
     if (!quickOpenQuery.trim()) return quickOpenAllFiles.slice(0, 50);
     const q = quickOpenQuery.trim();
@@ -1960,19 +1923,25 @@ export function ProjectQuickOpenModal({
   return (
     <div
       data-debug-id="project-quick-open-modal"
-      className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/50 backdrop-blur-xs p-4"
+      role="presentation"
+      className="fixed inset-0 z-modal flex items-start justify-center bg-surface-overlay/80 px-2 pt-[max(env(safe-area-inset-top),0.5rem)] backdrop-blur-sm sm:px-4 sm:pt-[12vh]"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-xl rounded-xl border border-subtle bg-surface shadow-2xl overflow-hidden flex flex-col"
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Quick open files"
+        className="flex max-h-[calc(100dvh-1rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-subtle bg-surface-overlay shadow-overlay outline-none sm:max-h-[70vh]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center border-b border-subtle px-3 py-2 bg-surface-raised gap-2">
-          <Icon name="search" size={16} className="text-muted" />
+        <div className="flex items-center gap-3 border-b border-subtle px-4 py-3">
+          <span aria-hidden="true" className="text-muted"><Icon name="search" size={16} /></span>
           <input
+            ref={inputRef}
             data-debug-id="project-quick-open-input"
             type="text"
-            autoFocus
             value={quickOpenQuery}
             onChange={(e) => {
               setQuickOpenQuery(e.target.value);
@@ -2000,26 +1969,23 @@ export function ProjectQuickOpenModal({
                     onSelectFile(selected);
                   }
                 }
-              } else if (e.key === 'Escape') {
-                e.preventDefault();
-                onClose();
               }
             }}
             placeholder="Search files by name or path (Cmd+P / Ctrl+P)…"
-            className="w-full bg-transparent text-[13px] text-primary placeholder:text-muted focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent text-[15px] text-primary outline-none placeholder:text-faint"
+            autoComplete="off"
+            spellCheck={false}
           />
-          <div className="flex items-center gap-1 text-[11px] text-faint shrink-0">
-            <kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5 font-mono">Esc</kbd>
-            <span>to close</span>
-          </div>
+          <kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5 text-[10px] text-muted">esc</kbd>
         </div>
 
         <div
+          ref={listRef}
           data-debug-id="project-quick-open-results"
-          className="max-h-80 overflow-y-auto divide-y divide-subtle/40"
+          className="flex-1 overflow-y-auto p-2"
         >
           {filteredQuickOpenFiles.length === 0 ? (
-            <div className="p-6 text-center text-xs text-muted">
+            <div className="px-3 py-8 text-center text-sm text-muted">
               {quickOpenState.isLoading ? 'Searching project files…' : 'No matching files found.'}
             </div>
           ) : (
@@ -2032,29 +1998,34 @@ export function ProjectQuickOpenModal({
                   key={file}
                   data-debug-id={`quick-open-item-${file}`}
                   data-selected={isSelected ? 'true' : 'false'}
+                  data-quick-open-index={idx}
                   onClick={() => {
                     onClose();
                     onSelectFile(file);
                   }}
                   onMouseEnter={() => setQuickOpenSelectedIndex(idx)}
-                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors text-[13px] ${
-                    isSelected ? 'bg-accent/15 text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                  className={`flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left text-sm ${
+                    isSelected ? 'bg-neutral-soft text-primary font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'
                   }`}
                 >
-                  <Icon name="file" size={14} className={isSelected ? 'text-accent' : 'text-muted'} />
-                  <span className="font-medium text-primary">{name}</span>
-                  {dir ? <span className="font-mono text-[11px] text-faint truncate ml-auto">{dir}</span> : null}
+                  <span aria-hidden="true" className="grid w-5 place-items-center text-muted opacity-80">
+                    <Icon name="file" size={16} className={isSelected ? 'text-primary' : 'text-muted'} />
+                  </span>
+                  <span className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="truncate text-primary">{name}</span>
+                    {dir ? <span className="truncate text-caption text-faint ml-auto font-mono text-[11px]">{dir}</span> : null}
+                  </span>
                 </div>
               );
             })
           )}
         </div>
 
-        <div className="flex items-center justify-between border-t border-subtle bg-surface-raised px-3 py-1.5 text-[11px] text-muted">
+        <div className="flex items-center justify-between border-t border-subtle bg-surface-raised px-4 py-2 text-[11px] text-muted">
           <span>{filteredQuickOpenFiles.length} file{filteredQuickOpenFiles.length === 1 ? '' : 's'}</span>
           <div className="flex items-center gap-2">
-            <span><kbd className="rounded border border-subtle bg-neutral-soft px-1 py-0.5 font-mono">↑↓</kbd> navigate</span>
-            <span><kbd className="rounded border border-subtle bg-neutral-soft px-1 py-0.5 font-mono">Enter</kbd> open</span>
+            <span><kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5">↑↓</kbd> navigate</span>
+            <span><kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5">↵</kbd> select</span>
           </div>
         </div>
       </div>
@@ -2147,6 +2118,7 @@ function MonacoMultiFileEditor({
   const diffListenerRef = useRef<{ dispose: () => void } | null>(null);
 
   const editorRef = useRef<any>(null);
+  const [editorInstance, setEditorInstance] = useState<any>(null);
   const statusNodeRef = useRef<HTMLDivElement | null>(null);
   const vimModeRef = useRef<any>(null);
 
@@ -2200,19 +2172,10 @@ function MonacoMultiFileEditor({
     } catch {}
   }, []);
 
-  // Clean disposal on unmount
+  // REQ-VIM-INSERT-MODE-FIX: Single unified lifecycle hook for Monaco Vim mode.
+  // Handles clean initialization and disposal on mode toggle, tab switch, and editor mount/unmount.
   useEffect(() => {
-    return () => {
-      if (vimModeRef.current) {
-        vimModeRef.current.dispose();
-        vimModeRef.current = null;
-      }
-    };
-  }, []);
-
-  // Initialize or dispose monaco-vim on mode toggle or tab change
-  useEffect(() => {
-    if (!isVimMode || !editorRef.current || !statusNodeRef.current) {
+    if (!isVimMode || !editorInstance || !statusNodeRef.current) {
       if (vimModeRef.current) {
         vimModeRef.current.dispose();
         vimModeRef.current = null;
@@ -2226,7 +2189,7 @@ function MonacoMultiFileEditor({
     }
 
     try {
-      const vim = initVimMode(editorRef.current, statusNodeRef.current);
+      const vim = initVimMode(editorInstance, statusNodeRef.current);
       vimModeRef.current = vim;
     } catch (e) {
       console.error('Failed to initialize monaco-vim:', e);
@@ -2238,10 +2201,11 @@ function MonacoMultiFileEditor({
         vimModeRef.current = null;
       }
     };
-  }, [isVimMode, activeTab.path]);
+  }, [isVimMode, activeTab.path, editorInstance]);
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    setEditorInstance(editor);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       onSaveActiveRef.current();
     });
@@ -2251,18 +2215,6 @@ function MonacoMultiFileEditor({
         onSaveAllRef.current();
       }
     );
-    if (isVimMode && statusNodeRef.current) {
-      if (vimModeRef.current) {
-        vimModeRef.current.dispose();
-        vimModeRef.current = null;
-      }
-      try {
-        const vim = initVimMode(editor, statusNodeRef.current);
-        vimModeRef.current = vim;
-      } catch (e) {
-        console.error('Failed to initialize monaco-vim on mount:', e);
-      }
-    }
   };
 
   const handleDiffMount: DiffOnMount = (diffEditor, monaco) => {
