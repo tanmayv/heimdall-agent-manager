@@ -1031,7 +1031,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
       ? decodeSegment(path.slice('/c/'.length))
       : decodeSegment(path.slice('/conversations/'.length));
     return (
-      <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-canvas">
+      <main data-debug-id="shell-main-route-outlet" className="h-full min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden bg-canvas">
         {/* key by agentInstanceId so switching conversations REMOUNTS the page:
             all per-conversation local state (older/local messages, draft, scroll
             position, menus) resets synchronously instead of the previous

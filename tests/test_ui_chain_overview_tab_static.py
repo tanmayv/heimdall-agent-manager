@@ -257,8 +257,8 @@ def test_conversation_thread_page_tab_integration() -> None:
         "Chain tab button must have aria-label='Chain Overview'",
     )
     require(
-        '<Icon name="layers" size={16} />' in src,
-        "Chain tab button must render 'layers' icon of size 16",
+        '<Icon name="layers" size={16} />' in src or '<Icon name="layers" size={18} />' in src,
+        "Chain tab button must render 'layers' icon of size 16 or 18",
     )
     require(
         "selectRightPanelTab('chain')" in src,
