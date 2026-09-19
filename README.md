@@ -78,6 +78,67 @@ A typical run looks like this:
 Everything above is visible and steerable in real time from the dashboard, and every step
 leaves a durable record.
 
+## Philosophy
+
+Heimdall is built around a simple idea: **agents should be cheap to start, focused on
+one thing, and easy for a human to steer.**
+
+### One coordinator, many short-lived workers
+
+Work starts when you create a Project (a name + the path to your codebase) and launch
+a Coordinator agent. The Coordinator is the only persistent agent — it holds the plan,
+owns the task chain, and is the person you talk to. Every other agent lives only for
+the duration of a single task.
+
+When the Coordinator assigns a task, Heimdall spawns a fresh Worker and a fresh
+Reviewer. The Worker runs in a clean context — no leftover conversation history, no
+accumulated confusion — and loads only the memories that are relevant to its task. When
+the task completes (Reviewer votes LGTM), both the Worker and Reviewer are stopped.
+If the chain needs them again for another task, new instances are started. This keeps
+each agent's context window small and its reasoning sharp.
+
+### Agents learn through memory proposals
+
+An agent cannot update its own permanent knowledge. Instead, when it discovers something
+worth keeping — a project convention, a build quirk, a decision rationale — it *proposes*
+a memory. Proposals sit in a queue until you review them on the Memory page in the UI.
+You approve the ones that are accurate and discard the rest. Only approved memories are
+injected into future agents.
+
+This makes learning intentional. Agents accumulate knowledge at the speed you trust them,
+not at the speed they generate text.
+
+### You steer from the task board
+
+You do not need to watch every agent session. The normal working pattern is:
+
+1. Describe the goal to the Coordinator in the conversation panel.
+2. The Coordinator plans the chain and starts workers autonomously.
+3. You check in on the task board to see progress, read task comments, and spot
+   anything that looks off.
+4. If a task is going the wrong direction, post a comment on it — the Worker reads task
+   comments and adjusts. If the whole plan needs rethinking, tell the Coordinator.
+5. When a task finishes, glance at the Reviewer's verdict and the evidence comment
+   before it closes.
+
+Everything is asynchronous. You do not have to be present for each step; agents keep
+working and the board reflects real progress.
+
+### The ideal first session
+
+```
+1. Add a project in the UI (name + local path on the bridge device).
+2. Start a Coordinator agent for that project.
+3. Send the Coordinator a message describing what you want to build or fix.
+4. Watch the task chain appear. The Coordinator will ask clarifying questions if
+   anything is ambiguous before delegating.
+5. Let workers run. Check back on the board when convenient.
+6. Review memory proposals on the Memory page after the chain completes.
+7. Repeat — the next chain starts with accumulated project knowledge already loaded.
+```
+
+---
+
 ## Key concepts
 
 The entities below are the building blocks of Heimdall. Understanding what each one is
