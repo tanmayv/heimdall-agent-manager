@@ -6,7 +6,7 @@ import { TaskCommentsThread } from './TaskCommentsThread';
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 
-import { Checkbox, Icon, PageShell, Select, StatusDot, Text, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
+import { Checkbox, Icon, PageShell, Select, StatusDot, runtimeStateFromStatus, runtimeStateLabel, runtimeStatusToTone } from '@ui';
 import {
   appendArtifactLinks,
   artifactIdFromLink,
@@ -153,6 +153,19 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [createInstanceInChain, { isLoading: addingAgent }] = useCreateAgentInstanceInChainMutation();
   const [reconcileChain, reconcileState] = useReconcileTaskChainMutation();
   const [reconcileMsg, setReconcileMsg] = useState('');
+
+  const handleReconcile = async () => {
+    if (reconcileState.isLoading || !chainId) return;
+    setReconcileMsg('');
+    try {
+      const res: any = await reconcileChain({ chainId }).unwrap();
+      const promoted = Number(res?.promoted ?? res?.data?.promoted ?? 0);
+      setReconcileMsg(`Reconciled — ${promoted} task${promoted === 1 ? '' : 's'} promoted.`);
+      refetch();
+    } catch (e: any) {
+      setReconcileMsg(String(e?.error || e?.message || 'Reconcile failed'));
+    }
+  };
   const dispatch = useDispatch();
 
   // Data sources for the Add-Agent popup's dependent selects.
@@ -1337,26 +1350,8 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   return (
     <div
       data-debug-id="taskchain-overview"
-      className="flex h-full w-full flex-col overflow-y-auto bg-canvas text-primary"
+      className="flex h-full w-full flex-col overflow-y-auto bg-canvas text-primary pb-28 sm:pb-12"
     >
-      {/* Mobile Back Header (Requirement 10) */}
-      {isMobile && onClose && (
-        <div
-          data-debug-id="taskchain-overview-back-btn-container"
-          className="sticky top-0 z-30 flex items-center justify-between border-b border-subtle bg-surface px-4 py-3 sm:hidden"
-        >
-          <button
-            type="button"
-            data-debug-id="taskchain-overview-back-btn"
-            onClick={onClose}
-            className="flex items-center gap-2 text-sm font-semibold text-accent hover:opacity-80"
-          >
-            ← Back to Chat
-          </button>
-          <Text role="overline" tone="muted">Task Chain</Text>
-        </div>
-      )}
-
       {/* Page frame + single <h1> — migrated to PageShell (ui-audit W2). Fixes the
           h2-as-page-title heading-hierarchy defect (finding #7): the chain title is
           now the page's one real <h1>. The chain status pill moves into PageShell's
@@ -1370,18 +1365,30 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           </span>
         }
         actions={
-          <span
-            data-debug-id="taskchain-overview-status"
-            className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
-              chain.status === 'completed'
-                ? 'bg-success-soft text-success'
-                : chain.status === 'cancelled'
-                ? 'bg-danger-soft text-danger'
-                : 'bg-accent/20 text-accent'
-            }`}
-          >
-            {chain.status}
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-debug-id="taskchain-overview-header-reconcile-btn"
+              disabled={reconcileState.isLoading || !chainId}
+              onClick={handleReconcile}
+              className="shrink-0 rounded bg-warning px-2.5 py-1 text-xs font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
+              title="Self-heal: re-plan the chain (promote tasks, set current-tasks, nudge idle agents)"
+            >
+              {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}
+            </button>
+            <span
+              data-debug-id="taskchain-overview-status"
+              className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
+                chain.status === 'completed'
+                  ? 'bg-success-soft text-success'
+                  : chain.status === 'cancelled'
+                  ? 'bg-danger-soft text-danger'
+                  : 'bg-accent/20 text-accent'
+              }`}
+            >
+              {chain.status}
+            </span>
+          </div>
         }
       >
         {/* Chain meta band (description, progress, members) — unchanged markup,
@@ -1458,15 +1465,32 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         <h3 className="text-sm font-bold uppercase tracking-wider text-muted">
           Tasks ({tasks.length})
         </h3>
-        <button
-          type="button"
-          data-debug-id="taskchain-new-task-btn"
-          onClick={() => setShowNewTaskModal(true)}
-          className="rounded bg-accent px-3 py-1 text-xs font-semibold text-accent-fg hover:opacity-90"
-        >
-          + New task
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-debug-id="taskchain-overview-reconcile-btn"
+            disabled={reconcileState.isLoading || !chainId}
+            onClick={handleReconcile}
+            className="rounded border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-semibold text-warning hover:bg-warning/20 disabled:opacity-50"
+            title="Reconcile chain (promote tasks, set current-tasks, nudge idle agents)"
+          >
+            {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}
+          </button>
+          <button
+            type="button"
+            data-debug-id="taskchain-new-task-btn"
+            onClick={() => setShowNewTaskModal(true)}
+            className="rounded bg-accent px-3 py-1 text-xs font-semibold text-accent-fg hover:opacity-90"
+          >
+            + New task
+          </button>
+        </div>
       </div>
+      {reconcileMsg ? (
+        <div data-debug-id="taskchain-overview-reconcile-banner" className="mx-4 mb-2 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning sm:mx-6">
+          {reconcileMsg}
+        </div>
+      ) : null}
 
       {/* Tasks List */}
       <div className="flex-1 space-y-3 px-4 pb-6 sm:px-6">
@@ -1579,19 +1603,9 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         </div>
         <button
           type="button"
-          data-debug-id="taskchain-overview-reconcile-btn"
+          data-debug-id="taskchain-overview-reconcile-btn-bottom"
           disabled={reconcileState.isLoading || !chainId}
-          onClick={async () => {
-            setReconcileMsg('');
-            try {
-              const res: any = await reconcileChain({ chainId }).unwrap();
-              const promoted = Number(res?.promoted ?? res?.data?.promoted ?? 0);
-              setReconcileMsg(`Reconciled — ${promoted} task${promoted === 1 ? '' : 's'} promoted.`);
-              refetch();
-            } catch (e: any) {
-              setReconcileMsg(String(e?.error || e?.message || 'Reconcile failed'));
-            }
-          }}
+          onClick={handleReconcile}
           className="shrink-0 rounded bg-warning px-3 py-1.5 text-xs font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
         >
           {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}

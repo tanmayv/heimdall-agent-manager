@@ -352,21 +352,6 @@ export default function ProjectVcsPanel({
 
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
-      {/* Sticky header */}
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-subtle bg-surface px-3 py-2">
-        <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-muted" title={`Provider: ${caps.provider}`}>
-          Changes · {caps.provider}
-        </span>
-        <button
-          data-debug-id={`${debugPrefix}-refresh-btn`}
-          type="button"
-          onClick={() => void loadFiles()}
-          className="shrink-0 rounded-lg border border-subtle px-2 py-0.5 text-caption text-primary hover:bg-neutral-soft"
-        >
-          Refresh
-        </button>
-      </div>
-
       {/* Scrollable body: single column of files, each with its inline diff. */}
       <div ref={scrollContainerRef} data-debug-id={`${debugPrefix}-body`} className="min-h-0 flex-1 overflow-y-auto">
         {filesLoading ? (

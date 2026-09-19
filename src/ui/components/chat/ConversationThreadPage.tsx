@@ -1357,7 +1357,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const tabBase = 'flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-1.5 text-xs font-semibold';
     return (
       <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-surface">
-        <div data-debug-id="conversation-right-panel-tabs" className="flex shrink-0 items-center gap-1 border-b border-subtle px-2 py-2">
+        <div data-debug-id="conversation-right-panel-tabs" className="sticky top-0 z-20 flex shrink-0 items-center gap-1 border-b border-subtle bg-surface px-2 py-2 backdrop-blur-sm">
           {hasTasks ? (
             <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => selectRightPanelTab('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
               <Icon name="tasks" size={15} />
