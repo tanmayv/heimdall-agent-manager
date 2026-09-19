@@ -19,6 +19,7 @@
 // compatible virtualizer or a React bump. Tracked as a Phase-4 follow-up.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Editor, { DiffEditor, useMonaco, type OnMount, type DiffOnMount, type EditorProps, type DiffEditorProps } from '@monaco-editor/react';
 import { initVimMode, VimMode } from 'monaco-vim';
 
@@ -312,7 +313,9 @@ export default function ProjectFilesPanel({
 
   // Quick log popover state
   const [isLogPopoverOpen, setIsLogPopoverOpen] = useState<boolean>(false);
+  const [logPopoverRect, setLogPopoverRect] = useState<DOMRect | null>(null);
   const logPopoverRef = useRef<HTMLDivElement | null>(null);
+  const logMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Per-file revert confirm
   const [confirmRevertOpen, setConfirmRevertOpen] = useState<boolean>(false);
@@ -437,17 +440,35 @@ export default function ProjectFilesPanel({
 
   // REQ-UI-RESPONSIVE-TOP-BAR: 3-dots overflow menu
   const [isOverflowOpen, setIsOverflowOpen] = useState<boolean>(false);
+  const [overflowRect, setOverflowRect] = useState<DOMRect | null>(null);
   const overflowRef = useRef<HTMLDivElement | null>(null);
+  const overflowMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!isOverflowOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+      if (
+        overflowRef.current &&
+        !overflowRef.current.contains(e.target as Node) &&
+        (!overflowMenuRef.current || !overflowMenuRef.current.contains(e.target as Node))
+      ) {
         setIsOverflowOpen(false);
       }
     };
+    const handleDismiss = (e: Event) => {
+      if (e.target && overflowMenuRef.current && (overflowMenuRef.current === e.target || overflowMenuRef.current.contains(e.target as Node))) {
+        return;
+      }
+      setIsOverflowOpen(false);
+    };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('scroll', handleDismiss, true);
+    window.addEventListener('resize', handleDismiss);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', handleDismiss, true);
+      window.removeEventListener('resize', handleDismiss);
+    };
   }, [isOverflowOpen]);
 
   // REQ-UI-MOBILE-SINGLE-PANE: Viewport < 640px or sidebar width < 480px single-pane layout
@@ -843,12 +864,28 @@ export default function ProjectFilesPanel({
   useEffect(() => {
     if (!isLogPopoverOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (logPopoverRef.current && !logPopoverRef.current.contains(e.target as Node)) {
+      if (
+        logPopoverRef.current &&
+        !logPopoverRef.current.contains(e.target as Node) &&
+        (!logMenuRef.current || !logMenuRef.current.contains(e.target as Node))
+      ) {
         setIsLogPopoverOpen(false);
       }
     };
+    const handleDismiss = (e: Event) => {
+      if (e.target && logMenuRef.current && (logMenuRef.current === e.target || logMenuRef.current.contains(e.target as Node))) {
+        return;
+      }
+      setIsLogPopoverOpen(false);
+    };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('scroll', handleDismiss, true);
+    window.addEventListener('resize', handleDismiss);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', handleDismiss, true);
+      window.removeEventListener('resize', handleDismiss);
+    };
   }, [isLogPopoverOpen]);
 
   // Fetch base file content for diff mode
@@ -1450,7 +1487,7 @@ export default function ProjectFilesPanel({
           {/* Unified 40px Top Icon Bar */}
           <div
             data-debug-id={`${debugPrefix}-unified-top-bar`}
-            className="flex h-[44px] min-h-[44px] w-full shrink-0 items-center justify-between border-b border-subtle bg-surface px-2 gap-2 text-[12px] select-none overflow-x-auto overflow-y-hidden flex-nowrap [-webkit-overflow-scrolling:touch] no-scrollbar"
+            className="relative z-20 flex h-[44px] min-h-[34px] w-full shrink-0 items-center justify-between border-b border-subtle bg-surface px-2 gap-2 text-[12px] select-none overflow-x-auto overflow-y-hidden flex-nowrap [-webkit-overflow-scrolling:touch] no-scrollbar"
           >
             {/* Left section: Strictly 3 primary icons + breadcrumb:
                 1) Explorer / Back to Files toggle button
@@ -1459,6 +1496,64 @@ export default function ProjectFilesPanel({
                 4) Active file path breadcrumb (with ellipsis on narrow widths)
             */}
             <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+              {/* Mobile single-pane: '← Files' back button when in Editor mode */}
+              {isSinglePane && activePane === 'editor' ? (
+                <button
+                  data-debug-id={`${debugPrefix}-mobile-back-files-btn`}
+                  type="button"
+                  onClick={() => {
+                    setActivePane('files');
+                    setIsExplorerCollapsed(false);
+                  }}
+                  className="inline-flex items-center gap-1 rounded bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-neutral-soft border border-subtle shrink-0"
+                  title="Back to file explorer"
+                  aria-label="Back to file explorer"
+                >
+                  <Icon name="arrow-left" size={12} />
+                  <span>← Files</span>
+                </button>
+              ) : null}
+
+              {/* Mobile single-pane: Segmented switcher [ Files | Editor ] */}
+              {isSinglePane ? (
+                <div
+                  data-debug-id={`${debugPrefix}-mobile-segmented-switcher`}
+                  className="inline-flex items-center rounded bg-neutral-soft p-0.5 text-[11px] font-medium shrink-0"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivePane('files');
+                      setIsExplorerCollapsed(false);
+                    }}
+                    className={`rounded px-1.5 py-0.5 transition-colors ${
+                      activePane === 'files'
+                        ? 'bg-surface text-primary shadow-xs font-semibold'
+                        : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    Files
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (openTabs.length > 0) {
+                        setActivePane('editor');
+                        setIsExplorerCollapsed(true);
+                      }
+                    }}
+                    disabled={openTabs.length === 0}
+                    className={`rounded px-1.5 py-0.5 transition-colors disabled:opacity-40 ${
+                      activePane === 'editor'
+                        ? 'bg-surface text-primary shadow-xs font-semibold'
+                        : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    Editor{openTabs.length > 0 ? ` (${openTabs.length})` : ''}
+                  </button>
+                </div>
+              ) : null}
+
               {/* 1) Explorer / Back to Files toggle button */}
               <button
                 data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
@@ -1647,6 +1742,20 @@ export default function ProjectFilesPanel({
                   ))
                 )}
               </div>
+
+              {openTabs.length > 0 && !isExplorerCollapsed && !isSinglePane ? (
+                <button
+                  data-debug-id={`${debugPrefix}-toolbar-editor-btn`}
+                  type="button"
+                  onClick={() => {
+                    setIsEditMode(true);
+                  }}
+                  className="hidden md:inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/15 shrink-0"
+                  title="Focus open editor tab"
+                >
+                  <Icon name="pencil" size={11} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
+                </button>
+              ) : null}
             </div>
 
             {/* Right section: Toast feedback, Persistent VCS chip, Commit button, Vim badge, and 3-dots overflow menu */}
@@ -1673,7 +1782,12 @@ export default function ProjectFilesPanel({
                 <div className="relative shrink-0" ref={logPopoverRef}>
                   <div
                     data-debug-id={`${debugPrefix}-vcs-status-chip`}
-                    onClick={() => setIsLogPopoverOpen((prev) => !prev)}
+                    onClick={() => {
+                      if (!isLogPopoverOpen && logPopoverRef.current) {
+                        setLogPopoverRect(logPopoverRef.current.getBoundingClientRect());
+                      }
+                      setIsLogPopoverOpen((prev) => !prev);
+                    }}
                     title="Click to view VCS log"
                     className="inline-flex items-center gap-1.5 rounded-md border border-subtle bg-surface-raised px-2 py-0.5 text-[11px] text-muted hover:bg-neutral-soft hover:text-primary cursor-pointer transition-colors select-none"
                   >
@@ -1719,44 +1833,53 @@ export default function ProjectFilesPanel({
                   </div>
 
                   {/* Quick Log Popover */}
-                  {isLogPopoverOpen ? (
-                    <div
-                      data-debug-id="vcs-quick-log-popover"
-                      className="absolute right-0 top-full mt-1 w-80 rounded-lg border border-subtle bg-surface-raised p-2 shadow-xl z-50 text-[12px] flex flex-col gap-1.5 max-h-72 overflow-y-auto"
-                    >
-                      <div className="flex items-center justify-between border-b border-subtle pb-1 font-semibold text-primary text-[12px]">
-                        <span>Recent VCS Log ({vcsStatus?.provider})</span>
-                        <span className="text-[10px] text-muted">{branchName}</span>
-                      </div>
-                      {vcsLogEntries.length === 0 ? (
-                        <div className="p-3 text-center text-xs text-muted">No log entries found.</div>
-                      ) : (
-                        vcsLogEntries.map((e, idx) => (
-                          <div
-                            key={`${e.revision}-${idx}`}
-                            className={`flex flex-col gap-0.5 rounded p-1.5 text-[11px] ${
-                              e.is_current ? 'bg-accent/10 border border-accent/30' : 'hover:bg-neutral-soft'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="font-mono font-bold text-accent">
-                                {e.revision ? e.revision.slice(0, 8) : ''}
-                                {e.cl_number ? ` (CL ${e.cl_number})` : ''}
-                              </span>
-                              {e.is_current ? (
-                                <span className="rounded bg-accent px-1 py-0.2 text-[9px] font-bold text-white">
-                                  Current
-                                </span>
-                              ) : null}
-                              <span className="text-faint text-[10px]">{formatModified(e.timestamp)}</span>
-                            </div>
-                            <span className="text-primary truncate font-medium">{e.title || 'No message'}</span>
-                            {e.author ? <span className="text-faint text-[10px]">by {e.author}</span> : null}
+                  {isLogPopoverOpen && logPopoverRect && typeof document !== 'undefined'
+                    ? createPortal(
+                        <div
+                          ref={logMenuRef}
+                          data-debug-id="vcs-quick-log-popover"
+                          style={{
+                            position: 'fixed',
+                            top: `${logPopoverRect.bottom + 4}px`,
+                            right: `${Math.max(8, window.innerWidth - logPopoverRect.right)}px`,
+                          }}
+                          className="z-50 w-80 rounded-lg border border-subtle bg-surface-raised p-2 shadow-xl text-[12px] flex flex-col gap-1.5 max-h-72 overflow-y-auto"
+                        >
+                          <div className="flex items-center justify-between border-b border-subtle pb-1 font-semibold text-primary text-[12px]">
+                            <span>Recent VCS Log ({vcsStatus?.provider})</span>
+                            <span className="text-[10px] text-muted">{branchName}</span>
                           </div>
-                        ))
-                      )}
-                    </div>
-                  ) : null}
+                          {vcsLogEntries.length === 0 ? (
+                            <div className="p-3 text-center text-xs text-muted">No log entries found.</div>
+                          ) : (
+                            vcsLogEntries.map((e, idx) => (
+                              <div
+                                key={`${e.revision}-${idx}`}
+                                className={`flex flex-col gap-0.5 rounded p-1.5 text-[11px] ${
+                                  e.is_current ? 'bg-accent/10 border border-accent/30' : 'hover:bg-neutral-soft'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-mono font-bold text-accent">
+                                    {e.revision ? e.revision.slice(0, 8) : ''}
+                                    {e.cl_number ? ` (CL ${e.cl_number})` : ''}
+                                  </span>
+                                  {e.is_current ? (
+                                    <span className="rounded bg-accent px-1 py-0.2 text-[9px] font-bold text-white">
+                                      Current
+                                    </span>
+                                  ) : null}
+                                  <span className="text-faint text-[10px]">{formatModified(e.timestamp)}</span>
+                                </div>
+                                <span className="text-primary truncate font-medium">{e.title || 'No message'}</span>
+                                {e.author ? <span className="text-faint text-[10px]">by {e.author}</span> : null}
+                              </div>
+                            ))
+                          )}
+                        </div>,
+                        document.body,
+                      )
+                    : null}
                 </div>
               ) : null}
 
@@ -1795,7 +1918,12 @@ export default function ProjectFilesPanel({
                 <button
                   data-debug-id={`${debugPrefix}-overflow-menu-btn`}
                   type="button"
-                  onClick={() => setIsOverflowOpen((prev) => !prev)}
+                  onClick={() => {
+                    if (!isOverflowOpen && overflowRef.current) {
+                      setOverflowRect(overflowRef.current.getBoundingClientRect());
+                    }
+                    setIsOverflowOpen((prev) => !prev);
+                  }}
                   aria-haspopup="true"
                   aria-expanded={isOverflowOpen ? 'true' : 'false'}
                   title="More actions"
@@ -1807,11 +1935,18 @@ export default function ProjectFilesPanel({
                   <Icon name="more-vertical" size={20} />
                 </button>
 
-                {isOverflowOpen ? (
-                  <div
-                    data-debug-id={`${debugPrefix}-overflow-dropdown`}
-                    className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-subtle bg-surface-raised p-1 shadow-lg z-50 text-[12px] flex flex-col gap-0.5"
-                  >
+                {isOverflowOpen && overflowRect && typeof document !== 'undefined'
+                  ? createPortal(
+                    <div
+                      ref={overflowMenuRef}
+                      data-debug-id={`${debugPrefix}-overflow-dropdown`}
+                      style={{
+                        position: 'fixed',
+                        top: `${overflowRect.bottom + 4}px`,
+                        right: `${Math.max(8, window.innerWidth - overflowRect.right)}px`,
+                      }}
+                      className="z-50 w-56 rounded-lg border border-subtle bg-surface-raised p-1 shadow-lg text-[12px] flex flex-col gap-0.5"
+                    >
                     {/* 1. New File */}
                     <button
                       data-debug-id={`${debugPrefix}-new-file-btn`}
@@ -1977,7 +2112,8 @@ export default function ProjectFilesPanel({
                         <span>Comment on Current Folder</span>
                       </button>
                     )}
-                  </div>
+                  </div>,
+                  document.body,
                 ) : null}
               </div>
             </div>
@@ -2341,7 +2477,7 @@ export default function ProjectFilesPanel({
       {isCommitModalOpen ? (
         <div
           data-debug-id="editor-commit-modal-backdrop"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-surface-overlay/80 backdrop-blur-sm p-4"
           onClick={() => setIsCommitModalOpen(false)}
         >
           <div
