@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 
-import { Icon, IconButton, StatusPill } from '@ui';
+import { StatusPill } from '@ui';
 import { useListShellJobsQuery, useFetchShellJobOutputQuery, type ShellJob, type ShellJobStatus } from '../../api/endpoints/shellJobs';
 import { selectAgentLastActionAt } from '../../store/agentActivitySlice';
 
@@ -70,6 +70,7 @@ export default function ShellJobsPanel({
   debugPrefix = 'shell-jobs',
 }: ShellJobsPanelProps) {
   void isMobile; // accepted for parity with the sibling panels; layout is responsive via CSS.
+  void onClose;
 
   const [cursor, setCursor] = useState<string>('');
   const [accJobs, setAccJobs] = useState<ShellJob[]>([]);
@@ -152,29 +153,20 @@ export default function ShellJobsPanel({
 
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-subtle px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <Icon name="terminal" className="shrink-0 text-muted" />
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-primary">Background Jobs</div>
-            {rootLabel ? <div className="truncate text-[11px] text-muted">{rootLabel}</div> : null}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            data-debug-id={`${debugPrefix}-refresh-btn`}
-            onClick={handleRefresh}
-            disabled={isFetching}
-            className="rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isFetching ? 'Refreshing…' : 'Refresh'}
-          </button>
-          {onClose ? (
-            <IconButton icon="close" label="Close background jobs panel" size="sm" data-debug-id={`${debugPrefix}-close-btn`} onClick={onClose} />
-          ) : null}
-        </div>
+      {/* Controls toolbar */}
+      <div className="flex items-center justify-between border-b border-subtle px-3 py-1.5 text-xs">
+        <span className="text-[11px] text-faint">
+          {rootLabel ? `Jobs · ${rootLabel}` : 'Shell jobs (≥15s)'}
+        </span>
+        <button
+          type="button"
+          data-debug-id={`${debugPrefix}-refresh-btn`}
+          onClick={handleRefresh}
+          disabled={isFetching}
+          className="rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isFetching ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
 
       {/* Body */}

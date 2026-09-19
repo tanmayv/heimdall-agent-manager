@@ -383,27 +383,6 @@ export default function InstanceRunDirPanel({
 
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-subtle px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <Icon name="folder" size={16} className="shrink-0 text-accent" />
-          <div className="min-w-0">
-            <div data-debug-id={`${debugPrefix}-title`} className="text-[12px] font-semibold text-primary">Run dir</div>
-            {rootAbs ? (
-              <div className="truncate font-mono text-[10px] text-faint" title={`Run dir: ${rootAbs}`}>root: {rootAbs}</div>
-            ) : null}
-            {lastRefreshed && !viewFile ? (
-              <div data-debug-id={`${debugPrefix}-last-refreshed`} className="text-[10px] text-faint">refreshed {new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-            ) : null}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <IconButton icon="refresh" label="Refresh" variant="solid" size="sm" data-debug-id={`${debugPrefix}-refresh-btn`} onClick={refresh} />
-          {onClose ? (
-            <IconButton icon="close" label="Close files panel" size="sm" data-debug-id={`${debugPrefix}-close-btn`} onClick={onClose} />
-          ) : null}
-        </div>
-      </div>
 
       {/* Pending review comments bar — spans ALL files in this conversation. */}
       {comments.length > 0 ? (
@@ -457,37 +436,48 @@ export default function InstanceRunDirPanel({
       ) : (
         <>
           {/* Breadcrumb */}
-          <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex flex-wrap items-center gap-0.5 border-b border-subtle px-3 py-2 text-[12px] text-muted">
-            {(() => {
-              const folderCount = comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length;
-              return (
-                <button
-                  data-debug-id={`${debugPrefix}-folder-comment-btn`}
-                  type="button"
-                  onClick={() => { setPathCommentDraft(''); setPathCommentFor({ path: cwd || '/', label: `folder: ${cwd || 'project root'}` }); }}
-                  title="Comment on this folder"
-                  aria-label="Comment on this folder"
-                  className={`mr-1 relative grid h-6 w-6 shrink-0 place-items-center rounded border ${folderCount > 0 ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-                >
-                  <Icon name="chat" size={12} />
-                  {folderCount > 0 ? <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">{folderCount}</span> : null}
-                </button>
-              );
-            })()}
-            {crumbs.map((c, i) => (
-              <span key={c.path || 'root'} className="flex items-center gap-0.5">
-                {i > 0 ? <Icon name="chevron-right" size={12} className="text-faint" /> : null}
-                <button
-                  data-debug-id={`${debugPrefix}-crumb-${i}`}
-                  type="button"
-                  onClick={() => openDir(c.path)}
-                  disabled={i === crumbs.length - 1}
-                  className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
-                >
-                  {c.label}
-                </button>
-              </span>
-            ))}
+          <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex items-center justify-between gap-1 border-b border-subtle px-3 py-1.5 text-[12px] text-muted">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
+              {(() => {
+                const folderCount = comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length;
+                return (
+                  <button
+                    data-debug-id={`${debugPrefix}-folder-comment-btn`}
+                    type="button"
+                    onClick={() => { setPathCommentDraft(''); setPathCommentFor({ path: cwd || '/', label: `folder: ${cwd || 'project root'}` }); }}
+                    title="Comment on this folder"
+                    aria-label="Comment on this folder"
+                    className={`mr-1 relative grid h-6 w-6 shrink-0 place-items-center rounded border ${folderCount > 0 ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
+                  >
+                    <Icon name="chat" size={12} />
+                    {folderCount > 0 ? <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">{folderCount}</span> : null}
+                  </button>
+                );
+              })()}
+              {crumbs.map((c, i) => (
+                <span key={c.path || 'root'} className="flex items-center gap-0.5">
+                  {i > 0 ? <Icon name="chevron-right" size={12} className="text-faint" /> : null}
+                  <button
+                    data-debug-id={`${debugPrefix}-crumb-${i}`}
+                    type="button"
+                    onClick={() => openDir(c.path)}
+                    disabled={i === crumbs.length - 1}
+                    className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
+                  >
+                    {c.label}
+                  </button>
+                </span>
+              ))}
+            </div>
+            <IconButton
+              icon="refresh"
+              label={lastRefreshed ? `Refresh (last: ${new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` : 'Refresh'}
+              variant="solid"
+              size="sm"
+              data-debug-id={`${debugPrefix}-refresh-btn`}
+              onClick={refresh}
+              className="shrink-0"
+            />
           </div>
 
           {/* Toolbar (read-only: hidden toggle only) */}
