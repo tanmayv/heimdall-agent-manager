@@ -496,7 +496,7 @@ export default function InstanceRunDirPanel({
           </div>
 
           {/* Directory list */}
-          <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto">
+          <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1 [-webkit-overflow-scrolling:touch] touch-pan-y" style={{ touchAction: 'pan-y' }}>
             {loading ? (
               <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-muted">Loading…</div>
             ) : error && sortedEntries.length === 0 ? (
@@ -528,7 +528,6 @@ export default function InstanceRunDirPanel({
                       {e.has_git ? <span className="shrink-0 rounded bg-success-soft px-1.5 py-0.5 text-[9px] font-bold text-success">git</span> : null}
                       {!e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-faint">{formatBytes(e.size)}</span> : null}
                       {e.modified_at ? <span className="hidden shrink-0 text-[10px] text-faint sm:inline">{formatModified(e.modified_at)}</span> : null}
-                      {e.is_dir ? <Icon name="chevron-right" size={13} className="shrink-0 text-faint" /> : null}
                     </button>
                   </li>
                   );

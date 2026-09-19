@@ -2108,7 +2108,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       ) : null}
 
       {/* Subtle Bottom Floating Pills */}
-      {isMobile && !chromeVisible ? (
+      {isMobile && !chromeVisible && rightPanel === 'closed' ? (
         <div className="fixed bottom-9 inset-x-0 flex justify-center items-center gap-2 z-30 pointer-events-none">
           <button
             type="button"

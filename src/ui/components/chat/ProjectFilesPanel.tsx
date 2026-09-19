@@ -1992,7 +1992,7 @@ export default function ProjectFilesPanel({
               className={`${
                 isSinglePane
                   ? activePane === 'files'
-                    ? 'w-full flex-1'
+                    ? 'w-full flex-1 flex'
                     : 'hidden'
                   : isExplorerCollapsed
                   ? 'hidden'
@@ -2035,7 +2035,7 @@ export default function ProjectFilesPanel({
               ) : null}
 
               {/* Directory list */}
-              <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1" style={{ touchAction: 'pan-y' }}>
+              <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1 [-webkit-overflow-scrolling:touch] touch-pan-y" style={{ touchAction: 'pan-y' }}>
                 {loading ? (
                   <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-muted">Loading…</div>
                 ) : error && sortedEntries.length === 0 ? (
@@ -2086,7 +2086,6 @@ export default function ProjectFilesPanel({
                             {e.has_git ? <span className="shrink-0 rounded bg-success-soft px-1.5 py-0.2 text-[9px] font-bold text-success">git</span> : null}
                             {!isNarrowExplorer && !e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-faint">{formatBytes(e.size)}</span> : null}
                             {!isNarrowExplorer && e.modified_at ? <span className="hidden shrink-0 text-[10px] text-faint sm:inline">{formatModified(e.modified_at)}</span> : null}
-                            {e.is_dir ? <Icon name="chevron-right" size={12} className="shrink-0 text-faint" /> : null}
                           </button>
                           {/* Row actions (edit / rename / delete) — visible on hover/focus. */}
                           <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
