@@ -20,7 +20,6 @@ import {
 import {
   useGetProjectVcsStatusQuery,
   useListVcsFilesQuery,
-  useLazyGetVcsDiffQuery,
   type VcsChangedFile,
 } from '../../api/endpoints/projectVcs';
 import { useListArtifactsQuery } from '../../api/endpoints/artifacts';
@@ -28,8 +27,8 @@ import { useStartInstanceMutation } from '../../api/endpoints/agents';
 import ArtifactViewer from '../ArtifactViewer';
 import Markdown from '../Markdown';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
-import MonacoDiffViewer from './MonacoDiffViewer';
 import { buildRouteHash } from '../../utils/appLocation';
+import { writeRightSidebarOpen, writeRightSidebarTab } from '../../utils/clientPersistence';
 
 function canUseAmbientApiAuth(): boolean {
   if (typeof window === 'undefined') return false;
@@ -313,10 +312,6 @@ export default function ChainOverviewPanel({
   const [expandedAttentionTaskId, setExpandedAttentionTaskId] = useState<string | null>(null);
   const [openTerminalIds, setOpenTerminalIds] = useState<Record<string, boolean>>({});
   const [maximizedTerminalInstanceId, setMaximizedTerminalInstanceId] = useState<string | null>(null);
-  const [diffModalFile, setDiffModalFile] = useState<string | null>(null);
-
-  // Lazy diff query for inline diff preview modal
-  const [fetchDiff, diffResult] = useLazyGetVcsDiffQuery();
 
   const chain = chainData?.chain;
   const members: any[] = useMemo(() => chain?.members || [], [chain?.members]);
@@ -380,21 +375,18 @@ export default function ChainOverviewPanel({
   );
 
   // Navigate to conversation thread
-  const handleNavigateToAgent = useCallback((agentInstanceId: string) => {
-    if (!agentInstanceId) return;
-    window.location.hash = buildRouteHash(`/conversations/${encodeURIComponent(agentInstanceId)}`, '');
-  }, []);
-
-  // Open diff modal
-  const handleOpenFileDiffPreview = useCallback(
-    (filePath: string, e?: React.MouseEvent) => {
-      e?.stopPropagation();
-      setDiffModalFile(filePath);
-      if (projectId) {
-        void fetchDiff({ projectId, bridgeId, file: filePath });
+  const handleNavigateToAgent = useCallback(
+    (agentInstanceId: string) => {
+      if (!agentInstanceId) return;
+      if (!isMobile) {
+        writeRightSidebarOpen(true, agentInstanceId);
+        writeRightSidebarTab('chain', agentInstanceId);
+        window.location.hash = buildRouteHash(`/conversations/${encodeURIComponent(agentInstanceId)}`, '?panel=chain');
+      } else {
+        window.location.hash = buildRouteHash(`/conversations/${encodeURIComponent(agentInstanceId)}`, '');
       }
     },
-    [projectId, bridgeId, fetchDiff]
+    [isMobile]
   );
 
   return (
@@ -790,8 +782,6 @@ export default function ChainOverviewPanel({
                     onClick={() => {
                       if (onOpenFileDiff) {
                         onOpenFileDiff(file.path);
-                      } else {
-                        handleOpenFileDiffPreview(file.path);
                       }
                     }}
                     className="flex items-center justify-between gap-2 rounded px-2 py-1 text-xs transition-colors hover:bg-neutral-soft cursor-pointer"
@@ -804,22 +794,14 @@ export default function ChainOverviewPanel({
                         {file.path}
                       </span>
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {(file.additions > 0 || file.deletions > 0) && (
+                    {(file.additions > 0 || file.deletions > 0) && (
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <div className="font-mono text-[10px]">
                           {file.additions > 0 && <span className="text-success">+{file.additions} </span>}
                           {file.deletions > 0 && <span className="text-danger">-{file.deletions}</span>}
                         </div>
-                      )}
-                      <button
-                        type="button"
-                        title="Quick preview diff"
-                        onClick={(e) => handleOpenFileDiffPreview(file.path, e)}
-                        className="text-muted hover:text-accent"
-                      >
-                        <Icon name="eye" size={12} />
-                      </button>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -851,7 +833,7 @@ export default function ChainOverviewPanel({
         {members.length === 0 ? (
           <p className="text-xs text-muted py-1">No member agents available.</p>
         ) : (
-          <div className="space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {members.map((member) => {
               const instId = member.agentInstanceId || member.agent_instance_id;
               const name = member.displayName || member.display_name || instId;
@@ -994,66 +976,6 @@ export default function ChainOverviewPanel({
               isActiveTab={true}
               className="h-full !max-h-full"
             />
-          </div>
-        </div>
-      )}
-
-      {/* Inline Monaco Diff Preview Modal */}
-      {diffModalFile && (
-        <div
-          data-debug-id="chain-overview-diff-modal"
-          className="fixed inset-0 z-50 flex flex-col bg-canvas/95 backdrop-blur-md p-4 sm:p-6"
-        >
-          <div className="flex items-center justify-between border-b border-subtle pb-3">
-            <div className="flex items-center gap-2">
-              <Icon name="spark" size={18} className="text-accent" />
-              <span className="font-semibold text-sm text-primary font-mono truncate max-w-xl">
-                Diff: {diffModalFile}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              {onOpenFileDiff && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => {
-                    const f = diffModalFile;
-                    setDiffModalFile(null);
-                    onOpenFileDiff(f);
-                  }}
-                >
-                  Open in Editor
-                </Button>
-              )}
-              <button
-                type="button"
-                data-debug-id="chain-overview-diff-modal-close"
-                aria-label="Close diff preview"
-                onClick={() => setDiffModalFile(null)}
-                className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
-              >
-                <Icon name="close" size={16} />
-              </button>
-            </div>
-          </div>
-          <div className="flex-1 min-h-0 pt-3">
-            {diffResult.isLoading ? (
-              <div className="flex items-center justify-center h-full text-xs text-muted gap-2">
-                <Spinner size="sm" /> Loading diff hunks…
-              </div>
-            ) : diffResult.error ? (
-              <div className="text-xs text-danger p-4">
-                Failed to load diff: {String((diffResult.error as any)?.error || diffResult.error)}
-              </div>
-            ) : (
-              <MonacoDiffViewer
-                hunks={diffResult.data?.hunks || []}
-                filePath={diffModalFile}
-                sideBySide={!isMobile}
-                height="100%"
-              />
-            )}
           </div>
         </div>
       )}

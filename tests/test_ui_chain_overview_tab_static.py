@@ -100,8 +100,10 @@ def test_chain_overview_panel_exports_and_imports() -> None:
     require("useStartInstanceMutation" in src, "Must import useStartInstanceMutation")
     require("ArtifactViewer" in src, "Must import ArtifactViewer")
     require("AgentPaneComposerPanel" in src, "Must import AgentPaneComposerPanel")
-    require("MonacoDiffViewer" in src, "Must import MonacoDiffViewer")
+    require("MonacoDiffViewer" not in src, "Must not import MonacoDiffViewer")
     require("buildRouteHash" in src, "Must import buildRouteHash")
+    require("writeRightSidebarOpen" in src, "Must import writeRightSidebarOpen")
+    require("writeRightSidebarTab" in src, "Must import writeRightSidebarTab")
 
     print("  [+] ChainOverviewPanel exports and imports verified.")
 
@@ -117,6 +119,10 @@ def test_chain_overview_panel_sections() -> None:
     require("handleStartAgent" in src, "Must have start agent handler")
     require("data-debug-id={`chain-overview-start-agent-${instId}`}" in src, "Start agent button must have data-debug-id")
     require("handleNavigateToAgent" in src, "Must have agent navigation handler")
+    require("writeRightSidebarOpen(true, agentInstanceId)" in src, "handleNavigateToAgent must persist sidebar open on desktop")
+    require("writeRightSidebarTab('chain', agentInstanceId)" in src, "handleNavigateToAgent must persist 'chain' tab on desktop")
+    require("buildRouteHash(`/conversations/${encodeURIComponent(agentInstanceId)}`, '?panel=chain')" in src,
+            "handleNavigateToAgent must preserve '?panel=chain' on desktop")
 
     # Section 2: Chain Artifacts
     require("Chain Artifacts" in src, "Must include Chain Artifacts section header")
@@ -131,8 +137,12 @@ def test_chain_overview_panel_sections() -> None:
     require("vcsModifiedCount" in src, "Must calculate vcsModifiedCount")
     require("vcsStagedCount" in src, "Must calculate vcsStagedCount")
     require("vcsUntrackedCount" in src, "Must calculate vcsUntrackedCount")
-    require("<MonacoDiffViewer" in src, "Must render MonacoDiffViewer modal for file diffs")
     require("onOpenVcsFiles" in src, "Must support jumping to project files tab")
+    require("onOpenFileDiff(file.path)" in src, "Must route clicked file directly via onOpenFileDiff(file.path)")
+    require("diffModalFile" not in src, "Must remove diffModalFile state")
+    require("<MonacoDiffViewer" not in src, "Must not render MonacoDiffViewer modal for file diffs")
+    require('data-debug-id="chain-overview-diff-modal"' not in src, "Must remove inline diff modal")
+    require("Quick preview diff" not in src, "Must remove quick preview diff button")
 
     # Section 4: Ongoing Tasks
     require("Ongoing Tasks" in src, "Must include Ongoing Tasks section header")
@@ -159,13 +169,20 @@ def test_chain_overview_panel_sections() -> None:
     require("data-debug-id={`chain-overview-terminal-accordion-${instId}`}" in src, "Terminal accordion must have data-debug-id")
     require("openTerminalIds" in src, "Must track open terminals state")
     require("toggleTerminal" in src, "Must provide toggleTerminal callback")
+    require("grid grid-cols-1 sm:grid-cols-2 gap-3" in src, "Fleet Terminals container must use 2-column grid layout")
 
     print("  [+] ChainOverviewPanel 6 core sections verified.")
 
 
 def test_fleet_terminals_lazy_mounting() -> None:
-    print("[*] Testing Fleet Terminals strict lazy mounting...")
+    print("[*] Testing Fleet Terminals strict lazy mounting and 2-column grid...")
     src = PANEL_FILE.read_text(encoding="utf-8")
+
+    # 2-column responsive grid layout
+    require(
+        "grid grid-cols-1 sm:grid-cols-2 gap-3" in src or "grid-cols-1 sm:grid-cols-2" in src,
+        "Fleet Terminals container must use responsive 2-column grid",
+    )
 
     # Check lazy mounting condition in accordion
     require("{isOpen && (" in src, "Accordion terminal content must be conditionally mounted with {isOpen && (")
@@ -183,7 +200,7 @@ def test_fleet_terminals_lazy_mounting() -> None:
     require("{maximizedTerminalInstanceId ? (" in src or "{maximizedTerminalInstanceId && (" in src,
             "Maximized terminal modal must be conditionally rendered")
 
-    print("  [+] Fleet Terminals lazy mounting verified.")
+    print("  [+] Fleet Terminals lazy mounting and 2-column grid verified.")
 
 
 def test_conversation_thread_page_tab_integration() -> None:
