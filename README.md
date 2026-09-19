@@ -78,10 +78,156 @@ A typical run looks like this:
 Everything above is visible and steerable in real time from the dashboard, and every step
 leaves a durable record.
 
+## Key concepts
+
+The entities below are the building blocks of Heimdall. Understanding what each one is
+and how it connects to the others makes the rest of the system easy to reason about.
+
+---
+
+### Agent ID
+
+A stable identifier for a *type* of agent — a named role such as `coordinator`,
+`worker`, or `reviewer`. The Agent ID is not tied to a specific running process. It is
+used when configuring which LLM provider backs a role, which skill set it loads at
+bootstrap, and which memories are scoped to it.
+
+**Connected to:** Agent Instance ID (each running instance carries an Agent ID),
+Memory (some memory is scoped per-agent by Agent ID), Task Chain (coordinator and
+worker roles are identified by Agent ID).
+
+---
+
+### Agent Instance ID
+
+The unique identifier for one *running* agent process. Every time an agent is spawned
+for a task it receives a fresh Instance ID. The Instance ID is used to route chat
+messages to that specific process, track its status in the fleet view, and identify
+which bridge it is running on.
+
+**Connected to:** Agent ID (each instance is one running copy of an agent role),
+Bridge (an instance always lives on exactly one bridge), Task Chain (a task is assigned
+to an instance by its Instance ID), Agent Run Dir (each instance has its own run
+directory on the bridge).
+
+---
+
+### Project
+
+A codebase or workspace that agents work on. A Project has a name, a local path on the
+bridge, and an optional VCS remote. Memories can be scoped to a project, so all agents
+working on that project share the same accumulated knowledge.
+
+**Connected to:** Memory (project-scoped memories are shared across all agents on that
+project), Task Chain (a chain usually targets a specific project), Bridge (the project
+path resolves on the bridge that hosts the agent).
+
+---
+
+### Memory
+
+Durable knowledge that persists across agent sessions. Memory is injected into an agent
+at bootstrap so it starts each task already aware of facts, conventions, and past
+decisions. There are four types:
+
+| Type | What it stores | Example |
+|------|---------------|---------|
+| **Fact** | Objective, stable truths about the project or environment | "The hub API runs on port 8081" |
+| **Habit** | Preferred working patterns or conventions | "Always run `npm run typecheck` before committing" |
+| **Episode** | Records of past events, decisions, or incidents | "The migration on 2025-03-15 required a manual SQL fix" |
+| **Skill** | Reusable procedures or mini-runbooks | "How to add a new icon to Icon.tsx" |
+
+Each memory is scoped to one of: `agent_id` (personal to one agent role), `project_id`
+(shared by all agents on a project), `bridge_id` (host-level facts about a device), or
+fleet-wide.
+
+**Connected to:** Agent ID (agent-scoped memories), Project (project-scoped memories),
+Bridge (bridge-scoped memories), Task Chain (chains produce memories at completion that
+are proposed for approval and carried forward).
+
+---
+
+### Task Chain
+
+A structured unit of work made up of ordered tasks. A Coordinator creates the chain,
+assigns each task to a Worker, and attaches a Reviewer. A task only completes once the
+required reviewer quorum has voted LGTM; the chain completes when all its tasks are
+done. Task chains are the primary audit trail — every status change, comment, and vote
+is recorded durably.
+
+**Connected to:** Agent ID / Agent Instance ID (coordinator, worker, and reviewer
+instances are attached to the chain), Project (a chain targets a project), Memory
+(chains produce memory proposals on completion), Reconcile (the Reconcile operation
+re-evaluates a chain's task assignment and status).
+
+---
+
+### Agent Run Dir
+
+A temporary working directory created on the bridge for each agent instance. It holds
+the instance's runtime state: the `ham-ctl` binary, environment config, the
+`.heimdall/` bootstrap folder, and any scratch files the agent writes during its
+session. The run dir is cleaned up when the instance exits.
+
+**Connected to:** Agent Instance ID (one run dir per instance), Bridge (the run dir is
+a filesystem path on the bridge host), `ham-ctl` (the agent CLI binary is placed in
+the run dir so the agent always has a consistent path to it).
+
+---
+
+### Bridge
+
+The per-device daemon that connects a machine to the hub. The bridge:
+
+- Authenticates to the hub using a bridge token (`hbr_…` — see `SELF_HOSTING.md`).
+- Spawns and supervises agent processes (via `ham-pty-host`).
+- Executes tracked shell commands on behalf of agents and streams output back.
+- Serves the local filesystem to agents for safe project exploration.
+
+One bridge runs on each machine that should host agent processes. All bridges connect
+to the same hub.
+
+**Connected to:** Agent Instance ID (the bridge spawns and owns instances), Agent Run
+Dir (run dirs are created on the bridge filesystem), Provider (the bridge passes
+provider credentials to agent processes at spawn time), Hub (bridge→hub connection is
+outbound over HTTPS using `socat` as the TLS transport).
+
+---
+
+### Provider
+
+The LLM backend that backs an agent. A provider record stores which API (Claude,
+OpenAI Codex, etc.) and model to use, along with the credentials needed to call it.
+Providers are configured on the hub and referenced by Agent ID, so swapping a model
+requires changing one record rather than touching every agent.
+
+**Connected to:** Agent ID (each agent role is configured with a provider), Bridge (the
+bridge injects provider credentials into the agent environment at spawn time), Agent
+Instance ID (a running instance uses whichever provider its Agent ID was configured
+with at spawn time).
+
+---
+
+### Reconcile (task chain)
+
+Reconcile is the operation that re-evaluates a task chain's current state and
+re-assigns any tasks that need attention — for example tasks that have no assigned
+instance, tasks whose assigned instance has died, or tasks that were blocked by a
+dependency that has since completed. Running Reconcile from the UI or via `ham-ctl
+task chain reconcile <chain-id>` is the normal way to un-stick a chain after a
+coordinator restart or a bridge reconnect.
+
+**Connected to:** Task Chain (reconcile targets one chain), Agent Instance ID
+(reconcile spawns new instances or re-assigns existing ones), Bridge (new instances
+are launched on an available bridge).
+
+---
+
 ## Getting started
 
 Heimdall is deployed as a NixOS flake. The hub runs on a VPS, and a bridge runs on each
 developer machine that should host agents. Point the bridges at the hub, and agents on
 every device coordinate through that one board.
 
-See the `nix-homelab-config` repository for the deployment configuration.
+See `SELF_HOSTING.md` for the full deployment guide, and the `nix-homelab-config`
+repository for the NixOS deployment configuration.
