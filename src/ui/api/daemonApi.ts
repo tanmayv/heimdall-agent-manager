@@ -741,13 +741,73 @@ export function artifactContentUrl({ daemonUrl, artifactId, version }: { daemonU
   return joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content${suffix}`);
 }
 
-export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100, offset = 0 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number; offset?: number }) {
+export async function listArtifacts({
+  daemonUrl,
+  clientToken,
+  projectId = '',
+  creatorId = '',
+  originRef = '',
+  includeDeleted = false,
+  limit = 100,
+  offset = 0,
+  agent_instance_id = '',
+  agentInstanceId = '',
+  agent_id = '',
+  agentId = '',
+  chain_id = '',
+  chainId = '',
+  task_id = '',
+  taskId = '',
+  kind = '',
+  since = '',
+  until = '',
+  sort = '',
+  order = '',
+  cursor = '',
+}: {
+  daemonUrl: string;
+  clientToken: string;
+  projectId?: string;
+  creatorId?: string;
+  originRef?: string;
+  includeDeleted?: boolean;
+  limit?: number;
+  offset?: number;
+  agent_instance_id?: string;
+  agentInstanceId?: string;
+  agent_id?: string;
+  agentId?: string;
+  chain_id?: string;
+  chainId?: string;
+  task_id?: string;
+  taskId?: string;
+  kind?: string;
+  since?: string;
+  until?: string;
+  sort?: string;
+  order?: string;
+  cursor?: string;
+}) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const sanitizedProjectId = sanitizeProjectId(projectId);
   if (sanitizedProjectId) params.set('project_id', sanitizedProjectId);
   if (creatorId) params.set('creator_id', creatorId);
   if (originRef) params.set('origin_ref', originRef);
   if (includeDeleted) params.set('include_deleted', 'true');
+  const resolvedAgentInstanceId = agent_instance_id || agentInstanceId;
+  if (resolvedAgentInstanceId) params.set('agent_instance_id', resolvedAgentInstanceId);
+  const resolvedAgentId = agent_id || agentId;
+  if (resolvedAgentId) params.set('agent_id', resolvedAgentId);
+  const resolvedChainId = chain_id || chainId;
+  if (resolvedChainId) params.set('chain_id', resolvedChainId);
+  const resolvedTaskId = task_id || taskId;
+  if (resolvedTaskId) params.set('task_id', resolvedTaskId);
+  if (kind) params.set('kind', kind);
+  if (since) params.set('since', since);
+  if (until) params.set('until', until);
+  if (sort) params.set('sort', sort);
+  if (order) params.set('order', order);
+  if (cursor) params.set('cursor', cursor);
   return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts?${params.toString()}`), {
     method: 'GET',
     headers: bearerHeaders(clientToken),

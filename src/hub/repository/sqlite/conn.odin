@@ -69,9 +69,13 @@ close :: proc(conn: ^Conn) {
 exec :: proc(conn: ^Conn, query: string) -> bool {
 	if conn == nil || conn.db == nil do return false
 	errmsg: cstring = nil
-	rc := sqlite3_exec(conn.db, cstring(raw_data(query)), nil, nil, &errmsg)
+	c_query := strings.clone_to_cstring(query, context.temp_allocator)
+	rc := sqlite3_exec(conn.db, c_query, nil, nil, &errmsg)
 	if rc != SQLITE_OK {
-		if errmsg != nil do sqlite3_free(rawptr(errmsg))
+		if errmsg != nil {
+			fmt.eprintln("SQLITE EXEC ERROR:", string(errmsg), "FOR QUERY:\n", query)
+			sqlite3_free(rawptr(errmsg))
+		}
 		return false
 	}
 	return true

@@ -34,7 +34,7 @@ ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
 		return
 	}
 	if resource == "projects" { ctl_hub_projects(base, user_token, action, args); return }
-	if resource == "artifacts" { ctl_hub_artifacts(base, user_token, action, args); return }
+	if resource == "artifacts" || resource == "artifact" { ctl_hub_artifacts(base, user_token, cmd[idx + 1:], args); return }
 	if resource == "memories" || resource == "memory" { ctl_hub_memories(base, user_token, cmd[idx + 1:], args); return }
 	if resource == "cards" || resource == "card" { ctl_hub_cards(base, user_token, cmd[idx + 1:], args); return }
 	if resource == "actions" || resource == "action" || resource == "scheduled-prompts" || resource == "scheduled-prompt" { ctl_hub_actions(base, user_token, cmd[idx + 1:], args); return }
@@ -287,8 +287,32 @@ ctl_hub_projects :: proc(base, token, action: string, args: []string) {
 	fmt.println("usage: ham-ctl hub projects <list|create|show|update>")
 }
 
-ctl_hub_artifacts :: proc(base, token, action: string, args: []string) {
-	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/artifacts", ""); return }
+ctl_hub_artifacts :: proc(base, token: string, tokens, args: []string) {
+	action := pos(tokens, 0)
+	if action == "" || action == "list" {
+		query := make([dynamic]string)
+		defer delete(query)
+		if p := option_value(args, "--project-id", option_value(args, "--project", "")); p != "" do append(&query, fmt.tprintf("project_id=%s", p))
+		if ai := option_value(args, "--agent-instance-id", option_value(args, "--agent-instance", "")); ai != "" do append(&query, fmt.tprintf("agent_instance_id=%s", ai))
+		if a := option_value(args, "--agent-id", option_value(args, "--agent", "")); a != "" do append(&query, fmt.tprintf("agent_id=%s", a))
+		if t := option_value(args, "--task-id", option_value(args, "--task", "")); t != "" do append(&query, fmt.tprintf("task_id=%s", t))
+		if c := option_value(args, "--chain-id", option_value(args, "--chain", "")); c != "" do append(&query, fmt.tprintf("chain_id=%s", c))
+		if k := option_value(args, "--kind", ""); k != "" do append(&query, fmt.tprintf("kind=%s", k))
+		if s := option_value(args, "--since", ""); s != "" do append(&query, fmt.tprintf("since=%s", s))
+		if u := option_value(args, "--until", ""); u != "" do append(&query, fmt.tprintf("until=%s", u))
+		if s := option_value(args, "--sort", option_value(args, "--sort-field", "")); s != "" do append(&query, fmt.tprintf("sort=%s", s))
+		if o := option_value(args, "--order", option_value(args, "--sort-order", "")); o != "" do append(&query, fmt.tprintf("order=%s", o))
+		if l := option_value(args, "--limit", ""); l != "" do append(&query, fmt.tprintf("limit=%s", l))
+		if cur := option_value(args, "--cursor", ""); cur != "" do append(&query, fmt.tprintf("cursor=%s", cur))
+		if has_flag(args, "--include-deleted") do append(&query, "include_deleted=true")
+
+		path := "/api/v1/artifacts"
+		if len(query) > 0 {
+			path = fmt.tprintf("/api/v1/artifacts?%s", strings.join(query[:], "&"))
+		}
+		ctl_hub_request(base, token, "GET", path, "")
+		return
+	}
 	if action == "create" {
 		name := option_value(args, "--name", "")
 		content := option_value(args, "--content", "")
@@ -303,7 +327,8 @@ ctl_hub_artifacts :: proc(base, token, action: string, args: []string) {
 		ctl_hub_request(base, token, "POST", "/api/v1/artifacts", json_object_from_slice(fields[:]))
 		return
 	}
-	artifact_id := option_value(args, "--artifact-id", option_value(args, "--artifact", ""))
+	artifact_id := pos(tokens, 1)
+	if artifact_id == "" do artifact_id = option_value(args, "--artifact-id", option_value(args, "--artifact", option_value(args, "--id", "")))
 	if artifact_id == "" { fmt.println("usage: ham-ctl hub artifacts <show|content|update|delete> --artifact-id <id>"); return }
 	if action == "show" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/artifacts/%s", safe_path_part(artifact_id)), ""); return }
 	if action == "content" || action == "get" { ctl_hub_request_raw(base, token, "GET", fmt.tprintf("/api/v1/artifacts/%s/content", safe_path_part(artifact_id)), ""); return }

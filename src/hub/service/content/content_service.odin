@@ -256,7 +256,34 @@ mark_read_with_receipts :: proc(s:^Content_Service, auth:contracts.Auth_Context,
 message_body_for_response :: proc(s:^Content_Service, m:domain.Chat_Message)->string{ if artifact_refs_have_missing(s,m.owner_user_id,m.artifact_ids_json) do return strings.concatenate({m.body,"\n[artifact unavailable/deleted]"}); return m.body }
 
 create_artifact :: proc(s:^Content_Service, auth:contracts.Auth_Context,input:Artifact_Input)->(domain.Artifact,bool,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return {},false,err; if len(input.content)>ARTIFACT_MAX_BYTES do return {},false,domain.domain_error(.Validation_Failed,fmt.tprintf("artifact is too large; maximum size is %d MB", ARTIFACT_MAX_BYTES/(1024*1024))); if ok_ctx,ctx_err:=artifact_context_owned(s,owner,input); !ok_ctx do return {},false,ctx_err; name:=input.name; if name=="" do name=input.filename; if name=="" do name="artifact"; kind:=input.kind; if kind=="" do kind="file"; now:=platform.clock_now(s.clock); a:=domain.Artifact{artifact_id=platform.generate_id(s.ids,"art_"),owner_user_id=owner,kind=kind,name=name,description=input.description,content_type=input.content_type,size_bytes=len(input.content),content=input.content,mime=input.mime,ext=input.ext,sha256=input.sha256,origin_kind=input.origin_kind,origin_ref=input.origin_ref,agent_id=input.agent_id,agent_instance_id=input.agent_instance_id,chain_id=input.chain_id,task_id=input.task_id,project_id=input.project_id,created_at=now,updated_at=now}; return iface.content_save_artifact(s.content,a) }
-list_artifacts :: proc(s:^Content_Service, auth:contracts.Auth_Context)->([]domain.Artifact,domain.Domain_Error){ owner,ok,err:=ownership.owner_from_auth(auth); if !ok do return nil,err; return iface.content_list_artifacts(s.content,owner) }
+list_artifacts :: proc(s: ^Content_Service, auth: contracts.Auth_Context, filter: domain.Artifact_List_Filter) -> ([]domain.Artifact, domain.Domain_Error) {
+	owner, ok, err := ownership.owner_from_auth(auth)
+	if !ok do return nil, err
+
+	f := filter
+	if f.limit <= 0 do f.limit = 50
+	if f.limit > 200 do f.limit = 200
+
+	sort_field_lower := strings.to_lower(strings.trim_space(f.sort_field), context.temp_allocator)
+	switch sort_field_lower {
+	case "created_at", "updated_at", "name", "size_bytes":
+	case "":
+		f.sort_field = "updated_at"
+	case:
+		return nil, domain.domain_error(.Validation_Failed, "invalid sort field; allowed: created_at, updated_at, name, size_bytes")
+	}
+
+	sort_order_lower := strings.to_lower(strings.trim_space(f.sort_order), context.temp_allocator)
+	switch sort_order_lower {
+	case "asc", "desc":
+	case "":
+		f.sort_order = "desc"
+	case:
+		return nil, domain.domain_error(.Validation_Failed, "invalid sort order; allowed: asc, desc")
+	}
+
+	return iface.content_list_artifacts(s.content, owner, f)
+}
 get_artifact :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(domain.Artifact,bool,domain.Domain_Error){ a,ok,err:=iface.content_get_artifact(s.content,id); if !ok do return {},false,err; if ok2,e:=ownership.require_owner(auth,a.owner_user_id); !ok2 do return {},false,e; return a,true,{} }
 update_artifact :: proc(s:^Content_Service, auth:contracts.Auth_Context,id,name,description:string)->(domain.Artifact,bool,domain.Domain_Error){ a,ok,err:=get_artifact(s,auth,id); if !ok do return {},false,err; if name!="" do a.name=name; if description!="" do a.description=description; a.updated_at=platform.clock_now(s.clock); return iface.content_save_artifact(s.content,a) }
 delete_artifact :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:string)->(bool,domain.Domain_Error){ a,ok,err:=get_artifact(s,auth,id); if !ok do return false,err; return iface.content_delete_artifact(s.content,a.artifact_id,a.owner_user_id) }

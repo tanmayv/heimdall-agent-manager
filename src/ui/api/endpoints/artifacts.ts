@@ -14,6 +14,20 @@ type ArtifactListArgs = ArtifactAuthArgs & {
   includeDeleted?: boolean;
   limit?: number;
   offset?: number;
+  agent_instance_id?: string;
+  agentInstanceId?: string;
+  agent_id?: string;
+  agentId?: string;
+  chain_id?: string;
+  chainId?: string;
+  task_id?: string;
+  taskId?: string;
+  kind?: string;
+  since?: string;
+  until?: string;
+  sort?: string;
+  order?: string;
+  cursor?: string;
 };
 
 type ArtifactCreateArgs = ArtifactAuthArgs & {
@@ -229,8 +243,52 @@ function withoutArtifactAuthArgs<T extends ArtifactAuthArgs>(args: T): Omit<T, k
 export const artifactsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listArtifacts: build.query<any, ArtifactListArgs>({
-      queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 20, offset = 0 }, { session }) => {
-        const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit, offset });
+      queryFn: withSessionQuery(async (args, { session }) => {
+        const {
+          projectId = '',
+          creatorId = '',
+          originRef = '',
+          includeDeleted = false,
+          limit = 20,
+          offset = 0,
+          agent_instance_id,
+          agentInstanceId,
+          agent_id,
+          agentId,
+          chain_id,
+          chainId,
+          task_id,
+          taskId,
+          kind,
+          since,
+          until,
+          sort,
+          order,
+          cursor,
+        } = args || {};
+        const data = await daemonApi.listArtifacts({
+          ...auth(session),
+          projectId,
+          creatorId,
+          originRef,
+          includeDeleted,
+          limit,
+          offset,
+          agent_instance_id,
+          agentInstanceId,
+          agent_id,
+          agentId,
+          chain_id,
+          chainId,
+          task_id,
+          taskId,
+          kind,
+          since,
+          until,
+          sort,
+          order,
+          cursor,
+        });
         return { ...data, artifacts: normalizeArtifacts(data) };
       }),
       providesTags: (result, _error, { projectId = '', originRef = '' }) => [
@@ -240,19 +298,108 @@ export const artifactsApi = heimdallApi.injectEndpoints({
       ],
     }),
     fetchArtifactsPage: build.query<any, ArtifactListArgs & { offset: number }>({
-      queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 20, offset }, { session }) => {
-        const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit, offset });
+      queryFn: withSessionQuery(async (args, { session }) => {
+        const {
+          projectId = '',
+          creatorId = '',
+          originRef = '',
+          includeDeleted = false,
+          limit = 20,
+          offset = 0,
+          agent_instance_id,
+          agentInstanceId,
+          agent_id,
+          agentId,
+          chain_id,
+          chainId,
+          task_id,
+          taskId,
+          kind,
+          since,
+          until,
+          sort,
+          order,
+          cursor,
+        } = args || {};
+        const data = await daemonApi.listArtifacts({
+          ...auth(session),
+          projectId,
+          creatorId,
+          originRef,
+          includeDeleted,
+          limit,
+          offset,
+          agent_instance_id,
+          agentInstanceId,
+          agent_id,
+          agentId,
+          chain_id,
+          chainId,
+          task_id,
+          taskId,
+          kind,
+          since,
+          until,
+          sort,
+          order,
+          cursor,
+        });
         return { ...data, artifacts: normalizeArtifacts(data) };
       }),
       async onQueryStarted(arg, { dispatch, queryFulfilled }) {
         try {
           const { data } = await queryFulfilled;
-          const { projectId, creatorId, originRef, includeDeleted, limit = 20, daemonUrl, clientToken } = arg;
-          const cacheKeyArgs = { projectId, creatorId, originRef, includeDeleted, limit, daemonUrl, clientToken };
+          const {
+            projectId,
+            creatorId,
+            originRef,
+            includeDeleted,
+            limit = 20,
+            daemonUrl,
+            clientToken,
+            agent_instance_id,
+            agentInstanceId,
+            agent_id,
+            agentId,
+            chain_id,
+            chainId,
+            task_id,
+            taskId,
+            kind,
+            since,
+            until,
+            sort,
+            order,
+            cursor,
+          } = arg;
+          const cacheKeyArgs = {
+            projectId,
+            creatorId,
+            originRef,
+            includeDeleted,
+            limit,
+            daemonUrl,
+            clientToken,
+            agent_instance_id,
+            agentInstanceId,
+            agent_id,
+            agentId,
+            chain_id,
+            chainId,
+            task_id,
+            taskId,
+            kind,
+            since,
+            until,
+            sort,
+            order,
+            cursor,
+          };
           dispatch(
             artifactsApi.util.updateQueryData('listArtifacts', cacheKeyArgs, (draft) => {
               if (!draft) return;
               draft.has_more = data.has_more;
+              draft.next_cursor = data.next_cursor;
               draft.next_offset = data.next_offset;
               draft.total = data.total;
               

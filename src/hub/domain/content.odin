@@ -145,6 +145,55 @@ Artifact :: struct {
 	updated_at: string,
 }
 
+artifact_destroy :: proc(a: ^Artifact) {
+	if a == nil do return
+	if len(a.artifact_id) > 0 do delete(a.artifact_id)
+	if len(string(a.owner_user_id)) > 0 do delete(string(a.owner_user_id))
+	if len(a.kind) > 0 do delete(a.kind)
+	if len(a.name) > 0 do delete(a.name)
+	if len(a.description) > 0 do delete(a.description)
+	if len(a.content_type) > 0 do delete(a.content_type)
+	if len(a.blob_ref) > 0 do delete(a.blob_ref)
+	if len(a.content) > 0 do delete(a.content)
+	if len(a.mime) > 0 do delete(a.mime)
+	if len(a.ext) > 0 do delete(a.ext)
+	if len(a.sha256) > 0 do delete(a.sha256)
+	if len(a.origin_kind) > 0 do delete(a.origin_kind)
+	if len(a.origin_ref) > 0 do delete(a.origin_ref)
+	if len(a.deleted_at) > 0 do delete(a.deleted_at)
+	if len(a.agent_id) > 0 do delete(a.agent_id)
+	if len(a.agent_instance_id) > 0 do delete(a.agent_instance_id)
+	if len(a.chain_id) > 0 do delete(a.chain_id)
+	if len(a.task_id) > 0 do delete(a.task_id)
+	if len(string(a.project_id)) > 0 do delete(string(a.project_id))
+	if len(a.created_at) > 0 do delete(a.created_at)
+	if len(a.updated_at) > 0 do delete(a.updated_at)
+	a^ = {}
+}
+
+artifacts_destroy :: proc(artifacts: []Artifact) {
+	for &a in artifacts {
+		artifact_destroy(&a)
+	}
+	delete(artifacts)
+}
+
+Artifact_List_Filter :: struct {
+	project_id:        Project_ID,
+	agent_instance_id: string,
+	agent_id:          string,
+	chain_id:          string,
+	task_id:           string,
+	kind:              string,
+	since:             string,
+	until:             string,
+	include_deleted:   bool,
+	sort_field:        string,
+	sort_order:        string,
+	limit:             int,
+	cursor:            string,
+}
+
 // Built-in AI-native system template IDs. Defined in the domain layer so the
 // content and agent services share a single source of truth for these identifiers.
 TEMPLATE_COORDINATOR_ID :: "tmpl_coordinator"
