@@ -376,6 +376,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/bridge-paths/*/validate", rawptr(&graph.project_handlers), http.validate_project_bridge_path_handler)
 	// Project-scoped filesystem browser (resolves project -> bridge+root, relays fs_* WS commands).
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/fs", rawptr(&graph.bridge_handlers), http.list_project_dir_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/fs/quick-open", rawptr(&graph.bridge_handlers), http.quick_open_project_fs_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/fs/search", rawptr(&graph.bridge_handlers), http.search_project_fs_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/fs/file", rawptr(&graph.bridge_handlers), http.read_project_file_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/file", rawptr(&graph.bridge_handlers), http.create_project_file_handler)
 	http.router_add(&graph.router, "PUT", "/api/v1/projects/*/fs/file", rawptr(&graph.bridge_handlers), http.write_project_file_handler)

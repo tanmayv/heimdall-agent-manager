@@ -194,6 +194,30 @@ Bridge_Fs_Mkdir_Result :: struct {
 	message:     string,
 }
 
+Bridge_Fs_Find_Files_Result :: struct {
+	ok:         bool,
+	root:       string,
+	files:      []string,
+	truncated:  bool,
+	error_code: string,
+	message:    string,
+}
+
+Bridge_Fs_Grep_Match :: struct {
+	path:        string,
+	line_number: int,
+	line:        string,
+}
+
+Bridge_Fs_Grep_Result :: struct {
+	ok:         bool,
+	root:       string,
+	matches:    []Bridge_Fs_Grep_Match,
+	truncated:  bool,
+	error_code: string,
+	message:    string,
+}
+
 BRIDGE_FS_MAX_ENTRIES :: 2000
 BRIDGE_FS_DEFAULT_LIMIT :: 200
 BRIDGE_FS_MAX_VIEW_BYTES :: 1_000_000 // 1 MB read-file total-size view cap
@@ -921,6 +945,307 @@ bridge_fs_make_dir :: proc(requested: string, sandbox_root: string = "") -> Brid
 	return Bridge_Fs_Mkdir_Result{ok = true, path = canonical, created = true, within_root = true}
 }
 
+bridge_fs_fuzzy_match :: proc(pattern, text: string) -> bool {
+	if len(pattern) == 0 do return true
+	if len(text) < len(pattern) do return false
+	p_idx := 0
+	for i in 0..<len(text) {
+		t_char := text[i]
+		if t_char >= 'A' && t_char <= 'Z' do t_char += 32
+		p_char := pattern[p_idx]
+		if p_char >= 'A' && p_char <= 'Z' do p_char += 32
+		if t_char == p_char {
+			p_idx += 1
+			if p_idx == len(pattern) do return true
+		}
+	}
+	return false
+}
+
+bridge_fs_contains_case_insensitive :: proc(haystack, needle: string) -> bool {
+	if len(needle) == 0 do return true
+	if len(haystack) < len(needle) do return false
+	h_len := len(haystack)
+	n_len := len(needle)
+	first_lower := needle[0]
+	if first_lower >= 'A' && first_lower <= 'Z' do first_lower += 32
+	first_upper := first_lower
+	if first_upper >= 'a' && first_upper <= 'z' do first_upper -= 32
+
+	for i := 0; i <= h_len - n_len; i += 1 {
+		b := haystack[i]
+		if b == first_lower || b == first_upper {
+			match := true
+			for j := 1; j < n_len; j += 1 {
+				hb := haystack[i + j]
+				nb := needle[j]
+				if hb >= 'A' && hb <= 'Z' do hb += 32
+				if nb >= 'A' && nb <= 'Z' do nb += 32
+				if hb != nb {
+					match = false
+					break
+				}
+			}
+			if match do return true
+		}
+	}
+	return false
+}
+
+bridge_fs_is_search_ignored_dir :: proc(name: string) -> bool {
+	return name == ".git" || name == "node_modules" || name == "dist" || name == "build" || name == ".build"
+}
+
+bridge_fs_find_files :: proc(query: string, limit: int, sandbox_root: string = "") -> Bridge_Fs_Find_Files_Result {
+	root, root_ok := bridge_fs_effective_root(sandbox_root)
+	if !root_ok {
+		return Bridge_Fs_Find_Files_Result{ok = false, root = sandbox_root, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
+	}
+	canonical, within := bridge_fs_resolve_within("", root)
+	if !within {
+		return Bridge_Fs_Find_Files_Result{ok = false, root = root, error_code = "path_outside_root", message = "Path is outside the allowed root"}
+	}
+	if !os.exists(canonical) || !os.is_dir(canonical) {
+		delete(canonical)
+		return Bridge_Fs_Find_Files_Result{ok = false, root = root, error_code = "path_not_directory", message = "Path is not a directory"}
+	}
+
+	max_results := limit
+	if max_results <= 0 do max_results = 100
+	if max_results > 1000 do max_results = 1000
+
+	query_trim := strings.trim_space(query)
+	query_lower := strings.to_lower(query_trim, context.temp_allocator)
+
+	results := make([dynamic]string, context.allocator)
+	truncated := false
+
+	dir_queue := make([dynamic]string, context.allocator)
+	defer {
+		for d in dir_queue do delete(d, context.allocator)
+		delete(dir_queue)
+	}
+	append(&dir_queue, canonical)
+
+	q_head := 0
+	for q_head < len(dir_queue) {
+		curr_dir := dir_queue[q_head]
+		q_head += 1
+
+		infos, rerr := os.read_directory_by_path(curr_dir, -1, context.allocator)
+		if rerr != nil do continue
+
+		slice.sort_by(infos, proc(a, b: os.File_Info) -> bool {
+			return strings.compare(a.name, b.name) < 0
+		})
+
+		for info in infos {
+			name := info.name
+			if name == "" || name == "." || name == ".." do continue
+			if info.type == .Directory {
+				if bridge_fs_is_search_ignored_dir(name) do continue
+				sub_canonical, sub_within := bridge_fs_resolve_within(info.fullpath, root)
+				if sub_within && os.is_dir(sub_canonical) {
+					append(&dir_queue, sub_canonical)
+				} else {
+					delete(sub_canonical)
+				}
+			} else {
+				rel := info.fullpath
+				if strings.has_prefix(rel, canonical) {
+					rel = rel[len(canonical):]
+					for len(rel) > 0 && rel[0] == '/' {
+						rel = rel[1:]
+					}
+				}
+				matches := false
+				if query_trim == "" {
+					matches = true
+				} else {
+					rel_lower := strings.to_lower(rel, context.temp_allocator)
+					matches = strings.contains(rel_lower, query_lower) || bridge_fs_fuzzy_match(query_lower, rel_lower)
+				}
+				if matches {
+					append(&results, strings.clone(rel, context.allocator))
+					if len(results) >= max_results {
+						truncated = true
+						break
+					}
+				}
+			}
+		}
+		os.file_info_slice_delete(infos, context.allocator)
+		if truncated do break
+	}
+
+	return Bridge_Fs_Find_Files_Result{
+		ok = true,
+		root = root,
+		files = results[:],
+		truncated = truncated,
+	}
+}
+
+bridge_fs_grep :: proc(query: string, case_sensitive: bool, max_results: int, sandbox_root: string = "") -> Bridge_Fs_Grep_Result {
+	root, root_ok := bridge_fs_effective_root(sandbox_root)
+	if !root_ok {
+		return Bridge_Fs_Grep_Result{ok = false, root = sandbox_root, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
+	}
+	canonical, within := bridge_fs_resolve_within("", root)
+	if !within {
+		return Bridge_Fs_Grep_Result{ok = false, root = root, error_code = "path_outside_root", message = "Path is outside the allowed root"}
+	}
+	if !os.exists(canonical) || !os.is_dir(canonical) {
+		delete(canonical)
+		return Bridge_Fs_Grep_Result{ok = false, root = root, error_code = "path_not_directory", message = "Path is not a directory"}
+	}
+
+	if len(query) == 0 {
+		delete(canonical)
+		return Bridge_Fs_Grep_Result{
+			ok = true,
+			root = root,
+			matches = make([]Bridge_Fs_Grep_Match, 0, context.allocator),
+			truncated = false,
+		}
+	}
+
+	limit := max_results
+	if limit <= 0 do limit = 100
+	if limit > 1000 do limit = 1000
+
+	matches := make([dynamic]Bridge_Fs_Grep_Match, context.allocator)
+	truncated := false
+
+	dir_queue := make([dynamic]string, context.allocator)
+	defer {
+		for d in dir_queue do delete(d, context.allocator)
+		delete(dir_queue)
+	}
+	append(&dir_queue, canonical)
+
+	q_head := 0
+	for q_head < len(dir_queue) {
+		curr_dir := dir_queue[q_head]
+		q_head += 1
+
+		infos, rerr := os.read_directory_by_path(curr_dir, -1, context.allocator)
+		if rerr != nil do continue
+
+		slice.sort_by(infos, proc(a, b: os.File_Info) -> bool {
+			return strings.compare(a.name, b.name) < 0
+		})
+
+		for info in infos {
+			name := info.name
+			if name == "" || name == "." || name == ".." do continue
+			if info.type == .Directory {
+				if bridge_fs_is_search_ignored_dir(name) do continue
+				sub_canonical, sub_within := bridge_fs_resolve_within(info.fullpath, root)
+				if sub_within && os.is_dir(sub_canonical) {
+					append(&dir_queue, sub_canonical)
+				} else {
+					delete(sub_canonical)
+				}
+			} else {
+				if info.size <= 0 || info.size > 2_000_000 do continue
+				_, encoding := bridge_fs_mime_for_ext(name)
+				if encoding == "base64" do continue
+
+				data, derr := os.read_entire_file_from_path(info.fullpath, context.allocator)
+				if derr != nil do continue
+
+				if encoding != "utf8" {
+					check_len := len(data) if len(data) < 512 else 512
+					is_bin := false
+					for b in data[:check_len] {
+						if b == 0 {
+							is_bin = true
+							break
+						}
+					}
+					if is_bin {
+						delete(data, context.allocator)
+						continue
+					}
+				}
+
+				content := string(data)
+				has_needle := false
+				if case_sensitive {
+					has_needle = strings.contains(content, query)
+				} else {
+					has_needle = bridge_fs_contains_case_insensitive(content, query)
+				}
+				if !has_needle {
+					delete(data, context.allocator)
+					continue
+				}
+
+				rel := info.fullpath
+				if strings.has_prefix(rel, canonical) {
+					rel = rel[len(canonical):]
+					for len(rel) > 0 && rel[0] == '/' {
+						rel = rel[1:]
+					}
+				}
+
+				line_number := 1
+				line_start := 0
+				for idx := 0; idx < len(content); idx += 1 {
+					if content[idx] == '\n' || idx == len(content) - 1 {
+						line_end := idx
+						if content[idx] != '\n' {
+							line_end = idx + 1
+						}
+						raw_line := content[line_start:line_end]
+						if len(raw_line) > 0 && raw_line[len(raw_line) - 1] == '\r' {
+							raw_line = raw_line[:len(raw_line) - 1]
+						}
+
+						matched := false
+						if case_sensitive {
+							matched = strings.contains(raw_line, query)
+						} else {
+							matched = bridge_fs_contains_case_insensitive(raw_line, query)
+						}
+
+						if matched {
+							line_str := raw_line
+							if len(line_str) > 500 {
+								line_str = line_str[:500]
+							}
+							append(&matches, Bridge_Fs_Grep_Match{
+								path = strings.clone(rel, context.allocator),
+								line_number = line_number,
+								line = strings.clone(line_str, context.allocator),
+							})
+							if len(matches) >= limit {
+								truncated = true
+								break
+							}
+						}
+
+						line_number += 1
+						line_start = idx + 1
+					}
+				}
+				delete(data, context.allocator)
+				if truncated do break
+			}
+		}
+		os.file_info_slice_delete(infos, context.allocator)
+		if truncated do break
+	}
+
+	return Bridge_Fs_Grep_Result{
+		ok = true,
+		root = root,
+		matches = matches[:],
+		truncated = truncated,
+	}
+}
+
 // --- WS command handling (Hub -> Bridge) ---------------------------------
 
 // bridge_fs_handle_command dispatches the fs_* command types over the runtime WS.
@@ -940,7 +1265,9 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		limit := extract_json_int(text, "limit", BRIDGE_FS_DEFAULT_LIMIT)
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_list_dir(path, include_hidden, cursor, limit, root)
+		defer bridge_fs_list_result_delete(&result)
 		out := bridge_fs_list_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -951,6 +1278,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_stat(path, root)
 		out := bridge_fs_stat_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -961,6 +1289,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_make_dir(path, root)
 		out := bridge_fs_mkdir_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -972,7 +1301,9 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		offset := i64(extract_json_int(text, "offset", 0))
 		limit := i64(extract_json_int(text, "limit", 0))
 		result := bridge_fs_read_file(path, root, offset, limit)
+		defer delete(result.content)
 		out := bridge_fs_read_file_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -994,7 +1325,9 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		} else {
 			result = bridge_fs_list_dir(path, include_hidden, cursor, limit, root, true)
 		}
+		defer bridge_fs_list_result_delete(&result)
 		out := bridge_fs_list_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -1013,7 +1346,9 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		} else {
 			result = bridge_fs_read_file(path, root, offset, limit, true)
 		}
+		defer delete(result.content)
 		out := bridge_fs_read_file_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -1024,6 +1359,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_create_file(path, root)
 		out := bridge_fs_create_file_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -1035,6 +1371,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_write_file(path, content, root)
 		out := bridge_fs_write_file_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -1071,7 +1408,9 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 			}
 		}
 		result := bridge_fs_batch_write(files, root)
+		defer bridge_fs_batch_write_result_delete(&result)
 		out := bridge_fs_batch_write_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -1083,6 +1422,7 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_move(from, to, root)
 		out := bridge_fs_move_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -1094,6 +1434,37 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		root := extract_json_string(text, "root", "")
 		result := bridge_fs_delete(path, recursive, root)
 		out := bridge_fs_delete_result_json(command_id, result)
+		defer delete(out)
+		bridge_runtime_cache_command(command_id, out)
+		_ = bridge_hub_send(conn, out)
+		return true
+	case "fs_find_files":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		query := extract_json_string(text, "query", "")
+		limit := extract_json_int(text, "limit", 100)
+		root := extract_json_string(text, "root", "")
+		result := bridge_fs_find_files(query, limit, root)
+		defer bridge_fs_find_files_result_delete(&result)
+		out := bridge_fs_find_files_result_json(command_id, result)
+		defer delete(out)
+		bridge_runtime_cache_command(command_id, out)
+		_ = bridge_hub_send(conn, out)
+		return true
+	case "fs_grep":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		query := extract_json_string(text, "query", "")
+		case_sensitive := bridge_fs_extract_json_bool(text, "case_sensitive", false)
+		limit := extract_json_int(text, "limit", 100)
+		if strings.contains(text, "\"max_results\"") {
+			limit = extract_json_int(text, "max_results", limit)
+		}
+		root := extract_json_string(text, "root", "")
+		result := bridge_fs_grep(query, case_sensitive, limit, root)
+		defer bridge_fs_grep_result_delete(&result)
+		out := bridge_fs_grep_result_json(command_id, result)
+		defer delete(out)
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
@@ -1272,4 +1643,82 @@ bridge_fs_batch_write_result_json :: proc(command_id: string, r: Bridge_Fs_Batch
 	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
 	strings.write_string(&b, "\"}}")
 	return strings.to_string(b)
+}
+
+bridge_fs_find_files_result_json :: proc(command_id: string, r: Bridge_Fs_Find_Files_Result) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"fs_find_files_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
+	strings.write_string(&b, ",\"root\":\""); json_write_string(&b, r.root)
+	strings.write_string(&b, "\",\"truncated\":"); strings.write_string(&b, "true" if r.truncated else "false")
+	strings.write_string(&b, ",\"files\":[")
+	for f, i in r.files {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_byte(&b, '"')
+		json_write_string(&b, f)
+		strings.write_byte(&b, '"')
+	}
+	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
+	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
+	strings.write_string(&b, "\"}}")
+	return strings.to_string(b)
+}
+
+bridge_fs_grep_result_json :: proc(command_id: string, r: Bridge_Fs_Grep_Result) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"fs_grep_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
+	strings.write_string(&b, ",\"root\":\""); json_write_string(&b, r.root)
+	strings.write_string(&b, "\",\"truncated\":"); strings.write_string(&b, "true" if r.truncated else "false")
+	strings.write_string(&b, ",\"matches\":[")
+	for m, i in r.matches {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, m.path)
+		strings.write_string(&b, "\",\"line_number\":"); strings.write_int(&b, m.line_number)
+		strings.write_string(&b, ",\"line\":\""); json_write_string(&b, m.line)
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
+	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
+	strings.write_string(&b, "\"}}")
+	return strings.to_string(b)
+}
+
+bridge_fs_find_files_result_delete :: proc(r: ^Bridge_Fs_Find_Files_Result) {
+	if r == nil do return
+	for f in r.files {
+		delete(f)
+	}
+	delete(r.files)
+}
+
+bridge_fs_grep_result_delete :: proc(r: ^Bridge_Fs_Grep_Result) {
+	if r == nil do return
+	for m in r.matches {
+		delete(m.path)
+		delete(m.line)
+	}
+	delete(r.matches)
+}
+
+bridge_fs_batch_write_result_delete :: proc(r: ^Bridge_Fs_Batch_Write_Result) {
+	if r == nil do return
+	for s in r.saved {
+		delete(s.path)
+	}
+	delete(r.saved)
+	for e in r.errors {
+		delete(e.path)
+		delete(e.error_code)
+		delete(e.message)
+	}
+	delete(r.errors)
+}
+
+bridge_fs_list_result_delete :: proc(r: ^Bridge_Fs_List_Result) {
+	if r == nil do return
+	for e in r.entries {
+		delete(e.name)
+	}
+	delete(r.entries)
 }

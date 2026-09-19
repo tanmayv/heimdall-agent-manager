@@ -19,16 +19,16 @@
 // compatible virtualizer or a React bump. Tracked as a Phase-4 follow-up.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Editor, { type OnMount, type EditorProps } from '@monaco-editor/react';
+import Editor, { DiffEditor, useMonaco, type OnMount, type DiffOnMount, type EditorProps, type DiffEditorProps } from '@monaco-editor/react';
 
 import MarkdownBody from '../MarkdownBody';
-import ProjectVcsPanel from './ProjectVcsPanel';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
 import { useTheme } from '../../store/themeSlice';
 import { Icon, IconButton } from '@ui';
 import {
   useLazyListProjectDirQuery,
   useLazyReadProjectFileQuery,
+  useLazyQuickOpenProjectFilesQuery,
   useCreateProjectFileMutation,
   useCreateProjectDirMutation,
   useMoveProjectPathMutation,
@@ -38,8 +38,8 @@ import {
   type FsEntry,
   type FsListResult,
   type FsReadFileResult,
+  type FsQuickOpenResult,
 } from '../../api/endpoints/projectFs';
-import { useLazyGetVcsCapabilitiesQuery } from '../../api/endpoints/projectVcs';
 
 export type EditorTab = {
   path: string;
@@ -168,6 +168,38 @@ function baseName(path: string): string {
   return idx < 0 ? clean : clean.slice(idx + 1);
 }
 
+// Subsequence fuzzy match: checks if all characters of pattern appear in text in order.
+// Satisfies Duckie recommendation: e.g. 'RTK' matches 'ReducerToolKit.ts'.
+export function subsequenceFuzzyMatch(pattern: string, text: string): boolean {
+  if (!pattern) return true;
+  const p = pattern.toLowerCase();
+  const t = text.toLowerCase();
+  let pIdx = 0;
+  for (let tIdx = 0; tIdx < t.length; tIdx++) {
+    if (t[tIdx] === p[pIdx]) {
+      pIdx++;
+      if (pIdx === p.length) return true;
+    }
+  }
+  return false;
+}
+
+// Ranking score for fuzzy search results (higher score = better match)
+export function fuzzyMatchScore(pattern: string, text: string): number {
+  if (!pattern) return 1;
+  const p = pattern.toLowerCase();
+  const t = text.toLowerCase();
+  const base = baseName(text).toLowerCase();
+  if (base === p) return 1000;
+  if (base.startsWith(p)) return 500;
+  if (base.includes(p)) return 300;
+  if (t.includes(p)) return 200;
+  if (subsequenceFuzzyMatch(pattern, text)) {
+    return 100 - Math.min(text.length - pattern.length, 90);
+  }
+  return 0;
+}
+
 const LIST_LIMIT = 200;
 
 type PendingAction =
@@ -213,13 +245,9 @@ export default function ProjectFilesPanel({
 }: ProjectFilesPanelProps) {
   const [listDir] = useLazyListProjectDirQuery();
   const [readFile, readState] = useLazyReadProjectFileQuery();
-  const [getVcsCapabilities] = useLazyGetVcsCapabilitiesQuery();
+  const [fetchQuickOpen, quickOpenState] = useLazyQuickOpenProjectFilesQuery();
+  const monaco = useMonaco();
 
-  // Sub-tab state: the file tree ('files') vs the VCS Changes view ('changes').
-  // The Changes tab is only offered when the project root has a detected VCS
-  // provider (probed once on mount / project change).
-  const [activeTab, setActiveTab] = useState<'files' | 'changes'>('files');
-  const [vcsProvider, setVcsProvider] = useState('');
   const [createFile, createFileState] = useCreateProjectFileMutation();
   const [createDir, createDirState] = useCreateProjectDirMutation();
   const [movePath, moveState] = useMoveProjectPathMutation();
@@ -227,6 +255,12 @@ export default function ProjectFilesPanel({
   const [writeProjectFile, writeState] = useWriteProjectFileMutation();
   const [batchWriteProjectFiles, batchWriteState] = useBatchWriteProjectFilesMutation();
   const { theme } = useTheme();
+
+  // Quick Open Modal state (Cmd+P / Ctrl+P) (REQ-UI-GLOBAL-QUICK-OPEN)
+  const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
+  const [quickOpenQuery, setQuickOpenQuery] = useState('');
+  const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
+  const [quickOpenAllFiles, setQuickOpenAllFiles] = useState<string[]>([]);
 
   // Multi-file editor state
   const [openTabs, setOpenTabs] = useState<EditorTab[]>([]);
@@ -400,26 +434,65 @@ export default function ProjectFilesPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, bridgeId]);
 
-  // Probe VCS capabilities once per project/bridge to decide whether the "Changes"
-  // sub-tab is offered. Reset to the file tree when the project/bridge changes so a
-  // stale Changes selection never carries over to a project without VCS.
+  // Quick Open: fetch files on open
   useEffect(() => {
-    let cancelled = false;
-    setActiveTab('files');
-    setVcsProvider('');
+    if (isQuickOpenOpen && projectId) {
+      setQuickOpenQuery('');
+      setQuickOpenSelectedIndex(0);
+      void fetchQuickOpen({ projectId, bridgeId, query: '', limit: 1000 })
+        .unwrap()
+        .then((res) => {
+          if (res.ok && Array.isArray(res.files)) {
+            setQuickOpenAllFiles(res.files);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isQuickOpenOpen, projectId, bridgeId, fetchQuickOpen]);
+
+  // Quick Open: query backend as user types
+  useEffect(() => {
+    if (!isQuickOpenOpen || !projectId) return;
+    const q = quickOpenQuery.trim();
+    if (!q) return;
+    const timer = setTimeout(() => {
+      void fetchQuickOpen({ projectId, bridgeId, query: q, limit: 500 })
+        .unwrap()
+        .then((res) => {
+          if (res.ok && Array.isArray(res.files)) {
+            setQuickOpenAllFiles((prev) => {
+              const set = new Set([...prev, ...res.files]);
+              return Array.from(set);
+            });
+          }
+        })
+        .catch(() => {});
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [quickOpenQuery, isQuickOpenOpen, projectId, bridgeId, fetchQuickOpen]);
+
+  // Global keydown listener for Quick Open (Cmd+P / Ctrl+P) scoped to current project (REQ-UI-GLOBAL-QUICK-OPEN)
+  useEffect(() => {
     if (!projectId) return;
-    (async () => {
-      try {
-        const res = await getVcsCapabilities({ projectId, bridgeId }).unwrap();
-        if (!cancelled && res.ok && str(res.provider)) setVcsProvider(res.provider);
-      } catch {
-        // No VCS / bridge offline: leave the Changes tab hidden.
+    const handleQuickOpenKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'p' || e.key === 'P') && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsQuickOpenOpen((prev) => !prev);
       }
-    })();
-    return () => {
-      cancelled = true;
     };
-  }, [projectId, bridgeId, getVcsCapabilities]);
+    window.addEventListener('keydown', handleQuickOpenKeyDown, true);
+    return () => window.removeEventListener('keydown', handleQuickOpenKeyDown, true);
+  }, [projectId]);
+
+  const filteredQuickOpenFiles = useMemo(() => {
+    if (!quickOpenQuery.trim()) return quickOpenAllFiles.slice(0, 50);
+    const q = quickOpenQuery.trim();
+    return quickOpenAllFiles
+      .filter((file) => subsequenceFuzzyMatch(q, file))
+      .sort((a, b) => fuzzyMatchScore(q, b) - fuzzyMatchScore(q, a))
+      .slice(0, 50);
+  }, [quickOpenAllFiles, quickOpenQuery]);
 
   // Show/hide-hidden refetches the CURRENT directory in place (Spec 4.2/4.3) —
   // it must not jump back to root. Skip the initial mount so this doesn't
@@ -526,6 +599,13 @@ export default function ProjectFilesPanel({
               mime: res.mime || 'image/png',
             };
           }
+          if ((res.size || 0) > 5 * 1024 * 1024) {
+            return {
+              content: '',
+              isUnviewable: true,
+              unviewableReason: `This file is too large to edit (${formatBytes(res.size || 0)} > 5 MB).`,
+            };
+          }
           if (!res.viewable) {
             return {
               content: '',
@@ -541,6 +621,13 @@ export default function ProjectFilesPanel({
         }
 
         acc += res.content || '';
+        if (acc.length > 5 * 1024 * 1024) {
+          return {
+            content: '',
+            isUnviewable: true,
+            unviewableReason: 'This file exceeds the 5 MB editor safety threshold.',
+          };
+        }
         const bytesReturned = Number(
           res.bytes_returned ?? (res.content ? res.content.length : 0)
         );
@@ -772,6 +859,21 @@ export default function ProjectFilesPanel({
         setConfirmClosePath(path);
         return;
       }
+      // Monaco Lifecycle: Dispose models matching this closed tab to prevent memory leaks
+      if (monaco) {
+        const models = monaco.editor.getModels();
+        for (const model of models) {
+          const modelPath = model.uri.path;
+          if (
+            modelPath === path ||
+            modelPath.endsWith(`/${path}`) ||
+            modelPath.endsWith(path) ||
+            model.uri.toString().includes(encodeURIComponent(path))
+          ) {
+            model.dispose();
+          }
+        }
+      }
       setOpenTabs((prev) => {
         const next = prev.filter((t) => t.path !== path);
         if (activeTabPath === path) {
@@ -787,7 +889,7 @@ export default function ProjectFilesPanel({
         return next;
       });
     },
-    [openTabs, activeTabPath]
+    [openTabs, activeTabPath, monaco]
   );
 
   // Global keyboard shortcuts for Cmd+S / Ctrl+S and Cmd+Shift+S / Ctrl+Shift+S
@@ -879,37 +981,6 @@ export default function ProjectFilesPanel({
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
 
-      {/* Sub-tabs: file tree vs VCS Changes. The Changes pill is only offered
-          when the project root has a detected VCS provider. */}
-      {vcsProvider ? (
-        <div data-debug-id={`${debugPrefix}-subtabs`} className="flex items-center gap-1.5 border-b border-subtle px-3 py-2">
-          <button
-            data-debug-id={`${debugPrefix}-tab-files`}
-            type="button"
-            onClick={() => setActiveTab('files')}
-            aria-pressed={activeTab === 'files' ? 'true' : 'false'}
-            className={`rounded-full border px-2.5 py-1 text-caption ${activeTab === 'files' ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-          >
-            📁 Files
-          </button>
-          <button
-            data-debug-id={`${debugPrefix}-tab-changes`}
-            type="button"
-            onClick={() => setActiveTab('changes')}
-            aria-pressed={activeTab === 'changes' ? 'true' : 'false'}
-            className={`rounded-full border px-2.5 py-1 text-caption ${activeTab === 'changes' ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-          >
-            ± Changes
-          </button>
-        </div>
-      ) : null}
-
-      {activeTab === 'changes' && vcsProvider ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <ProjectVcsPanel projectId={projectId} bridgeId={bridgeId} onClose={onClose ?? (() => {})} isMobile={isMobile} />
-        </div>
-      ) : (
-      <>
       {/* Pending review comments bar — spans ALL files in this conversation. */}
       {comments.length > 0 ? (
         <div data-debug-id={`${debugPrefix}-comments-bar`} className="flex items-center gap-2 border-b border-accent/30 bg-accent/10 px-3 py-2">
@@ -1010,6 +1081,18 @@ export default function ProjectFilesPanel({
               >
                 <Icon name="panel-left" size={12} />
                 <span className="hidden sm:inline">Collapse</span>
+              </button>
+              <button
+                data-debug-id={`${debugPrefix}-quick-open-btn`}
+                type="button"
+                onClick={() => setIsQuickOpenOpen(true)}
+                title="Quick open file by name or path (Cmd+P / Ctrl+P)"
+                aria-label="Quick open file"
+                className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+              >
+                <Icon name="search" size={12} />
+                <span className="hidden sm:inline">Quick Open</span>
+                <kbd className="ml-0.5 rounded bg-neutral-soft px-1 text-[10px] font-mono text-faint">⌘P</kbd>
               </button>
               <button
                 data-debug-id={`${debugPrefix}-new-file-btn`}
@@ -1315,8 +1398,6 @@ export default function ProjectFilesPanel({
           {error}
         </div>
       ) : null}
-      </>
-      )}
 
       {/* Confirmation modal for closing dirty tabs */}
       {confirmClosePath ? (
@@ -1356,6 +1437,111 @@ export default function ProjectFilesPanel({
               >
                 Discard & Close
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Quick Open Modal (Cmd+P / Ctrl+P) (REQ-UI-GLOBAL-QUICK-OPEN) */}
+      {isQuickOpenOpen ? (
+        <div
+          data-debug-id="project-quick-open-modal"
+          className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/50 backdrop-blur-xs p-4"
+          onClick={() => setIsQuickOpenOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl rounded-xl border border-subtle bg-surface shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center border-b border-subtle px-3 py-2 bg-surface-raised gap-2">
+              <Icon name="search" size={16} className="text-muted" />
+              <input
+                data-debug-id="project-quick-open-input"
+                type="text"
+                autoFocus
+                value={quickOpenQuery}
+                onChange={(e) => {
+                  setQuickOpenQuery(e.target.value);
+                  setQuickOpenSelectedIndex(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setQuickOpenSelectedIndex((prev) =>
+                      filteredQuickOpenFiles.length > 0 ? (prev + 1) % filteredQuickOpenFiles.length : 0
+                    );
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setQuickOpenSelectedIndex((prev) =>
+                      filteredQuickOpenFiles.length > 0
+                        ? (prev - 1 + filteredQuickOpenFiles.length) % filteredQuickOpenFiles.length
+                        : 0
+                    );
+                  } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (filteredQuickOpenFiles.length > 0) {
+                      const selected = filteredQuickOpenFiles[quickOpenSelectedIndex] || filteredQuickOpenFiles[0];
+                      if (selected) {
+                        setIsQuickOpenOpen(false);
+                        void openFileInEditor(selected);
+                      }
+                    }
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setIsQuickOpenOpen(false);
+                  }
+                }}
+                placeholder="Search files by name or path (Cmd+P / Ctrl+P)…"
+                className="w-full bg-transparent text-[13px] text-primary placeholder:text-muted focus:outline-none"
+              />
+              <div className="flex items-center gap-1 text-[11px] text-faint shrink-0">
+                <kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5 font-mono">Esc</kbd>
+                <span>to close</span>
+              </div>
+            </div>
+
+            <div
+              data-debug-id="project-quick-open-results"
+              className="max-h-80 overflow-y-auto divide-y divide-subtle/40"
+            >
+              {filteredQuickOpenFiles.length === 0 ? (
+                <div className="p-6 text-center text-xs text-muted">
+                  {quickOpenState.isLoading ? 'Searching project files…' : 'No matching files found.'}
+                </div>
+              ) : (
+                filteredQuickOpenFiles.map((file, idx) => {
+                  const isSelected = idx === quickOpenSelectedIndex;
+                  const name = baseName(file);
+                  const dir = parentPath(file);
+                  return (
+                    <div
+                      key={file}
+                      data-debug-id={`quick-open-item-${file}`}
+                      data-selected={isSelected ? 'true' : 'false'}
+                      onClick={() => {
+                        setIsQuickOpenOpen(false);
+                        void openFileInEditor(file);
+                      }}
+                      onMouseEnter={() => setQuickOpenSelectedIndex(idx)}
+                      className={`flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors text-[13px] ${
+                        isSelected ? 'bg-accent/15 text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                      }`}
+                    >
+                      <Icon name="file" size={14} className={isSelected ? 'text-accent' : 'text-muted'} />
+                      <span className="font-medium text-primary">{name}</span>
+                      {dir ? <span className="font-mono text-[11px] text-faint truncate ml-auto">{dir}</span> : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-subtle bg-surface-raised px-3 py-1.5 text-[11px] text-muted">
+              <span>{filteredQuickOpenFiles.length} file{filteredQuickOpenFiles.length === 1 ? '' : 's'}</span>
+              <div className="flex items-center gap-2">
+                <span><kbd className="rounded border border-subtle bg-neutral-soft px-1 py-0.5 font-mono">↑↓</kbd> navigate</span>
+                <span><kbd className="rounded border border-subtle bg-neutral-soft px-1 py-0.5 font-mono">Enter</kbd> open</span>
+              </div>
             </div>
           </div>
         </div>
@@ -1440,6 +1626,14 @@ function MonacoMultiFileEditor({
 
   const [isPromptingNewFile, setIsPromptingNewFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
+  const [isDiffMode, setIsDiffMode] = useState(false);
+  const diffListenerRef = useRef<{ dispose: () => void } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      diffListenerRef.current?.dispose();
+    };
+  }, []);
 
   const onSaveActiveRef = useRef(onSaveActive);
   const onSaveAllRef = useRef(onSaveAll);
@@ -1460,6 +1654,16 @@ function MonacoMultiFileEditor({
         onSaveAllRef.current();
       }
     );
+  };
+
+  const handleDiffMount: DiffOnMount = (diffEditor, monaco) => {
+    handleEditorMount(diffEditor.getModifiedEditor(), monaco);
+    diffListenerRef.current?.dispose();
+    const modifiedModel = diffEditor.getModifiedEditor().getModel();
+    diffListenerRef.current = modifiedModel?.onDidChangeContent(() => {
+      const val = diffEditor.getModifiedEditor().getValue();
+      onContentChange(activeTab.path, val);
+    }) ?? null;
   };
 
   const options: EditorProps['options'] = {
@@ -1700,6 +1904,26 @@ function MonacoMultiFileEditor({
             <Icon name="plus" size={12} />
           </button>
         )}
+
+        {/* In-editor Diff / Changes toggle button (REQ-UI-IN-EDITOR-DIFF) */}
+        <div className="ml-auto flex items-center shrink-0 pr-1">
+          <button
+            data-debug-id="editor-toggle-diff-btn"
+            type="button"
+            onClick={() => setIsDiffMode((prev) => !prev)}
+            aria-pressed={isDiffMode ? 'true' : 'false'}
+            disabled={activeTab.isImage || activeTab.isUnviewable}
+            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors disabled:opacity-40 ${
+              isDiffMode
+                ? 'border border-accent bg-accent/20 text-accent font-semibold shadow-xs'
+                : 'border border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
+            }`}
+            title={isDiffMode ? 'Return to Standard Editor' : 'Compare against original buffer / Git HEAD'}
+          >
+            <span className="font-mono font-bold text-xs leading-none">±</span>
+            <span>Diff / Changes</span>
+          </button>
+        </div>
       </div>
 
       {/* File-level & line comments for active tab */}
@@ -1718,7 +1942,7 @@ function MonacoMultiFileEditor({
         </div>
       ) : null}
 
-      {/* Monaco Editor Canvas or Image / Unviewable Preview */}
+      {/* Monaco Editor Canvas or Image / Unviewable Preview or DiffEditor */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {activeTab.isImage ? (
           <div
@@ -1735,10 +1959,42 @@ function MonacoMultiFileEditor({
         ) : activeTab.isUnviewable ? (
           <div
             data-debug-id={`${debugPrefix}-file-unviewable`}
-            className="grid h-full place-items-center p-6 text-center text-xs text-muted"
+            className="flex h-full flex-col items-center justify-center p-6 text-center text-xs text-muted gap-2"
           >
-            {activeTab.unviewableReason || 'This file cannot be previewed or edited.'}
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-warning/40 bg-warning/10 px-3 py-1 text-warning font-medium">
+              <Icon name="alert" size={14} />
+              <span>{activeTab.unviewableReason || 'This file cannot be previewed or edited.'}</span>
+            </div>
+            <p className="text-faint max-w-sm">Files larger than 5MB or with binary encodings are restricted from Monaco tokenization for safety and performance.</p>
           </div>
+        ) : isDiffMode ? (
+          <DiffEditor
+            original={activeTab.initialContent}
+            modified={activeTab.content}
+            language={language}
+            theme={monacoTheme}
+            options={{
+              minimap: { enabled: true },
+              wordWrap: 'on',
+              lineNumbers: 'on',
+              scrollBeyondLastLine: false,
+              automaticLayout: true,
+              fontSize: 13,
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+              tabSize: 2,
+              renderWhitespace: 'selection',
+              smoothScrolling: true,
+              readOnly: false,
+              originalEditable: false,
+            }}
+            onMount={handleDiffMount}
+            loading={
+              <div className="p-4 text-center text-xs text-muted">
+                Loading diff editor…
+              </div>
+            }
+          />
         ) : (
           <Editor
             path={activeTab.path}
