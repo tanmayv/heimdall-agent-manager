@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Static verification for multi-file Monaco Code Editor with dirty state tracking,
-tabs, single/batch save, and collapsible split-pane layout alongside directory explorer
-(REQ-UI-MONACO-EDITOR, REQ-UI-MULTI-FILE-TABS, REQ-UI-BATCH-SAVE-ACTION, REQ-UI-REMOVE-FILEVIEW,
-REQ-UI-DIRECT-MONACO-OPEN, REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE).
+"""Static verification for multi-file Monaco Code Editor, unified 34px top icon bar,
+compact narrow-view explorer, fixed quick-open root path resolution, global Cmd+P,
+and sidebar maximize/minimize toggle
+(REQ-UI-UNIFIED-ICON-BAR, REQ-UI-COMPACT-TREE, REQ-FIX-QUICK-OPEN-CWD-PATH,
+ REQ-UI-GLOBAL-CMDP-EVERYWHERE, REQ-UI-SIDEBAR-MAXIMIZE-TOGGLE,
+ REQ-UI-MONACO-EDITOR, REQ-UI-MULTI-FILE-TABS, REQ-UI-BATCH-SAVE-ACTION,
+ REQ-UI-REMOVE-FILEVIEW, REQ-UI-DIRECT-MONACO-OPEN, REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE).
 """
 
 from pathlib import Path
@@ -11,6 +14,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_FS_FILE = ROOT / "src" / "ui" / "api" / "endpoints" / "projectFs.ts"
 PANEL_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ProjectFilesPanel.tsx"
+THREAD_PAGE_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ConversationThreadPage.tsx"
+ICON_FILE = ROOT / "src" / "ui" / "components" / "ui" / "primitives" / "Icon.tsx"
 
 
 def require(condition: bool, message: str) -> None:
@@ -83,61 +88,102 @@ def main() -> None:
     require("tab-close-btn" in panel_src, "Must have close tab button")
     require("close-confirm-modal" in panel_src, "Must provide confirmation modal when closing dirty tab")
 
-    # In-editor Diff / Changes toggle button (REQ-UI-IN-EDITOR-DIFF)
-    require("editor-toggle-diff-btn" in panel_src, "Must render in-editor Diff / Changes toggle button (editor-toggle-diff-btn)")
-    require("isDiffMode" in panel_src, "Must track isDiffMode state for in-editor diff view")
+    # REQ-UI-UNIFIED-ICON-BAR: Single unified 34px top icon bar
+    require("unified-top-bar" in panel_src, "Must render single unified 34px top icon bar (unified-top-bar)")
+    require("h-[34px]" in panel_src or "min-h-[34px]" in panel_src, "Unified top bar must be exactly 34px tall")
+    require("explorer-toggle-btn" in panel_src, "Top bar must include explorer toggle button")
+    require("quick-open-btn" in panel_src, "Top bar must include Quick Open button")
+    require("new-file-btn" in panel_src, "Top bar must include New File button")
+    require("new-dir-btn" in panel_src, "Top bar must include New Folder button")
+    require("hidden-toggle" in panel_src, "Top bar must include Toggle Hidden button")
+    require("refresh-btn" in panel_src, "Top bar must include Refresh button")
+    require("breadcrumb" in panel_src, "Top bar must include active file path / breadcrumb")
+    require("editor-toggle-diff-btn" in panel_src, "Top bar must render in-editor Diff toggle button (editor-toggle-diff-btn)")
+    require("editor-save-btn" in panel_src, "Top bar must render prominent Save button (editor-save-btn)")
+    require("editor-save-all-btn" in panel_src, "Top bar must render prominent Save All button (editor-save-all-btn)")
+    require("save-toast" in panel_src, "Top bar must display transient feedback toast on save")
 
-    # Removal of top-level subtabs bar
-    require("-subtabs" not in panel_src and "-tab-changes" not in panel_src and "-tab-files" not in panel_src,
-            "Separate Files / Changes top-level subtabs bar must be removed from ProjectFilesPanel")
+    # Redundant toolbar buttons removed from explorer pane and editor header
+    require("editor-back-files-btn" not in panel_src, "Redundant editor-back-files-btn must be removed from editor header")
+    require("editor-new-file-btn" not in panel_src, "Redundant editor-new-file-btn must be removed from editor header")
 
-    # Quick Open Modal & Shortcuts (REQ-UI-GLOBAL-QUICK-OPEN)
+    # REQ-UI-COMPACT-TREE: Compact explorer tree styling
+    require("h-7 py-0.5 px-2 text-[12px]" in panel_src, "Explorer rows must use compact h-7 py-0.5 px-2 text-[12px] styling")
+    require("parent-dir" in panel_src or ".. (parent folder)" in panel_src, "Must render compact .. (parent folder) row when cwd !== ''")
+    require("isNarrowExplorer" in panel_src, "Must track isNarrowExplorer state (<320px)")
+    require("formatBytes(e.size)" in panel_src, "Must format file bytes for explorer display")
+    require("!isNarrowExplorer && !e.is_dir" in panel_src or "!isNarrowExplorer &&" in panel_src,
+            "Narrow explorer must suppress size and modified date columns")
+
+    # REQ-FIX-QUICK-OPEN-CWD-PATH: Root-relative path resolution
+    require("const filePath = inputPath;" in panel_src, "openFileInEditor must use inputPath directly without flawed cwd prepending")
+
+    # Quick Open Modal & Shortcuts
+    require("ProjectQuickOpenModal" in panel_src, "Must export ProjectQuickOpenModal component")
     require("project-quick-open-modal" in panel_src, "Must render project-quick-open-modal")
     require("project-quick-open-input" in panel_src, "Must render project-quick-open-input")
     require("project-quick-open-results" in panel_src, "Must render project-quick-open-results")
-    require("key === 'p'" in panel_src or "key === 'P'" in panel_src or "KeyP" in panel_src,
-            "Must wire Cmd+P / Ctrl+P global shortcut for Quick Open")
     require("subsequenceFuzzyMatch" in panel_src, "Must implement subsequenceFuzzyMatch for Quick Open")
 
-    # Keyboard shortcuts & Save buttons
+    # Keyboard shortcuts & Save handlers
     require("onSaveActive" in panel_src or "saveActiveFile" in panel_src, "Must implement saveActiveFile handler")
     require("onSaveAll" in panel_src or "saveAllFiles" in panel_src, "Must implement saveAllFiles handler")
-    require("editor-save-btn" in panel_src, "Must render prominent Save button")
-    require("editor-save-all-btn" in panel_src, "Must render prominent Save All button")
-    require("save-toast" in panel_src, "Must display transient feedback toast on save")
     require("KeyS" in panel_src or "key === 's'" in panel_src, "Must wire Cmd+S / Ctrl+S and Cmd+Shift+S / Ctrl+Shift+S")
 
-    # Direct open and navigation (REQ-UI-REMOVE-FILEVIEW, REQ-UI-DIRECT-MONACO-OPEN)
-    require("editor-back-files-btn" in panel_src, "MonacoMultiFileEditor must provide back button to return to directory browser")
+    # Direct open and navigation
     require("toolbar-editor-btn" in panel_src, "Directory toolbar must offer quick return to open editor tabs")
     require("openFileInEditor(joinPath" in panel_src or "openFileInEditor(" in panel_src, "Clicking files must call openFileInEditor directly")
     require("<FileView" not in panel_src and "function FileView" not in panel_src, "Legacy FileView component must be removed from ProjectFilesPanel.tsx")
 
-    # New file creation support
-    require("editor-new-file-btn" in panel_src, "Editor header must offer New File action")
+    # Editor Tab Strip new file support
     require("new-tab-btn" in panel_src, "Editor tab strip must offer + New Tab button")
     require("new-file-inline-prompt" in panel_src, "Must offer inline prompt for new file name")
     require("new-file-input" in panel_src, "Must provide input field for new file name")
     require("new-file-confirm-btn" in panel_src, "Must provide confirm button for new file creation")
-    require("handleEditorNewFile" in panel_src, "Must implement handleEditorNewFile callback")
-    require("isNew" in panel_src, "Must track isNew flag for newly created tabs")
-    require("openFileInEditor(targetPath)" in panel_src, "Directory browser new file creation must open directly in editor")
 
     # Preservation of read-only comment gutter
     require("CodeLines" in panel_src, "Must preserve existing CodeLines component")
     require("LineComment" in panel_src, "Must preserve LineComment component")
     require("LineComposer" in panel_src, "Must preserve LineComposer component")
 
-    # Split-pane IDE layout alongside Monaco Editor (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE)
+    # Split-pane IDE layout alongside Monaco Editor
     require("split-container" in panel_src, "ProjectFilesPanel must implement a split container layout")
     require("explorer-pane" in panel_src, "Split container must include left-side directory explorer pane")
     require("editor-pane" in panel_src, "Split container must include right-side editor pane")
     require("isExplorerCollapsed" in panel_src and "setIsExplorerCollapsed" in panel_src, "Must maintain isExplorerCollapsed state")
-    require("explorer-toggle-btn" in panel_src or "explorer-toggle" in panel_src, "Must provide explorer collapse/expand toggle button")
     require("editor-empty-state" in panel_src, "Must provide empty editor state when no tabs are open")
     require("Select a file from the explorer to view or edit, or press + to create a new file" in panel_src, "Must display clean empty state prompt when openTabs is empty")
     require("explorerWidth" in panel_src, "Must maintain explorer width (default ~260-280px / resizable)")
-    print("  [+] ProjectFilesPanel.tsx editor features and split-pane layout verified successfully.")
+    print("  [+] ProjectFilesPanel.tsx features verified successfully.")
+
+    print("[*] 3. Checking src/ui/components/chat/ConversationThreadPage.tsx...")
+    require(THREAD_PAGE_FILE.exists(), "ConversationThreadPage.tsx must exist")
+    thread_src = THREAD_PAGE_FILE.read_text(encoding="utf-8")
+
+    # REQ-UI-GLOBAL-CMDP-EVERYWHERE: Global Cmd+P listener and quick open integration
+    require("ProjectQuickOpenModal" in thread_src, "Must import and render ProjectQuickOpenModal in ConversationThreadPage")
+    require("isQuickOpenOpen" in thread_src, "Must maintain isQuickOpenOpen state in ConversationThreadPage")
+    require("editorFileToOpen" in thread_src, "Must maintain editorFileToOpen state for cross-panel file opening")
+    require("key === 'p'" in thread_src or "key === 'P'" in thread_src, "Must wire window keydown listener for Cmd+P / Ctrl+P")
+    require("selectRightPanelTab('files')" in thread_src, "Selecting a file from global Quick Open must switch to files tab")
+
+    # REQ-UI-SIDEBAR-MAXIMIZE-TOGGLE: Right sidebar maximize/minimize toggle
+    require("isRightPanelMaximized" in thread_src, "Must maintain isRightPanelMaximized state")
+    require("conversation-right-panel-maximize-btn" in thread_src, "Must render conversation-right-panel-maximize-btn")
+    require("conversation-right-panel-close-btn" in thread_src, "Must render conversation-right-panel-close-btn")
+    require("isRightPanelMaximized && panelOpen ? 'hidden' :" in thread_src or "isRightPanelMaximized ? 'hidden' :" in thread_src,
+            "Must hide conversation chat column when sidebar is maximized")
+    require("!isRightPanelMaximized" in thread_src, "Must hide resizer divider when sidebar is maximized")
+    require("w-full flex-1 max-w-full min-w-0" in thread_src, "Must expand right panel container to full width when maximized")
+    require("setIsRightPanelMaximized(false)" in thread_src, "Must reset isRightPanelMaximized on panel close")
+    print("  [+] ConversationThreadPage.tsx features verified successfully.")
+
+    print("[*] 4. Checking src/ui/components/ui/primitives/Icon.tsx...")
+    require(ICON_FILE.exists(), "Icon.tsx must exist")
+    icon_src = ICON_FILE.read_text(encoding="utf-8")
+    require("'maximize'" in icon_src and "'minimize'" in icon_src, "Must define maximize and minimize icons in Icon.tsx")
+    require("'eye'" in icon_src and "'eye-off'" in icon_src, "Must define eye and eye-off icons in Icon.tsx")
+    print("  [+] Icon.tsx primitives verified successfully.")
 
     print("\n[SUCCESS] All static verification checks passed cleanly!")
 
