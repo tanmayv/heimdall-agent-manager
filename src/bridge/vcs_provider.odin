@@ -14,7 +14,7 @@ package main
 // same command_id-cached, bridge_hub_send envelope as the fs_* commands.
 //
 // A provider is a proc-table struct; the registry is an ordered list and the first
-// adapter whose detect() returns true for a path wins (git before jj).
+// adapter whose detect() returns true for a path wins (fig before git before jj).
 
 import "core:os"
 import "core:strings"
@@ -59,6 +59,23 @@ VCS_Capabilities :: struct {
 	supports_staging: bool,
 }
 
+VCS_Diff_Target :: struct {
+	id:          string,
+	label:       string,
+	description: string,
+	is_default:  bool,
+}
+
+VCS_Log_Entry :: struct {
+	revision:   string,
+	cl_number:  string,
+	title:      string,
+	author:     string,
+	timestamp:  string,
+	is_current: bool,
+	status:     string,
+}
+
 // --- provider interface (proc-table struct) ------------------------------
 
 VCS_Provider :: struct {
@@ -66,9 +83,16 @@ VCS_Provider :: struct {
 	detect:        proc(path: string) -> bool,
 	status:        proc(path: string) -> (VCS_Status, bool),
 	// returns (files, next_cursor, has_more, ok)
-	changed_files: proc(path, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool),
+	changed_files: proc(path, target, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool),
 	// returns (hunks, next_cursor, has_more, ok)
-	diff_file:     proc(path, file, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool),
+	diff_file:     proc(path, file, target, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool),
+	diff_targets:  proc(path: string) -> ([]VCS_Diff_Target, bool),
+	log:           proc(path: string, limit: int) -> ([]VCS_Log_Entry, bool),
+	file_content:  proc(path, file, target: string) -> (string, bool),
+	add_file:      proc(path, file: string) -> bool,
+	revert_file:   proc(path, file: string) -> bool,
+	revert_all:    proc(path: string) -> bool,
+	commit:        proc(path, message: string, amend: bool) -> (string, bool),
 	capabilities:  proc(path: string) -> VCS_Capabilities,
 }
 
@@ -83,11 +107,11 @@ vcs_init :: proc() {}
 
 // vcs_detect_provider returns the first provider that detects a VCS at `path`.
 // ok=false means no known VCS is present (or path is empty). The provider list is
-// always built as a stack-local array (git before jj), so the detector touches no
+// always built as a stack-local array (fig before git before jj), so the detector touches no
 // shared global and is safe to call from multiple threads without any prior init.
 vcs_detect_provider :: proc(path: string) -> (VCS_Provider, bool) {
 	if path == "" do return VCS_Provider{}, false
-	local := [2]VCS_Provider{vcs_git_provider(), vcs_jj_provider()}
+	local := [3]VCS_Provider{vcs_fig_provider(), vcs_git_provider(), vcs_jj_provider()}
 	providers := local[:]
 	for p in providers {
 		if p.detect != nil && p.detect(path) do return p, true
@@ -257,3 +281,50 @@ vcs_atoi :: proc(s: string) -> int {
 	}
 	return n
 }
+
+// vcs_synthetic_diff_added builds hunks for a newly added file against /dev/null (+ lines)
+vcs_synthetic_diff_added :: proc(content: string) -> []VCS_Diff_Hunk {
+	lines := strings.split_lines(content, context.temp_allocator)
+	if len(lines) > 0 && len(lines[len(lines) - 1]) == 0 {
+		lines = lines[:len(lines) - 1]
+	}
+	if len(lines) == 0 do return nil
+	diff_lines := make([]VCS_Diff_Line, len(lines), context.allocator)
+	for line, i in lines {
+		diff_lines[i] = VCS_Diff_Line{op = "+", text = strings.clone(line)}
+	}
+	hunk := VCS_Diff_Hunk{
+		old_start = 0,
+		old_len   = 0,
+		new_start = 1,
+		new_len   = len(lines),
+		lines     = diff_lines,
+	}
+	hunks := make([]VCS_Diff_Hunk, 1, context.allocator)
+	hunks[0] = hunk
+	return hunks
+}
+
+// vcs_synthetic_diff_deleted builds hunks for a deleted file against /dev/null (- lines)
+vcs_synthetic_diff_deleted :: proc(content: string) -> []VCS_Diff_Hunk {
+	lines := strings.split_lines(content, context.temp_allocator)
+	if len(lines) > 0 && len(lines[len(lines) - 1]) == 0 {
+		lines = lines[:len(lines) - 1]
+	}
+	if len(lines) == 0 do return nil
+	diff_lines := make([]VCS_Diff_Line, len(lines), context.allocator)
+	for line, i in lines {
+		diff_lines[i] = VCS_Diff_Line{op = "-", text = strings.clone(line)}
+	}
+	hunk := VCS_Diff_Hunk{
+		old_start = 1,
+		old_len   = len(lines),
+		new_start = 0,
+		new_len   = 0,
+		lines     = diff_lines,
+	}
+	hunks := make([]VCS_Diff_Hunk, 1, context.allocator)
+	hunks[0] = hunk
+	return hunks
+}
+

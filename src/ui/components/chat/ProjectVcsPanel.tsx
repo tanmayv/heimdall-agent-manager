@@ -1,19 +1,11 @@
 // ProjectVcsPanel — the "Changes" sub-tab peer to the file tree inside the Files
-// panel (VCS Integration — REQ-VCS-8/9, REQ-UI-1/2, REQ-STAT-1/2).
+// panel (VCS Integration — REQ-VCS-8/9, REQ-UI-1/2, REQ-STAT-1/2, REQ-VCS-DIFF-TARGETS, REQ-VCS-FILE-ACTIONS).
 //
 // GitHub-style single scrolling column: each changed file is a row (chevron +
-// status badge + path + +N/-N add/del counts + staged badge) whose unified diff
+// status badge + path + +N/-N add/del counts + staged badge + actions) whose unified diff
 // is rendered inline directly beneath it, expanded by default and collapsible by
-// clicking the header. There is no separate diff pane and no manual "Load more"
-// button — an IntersectionObserver pages the file list and each file's diff hunks
-// as their sentinels scroll into view. The layout is a single column at every
-// viewport width (the isMobile prop is retained for signature compatibility but no
-// longer drives layout).
-//
-// On mount it detects the VCS provider (getVcsCapabilities); when none is present
-// it shows "No VCS detected". Otherwise it loads the first page of changed files
-// (limit 100) and eagerly pre-loads each file's first diff page so diffs are
-// visible without interaction.
+// clicking the header. Supports diff target selection (HEAD, cached, p4base, etc.),
+// diff viewing for added and deleted files, and per-file stage/add and revert actions.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -21,12 +13,15 @@ import {
   useLazyGetVcsCapabilitiesQuery,
   useLazyListVcsFilesQuery,
   useLazyGetVcsDiffQuery,
+  useGetVcsTargetsQuery,
+  useExecuteVcsActionMutation,
   type VcsChangedFile,
   type VcsDiffHunk,
   type VcsFileStatus,
   type VcsFilesResult,
   type VcsDiffResult,
 } from '../../api/endpoints/projectVcs';
+import { Select } from '@ui';
 import MonacoDiffViewer from './MonacoDiffViewer';
 
 function str(v: any): string {
@@ -99,9 +94,27 @@ export default function ProjectVcsPanel({
   const [getCapabilities] = useLazyGetVcsCapabilitiesQuery();
   const [listFiles] = useLazyListVcsFilesQuery();
   const [getDiff] = useLazyGetVcsDiffQuery();
+  const { data: targetsData } = useGetVcsTargetsQuery({ projectId, bridgeId }, { skip: !projectId });
+  const [executeAction, { isLoading: isActionLoading }] = useExecuteVcsActionMutation();
 
-  // Capabilities: null = loading, then { provider } once resolved.
-  const [caps, setCaps] = useState<{ provider: string } | null>(null);
+  const targets = targetsData?.targets || [];
+  const [selectedTarget, setSelectedTarget] = useState<string>('');
+  const [confirmRevertFile, setConfirmRevertFile] = useState<string | null>(null);
+
+  // Sync default target if available
+  useEffect(() => {
+    if (targets.length > 0 && !selectedTarget) {
+      const defaultTarget = targets.find((t) => t.is_default);
+      if (defaultTarget) {
+        setSelectedTarget(defaultTarget.id);
+      } else if (targets[0]) {
+        setSelectedTarget(targets[0].id);
+      }
+    }
+  }, [targets, selectedTarget]);
+
+  // Capabilities: null = loading, then { provider, supports_staging } once resolved.
+  const [caps, setCaps] = useState<{ provider: string; supports_staging?: boolean } | null>(null);
   const [capsLoading, setCapsLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -127,11 +140,12 @@ export default function ProjectVcsPanel({
   // loadDiff (re)loads the first page of a file's diff, preserving its collapsed
   // flag across a refresh.
   const loadDiff = useCallback(
-    async (file: string) => {
+    async (file: string, target?: string) => {
       if (!projectId || !file) return;
+      const effTarget = target !== undefined ? target : selectedTarget;
       setFileStates((prev) => ({ ...prev, [file]: { ...(prev[file] ?? newFileState()), loading: true, error: '' } }));
       try {
-        const res: VcsDiffResult = await getDiff({ projectId, bridgeId, file, cursor: null }).unwrap();
+        const res: VcsDiffResult = await getDiff({ projectId, bridgeId, file, target: effTarget, cursor: null }).unwrap();
         if (!res.ok) {
           setFileStates((prev) => ({
             ...prev,
@@ -150,18 +164,19 @@ export default function ProjectVcsPanel({
         }));
       }
     },
-    [projectId, bridgeId, getDiff],
+    [projectId, bridgeId, getDiff, selectedTarget],
   );
 
   // loadMoreDiff appends the next diff page for a file (driven by its sentinel).
   const loadMoreDiff = useCallback(
-    async (file: string) => {
+    async (file: string, target?: string) => {
       if (!projectId || !file) return;
+      const effTarget = target !== undefined ? target : selectedTarget;
       const cur = fileStatesRef.current[file];
       if (!cur || cur.loadingMore || !cur.hasMore) return;
       setFileStates((prev) => ({ ...prev, [file]: { ...(prev[file] ?? newFileState()), loadingMore: true } }));
       try {
-        const res: VcsDiffResult = await getDiff({ projectId, bridgeId, file, cursor: cur.cursor ?? null }).unwrap();
+        const res: VcsDiffResult = await getDiff({ projectId, bridgeId, file, target: effTarget, cursor: cur.cursor ?? null }).unwrap();
         if (!res.ok) {
           setFileStates((prev) => ({ ...prev, [file]: { ...(prev[file] ?? newFileState()), loadingMore: false, error: str(res.error?.message) || 'Could not read diff' } }));
           return;
@@ -177,7 +192,7 @@ export default function ProjectVcsPanel({
         setFileStates((prev) => ({ ...prev, [file]: { ...(prev[file] ?? newFileState()), loadingMore: false, error: str(e?.error || e?.message) || 'Could not read diff' } }));
       }
     },
-    [projectId, bridgeId, getDiff],
+    [projectId, bridgeId, getDiff, selectedTarget],
   );
 
   const toggleCollapse = useCallback((path: string) => {
@@ -187,9 +202,10 @@ export default function ProjectVcsPanel({
   // ---- Changed files --------------------------------------------------------
 
   const loadFiles = useCallback(
-    async (opts?: { cursor?: string | null; append?: boolean }) => {
+    async (opts?: { cursor?: string | null; append?: boolean; target?: string }) => {
       if (!projectId) return;
       const append = Boolean(opts?.append);
+      const effTarget = opts?.target !== undefined ? opts.target : selectedTarget;
       setError('');
       if (append) setFilesLoadingMore(true);
       else setFilesLoading(true);
@@ -197,6 +213,7 @@ export default function ProjectVcsPanel({
         const res: VcsFilesResult = await listFiles({
           projectId,
           bridgeId,
+          target: effTarget,
           cursor: opts?.cursor ?? null,
           limit: FILES_LIMIT,
         }).unwrap();
@@ -216,7 +233,7 @@ export default function ProjectVcsPanel({
         // files don't linger. Pre-load each incoming file's first diff page so it
         // renders inline immediately.
         if (!append) setFileStates({});
-        for (const f of incoming) void loadDiff(f.path);
+        for (const f of incoming) void loadDiff(f.path, effTarget);
       } catch (e: any) {
         setError(str(e?.error || e?.message) || 'Bridge unavailable');
         if (!append) {
@@ -228,8 +245,13 @@ export default function ProjectVcsPanel({
         else setFilesLoading(false);
       }
     },
-    [projectId, bridgeId, listFiles, loadDiff],
+    [projectId, bridgeId, listFiles, loadDiff, selectedTarget],
   );
+
+  const handleTargetChange = (newTarget: string) => {
+    setSelectedTarget(newTarget);
+    void loadFiles({ target: newTarget, append: false });
+  };
 
   // ---- IntersectionObserver wiring ------------------------------------------
 
@@ -304,7 +326,7 @@ export default function ProjectVcsPanel({
           setCaps({ provider: '' });
           return;
         }
-        setCaps({ provider: res.provider });
+        setCaps({ provider: res.provider, supports_staging: res.supports_staging });
         void loadFiles();
       } catch (e: any) {
         if (!cancelled) setError(str(e?.error || e?.message) || 'Could not detect VCS');
@@ -354,16 +376,35 @@ export default function ProjectVcsPanel({
 
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
-      {/* Top toolbar with side-by-side vs unified diff toggle */}
-      <div data-debug-id={`${debugPrefix}-toolbar`} className="flex shrink-0 items-center justify-between border-b border-subtle bg-surface px-3 py-1.5 text-caption">
-        <span className="font-medium text-muted">
-          {files.length} changed {files.length === 1 ? 'file' : 'files'}
-        </span>
+      {/* Top toolbar with target dropdown and side-by-side vs unified diff toggle */}
+      <div data-debug-id={`${debugPrefix}-toolbar`} className="flex shrink-0 items-center justify-between border-b border-subtle bg-surface px-3 py-1.5 text-caption gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-medium text-muted shrink-0">
+            {files.length} changed {files.length === 1 ? 'file' : 'files'}
+          </span>
+          {targets.length > 0 ? (
+            <div className="flex items-center gap-1 min-w-0">
+              <span className="text-[11px] text-faint shrink-0">Diff:</span>
+              <Select
+                data-debug-id={`${debugPrefix}-target-select`}
+                value={selectedTarget}
+                onChange={(val) => handleTargetChange(val)}
+                size="sm"
+              >
+                {targets.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.label}{t.is_default ? ' (default)' : ''}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          ) : null}
+        </div>
         <button
           type="button"
           data-debug-id={`${debugPrefix}-diff-mode-toggle`}
           onClick={() => setSideBySide((prev) => !prev)}
-          className={`rounded border px-2 py-0.5 text-caption font-medium transition-colors ${
+          className={`rounded border px-2 py-0.5 text-caption font-medium transition-colors shrink-0 ${
             sideBySide
               ? 'border-accent bg-accent/20 text-accent'
               : 'border-subtle bg-neutral-soft text-muted hover:text-primary'
@@ -389,11 +430,10 @@ export default function ProjectVcsPanel({
             return (
               <div key={`${f.path}:${f.staged ? 's' : 'u'}`} data-debug-id={`${debugPrefix}-file-${f.path}`} className="border-b border-subtle">
                 {/* File header — click to collapse/expand its diff. */}
-                <button
+                <div
                   data-debug-id={`${debugPrefix}-file-header-${f.path}`}
-                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-soft cursor-pointer select-none"
                   onClick={() => toggleCollapse(f.path)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-soft"
                 >
                   <ChevronIcon collapsed={fs.collapsed} />
                   <span className={`grid h-4 w-4 shrink-0 place-items-center rounded text-[9px] font-bold ${badge.cls}`} title={f.status}>
@@ -409,7 +449,80 @@ export default function ProjectVcsPanel({
                   {f.staged ? (
                     <span className="shrink-0 rounded bg-success-soft px-1 py-0.5 text-[8px] font-bold text-success" title="Staged">staged</span>
                   ) : null}
-                </button>
+
+                  {/* Actions: Add / Stage and Revert / Discard */}
+                  <div className="ml-2 flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      data-debug-id={`${debugPrefix}-action-add-${f.path}`}
+                      title={f.staged ? 'Already staged' : 'Stage / Add file'}
+                      disabled={isActionLoading || f.staged}
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          await executeAction({ projectId, bridgeId, action: 'add', file: f.path }).unwrap();
+                          void loadFiles();
+                        } catch (err: any) {
+                          setError(str(err?.message || err) || 'Failed to add file');
+                        }
+                      }}
+                      className="rounded border border-subtle bg-surface-raised px-1.5 py-0.5 text-[10.5px] font-medium text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40"
+                    >
+                      Add
+                    </button>
+
+                    {confirmRevertFile === f.path ? (
+                      <span className="flex items-center gap-1">
+                        <span className="text-[10px] text-danger font-medium">Discard?</span>
+                        <button
+                          type="button"
+                          data-debug-id={`${debugPrefix}-action-revert-confirm-${f.path}`}
+                          title="Confirm revert"
+                          disabled={isActionLoading}
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setConfirmRevertFile(null);
+                            try {
+                              await executeAction({ projectId, bridgeId, action: 'revert', file: f.path }).unwrap();
+                              void loadFiles();
+                            } catch (err: any) {
+                              setError(str(err?.message || err) || 'Failed to revert file');
+                            }
+                          }}
+                          className="rounded bg-danger px-1.5 py-0.5 text-[10px] font-semibold text-white hover:opacity-90"
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          data-debug-id={`${debugPrefix}-action-revert-cancel-${f.path}`}
+                          title="Cancel revert"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmRevertFile(null);
+                          }}
+                          className="rounded px-1 py-0.5 text-[10px] text-muted hover:text-primary"
+                        >
+                          No
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        data-debug-id={`${debugPrefix}-action-revert-${f.path}`}
+                        title="Revert / Discard changes"
+                        disabled={isActionLoading}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmRevertFile(f.path);
+                        }}
+                        className="rounded border border-subtle bg-surface-raised px-1.5 py-0.5 text-[10.5px] font-medium text-muted hover:bg-danger/10 hover:text-danger hover:border-danger/30 transition-colors disabled:opacity-40"
+                      >
+                        Revert
+                      </button>
+                    )}
+                  </div>
+                </div>
 
                 {/* Inline diff — hidden when collapsed. */}
                 {!fs.collapsed ? (
@@ -424,7 +537,7 @@ export default function ProjectVcsPanel({
                     ) : fs.hunks.length === 0 ? (
                       <div data-debug-id={`${debugPrefix}-diff-no-hunks-${f.path}`} className="p-3 text-center text-xs text-muted">No diff to show.</div>
                     ) : (
-                      <MonacoDiffViewer hunks={fs.hunks} filePath={f.path} sideBySide={sideBySide} />
+                      <MonacoDiffViewer hunks={fs.hunks} filePath={f.path} status={f.status} sideBySide={sideBySide} />
                     )}
 
                     {/* Per-file diff infinite-scroll sentinel. */}

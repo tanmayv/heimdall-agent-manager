@@ -1,19 +1,25 @@
-// Project-scoped VCS endpoints (VCS Integration feature — REQ-VCS-8/9).
+// Project-scoped VCS endpoints (VCS Integration feature — REQ-VCS-8/9, REQ-VCS-DIFF-TARGETS, REQ-VCS-FILE-CONTENT-API, REQ-VCS-STATUS-AND-LOG-INDICATORS, REQ-VCS-FILE-ACTIONS).
 //
 // Project-scoped Hub wrappers that resolve (project_id -> bridge_id, root_path)
-// server-side and relay a read-only vcs_* WS command to the owning bridge, mirroring
-// projectFs.ts. All four backing commands are read-only; the UI uses three of them:
+// server-side and relay a vcs_* WS command to the owning bridge, mirroring
+// projectFs.ts. Backing commands:
 //
-//   GET /api/v1/projects/{projectId}/vcs/capabilities  -> vcs_capabilities
-//   GET /api/v1/projects/{projectId}/vcs/files          -> vcs_files (?cursor=&limit=)
-//   GET /api/v1/projects/{projectId}/vcs/diff           -> vcs_diff  (?file=&cursor=&limit=)
+//   GET /api/v1/projects/{projectId}/vcs/capabilities   -> vcs_capabilities
+//   GET /api/v1/projects/{projectId}/vcs/targets        -> vcs_targets
+//   GET /api/v1/projects/{projectId}/vcs/log            -> vcs_log (?limit=)
+//   GET /api/v1/projects/{projectId}/vcs/files          -> vcs_files (?target=&cursor=&limit=)
+//   GET /api/v1/projects/{projectId}/vcs/diff           -> vcs_diff  (?file=&target=&cursor=&limit=)
+//   GET /api/v1/projects/{projectId}/vcs/file-content   -> vcs_file_content (?file=&target=)
+//   GET /api/v1/projects/{projectId}/vcs/status         -> vcs_status
+//   POST /api/v1/projects/{projectId}/vcs/action        -> vcs_action (body: { action, file })
+//   POST /api/v1/projects/{projectId}/vcs/commit        -> vcs_commit (body: { message, amend })
 //
 // The bridge result JSON is returned verbatim by the hub, so these types mirror the
 // bridge serialization in src/bridge/vcs_api.odin exactly. UI cache is keyed by
-// (projectId, bridgeId[, file]) so switching project/bridge only refetches what changed.
+// (projectId, bridgeId[, file, target]) so switching project/bridge only refetches what changed.
 
 import { heimdallApi } from '../heimdallApi';
-import { cookieJsonFetch } from '../cookieFetch';
+import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 
 // ---- Contract types (mirror the bridge vcs_* result JSON exactly) -----------
 
@@ -38,6 +44,37 @@ export type VcsStatus = {
   error: VcsError;
 };
 
+export type VcsDiffTarget = {
+  id: string;
+  label: string;
+  description: string;
+  is_default: boolean;
+};
+
+export type VcsTargetsResult = {
+  ok: boolean;
+  provider: string;
+  targets: VcsDiffTarget[];
+  error: VcsError;
+};
+
+export type VcsLogEntry = {
+  revision: string;
+  cl_number: string;
+  title: string;
+  author: string;
+  timestamp: string;
+  is_current: boolean;
+  status: string;
+};
+
+export type VcsLogResult = {
+  ok: boolean;
+  provider: string;
+  entries: VcsLogEntry[];
+  error: VcsError;
+};
+
 export type VcsFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'untracked';
 
 export type VcsChangedFile = {
@@ -50,6 +87,8 @@ export type VcsChangedFile = {
 
 export type VcsFilesResult = {
   ok: boolean;
+  provider?: string;
+  target?: string;
   files: VcsChangedFile[];
   next_cursor: string | null;
   has_more: boolean;
@@ -68,10 +107,36 @@ export type VcsDiffHunk = {
 
 export type VcsDiffResult = {
   ok: boolean;
+  provider?: string;
   file: string;
+  target?: string;
   hunks: VcsDiffHunk[];
   next_cursor: string | null;
   has_more: boolean;
+  error: VcsError;
+};
+
+export type VcsFileContentResult = {
+  ok: boolean;
+  provider: string;
+  file: string;
+  target: string;
+  content: string;
+  error: VcsError;
+};
+
+export type VcsActionResult = {
+  ok: boolean;
+  provider: string;
+  action: string;
+  file: string;
+  error: VcsError;
+};
+
+export type VcsCommitResult = {
+  ok: boolean;
+  provider: string;
+  output: string;
   error: VcsError;
 };
 
@@ -86,8 +151,13 @@ function vcsTagId(projectId: string, bridgeId: string, suffix = ''): string {
 // ---- Arg types --------------------------------------------------------------
 
 type CapabilitiesArgs = { projectId: string; bridgeId?: string };
-type FilesArgs = { projectId: string; bridgeId?: string; cursor?: string | null; limit?: number };
-type DiffArgs = { projectId: string; bridgeId?: string; file: string; cursor?: string | null; limit?: number };
+type TargetsArgs = { projectId: string; bridgeId?: string };
+type LogArgs = { projectId: string; bridgeId?: string; limit?: number };
+type FilesArgs = { projectId: string; bridgeId?: string; target?: string; cursor?: string | null; limit?: number };
+type DiffArgs = { projectId: string; bridgeId?: string; file: string; target?: string; cursor?: string | null; limit?: number };
+type FileContentArgs = { projectId: string; bridgeId?: string; file: string; target?: string; revision?: string };
+type ActionArgs = { projectId: string; bridgeId?: string; action: 'add' | 'revert' | 'revert_all' | string; file?: string; path?: string };
+type CommitArgs = { projectId: string; bridgeId?: string; message?: string; amend?: boolean };
 
 function base(projectId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/vcs`;
@@ -101,9 +171,6 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
       queryFn: async ({ projectId, bridgeId = '' }) => {
         try {
           const qs = new URLSearchParams();
-          // Disambiguate which bridge's project path to use (see projectFs.ts): a
-          // project may be configured on multiple bridges, so pass the conversation's
-          // bridge_id to resolve THIS bridge's path.
           if (bridgeId) qs.set('bridge_id', bridgeId);
           const suffix = qs.toString() ? `?${qs.toString()}` : '';
           const data = await cookieJsonFetch(`${base(projectId)}/capabilities${suffix}`);
@@ -117,13 +184,50 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
-    // Paginated list of changed files. Fetched lazily and stitched in the component,
-    // so we don't key the cache by cursor.
-    listVcsFiles: build.query<VcsFilesResult, FilesArgs>({
-      queryFn: async ({ projectId, bridgeId = '', cursor = null, limit }) => {
+    // Available diff targets (HEAD, cached, p4base, p4head, recent commits/CLs).
+    getVcsTargets: build.query<VcsTargetsResult, TargetsArgs>({
+      queryFn: async ({ projectId, bridgeId = '' }) => {
         try {
           const qs = new URLSearchParams();
           if (bridgeId) qs.set('bridge_id', bridgeId);
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = await cookieJsonFetch(`${base(projectId)}/targets${suffix}`);
+          return { data: data as VcsTargetsResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'targets') },
+      ],
+    }),
+
+    // Recent commit log / Fig CL stack entries.
+    getVcsLog: build.query<VcsLogResult, LogArgs>({
+      queryFn: async ({ projectId, bridgeId = '', limit }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (limit != null) qs.set('limit', String(limit));
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = await cookieJsonFetch(`${base(projectId)}/log${suffix}`);
+          return { data: data as VcsLogResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId, bridgeId = '', limit }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `log::${limit ?? 20}`) },
+      ],
+    }),
+
+    // Paginated list of changed files relative to target (default HEAD/p4base).
+    listVcsFiles: build.query<VcsFilesResult, FilesArgs>({
+      queryFn: async ({ projectId, bridgeId = '', target = '', cursor = null, limit }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (target) qs.set('target', target);
           if (cursor) qs.set('cursor', cursor);
           if (limit != null) qs.set('limit', String(limit));
           const suffix = qs.toString() ? `?${qs.toString()}` : '';
@@ -133,19 +237,19 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+      providesTags: (_result, _error, { projectId, bridgeId = '', target = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `files::${target}`) },
         { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
       ],
     }),
 
-    // Paginated diff hunks for a single changed file. Pages are fetched lazily and
-    // appended in the component, so the cache is keyed by (project, bridge, file) —
-    // not by cursor.
+    // Paginated diff hunks for a single changed file against optional target.
     getVcsDiff: build.query<VcsDiffResult, DiffArgs>({
-      queryFn: async ({ projectId, bridgeId = '', file, cursor = null, limit }) => {
+      queryFn: async ({ projectId, bridgeId = '', file, target = '', cursor = null, limit }) => {
         try {
           const qs = new URLSearchParams({ file });
           if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (target) qs.set('target', target);
           if (cursor) qs.set('cursor', cursor);
           if (limit != null) qs.set('limit', String(limit));
           const data = await cookieJsonFetch(`${base(projectId)}/diff?${qs.toString()}`);
@@ -154,8 +258,28 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: (_result, _error, { projectId, bridgeId = '', file }) => [
+      providesTags: (_result, _error, { projectId, bridgeId = '', file, target = '' }) => [
         { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `diff::${file}`) },
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `diff::${file}::${target}`) },
+      ],
+    }),
+
+    // Fetch base file content at a specific revision/target.
+    getVcsFileContent: build.query<VcsFileContentResult, FileContentArgs>({
+      queryFn: async ({ projectId, bridgeId = '', file, target = '', revision = '' }) => {
+        try {
+          const effTarget = target || revision;
+          const qs = new URLSearchParams({ file });
+          if (effTarget) qs.set('target', effTarget);
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          const data = await cookieJsonFetch(`${base(projectId)}/file-content?${qs.toString()}`);
+          return { data: data as VcsFileContentResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId, bridgeId = '', file, target = '', revision = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `content::${file}::${target || revision}`) },
       ],
     }),
 
@@ -185,6 +309,57 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
         ];
       },
     }),
+
+    // Execute VCS file actions: 'add', 'revert', 'revert_all'.
+    executeVcsAction: build.mutation<VcsActionResult, ActionArgs>({
+      queryFn: async ({ projectId, bridgeId = '', action, file, path }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const targetFile = file || path || '';
+          const data = await cookieMutation(`${base(projectId)}/action${suffix}`, 'POST', {
+            action,
+            file: targetFile,
+          });
+          return { data: data as VcsActionResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '', file, path }) => {
+        const filePath = file || path || '';
+        return [
+          { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+          { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'status') },
+          { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `diff::${filePath}`) },
+        ];
+      },
+    }),
+
+    // Commit changes or amend CL.
+    commitVcs: build.mutation<VcsCommitResult, CommitArgs>({
+      queryFn: async ({ projectId, bridgeId = '', message = '', amend = false }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = await cookieMutation(`${base(projectId)}/commit${suffix}`, 'POST', {
+            message,
+            amend,
+          });
+          return { data: data as VcsCommitResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'status') },
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'targets') },
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'log::20') },
+      ],
+    }),
   }),
 });
 
@@ -197,4 +372,12 @@ export const {
   useLazyGetVcsDiffQuery,
   useGetProjectVcsStatusQuery,
   useLazyGetProjectVcsStatusQuery,
+  useGetVcsTargetsQuery,
+  useLazyGetVcsTargetsQuery,
+  useGetVcsLogQuery,
+  useLazyGetVcsLogQuery,
+  useGetVcsFileContentQuery,
+  useLazyGetVcsFileContentQuery,
+  useExecuteVcsActionMutation,
+  useCommitVcsMutation,
 } = projectVcsApi;

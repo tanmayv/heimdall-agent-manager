@@ -18,6 +18,13 @@ vcs_jj_provider :: proc() -> VCS_Provider {
 		status        = vcs_jj_status,
 		changed_files = vcs_jj_changed_files,
 		diff_file     = vcs_jj_diff_file,
+		diff_targets  = vcs_jj_diff_targets,
+		log           = vcs_jj_log,
+		file_content  = vcs_jj_file_content,
+		add_file      = vcs_jj_add_file,
+		revert_file   = vcs_jj_revert_file,
+		revert_all    = vcs_jj_revert_all,
+		commit        = vcs_jj_commit,
 		capabilities  = vcs_jj_capabilities,
 	}
 }
@@ -73,7 +80,8 @@ vcs_jj_pick_remote :: proc(out: string) -> string {
 // vcs_jj_changed_files parses `jj diff --summary` (each line "<code> <path>") into
 // the neutral shape, then paginates (default 100, max 500). Every entry is staged
 // (jj's working copy is always committed-in-place).
-vcs_jj_changed_files :: proc(path, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
+vcs_jj_changed_files :: proc(path, target, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
+	_ = target
 	out, ok := vcs_run([]string{"jj", "-R", path, "diff", "--summary"})
 	if !ok do return nil, "", false, false
 
@@ -109,10 +117,56 @@ vcs_jj_status_word :: proc(code: u8) -> string {
 
 // vcs_jj_diff_file parses `jj diff --git -- <file>` (unified/git format) into
 // hunks, then paginates (default 50, max 200).
-vcs_jj_diff_file :: proc(path, file, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
+vcs_jj_diff_file :: proc(path, file, target, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
+	_ = target
 	out, ok := vcs_run([]string{"jj", "-R", path, "diff", "--git", "--", file})
 	if !ok do return nil, "", false, false
 	hunks := vcs_parse_unified_diff(out)
 	page, next_cursor, has_more := vcs_paginate_hunks(hunks, cursor, limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
 	return page, next_cursor, has_more, true
 }
+
+vcs_jj_diff_targets :: proc(path: string) -> ([]VCS_Diff_Target, bool) {
+	targets := make([]VCS_Diff_Target, 1, context.allocator)
+	targets[0] = VCS_Diff_Target{
+		id          = "@",
+		label       = "@",
+		description = "Current working copy commit",
+		is_default  = true,
+	}
+	return targets, true
+}
+
+vcs_jj_log :: proc(path: string, limit: int) -> ([]VCS_Log_Entry, bool) {
+	_ = path
+	_ = limit
+	return nil, true
+}
+
+vcs_jj_file_content :: proc(path, file, target: string) -> (string, bool) {
+	eff_target := target
+	if eff_target == "" do eff_target = "@"
+	return vcs_run([]string{"jj", "-R", path, "file", "show", "-r", eff_target, file})
+}
+
+vcs_jj_add_file :: proc(path, file: string) -> bool {
+	_ = path
+	_ = file
+	return true // jj automatically tracks working copy files
+}
+
+vcs_jj_revert_file :: proc(path, file: string) -> bool {
+	_, ok := vcs_run([]string{"jj", "-R", path, "restore", file})
+	return ok
+}
+
+vcs_jj_revert_all :: proc(path: string) -> bool {
+	_, ok := vcs_run([]string{"jj", "-R", path, "restore"})
+	return ok
+}
+
+vcs_jj_commit :: proc(path, message: string, amend: bool) -> (string, bool) {
+	_ = amend
+	return vcs_run([]string{"jj", "-R", path, "describe", "-m", message})
+}
+

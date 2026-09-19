@@ -154,3 +154,45 @@ vcs_detect_provider_on_repo :: proc(t: ^testing.T) {
 	testing.expect(t, provider.name() == "git", "git wins detection ordering")
 	testing.expect(t, !vcs_jj_detect(repo), "no .jj in this checkout")
 }
+
+@(test)
+vcs_synthetic_diff_added_test :: proc(t: ^testing.T) {
+	content := "line 1\nline 2\nline 3\n"
+	hunks := vcs_synthetic_diff_added(content)
+	defer vcs_test_free_hunks(hunks)
+
+	testing.expect_value(t, len(hunks), 1)
+	h := hunks[0]
+	testing.expect_value(t, h.old_start, 0)
+	testing.expect_value(t, h.old_len, 0)
+	testing.expect_value(t, h.new_start, 1)
+	testing.expect_value(t, h.new_len, 3)
+	testing.expect_value(t, len(h.lines), 3)
+	for ln, idx in h.lines {
+		testing.expect_value(t, ln.op, "+")
+	}
+	testing.expect_value(t, h.lines[0].text, "line 1")
+	testing.expect_value(t, h.lines[1].text, "line 2")
+	testing.expect_value(t, h.lines[2].text, "line 3")
+}
+
+@(test)
+vcs_synthetic_diff_deleted_test :: proc(t: ^testing.T) {
+	content := "deleted line A\ndeleted line B\n"
+	hunks := vcs_synthetic_diff_deleted(content)
+	defer vcs_test_free_hunks(hunks)
+
+	testing.expect_value(t, len(hunks), 1)
+	h := hunks[0]
+	testing.expect_value(t, h.old_start, 1)
+	testing.expect_value(t, h.old_len, 2)
+	testing.expect_value(t, h.new_start, 0)
+	testing.expect_value(t, h.new_len, 0)
+	testing.expect_value(t, len(h.lines), 2)
+	for ln, idx in h.lines {
+		testing.expect_value(t, ln.op, "-")
+	}
+	testing.expect_value(t, h.lines[0].text, "deleted line A")
+	testing.expect_value(t, h.lines[1].text, "deleted line B")
+}
+
