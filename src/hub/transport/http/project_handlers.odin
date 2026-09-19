@@ -79,3 +79,38 @@ write_project_detail_json :: proc(b: ^strings.Builder, p: domain.Project, paths:
 	strings.write_string(b, "],\"updated_at\":\""); write_handler_json_string(b, p.updated_at); strings.write_string(b, "\"}")
 }
 write_path_json :: proc(b: ^strings.Builder, p: domain.Project_Bridge_Path) { strings.write_string(b, "{\"project_id\":\""); write_handler_json_string(b, string(p.project_id)); strings.write_string(b, "\",\"bridge_id\":\""); write_handler_json_string(b, p.bridge_id); strings.write_string(b, "\",\"path\":\""); write_handler_json_string(b, p.path); strings.write_string(b, "\",\"is_validated\":"); strings.write_string(b, "true" if p.is_validated else "false"); strings.write_string(b, ",\"last_validated_at\":\""); write_handler_json_string(b, p.last_validated_at); strings.write_string(b, "\",\"validation_error\":\""); write_handler_json_string(b, p.validation_error); strings.write_string(b, "\",\"validation_details\":"); strings.write_string(b, p.validation_details_json if p.validation_details_json != "" else "{}"); strings.write_string(b, "}") }
+
+// Project-scoped quick-open file path search
+quick_open_project_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	query := query_value(req.query, "query")
+	limit := query_int(req.query, "limit", 100)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_find_files",
+		query = query,
+		send_query = true,
+		limit = limit,
+		send_limit = limit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// Project-scoped text grep search
+search_project_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	query := query_value(req.query, "query")
+	case_sensitive := query_bool(req.query, "case_sensitive", false)
+	limit := query_int(req.query, "limit", 100)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_grep",
+		query = query,
+		send_query = true,
+		case_sensitive = case_sensitive,
+		send_case_sensitive = true,
+		limit = limit,
+		send_limit = limit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}

@@ -45,6 +45,10 @@ def main() -> None:
     # Exported hooks
     require("useWriteProjectFileMutation" in pfs_src, "Must export useWriteProjectFileMutation hook")
     require("useBatchWriteProjectFilesMutation" in pfs_src, "Must export useBatchWriteProjectFilesMutation hook")
+    require("useLazyQuickOpenProjectFilesQuery" in pfs_src, "Must export useLazyQuickOpenProjectFilesQuery hook")
+    require("quickOpenProjectFiles: build.query" in pfs_src, "Must define quickOpenProjectFiles query")
+    require("/quick-open" in pfs_src, "quickOpenProjectFiles must target /quick-open endpoint")
+    require("FsQuickOpenResult" in pfs_src, "Must export FsQuickOpenResult type")
     print("  [+] projectFs.ts contract verified successfully.")
 
     print("[*] 2. Checking src/ui/components/chat/ProjectFilesPanel.tsx...")
@@ -54,9 +58,11 @@ def main() -> None:
     # Import of Monaco Editor and theme
     require("@monaco-editor/react" in panel_src, "Must import from @monaco-editor/react")
     require("Editor" in panel_src, "Must use Editor component from Monaco")
+    require("DiffEditor" in panel_src, "Must use DiffEditor component from Monaco")
     require("useTheme" in panel_src, "Must import and use useTheme hook for theme synchronization")
     require("useWriteProjectFileMutation" in panel_src, "Must use useWriteProjectFileMutation")
     require("useBatchWriteProjectFilesMutation" in panel_src, "Must use useBatchWriteProjectFilesMutation")
+    require("useLazyQuickOpenProjectFilesQuery" in panel_src, "Must use useLazyQuickOpenProjectFilesQuery")
 
     # Tab state
     require("openTabs" in panel_src and "setOpenTabs" in panel_src, "Must maintain openTabs state")
@@ -76,6 +82,22 @@ def main() -> None:
     require("tab-dirty-bullet" in panel_src or "•" in panel_src, "Must display dirty bullet indicator on modified tabs")
     require("tab-close-btn" in panel_src, "Must have close tab button")
     require("close-confirm-modal" in panel_src, "Must provide confirmation modal when closing dirty tab")
+
+    # In-editor Diff / Changes toggle button (REQ-UI-IN-EDITOR-DIFF)
+    require("editor-toggle-diff-btn" in panel_src, "Must render in-editor Diff / Changes toggle button (editor-toggle-diff-btn)")
+    require("isDiffMode" in panel_src, "Must track isDiffMode state for in-editor diff view")
+
+    # Removal of top-level subtabs bar
+    require("-subtabs" not in panel_src and "-tab-changes" not in panel_src and "-tab-files" not in panel_src,
+            "Separate Files / Changes top-level subtabs bar must be removed from ProjectFilesPanel")
+
+    # Quick Open Modal & Shortcuts (REQ-UI-GLOBAL-QUICK-OPEN)
+    require("project-quick-open-modal" in panel_src, "Must render project-quick-open-modal")
+    require("project-quick-open-input" in panel_src, "Must render project-quick-open-input")
+    require("project-quick-open-results" in panel_src, "Must render project-quick-open-results")
+    require("key === 'p'" in panel_src or "key === 'P'" in panel_src or "KeyP" in panel_src,
+            "Must wire Cmd+P / Ctrl+P global shortcut for Quick Open")
+    require("subsequenceFuzzyMatch" in panel_src, "Must implement subsequenceFuzzyMatch for Quick Open")
 
     # Keyboard shortcuts & Save buttons
     require("onSaveActive" in panel_src or "saveActiveFile" in panel_src, "Must implement saveActiveFile handler")

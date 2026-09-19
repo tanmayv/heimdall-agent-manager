@@ -326,6 +326,11 @@ Project_Fs_Command :: struct {
 	// multi-file batch write
 	raw_files_json: string,
 	send_raw_files: bool,
+	// search / quick-open options
+	query: string,
+	send_query: bool,
+	case_sensitive: bool,
+	send_case_sensitive: bool,
 }
 
 project_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Fs_Command) -> (string, bool, domain.Domain_Error) {
@@ -381,6 +386,12 @@ project_fs_command_json :: proc(cmd: Project_Fs_Command, command_id, root_path: 
 	}
 	if cmd.send_raw_files {
 		strings.write_string(&b, ",\"files\":"); strings.write_string(&b, cmd.raw_files_json)
+	}
+	if cmd.send_query {
+		strings.write_string(&b, ",\"query\":\""); write_handler_json_string(&b, cmd.query); strings.write_string(&b, "\"")
+	}
+	if cmd.send_case_sensitive {
+		strings.write_string(&b, ",\"case_sensitive\":"); strings.write_string(&b, "true" if cmd.case_sensitive else "false")
 	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
@@ -1086,7 +1097,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
-	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result":
+	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "fs_find_files_result", "fs_grep_result":
 		command_id := json_string(text, "command_id")
 		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		if existed {

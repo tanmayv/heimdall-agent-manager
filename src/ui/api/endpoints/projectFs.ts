@@ -98,6 +98,14 @@ export type FsBatchWriteResult = {
   error?: { code: string; message: string };
 };
 
+export type FsQuickOpenResult = {
+  ok: boolean;
+  root: string;
+  files: string[];
+  truncated: boolean;
+  error?: { code: string; message: string };
+};
+
 // The shared error vocabulary from the contract, exported for callers that want
 // to branch on specific failures (e.g. friendly "already exists" messaging).
 export const FS_ERROR_CODES = [
@@ -143,6 +151,7 @@ type WriteFileArgs = { projectId: string; bridgeId?: string; path: string; conte
 type BatchWriteFilesArgs = { projectId: string; bridgeId?: string; files: Array<{ path: string; content: string }> };
 type MoveArgs = { projectId: string; bridgeId?: string; from: string; to: string };
 type DeleteArgs = { projectId: string; bridgeId?: string; path: string; recursive?: boolean };
+type QuickOpenArgs = { projectId: string; bridgeId?: string; query?: string; limit?: number };
 
 function base(projectId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/fs`;
@@ -325,6 +334,23 @@ export const projectFsApi = heimdallApi.injectEndpoints({
         return tags;
       },
     }),
+
+    // Project-scoped fuzzy file path search for Quick Open (GET /projects/{projectId}/fs/quick-open).
+    quickOpenProjectFiles: build.query<FsQuickOpenResult, QuickOpenArgs>({
+      queryFn: async ({ projectId, bridgeId = '', query = '', limit }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (query) qs.set('query', query);
+          if (limit != null) qs.set('limit', String(limit));
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = await cookieJsonFetch(`${base(projectId)}/quick-open${suffix}`);
+          return { data: data as FsQuickOpenResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+    }),
   }),
 });
 
@@ -347,4 +373,6 @@ export const {
   useDeleteProjectPathMutation,
   useWriteProjectFileMutation,
   useBatchWriteProjectFilesMutation,
+  useQuickOpenProjectFilesQuery,
+  useLazyQuickOpenProjectFilesQuery,
 } = projectFsApi;
