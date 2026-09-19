@@ -378,6 +378,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/fs", rawptr(&graph.bridge_handlers), http.list_project_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/fs/file", rawptr(&graph.bridge_handlers), http.read_project_file_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/file", rawptr(&graph.bridge_handlers), http.create_project_file_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/projects/*/fs/file", rawptr(&graph.bridge_handlers), http.write_project_file_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/projects/*/fs/files", rawptr(&graph.bridge_handlers), http.batch_write_project_files_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/dir", rawptr(&graph.bridge_handlers), http.create_project_dir_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/fs/move", rawptr(&graph.bridge_handlers), http.move_project_path_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/projects/*/fs", rawptr(&graph.bridge_handlers), http.delete_project_path_handler)
