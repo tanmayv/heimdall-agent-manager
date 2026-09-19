@@ -1,4 +1,5 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
+import ChainOverviewPanel from './ChainOverviewPanel';
 import ProjectFilesPanel, { ProjectQuickOpenModal } from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
 import ShellJobsPanel from './ShellJobsPanel';
@@ -594,12 +595,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
   // panel itself has Tasks / Files / RunDir tabs. 'closed' hides it entirely.
   // Initialized from ?panel= / ?sidebar= query param, falling back to UI storage.
-  const [rightPanel, setRightPanel] = useState<'closed' | 'tasks' | 'files' | 'rundir' | 'jobs'>(() => {
+  const [rightPanel, setRightPanel] = useState<'closed' | RightSidebarTab>(() => {
     const search = getRouteSearch();
     const params = new URLSearchParams(search.replace(/^\?/, ''));
     const param = params.get('panel') || params.get('sidebar');
     if (param) {
       const norm = param.trim().toLowerCase();
+      if (norm === 'chain') return 'chain';
       if (norm === 'tasks') return 'tasks';
       if (norm === 'files') return 'files';
       if (norm === 'rundir') return 'rundir';
@@ -622,6 +624,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [isRightPanelMaximized, setIsRightPanelMaximized] = useState(false);
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
   const [editorFileToOpen, setEditorFileToOpen] = useState<string | null>(null);
+  const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Synchronize sidebar state when agentInstanceId changes (REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE)
@@ -632,7 +635,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const param = params.get('panel') || params.get('sidebar');
     if (param) {
       const norm = param.trim().toLowerCase();
-      if (norm === 'tasks' || norm === 'files' || norm === 'rundir' || norm === 'jobs') {
+      if (norm === 'chain' || norm === 'tasks' || norm === 'files' || norm === 'rundir' || norm === 'jobs') {
         setRightPanel(norm);
         return;
       }
@@ -676,7 +679,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       const param = params.get('panel') || params.get('sidebar');
       if (param) {
         const norm = param.trim().toLowerCase();
-        if (norm === 'tasks') {
+        if (norm === 'chain') {
+          setRightPanel('chain');
+          writeRightSidebarOpen(true, agentInstanceId);
+          writeRightSidebarTab('chain', agentInstanceId);
+        } else if (norm === 'tasks') {
           setRightPanel('tasks');
           writeRightSidebarOpen(true, agentInstanceId);
           writeRightSidebarTab('tasks', agentInstanceId);
@@ -950,6 +957,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         kind: artifactKindForFile(file),
         originKind: 'conversation_chat',
         originRef: conversationId,
+        projectId,
+        agentId,
+        agentInstanceId,
+        chainId,
       }).unwrap();
       const link = artifactLinkFromResponse(res);
       const id = link.replace(/^artifact:\/\//i, '');
@@ -1042,7 +1053,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   // Default the panel's active tab based on what this conversation has: prefer
   // Tasks when linked to a chain, else Files when it has a project.
-  function defaultPanelTab(): 'tasks' | 'files' | 'rundir' | 'jobs' {
+  function defaultPanelTab(): RightSidebarTab {
     if (chainId) return 'tasks';
     if (projectId) return 'files';
     if (agentInstanceId) return 'rundir';
@@ -1050,7 +1061,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   // Sync ?panel=<tab> to route hash search on panel open/tab switch, or clean it up on close
-  function syncUrlPanel(tab: 'tasks' | 'files' | 'rundir' | 'jobs' | null) {
+  function syncUrlPanel(tab: RightSidebarTab | null) {
     if (typeof window === 'undefined') return;
     try {
       const search = getRouteSearch();
@@ -1093,7 +1104,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
 
   // Open the panel focused on a specific tab (e.g. the composer project chip
   // opens Files; a current-task link opens Tasks).
-  function openRightPanel(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
+  function openRightPanel(tab: RightSidebarTab) {
     setHeaderActionsOpen(false);
     writeRightSidebarOpen(true, agentInstanceId);
     writeRightSidebarTab(tab, agentInstanceId);
@@ -1122,7 +1133,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     };
   }, [agentInstanceId]);
 
-  function selectRightPanelTab(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
+  function selectRightPanelTab(tab: RightSidebarTab) {
     writeRightSidebarOpen(true, agentInstanceId);
     writeRightSidebarTab(tab, agentInstanceId);
     syncUrlPanel(tab);
@@ -1389,6 +1400,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // conversation actually has that context (a chain for Tasks, a project for
   // Files). `isMobile` renders it as a full-width overlay with its own header.
   function renderRightPanel(isMobilePanel: boolean) {
+    const hasChain = Boolean(chainId);
     const hasTasks = Boolean(chainId);
     const hasFiles = Boolean(projectId);
     const hasRunDir = Boolean(agentInstanceId);
@@ -1398,8 +1410,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     // truncate when long. Tasks keeps its fixed label.
     const instanceDisplayName = String(instance?.display_name || (instance as any)?.displayName || title || agentId || agentInstanceId || 'instance').trim();
     const filesLabel = projectName || 'Files';
-    const active: 'tasks' | 'files' | 'rundir' | 'jobs' =
-      rightPanel === 'files' && hasFiles ? 'files'
+    const active: RightSidebarTab =
+      rightPanel === 'chain' && hasChain ? 'chain'
+      : rightPanel === 'files' && hasFiles ? 'files'
       : rightPanel === 'rundir' && hasRunDir ? 'rundir'
       : rightPanel === 'jobs' && hasJobs ? 'jobs'
       : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
@@ -1410,6 +1423,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     return (
       <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-surface">
         <div data-debug-id="conversation-right-panel-tabs" className="relative sticky top-0 z-20 flex shrink-0 items-center gap-1.5 px-3 py-2.5 sm:px-4 bg-canvas/90 backdrop-blur-md">
+          {hasChain ? (
+            <button
+              type="button"
+              aria-label="Chain Overview"
+              title="Chain Overview"
+              data-debug-id="conversation-right-panel-tab-chain"
+              onClick={() => selectRightPanelTab('chain')}
+              aria-pressed={active === 'chain' ? 'true' : 'false'}
+              className={`${tabBase} ${active === 'chain' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}
+            >
+              <Icon name="layers" size={16} />
+            </button>
+          ) : null}
           {hasTasks ? (
             <button type="button" aria-label="Tasks" title="Tasks" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => selectRightPanelTab('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
               <Icon name="tasks" size={16} />
@@ -1456,7 +1482,26 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           <div className="pointer-events-none absolute inset-x-0 -bottom-6 h-6 bg-gradient-to-b from-canvas/90 via-canvas/50 to-transparent backdrop-blur-sm" aria-hidden="true" />
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
-          {active === 'files' && hasFiles ? (
+          {active === 'chain' && hasChain ? (
+            <ChainOverviewPanel
+              chainId={chainId}
+              projectId={projectId}
+              bridgeId={instanceBridgeId}
+              onClose={closeRightPanel}
+              onSelectTask={(taskId) => {
+                if (taskId) setFocusedTaskId(taskId);
+                selectRightPanelTab('tasks');
+              }}
+              onOpenFileDiff={(filePath) => {
+                selectRightPanelTab('files');
+                setEditorFileToOpen(filePath);
+              }}
+              onOpenVcsFiles={() => {
+                selectRightPanelTab('files');
+              }}
+              isMobile={isMobilePanel}
+            />
+          ) : active === 'files' && hasFiles ? (
             <ProjectFilesPanel
               key={agentInstanceId || projectId}
               agentInstanceId={agentInstanceId}
@@ -1491,6 +1536,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             chainId ? (
               <TaskChainOverview
                 chainId={chainId}
+                focusTaskId={focusedTaskId || undefined}
                 onClose={closeRightPanel}
                 isMobile={isMobilePanel}
               />

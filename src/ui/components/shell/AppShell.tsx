@@ -1006,11 +1006,14 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const isMobile = viewport === 'mobile';
   const description = routeDescription(path);
   const crumbs = routeBreadcrumbs(path, conversations);
-  const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
+  const isConversationThreadRoute =
+    (path.startsWith('/conversations/') && path !== '/conversations/new') ||
+    path.startsWith('/c/');
   const isKnownRoute = useMemo(() => {
     return [
       '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
+      path.startsWith('/c/') ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/appearance') ||
       path.startsWith('/settings/user-tokens') ||
@@ -1024,7 +1027,9 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   }, [path]);
 
   if (isConversationThreadRoute) {
-    const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
+    const agentInstanceId = path.startsWith('/c/')
+      ? decodeSegment(path.slice('/c/'.length))
+      : decodeSegment(path.slice('/conversations/'.length));
     return (
       <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-hidden bg-canvas">
         {/* key by agentInstanceId so switching conversations REMOUNTS the page:

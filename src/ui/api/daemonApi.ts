@@ -690,7 +690,47 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-export async function createArtifact({ daemonUrl, clientToken, file, name, kind = '', mime = '', ext = '', projectId = '', description = '', originKind = '', originRef = '', contentBase64 = '' }: { daemonUrl: string; clientToken: string; file?: File | Blob | null; name: string; kind?: string; mime?: string; ext?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string }) {
+export async function createArtifact({
+  daemonUrl,
+  clientToken,
+  file,
+  name,
+  kind = '',
+  mime = '',
+  ext = '',
+  projectId = '',
+  project_id = '',
+  agentId = '',
+  agent_id = '',
+  agentInstanceId = '',
+  agent_instance_id = '',
+  chainId = '',
+  chain_id = '',
+  description = '',
+  originKind = '',
+  originRef = '',
+  contentBase64 = '',
+}: {
+  daemonUrl: string;
+  clientToken: string;
+  file?: File | Blob | null;
+  name: string;
+  kind?: string;
+  mime?: string;
+  ext?: string;
+  projectId?: string;
+  project_id?: string;
+  agentId?: string;
+  agent_id?: string;
+  agentInstanceId?: string;
+  agent_instance_id?: string;
+  chainId?: string;
+  chain_id?: string;
+  description?: string;
+  originKind?: string;
+  originRef?: string;
+  contentBase64?: string;
+}) {
   // Use the JSON/base64 artifact API for browser-selected files. Chromium/Electron
   // may stream multipart FormData with Transfer-Encoding: chunked; the lightweight
   // Hub HTTP server is Content-Length based, so that path can fail at the network
@@ -698,13 +738,22 @@ export async function createArtifact({ daemonUrl, clientToken, file, name, kind 
   // fixed-length and works consistently in the browser, dev proxy, and Electron
   // fetch bridge while preserving the same artifact endpoint contract.
   const uploadBase64 = file ? await blobToBase64(file) : contentBase64;
+  const resolvedProjectId = sanitizeProjectId(project_id || projectId);
+  const resolvedAgentId = agent_id || agentId;
+  const resolvedAgentInstanceId = agent_instance_id || agentInstanceId;
+  const resolvedChainId = chain_id || chainId;
+
   const body: any = {
     name,
     kind,
-    project_id: sanitizeProjectId(projectId),
+    project_id: resolvedProjectId,
     description,
     content_base64: uploadBase64,
   };
+  if (resolvedAgentId) body.agent_id = resolvedAgentId;
+  if (resolvedAgentInstanceId) body.agent_instance_id = resolvedAgentInstanceId;
+  if (resolvedChainId) body.chain_id = resolvedChainId;
+
   const finalMime = mime || (file ? String((file as any).type || '') : '');
   const finalExt = ext || extensionFromNameOrMime(name, finalMime);
   if (finalMime) body.mime = finalMime;

@@ -37,6 +37,13 @@ type ArtifactCreateArgs = ArtifactAuthArgs & {
   mime?: string;
   ext?: string;
   projectId?: string;
+  project_id?: string;
+  agentId?: string;
+  agent_id?: string;
+  agentInstanceId?: string;
+  agent_instance_id?: string;
+  chainId?: string;
+  chain_id?: string;
   description?: string;
   originKind?: string;
   originRef?: string;
@@ -291,9 +298,10 @@ export const artifactsApi = heimdallApi.injectEndpoints({
         });
         return { ...data, artifacts: normalizeArtifacts(data) };
       }),
-      providesTags: (result, _error, { projectId = '', originRef = '' }) => [
+      providesTags: (result, _error, { projectId = '', originRef = '', chainId = '', chain_id = '' }) => [
         { type: 'Artifact' as const, id: projectListTag(projectId) },
         ...(originRef ? [{ type: 'Artifact' as const, id: originListTag(originRef) }] : []),
+        ...(chainId || chain_id ? [{ type: 'Artifact' as const, id: `CHAIN_LIST:${chainId || chain_id}` }] : []),
         ...((result?.artifacts || []).map((artifact: any) => ({ type: 'Artifact' as const, id: artifactIdOf(artifact) })).filter((tag: any) => Boolean(tag.id))),
       ],
     }),
@@ -479,11 +487,13 @@ export const artifactsApi = heimdallApi.injectEndpoints({
         const artifact = normalizeArtifact(data?.artifact || data?.data || data);
         return { ...data, artifact, link: artifact?.link || (artifact?.artifact_id ? `artifact://${artifact.artifact_id}` : '') };
       }),
-      invalidatesTags: (result, _error, { projectId = '', originRef = '' }) => {
+      invalidatesTags: (result, _error, { projectId = '', originRef = '', chainId = '', chain_id = '' }) => {
         const artifactId = artifactIdOf(result?.artifact);
+        const resolvedChainId = chainId || chain_id || result?.artifact?.chain_id || result?.artifact?.chainId;
         return [
           { type: 'Artifact' as const, id: projectListTag(projectId || result?.artifact?.project_id || result?.artifact?.projectId || '') },
           ...(originRef || result?.artifact?.origin_ref ? [{ type: 'Artifact' as const, id: originListTag(originRef || result?.artifact?.origin_ref || result?.artifact?.originRef || '') }] : []),
+          ...(resolvedChainId ? [{ type: 'Artifact' as const, id: `CHAIN_LIST:${resolvedChainId}` }] : []),
           ...(artifactId ? [
             { type: 'Artifact' as const, id: artifactId },
             { type: 'ArtifactContent' as const, id: artifactId },
