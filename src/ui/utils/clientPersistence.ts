@@ -1,4 +1,4 @@
-export const APP_STORAGE_PREFIXES = ['odin.', 'heimdall.'] as const;
+export const APP_STORAGE_PREFIXES = ['odin.', 'heimdall.', 'heimdall:'] as const;
 export const LAST_SEEN_USER_ID_KEY = 'heimdall.lastSeenUserId';
 
 function storageKeys(storage: Storage): string[] {
@@ -86,9 +86,15 @@ export function writeRightSidebarWidth(width: number): void {
   }
 }
 
-export function readRightSidebarOpen(): boolean {
+export function readRightSidebarOpen(instanceId?: string): boolean {
   if (typeof window === 'undefined') return false;
   try {
+    if (instanceId) {
+      const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:open:${instanceId}`);
+      if (instanceRaw !== null) {
+        return instanceRaw === 'true' || instanceRaw === '1';
+      }
+    }
     const raw = window.localStorage.getItem(RIGHT_SIDEBAR_OPEN_KEY);
     if (raw === null) return false;
     return raw === 'true' || raw === '1';
@@ -97,18 +103,28 @@ export function readRightSidebarOpen(): boolean {
   }
 }
 
-export function writeRightSidebarOpen(open: boolean): void {
+export function writeRightSidebarOpen(open: boolean, instanceId?: string): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(RIGHT_SIDEBAR_OPEN_KEY, open ? 'true' : 'false');
+    const val = open ? 'true' : 'false';
+    window.localStorage.setItem(RIGHT_SIDEBAR_OPEN_KEY, val);
+    if (instanceId) {
+      window.localStorage.setItem(`heimdall:sidebar:open:${instanceId}`, val);
+    }
   } catch {
     /* ignore */
   }
 }
 
-export function readRightSidebarTab(): RightSidebarTab | null {
+export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null {
   if (typeof window === 'undefined') return null;
   try {
+    if (instanceId) {
+      const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:tab:${instanceId}`);
+      if (instanceRaw === 'tasks' || instanceRaw === 'files' || instanceRaw === 'rundir' || instanceRaw === 'jobs') {
+        return instanceRaw;
+      }
+    }
     const raw = window.localStorage.getItem(RIGHT_SIDEBAR_TAB_KEY);
     if (raw === 'tasks' || raw === 'files' || raw === 'rundir' || raw === 'jobs') {
       return raw;
@@ -119,11 +135,14 @@ export function readRightSidebarTab(): RightSidebarTab | null {
   }
 }
 
-export function writeRightSidebarTab(tab: RightSidebarTab): void {
+export function writeRightSidebarTab(tab: RightSidebarTab, instanceId?: string): void {
   if (typeof window === 'undefined') return;
   try {
     if (tab === 'tasks' || tab === 'files' || tab === 'rundir' || tab === 'jobs') {
       window.localStorage.setItem(RIGHT_SIDEBAR_TAB_KEY, tab);
+      if (instanceId) {
+        window.localStorage.setItem(`heimdall:sidebar:tab:${instanceId}`, tab);
+      }
     }
   } catch {
     /* ignore */
