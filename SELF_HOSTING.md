@@ -179,6 +179,85 @@ In `nix-homelab-config` or any NixOS flake:
 }
 ```
 
+### 1.7 Single-user / VPN setup with dev-proxy (no TLS cert required)
+
+> **When to use this:** You are the only user, the hub is reachable only through a
+> private VPN (Tailscale, WireGuard, etc.) or a local network, and you do not want to
+> manage TLS certificates. If the hub is publicly accessible on the internet, **do not
+> use this approach** — use a real TLS terminator (nginx + ACME, Caddy, or Tailscale
+> HTTPS) so that credentials and agent traffic are encrypted in transit.
+
+For a personal, VPN-only deployment you can skip the reverse proxy entirely and use
+a simple dev-proxy (e.g. `caddy reverse-proxy` in plain HTTP mode, or a one-liner
+`socat`/`nginx` forward) that just routes plain HTTP to the hub. The hub itself
+already handles all authentication; the only risk you are accepting is that traffic
+on the VPN is unencrypted — acceptable when the VPN itself provides the transport
+security.
+
+**Option A — Caddy as a plain HTTP proxy (no certificates)**
+
+```bash
+# Install Caddy, then create /etc/caddy/Caddyfile:
+:80 {
+    reverse_proxy 127.0.0.1:8081
+}
+```
+
+```bash
+sudo systemctl enable --now caddy
+```
+
+Bridges and the web UI connect to `http://<vpn-ip>` (port 80). No certificate
+management needed.
+
+**Option B — socat one-liner (quick test / no daemon)**
+
+```bash
+# Forward public VPN port 8080 → hub on 127.0.0.1:8081
+socat TCP-LISTEN:8080,fork,reuseaddr TCP:127.0.0.1:8081
+```
+
+Bridges connect to `http://<vpn-ip>:8080`. This is a foreground process; wrap it in
+a systemd unit or `tmux` session if you want it to persist.
+
+**Option C — nginx plain HTTP proxy**
+
+```nginx
+# /etc/nginx/sites-available/heimdall
+server {
+    listen 80;
+    server_name _;   # or your VPN hostname
+
+    location / {
+        proxy_pass         http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host $host;
+    }
+}
+```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/heimdall /etc/nginx/sites-enabled/
+sudo systemctl reload nginx
+```
+
+**Configuring bridges to use a plain HTTP hub**
+
+When the hub is served over plain HTTP, pass the `http://` URL to `ham-bridge enroll`
+and to the bridge service:
+
+```bash
+ham-bridge enroll \
+  --hub http://<vpn-ip> \
+  --enrollment-token hbe_... \
+  --bridge-token-file ~/.config/heimdall/bridge-token
+```
+
+The `--hub` flag in the systemd/launchd service should match (e.g.
+`http://100.x.x.x` for a Tailscale IP).
+
 ---
 
 ## Part 2 — Bridge (one per agent-running device)
