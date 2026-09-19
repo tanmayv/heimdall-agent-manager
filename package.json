@@ -16,6 +16,7 @@
     "smoke": "npm run build"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@reduxjs/toolkit": "^2.2.8",
     "@vimee/core": "^0.3.0",
     "@vimee/react": "^0.3.0",
