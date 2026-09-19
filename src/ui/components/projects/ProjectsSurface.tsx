@@ -807,6 +807,10 @@ function AboutPanel({ projectId, project, bridges = [] }: { projectId: string; p
                 initialPath={defaultPath}
                 onPick={(p) => {
                   setDefaultPath(p);
+                  if (!name.trim()) {
+                    const base = p.split("/").filter(Boolean).pop();
+                    if (base) setName(base);
+                  }
                   setShowLocalPicker(false);
                 }}
                 onClose={() => setShowLocalPicker(false)}

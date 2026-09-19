@@ -26,6 +26,15 @@ Requirements covered:
 - REQ-UI-MOBILE-RESPONSIVE:
   * Mobile view (< 768px) overlays sidebar with close button.
   * Mobile scroll-hide and floating reply pill preserved when closed.
+- REQ-MOBILE-TOPBAR-FIX:
+  * <header> uses fixed on mobile and relative on desktop without class collision.
+  * Chat transcript has pt-16 top padding clearance.
+- REQ-VAL-MOBILE-FIX:
+  * Validates clean header class separation and mobile overlay semantics.
+- REQ-MOBILE-BORDERLESS:
+  * Mobile <header> has zero border-b and zero shadow-sm classes, using bg-canvas/90 backdrop-blur-md.
+- REQ-VAL-BORDERLESS:
+  * Validates borderless mobile header and seamless blur-fade overlay compatibility.
 - REQ-VAL-UI-2COL-1:
   * Validates all requirements via static pattern analysis.
 """
@@ -140,8 +149,27 @@ def test_topbar_actions() -> None:
             "Top bar blur-fade overlay must use backdrop-blur")
     require("w-64" in src,
             "Three-dots menu must have dedicated width w-64")
-    require("relative z-20 overflow-visible" in src,
-            "Header must have relative z-20 overflow-visible stacking context")
+    require("overflow-visible" in src,
+            "Header must retain overflow-visible")
+    require("relative z-20" in src,
+            "Header must have relative z-20 stacking context on desktop")
+
+    # Header positioning: conditional fixed on mobile and relative on desktop without class collision (REQ-MOBILE-TOPBAR-FIX, REQ-MOBILE-BORDERLESS)
+    header_start = src.find('data-debug-id="conversation-thread-header"')
+    require(header_start != -1, "Header element must exist")
+    header_chunk = src[header_start:header_start + 450]
+    require("isMobile" in header_chunk, "Header classes must branch on isMobile")
+    base_classes = header_chunk.split("isMobile")[0]
+    require("relative" not in base_classes,
+            "Header base classes must not contain unconditional relative (avoids mobile fixed collision)")
+    require("fixed top-0 inset-x-0" in header_chunk,
+            "Header must apply fixed top-0 inset-x-0 overlay positioning on mobile")
+    require("bg-canvas/90 backdrop-blur-md" in header_chunk,
+            "Header must use bg-canvas/90 backdrop-blur-md on mobile (REQ-MOBILE-BORDERLESS)")
+    require("border-b" not in header_chunk,
+            "Header must not contain border-b on mobile (REQ-MOBILE-BORDERLESS)")
+    require("shadow-sm" not in header_chunk,
+            "Header must not contain shadow-sm on mobile (REQ-MOBILE-BORDERLESS)")
 
 
 def test_sidebar_toggle_buttons() -> None:
@@ -179,6 +207,14 @@ def test_mobile_responsive() -> None:
     require('data-debug-id="conversation-floating-reply-pill"' in src,
             "Floating reply pill on mobile must be preserved when chrome is hidden")
 
+    # Mobile overlay semantics and transcript padding clearance (REQ-MOBILE-TOPBAR-FIX, REQ-VAL-MOBILE-FIX, REQ-MOBILE-BORDERLESS)
+    require("fixed top-0 inset-x-0 z-20 h-14 bg-canvas/90 backdrop-blur-md" in src,
+            "Header must use fixed top-0 overlay semantics on mobile with bg-canvas/90 backdrop-blur-md")
+    require("fixed bottom-14 inset-x-0 z-20" in src,
+            "Composer must use fixed bottom-14 overlay semantics on mobile")
+    require("pt-16 pb-4" in src,
+            "Transcript scroll container must have pt-16 top padding clearance for fixed header")
+
 
 def test_chat_and_composer_max_width() -> None:
     conv_src = CONVERSATION_FILE.read_text(encoding="utf-8")
@@ -203,7 +239,7 @@ def main() -> None:
     test_sidebar_toggle_buttons()
     test_mobile_responsive()
     test_chat_and_composer_max_width()
-    print("PASS: test_ui_conversation_2col_layout_static (REQ-UI-LAYOUT-2COL, REQ-UI-TOPBAR-BREADCRUMB, REQ-UI-TOPBAR-ACTIONS, REQ-UI-SIDEBAR-TOGGLE, REQ-UI-MOBILE-RESPONSIVE, REQ-UI-CHAT-MAXWIDTH, REQ-VAL-UI-2COL-1)")
+    print("PASS: test_ui_conversation_2col_layout_static (REQ-UI-LAYOUT-2COL, REQ-UI-TOPBAR-BREADCRUMB, REQ-UI-TOPBAR-ACTIONS, REQ-UI-SIDEBAR-TOGGLE, REQ-UI-MOBILE-RESPONSIVE, REQ-UI-CHAT-MAXWIDTH, REQ-VAL-UI-2COL-1, REQ-MOBILE-BORDERLESS, REQ-VAL-BORDERLESS)")
 
 
 if __name__ == "__main__":
