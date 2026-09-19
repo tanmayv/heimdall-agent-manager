@@ -1421,7 +1421,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           a mobile top bar carries the drawer toggle + title, and the route outlet
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col h-full min-h-0 overflow-hidden">
         <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
       </div>
 

@@ -149,3 +149,29 @@ export function writeRightSidebarTab(tab: RightSidebarTab, instanceId?: string):
   }
 }
 
+export function readChainOverviewCollapsedState(agentInstanceId?: string): Record<string, boolean> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const key = 'heimdall:chainOverview:collapsed:' + (agentInstanceId || 'default');
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, boolean>;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeChainOverviewCollapsedState(state: Record<string, boolean>, agentInstanceId?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = 'heimdall:chainOverview:collapsed:' + (agentInstanceId || 'default');
+    window.localStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    /* ignore */
+  }
+}
+
