@@ -346,73 +346,79 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   }
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div data-debug-id="artifact-viewer" className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[22px] border border-subtle bg-surface shadow-panel focus-within:border-accent/40" onClick={(event) => event.stopPropagation()}>
-        <div data-debug-id="artifact-viewer-breadcrumb" className="flex items-center gap-2 border-b border-subtle bg-surface-raised/80 px-5 py-2.5 text-[12px] text-faint">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-surface-overlay/80 p-2 sm:p-4 backdrop-blur-sm" onClick={onClose}>
+      <div data-debug-id="artifact-viewer" className="flex max-h-[96vh] sm:max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[22px] border border-subtle bg-surface shadow-panel focus-within:border-accent/40" onClick={(event) => event.stopPropagation()}>
+        <div data-debug-id="artifact-viewer-breadcrumb" className="flex items-center gap-2 border-b border-subtle bg-surface-raised/80 px-4 py-2 sm:px-5 sm:py-2.5 text-[12px] text-faint">
           <span className="text-muted">Artifact</span>
           <span className="text-faint">/</span>
           <span className="truncate text-primary">{title}</span>
         </div>
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-subtle px-5 pb-4 pt-4">
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-xl font-semibold tracking-[-0.01em] text-primary">{title}</div>
-            <div data-debug-id="artifact-viewer-meta-strip" className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px] text-muted">
-              <span className="rounded-full border border-subtle bg-neutral-soft px-2.5 py-0.5 uppercase tracking-wide text-muted">{selectedArtifactMeta?.kind || 'artifact'}</span>
-              {(selectedArtifactMeta?.mime || selectedArtifactMeta?.content_type || selectedArtifactMeta?.contentType) && <span className="rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 text-muted">{selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}</span>}
-              {selectedArtifactMeta?.size_bytes != null && <span className="rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 text-muted">{formatBytes(Number(selectedArtifactMeta.size_bytes))}</span>}
-              {(meta?.link || artifactId) && <span className="max-w-full truncate rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 font-mono text-muted">{meta?.link || `artifact://${artifactId}`}</span>}
-              {currentHeadVersionNo > 0 ? <span className="rounded-full border border-success/30 bg-success-soft px-2.5 py-0.5 text-success">{selectedVersionLabel}</span> : null}
+        <div className="flex flex-col gap-2.5 sm:gap-3 border-b border-subtle px-4 py-3 sm:px-5 sm:py-3.5">
+          {/* Row 1: Title (full width on mobile, truncate, never squashed) and 3 action buttons */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 min-w-0 w-full">
+            <div className="min-w-0 w-full sm:flex-1 truncate text-lg sm:text-xl font-semibold tracking-[-0.01em] text-primary" title={title}>
+              {title}
             </div>
-            {versions.length > 1 ? (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <label className="text-xs uppercase tracking-wide text-faint">Versions</label>
-                <Select
-                  data-debug-id="artifact-viewer-version-select"
-                  value={versionSelectValue}
-                  onChange={(nextValue) => {
-                    setSelectedVersionNo(nextValue === 'HEAD' ? null : Number(nextValue));
-                  }}
-                >
-                  <option value="HEAD">Head v{currentHeadVersionNo || '?'}</option>
-                  {versions.filter((version) => Number(version.version_no) !== currentHeadVersionNo).map((version) => (
-                    <option key={version.version_no} value={String(version.version_no)}>v{version.version_no}</option>
-                  ))}
-                </Select>
-              </div>
-            ) : null}
+            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+              <Button
+                data-debug-id="artifact-viewer-copy-link-btn"
+                variant="secondary"
+                size="sm"
+                onClick={handleCopyLink}
+                leading={copyLinkState === 'copied' ? <Icon name="check" size="sm" /> : undefined}
+              >
+                {copyLinkState === 'copied' ? 'Copied' : 'Copy Link'}
+              </Button>
+              <Button
+                data-debug-id="artifact-viewer-download-btn"
+                variant="primary"
+                size="sm"
+                disabled={!contentUrl || contentState.loading}
+                onClick={handleDownload}
+                leading={<Icon name="download" size="sm" />}
+              >
+                {contentState.loading ? 'Downloading…' : 'Download'}
+              </Button>
+              <Button
+                data-debug-id="artifact-viewer-close-btn"
+                variant="secondary"
+                size="sm"
+                onClick={onClose}
+                leading={<Icon name="close" size="sm" />}
+              >
+                Close
+              </Button>
+            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              data-debug-id="artifact-viewer-copy-link-btn"
-              variant="secondary"
-              size="sm"
-              onClick={handleCopyLink}
-              leading={copyLinkState === 'copied' ? <Icon name="check" size="sm" /> : undefined}
-            >
-              {copyLinkState === 'copied' ? 'Copied' : 'Copy Link'}
-            </Button>
-            <Button
-              data-debug-id="artifact-viewer-download-btn"
-              variant="primary"
-              size="sm"
-              disabled={!contentUrl || contentState.loading}
-              onClick={handleDownload}
-              leading={<Icon name="download" size="sm" />}
-            >
-              {contentState.loading ? 'Downloading…' : 'Download'}
-            </Button>
-            <Button
-              data-debug-id="artifact-viewer-close-btn"
-              variant="secondary"
-              size="sm"
-              onClick={onClose}
-              leading={<Icon name="close" size="sm" />}
-            >
-              Close
-            </Button>
+
+          {/* Row 2: Full-width meta-strip */}
+          <div data-debug-id="artifact-viewer-meta-strip" className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[11.5px] text-muted w-full">
+            <span className="rounded-full border border-subtle bg-neutral-soft px-2.5 py-0.5 uppercase tracking-wide text-muted">{selectedArtifactMeta?.kind || 'artifact'}</span>
+            {(selectedArtifactMeta?.mime || selectedArtifactMeta?.content_type || selectedArtifactMeta?.contentType) && <span className="rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 text-muted">{selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}</span>}
+            {selectedArtifactMeta?.size_bytes != null && <span className="rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 text-muted">{formatBytes(Number(selectedArtifactMeta.size_bytes))}</span>}
+            {(meta?.link || artifactId) && <span className="max-w-full truncate rounded-full border border-subtle bg-surface-raised px-2.5 py-0.5 font-mono text-muted">{meta?.link || `artifact://${artifactId}`}</span>}
+            {currentHeadVersionNo > 0 ? <span className="rounded-full border border-success/30 bg-success-soft px-2.5 py-0.5 text-success">{selectedVersionLabel}</span> : null}
           </div>
+
+          {versions.length > 1 ? (
+            <div className="flex flex-wrap items-center gap-2 pt-0.5">
+              <label className="text-xs uppercase tracking-wide text-faint">Versions</label>
+              <Select
+                data-debug-id="artifact-viewer-version-select"
+                value={versionSelectValue}
+                onChange={(nextValue) => {
+                  setSelectedVersionNo(nextValue === 'HEAD' ? null : Number(nextValue));
+                }}
+              >
+                <option value="HEAD">Head v{currentHeadVersionNo || '?'}</option>
+                {versions.filter((version) => Number(version.version_no) !== currentHeadVersionNo).map((version) => (
+                  <option key={version.version_no} value={String(version.version_no)}>v{version.version_no}</option>
+                ))}
+              </Select>
+            </div>
+          ) : null}
         </div>
-        <div className="overflow-auto p-5">
+        <div className="overflow-auto p-3 sm:p-5">
           <div className="space-y-4">
             {loading && <div className="text-sm text-muted">Loading artifact…</div>}
             {!loading && error && <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">{error}</div>}

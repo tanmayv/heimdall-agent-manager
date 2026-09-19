@@ -471,6 +471,12 @@ export default function ProjectFilesPanel({
     };
   }, [isOverflowOpen]);
 
+  useEffect(() => {
+    if (!isOverflowOpen) {
+      setConfirmRevertOpen(false);
+    }
+  }, [isOverflowOpen]);
+
   // REQ-UI-MOBILE-SINGLE-PANE: Viewport < 640px or sidebar width < 480px single-pane layout
   const [containerWidth, setContainerWidth] = useState<number>(800);
   const [viewportWidth, setViewportWidth] = useState<number>(1024);
@@ -1444,6 +1450,337 @@ export default function ProjectFilesPanel({
     setNameDraft(action?.kind === 'rename' ? action.entry.name : '');
   }
 
+  // ---- Render Helpers --------------------------------------------------------
+
+  const renderVcsPopover = () => {
+    if (!isLogPopoverOpen || !logPopoverRect || typeof document === 'undefined') return null;
+    const width = Math.min(320, typeof window !== 'undefined' ? window.innerWidth - 16 : 320);
+    const left = Math.max(
+      8,
+      Math.min(logPopoverRect.right - width, (typeof window !== 'undefined' ? window.innerWidth : 400) - width - 8),
+    );
+    return createPortal(
+      <div
+        ref={logMenuRef}
+        data-debug-id="vcs-quick-log-popover"
+        style={{
+          position: 'fixed',
+          top: `${logPopoverRect.bottom + 4}px`,
+          left: `${left}px`,
+          width: `${width}px`,
+          maxWidth: 'calc(100vw - 16px)',
+        }}
+        className="z-50 rounded-lg border border-subtle bg-surface-raised p-2 shadow-xl text-[12px] flex flex-col gap-1.5 max-h-72 overflow-y-auto"
+      >
+        <div className="flex items-center justify-between border-b border-subtle pb-1 font-semibold text-primary text-[12px]">
+          <span>Recent VCS Log ({vcsStatus?.provider})</span>
+          <span className="text-[10px] text-muted">{branchName}</span>
+        </div>
+        {vcsLogEntries.length === 0 ? (
+          <div className="p-3 text-center text-xs text-muted">No log entries found.</div>
+        ) : (
+          vcsLogEntries.map((e, idx) => (
+            <div
+              key={`${e.revision}-${idx}`}
+              className={`flex flex-col gap-0.5 rounded p-1.5 text-[11px] ${
+                e.is_current ? 'bg-accent/10 border border-accent/30' : 'hover:bg-neutral-soft'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-mono font-bold text-accent">
+                  {e.revision ? e.revision.slice(0, 8) : ''}
+                  {e.cl_number ? ` (CL ${e.cl_number})` : ''}
+                </span>
+                {e.is_current ? (
+                  <span className="rounded bg-accent px-1 py-0.2 text-[9px] font-bold text-white">
+                    Current
+                  </span>
+                ) : null}
+                <span className="text-faint text-[10px]">{formatModified(e.timestamp)}</span>
+              </div>
+              <span className="text-primary truncate font-medium">{e.title || 'No message'}</span>
+              {e.author ? <span className="text-faint text-[10px]">by {e.author}</span> : null}
+            </div>
+          ))
+        )}
+      </div>,
+      document.body,
+    );
+  };
+
+  const renderOverflowDropdown = () => {
+    if (!isOverflowOpen || !overflowRect || typeof document === 'undefined') return null;
+    const width = Math.min(224, typeof window !== 'undefined' ? window.innerWidth - 16 : 224);
+    const left = Math.max(
+      8,
+      Math.min(overflowRect.right - width, (typeof window !== 'undefined' ? window.innerWidth : 400) - width - 8),
+    );
+    return createPortal(
+      <div
+        ref={overflowMenuRef}
+        data-debug-id={`${debugPrefix}-overflow-dropdown`}
+        style={{
+          position: 'fixed',
+          top: `${overflowRect.bottom + 4}px`,
+          left: `${left}px`,
+          width: `${width}px`,
+          maxWidth: 'calc(100vw - 16px)',
+        }}
+        className="z-50 rounded-lg border border-subtle bg-surface-raised p-1 shadow-lg text-[12px] flex flex-col gap-0.5"
+      >
+        {/* File actions moved to 3-dots: Save, Stage, Discard/Revert (REQ-TOOLBAR-ACTIONS-3DOTS) */}
+        {activeEditorTab ? (
+          <>
+            {/* Save Active File */}
+            <button
+              data-debug-id="editor-save-btn"
+              type="button"
+              disabled={writeState.isLoading || !activeEditorTab.isDirty || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+              onClick={() => {
+                setIsOverflowOpen(false);
+                void saveActiveFile();
+              }}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40 ${
+                activeEditorTab.isDirty ? 'text-accent font-medium' : ''
+              }`}
+              title="Save active file (Cmd+S / Ctrl+S)"
+            >
+              <Icon name={writeState.isLoading ? 'refresh' : 'save'} size={14} className={writeState.isLoading ? 'animate-spin' : undefined} />
+              <span>Save File {activeEditorTab.isDirty ? '•' : ''}</span>
+            </button>
+
+            {/* Stage Active File */}
+            <button
+              data-debug-id="editor-stage-file-btn"
+              type="button"
+              disabled={isVcsActionLoading || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+              onClick={() => {
+                setIsOverflowOpen(false);
+                void handleStageActiveFile();
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40"
+              title="Stage active file"
+            >
+              <Icon name="plus" size={14} />
+              <span>Stage File</span>
+            </button>
+
+            {/* Discard / Revert Active File */}
+            {confirmRevertOpen ? (
+              <div className="flex w-full items-center justify-between rounded px-2 py-1.5 bg-surface-raised border border-danger/40 text-[11px]">
+                <span className="text-danger font-semibold">Discard?</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    data-debug-id="editor-revert-confirm-btn"
+                    type="button"
+                    disabled={isVcsActionLoading}
+                    onClick={() => {
+                      setIsOverflowOpen(false);
+                      setConfirmRevertOpen(false);
+                      void handleDiscardActiveFile();
+                    }}
+                    className="rounded bg-danger px-2 py-0.5 text-[10px] font-bold text-white hover:opacity-90"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    data-debug-id="editor-revert-cancel-btn"
+                    type="button"
+                    onClick={() => setConfirmRevertOpen(false)}
+                    className="rounded px-1.5 py-0.5 text-[10px] text-muted hover:text-primary"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                data-debug-id="editor-revert-btn"
+                type="button"
+                disabled={isVcsActionLoading || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+                onClick={() => setConfirmRevertOpen(true)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-danger/10 hover:text-danger transition-colors disabled:opacity-40"
+                title="Discard / Revert changes"
+              >
+                <Icon name="trash" size={14} />
+                <span>Discard Changes</span>
+              </button>
+            )}
+
+            <div className="my-1 border-t border-subtle/60" />
+          </>
+        ) : null}
+
+        {/* 1. New File */}
+        <button
+          data-debug-id={`${debugPrefix}-new-file-btn`}
+          type="button"
+          onClick={() => {
+            setIsOverflowOpen(false);
+            if (isExplorerCollapsed) updateExplorerCollapsed(false);
+            if (isSinglePane) setActivePane('files');
+            beginAction({ kind: 'new-file' });
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+        >
+          <Icon name="plus" size={14} />
+          <span>New File</span>
+        </button>
+
+        {/* 2. New Folder */}
+        <button
+          data-debug-id={`${debugPrefix}-new-dir-btn`}
+          type="button"
+          onClick={() => {
+            setIsOverflowOpen(false);
+            if (isExplorerCollapsed) updateExplorerCollapsed(false);
+            if (isSinglePane) setActivePane('files');
+            beginAction({ kind: 'new-dir' });
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+        >
+          <Icon name="folder" size={14} />
+          <span>New Folder</span>
+        </button>
+
+        {/* 3. Toggle Hidden Files */}
+        <button
+          data-debug-id={`${debugPrefix}-hidden-toggle`}
+          type="button"
+          onClick={() => {
+            setIsOverflowOpen(false);
+            setIncludeHidden((v) => !v);
+          }}
+          aria-pressed={includeHidden ? 'true' : 'false'}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+        >
+          <Icon name={includeHidden ? 'eye' : 'eye-off'} size={14} />
+          <span>{includeHidden ? 'Hide Hidden Files' : 'Show Hidden Files'}</span>
+        </button>
+
+        {/* 4. Refresh Explorer */}
+        <button
+          data-debug-id={`${debugPrefix}-refresh-btn`}
+          type="button"
+          onClick={() => {
+            setIsOverflowOpen(false);
+            refresh();
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+        >
+          <Icon name="refresh" size={14} />
+          <span>Refresh Explorer</span>
+        </button>
+
+        <div className="my-1 border-t border-subtle/60" />
+
+        {/* 5. Toggle In-Editor Diff */}
+        <button
+          data-debug-id="editor-toggle-diff-btn"
+          type="button"
+          disabled={!activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+          onClick={() => {
+            setIsOverflowOpen(false);
+            setIsDiffMode((prev) => !prev);
+          }}
+          aria-pressed={isDiffMode ? 'true' : 'false'}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40"
+        >
+          <span className="font-mono font-bold text-xs leading-none">±</span>
+          <span>{isDiffMode ? 'Standard Editor' : 'Toggle In-Editor Diff'}</span>
+          {isDiffMode ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+        </button>
+
+        {/* 6. Toggle Vim Mode */}
+        <button
+          data-debug-id={`${debugPrefix}-toggle-vim-btn`}
+          type="button"
+          onClick={() => {
+            setIsOverflowOpen(false);
+            toggleVimMode();
+          }}
+          aria-pressed={isVimMode ? 'true' : 'false'}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+        >
+          <span className="font-mono font-bold text-xs leading-none">V</span>
+          <span>Toggle Vim Mode</span>
+          {isVimMode ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+        </button>
+
+        {/* Toggle Word Wrap (REQ-UI-MOBILE-WORD-WRAP) */}
+        <button
+          data-debug-id={`${debugPrefix}-toggle-word-wrap-btn`}
+          type="button"
+          onClick={() => {
+            setIsOverflowOpen(false);
+            toggleWordWrap();
+          }}
+          aria-pressed={isWordWrap ? 'true' : 'false'}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+        >
+          <Icon name="pencil" size={14} />
+          <span>Toggle Word Wrap</span>
+          {isWordWrap ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+        </button>
+
+        {/* 7. Save All Files */}
+        <button
+          data-debug-id="editor-save-all-btn"
+          type="button"
+          disabled={batchWriteState.isLoading || openTabs.filter((t) => t.isDirty).length === 0}
+          onClick={() => {
+            setIsOverflowOpen(false);
+            saveAllFiles();
+          }}
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40"
+        >
+          <Icon name="save" size={14} />
+          <span>Save All Files {openTabs.filter((t) => t.isDirty).length > 0 ? `(${openTabs.filter((t) => t.isDirty).length})` : ''}</span>
+        </button>
+
+        <div className="my-1 border-t border-subtle/60" />
+
+        {/* 8. Comment on Current File / Folder */}
+        {activeEditorTab ? (
+          <button
+            data-debug-id={`${debugPrefix}-file-comment-btn`}
+            type="button"
+            onClick={() => {
+              setIsOverflowOpen(false);
+              setPathCommentDraft('');
+              setPathCommentFor({
+                path: activeEditorTab.path,
+                label: `file: ${baseName(activeEditorTab.path)}`,
+              });
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+          >
+            <Icon name="chat" size={14} />
+            <span>Comment on Active File</span>
+          </button>
+        ) : (
+          <button
+            data-debug-id={`${debugPrefix}-folder-comment-btn`}
+            type="button"
+            onClick={() => {
+              setIsOverflowOpen(false);
+              setPathCommentDraft('');
+              setPathCommentFor({
+                path: cwd || '/',
+                label: `folder: ${cwd || 'project root'}`,
+              });
+            }}
+            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+          >
+            <Icon name="chat" size={14} />
+            <span>Comment on Current Folder</span>
+          </button>
+        )}
+      </div>,
+      document.body,
+    );
+  };
+
   // ---- Render ---------------------------------------------------------------
 
   const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-surface';
@@ -1486,639 +1823,520 @@ export default function ProjectFilesPanel({
         </div>
       ) : (
         <>
-          {/* Unified 40px Top Icon Bar */}
+          {/* Unified Top Icon Bar (2 rows on mobile, single row on desktop) */}
           <div
             data-debug-id={`${debugPrefix}-unified-top-bar`}
-            className="relative z-20 flex h-[44px] min-h-[34px] w-full shrink-0 items-center justify-between border-b border-subtle bg-surface px-2 gap-2 text-[12px] select-none overflow-x-auto overflow-y-hidden flex-nowrap [-webkit-overflow-scrolling:touch] no-scrollbar"
+            className={`relative z-20 flex w-full shrink-0 border-b border-subtle bg-surface px-2 text-[12px] select-none ${
+              isMobile || isSinglePane
+                ? 'flex-col min-h-[34px] py-1 gap-1'
+                : 'h-[44px] min-h-[34px] items-center justify-between gap-2 overflow-x-auto overflow-y-hidden flex-nowrap [-webkit-overflow-scrolling:touch] no-scrollbar'
+            }`}
           >
-            {/* Left section: Strictly 3 primary icons + breadcrumb:
-                1) Explorer / Back to Files toggle button
-                2) Quick Open (search icon)
-                3) Save active file (save icon, highlighted when dirty)
-                4) Active file path breadcrumb (with ellipsis on narrow widths)
-            */}
-            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
-              {/* Mobile single-pane: '← Files' back button when in Editor mode */}
-              {isSinglePane && activePane === 'editor' ? (
-                <button
-                  data-debug-id={`${debugPrefix}-mobile-back-files-btn`}
-                  type="button"
-                  onClick={() => {
-                    setActivePane('files');
-                    setIsExplorerCollapsed(false);
-                  }}
-                  className="inline-flex items-center gap-1 rounded bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-neutral-soft border border-subtle shrink-0"
-                  title="Back to file explorer"
-                  aria-label="Back to file explorer"
-                >
-                  <Icon name="arrow-left" size={12} />
-                  <span>← Files</span>
-                </button>
-              ) : null}
-
-              {/* Mobile single-pane: Segmented switcher [ Files | Editor ] */}
-              {isSinglePane ? (
-                <div
-                  data-debug-id={`${debugPrefix}-mobile-segmented-switcher`}
-                  className="inline-flex items-center rounded bg-neutral-soft p-0.5 text-[11px] font-medium shrink-0"
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActivePane('files');
-                      setIsExplorerCollapsed(false);
-                    }}
-                    className={`rounded px-1.5 py-0.5 transition-colors ${
-                      activePane === 'files'
-                        ? 'bg-surface text-primary shadow-xs font-semibold'
-                        : 'text-muted hover:text-primary'
-                    }`}
-                  >
-                    Files
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (openTabs.length > 0) {
-                        setActivePane('editor');
-                        setIsExplorerCollapsed(true);
-                      }
-                    }}
-                    disabled={openTabs.length === 0}
-                    className={`rounded px-1.5 py-0.5 transition-colors disabled:opacity-40 ${
-                      activePane === 'editor'
-                        ? 'bg-surface text-primary shadow-xs font-semibold'
-                        : 'text-muted hover:text-primary'
-                    }`}
-                  >
-                    Editor{openTabs.length > 0 ? ` (${openTabs.length})` : ''}
-                  </button>
-                </div>
-              ) : null}
-
-              {/* 1) Explorer / Back to Files toggle button */}
-              <button
-                data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
-                type="button"
-                onClick={() => {
-                  if (isSinglePane) {
-                    setActivePane((p) => (p === 'files' ? 'editor' : 'files'));
-                  } else {
-                    updateExplorerCollapsed((prev) => !prev);
-                  }
-                }}
-                title={
-                  isSinglePane
-                    ? activePane === 'files'
-                      ? 'Switch to editor'
-                      : 'Back to files'
-                    : isExplorerCollapsed
-                    ? 'Expand file explorer'
-                    : 'Collapse file explorer'
-                }
-                aria-label={
-                  isSinglePane
-                    ? activePane === 'files'
-                      ? 'Switch to editor'
-                      : 'Back to files'
-                    : isExplorerCollapsed
-                    ? 'Expand file explorer'
-                    : 'Collapse file explorer'
-                }
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
-              >
-                <Icon name="panel-left" size={20} />
-              </button>
-
-              {/* 2) Quick Open (search icon, Cmd+P / Ctrl+P) */}
-              <button
-                data-debug-id={`${debugPrefix}-quick-open-btn`}
-                type="button"
-                onClick={() => (onOpenQuickOpen ? onOpenQuickOpen() : setIsQuickOpenOpen(true))}
-                title="Quick open file (Cmd+P / Ctrl+P)"
-                aria-label="Quick open file"
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
-              >
-                <Icon name="search" size={20} />
-              </button>
-
-              {/* 3) Save active file (save icon, highlighted when dirty) */}
-              <button
-                data-debug-id="editor-save-btn"
-                type="button"
-                disabled={!activeEditorTab || writeState.isLoading || !activeEditorTab.isDirty || activeEditorTab.isImage || activeEditorTab.isUnviewable}
-                onClick={saveActiveFile}
-                className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-xl text-[11px] font-semibold transition-colors disabled:opacity-40 shrink-0 ${
-                  activeEditorTab?.isDirty
-                    ? 'bg-accent text-accent-fg hover:opacity-90 shadow-xs'
-                    : 'hover:bg-neutral-soft text-muted hover:text-primary'
-                }`}
-                title="Save active file (Cmd+S / Ctrl+S)"
-                aria-label="Save active file"
-              >
-                {writeState.isLoading ? (
-                  <Icon name="refresh" size={18} className="animate-spin" />
-                ) : (
-                  <Icon name="save" size={18} />
-                )}
-                <span className="hidden sm:inline">Save</span>
-              </button>
-
-              {/* Stage / Add active file */}
-              {activeEditorTab ? (
-                <button
-                  data-debug-id="editor-stage-file-btn"
-                  type="button"
-                  disabled={isVcsActionLoading || activeEditorTab.isImage || activeEditorTab.isUnviewable}
-                  onClick={handleStageActiveFile}
-                  className="inline-flex items-center justify-center gap-1.5 h-9 px-2.5 rounded-xl text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40 shrink-0"
-                  title="Stage / Add file (git add / hg add)"
-                >
-                  <Icon name="plus" size={18} />
-                  <span className="hidden sm:inline">Stage</span>
-                </button>
-              ) : null}
-
-              {/* Revert / Discard active file */}
-              {activeEditorTab ? (
-                confirmRevertOpen ? (
-                  <div className="inline-flex items-center gap-1 bg-surface-raised border border-danger/40 rounded-xl px-2.5 h-9 shrink-0 shadow-xs">
-                    <span className="text-[10px] text-danger font-semibold">Discard?</span>
+            {isMobile || isSinglePane ? (
+              <>
+                {/* Row 1: Navigation, Breadcrumb, and 3-dots Menu */}
+                <div className="flex w-full items-center gap-1.5 overflow-hidden min-h-[32px]">
+                  {/* Mobile single-pane: '← Files' back button when in Editor mode */}
+                  {isSinglePane && activePane === 'editor' ? (
                     <button
-                      data-debug-id="editor-revert-confirm-btn"
+                      data-debug-id={`${debugPrefix}-mobile-back-files-btn`}
                       type="button"
-                      disabled={isVcsActionLoading}
-                      onClick={handleDiscardActiveFile}
-                      className="rounded bg-danger px-1.5 py-0.5 text-[10px] font-bold text-white hover:opacity-90"
+                      onClick={() => {
+                        setActivePane('files');
+                        setIsExplorerCollapsed(false);
+                      }}
+                      className="inline-flex items-center gap-1 rounded bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-neutral-soft border border-subtle shrink-0"
+                      title="Back to file explorer"
+                      aria-label="Back to file explorer"
                     >
-                      Yes
+                      <Icon name="arrow-left" size={12} />
+                      <span>← Files</span>
                     </button>
-                    <button
-                      data-debug-id="editor-revert-cancel-btn"
-                      type="button"
-                      onClick={() => setConfirmRevertOpen(false)}
-                      className="rounded px-1 text-[10px] text-muted hover:text-primary"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    data-debug-id="editor-revert-file-btn"
-                    type="button"
-                    disabled={isVcsActionLoading || activeEditorTab.isImage || activeEditorTab.isUnviewable}
-                    onClick={() => setConfirmRevertOpen(true)}
-                    className="inline-flex items-center justify-center gap-1.5 h-9 px-2.5 rounded-xl text-[11px] font-medium text-muted hover:bg-danger/10 hover:text-danger hover:border-danger/30 transition-colors disabled:opacity-40 shrink-0"
-                    title="Discard / Revert changes (git restore / hg revert)"
-                  >
-                    <Icon name="trash" size={18} />
-                    <span className="hidden sm:inline">Revert</span>
-                  </button>
-                )
-              ) : null}
-
-              {/* In-Editor Diff Toggle */}
-              {activeEditorTab ? (
-                <button
-                  data-debug-id="editor-toggle-diff-btn-toolbar"
-                  type="button"
-                  disabled={activeEditorTab.isImage || activeEditorTab.isUnviewable}
-                  onClick={() => setIsDiffMode((prev) => !prev)}
-                  className={`inline-flex items-center justify-center gap-1.5 h-9 px-2.5 rounded-xl text-[11px] font-medium transition-colors disabled:opacity-40 shrink-0 ${
-                    isDiffMode
-                      ? 'border border-accent bg-accent/15 text-accent font-semibold'
-                      : 'hover:bg-neutral-soft text-muted hover:text-primary'
-                  }`}
-                  title={isDiffMode ? 'Switch to Standard Editor' : 'Toggle In-Editor Diff'}
-                >
-                  <span className="font-mono font-bold text-xs leading-none">±</span>
-                  <span className="hidden sm:inline">Diff</span>
-                </button>
-              ) : null}
-
-              {/* Diff Against Dropdown when in Diff Mode */}
-              {isDiffMode && activeEditorTab && vcsTargets.length > 0 ? (
-                <div
-                  data-debug-id="editor-diff-target-container"
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-surface-raised border border-subtle px-2.5 h-9 text-[11px] shrink-0"
-                >
-                  <span className="text-muted text-[10.5px]">Diff against:</span>
-                  <Select
-                    data-debug-id="editor-diff-target-select"
-                    value={selectedDiffTarget}
-                    onChange={(val) => setSelectedDiffTarget(val)}
-                    size="sm"
-                  >
-                    {vcsTargets.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.label}{t.is_default ? ' (default)' : ''}
-                      </option>
-                    ))}
-                  </Select>
-                  {isFetchingBaseContent ? (
-                    <Icon name="refresh" size={15} className="animate-spin text-muted" />
                   ) : null}
-                </div>
-              ) : null}
 
-              {/* 4) Active file path breadcrumb (with ellipsis on narrow widths) */}
-              <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden truncate pl-1 text-[11.5px] text-muted">
-                {activeEditorTab ? (
-                  <span className="truncate font-mono text-[11.5px] text-primary/80" title={activeEditorTab.path}>
-                    {activeEditorTab.path}
-                  </span>
-                ) : (
-                  crumbs.map((c, i) => (
-                    <span key={c.path || 'root'} className="flex shrink-0 items-center gap-0.5">
-                      {i > 0 ? <Icon name="chevron-right" size={10} className="text-faint" /> : null}
-                      <button
-                        data-debug-id={`${debugPrefix}-crumb-${i}`}
-                        type="button"
-                        onClick={() => openDir(c.path)}
-                        disabled={i === crumbs.length - 1}
-                        className="max-w-[120px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
-                      >
-                        {c.label}
-                      </button>
-                    </span>
-                  ))
-                )}
-              </div>
-
-              {openTabs.length > 0 && !isExplorerCollapsed && !isSinglePane ? (
-                <button
-                  data-debug-id={`${debugPrefix}-toolbar-editor-btn`}
-                  type="button"
-                  onClick={() => {
-                    setIsEditMode(true);
-                  }}
-                  className="hidden md:inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/15 shrink-0"
-                  title="Focus open editor tab"
-                >
-                  <Icon name="pencil" size={11} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
-                </button>
-              ) : null}
-            </div>
-
-            {/* Right section: Toast feedback, Persistent VCS chip, Commit button, Vim badge, and 3-dots overflow menu */}
-            <div className="flex shrink-0 items-center gap-1.5 pl-2">
-              {/* Save toast feedback */}
-              {saveFeedback ? (
-                <div
-                  data-debug-id={`${debugPrefix}-save-toast`}
-                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-all shrink-0 ${
-                    saveFeedback.type === 'success'
-                      ? 'bg-success-soft text-success border border-success/30'
-                      : saveFeedback.type === 'warning'
-                      ? 'bg-warning-soft text-warning border border-warning/30'
-                      : 'bg-danger-soft text-danger border border-danger/30'
-                  }`}
-                >
-                  <Icon name={saveFeedback.type === 'success' ? 'check' : 'alert'} size={11} />
-                  <span className="truncate max-w-[120px]">{saveFeedback.message}</span>
-                </div>
-              ) : null}
-
-              {/* Persistent VCS Status Bar Chip */}
-              {isVcsActive ? (
-                <div className="relative shrink-0" ref={logPopoverRef}>
-                  <div
-                    data-debug-id={`${debugPrefix}-vcs-status-chip`}
+                  {/* 1) Explorer toggle */}
+                  <button
+                    data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
+                    type="button"
                     onClick={() => {
-                      if (!isLogPopoverOpen && logPopoverRef.current) {
-                        setLogPopoverRect(logPopoverRef.current.getBoundingClientRect());
+                      if (isSinglePane) {
+                        setActivePane((p) => (p === 'files' ? 'editor' : 'files'));
+                      } else {
+                        updateExplorerCollapsed((prev) => !prev);
                       }
-                      setIsLogPopoverOpen((prev) => !prev);
                     }}
-                    title="Click to view VCS log"
-                    className="inline-flex items-center gap-1.5 rounded-md border border-subtle bg-surface-raised px-2 py-0.5 text-[11px] text-muted hover:bg-neutral-soft hover:text-primary cursor-pointer transition-colors select-none"
+                    title={
+                      isSinglePane
+                        ? activePane === 'files'
+                          ? 'Switch to editor'
+                          : 'Back to files'
+                        : isExplorerCollapsed
+                        ? 'Expand file explorer'
+                        : 'Collapse file explorer'
+                    }
+                    aria-label={
+                      isSinglePane
+                        ? activePane === 'files'
+                          ? 'Switch to editor'
+                          : 'Back to files'
+                        : isExplorerCollapsed
+                        ? 'Expand file explorer'
+                        : 'Collapse file explorer'
+                    }
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
                   >
-                    {/* Branch / Bookmark badge */}
-                    <span data-debug-id="vcs-branch-badge" className="inline-flex items-center gap-1 font-medium text-primary">
-                      <Icon name="folder" size={11} className="text-accent" />
-                      <span className="max-w-[90px] truncate">{branchName}</span>
-                    </span>
+                    <Icon name="panel-left" size={18} />
+                  </button>
 
-                    {/* CL number badge (if Fig) */}
-                    {isFig && currentCl ? (
-                      <span
-                        data-debug-id="vcs-cl-badge"
-                        className="rounded bg-accent/15 px-1 text-[10px] font-mono font-semibold text-accent"
-                        title={`Current CL ${currentCl}`}
-                      >
-                        CL {currentCl}
-                      </span>
-                    ) : null}
+                  {/* 2) Quick Open (search icon) */}
+                  <button
+                    data-debug-id={`${debugPrefix}-quick-open-btn`}
+                    type="button"
+                    onClick={() => (onOpenQuickOpen ? onOpenQuickOpen() : setIsQuickOpenOpen(true))}
+                    title="Quick open file (Cmd+P / Ctrl+P)"
+                    aria-label="Quick open file"
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
+                  >
+                    <Icon name="search" size={18} />
+                  </button>
 
-                    {/* Ahead / behind */}
-                    {ahead > 0 ? (
-                      <span className="text-success text-[10px] font-semibold" title={`${ahead} commits ahead`}>
-                        ↑{ahead}
+                  {/* 3) Active file path breadcrumb */}
+                  <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden truncate pl-1 text-[11.5px] text-muted">
+                    {activeEditorTab ? (
+                      <span className="truncate font-mono text-[11.5px] text-primary/80" title={activeEditorTab.path}>
+                        {activeEditorTab.path}
                       </span>
-                    ) : null}
-                    {behind > 0 ? (
-                      <span className="text-warning text-[10px] font-semibold" title={`${behind} commits behind`}>
-                        ↓{behind}
-                      </span>
-                    ) : null}
-
-                    {/* Modified file count badge */}
-                    <span
-                      data-debug-id="vcs-modified-badge"
-                      className={`rounded-full px-1.5 py-0.2 text-[10px] font-bold ${
-                        modifiedFilesCount > 0 ? 'bg-accent/20 text-accent' : 'bg-neutral-soft text-muted'
-                      }`}
-                      title={`${modifiedFilesCount} modified ${modifiedFilesCount === 1 ? 'file' : 'files'}`}
-                    >
-                      {modifiedFilesCount}
-                    </span>
+                    ) : (
+                      crumbs.map((c, i) => (
+                        <span key={c.path || 'root'} className="flex shrink-0 items-center gap-0.5">
+                          {i > 0 ? <Icon name="chevron-right" size={10} className="text-faint" /> : null}
+                          <button
+                            data-debug-id={`${debugPrefix}-crumb-${i}`}
+                            type="button"
+                            onClick={() => openDir(c.path)}
+                            disabled={i === crumbs.length - 1}
+                            className="max-w-[120px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
+                          >
+                            {c.label}
+                          </button>
+                        </span>
+                      ))
+                    )}
                   </div>
 
-                  {/* Quick Log Popover */}
-                  {isLogPopoverOpen && logPopoverRect && typeof document !== 'undefined'
-                    ? createPortal(
-                        <div
-                          ref={logMenuRef}
-                          data-debug-id="vcs-quick-log-popover"
-                          style={{
-                            position: 'fixed',
-                            top: `${logPopoverRect.bottom + 4}px`,
-                            right: `${Math.max(8, window.innerWidth - logPopoverRect.right)}px`,
-                          }}
-                          className="z-50 w-80 rounded-lg border border-subtle bg-surface-raised p-2 shadow-xl text-[12px] flex flex-col gap-1.5 max-h-72 overflow-y-auto"
-                        >
-                          <div className="flex items-center justify-between border-b border-subtle pb-1 font-semibold text-primary text-[12px]">
-                            <span>Recent VCS Log ({vcsStatus?.provider})</span>
-                            <span className="text-[10px] text-muted">{branchName}</span>
-                          </div>
-                          {vcsLogEntries.length === 0 ? (
-                            <div className="p-3 text-center text-xs text-muted">No log entries found.</div>
-                          ) : (
-                            vcsLogEntries.map((e, idx) => (
-                              <div
-                                key={`${e.revision}-${idx}`}
-                                className={`flex flex-col gap-0.5 rounded p-1.5 text-[11px] ${
-                                  e.is_current ? 'bg-accent/10 border border-accent/30' : 'hover:bg-neutral-soft'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between">
-                                  <span className="font-mono font-bold text-accent">
-                                    {e.revision ? e.revision.slice(0, 8) : ''}
-                                    {e.cl_number ? ` (CL ${e.cl_number})` : ''}
-                                  </span>
-                                  {e.is_current ? (
-                                    <span className="rounded bg-accent px-1 py-0.2 text-[9px] font-bold text-white">
-                                      Current
-                                    </span>
-                                  ) : null}
-                                  <span className="text-faint text-[10px]">{formatModified(e.timestamp)}</span>
-                                </div>
-                                <span className="text-primary truncate font-medium">{e.title || 'No message'}</span>
-                                {e.author ? <span className="text-faint text-[10px]">by {e.author}</span> : null}
-                              </div>
-                            ))
-                          )}
-                        </div>,
-                        document.body,
-                      )
-                    : null}
+                  {/* 4) 3-dots overflow menu button */}
+                  <div className="relative shrink-0" ref={overflowRef}>
+                    <button
+                      data-debug-id={`${debugPrefix}-overflow-menu-btn`}
+                      type="button"
+                      onClick={() => {
+                        if (!isOverflowOpen && overflowRef.current) {
+                          setOverflowRect(overflowRef.current.getBoundingClientRect());
+                        }
+                        setIsOverflowOpen((prev) => !prev);
+                      }}
+                      aria-haspopup="true"
+                      aria-expanded={isOverflowOpen ? 'true' : 'false'}
+                      title="More actions"
+                      aria-label="More actions"
+                      className={`grid h-8 w-8 place-items-center rounded-lg transition-colors ${
+                        isOverflowOpen ? 'bg-neutral-soft text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                      }`}
+                    >
+                      <Icon name="more-vertical" size={18} />
+                    </button>
+                    {renderOverflowDropdown()}
+                  </div>
                 </div>
-              ) : null}
 
-              {/* Commit Button */}
-              {isVcsActive ? (
-                <button
-                  data-debug-id="editor-commit-btn"
-                  type="button"
-                  onClick={() => {
-                    setCommitError('');
-                    setIsCommitModalOpen(true);
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3 h-9 text-[11px] font-semibold text-accent-fg hover:opacity-90 transition-opacity shrink-0 shadow-xs"
-                  title="Commit changes"
-                >
-                  <Icon name="check" size={18} />
-                  <span>Commit{modifiedFilesCount > 0 ? ` (${modifiedFilesCount})` : ''}</span>
-                </button>
-              ) : null}
-
-              {/* Optional compact VIM badge in top bar */}
-              {isVimMode ? (
-                <button
-                  data-debug-id={`${debugPrefix}-vim-badge`}
-                  type="button"
-                  onClick={toggleVimMode}
-                  title="Vim mode active (click to toggle)"
-                  className="rounded-xl bg-accent/20 px-2.5 h-9 text-[10.5px] font-mono font-bold text-accent hover:bg-accent/30 transition-colors shrink-0"
-                >
-                  VIM
-                </button>
-              ) : null}
-
-              {/* Clean 3-dots overflow dropdown menu */}
-              <div className="relative shrink-0" ref={overflowRef}>
-                <button
-                  data-debug-id={`${debugPrefix}-overflow-menu-btn`}
-                  type="button"
-                  onClick={() => {
-                    if (!isOverflowOpen && overflowRef.current) {
-                      setOverflowRect(overflowRef.current.getBoundingClientRect());
-                    }
-                    setIsOverflowOpen((prev) => !prev);
-                  }}
-                  aria-haspopup="true"
-                  aria-expanded={isOverflowOpen ? 'true' : 'false'}
-                  title="More actions"
-                  aria-label="More actions"
-                  className={`grid h-9 w-9 place-items-center rounded-xl transition-colors ${
-                    isOverflowOpen ? 'bg-neutral-soft text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
-                  }`}
-                >
-                  <Icon name="more-vertical" size={20} />
-                </button>
-
-                {isOverflowOpen && overflowRect && typeof document !== 'undefined'
-                  ? createPortal(
+                {/* Row 2: VCS branch & status chip, Diff toggle / Diff against selector, Commit button, VIM mode badge */}
+                <div className="flex w-full items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 min-h-[30px]">
+                  {saveFeedback ? (
                     <div
-                      ref={overflowMenuRef}
-                      data-debug-id={`${debugPrefix}-overflow-dropdown`}
-                      style={{
-                        position: 'fixed',
-                        top: `${overflowRect.bottom + 4}px`,
-                        right: `${Math.max(8, window.innerWidth - overflowRect.right)}px`,
-                      }}
-                      className="z-50 w-56 rounded-lg border border-subtle bg-surface-raised p-1 shadow-lg text-[12px] flex flex-col gap-0.5"
+                      data-debug-id={`${debugPrefix}-save-toast`}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-all shrink-0 ${
+                        saveFeedback.type === 'success'
+                          ? 'bg-success-soft text-success border border-success/30'
+                          : saveFeedback.type === 'warning'
+                          ? 'bg-warning-soft text-warning border border-warning/30'
+                          : 'bg-danger-soft text-danger border border-danger/30'
+                      }`}
                     >
-                    {/* 1. New File */}
-                    <button
-                      data-debug-id={`${debugPrefix}-new-file-btn`}
-                      type="button"
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        if (isExplorerCollapsed) updateExplorerCollapsed(false);
-                        if (isSinglePane) setActivePane('files');
-                        beginAction({ kind: 'new-file' });
-                      }}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-                    >
-                      <Icon name="plus" size={14} />
-                      <span>New File</span>
-                    </button>
+                      <Icon name={saveFeedback.type === 'success' ? 'check' : 'alert'} size={11} />
+                      <span className="truncate max-w-[120px]">{saveFeedback.message}</span>
+                    </div>
+                  ) : null}
 
-                    {/* 2. New Folder */}
-                    <button
-                      data-debug-id={`${debugPrefix}-new-dir-btn`}
-                      type="button"
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        if (isExplorerCollapsed) updateExplorerCollapsed(false);
-                        if (isSinglePane) setActivePane('files');
-                        beginAction({ kind: 'new-dir' });
-                      }}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-                    >
-                      <Icon name="folder" size={14} />
-                      <span>New Folder</span>
-                    </button>
+                  {/* Persistent VCS Status Bar Chip */}
+                  {isVcsActive ? (
+                    <div className="relative shrink-0" ref={logPopoverRef}>
+                      <div
+                        data-debug-id={`${debugPrefix}-vcs-status-chip`}
+                        onClick={() => {
+                          if (!isLogPopoverOpen && logPopoverRef.current) {
+                            setLogPopoverRect(logPopoverRef.current.getBoundingClientRect());
+                          }
+                          setIsLogPopoverOpen((prev) => !prev);
+                        }}
+                        title="Click to view VCS log"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-subtle bg-surface-raised px-2 py-0.5 text-[11px] text-muted hover:bg-neutral-soft hover:text-primary cursor-pointer transition-colors select-none"
+                      >
+                        <span data-debug-id="vcs-branch-badge" className="inline-flex items-center gap-1 font-medium text-primary">
+                          <Icon name="folder" size={11} className="text-accent" />
+                          <span className="max-w-[90px] truncate">{branchName}</span>
+                        </span>
+                        {isFig && currentCl ? (
+                          <span
+                            data-debug-id="vcs-cl-badge"
+                            className="rounded bg-accent/15 px-1 text-[10px] font-mono font-semibold text-accent"
+                            title={`Current CL ${currentCl}`}
+                          >
+                            CL {currentCl}
+                          </span>
+                        ) : null}
+                        {ahead > 0 ? (
+                          <span className="text-success text-[10px] font-semibold" title={`${ahead} commits ahead`}>
+                            ↑{ahead}
+                          </span>
+                        ) : null}
+                        {behind > 0 ? (
+                          <span className="text-warning text-[10px] font-semibold" title={`${behind} commits behind`}>
+                            ↓{behind}
+                          </span>
+                        ) : null}
+                        <span
+                          data-debug-id="vcs-modified-badge"
+                          className={`rounded-full px-1.5 py-0.2 text-[10px] font-bold ${
+                            modifiedFilesCount > 0 ? 'bg-accent/20 text-accent' : 'bg-neutral-soft text-muted'
+                          }`}
+                          title={`${modifiedFilesCount} modified ${modifiedFilesCount === 1 ? 'file' : 'files'}`}
+                        >
+                          {modifiedFilesCount}
+                        </span>
+                      </div>
+                      {renderVcsPopover()}
+                    </div>
+                  ) : null}
 
-                    {/* 3. Toggle Hidden Files */}
+                  {/* In-Editor Diff Toggle */}
+                  {activeEditorTab ? (
                     <button
-                      data-debug-id={`${debugPrefix}-hidden-toggle`}
+                      data-debug-id="editor-toggle-diff-btn-toolbar"
                       type="button"
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        setIncludeHidden((v) => !v);
-                      }}
-                      aria-pressed={includeHidden ? 'true' : 'false'}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-                    >
-                      <Icon name={includeHidden ? 'eye' : 'eye-off'} size={14} />
-                      <span>{includeHidden ? 'Hide Hidden Files' : 'Show Hidden Files'}</span>
-                    </button>
-
-                    {/* 4. Refresh Explorer */}
-                    <button
-                      data-debug-id={`${debugPrefix}-refresh-btn`}
-                      type="button"
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        refresh();
-                      }}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-                    >
-                      <Icon name="refresh" size={14} />
-                      <span>Refresh Explorer</span>
-                    </button>
-
-                    <div className="my-1 border-t border-subtle/60" />
-
-                    {/* 5. Toggle In-Editor Diff */}
-                    <button
-                      data-debug-id="editor-toggle-diff-btn"
-                      type="button"
-                      disabled={!activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable}
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        setIsDiffMode((prev) => !prev);
-                      }}
-                      aria-pressed={isDiffMode ? 'true' : 'false'}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40"
+                      disabled={activeEditorTab.isImage || activeEditorTab.isUnviewable}
+                      onClick={() => setIsDiffMode((prev) => !prev)}
+                      className={`inline-flex items-center justify-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium transition-colors disabled:opacity-40 shrink-0 ${
+                        isDiffMode
+                          ? 'border border-accent bg-accent/15 text-accent font-semibold'
+                          : 'border border-subtle bg-surface-raised hover:bg-neutral-soft text-muted hover:text-primary'
+                      }`}
+                      title={isDiffMode ? 'Switch to Standard Editor' : 'Toggle In-Editor Diff'}
                     >
                       <span className="font-mono font-bold text-xs leading-none">±</span>
-                      <span>{isDiffMode ? 'Standard Editor' : 'Toggle In-Editor Diff'}</span>
-                      {isDiffMode ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+                      <span>Diff</span>
                     </button>
+                  ) : null}
 
-                    {/* 6. Toggle Vim Mode */}
+                  {/* Diff Against Dropdown when in Diff Mode */}
+                  {isDiffMode && activeEditorTab && vcsTargets.length > 0 ? (
+                    <div
+                      data-debug-id="editor-diff-target-container"
+                      className="inline-flex items-center gap-1 rounded-md bg-surface-raised border border-subtle px-1.5 h-7 text-[10.5px] shrink-0"
+                    >
+                      <span className="text-muted text-[10px]">Diff:</span>
+                      <Select
+                        data-debug-id="editor-diff-target-select"
+                        value={selectedDiffTarget}
+                        onChange={(val) => setSelectedDiffTarget(val)}
+                        size="sm"
+                      >
+                        {vcsTargets.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.label}{t.is_default ? ' (default)' : ''}
+                          </option>
+                        ))}
+                      </Select>
+                      {isFetchingBaseContent ? (
+                        <Icon name="refresh" size={12} className="animate-spin text-muted" />
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {/* Commit Button (subtle styling) */}
+                  {isVcsActive ? (
                     <button
-                      data-debug-id={`${debugPrefix}-toggle-vim-btn`}
+                      data-debug-id="editor-commit-btn"
                       type="button"
                       onClick={() => {
-                        setIsOverflowOpen(false);
-                        toggleVimMode();
+                        setCommitError('');
+                        setIsCommitModalOpen(true);
                       }}
-                      aria-pressed={isVimMode ? 'true' : 'false'}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                      className="inline-flex items-center gap-1.5 rounded-md border border-subtle bg-surface-raised px-2.5 h-7 text-[11px] font-medium text-muted hover:text-primary hover:bg-neutral-soft transition-colors shrink-0"
+                      title="Commit changes"
                     >
-                      <span className="font-mono font-bold text-xs leading-none">V</span>
-                      <span>Toggle Vim Mode</span>
-                      {isVimMode ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+                      <Icon name="check" size={14} />
+                      <span>Commit{modifiedFilesCount > 0 ? ` (${modifiedFilesCount})` : ''}</span>
                     </button>
+                  ) : null}
 
-                    {/* Toggle Word Wrap (REQ-UI-MOBILE-WORD-WRAP) */}
+                  {/* VIM mode badge */}
+                  {isVimMode ? (
                     <button
-                      data-debug-id={`${debugPrefix}-toggle-word-wrap-btn`}
+                      data-debug-id={`${debugPrefix}-vim-badge`}
                       type="button"
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        toggleWordWrap();
-                      }}
-                      aria-pressed={isWordWrap ? 'true' : 'false'}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                      onClick={toggleVimMode}
+                      title="Vim mode active (click to toggle)"
+                      className="rounded-md bg-accent/20 px-2 h-7 text-[10.5px] font-mono font-bold text-accent hover:bg-accent/30 transition-colors shrink-0"
                     >
-                      <Icon name="pencil" size={14} />
-                      <span>Toggle Word Wrap</span>
-                      {isWordWrap ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+                      VIM
                     </button>
+                  ) : null}
+                </div>
+              </>
+            ) : (
+              /* Desktop Single Row */
+              <>
+                <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+                  <button
+                    data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
+                    type="button"
+                    onClick={() => {
+                      updateExplorerCollapsed((prev) => !prev);
+                    }}
+                    title={
+                      isExplorerCollapsed
+                        ? 'Expand file explorer'
+                        : 'Collapse file explorer'
+                    }
+                    aria-label={
+                      isExplorerCollapsed
+                        ? 'Expand file explorer'
+                        : 'Collapse file explorer'
+                    }
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-xl hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
+                  >
+                    <Icon name="panel-left" size={20} />
+                  </button>
 
-                    {/* 7. Save All Files */}
+                  <button
+                    data-debug-id={`${debugPrefix}-quick-open-btn`}
+                    type="button"
+                    onClick={() => (onOpenQuickOpen ? onOpenQuickOpen() : setIsQuickOpenOpen(true))}
+                    title="Quick open file (Cmd+P / Ctrl+P)"
+                    aria-label="Quick open file"
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-xl hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
+                  >
+                    <Icon name="search" size={20} />
+                  </button>
+
+                  {/* In-Editor Diff Toggle */}
+                  {activeEditorTab ? (
                     <button
-                      data-debug-id="editor-save-all-btn"
+                      data-debug-id="editor-toggle-diff-btn-toolbar"
                       type="button"
-                      disabled={batchWriteState.isLoading || openTabs.filter((t) => t.isDirty).length === 0}
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        saveAllFiles();
-                      }}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40"
+                      disabled={activeEditorTab.isImage || activeEditorTab.isUnviewable}
+                      onClick={() => setIsDiffMode((prev) => !prev)}
+                      className={`inline-flex items-center justify-center gap-1.5 h-9 px-2.5 rounded-xl text-[11px] font-medium transition-colors disabled:opacity-40 shrink-0 ${
+                        isDiffMode
+                          ? 'border border-accent bg-accent/15 text-accent font-semibold'
+                          : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                      }`}
+                      title={isDiffMode ? 'Switch to Standard Editor' : 'Toggle In-Editor Diff'}
                     >
-                      <Icon name="save" size={14} />
-                      <span>Save All Files {openTabs.filter((t) => t.isDirty).length > 0 ? `(${openTabs.filter((t) => t.isDirty).length})` : ''}</span>
+                      <span className="font-mono font-bold text-xs leading-none">±</span>
+                      <span className="hidden sm:inline">Diff</span>
                     </button>
+                  ) : null}
 
-                    <div className="my-1 border-t border-subtle/60" />
+                  {/* Diff Against Dropdown when in Diff Mode */}
+                  {isDiffMode && activeEditorTab && vcsTargets.length > 0 ? (
+                    <div
+                      data-debug-id="editor-diff-target-container"
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-surface-raised border border-subtle px-2.5 h-9 text-[11px] shrink-0"
+                    >
+                      <span className="text-muted text-[10.5px]">Diff against:</span>
+                      <Select
+                        data-debug-id="editor-diff-target-select"
+                        value={selectedDiffTarget}
+                        onChange={(val) => setSelectedDiffTarget(val)}
+                        size="sm"
+                      >
+                        {vcsTargets.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.label}{t.is_default ? ' (default)' : ''}
+                          </option>
+                        ))}
+                      </Select>
+                      {isFetchingBaseContent ? (
+                        <Icon name="refresh" size={15} className="animate-spin text-muted" />
+                      ) : null}
+                    </div>
+                  ) : null}
 
-                    {/* 8. Comment on Current File / Folder */}
+                  {/* Active file path breadcrumb */}
+                  <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden truncate pl-1 text-[11.5px] text-muted">
                     {activeEditorTab ? (
-                      <button
-                        data-debug-id={`${debugPrefix}-file-comment-btn`}
-                        type="button"
-                        onClick={() => {
-                          setIsOverflowOpen(false);
-                          setPathCommentDraft('');
-                          setPathCommentFor({
-                            path: activeEditorTab.path,
-                            label: `file: ${baseName(activeEditorTab.path)}`,
-                          });
-                        }}
-                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-                      >
-                        <Icon name="chat" size={14} />
-                        <span>Comment on Active File</span>
-                      </button>
+                      <span className="truncate font-mono text-[11.5px] text-primary/80" title={activeEditorTab.path}>
+                        {activeEditorTab.path}
+                      </span>
                     ) : (
-                      <button
-                        data-debug-id={`${debugPrefix}-folder-comment-btn`}
-                        type="button"
-                        onClick={() => {
-                          setIsOverflowOpen(false);
-                          setPathCommentDraft('');
-                          setPathCommentFor({
-                            path: cwd || '/',
-                            label: `folder: ${cwd || 'project root'}`,
-                          });
-                        }}
-                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-                      >
-                        <Icon name="chat" size={14} />
-                        <span>Comment on Current Folder</span>
-                      </button>
+                      crumbs.map((c, i) => (
+                        <span key={c.path || 'root'} className="flex shrink-0 items-center gap-0.5">
+                          {i > 0 ? <Icon name="chevron-right" size={10} className="text-faint" /> : null}
+                          <button
+                            data-debug-id={`${debugPrefix}-crumb-${i}`}
+                            type="button"
+                            onClick={() => openDir(c.path)}
+                            disabled={i === crumbs.length - 1}
+                            className="max-w-[120px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
+                          >
+                            {c.label}
+                          </button>
+                        </span>
+                      ))
                     )}
-                  </div>,
-                  document.body,
-                ) : null}
-              </div>
-            </div>
+                  </div>
+
+                  {openTabs.length > 0 && !isExplorerCollapsed ? (
+                    <button
+                      data-debug-id={`${debugPrefix}-toolbar-editor-btn`}
+                      type="button"
+                      onClick={() => {
+                        setIsEditMode(true);
+                      }}
+                      className="hidden md:inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/15 shrink-0"
+                      title="Focus open editor tab"
+                    >
+                      <Icon name="pencil" size={11} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
+                    </button>
+                  ) : null}
+                </div>
+
+                {/* Right section on desktop */}
+                <div className="flex shrink-0 items-center gap-1.5 pl-2">
+                  {saveFeedback ? (
+                    <div
+                      data-debug-id={`${debugPrefix}-save-toast`}
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-all shrink-0 ${
+                        saveFeedback.type === 'success'
+                          ? 'bg-success-soft text-success border border-success/30'
+                          : saveFeedback.type === 'warning'
+                          ? 'bg-warning-soft text-warning border border-warning/30'
+                          : 'bg-danger-soft text-danger border border-danger/30'
+                      }`}
+                    >
+                      <Icon name={saveFeedback.type === 'success' ? 'check' : 'alert'} size={11} />
+                      <span className="truncate max-w-[120px]">{saveFeedback.message}</span>
+                    </div>
+                  ) : null}
+
+                  {/* Persistent VCS Status Bar Chip */}
+                  {isVcsActive ? (
+                    <div className="relative shrink-0" ref={logPopoverRef}>
+                      <div
+                        data-debug-id={`${debugPrefix}-vcs-status-chip`}
+                        onClick={() => {
+                          if (!isLogPopoverOpen && logPopoverRef.current) {
+                            setLogPopoverRect(logPopoverRef.current.getBoundingClientRect());
+                          }
+                          setIsLogPopoverOpen((prev) => !prev);
+                        }}
+                        title="Click to view VCS log"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-subtle bg-surface-raised px-2 py-0.5 text-[11px] text-muted hover:bg-neutral-soft hover:text-primary cursor-pointer transition-colors select-none"
+                      >
+                        <span data-debug-id="vcs-branch-badge" className="inline-flex items-center gap-1 font-medium text-primary">
+                          <Icon name="folder" size={11} className="text-accent" />
+                          <span className="max-w-[90px] truncate">{branchName}</span>
+                        </span>
+                        {isFig && currentCl ? (
+                          <span
+                            data-debug-id="vcs-cl-badge"
+                            className="rounded bg-accent/15 px-1 text-[10px] font-mono font-semibold text-accent"
+                            title={`Current CL ${currentCl}`}
+                          >
+                            CL {currentCl}
+                          </span>
+                        ) : null}
+                        {ahead > 0 ? (
+                          <span className="text-success text-[10px] font-semibold" title={`${ahead} commits ahead`}>
+                            ↑{ahead}
+                          </span>
+                        ) : null}
+                        {behind > 0 ? (
+                          <span className="text-warning text-[10px] font-semibold" title={`${behind} commits behind`}>
+                            ↓{behind}
+                          </span>
+                        ) : null}
+                        <span
+                          data-debug-id="vcs-modified-badge"
+                          className={`rounded-full px-1.5 py-0.2 text-[10px] font-bold ${
+                            modifiedFilesCount > 0 ? 'bg-accent/20 text-accent' : 'bg-neutral-soft text-muted'
+                          }`}
+                          title={`${modifiedFilesCount} modified ${modifiedFilesCount === 1 ? 'file' : 'files'}`}
+                        >
+                          {modifiedFilesCount}
+                        </span>
+                      </div>
+                      {renderVcsPopover()}
+                    </div>
+                  ) : null}
+
+                  {/* Commit Button (subtle styling) */}
+                  {isVcsActive ? (
+                    <button
+                      data-debug-id="editor-commit-btn"
+                      type="button"
+                      onClick={() => {
+                        setCommitError('');
+                        setIsCommitModalOpen(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-subtle bg-surface-raised px-2.5 h-8 text-[11px] font-medium text-muted hover:text-primary hover:bg-neutral-soft transition-colors shrink-0"
+                      title="Commit changes"
+                    >
+                      <Icon name="check" size={16} />
+                      <span>Commit{modifiedFilesCount > 0 ? ` (${modifiedFilesCount})` : ''}</span>
+                    </button>
+                  ) : null}
+
+                  {/* VIM badge */}
+                  {isVimMode ? (
+                    <button
+                      data-debug-id={`${debugPrefix}-vim-badge`}
+                      type="button"
+                      onClick={toggleVimMode}
+                      title="Vim mode active (click to toggle)"
+                      className="rounded-lg bg-accent/20 px-2.5 h-8 text-[10.5px] font-mono font-bold text-accent hover:bg-accent/30 transition-colors shrink-0"
+                    >
+                      VIM
+                    </button>
+                  ) : null}
+
+                  {/* 3-dots overflow menu button */}
+                  <div className="relative shrink-0" ref={overflowRef}>
+                    <button
+                      data-debug-id={`${debugPrefix}-overflow-menu-btn`}
+                      type="button"
+                      onClick={() => {
+                        if (!isOverflowOpen && overflowRef.current) {
+                          setOverflowRect(overflowRef.current.getBoundingClientRect());
+                        }
+                        setIsOverflowOpen((prev) => !prev);
+                      }}
+                      aria-haspopup="true"
+                      aria-expanded={isOverflowOpen ? 'true' : 'false'}
+                      title="More actions"
+                      aria-label="More actions"
+                      className={`grid h-9 w-9 place-items-center rounded-xl transition-colors ${
+                        isOverflowOpen ? 'bg-neutral-soft text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                      }`}
+                    >
+                      <Icon name="more-vertical" size={20} />
+                    </button>
+                    {renderOverflowDropdown()}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Split Container */}
