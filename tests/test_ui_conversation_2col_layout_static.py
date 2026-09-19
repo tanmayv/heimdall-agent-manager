@@ -186,8 +186,8 @@ def test_sidebar_toggle_buttons() -> None:
     # Col 2 tabs header: right-aligned close toggle button when OPEN
     require('data-debug-id="conversation-right-panel-close-btn"' in src,
             "Col 2 header must contain data-debug-id='conversation-right-panel-close-btn'")
-    require('Icon name="panel-right" size={16}' in src or 'Icon name="panel-right" size={18}' in src,
-            "Col 2 close toggle button must render panel-right icon with size 16 or 18")
+    require('Icon name="panel-right" size={16}' in src or 'Icon name="panel-right" size={18}' in src or 'Icon name="panel-right" size={20}' in src,
+            "Col 2 close toggle button must render panel-right icon with size 16, 18, or 20")
     require("closeRightPanel" in src,
             "Col 2 close toggle button must trigger closeRightPanel")
     require("ml-auto" in src,

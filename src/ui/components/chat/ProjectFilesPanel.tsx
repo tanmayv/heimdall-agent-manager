@@ -1450,7 +1450,7 @@ export default function ProjectFilesPanel({
           {/* Unified 40px Top Icon Bar */}
           <div
             data-debug-id={`${debugPrefix}-unified-top-bar`}
-            className="flex h-[40px] min-h-[40px] w-full shrink-0 items-center justify-between border-b border-subtle bg-surface px-2 gap-1.5 text-[12px] select-none"
+            className="flex h-[44px] min-h-[44px] w-full shrink-0 items-center justify-between border-b border-subtle bg-surface px-2 gap-2 text-[12px] select-none overflow-x-auto overflow-y-hidden flex-nowrap [-webkit-overflow-scrolling:touch] no-scrollbar"
           >
             {/* Left section: Strictly 3 primary icons + breadcrumb:
                 1) Explorer / Back to Files toggle button
@@ -1488,9 +1488,9 @@ export default function ProjectFilesPanel({
                     ? 'Expand file explorer'
                     : 'Collapse file explorer'
                 }
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-lg hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
               >
-                <Icon name="panel-left" size={17} />
+                <Icon name="panel-left" size={20} />
               </button>
 
               {/* 2) Quick Open (search icon, Cmd+P / Ctrl+P) */}
@@ -1500,9 +1500,9 @@ export default function ProjectFilesPanel({
                 onClick={() => (onOpenQuickOpen ? onOpenQuickOpen() : setIsQuickOpenOpen(true))}
                 title="Quick open file (Cmd+P / Ctrl+P)"
                 aria-label="Quick open file"
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-lg hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
               >
-                <Icon name="search" size={17} />
+                <Icon name="search" size={20} />
               </button>
 
               {/* 3) Save active file (save icon, highlighted when dirty) */}
@@ -1511,7 +1511,7 @@ export default function ProjectFilesPanel({
                 type="button"
                 disabled={!activeEditorTab || writeState.isLoading || !activeEditorTab.isDirty || activeEditorTab.isImage || activeEditorTab.isUnviewable}
                 onClick={saveActiveFile}
-                className={`inline-flex items-center justify-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-semibold transition-colors disabled:opacity-40 shrink-0 ${
+                className={`inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-xl text-[11px] font-semibold transition-colors disabled:opacity-40 shrink-0 ${
                   activeEditorTab?.isDirty
                     ? 'bg-accent text-accent-fg hover:opacity-90 shadow-xs'
                     : 'hover:bg-neutral-soft text-muted hover:text-primary'
@@ -1520,9 +1520,9 @@ export default function ProjectFilesPanel({
                 aria-label="Save active file"
               >
                 {writeState.isLoading ? (
-                  <Icon name="refresh" size={16} className="animate-spin" />
+                  <Icon name="refresh" size={18} className="animate-spin" />
                 ) : (
-                  <Icon name="save" size={16} />
+                  <Icon name="save" size={18} />
                 )}
                 <span className="hidden sm:inline">Save</span>
               </button>
@@ -1534,10 +1534,10 @@ export default function ProjectFilesPanel({
                   type="button"
                   disabled={isVcsActionLoading || activeEditorTab.isImage || activeEditorTab.isUnviewable}
                   onClick={handleStageActiveFile}
-                  className="inline-flex items-center justify-center gap-1.5 h-8 px-2 rounded-lg text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40 shrink-0"
+                  className="inline-flex items-center justify-center gap-1.5 h-9 px-2.5 rounded-xl text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40 shrink-0"
                   title="Stage / Add file (git add / hg add)"
                 >
-                  <Icon name="plus" size={16} />
+                  <Icon name="plus" size={18} />
                   <span className="hidden sm:inline">Stage</span>
                 </button>
               ) : null}
@@ -1545,7 +1545,7 @@ export default function ProjectFilesPanel({
               {/* Revert / Discard active file */}
               {activeEditorTab ? (
                 confirmRevertOpen ? (
-                  <div className="inline-flex items-center gap-1 bg-surface-raised border border-danger/40 rounded-lg px-2 h-8 shrink-0 shadow-xs">
+                  <div className="inline-flex items-center gap-1 bg-surface-raised border border-danger/40 rounded-xl px-2.5 h-9 shrink-0 shadow-xs">
                     <span className="text-[10px] text-danger font-semibold">Discard?</span>
                     <button
                       data-debug-id="editor-revert-confirm-btn"
@@ -1571,10 +1571,10 @@ export default function ProjectFilesPanel({
                     type="button"
                     disabled={isVcsActionLoading || activeEditorTab.isImage || activeEditorTab.isUnviewable}
                     onClick={() => setConfirmRevertOpen(true)}
-                    className="inline-flex items-center justify-center gap-1.5 h-8 px-2 rounded-lg text-[11px] font-medium text-muted hover:bg-danger/10 hover:text-danger hover:border-danger/30 transition-colors disabled:opacity-40 shrink-0"
+                    className="inline-flex items-center justify-center gap-1.5 h-9 px-2.5 rounded-xl text-[11px] font-medium text-muted hover:bg-danger/10 hover:text-danger hover:border-danger/30 transition-colors disabled:opacity-40 shrink-0"
                     title="Discard / Revert changes (git restore / hg revert)"
                   >
-                    <Icon name="trash" size={16} />
+                    <Icon name="trash" size={18} />
                     <span className="hidden sm:inline">Revert</span>
                   </button>
                 )
@@ -1587,7 +1587,7 @@ export default function ProjectFilesPanel({
                   type="button"
                   disabled={activeEditorTab.isImage || activeEditorTab.isUnviewable}
                   onClick={() => setIsDiffMode((prev) => !prev)}
-                  className={`inline-flex items-center justify-center gap-1.5 h-8 px-2 rounded-lg text-[11px] font-medium transition-colors disabled:opacity-40 shrink-0 ${
+                  className={`inline-flex items-center justify-center gap-1.5 h-9 px-2.5 rounded-xl text-[11px] font-medium transition-colors disabled:opacity-40 shrink-0 ${
                     isDiffMode
                       ? 'border border-accent bg-accent/15 text-accent font-semibold'
                       : 'hover:bg-neutral-soft text-muted hover:text-primary'
@@ -1603,7 +1603,7 @@ export default function ProjectFilesPanel({
               {isDiffMode && activeEditorTab && vcsTargets.length > 0 ? (
                 <div
                   data-debug-id="editor-diff-target-container"
-                  className="inline-flex items-center gap-1 rounded-lg bg-surface-raised border border-subtle px-1.5 h-8 text-[11px] shrink-0"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-surface-raised border border-subtle px-2.5 h-9 text-[11px] shrink-0"
                 >
                   <span className="text-muted text-[10.5px]">Diff against:</span>
                   <Select
@@ -1619,7 +1619,7 @@ export default function ProjectFilesPanel({
                     ))}
                   </Select>
                   {isFetchingBaseContent ? (
-                    <Icon name="refresh" size={10} className="animate-spin text-muted" />
+                    <Icon name="refresh" size={15} className="animate-spin text-muted" />
                   ) : null}
                 </div>
               ) : null}
@@ -1769,10 +1769,10 @@ export default function ProjectFilesPanel({
                     setCommitError('');
                     setIsCommitModalOpen(true);
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-2.5 h-8 text-[11px] font-semibold text-accent-fg hover:opacity-90 transition-opacity shrink-0 shadow-xs"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-3 h-9 text-[11px] font-semibold text-accent-fg hover:opacity-90 transition-opacity shrink-0 shadow-xs"
                   title="Commit changes"
                 >
-                  <Icon name="check" size={16} />
+                  <Icon name="check" size={18} />
                   <span>Commit{modifiedFilesCount > 0 ? ` (${modifiedFilesCount})` : ''}</span>
                 </button>
               ) : null}
@@ -1784,7 +1784,7 @@ export default function ProjectFilesPanel({
                   type="button"
                   onClick={toggleVimMode}
                   title="Vim mode active (click to toggle)"
-                  className="rounded-lg bg-accent/20 px-2 h-8 text-[10.5px] font-mono font-bold text-accent hover:bg-accent/30 transition-colors shrink-0"
+                  className="rounded-xl bg-accent/20 px-2.5 h-9 text-[10.5px] font-mono font-bold text-accent hover:bg-accent/30 transition-colors shrink-0"
                 >
                   VIM
                 </button>
@@ -1800,11 +1800,11 @@ export default function ProjectFilesPanel({
                   aria-expanded={isOverflowOpen ? 'true' : 'false'}
                   title="More actions"
                   aria-label="More actions"
-                  className={`grid h-8 w-8 place-items-center rounded-lg transition-colors ${
+                  className={`grid h-9 w-9 place-items-center rounded-xl transition-colors ${
                     isOverflowOpen ? 'bg-neutral-soft text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
                   }`}
                 >
-                  <Icon name="more-vertical" size={17} />
+                  <Icon name="more-vertical" size={20} />
                 </button>
 
                 {isOverflowOpen ? (
