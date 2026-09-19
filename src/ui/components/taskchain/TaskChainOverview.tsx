@@ -1365,30 +1365,18 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           </span>
         }
         actions={
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              data-debug-id="taskchain-overview-header-reconcile-btn"
-              disabled={reconcileState.isLoading || !chainId}
-              onClick={handleReconcile}
-              className="shrink-0 rounded bg-warning px-2.5 py-1 text-xs font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
-              title="Self-heal: re-plan the chain (promote tasks, set current-tasks, nudge idle agents)"
-            >
-              {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}
-            </button>
-            <span
-              data-debug-id="taskchain-overview-status"
-              className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
-                chain.status === 'completed'
-                  ? 'bg-success-soft text-success'
-                  : chain.status === 'cancelled'
-                  ? 'bg-danger-soft text-danger'
-                  : 'bg-accent/20 text-accent'
-              }`}
-            >
-              {chain.status}
-            </span>
-          </div>
+          <span
+            data-debug-id="taskchain-overview-status"
+            className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wider ${
+              chain.status === 'completed'
+                ? 'bg-success-soft text-success'
+                : chain.status === 'cancelled'
+                ? 'bg-danger-soft text-danger'
+                : 'bg-accent/20 text-accent'
+            }`}
+          >
+            {chain.status}
+          </span>
         }
       >
         {/* Chain meta band (description, progress, members) — unchanged markup,
@@ -1586,30 +1574,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
             )}
           </>
         )}
-      </div>
-
-      {/* Reconcile (self-heal) — below the task chain. Coordinator/owner only;
-          promotes actionable tasks, sets current-tasks, nudges idle agents. */}
-      <div
-        data-debug-id="taskchain-overview-reconcile-bar"
-        className="flex items-center justify-between gap-3 border-t border-subtle px-4 py-3 sm:px-6"
-      >
-        <div className="min-w-0 text-caption text-muted">
-          {reconcileMsg ? (
-            <span data-debug-id="taskchain-overview-reconcile-status">{reconcileMsg}</span>
-          ) : (
-            <span>Self-heal: re-plan the chain (promote tasks, set current-tasks, nudge idle agents).</span>
-          )}
-        </div>
-        <button
-          type="button"
-          data-debug-id="taskchain-overview-reconcile-btn-bottom"
-          disabled={reconcileState.isLoading || !chainId}
-          onClick={handleReconcile}
-          className="shrink-0 rounded bg-warning px-3 py-1.5 text-xs font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
-        >
-          {reconcileState.isLoading ? 'Reconciling…' : '↻ Reconcile chain'}
-        </button>
       </div>
 
       {/* New Task Modal */}

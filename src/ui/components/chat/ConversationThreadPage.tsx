@@ -1354,33 +1354,29 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       : hasTasks ? 'tasks'
       : hasFiles ? 'files'
       : 'rundir';
-    const tabBase = 'flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg px-1.5 text-xs font-semibold';
+    const tabBase = 'relative inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg px-1.5';
     return (
       <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-x-hidden bg-surface">
-        <div data-debug-id="conversation-right-panel-tabs" className="sticky top-0 z-20 flex shrink-0 items-center gap-1 border-b border-subtle bg-surface px-2 py-2 backdrop-blur-sm">
+        <div data-debug-id="conversation-right-panel-tabs" className="relative sticky top-0 z-20 flex shrink-0 items-center gap-1.5 px-3 py-2.5 sm:px-4 bg-canvas/90 backdrop-blur-md">
           {hasTasks ? (
-            <button type="button" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => selectRightPanelTab('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
-              <Icon name="tasks" size={15} />
-              <span>Tasks</span>
+            <button type="button" aria-label="Tasks" title="Tasks" data-debug-id="conversation-right-panel-tab-tasks" onClick={() => selectRightPanelTab('tasks')} aria-pressed={active === 'tasks' ? 'true' : 'false'} className={`${tabBase} ${active === 'tasks' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
+              <Icon name="tasks" size={16} />
               {chainProgress.total > 0 ? <span className="rounded-full bg-neutral-soft px-1.5 py-0.5 text-[10px] font-bold text-accent">{chainProgress.done}/{chainProgress.total}</span> : null}
             </button>
           ) : null}
           {hasFiles ? (
-            <button type="button" title={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => selectRightPanelTab('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
-              <Icon name="folder" size={15} className="shrink-0" />
-              <span className="truncate">{filesLabel}</span>
+            <button type="button" title={filesLabel} aria-label={filesLabel} data-debug-id="conversation-right-panel-tab-files" onClick={() => selectRightPanelTab('files')} aria-pressed={active === 'files' ? 'true' : 'false'} className={`${tabBase} ${active === 'files' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
+              <Icon name="folder" size={16} />
             </button>
           ) : null}
           {hasRunDir ? (
-            <button type="button" title={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
-              <Icon name="folder" size={15} className="shrink-0" />
-              <span className="truncate">{instanceDisplayName}</span>
+            <button type="button" title={`Run dir — ${instanceDisplayName}`} aria-label={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
+              <Icon name="folder" size={16} />
             </button>
           ) : null}
           {hasJobs ? (
-            <button type="button" title="Background jobs" data-debug-id="conversation-right-panel-tab-jobs" onClick={() => selectRightPanelTab('jobs')} aria-pressed={active === 'jobs' ? 'true' : 'false'} className={`${tabBase} ${active === 'jobs' ? 'bg-accent/15 text-accent font-semibold' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
-              <Icon name="terminal" size={15} className="shrink-0" />
-              <span className="truncate">Jobs</span>
+            <button type="button" title="Background jobs" aria-label="Background jobs" data-debug-id="conversation-right-panel-tab-jobs" onClick={() => selectRightPanelTab('jobs')} aria-pressed={active === 'jobs' ? 'true' : 'false'} className={`${tabBase} ${active === 'jobs' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
+              <Icon name="terminal" size={16} />
             </button>
           ) : null}
           <button
@@ -1393,6 +1389,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           >
             <Icon name="panel-right" size={16} />
           </button>
+          <div className="pointer-events-none absolute inset-x-0 -bottom-6 h-6 bg-gradient-to-b from-canvas/90 via-canvas/50 to-transparent backdrop-blur-sm" aria-hidden="true" />
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
           {active === 'files' && hasFiles ? (

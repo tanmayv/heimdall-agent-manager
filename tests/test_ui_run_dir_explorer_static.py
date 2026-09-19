@@ -59,8 +59,11 @@ def main() -> None:
     require("'closed' | 'tasks' | 'files' | 'rundir'" in thread, "rightPanel union must include 'rundir'")
     require("instanceDisplayName" in thread, "run-dir tab must use the instance display name label")
     require("const filesLabel = projectName" in thread, "files tab must use the project name label")
-    # both explorer tab labels truncate
-    require(thread.count('<span className="truncate">') >= 2, "both explorer tab labels must truncate")
+    # both explorer tab labels are exposed via title/aria-label (icon-only tabs per REQ-UI-SIDEBAR-BLUR-ICON-TABS)
+    require('title={filesLabel}' in thread or 'aria-label={filesLabel}' in thread,
+            "files tab must expose label via title or aria-label attribute")
+    require('title={`Run dir' in thread or 'aria-label={`Run dir' in thread,
+            "run-dir tab must expose label via title or aria-label attribute")
 
     print("PASS: run-dir explorer UI static checks")
 
