@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Static verification for multi-file Monaco Code Editor with dirty state tracking,
-tabs, and single/batch save (REQ-UI-MONACO-EDITOR, REQ-UI-MULTI-FILE-TABS, REQ-UI-BATCH-SAVE-ACTION).
+tabs, and single/batch save (REQ-UI-MONACO-EDITOR, REQ-UI-MULTI-FILE-TABS, REQ-UI-BATCH-SAVE-ACTION, REQ-UI-REMOVE-FILEVIEW, REQ-UI-DIRECT-MONACO-OPEN).
 """
 
 from pathlib import Path
@@ -83,10 +83,11 @@ def main() -> None:
     require("save-toast" in panel_src, "Must display transient feedback toast on save")
     require("KeyS" in panel_src or "key === 's'" in panel_src, "Must wire Cmd+S / Ctrl+S and Cmd+Shift+S / Ctrl+Shift+S")
 
-    # Mode switching
-    require("file-edit-mode-btn" in panel_src, "FileView must have Edit button to switch to edit mode")
-    require("editor-view-mode-btn" in panel_src, "Editor must have View button to switch to read-only view mode")
+    # Direct open and navigation (REQ-UI-REMOVE-FILEVIEW, REQ-UI-DIRECT-MONACO-OPEN)
+    require("editor-back-files-btn" in panel_src, "MonacoMultiFileEditor must provide back button to return to directory browser")
     require("toolbar-editor-btn" in panel_src, "Directory toolbar must offer quick return to open editor tabs")
+    require("openFileInEditor(joinPath" in panel_src or "openFileInEditor(" in panel_src, "Clicking files must call openFileInEditor directly")
+    require("<FileView" not in panel_src and "function FileView" not in panel_src, "Legacy FileView component must be removed from ProjectFilesPanel.tsx")
 
     # New file creation support
     require("editor-new-file-btn" in panel_src, "Editor header must offer New File action")

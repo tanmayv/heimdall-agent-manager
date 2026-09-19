@@ -47,6 +47,10 @@ export type EditorTab = {
   initialContent: string;
   isDirty: boolean;
   isNew?: boolean;
+  isImage?: boolean;
+  mime?: string;
+  isUnviewable?: boolean;
+  unviewableReason?: string;
 };
 
 function getLanguageForMonaco(filePath: string): string {
@@ -251,8 +255,6 @@ export default function ProjectFilesPanel({
   const [pending, setPending] = useState<PendingAction>(null);
   const [nameDraft, setNameDraft] = useState('');
 
-  // The file currently open in the read-only viewer (null = list view).
-  const [viewFile, setViewFile] = useState<FsReadFileResult | null>(null);
 
   // In-memory review comments, tracked ACROSS all files in this conversation.
   // Reset when the conversation scope changes so notes never leak between chats.
@@ -353,7 +355,6 @@ export default function ProjectFilesPanel({
   // show a stale directory carried over from another project. The hidden toggle
   // must NOT reset here (Spec 4.2/4.3 — it refetches the CURRENT dir; see below).
   useEffect(() => {
-    setViewFile(null);
     setPending(null);
     setOpenTabs([]);
     setActiveTabPath('');
@@ -400,7 +401,6 @@ export default function ProjectFilesPanel({
 
   const openDir = useCallback(
     (path: string) => {
-      setViewFile(null);
       setPending(null);
       void load(path);
     },
@@ -408,13 +408,8 @@ export default function ProjectFilesPanel({
   );
 
   const refresh = useCallback(() => {
-    if (viewFile) {
-      void openFile(viewFile.path);
-      return;
-    }
     void load(cwd);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, viewFile, load]);
+  }, [cwd, load]);
 
   // Breadcrumb crumbs: project root -> cwd.
   const crumbs = useMemo(() => {
@@ -441,67 +436,6 @@ export default function ProjectFilesPanel({
     });
   }, [entries]);
 
-  // ---- File viewer ----------------------------------------------------------
-
-  // Accumulated viewer content across paged reads. `viewFile` holds the metadata
-  // + first chunk; `viewContent` is the stitched text; `viewNextOffset`/`viewEof`
-  // drive lazy paging. We assume the file doesn't change between pages.
-  const [viewContent, setViewContent] = useState('');
-  const [viewNextOffset, setViewNextOffset] = useState(0);
-  const [viewEof, setViewEof] = useState(true);
-  const [loadingMoreFile, setLoadingMoreFile] = useState(false);
-  // Path of the file whose contents are currently being fetched — drives the
-  // inline spinner next to that file's name in the list.
-  const [openingPath, setOpeningPath] = useState('');
-
-  const openFile = useCallback(
-    async (path: string) => {
-      setError('');
-      setOpeningPath(path);
-      try {
-        const res: FsReadFileResult = await readFile({ projectId, bridgeId, path, offset: 0 }).unwrap();
-        setViewFile(res);
-        if (res.viewable && res.encoding === 'utf8') {
-          setViewContent(res.content || '');
-          setViewNextOffset(Number(res.offset || 0) + Number(res.bytes_returned || (res.content ? res.content.length : 0)));
-          setViewEof(res.eof !== false);
-        } else {
-          // Images / non-viewable: no paging.
-          setViewContent(res.content || '');
-          setViewNextOffset(0);
-          setViewEof(true);
-        }
-        if (!res.ok && res.error?.message) setError(str(res.error.message));
-      } catch (e: any) {
-        setError(str(e?.error || e?.message) || 'Could not read file');
-      } finally {
-        setOpeningPath((cur) => (cur === path ? '' : cur));
-      }
-    },
-    [projectId, bridgeId, readFile],
-  );
-
-  const loadMoreFile = useCallback(async () => {
-    if (!viewFile || viewEof || loadingMoreFile) return;
-    setLoadingMoreFile(true);
-    try {
-      const res: FsReadFileResult = await readFile({ projectId, bridgeId, path: viewFile.path, offset: viewNextOffset }).unwrap();
-      if (res.ok && res.viewable) {
-        setViewContent((prev) => prev + (res.content || ''));
-        setViewNextOffset(Number(res.offset || 0) + Number(res.bytes_returned || (res.content ? res.content.length : 0)));
-        setViewEof(res.eof !== false);
-      } else if (res.error?.message) {
-        setError(str(res.error.message));
-        setViewEof(true);
-      }
-    } catch (e: any) {
-      setError(str(e?.error || e?.message) || 'Could not load more of this file');
-      setViewEof(true);
-    } finally {
-      setLoadingMoreFile(false);
-    }
-  }, [projectId, bridgeId, readFile, viewFile, viewNextOffset, viewEof, loadingMoreFile]);
-
   // Auto-dismiss save feedback after 3s
   useEffect(() => {
     if (saveFeedback) {
@@ -519,14 +453,22 @@ export default function ProjectFilesPanel({
 
   // Fetch full file content across all byte pages before editing
   const fetchAllFileContent = useCallback(
-    async (filePath: string): Promise<string> => {
-      if (viewFile && viewFile.path === filePath && viewEof) {
-        return viewContent;
-      }
+    async (
+      filePath: string
+    ): Promise<{
+      content: string;
+      isImage?: boolean;
+      mime?: string;
+      isUnviewable?: boolean;
+      unviewableReason?: string;
+    }> => {
       let acc = '';
       let offset = 0;
       let eof = false;
       let iterations = 0;
+      let isImage = false;
+      let mime = '';
+
       while (!eof && iterations < 100) {
         iterations++;
         const res: FsReadFileResult = await readFile({
@@ -539,8 +481,28 @@ export default function ProjectFilesPanel({
         if (!res.ok) {
           throw new Error(res.error?.message || 'Could not read file');
         }
-        if (!res.viewable || res.encoding === 'base64') {
-          throw new Error('This file cannot be edited as text');
+
+        if (iterations === 1) {
+          mime = res.mime || '';
+          if (res.viewable && res.encoding === 'base64') {
+            return {
+              content: res.content || '',
+              isImage: true,
+              mime: res.mime || 'image/png',
+            };
+          }
+          if (!res.viewable) {
+            return {
+              content: '',
+              isUnviewable: true,
+              unviewableReason:
+                res.error?.code === 'file_too_large'
+                  ? `This file is too large to preview (${formatBytes(res.size || 0)}).`
+                  : res.error?.code === 'unsupported_type'
+                    ? 'This file type cannot be previewed.'
+                    : str(res.error?.message) || 'This file cannot be previewed.',
+            };
+          }
         }
 
         acc += res.content || '';
@@ -550,42 +512,49 @@ export default function ProjectFilesPanel({
         offset = Number(res.offset ?? 0) + bytesReturned;
         eof = res.eof !== false || bytesReturned === 0;
       }
-      return acc;
+      return { content: acc, isImage, mime };
     },
-    [viewFile, viewEof, viewContent, readFile, projectId, bridgeId]
+    [readFile, projectId, bridgeId]
   );
 
   const openFileInEditor = useCallback(
-    async (filePath: string) => {
+    async (inputPath: string) => {
       setError('');
+      const filePath =
+        cwd && !inputPath.includes('/') && !inputPath.startsWith(cwd)
+          ? joinPath(cwd, inputPath)
+          : inputPath;
+
       const existing = openTabs.find((t) => t.path === filePath);
       if (existing) {
         setActiveTabPath(filePath);
         setIsEditMode(true);
-        setViewFile(null);
         return;
       }
       setOpeningInEditor(filePath);
       try {
-        const completeContent = await fetchAllFileContent(filePath);
+        const fileRes = await fetchAllFileContent(filePath);
         const newTab: EditorTab = {
           path: filePath,
-          content: completeContent,
-          initialContent: completeContent,
+          content: fileRes.content,
+          initialContent: fileRes.content,
           isDirty: false,
           isNew: false,
+          isImage: fileRes.isImage,
+          mime: fileRes.mime,
+          isUnviewable: fileRes.isUnviewable,
+          unviewableReason: fileRes.unviewableReason,
         };
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(filePath);
         setIsEditMode(true);
-        setViewFile(null);
       } catch (e: any) {
         setError(str(e?.message) || 'Could not open file in editor');
       } finally {
         setOpeningInEditor('');
       }
     },
-    [openTabs, fetchAllFileContent]
+    [cwd, openTabs, fetchAllFileContent]
   );
 
   const handleEditorNewFile = useCallback(
@@ -599,24 +568,26 @@ export default function ProjectFilesPanel({
       if (existing) {
         setActiveTabPath(targetPath);
         setIsEditMode(true);
-        setViewFile(null);
         return;
       }
 
       setOpeningInEditor(targetPath);
       try {
-        const existingContent = await fetchAllFileContent(targetPath);
+        const fileRes = await fetchAllFileContent(targetPath);
         const newTab: EditorTab = {
           path: targetPath,
-          content: existingContent,
-          initialContent: existingContent,
+          content: fileRes.content,
+          initialContent: fileRes.content,
           isDirty: false,
           isNew: false,
+          isImage: fileRes.isImage,
+          mime: fileRes.mime,
+          isUnviewable: fileRes.isUnviewable,
+          unviewableReason: fileRes.unviewableReason,
         };
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(targetPath);
         setIsEditMode(true);
-        setViewFile(null);
       } catch {
         const newTab: EditorTab = {
           path: targetPath,
@@ -628,7 +599,6 @@ export default function ProjectFilesPanel({
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(targetPath);
         setIsEditMode(true);
-        setViewFile(null);
       } finally {
         setOpeningInEditor('');
       }
@@ -637,7 +607,7 @@ export default function ProjectFilesPanel({
   );
 
   const saveActiveFile = useCallback(async () => {
-    if (!activeEditorTab || writeState.isLoading) return;
+    if (!activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable || writeState.isLoading) return;
     setSaveFeedback(null);
     try {
       const res = await writeProjectFile({
@@ -676,7 +646,7 @@ export default function ProjectFilesPanel({
   }, [activeEditorTab, writeState.isLoading, writeProjectFile, projectId, bridgeId, cwd, load]);
 
   const saveAllFiles = useCallback(async () => {
-    const dirtyTabs = openTabs.filter((t) => t.isDirty);
+    const dirtyTabs = openTabs.filter((t) => t.isDirty && !t.isImage && !t.isUnviewable);
     if (dirtyTabs.length === 0 || batchWriteState.isLoading) return;
     setSaveFeedback(null);
     try {
@@ -918,7 +888,7 @@ export default function ProjectFilesPanel({
         <div data-debug-id={`${debugPrefix}-no-project`} className="grid flex-1 place-items-center p-6 text-center text-xs text-muted">
           No project is associated with this conversation.
         </div>
-      ) : isEditMode && activeEditorTab ? (
+      ) : (isEditMode || openTabs.length > 0) && isEditMode && activeEditorTab ? (
         <MonacoMultiFileEditor
           tabs={openTabs}
           activeTab={activeEditorTab}
@@ -930,35 +900,22 @@ export default function ProjectFilesPanel({
           isSaving={writeState.isLoading}
           isBatchSaving={batchWriteState.isLoading}
           saveFeedback={saveFeedback}
-          onSwitchToViewMode={() => {
-            setIsEditMode(false);
-            if (activeEditorTab) void openFile(activeEditorTab.path);
-          }}
-          onBackToFiles={() => {
-            setIsEditMode(false);
-            setViewFile(null);
-          }}
+          onBackToFiles={() => setIsEditMode(false)}
           onNewFile={handleEditorNewFile}
           cwd={cwd}
           debugPrefix={debugPrefix}
           themeAppearance={theme?.appearance}
-        />
-      ) : viewFile ? (
-        <FileView
-          file={viewFile}
-          content={viewContent}
-          hasMore={!viewEof}
-          loadingMore={loadingMoreFile}
-          onLoadMore={loadMoreFile}
-          fetching={readState.isFetching}
-          debugPrefix={debugPrefix}
-          comments={commentsForPath(viewFile.path)}
-          onAddComment={(line, lineText, body) => addComment(viewFile.path, line, lineText, body)}
+          comments={commentsForPath(activeEditorTab.path)}
+          onAddComment={(line, lineText, body) => addComment(activeEditorTab.path, line, lineText, body)}
           onEditComment={editComment}
           onDeleteComment={deleteComment}
-          onCommentFile={() => { setPathCommentDraft(''); setPathCommentFor({ path: viewFile.path, label: `file: ${baseName(viewFile.path)}` }); }}
-          onBack={() => setViewFile(null)}
-          onOpenInEditor={() => void openFileInEditor(viewFile.path)}
+          onCommentFile={() => {
+            setPathCommentDraft('');
+            setPathCommentFor({
+              path: activeEditorTab.path,
+              label: `file: ${baseName(activeEditorTab.path)}`,
+            });
+          }}
         />
       ) : (
         <>
@@ -1097,14 +1054,14 @@ export default function ProjectFilesPanel({
             ) : (
               <ul>
                 {sortedEntries.map((e) => {
-                  const isOpening = !e.is_dir && (openingPath === joinPath(cwd, e.name) || openingInEditor === joinPath(cwd, e.name));
+                  const isOpening = !e.is_dir && openingInEditor === joinPath(cwd, e.name);
                   return (
                   <li key={`${e.is_dir ? 'd' : 'f'}:${e.name}`} className="group flex items-center gap-2 border-b border-subtle/40 px-3 py-1.5 hover:bg-neutral-soft">
                     <button
                       data-debug-id={`${debugPrefix}-entry-${e.name}`}
                       type="button"
                       disabled={isOpening}
-                      onClick={() => (e.is_dir ? openDir(joinPath(cwd, e.name)) : void openFile(joinPath(cwd, e.name)))}
+                      onClick={() => (e.is_dir ? openDir(joinPath(cwd, e.name)) : void openFileInEditor(joinPath(cwd, e.name)))}
                       className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     >
                       {isOpening ? (
@@ -1254,7 +1211,7 @@ export default function ProjectFilesPanel({
                   closeTab(confirmClosePath, true);
                   setConfirmClosePath(null);
                 }}
-                className="rounded-lg bg-danger px-3 py-1.5 text-caption font-semibold text-white hover:opacity-90"
+                className="rounded-lg bg-danger px-3 py-1.5 text-caption font-semibold text-accent-fg hover:opacity-90"
               >
                 Discard & Close
               </button>
@@ -1299,12 +1256,16 @@ function MonacoMultiFileEditor({
   isSaving,
   isBatchSaving,
   saveFeedback,
-  onSwitchToViewMode,
   onBackToFiles,
   onNewFile,
   debugPrefix,
   themeAppearance,
   cwd,
+  comments = [],
+  onAddComment,
+  onEditComment,
+  onDeleteComment,
+  onCommentFile,
 }: {
   tabs: EditorTab[];
   activeTab: EditorTab;
@@ -1316,16 +1277,21 @@ function MonacoMultiFileEditor({
   isSaving: boolean;
   isBatchSaving: boolean;
   saveFeedback: { type: 'success' | 'warning' | 'error'; message: string } | null;
-  onSwitchToViewMode: () => void;
   onBackToFiles: () => void;
   onNewFile: (path: string) => void;
   debugPrefix: string;
   themeAppearance?: string;
   cwd?: string;
+  comments?: FileLineComment[];
+  onAddComment?: (line: number, lineText: string, body: string) => void;
+  onEditComment?: (id: string, body: string) => void;
+  onDeleteComment?: (id: string) => void;
+  onCommentFile?: () => void;
 }) {
   const monacoTheme = themeAppearance === 'light' ? 'light' : 'vs-dark';
   const language = useMemo(() => getLanguageForMonaco(activeTab.path), [activeTab.path]);
   const dirtyCount = useMemo(() => tabs.filter((t) => t.isDirty).length, [tabs]);
+  const fileLevelCount = useMemo(() => comments.filter((c) => c.line === 0).length, [comments]);
 
   const [isPromptingNewFile, setIsPromptingNewFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
@@ -1380,7 +1346,7 @@ function MonacoMultiFileEditor({
             className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
             title="Browse files"
           >
-            <Icon name="folder" size={13} /> Files
+            <Icon name="chevron-left" size={13} /> Files
           </button>
           <button
             data-debug-id={`${debugPrefix}-editor-new-file-btn`}
@@ -1397,6 +1363,28 @@ function MonacoMultiFileEditor({
         </div>
 
         <div className="flex items-center gap-1.5 ml-auto">
+          {onCommentFile ? (
+            <button
+              data-debug-id={`${debugPrefix}-file-comment-btn`}
+              type="button"
+              onClick={onCommentFile}
+              title="Comment on this file"
+              aria-label="Comment on this file"
+              className={`relative shrink-0 grid h-7 w-7 place-items-center rounded-lg border ${
+                fileLevelCount > 0
+                  ? 'border-accent bg-accent/20 text-accent'
+                  : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
+              }`}
+            >
+              <Icon name="chat" size={13} />
+              {fileLevelCount > 0 ? (
+                <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">
+                  {fileLevelCount}
+                </span>
+              ) : null}
+            </button>
+          ) : null}
+
           {saveFeedback ? (
             <div
               data-debug-id={`${debugPrefix}-save-toast`}
@@ -1416,7 +1404,7 @@ function MonacoMultiFileEditor({
           <button
             data-debug-id={`${debugPrefix}-editor-save-btn`}
             type="button"
-            disabled={isSaving || !activeTab.isDirty}
+            disabled={isSaving || !activeTab.isDirty || activeTab.isImage || activeTab.isUnviewable}
             onClick={onSaveActive}
             className="inline-flex items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-40"
             title="Save active file (Cmd+S / Ctrl+S)"
@@ -1435,16 +1423,6 @@ function MonacoMultiFileEditor({
           >
             {isBatchSaving ? <Icon name="refresh" size={12} className="animate-spin" /> : null}
             Save All {dirtyCount > 0 ? `(${dirtyCount})` : ''}
-          </button>
-
-          <button
-            data-debug-id={`${debugPrefix}-editor-view-mode-btn`}
-            type="button"
-            onClick={onSwitchToViewMode}
-            className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            title="Switch to Read-only View Mode"
-          >
-            View
           </button>
         </div>
       </div>
@@ -1569,216 +1547,60 @@ function MonacoMultiFileEditor({
         )}
       </div>
 
-      {/* Monaco Editor Canvas */}
-      <div className="relative min-h-0 flex-1 overflow-hidden">
-        <Editor
-          path={activeTab.path}
-          value={activeTab.content}
-          language={language}
-          theme={monacoTheme}
-          options={options}
-          onChange={(val) => onContentChange(activeTab.path, val ?? '')}
-          onMount={handleEditorMount}
-          loading={
-            <div className="p-4 text-center text-xs text-muted">
-              Loading editor…
-            </div>
-          }
-        />
-      </div>
-    </div>
-  );
-}
-
-// ---- Read-only file viewer --------------------------------------------------
-
-function isMarkdownFile(pathOrName: string): boolean {
-  const n = String(pathOrName || '').toLowerCase();
-  return n.endsWith('.md') || n.endsWith('.markdown') || n.endsWith('.mdx');
-}
-
-function FileView({
-  file,
-  content,
-  hasMore,
-  loadingMore,
-  onLoadMore,
-  fetching,
-  debugPrefix,
-  comments,
-  onAddComment,
-  onEditComment,
-  onDeleteComment,
-  onCommentFile,
-  onBack,
-  onOpenInEditor,
-}: {
-  file: FsReadFileResult;
-  content: string; // stitched text content across paged reads
-  hasMore: boolean; // more of this file remains to load
-  loadingMore: boolean;
-  onLoadMore: () => void;
-  fetching: boolean;
-  debugPrefix: string;
-  comments: FileLineComment[];
-  onAddComment: (line: number, lineText: string, body: string) => void;
-  onEditComment: (id: string, body: string) => void;
-  onDeleteComment: (id: string) => void;
-  onCommentFile: () => void;
-  onBack: () => void;
-  onOpenInEditor?: () => void;
-}) {
-  const name = baseName(file.path);
-  const fileLevelCount = comments.filter((c) => c.line === 0).length;
-  const isImage = file.viewable && file.encoding === 'base64';
-  const dataUri = isImage ? `data:${file.mime || 'application/octet-stream'};base64,${file.content || ''}` : '';
-  const isText = file.viewable && !isImage;
-  const isMarkdown = isText && isMarkdownFile(file.path);
-
-  // View modes for markdown: "rendered" (MarkdownBody) or "source" (highlighted).
-  const [mdRendered, setMdRendered] = useState(true);
-  // Soft-wrap toggle for the code/source view (off = horizontal scroll).
-  const [wrap, setWrap] = useState(false);
-  const showCode = isText && !(isMarkdown && mdRendered);
-
-  return (
-    <div data-debug-id={`${debugPrefix}-file-view`} className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-subtle px-3 py-2">
-        <button
-          data-debug-id={`${debugPrefix}-file-back-btn`}
-          type="button"
-          onClick={onBack}
-          className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-        >
-          <Icon name="chevron-left" size={13} /> Back
-        </button>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12.5px] font-semibold text-primary" title={file.path}>{name}</div>
-          <div className="truncate text-[10px] text-faint">
-            {[file.mime, file.size != null ? formatBytes(file.size) : '', file.modified_at ? formatModified(file.modified_at) : '']
-              .filter(Boolean)
-              .join(' · ')}
-          </div>
-        </div>
-        {/* File-level comment */}
-        <button
-          data-debug-id={`${debugPrefix}-file-comment-btn`}
-          type="button"
-          onClick={onCommentFile}
-          title="Comment on this file"
-          aria-label="Comment on this file"
-          className={`relative shrink-0 grid h-8 w-8 place-items-center rounded-lg border ${fileLevelCount > 0 ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-        >
-          <Icon name="chat" size={14} />
-          {fileLevelCount > 0 ? <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[9px] font-bold text-accent-fg">{fileLevelCount}</span> : null}
-        </button>
-        {/* View controls */}
-        {isMarkdown ? (
-          <button
-            data-debug-id={`${debugPrefix}-file-md-toggle-btn`}
-            type="button"
-            onClick={() => setMdRendered((v) => !v)}
-            className="shrink-0 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            title={mdRendered ? 'View source' : 'View rendered'}
-          >
-            {mdRendered ? 'Source' : 'Rendered'}
-          </button>
-        ) : null}
-        {showCode ? (
-          <button
-            data-debug-id={`${debugPrefix}-file-wrap-toggle-btn`}
-            type="button"
-            onClick={() => setWrap((v) => !v)}
-            aria-pressed={wrap ? 'true' : 'false'}
-            className={`shrink-0 rounded-lg border px-2 py-1 text-caption ${wrap ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-            title={wrap ? 'Disable soft wrap' : 'Enable soft wrap'}
-          >
-            Wrap
-          </button>
-        ) : null}
-        {isText && onOpenInEditor ? (
-          <button
-            data-debug-id={`${debugPrefix}-file-edit-mode-btn`}
-            type="button"
-            onClick={onOpenInEditor}
-            className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            title="Edit file in code editor"
-          >
-            <Icon name="pencil" size={12} /> Edit
-          </button>
-        ) : null}
-      </div>
-
-      <div
-        className="min-h-0 flex-1 overflow-auto bg-canvas"
-        onScroll={(e) => {
-          if (!hasMore || loadingMore) return;
-          const el = e.currentTarget;
-          // Near-bottom (within ~600px) => fetch the next byte page.
-          if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) onLoadMore();
-        }}
-      >
-        {/* File-level comments (line 0), shown above the content. */}
-        {comments.filter((c) => c.line === 0).length > 0 ? (
-          <div data-debug-id={`${debugPrefix}-file-comments`} className="border-b border-subtle bg-surface-raised p-2">
-            {comments.filter((c) => c.line === 0).map((c) => (
-              <LineComment key={c.id} comment={c} debugPrefix={debugPrefix} gutterWidthCh={0} onEdit={onEditComment} onDelete={onDeleteComment} />
-            ))}
-          </div>
-        ) : null}
-        {fetching && !content ? (
-          <div className="p-4 text-center text-xs text-muted">Loading…</div>
-        ) : !file.viewable ? (
-          <div data-debug-id={`${debugPrefix}-file-unviewable`} className="grid h-full place-items-center p-6 text-center text-xs text-muted">
-            {file.error?.code === 'file_too_large'
-              ? `This file is too large to preview (${formatBytes(file.size)}).`
-              : file.error?.code === 'unsupported_type'
-                ? 'This file type cannot be previewed.'
-                : str(file.error?.message) || 'This file cannot be previewed.'}
-          </div>
-        ) : isImage ? (
-          <div className="grid h-full place-items-center p-4">
-            {/* eslint-disable-next-line jsx-a11y/img-redundant-alt */}
-            <img data-debug-id={`${debugPrefix}-file-image`} src={dataUri} alt={name} className="max-h-full max-w-full rounded-lg object-contain" />
-          </div>
-        ) : isMarkdown && mdRendered ? (
-          <div data-debug-id={`${debugPrefix}-file-markdown`} className="p-3">
-            <MarkdownBody source={content} className="text-primary" />
-          </div>
-        ) : (
-          <>
-            <CodeLines
-              content={content}
-              path={file.path}
-              wrap={wrap}
+      {/* File-level & line comments for active tab */}
+      {comments.length > 0 && onEditComment && onDeleteComment ? (
+        <div data-debug-id={`${debugPrefix}-file-comments`} className="border-b border-subtle bg-surface-raised p-2 max-h-36 overflow-y-auto">
+          {comments.map((c) => (
+            <LineComment
+              key={c.id}
+              comment={c}
               debugPrefix={debugPrefix}
-              comments={comments}
-              onAddComment={onAddComment}
-              onEditComment={onEditComment}
-              onDeleteComment={onDeleteComment}
+              gutterWidthCh={0}
+              onEdit={onEditComment}
+              onDelete={onDeleteComment}
             />
-            {hasMore ? (
-              <div className="flex justify-center py-2">
-                <button
-                  data-debug-id={`${debugPrefix}-file-load-more-btn`}
-                  type="button"
-                  onClick={onLoadMore}
-                  disabled={loadingMore}
-                  className="rounded-lg border border-subtle px-3 py-1.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
-                >
-                  {loadingMore ? 'Loading…' : 'Load more of this file'}
-                </button>
-              </div>
-            ) : null}
-          </>
-        )}
-      </div>
-
-      {file.truncated ? (
-        <div className="border-t border-warning/30 bg-warning-soft px-3 py-1.5 text-center text-[10px] text-warning">
-          Preview truncated.
+          ))}
         </div>
       ) : null}
+
+      {/* Monaco Editor Canvas or Image / Unviewable Preview */}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        {activeTab.isImage ? (
+          <div
+            data-debug-id={`${debugPrefix}-image-preview`}
+            className="flex h-full w-full items-center justify-center overflow-auto bg-canvas p-4"
+          >
+            <img
+              data-debug-id={`${debugPrefix}-file-image`}
+              src={`data:${activeTab.mime || 'image/png'};base64,${activeTab.content}`}
+              alt={baseName(activeTab.path)}
+              className="max-h-full max-w-full rounded-lg object-contain shadow-sm"
+            />
+          </div>
+        ) : activeTab.isUnviewable ? (
+          <div
+            data-debug-id={`${debugPrefix}-file-unviewable`}
+            className="grid h-full place-items-center p-6 text-center text-xs text-muted"
+          >
+            {activeTab.unviewableReason || 'This file cannot be previewed or edited.'}
+          </div>
+        ) : (
+          <Editor
+            path={activeTab.path}
+            value={activeTab.content}
+            language={language}
+            theme={monacoTheme}
+            options={options}
+            onChange={(val) => onContentChange(activeTab.path, val ?? '')}
+            onMount={handleEditorMount}
+            loading={
+              <div className="p-4 text-center text-xs text-muted">
+                Loading editor…
+              </div>
+            }
+          />
+        )}
+      </div>
     </div>
   );
 }
