@@ -1338,7 +1338,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
-	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "fig_list_workspaces_result", "fig_create_workspace_result", "fig_list_dir_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "fs_find_files_result", "fs_grep_result":
+	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "fig_list_workspaces_result", "fig_create_workspace_result", "fig_list_dir_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_targets_result", "vcs_log_result", "vcs_file_content_result", "vcs_action_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result":
 		command_id := json_string(text, "command_id")
 		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		if existed {

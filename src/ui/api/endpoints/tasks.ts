@@ -15,6 +15,71 @@ function unwrapData(res: any): any {
 
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function normalizeTask(task: any) {
+  // Derive assigneeAgentInstanceId
+  const assigneeAgentInstanceId =
+    task.assignee_agent_instance_id ||
+    task.assignee_ref?.agent_instance_id ||
+    task.assigneeRef?.agentInstanceId ||
+    task.assignee_ref?.agentInstanceId ||
+    task.assigneeRef?.agent_instance_id ||
+    '';
+
+  // Raw assignee ref normalization
+  const rawAssigneeRef =
+    task.assignee_ref ||
+    task.assigneeRef ||
+    (assigneeAgentInstanceId
+      ? { type: 'agent_instance', agent_instance_id: assigneeAgentInstanceId, agentInstanceId: assigneeAgentInstanceId }
+      : null);
+  let normalizedAssigneeRef = rawAssigneeRef ? { ...rawAssigneeRef } : null;
+  if (normalizedAssigneeRef) {
+    if (normalizedAssigneeRef.agent_instance_id && !normalizedAssigneeRef.agentInstanceId) {
+      normalizedAssigneeRef.agentInstanceId = normalizedAssigneeRef.agent_instance_id;
+    }
+    if (normalizedAssigneeRef.agentInstanceId && !normalizedAssigneeRef.agent_instance_id) {
+      normalizedAssigneeRef.agent_instance_id = normalizedAssigneeRef.agentInstanceId;
+    }
+    if (normalizedAssigneeRef.display_name && !normalizedAssigneeRef.displayName) {
+      normalizedAssigneeRef.displayName = normalizedAssigneeRef.display_name;
+    }
+    if (normalizedAssigneeRef.displayName && !normalizedAssigneeRef.display_name) {
+      normalizedAssigneeRef.display_name = normalizedAssigneeRef.displayName;
+    }
+  }
+
+  // Derive reviewerAgentInstanceId
+  const reviewerAgentInstanceId =
+    task.reviewer_agent_instance_id ||
+    task.reviewer_refs?.[0]?.agent_instance_id ||
+    task.reviewerRefs?.[0]?.agentInstanceId ||
+    task.reviewer_refs?.[0]?.agentInstanceId ||
+    task.reviewerRefs?.[0]?.agent_instance_id ||
+    '';
+
+  // Raw reviewer refs normalization
+  const rawReviewerRefs =
+    task.reviewer_refs ||
+    task.reviewerRefs ||
+    (reviewerAgentInstanceId
+      ? [{ type: 'agent_instance', agent_instance_id: reviewerAgentInstanceId, agentInstanceId: reviewerAgentInstanceId }]
+      : []);
+  const normalizedReviewerRefs = (Array.isArray(rawReviewerRefs) ? rawReviewerRefs : []).map((r: any) => {
+    const item = { ...r };
+    if (item.agent_instance_id && !item.agentInstanceId) {
+      item.agentInstanceId = item.agent_instance_id;
+    }
+    if (item.agentInstanceId && !item.agent_instance_id) {
+      item.agent_instance_id = item.agentInstanceId;
+    }
+    if (item.display_name && !item.displayName) {
+      item.displayName = item.display_name;
+    }
+    if (item.displayName && !item.display_name) {
+      item.display_name = item.displayName;
+    }
+    return item;
+  });
+
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
   const result: any = {
     // TODO(FIX): Replace loose fallback chain with canonical typed schema property
@@ -26,15 +91,16 @@ function normalizeTask(task: any) {
     description: task.description || '',
     priority: task.priority || 'p2',
     status: task.status || 'pending',
-    assigneeAgentInstanceId: task.assignee_agent_instance_id || '',
-    reviewerAgentInstanceId: task.reviewer_agent_instance_id || '',
+    assigneeAgentInstanceId,
+    reviewerAgentInstanceId,
     coordinatorAgentInstanceId: task.coordinator_agent_instance_id || '',
     dependsOn: task.depends_on || (task.depends_on_task_ids ? task.depends_on_task_ids : []),
     blocked: Boolean(task.blocked),
-    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-    assigneeRef: task.assignee_ref || task.assigneeRef || (task.assignee_agent_instance_id ? { type: 'agent_instance', agent_instance_id: task.assignee_agent_instance_id } : null),
-    // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-    reviewerRefs: task.reviewer_refs || task.reviewerRefs || (task.reviewer_agent_instance_id ? [{ type: 'agent_instance', agent_instance_id: task.reviewer_agent_instance_id }] : []),
+    // Dual casing on normalized task
+    assigneeRef: normalizedAssigneeRef,
+    assignee_ref: normalizedAssigneeRef,
+    reviewerRefs: normalizedReviewerRefs,
+    reviewer_refs: normalizedReviewerRefs,
     comments: (task.comments || []).map(normalizeTaskComments),
     commentSummary: task.comment_summary ? {
       count: Number(task.comment_summary.count || 0),
@@ -140,6 +206,57 @@ function preciseTaskTags(taskId?: string, chainId?: string, includeComments = tr
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function normalizeTaskChainDetail(data: any) {
   if (!data) return null;
+
+  // Build memberNameMap from data.members mapping both agentInstanceId and agent_instance_id to displayName
+  const memberNameMap = new Map<string, string>();
+  for (const m of data.members || []) {
+    const name = m.display_name || m.displayName || '';
+    if (name) {
+      if (m.agent_instance_id) memberNameMap.set(m.agent_instance_id, name);
+      if (m.agentInstanceId) memberNameMap.set(m.agentInstanceId, name);
+    }
+  }
+
+  const tasks = (data.tasks || []).map((rawTask: any) => {
+    const task = normalizeTask(rawTask);
+    const assigneeId =
+      task.assigneeAgentInstanceId ||
+      task.assigneeRef?.agentInstanceId ||
+      task.assigneeRef?.agent_instance_id ||
+      task.assignee_ref?.agentInstanceId ||
+      task.assignee_ref?.agent_instance_id;
+    if (assigneeId && memberNameMap.has(assigneeId)) {
+      const name = memberNameMap.get(assigneeId)!;
+      if (task.assigneeRef) {
+        task.assigneeRef.displayName = task.assigneeRef.displayName || name;
+        task.assigneeRef.display_name = task.assigneeRef.display_name || name;
+      }
+      if (task.assignee_ref) {
+        task.assignee_ref.displayName = task.assignee_ref.displayName || name;
+        task.assignee_ref.display_name = task.assignee_ref.display_name || name;
+      }
+    }
+
+    const enrichReviewer = (rev: any) => {
+      const rId = rev?.agentInstanceId || rev?.agent_instance_id;
+      if (rId && memberNameMap.has(rId)) {
+        const name = memberNameMap.get(rId)!;
+        rev.displayName = rev.displayName || name;
+        rev.display_name = rev.display_name || name;
+      }
+      return rev;
+    };
+
+    if (Array.isArray(task.reviewerRefs)) {
+      task.reviewerRefs.forEach(enrichReviewer);
+    }
+    if (Array.isArray(task.reviewer_refs)) {
+      task.reviewer_refs.forEach(enrichReviewer);
+    }
+
+    return task;
+  });
+
   return {
     // TODO(FIX): Replace loose fallback chain with canonical typed schema property
     chainId: data.chain_id || data.chainId,
@@ -163,7 +280,7 @@ function normalizeTaskChainDetail(data: any) {
       activityStatus: m.activity_status || '',
       createdAt: m.created_at,
     })),
-    tasks: (data.tasks || []).map(normalizeTask),
+    tasks,
     createdAt: data.created_at || '',
     updatedAt: data.updated_at || '',
   };

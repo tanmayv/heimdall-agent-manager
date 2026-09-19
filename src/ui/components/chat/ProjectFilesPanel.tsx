@@ -857,8 +857,10 @@ export default function ProjectFilesPanel({
       const def = vcsTargets.find((t) => t.is_default);
       if (def) setSelectedDiffTarget(def.id);
       else if (vcsTargets[0]) setSelectedDiffTarget(vcsTargets[0].id);
+    } else if (isVcsActive && !selectedDiffTarget) {
+      setSelectedDiffTarget('HEAD');
     }
-  }, [vcsTargets, selectedDiffTarget]);
+  }, [vcsTargets, selectedDiffTarget, isVcsActive]);
 
   // Click outside for log popover
   useEffect(() => {
@@ -3245,7 +3247,13 @@ function MonacoMultiFileEditor({
               </div>
             </div>
 
-            <div className="relative min-h-0 flex-1">
+            <div className="h-full min-h-[350px] w-full flex-1 relative">
+              {isFetchingBaseContent ? (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-canvas/60 backdrop-blur-xs gap-2">
+                  <Icon name="refresh" size={18} className="animate-spin text-accent" />
+                  <span className="text-xs text-muted">Loading base revision…</span>
+                </div>
+              ) : null}
               <DiffEditor
                 original={diffOriginalContent !== undefined ? diffOriginalContent : activeTab.initialContent}
                 modified={diffModifiedContent !== undefined ? diffModifiedContent : activeTab.content}

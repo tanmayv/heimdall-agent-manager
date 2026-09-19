@@ -389,6 +389,42 @@ export default function ChainOverviewPanel({
     return map;
   }, [tasks]);
 
+  // Memoized member display name map (instanceId -> displayName)
+  const memberNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of members) {
+      const instId = m.agentInstanceId || m.agent_instance_id;
+      const name = m.displayName || m.display_name;
+      if (instId && name) {
+        map.set(instId, name);
+      }
+    }
+    return map;
+  }, [members]);
+
+  // Resolve human-friendly agent/user display name
+  const resolveAgentName = useCallback(
+    (ref: any, fallback: string): string => {
+      if (!ref) return fallback;
+      if (typeof ref === 'string') {
+        if (ref === 'user' || ref.toLowerCase() === 'user') return 'User';
+        return memberNameMap.get(ref) || ref || fallback;
+      }
+      if (ref.type === 'user' || ref.user_id === 'user' || ref.userId === 'user') {
+        return 'User';
+      }
+      if (ref.displayName || ref.display_name) {
+        return ref.displayName || ref.display_name;
+      }
+      const instanceId = ref.agentInstanceId || ref.agent_instance_id;
+      if (instanceId) {
+        return memberNameMap.get(instanceId) || instanceId;
+      }
+      return fallback;
+    },
+    [memberNameMap]
+  );
+
   // Toggle terminal accordion
   const toggleTerminal = useCallback((instId: string) => {
     setOpenTerminalIds((prev) => ({
@@ -650,6 +686,17 @@ export default function ChainOverviewPanel({
                 const taskId = task.taskId || task.id;
                 const isExpanded = expandedAttentionTaskId === taskId;
                 const reason = attentionReason(task);
+                const assignee = resolveAgentName(
+                  task.assigneeRef || task.assignee_ref || task.assigneeAgentInstanceId || task.assignee_agent_instance_id,
+                  'Unassigned'
+                );
+                const reviewerRef =
+                  task.reviewerRefs?.[0] ||
+                  task.reviewer_refs?.[0] ||
+                  task.reviewerAgentInstanceId ||
+                  task.reviewer_agent_instance_id ||
+                  (task.reviewers?.[0] ? String(task.reviewers[0]) : null);
+                const reviewer = resolveAgentName(reviewerRef, 'None');
 
                 return (
                   <div
@@ -676,6 +723,14 @@ export default function ChainOverviewPanel({
                         <h4 className="text-xs font-semibold text-primary mt-1 line-clamp-2">
                           {task.title}
                         </h4>
+                        <div className="mt-1 flex items-center justify-between text-[11px] text-muted">
+                          <span className="truncate max-w-[140px]">
+                            Worker: <strong className="text-primary font-normal">{assignee}</strong>
+                          </span>
+                          <span className="truncate max-w-[140px]">
+                            Reviewer: <strong className="text-primary font-normal">{reviewer}</strong>
+                          </span>
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -742,18 +797,17 @@ export default function ChainOverviewPanel({
             <div className="grid gap-2">
               {ongoingTasks.map((task) => {
                 const taskId = task.taskId || task.id;
-                const assignee =
-                  task.assignee_ref?.display_name ||
-                  task.assigneeRef?.displayName ||
-                  task.assignee_ref?.agent_instance_id ||
-                  task.assigneeRef?.agentInstanceId ||
-                  'Unassigned';
-                const reviewer =
-                  task.reviewer_refs?.[0]?.display_name ||
-                  task.reviewerRefs?.[0]?.displayName ||
-                  task.reviewer_refs?.[0]?.agent_instance_id ||
-                  task.reviewerRefs?.[0]?.agentInstanceId ||
-                  (task.reviewers?.[0] ? String(task.reviewers[0]) : 'None');
+                const assignee = resolveAgentName(
+                  task.assigneeRef || task.assignee_ref || task.assigneeAgentInstanceId || task.assignee_agent_instance_id,
+                  'Unassigned'
+                );
+                const reviewerRef =
+                  task.reviewerRefs?.[0] ||
+                  task.reviewer_refs?.[0] ||
+                  task.reviewerAgentInstanceId ||
+                  task.reviewer_agent_instance_id ||
+                  (task.reviewers?.[0] ? String(task.reviewers[0]) : null);
+                const reviewer = resolveAgentName(reviewerRef, 'None');
 
                 return (
                   <div
