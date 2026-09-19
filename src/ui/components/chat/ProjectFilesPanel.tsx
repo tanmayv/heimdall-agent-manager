@@ -277,8 +277,24 @@ export default function ProjectFilesPanel({
   const [confirmClosePath, setConfirmClosePath] = useState<string | null>(null);
   const [openingInEditor, setOpeningInEditor] = useState<string>('');
 
-  // Split-pane & explorer collapse/resizing state (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE)
-  const [isExplorerCollapsed, setIsExplorerCollapsed] = useState<boolean>(false);
+  // Split-pane & explorer collapse/resizing state (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE, REQ-UI-SIDEBAR-PERSISTENCE)
+  const [isExplorerCollapsed, setIsExplorerCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('heimdall:editor:explorer_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const updateExplorerCollapsed = useCallback((nextOrUpdater: boolean | ((prev: boolean) => boolean)) => {
+    setIsExplorerCollapsed((prev) => {
+      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
+      try {
+        localStorage.setItem('heimdall:editor:explorer_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
   const [explorerWidth, setExplorerWidth] = useState<number>(280);
   const [isDiffMode, setIsDiffMode] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<boolean>(false);
@@ -1166,7 +1182,7 @@ export default function ProjectFilesPanel({
                   if (isSinglePane) {
                     setActivePane((p) => (p === 'files' ? 'editor' : 'files'));
                   } else {
-                    setIsExplorerCollapsed((prev) => !prev);
+                    updateExplorerCollapsed((prev) => !prev);
                   }
                 }}
                 title={
@@ -1325,7 +1341,7 @@ export default function ProjectFilesPanel({
                       type="button"
                       onClick={() => {
                         setIsOverflowOpen(false);
-                        if (isExplorerCollapsed) setIsExplorerCollapsed(false);
+                        if (isExplorerCollapsed) updateExplorerCollapsed(false);
                         if (isSinglePane) setActivePane('files');
                         beginAction({ kind: 'new-file' });
                       }}
@@ -1341,7 +1357,7 @@ export default function ProjectFilesPanel({
                       type="button"
                       onClick={() => {
                         setIsOverflowOpen(false);
-                        if (isExplorerCollapsed) setIsExplorerCollapsed(false);
+                        if (isExplorerCollapsed) updateExplorerCollapsed(false);
                         if (isSinglePane) setActivePane('files');
                         beginAction({ kind: 'new-dir' });
                       }}
@@ -1685,11 +1701,11 @@ export default function ProjectFilesPanel({
                   saveFeedback={saveFeedback}
                   onBackToFiles={() => {
                     if (isSinglePane) setActivePane('files');
-                    else setIsExplorerCollapsed((prev) => !prev);
+                    else updateExplorerCollapsed((prev) => !prev);
                   }}
                   onToggleExplorer={() => {
                     if (isSinglePane) setActivePane('files');
-                    else setIsExplorerCollapsed((prev) => !prev);
+                    else updateExplorerCollapsed((prev) => !prev);
                   }}
                   isExplorerCollapsed={isExplorerCollapsed}
                   onNewFile={handleEditorNewFile}
