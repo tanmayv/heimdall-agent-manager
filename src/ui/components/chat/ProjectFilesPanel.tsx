@@ -224,6 +224,7 @@ export type ProjectFilesPanelProps = {
   projectId: string;
   bridgeId?: string;
   projectName?: string;
+  agentInstanceId?: string;
   // Scope key for the in-memory comment store: comments reset when this changes
   // (e.g. switching conversations) so review notes never leak across chats.
   conversationKey?: string;
@@ -242,6 +243,7 @@ export default function ProjectFilesPanel({
   projectId,
   bridgeId = '',
   projectName,
+  agentInstanceId,
   conversationKey = '',
   onPublishComments,
   onClose,
@@ -266,10 +268,44 @@ export default function ProjectFilesPanel({
   // Quick Open Modal state (Cmd+P / Ctrl+P) (REQ-UI-GLOBAL-QUICK-OPEN)
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
 
-  // Multi-file editor state
-  const [openTabs, setOpenTabs] = useState<EditorTab[]>([]);
-  const [activeTabPath, setActiveTabPath] = useState<string>('');
-  const [isEditMode, setIsEditMode] = useState<boolean>(false);
+  // Multi-file editor state (REQ-UI-INSTANCE-MONACO-PERSISTENCE)
+  const [openTabs, setOpenTabs] = useState<EditorTab[]>(() => {
+    if (!agentInstanceId || typeof window === 'undefined') return [];
+    try {
+      const raw = localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed?.openTabs)) return parsed.openTabs;
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [activeTabPath, setActiveTabPath] = useState<string>(() => {
+    if (!agentInstanceId || typeof window === 'undefined') return '';
+    try {
+      const raw = localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.activeTabPath === 'string') return parsed.activeTabPath;
+        if (Array.isArray(parsed?.openTabs) && parsed.openTabs.length > 0) return parsed.openTabs[0].path;
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed[0].path;
+      }
+    } catch {}
+    return '';
+  });
+  const [isEditMode, setIsEditMode] = useState<boolean>(() => {
+    if (!agentInstanceId || typeof window === 'undefined') return false;
+    try {
+      const raw = localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed?.openTabs)) return parsed.openTabs.length > 0;
+        if (Array.isArray(parsed)) return parsed.length > 0;
+      }
+    } catch {}
+    return false;
+  });
   const [saveFeedback, setSaveFeedback] = useState<{
     type: 'success' | 'warning' | 'error';
     message: string;
@@ -277,9 +313,31 @@ export default function ProjectFilesPanel({
   const [confirmClosePath, setConfirmClosePath] = useState<string | null>(null);
   const [openingInEditor, setOpeningInEditor] = useState<string>('');
 
-  // Split-pane & explorer collapse/resizing state (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE, REQ-UI-SIDEBAR-PERSISTENCE)
+  // Track active agentInstanceId for tab state to guard against cross-saving during instance transitions
+  const activeInstanceRef = useRef(agentInstanceId);
+
+  // Persist openTabs and activeTabPath per agentInstanceId (REQ-UI-INSTANCE-MONACO-PERSISTENCE)
+  useEffect(() => {
+    if (!agentInstanceId || typeof window === 'undefined') return;
+    if (activeInstanceRef.current !== agentInstanceId) return;
+    try {
+      const payload = JSON.stringify({ openTabs, activeTabPath });
+      localStorage.setItem(`heimdall:editor:tabs:${agentInstanceId}`, payload);
+    } catch {}
+  }, [agentInstanceId, openTabs, activeTabPath]);
+
+  // Split-pane & explorer collapse/resizing state (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE, REQ-UI-SIDEBAR-PERSISTENCE, REQ-UI-INSTANCE-TREE-PERSISTENCE)
   const [isExplorerCollapsed, setIsExplorerCollapsed] = useState<boolean>(() => {
     try {
+      if (agentInstanceId) {
+        const treeRaw = localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`);
+        if (treeRaw) {
+          const parsed = JSON.parse(treeRaw);
+          if (typeof parsed?.isExplorerCollapsed === 'boolean') {
+            return parsed.isExplorerCollapsed;
+          }
+        }
+      }
       return localStorage.getItem('heimdall:editor:explorer_collapsed') === 'true';
     } catch {
       return false;
@@ -291,10 +349,16 @@ export default function ProjectFilesPanel({
       const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
       try {
         localStorage.setItem('heimdall:editor:explorer_collapsed', String(next));
+        if (agentInstanceId) {
+          const treeRaw = localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`);
+          const parsed = treeRaw ? JSON.parse(treeRaw) : {};
+          parsed.isExplorerCollapsed = next;
+          localStorage.setItem(`heimdall:editor:tree:${agentInstanceId}`, JSON.stringify(parsed));
+        }
       } catch {}
       return next;
     });
-  }, []);
+  }, [agentInstanceId]);
   const [explorerWidth, setExplorerWidth] = useState<number>(280);
   const [isDiffMode, setIsDiffMode] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<boolean>(false);
@@ -427,7 +491,33 @@ export default function ProjectFilesPanel({
     };
   }, [isResizing]);
 
-  const [cwd, setCwd] = useState(''); // project-root-relative path ('' = root)
+  const [cwd, setCwd] = useState<string>(() => {
+    try {
+      if (agentInstanceId) {
+        const treeRaw = localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`);
+        if (treeRaw) {
+          const parsed = JSON.parse(treeRaw);
+          if (typeof parsed?.cwd === 'string') {
+            return parsed.cwd;
+          }
+        }
+      }
+    } catch {}
+    return '';
+  }); // project-root-relative path ('' = root)
+
+  // Persist cwd and isExplorerCollapsed per agentInstanceId (REQ-UI-INSTANCE-TREE-PERSISTENCE)
+  useEffect(() => {
+    if (!agentInstanceId || typeof window === 'undefined') return;
+    if (activeInstanceRef.current !== agentInstanceId) return;
+    try {
+      const treeRaw = localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`);
+      const parsed = treeRaw ? JSON.parse(treeRaw) : {};
+      parsed.cwd = cwd;
+      parsed.isExplorerCollapsed = isExplorerCollapsed;
+      localStorage.setItem(`heimdall:editor:tree:${agentInstanceId}`, JSON.stringify(parsed));
+    } catch {}
+  }, [agentInstanceId, cwd, isExplorerCollapsed]);
   const [rootAbs, setRootAbs] = useState('');
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -539,19 +629,56 @@ export default function ProjectFilesPanel({
     [projectId, bridgeId, includeHidden, listDir],
   );
 
-  // Reset to the project ROOT only when the project/bridge changes, so we never
-  // show a stale directory carried over from another project. The hidden toggle
-  // must NOT reset here (Spec 4.2/4.3 — it refetches the CURRENT dir; see below).
+  // Restore / load directory and editor state for current project & instance (REQ-UI-INSTANCE-MONACO-PERSISTENCE, REQ-UI-INSTANCE-TREE-PERSISTENCE)
+  const isProjectMountedRef = useRef(false);
   useEffect(() => {
+    if (!isProjectMountedRef.current) {
+      isProjectMountedRef.current = true;
+      void load(cwd);
+      return;
+    }
     setPending(null);
-    setOpenTabs([]);
-    setActiveTabPath('');
-    setIsEditMode(false);
     setSaveFeedback(null);
     setConfirmClosePath(null);
-    void load('');
+
+    let restoredTabs: EditorTab[] = [];
+    let restoredActive = '';
+    let restoredCwd = '';
+    let restoredCollapsed = false;
+
+    if (agentInstanceId && typeof window !== 'undefined') {
+      try {
+        const tabsRaw = localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
+        if (tabsRaw) {
+          const parsed = JSON.parse(tabsRaw);
+          if (Array.isArray(parsed?.openTabs)) {
+            restoredTabs = parsed.openTabs;
+            restoredActive = typeof parsed.activeTabPath === 'string' ? parsed.activeTabPath : (restoredTabs[0]?.path || '');
+          } else if (Array.isArray(parsed)) {
+            restoredTabs = parsed;
+            restoredActive = restoredTabs[0]?.path || '';
+          }
+        }
+        const treeRaw = localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`);
+        if (treeRaw) {
+          const parsed = JSON.parse(treeRaw);
+          if (typeof parsed?.cwd === 'string') restoredCwd = parsed.cwd;
+          if (typeof parsed?.isExplorerCollapsed === 'boolean') restoredCollapsed = parsed.isExplorerCollapsed;
+        } else {
+          restoredCollapsed = localStorage.getItem('heimdall:editor:explorer_collapsed') === 'true';
+        }
+      } catch {}
+    }
+
+    setOpenTabs(restoredTabs);
+    setActiveTabPath(restoredActive);
+    setIsEditMode(restoredTabs.length > 0);
+    setCwd(restoredCwd);
+    setIsExplorerCollapsed(restoredCollapsed);
+    activeInstanceRef.current = agentInstanceId;
+    void load(restoredCwd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, bridgeId]);
+  }, [projectId, bridgeId, agentInstanceId]);
 
   // Global keydown listener for Quick Open (Cmd+P / Ctrl+P) scoped to current project (REQ-UI-GLOBAL-QUICK-OPEN)
   useEffect(() => {
@@ -2126,6 +2253,7 @@ function MonacoMultiFileEditor({
   isVimMode?: boolean;
   isWordWrap?: boolean;
 }) {
+  const monaco = useMonaco();
   const monacoTheme = themeAppearance === 'light' ? 'light' : 'vs-dark';
   const language = useMemo(() => getLanguageForMonaco(activeTab.path), [activeTab.path]);
 
@@ -2206,6 +2334,17 @@ function MonacoMultiFileEditor({
 
     try {
       const vim = initVimMode(editorInstance, statusNodeRef.current);
+      const origGetOption = vim.getOption;
+      vim.getOption = function(key: string) {
+        if (key === "readOnly") {
+          const monacoEditorOption = (monaco as any)?.editor?.EditorOption?.readOnly;
+          if (typeof monacoEditorOption === "number") {
+            return Boolean(editorInstance.getOption(monacoEditorOption));
+          }
+          return Boolean(editorInstance.getRawOptions?.()?.readOnly);
+        }
+        return origGetOption.call(this, key);
+      };
       vimModeRef.current = vim;
     } catch (e) {
       console.error('Failed to initialize monaco-vim:', e);

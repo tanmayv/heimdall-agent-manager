@@ -18,6 +18,7 @@ PANEL_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ProjectFilesPanel.ts
 APP_SHELL_FILE = ROOT / "src" / "ui" / "components" / "shell" / "AppShell.tsx"
 THREAD_PAGE_FILE = ROOT / "src" / "ui" / "components" / "chat" / "ConversationThreadPage.tsx"
 ICON_FILE = ROOT / "src" / "ui" / "components" / "ui" / "primitives" / "Icon.tsx"
+PERSISTENCE_FILE = ROOT / "src" / "ui" / "utils" / "clientPersistence.ts"
 PACKAGE_JSON_FILE = ROOT / "package.json"
 
 
@@ -183,6 +184,15 @@ def main() -> None:
     require("heimdall:editor:vim_mode" in panel_src, "Vim mode toggle must be persisted in localStorage")
     require("toggle-vim-btn" in panel_src, "Must offer Vim toggle in overflow menu")
     require("editorInstance" in panel_src, "Must unify Vim lifecycle into single hook driven by editorInstance")
+    # REQ-VIM-INSERT-MODE-FIX: Monaco Vim insert mode readOnly fix
+    require("origGetOption" in panel_src, "Must save original vim.getOption")
+    require("readOnly" in panel_src, "Must intercept readOnly option in vim.getOption")
+    require("EditorOption?.readOnly" in panel_src, "Must resolve EditorOption.readOnly for monaco")
+
+    # REQ-UI-INSTANCE-MONACO-PERSISTENCE & REQ-UI-INSTANCE-TREE-PERSISTENCE
+    require("agentInstanceId" in panel_src, "ProjectFilesPanel must accept agentInstanceId")
+    require("heimdall:editor:tabs:" in panel_src, "Must persist openTabs and activeTabPath per agentInstanceId")
+    require("heimdall:editor:tree:" in panel_src, "Must persist cwd and isExplorerCollapsed per agentInstanceId")
 
     # REQ-UI-RESPONSIVE-TOP-BAR: Responsive top bar with 3-dots overflow menu
     require("overflow-menu-btn" in panel_src, "Must render 3-dots overflow menu button")
@@ -209,6 +219,11 @@ def main() -> None:
     print("[*] 3. Checking src/ui/components/chat/ConversationThreadPage.tsx...")
     require(THREAD_PAGE_FILE.exists(), "ConversationThreadPage.tsx must exist")
     thread_src = THREAD_PAGE_FILE.read_text(encoding="utf-8")
+
+    # REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE & REQ-UI-INSTANCE-MONACO-PERSISTENCE
+    require("agentInstanceId={agentInstanceId}" in thread_src, "ConversationThreadPage must forward agentInstanceId to ProjectFilesPanel")
+    require("readRightSidebarTab(agentInstanceId)" in thread_src, "ConversationThreadPage must restore tab per agentInstanceId")
+    require("readRightSidebarOpen(agentInstanceId)" in thread_src, "ConversationThreadPage must restore open state per agentInstanceId")
 
     # REQ-UI-GLOBAL-CMDP-EVERYWHERE: Global Cmd+P listener and quick open integration
     require("ProjectQuickOpenModal" in thread_src, "Must import and render ProjectQuickOpenModal in ConversationThreadPage")
@@ -246,6 +261,17 @@ def main() -> None:
     require("toggleCollapsed" in shell_src, "AppShell must implement toggleCollapsed handler")
     require("setDrawerOpen(false)" in shell_src, "Must keep mobile drawer distinct from desktop collapse")
     print("  [+] AppShell.tsx sidebar persistence verified successfully.")
+
+    print("[*] 6. Checking src/ui/utils/clientPersistence.ts for instance-scoped sidebar persistence (REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE)...")
+    require(PERSISTENCE_FILE.exists(), "clientPersistence.ts must exist")
+    persist_src = PERSISTENCE_FILE.read_text(encoding="utf-8")
+    require("readRightSidebarOpen(instanceId?: string)" in persist_src, "readRightSidebarOpen must accept optional instanceId")
+    require("writeRightSidebarOpen(open: boolean, instanceId?: string)" in persist_src, "writeRightSidebarOpen must accept optional instanceId")
+    require("readRightSidebarTab(instanceId?: string)" in persist_src, "readRightSidebarTab must accept optional instanceId")
+    require("writeRightSidebarTab(tab: RightSidebarTab, instanceId?: string)" in persist_src, "writeRightSidebarTab must accept optional instanceId")
+    require("heimdall:sidebar:open:" in persist_src, "clientPersistence must use heimdall:sidebar:open:<instanceId>")
+    require("heimdall:sidebar:tab:" in persist_src, "clientPersistence must use heimdall:sidebar:tab:<instanceId>")
+    print("  [+] clientPersistence.ts instance persistence verified successfully.")
 
     print("\n[SUCCESS] All static verification checks passed cleanly!")
 

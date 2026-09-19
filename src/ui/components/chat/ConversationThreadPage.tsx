@@ -606,12 +606,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       if (norm === 'jobs') return 'jobs';
       if (norm === 'closed' || norm === 'false' || norm === '0') return 'closed';
       if (norm === 'open' || norm === 'true' || norm === '1') {
-        return readRightSidebarTab() || 'tasks';
+        return readRightSidebarTab(agentInstanceId) || 'tasks';
       }
     }
-    const open = !isMobile && readRightSidebarOpen();
+    // Guard initial rightPanel state on mobile: !isMobile && readRightSidebarOpen()
+    const open = !isMobile && readRightSidebarOpen(agentInstanceId);
     if (open) {
-      return readRightSidebarTab() || 'tasks';
+      return readRightSidebarTab(agentInstanceId) || 'tasks';
     }
     return 'closed';
   });
@@ -622,6 +623,31 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
   const [editorFileToOpen, setEditorFileToOpen] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Synchronize sidebar state when agentInstanceId changes (REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE)
+  useEffect(() => {
+    if (!agentInstanceId) return;
+    const search = getRouteSearch();
+    const params = new URLSearchParams(search.replace(/^\?/, ''));
+    const param = params.get('panel') || params.get('sidebar');
+    if (param) {
+      const norm = param.trim().toLowerCase();
+      if (norm === 'tasks' || norm === 'files' || norm === 'rundir' || norm === 'jobs') {
+        setRightPanel(norm);
+        return;
+      }
+      if (norm === 'closed' || norm === 'false' || norm === '0') {
+        setRightPanel('closed');
+        return;
+      }
+    }
+    const open = !isMobile && readRightSidebarOpen(agentInstanceId);
+    if (open) {
+      setRightPanel(readRightSidebarTab(agentInstanceId) || 'tasks');
+    } else {
+      setRightPanel('closed');
+    }
+  }, [agentInstanceId, isMobile]);
 
   // Global Cmd+P / Ctrl+P shortcut to trigger Quick Open across the conversation page (REQ-UI-GLOBAL-CMDP-EVERYWHERE)
   useEffect(() => {
@@ -652,27 +678,27 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         const norm = param.trim().toLowerCase();
         if (norm === 'tasks') {
           setRightPanel('tasks');
-          writeRightSidebarOpen(true);
-          writeRightSidebarTab('tasks');
+          writeRightSidebarOpen(true, agentInstanceId);
+          writeRightSidebarTab('tasks', agentInstanceId);
         } else if (norm === 'files') {
           setRightPanel('files');
-          writeRightSidebarOpen(true);
-          writeRightSidebarTab('files');
+          writeRightSidebarOpen(true, agentInstanceId);
+          writeRightSidebarTab('files', agentInstanceId);
         } else if (norm === 'rundir') {
           setRightPanel('rundir');
-          writeRightSidebarOpen(true);
-          writeRightSidebarTab('rundir');
+          writeRightSidebarOpen(true, agentInstanceId);
+          writeRightSidebarTab('rundir', agentInstanceId);
         } else if (norm === 'jobs') {
           setRightPanel('jobs');
-          writeRightSidebarOpen(true);
-          writeRightSidebarTab('jobs');
+          writeRightSidebarOpen(true, agentInstanceId);
+          writeRightSidebarTab('jobs', agentInstanceId);
         } else if (norm === 'closed' || norm === 'false' || norm === '0') {
           setRightPanel('closed');
-          writeRightSidebarOpen(false);
+          writeRightSidebarOpen(false, agentInstanceId);
         }
       } else {
         setRightPanel('closed');
-        writeRightSidebarOpen(false);
+        writeRightSidebarOpen(false, agentInstanceId);
       }
     };
     window.addEventListener('hashchange', handleLocationChange);
@@ -681,7 +707,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       window.removeEventListener('hashchange', handleLocationChange);
       window.removeEventListener('popstate', handleLocationChange);
     };
-  }, []);
+  }, [agentInstanceId]);
 
   // Guardrail: adjust sidebar width on window resize so chat view never violates CHAT_VIEW_MIN_WIDTH
   useEffect(() => {
@@ -1051,14 +1077,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setHeaderActionsOpen(false);
     setRightPanel((cur) => {
       if (cur === 'closed') {
-        const targetTab = readRightSidebarTab() || defaultPanelTab();
-        writeRightSidebarOpen(true);
-        writeRightSidebarTab(targetTab);
+        const targetTab = readRightSidebarTab(agentInstanceId) || defaultPanelTab();
+        writeRightSidebarOpen(true, agentInstanceId);
+        writeRightSidebarTab(targetTab, agentInstanceId);
         syncUrlPanel(targetTab);
         return targetTab;
       } else {
         setIsRightPanelMaximized(false);
-        writeRightSidebarOpen(false);
+        writeRightSidebarOpen(false, agentInstanceId);
         syncUrlPanel(null);
         return 'closed';
       }
@@ -1069,15 +1095,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // opens Files; a current-task link opens Tasks).
   function openRightPanel(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
     setHeaderActionsOpen(false);
-    writeRightSidebarOpen(true);
-    writeRightSidebarTab(tab);
+    writeRightSidebarOpen(true, agentInstanceId);
+    writeRightSidebarTab(tab, agentInstanceId);
     syncUrlPanel(tab);
     setRightPanel(tab);
   }
 
   function closeRightPanel() {
     setIsRightPanelMaximized(false);
-    writeRightSidebarOpen(false);
+    writeRightSidebarOpen(false, agentInstanceId);
     syncUrlPanel(null);
     setRightPanel('closed');
   }
@@ -1087,17 +1113,18 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       setIsRightPanelMaximized(false);
       setRightPanel('closed');
       writeRightSidebarOpen(false);
+      if (agentInstanceId) writeRightSidebarOpen(false, agentInstanceId);
       syncUrlPanel(null);
     };
     window.addEventListener('heimdall:close-sidebar', handleCloseSidebar);
     return () => {
       window.removeEventListener('heimdall:close-sidebar', handleCloseSidebar);
     };
-  }, []);
+  }, [agentInstanceId]);
 
   function selectRightPanelTab(tab: 'tasks' | 'files' | 'rundir' | 'jobs') {
-    writeRightSidebarOpen(true);
-    writeRightSidebarTab(tab);
+    writeRightSidebarOpen(true, agentInstanceId);
+    writeRightSidebarTab(tab, agentInstanceId);
     syncUrlPanel(tab);
     setRightPanel(tab);
   }
@@ -1431,6 +1458,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         <div className="min-h-0 flex-1 overflow-hidden">
           {active === 'files' && hasFiles ? (
             <ProjectFilesPanel
+              key={agentInstanceId || projectId}
+              agentInstanceId={agentInstanceId}
               projectId={projectId}
               bridgeId={instanceBridgeId}
               projectName={projectName}
