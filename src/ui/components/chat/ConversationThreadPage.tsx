@@ -1799,7 +1799,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           data-debug-id="conversation-thread-header"
           className={`flex shrink-0 items-center gap-2 px-3 sm:gap-3 sm:px-4 transition-all duration-300 ease-in-out overflow-visible ${
             isMobile
-              ? `fixed top-0 inset-x-0 z-20 h-14 bg-surface/90 backdrop-blur-md border-b border-subtle/70 shadow-sm ${
+              ? `fixed top-0 inset-x-0 z-20 h-14 bg-canvas/90 backdrop-blur-md ${
                   !chromeVisible
                     ? '-translate-y-full opacity-0 pointer-events-none'
                     : 'translate-y-0 opacity-100 pointer-events-auto'
