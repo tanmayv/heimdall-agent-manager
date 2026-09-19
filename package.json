@@ -25,6 +25,8 @@
     "@xterm/xterm": "^6.0.0",
     "lucide-react": "^1.21.0",
     "mermaid": "^11.16.0",
+    "monaco-editor": "^0.45.0",
+    "monaco-vim": "^0.4.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-redux": "^9.1.2",

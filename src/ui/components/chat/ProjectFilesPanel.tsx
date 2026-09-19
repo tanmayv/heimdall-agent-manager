@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Editor, { DiffEditor, useMonaco, type OnMount, type DiffOnMount, type EditorProps, type DiffEditorProps } from '@monaco-editor/react';
+import { initVimMode, VimMode } from 'monaco-vim';
 
 import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
@@ -282,10 +283,107 @@ export default function ProjectFilesPanel({
   // Split-pane & explorer collapse/resizing state (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE)
   const [isExplorerCollapsed, setIsExplorerCollapsed] = useState<boolean>(false);
   const [explorerWidth, setExplorerWidth] = useState<number>(280);
-  const isNarrowExplorer = isMobile || explorerWidth < 320;
   const [isDiffMode, setIsDiffMode] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<boolean>(false);
   const resizerRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  // REQ-VIM-KEYBINDINGS: Persisted Vim mode toggle ('heimdall:editor:vim_mode')
+  const [isVimMode, setIsVimMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('heimdall:editor:vim_mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleVimMode = useCallback(() => {
+    setIsVimMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('heimdall:editor:vim_mode', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  // REQ-UI-RESPONSIVE-TOP-BAR: 3-dots overflow menu
+  const [isOverflowOpen, setIsOverflowOpen] = useState<boolean>(false);
+  const overflowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOverflowOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
+        setIsOverflowOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOverflowOpen]);
+
+  // REQ-UI-MOBILE-SINGLE-PANE: Viewport < 640px or sidebar width < 480px single-pane layout
+  const [containerWidth, setContainerWidth] = useState<number>(800);
+  const [viewportWidth, setViewportWidth] = useState<number>(1024);
+  const panelRootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const updateDimensions = () => {
+      setViewportWidth(window.innerWidth);
+      if (panelRootRef.current) {
+        setContainerWidth(panelRootRef.current.clientWidth);
+      }
+    };
+    updateDimensions();
+    window.addEventListener('resize', updateDimensions);
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && panelRootRef.current) {
+      ro = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.contentRect) {
+            setContainerWidth(entry.contentRect.width);
+          }
+        }
+      });
+      ro.observe(panelRootRef.current);
+    }
+    return () => {
+      window.removeEventListener('resize', updateDimensions);
+      ro?.disconnect();
+    };
+  }, []);
+
+  const isSinglePane = isMobile || viewportWidth < 640 || containerWidth < 480;
+  const isNarrowExplorer = isMobile || isSinglePane || explorerWidth < 320;
+  const [activePane, setActivePane] = useState<'files' | 'editor'>('files');
+
+  // REQ-UI-MOBILE-WORD-WRAP: Line wrapping in Monaco editor ('heimdall:editor:word_wrap'), defaults to 'on' in mobile view
+  const [isWordWrap, setIsWordWrap] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('heimdall:editor:word_wrap');
+      if (stored !== null) return stored === 'true';
+    } catch {}
+    return true;
+  });
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('heimdall:editor:word_wrap');
+      if (stored === null && isSinglePane) {
+        setIsWordWrap(true);
+      }
+    } catch {}
+  }, [isSinglePane]);
+
+  const toggleWordWrap = useCallback(() => {
+    setIsWordWrap((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('heimdall:editor:word_wrap', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   const startResizing = useCallback(
     (e: React.MouseEvent) => {
@@ -660,7 +758,8 @@ export default function ProjectFilesPanel({
       if (existing) {
         setActiveTabPath(filePath);
         setIsEditMode(true);
-        if (isMobile) setIsExplorerCollapsed(true);
+        setActivePane('editor');
+        if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
         return;
       }
       setOpeningInEditor(filePath);
@@ -680,14 +779,15 @@ export default function ProjectFilesPanel({
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(filePath);
         setIsEditMode(true);
-        if (isMobile) setIsExplorerCollapsed(true);
+        setActivePane('editor');
+        if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
       } catch (e: any) {
         setError(str(e?.message) || 'Could not open file in editor');
       } finally {
         setOpeningInEditor('');
       }
     },
-    [cwd, openTabs, fetchAllFileContent, isMobile]
+    [cwd, openTabs, fetchAllFileContent, isMobile, isSinglePane]
   );
 
   useEffect(() => {
@@ -708,7 +808,8 @@ export default function ProjectFilesPanel({
       if (existing) {
         setActiveTabPath(targetPath);
         setIsEditMode(true);
-        if (isMobile) setIsExplorerCollapsed(true);
+        setActivePane('editor');
+        if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
         return;
       }
 
@@ -729,7 +830,8 @@ export default function ProjectFilesPanel({
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(targetPath);
         setIsEditMode(true);
-        if (isMobile) setIsExplorerCollapsed(true);
+        setActivePane('editor');
+        if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
       } catch {
         const newTab: EditorTab = {
           path: targetPath,
@@ -741,12 +843,13 @@ export default function ProjectFilesPanel({
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(targetPath);
         setIsEditMode(true);
-        if (isMobile) setIsExplorerCollapsed(true);
+        setActivePane('editor');
+        if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
       } finally {
         setOpeningInEditor('');
       }
     },
-    [cwd, openTabs, fetchAllFileContent, isMobile]
+    [cwd, openTabs, fetchAllFileContent, isMobile, isSinglePane]
   );
 
   // When no tabs are open, pressing '+' creates a new file (REQ-IDE-SPLIT-PANE)
@@ -865,6 +968,7 @@ export default function ProjectFilesPanel({
 
   const selectTab = useCallback((path: string) => {
     setActiveTabPath(path);
+    setActivePane('editor');
   }, []);
 
   const closeTab = useCallback(
@@ -900,6 +1004,7 @@ export default function ProjectFilesPanel({
           } else {
             setActiveTabPath('');
             setIsEditMode(false);
+            setActivePane('files');
           }
         }
         return next;
@@ -995,7 +1100,7 @@ export default function ProjectFilesPanel({
   const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-surface';
 
   return (
-    <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
+    <div ref={panelRootRef} data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
 
       {/* Pending review comments bar — spans ALL files in this conversation. */}
       {comments.length > 0 ? (
@@ -1037,18 +1142,106 @@ export default function ProjectFilesPanel({
             data-debug-id={`${debugPrefix}-unified-top-bar`}
             className="flex h-[34px] min-h-[34px] max-h-[34px] w-full shrink-0 items-center justify-between border-b border-subtle bg-surface px-2 gap-1 text-[12px] select-none"
           >
-            {/* Left section: Toggle Explorer, Quick Open, New File, New Folder, Toggle Hidden, Refresh, active file path / breadcrumb */}
+            {/* Left section: Strictly 3 primary icons + breadcrumb:
+                1) Explorer / Back to Files toggle button
+                2) Quick Open (search icon)
+                3) Save active file (save icon, highlighted when dirty)
+                4) Active file path breadcrumb (with ellipsis on narrow widths)
+            */}
             <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+              {/* Mobile single-pane: '← Files' back button when in Editor mode */}
+              {isSinglePane && activePane === 'editor' ? (
+                <button
+                  data-debug-id={`${debugPrefix}-mobile-back-files-btn`}
+                  type="button"
+                  onClick={() => {
+                    setActivePane('files');
+                    setIsExplorerCollapsed(false);
+                  }}
+                  className="inline-flex items-center gap-1 rounded bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-neutral-soft border border-subtle shrink-0"
+                  title="Back to file explorer"
+                  aria-label="Back to file explorer"
+                >
+                  <Icon name="arrow-left" size={12} />
+                  <span>← Files</span>
+                </button>
+              ) : null}
+
+              {/* Mobile single-pane: Segmented switcher [ Files | Editor ] */}
+              {isSinglePane ? (
+                <div
+                  data-debug-id={`${debugPrefix}-mobile-segmented-switcher`}
+                  className="inline-flex items-center rounded bg-neutral-soft p-0.5 text-[11px] font-medium shrink-0"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActivePane('files');
+                      setIsExplorerCollapsed(false);
+                    }}
+                    className={`rounded px-1.5 py-0.5 transition-colors ${
+                      activePane === 'files'
+                        ? 'bg-surface text-primary shadow-xs font-semibold'
+                        : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    Files
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (openTabs.length > 0) {
+                        setActivePane('editor');
+                        setIsExplorerCollapsed(true);
+                      }
+                    }}
+                    disabled={openTabs.length === 0}
+                    className={`rounded px-1.5 py-0.5 transition-colors disabled:opacity-40 ${
+                      activePane === 'editor'
+                        ? 'bg-surface text-primary shadow-xs font-semibold'
+                        : 'text-muted hover:text-primary'
+                    }`}
+                  >
+                    Editor{openTabs.length > 0 ? ` (${openTabs.length})` : ''}
+                  </button>
+                </div>
+              ) : null}
+
+              {/* 1) Explorer / Back to Files toggle button */}
               <button
                 data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
                 type="button"
-                onClick={() => setIsExplorerCollapsed((prev) => !prev)}
-                title={isExplorerCollapsed ? 'Expand file explorer' : 'Collapse file explorer'}
-                aria-label={isExplorerCollapsed ? 'Expand file explorer' : 'Collapse file explorer'}
+                onClick={() => {
+                  if (isSinglePane) {
+                    setActivePane((p) => (p === 'files' ? 'editor' : 'files'));
+                  } else {
+                    setIsExplorerCollapsed((prev) => !prev);
+                  }
+                }}
+                title={
+                  isSinglePane
+                    ? activePane === 'files'
+                      ? 'Switch to editor'
+                      : 'Back to files'
+                    : isExplorerCollapsed
+                    ? 'Expand file explorer'
+                    : 'Collapse file explorer'
+                }
+                aria-label={
+                  isSinglePane
+                    ? activePane === 'files'
+                      ? 'Switch to editor'
+                      : 'Back to files'
+                    : isExplorerCollapsed
+                    ? 'Expand file explorer'
+                    : 'Collapse file explorer'
+                }
                 className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
               >
                 <Icon name="panel-left" size={14} />
               </button>
+
+              {/* 2) Quick Open (search icon, Cmd+P / Ctrl+P) */}
               <button
                 data-debug-id={`${debugPrefix}-quick-open-btn`}
                 type="button"
@@ -1059,58 +1252,31 @@ export default function ProjectFilesPanel({
               >
                 <Icon name="search" size={14} />
               </button>
+
+              {/* 3) Save active file (save icon, highlighted when dirty) */}
               <button
-                data-debug-id={`${debugPrefix}-new-file-btn`}
+                data-debug-id="editor-save-btn"
                 type="button"
-                onClick={() => {
-                  if (isExplorerCollapsed) setIsExplorerCollapsed(false);
-                  beginAction({ kind: 'new-file' });
-                }}
-                title="New file"
-                aria-label="New file"
-                className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
-              >
-                <Icon name="plus" size={14} />
-              </button>
-              <button
-                data-debug-id={`${debugPrefix}-new-dir-btn`}
-                type="button"
-                onClick={() => {
-                  if (isExplorerCollapsed) setIsExplorerCollapsed(false);
-                  beginAction({ kind: 'new-dir' });
-                }}
-                title="New folder"
-                aria-label="New folder"
-                className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
-              >
-                <Icon name="folder" size={14} />
-              </button>
-              <button
-                data-debug-id={`${debugPrefix}-hidden-toggle`}
-                type="button"
-                onClick={() => setIncludeHidden((v) => !v)}
-                aria-pressed={includeHidden ? 'true' : 'false'}
-                title={includeHidden ? 'Hide hidden files' : 'Show hidden files'}
-                aria-label={includeHidden ? 'Hide hidden files' : 'Show hidden files'}
-                className={`grid h-6 w-6 shrink-0 place-items-center rounded transition-colors ${
-                  includeHidden ? 'bg-accent/15 text-accent' : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                disabled={!activeEditorTab || writeState.isLoading || !activeEditorTab.isDirty || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+                onClick={saveActiveFile}
+                className={`inline-flex items-center justify-center gap-1 h-6 px-2 rounded text-[11px] font-semibold transition-colors disabled:opacity-40 shrink-0 ${
+                  activeEditorTab?.isDirty
+                    ? 'bg-accent text-accent-fg hover:opacity-90 shadow-xs'
+                    : 'hover:bg-neutral-soft text-muted hover:text-primary'
                 }`}
+                title="Save active file (Cmd+S / Ctrl+S)"
+                aria-label="Save active file"
               >
-                <Icon name={includeHidden ? 'eye' : 'eye-off'} size={14} />
-              </button>
-              <button
-                data-debug-id={`${debugPrefix}-refresh-btn`}
-                type="button"
-                onClick={refresh}
-                title={lastRefreshed ? `Refresh (last: ${new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` : 'Refresh'}
-                aria-label="Refresh"
-                className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
-              >
-                <Icon name="refresh" size={14} />
+                {writeState.isLoading ? (
+                  <Icon name="refresh" size={12} className="animate-spin" />
+                ) : (
+                  <Icon name="save" size={13} />
+                )}
+                <span className="hidden sm:inline">Save</span>
               </button>
 
-              {/* Active file path / breadcrumb */}
-              <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 items-center gap-1 overflow-hidden truncate pl-1 text-[11.5px] text-muted">
+              {/* 4) Active file path breadcrumb (with ellipsis on narrow widths) */}
+              <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden truncate pl-1 text-[11.5px] text-muted">
                 {activeEditorTab ? (
                   <span className="truncate font-mono text-[11.5px] text-primary/80" title={activeEditorTab.path}>
                     {activeEditorTab.path}
@@ -1133,15 +1299,14 @@ export default function ProjectFilesPanel({
                 )}
               </div>
 
-              {openTabs.length > 0 && !isExplorerCollapsed ? (
+              {openTabs.length > 0 && !isExplorerCollapsed && !isSinglePane ? (
                 <button
                   data-debug-id={`${debugPrefix}-toolbar-editor-btn`}
                   type="button"
                   onClick={() => {
                     setIsEditMode(true);
-                    if (isMobile) setIsExplorerCollapsed(true);
                   }}
-                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/15 shrink-0"
+                  className="hidden md:inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/15 shrink-0"
                   title="Focus open editor tab"
                 >
                   <Icon name="pencil" size={11} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
@@ -1149,86 +1314,13 @@ export default function ProjectFilesPanel({
               ) : null}
             </div>
 
-            {/* Right section: Comment on active file/folder, Diff toggle, Save/Save All */}
+            {/* Right section: Toast feedback, Vim badge, and 3-dots overflow menu */}
             <div className="flex shrink-0 items-center gap-1.5 pl-2">
-              {/* Comment on active file/folder */}
-              {activeEditorTab ? (
-                <button
-                  data-debug-id={`${debugPrefix}-file-comment-btn`}
-                  type="button"
-                  onClick={() => {
-                    setPathCommentDraft('');
-                    setPathCommentFor({
-                      path: activeEditorTab.path,
-                      label: `file: ${baseName(activeEditorTab.path)}`,
-                    });
-                  }}
-                  title="Comment on active file"
-                  aria-label="Comment on active file"
-                  className={`relative grid h-6 w-6 shrink-0 place-items-center rounded border ${
-                    comments.filter((c) => c.path === activeEditorTab.path && c.line === 0).length > 0
-                      ? 'border-accent bg-accent/20 text-accent'
-                      : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
-                  }`}
-                >
-                  <Icon name="chat" size={12} />
-                  {comments.filter((c) => c.path === activeEditorTab.path && c.line === 0).length > 0 ? (
-                    <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">
-                      {comments.filter((c) => c.path === activeEditorTab.path && c.line === 0).length}
-                    </span>
-                  ) : null}
-                </button>
-              ) : (
-                <button
-                  data-debug-id={`${debugPrefix}-folder-comment-btn`}
-                  type="button"
-                  onClick={() => {
-                    setPathCommentDraft('');
-                    setPathCommentFor({
-                      path: cwd || '/',
-                      label: `folder: ${cwd || 'project root'}`,
-                    });
-                  }}
-                  title="Comment on current folder"
-                  aria-label="Comment on current folder"
-                  className={`relative grid h-6 w-6 shrink-0 place-items-center rounded border ${
-                    comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length > 0
-                      ? 'border-accent bg-accent/20 text-accent'
-                      : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
-                  }`}
-                >
-                  <Icon name="chat" size={12} />
-                  {comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length > 0 ? (
-                    <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">
-                      {comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length}
-                    </span>
-                  ) : null}
-                </button>
-              )}
-
-              {/* Diff toggle button */}
-              <button
-                data-debug-id="editor-toggle-diff-btn"
-                type="button"
-                disabled={!activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable}
-                onClick={() => setIsDiffMode((prev) => !prev)}
-                aria-pressed={isDiffMode ? 'true' : 'false'}
-                title={isDiffMode ? 'Return to Standard Editor' : 'Compare against original buffer / Git HEAD'}
-                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors disabled:opacity-40 ${
-                  isDiffMode
-                    ? 'border border-accent bg-accent/20 text-accent font-semibold shadow-xs'
-                    : 'border border-subtle text-muted hover:bg-neutral-soft hover:text-primary'
-                }`}
-              >
-                <span className="font-mono font-bold text-xs leading-none">±</span>
-                <span>Diff</span>
-              </button>
-
-              {/* Save toast */}
+              {/* Save toast feedback */}
               {saveFeedback ? (
                 <div
                   data-debug-id={`${debugPrefix}-save-toast`}
-                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-all ${
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium transition-all shrink-0 ${
                     saveFeedback.type === 'success'
                       ? 'bg-success-soft text-success border border-success/30'
                       : saveFeedback.type === 'warning'
@@ -1237,35 +1329,213 @@ export default function ProjectFilesPanel({
                   }`}
                 >
                   <Icon name={saveFeedback.type === 'success' ? 'check' : 'alert'} size={11} />
-                  <span>{saveFeedback.message}</span>
+                  <span className="truncate max-w-[120px]">{saveFeedback.message}</span>
                 </div>
               ) : null}
 
-              {/* Save button */}
-              <button
-                data-debug-id="editor-save-btn"
-                type="button"
-                disabled={!activeEditorTab || writeState.isLoading || !activeEditorTab.isDirty || activeEditorTab.isImage || activeEditorTab.isUnviewable}
-                onClick={saveActiveFile}
-                className="inline-flex items-center gap-1 rounded bg-accent px-2 py-0.5 text-[11px] font-semibold text-accent-fg hover:opacity-90 disabled:opacity-40"
-                title="Save active file (Cmd+S / Ctrl+S)"
-              >
-                {writeState.isLoading ? <Icon name="refresh" size={11} className="animate-spin" /> : null}
-                Save
-              </button>
+              {/* Optional compact VIM badge in top bar */}
+              {isVimMode ? (
+                <button
+                  data-debug-id={`${debugPrefix}-vim-badge`}
+                  type="button"
+                  onClick={toggleVimMode}
+                  title="Vim mode active (click to toggle)"
+                  className="rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-mono font-bold text-accent hover:bg-accent/30 transition-colors shrink-0"
+                >
+                  VIM
+                </button>
+              ) : null}
 
-              {/* Save All button */}
-              <button
-                data-debug-id="editor-save-all-btn"
-                type="button"
-                disabled={batchWriteState.isLoading || openTabs.filter((t) => t.isDirty).length === 0}
-                onClick={saveAllFiles}
-                className="inline-flex items-center gap-1 rounded border border-accent/40 bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent hover:bg-accent/20 disabled:opacity-40"
-                title="Save all modified files (Cmd+Shift+S / Ctrl+Shift+S)"
-              >
-                {batchWriteState.isLoading ? <Icon name="refresh" size={11} className="animate-spin" /> : null}
-                Save All {openTabs.filter((t) => t.isDirty).length > 0 ? `(${openTabs.filter((t) => t.isDirty).length})` : ''}
-              </button>
+              {/* Clean 3-dots overflow dropdown menu */}
+              <div className="relative shrink-0" ref={overflowRef}>
+                <button
+                  data-debug-id={`${debugPrefix}-overflow-menu-btn`}
+                  type="button"
+                  onClick={() => setIsOverflowOpen((prev) => !prev)}
+                  aria-haspopup="true"
+                  aria-expanded={isOverflowOpen ? 'true' : 'false'}
+                  title="More actions"
+                  aria-label="More actions"
+                  className={`grid h-6 w-6 place-items-center rounded transition-colors ${
+                    isOverflowOpen ? 'bg-neutral-soft text-primary' : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                  }`}
+                >
+                  <Icon name="more-vertical" size={14} />
+                </button>
+
+                {isOverflowOpen ? (
+                  <div
+                    data-debug-id={`${debugPrefix}-overflow-dropdown`}
+                    className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-subtle bg-surface-raised p-1 shadow-lg z-50 text-[12px] flex flex-col gap-0.5"
+                  >
+                    {/* 1. New File */}
+                    <button
+                      data-debug-id={`${debugPrefix}-new-file-btn`}
+                      type="button"
+                      onClick={() => {
+                        setIsOverflowOpen(false);
+                        if (isExplorerCollapsed) setIsExplorerCollapsed(false);
+                        if (isSinglePane) setActivePane('files');
+                        beginAction({ kind: 'new-file' });
+                      }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                    >
+                      <Icon name="plus" size={14} />
+                      <span>New File</span>
+                    </button>
+
+                    {/* 2. New Folder */}
+                    <button
+                      data-debug-id={`${debugPrefix}-new-dir-btn`}
+                      type="button"
+                      onClick={() => {
+                        setIsOverflowOpen(false);
+                        if (isExplorerCollapsed) setIsExplorerCollapsed(false);
+                        if (isSinglePane) setActivePane('files');
+                        beginAction({ kind: 'new-dir' });
+                      }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                    >
+                      <Icon name="folder" size={14} />
+                      <span>New Folder</span>
+                    </button>
+
+                    {/* 3. Toggle Hidden Files */}
+                    <button
+                      data-debug-id={`${debugPrefix}-hidden-toggle`}
+                      type="button"
+                      onClick={() => {
+                        setIsOverflowOpen(false);
+                        setIncludeHidden((v) => !v);
+                      }}
+                      aria-pressed={includeHidden ? 'true' : 'false'}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                    >
+                      <Icon name={includeHidden ? 'eye' : 'eye-off'} size={14} />
+                      <span>{includeHidden ? 'Hide Hidden Files' : 'Show Hidden Files'}</span>
+                    </button>
+
+                    {/* 4. Refresh Explorer */}
+                    <button
+                      data-debug-id={`${debugPrefix}-refresh-btn`}
+                      type="button"
+                      onClick={() => {
+                        setIsOverflowOpen(false);
+                        refresh();
+                      }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                    >
+                      <Icon name="refresh" size={14} />
+                      <span>Refresh Explorer</span>
+                    </button>
+
+                    <div className="my-1 border-t border-subtle/60" />
+
+                    {/* 5. Toggle In-Editor Diff */}
+                    <button
+                      data-debug-id="editor-toggle-diff-btn"
+                      type="button"
+                      disabled={!activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+                      onClick={() => {
+                        setIsOverflowOpen(false);
+                        setIsDiffMode((prev) => !prev);
+                      }}
+                      aria-pressed={isDiffMode ? 'true' : 'false'}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40"
+                    >
+                      <span className="font-mono font-bold text-xs leading-none">±</span>
+                      <span>{isDiffMode ? 'Standard Editor' : 'Toggle In-Editor Diff'}</span>
+                      {isDiffMode ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+                    </button>
+
+                    {/* 6. Toggle Vim Mode */}
+                    <button
+                      data-debug-id={`${debugPrefix}-toggle-vim-btn`}
+                      type="button"
+                      onClick={() => {
+                        setIsOverflowOpen(false);
+                        toggleVimMode();
+                      }}
+                      aria-pressed={isVimMode ? 'true' : 'false'}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                    >
+                      <span className="font-mono font-bold text-xs leading-none">V</span>
+                      <span>Toggle Vim Mode</span>
+                      {isVimMode ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+                    </button>
+
+                    {/* Toggle Word Wrap (REQ-UI-MOBILE-WORD-WRAP) */}
+                    <button
+                      data-debug-id={`${debugPrefix}-toggle-word-wrap-btn`}
+                      type="button"
+                      onClick={() => {
+                        setIsOverflowOpen(false);
+                        toggleWordWrap();
+                      }}
+                      aria-pressed={isWordWrap ? 'true' : 'false'}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                    >
+                      <Icon name="pencil" size={14} />
+                      <span>Toggle Word Wrap</span>
+                      {isWordWrap ? <Icon name="check" size={13} className="ml-auto text-accent" /> : null}
+                    </button>
+
+                    {/* 7. Save All Files */}
+                    <button
+                      data-debug-id="editor-save-all-btn"
+                      type="button"
+                      disabled={batchWriteState.isLoading || openTabs.filter((t) => t.isDirty).length === 0}
+                      onClick={() => {
+                        setIsOverflowOpen(false);
+                        saveAllFiles();
+                      }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors disabled:opacity-40"
+                    >
+                      <Icon name="save" size={14} />
+                      <span>Save All Files {openTabs.filter((t) => t.isDirty).length > 0 ? `(${openTabs.filter((t) => t.isDirty).length})` : ''}</span>
+                    </button>
+
+                    <div className="my-1 border-t border-subtle/60" />
+
+                    {/* 8. Comment on Current File / Folder */}
+                    {activeEditorTab ? (
+                      <button
+                        data-debug-id={`${debugPrefix}-file-comment-btn`}
+                        type="button"
+                        onClick={() => {
+                          setIsOverflowOpen(false);
+                          setPathCommentDraft('');
+                          setPathCommentFor({
+                            path: activeEditorTab.path,
+                            label: `file: ${baseName(activeEditorTab.path)}`,
+                          });
+                        }}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                      >
+                        <Icon name="chat" size={14} />
+                        <span>Comment on Active File</span>
+                      </button>
+                    ) : (
+                      <button
+                        data-debug-id={`${debugPrefix}-folder-comment-btn`}
+                        type="button"
+                        onClick={() => {
+                          setIsOverflowOpen(false);
+                          setPathCommentDraft('');
+                          setPathCommentFor({
+                            path: cwd || '/',
+                            label: `folder: ${cwd || 'project root'}`,
+                          });
+                        }}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                      >
+                        <Icon name="chat" size={14} />
+                        <span>Comment on Current Folder</span>
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
 
@@ -1274,10 +1544,16 @@ export default function ProjectFilesPanel({
             {/* Left Column: Directory Explorer */}
             <div
               data-debug-id={`${debugPrefix}-explorer-pane`}
-              style={!isExplorerCollapsed && !isMobile ? { width: explorerWidth } : undefined}
+              style={!isSinglePane && !isExplorerCollapsed ? { width: explorerWidth } : undefined}
               className={`${
-                isExplorerCollapsed ? 'hidden' : 'flex'
-              } min-h-0 flex-col border-r border-subtle bg-surface shrink-0 ${isMobile ? 'w-full' : ''}`}
+                isSinglePane
+                  ? activePane === 'files'
+                    ? 'w-full flex-1'
+                    : 'hidden'
+                  : isExplorerCollapsed
+                  ? 'hidden'
+                  : 'flex'
+              } min-h-0 flex-col border-r border-subtle bg-surface shrink-0`}
             >
               {/* Inline create/rename input */}
               {pending ? (
@@ -1424,7 +1700,7 @@ export default function ProjectFilesPanel({
             </div>
 
             {/* Resizer Divider */}
-            {!isExplorerCollapsed && !isMobile ? (
+            {!isExplorerCollapsed && !isSinglePane ? (
               <div
                 data-debug-id={`${debugPrefix}-resizer`}
                 onMouseDown={startResizing}
@@ -1436,9 +1712,13 @@ export default function ProjectFilesPanel({
             {/* Right Column: Monaco Editor or Empty State */}
             <div
               data-debug-id={`${debugPrefix}-editor-pane`}
-              className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-surface ${
-                isMobile && !isExplorerCollapsed ? 'hidden' : 'flex'
-              }`}
+              className={`${
+                isSinglePane
+                  ? activePane === 'editor'
+                    ? 'w-full flex-1 flex'
+                    : 'hidden'
+                  : 'flex flex-1'
+              } min-h-0 flex-col overflow-hidden bg-surface`}
             >
               {openTabs.length > 0 && activeEditorTab ? (
                 <MonacoMultiFileEditor
@@ -1452,13 +1732,21 @@ export default function ProjectFilesPanel({
                   isSaving={writeState.isLoading}
                   isBatchSaving={batchWriteState.isLoading}
                   saveFeedback={saveFeedback}
-                  onBackToFiles={() => setIsExplorerCollapsed((prev) => !prev)}
-                  onToggleExplorer={() => setIsExplorerCollapsed((prev) => !prev)}
+                  onBackToFiles={() => {
+                    if (isSinglePane) setActivePane('files');
+                    else setIsExplorerCollapsed((prev) => !prev);
+                  }}
+                  onToggleExplorer={() => {
+                    if (isSinglePane) setActivePane('files');
+                    else setIsExplorerCollapsed((prev) => !prev);
+                  }}
                   isExplorerCollapsed={isExplorerCollapsed}
                   onNewFile={handleEditorNewFile}
                   cwd={cwd}
                   debugPrefix={debugPrefix}
                   themeAppearance={theme?.appearance}
+                  isVimMode={isVimMode}
+                  isWordWrap={isWordWrap}
                   comments={commentsForPath(activeEditorTab.path)}
                   onAddComment={(line, lineText, body) => addComment(activeEditorTab.path, line, lineText, body)}
                   onEditComment={editComment}
@@ -1821,6 +2109,8 @@ function MonacoMultiFileEditor({
   onCommentFile: _onCommentFile,
   isDiffMode = false,
   onToggleDiff: _onToggleDiff,
+  isVimMode = false,
+  isWordWrap = true,
 }: {
   tabs: EditorTab[];
   activeTab: EditorTab;
@@ -1846,6 +2136,8 @@ function MonacoMultiFileEditor({
   onCommentFile?: () => void;
   isDiffMode?: boolean;
   onToggleDiff?: () => void;
+  isVimMode?: boolean;
+  isWordWrap?: boolean;
 }) {
   const monacoTheme = themeAppearance === 'light' ? 'light' : 'vs-dark';
   const language = useMemo(() => getLanguageForMonaco(activeTab.path), [activeTab.path]);
@@ -1853,6 +2145,10 @@ function MonacoMultiFileEditor({
   const [isPromptingNewFile, setIsPromptingNewFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
   const diffListenerRef = useRef<{ dispose: () => void } | null>(null);
+
+  const editorRef = useRef<any>(null);
+  const statusNodeRef = useRef<HTMLDivElement | null>(null);
+  const vimModeRef = useRef<any>(null);
 
   useEffect(() => {
     return () => {
@@ -1869,7 +2165,83 @@ function MonacoMultiFileEditor({
     onSaveAllRef.current = onSaveAll;
   }, [onSaveAll]);
 
+  const activeTabPathRef = useRef(activeTab.path);
+  useEffect(() => {
+    activeTabPathRef.current = activeTab.path;
+  }, [activeTab.path]);
+
+  const onCloseTabRef = useRef(onCloseTab);
+  useEffect(() => {
+    onCloseTabRef.current = onCloseTab;
+  }, [onCloseTab]);
+
+  // REQ-VIM-KEYBINDINGS: Wire custom Ex commands via Vim.defineEx:
+  // ':w' -> onSaveActiveRef.current()
+  // ':q' -> close active tab onCloseTab(activeTabPath)
+  // ':wq' -> onSaveActiveRef.current() and close active tab
+  useEffect(() => {
+    const Vim = (VimMode as any)?.Vim;
+    if (!Vim?.defineEx) return;
+    try {
+      Vim.defineEx('write', 'w', () => {
+        onSaveActiveRef.current();
+      });
+    } catch {}
+    try {
+      Vim.defineEx('quit', 'q', () => {
+        onCloseTabRef.current(activeTabPathRef.current);
+      });
+    } catch {}
+    try {
+      Vim.defineEx('wq', 'wq', () => {
+        onSaveActiveRef.current();
+        onCloseTabRef.current(activeTabPathRef.current);
+      });
+    } catch {}
+  }, []);
+
+  // Clean disposal on unmount
+  useEffect(() => {
+    return () => {
+      if (vimModeRef.current) {
+        vimModeRef.current.dispose();
+        vimModeRef.current = null;
+      }
+    };
+  }, []);
+
+  // Initialize or dispose monaco-vim on mode toggle or tab change
+  useEffect(() => {
+    if (!isVimMode || !editorRef.current || !statusNodeRef.current) {
+      if (vimModeRef.current) {
+        vimModeRef.current.dispose();
+        vimModeRef.current = null;
+      }
+      return;
+    }
+
+    if (vimModeRef.current) {
+      vimModeRef.current.dispose();
+      vimModeRef.current = null;
+    }
+
+    try {
+      const vim = initVimMode(editorRef.current, statusNodeRef.current);
+      vimModeRef.current = vim;
+    } catch (e) {
+      console.error('Failed to initialize monaco-vim:', e);
+    }
+
+    return () => {
+      if (vimModeRef.current) {
+        vimModeRef.current.dispose();
+        vimModeRef.current = null;
+      }
+    };
+  }, [isVimMode, activeTab.path]);
+
   const handleEditorMount: OnMount = (editor, monaco) => {
+    editorRef.current = editor;
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       onSaveActiveRef.current();
     });
@@ -1879,6 +2251,18 @@ function MonacoMultiFileEditor({
         onSaveAllRef.current();
       }
     );
+    if (isVimMode && statusNodeRef.current) {
+      if (vimModeRef.current) {
+        vimModeRef.current.dispose();
+        vimModeRef.current = null;
+      }
+      try {
+        const vim = initVimMode(editor, statusNodeRef.current);
+        vimModeRef.current = vim;
+      } catch (e) {
+        console.error('Failed to initialize monaco-vim on mount:', e);
+      }
+    }
   };
 
   const handleDiffMount: DiffOnMount = (diffEditor, monaco) => {
@@ -1893,7 +2277,7 @@ function MonacoMultiFileEditor({
 
   const options: EditorProps['options'] = {
     minimap: { enabled: true },
-    wordWrap: 'on',
+    wordWrap: isWordWrap ? 'on' : 'off',
     lineNumbers: 'on',
     scrollBeyondLastLine: false,
     automaticLayout: true,
@@ -2079,14 +2463,13 @@ function MonacoMultiFileEditor({
             theme={monacoTheme}
             options={{
               minimap: { enabled: true },
-              wordWrap: 'on',
+              wordWrap: isWordWrap ? 'on' : 'off',
               lineNumbers: 'on',
               scrollBeyondLastLine: false,
               automaticLayout: true,
               fontSize: 13,
               fontFamily:
                 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-              tabSize: 2,
               renderWhitespace: 'selection',
               smoothScrolling: true,
               readOnly: false,
@@ -2116,6 +2499,15 @@ function MonacoMultiFileEditor({
           />
         )}
       </div>
+
+      {/* REQ-VIM-KEYBINDINGS: Themed 20-22px Vim status line below Monaco Editor container */}
+      <div
+        ref={statusNodeRef}
+        data-debug-id={`${debugPrefix}-vim-statusbar`}
+        className={`${
+          isVimMode ? '' : 'hidden'
+        } h-[22px] min-h-[22px] max-h-[22px] w-full px-2 text-[11.5px] font-mono bg-surface-raised border-t border-subtle text-muted select-none overflow-hidden shrink-0 leading-[22px] [&_input]:bg-transparent [&_input]:border-none [&_input]:outline-none [&_input]:text-primary [&_input]:font-mono [&_input]:text-[11.5px] [&_input]:p-0 [&_input]:m-0`}
+      />
     </div>
   );
 }
