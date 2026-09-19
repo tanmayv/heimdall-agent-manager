@@ -25,6 +25,7 @@ PERSISTENCE_FILE = ROOT / "src" / "ui" / "utils" / "clientPersistence.ts"
 ICON_FILE = ROOT / "src" / "ui" / "components" / "ui" / "primitives" / "Icon.tsx"
 DAEMON_API_FILE = ROOT / "src" / "ui" / "api" / "daemonApi.ts"
 ARTIFACTS_API_FILE = ROOT / "src" / "ui" / "api" / "endpoints" / "artifacts.ts"
+APP_SHELL_FILE = ROOT / "src" / "ui" / "components" / "shell" / "AppShell.tsx"
 
 
 def require(condition: bool, message: str) -> None:
@@ -59,7 +60,21 @@ def test_client_persistence() -> None:
         "tab === 'chain'" in src,
         "writeRightSidebarTab must persist 'chain' tab",
     )
-    print("  [+] RightSidebarTab persistence verified.")
+
+    # Collapsed state persistence functions and key
+    require(
+        "export function readChainOverviewCollapsedState" in src,
+        "clientPersistence.ts must export readChainOverviewCollapsedState",
+    )
+    require(
+        "export function writeChainOverviewCollapsedState" in src,
+        "clientPersistence.ts must export writeChainOverviewCollapsedState",
+    )
+    require(
+        "'heimdall:chainOverview:collapsed:'" in src,
+        "clientPersistence.ts must use 'heimdall:chainOverview:collapsed:' key prefix",
+    )
+    print("  [+] RightSidebarTab and ChainOverview collapsed persistence verified.")
 
 
 def test_chain_overview_panel_exports_and_imports() -> None:
@@ -82,6 +97,7 @@ def test_chain_overview_panel_exports_and_imports() -> None:
         "chainId: string;",
         "projectId: string;",
         "bridgeId?: string;",
+        "agentInstanceId?: string;",
         "onClose?: () => void;",
         "onSelectTask?: (taskId: string) => void;",
         "onOpenFileDiff?: (filePath: string) => void;",
@@ -104,8 +120,13 @@ def test_chain_overview_panel_exports_and_imports() -> None:
     require("buildRouteHash" in src, "Must import buildRouteHash")
     require("writeRightSidebarOpen" in src, "Must import writeRightSidebarOpen")
     require("writeRightSidebarTab" in src, "Must import writeRightSidebarTab")
+    require("readChainOverviewCollapsedState" in src, "Must import readChainOverviewCollapsedState")
+    require("writeChainOverviewCollapsedState" in src, "Must import writeChainOverviewCollapsedState")
 
-    print("  [+] ChainOverviewPanel exports and imports verified.")
+    # Redundant inner header removed
+    require('data-debug-id="chain-overview-close-btn"' not in src, "Redundant inner header close button must be removed")
+
+    print("  [+] ChainOverviewPanel exports, props, and imports verified.")
 
 
 def test_chain_overview_panel_sections() -> None:
@@ -169,9 +190,21 @@ def test_chain_overview_panel_sections() -> None:
     require("data-debug-id={`chain-overview-terminal-accordion-${instId}`}" in src, "Terminal accordion must have data-debug-id")
     require("openTerminalIds" in src, "Must track open terminals state")
     require("toggleTerminal" in src, "Must provide toggleTerminal callback")
-    require("grid grid-cols-1 sm:grid-cols-2 gap-3" in src, "Fleet Terminals container must use 2-column grid layout")
+    require("grid grid-cols-1 sm:grid-cols-2 gap-3 items-start" in src, "Fleet Terminals container must use 2-column grid layout with items-start")
 
-    print("  [+] ChainOverviewPanel 6 core sections verified.")
+    # 2x2 Grid and Coordinator Styling in Section 1
+    require("grid grid-cols-1 sm:grid-cols-2 gap-2.5" in src, "Chain Agents container must use 2x2 responsive grid")
+    require(
+        "border-accent/50 bg-gradient-to-br from-accent/10 to-accent/5 ring-1 ring-accent/20" in src,
+        "Chain Agents must apply special coordinator styling",
+    )
+
+    # Collapsible interactive subheadings for all 6 sections
+    for sec_key in ['agents', 'attention', 'ongoingTasks', 'artifacts', 'vcs', 'terminals']:
+        require(f"toggleSection('{sec_key}')" in src, f"Section '{sec_key}' must be collapsible")
+        require(f'data-debug-id="chain-overview-section-toggle-{sec_key}"' in src, f"Toggle button for '{sec_key}' must exist")
+
+    print("  [+] ChainOverviewPanel 6 core sections and collapsible subheadings verified.")
 
 
 def test_fleet_terminals_lazy_mounting() -> None:
@@ -251,8 +284,43 @@ def test_conversation_thread_page_tab_integration() -> None:
         "<ChainOverviewPanel" in src,
         "ConversationThreadPage must render <ChainOverviewPanel",
     )
+    require(
+        "agentInstanceId={agentInstanceId}" in src,
+        "ConversationThreadPage must pass agentInstanceId to ChainOverviewPanel",
+    )
 
-    print("  [+] ConversationThreadPage tab integration verified.")
+    # Overflow bounds to prevent void scroll
+    require(
+        'max-w-full overflow-hidden bg-canvas' in src,
+        "ConversationThreadPage root container must use overflow-hidden to prevent void scroll",
+    )
+
+    # Small-width composer toolbar responsiveness
+    require(
+        "flex flex-wrap items-center gap-1.5 min-w-0" in src,
+        "Composer bottom toolbar must use flex-wrap with min-w-0",
+    )
+    require(
+        "max-w-[120px] truncate font-medium" in src,
+        "AgentPickerTrigger must truncate at max-w-[120px]",
+    )
+    require(
+        'data-debug-id="conversation-composer-send-btn"' in src and "shrink-0" in src,
+        "Composer send button must retain shrink-0",
+    )
+
+    print("  [+] ConversationThreadPage tab integration and composer responsiveness verified.")
+
+
+def test_app_shell_container() -> None:
+    print("[*] Testing AppShell.tsx container layout bounds...")
+    require(APP_SHELL_FILE.exists(), "AppShell.tsx must exist")
+    src = APP_SHELL_FILE.read_text(encoding="utf-8")
+    require(
+        'className="flex min-w-0 flex-1 flex-col h-full min-h-0 overflow-hidden"' in src,
+        "AppShell main container must include h-full min-h-0 overflow-hidden",
+    )
+    print("  [+] AppShell container layout bounds verified.")
 
 
 def test_icon_definitions() -> None:
@@ -304,6 +372,7 @@ def main() -> None:
     test_chain_overview_panel_sections()
     test_fleet_terminals_lazy_mounting()
     test_conversation_thread_page_tab_integration()
+    test_app_shell_container()
     test_icon_definitions()
     test_attachment_metadata_contract()
     print("ALL TESTS PASSED: test_ui_chain_overview_tab_static.py (REQ-UI-CHAIN-OVERVIEW-TAB, REQ-CITC-DEPLOY-VERIFY)")

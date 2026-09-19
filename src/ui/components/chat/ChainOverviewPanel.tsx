@@ -28,7 +28,12 @@ import ArtifactViewer from '../ArtifactViewer';
 import Markdown from '../Markdown';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
 import { buildRouteHash } from '../../utils/appLocation';
-import { writeRightSidebarOpen, writeRightSidebarTab } from '../../utils/clientPersistence';
+import {
+  readChainOverviewCollapsedState,
+  writeChainOverviewCollapsedState,
+  writeRightSidebarOpen,
+  writeRightSidebarTab,
+} from '../../utils/clientPersistence';
 
 function canUseAmbientApiAuth(): boolean {
   if (typeof window === 'undefined') return false;
@@ -44,6 +49,7 @@ export interface ChainOverviewPanelProps {
   chainId: string;
   projectId: string;
   bridgeId?: string;
+  agentInstanceId?: string;
   onClose?: () => void;
   onSelectTask?: (taskId: string) => void;
   onOpenFileDiff?: (filePath: string) => void;
@@ -274,6 +280,7 @@ export default function ChainOverviewPanel({
   chainId,
   projectId,
   bridgeId = '',
+  agentInstanceId,
   onClose,
   onSelectTask,
   onOpenFileDiff,
@@ -282,6 +289,31 @@ export default function ChainOverviewPanel({
 }: ChainOverviewPanelProps) {
   const session = useSelector((state: any) => state.chat?.session || {});
   const viewerSession = getArtifactViewerSession(session);
+
+  // Collapsed sections state with client persistence (default open)
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>(() =>
+    readChainOverviewCollapsedState(agentInstanceId)
+  );
+
+  React.useEffect(() => {
+    setCollapsedSections(readChainOverviewCollapsedState(agentInstanceId));
+  }, [agentInstanceId]);
+
+  const toggleSection = useCallback(
+    (sectionKey: string) => {
+      setCollapsedSections((prev) => {
+        const next = {
+          ...prev,
+          [sectionKey]: !prev[sectionKey],
+        };
+        writeChainOverviewCollapsedState(next, agentInstanceId);
+        return next;
+      });
+    },
+    [agentInstanceId]
+  );
+
+  const isCollapsed = useCallback((key: string) => Boolean(collapsedSections[key]), [collapsedSections]);
 
   // Queries
   const { data: chainData, isLoading: isChainLoading, refetch: refetchChain } = useFetchTaskChainDetailQuery(
@@ -394,30 +426,6 @@ export default function ChainOverviewPanel({
       data-debug-id="chain-overview-panel"
       className="flex h-full min-h-0 flex-col overflow-y-auto bg-surface text-primary p-3 sm:p-4 space-y-6"
     >
-      {/* Panel Header */}
-      <div className="flex items-center justify-between border-b border-subtle pb-3">
-        <div className="flex items-center gap-2">
-          <Icon name="layers" size={18} className="text-accent" />
-          <span className="font-semibold text-sm">Chain Overview</span>
-          {chain?.title ? (
-            <span className="text-xs text-muted truncate max-w-[200px]" title={chain.title}>
-              · {chain.title}
-            </span>
-          ) : null}
-        </div>
-        {onClose && (
-          <button
-            type="button"
-            data-debug-id="chain-overview-close-btn"
-            aria-label="Close Chain Overview"
-            onClick={onClose}
-            className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
-          >
-            <Icon name="close" size={14} />
-          </button>
-        )}
-      </div>
-
       {isChainLoading && (
         <div className="flex items-center justify-center py-8 text-xs text-muted gap-2">
           <Spinner size="sm" /> Loading chain overview…
@@ -426,174 +434,221 @@ export default function ChainOverviewPanel({
 
       {/* SECTION 1: Chain Agents */}
       <section data-debug-id="chain-overview-section-agents" className="space-y-2.5">
-        <div className="flex items-center justify-between">
+        <button
+          type="button"
+          data-debug-id="chain-overview-section-toggle-agents"
+          onClick={() => toggleSection('agents')}
+          aria-expanded={!isCollapsed('agents')}
+          className="flex w-full items-center justify-between text-left group cursor-pointer"
+        >
           <div className="flex items-center gap-1.5">
+            <Icon
+              name={isCollapsed('agents') ? 'chevron-right' : 'chevron-down'}
+              size={14}
+              className="text-muted group-hover:text-primary transition-colors"
+            />
             <Icon name="bot" size={14} className="text-muted" />
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted group-hover:text-primary transition-colors">
               Chain Agents ({members.length})
             </h3>
           </div>
-        </div>
+        </button>
 
-        {members.length === 0 ? (
-          <p className="text-xs text-muted py-1">No agents assigned to this chain.</p>
-        ) : (
-          <div className="grid gap-2">
-            {members.map((member) => {
-              const instId = member.agentInstanceId || member.agent_instance_id;
-              const name = member.displayName || member.display_name || instId;
-              const role = member.role || 'worker';
-              const rawStatus = String(member.runtimeStatus || member.runtime_status || 'stopped').toLowerCase();
-              const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
-              const isStarting = startingInstanceId === instId || rawStatus === 'starting';
-              const currentTask = memberCurrentTaskMap.get(instId);
+        {!isCollapsed('agents') && (
+          members.length === 0 ? (
+            <p className="text-xs text-muted py-1">No agents assigned to this chain.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {members.map((member) => {
+                const instId = member.agentInstanceId || member.agent_instance_id;
+                const name = member.displayName || member.display_name || instId;
+                const role = member.role || 'worker';
+                const rawStatus = String(member.runtimeStatus || member.runtime_status || 'stopped').toLowerCase();
+                const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
+                const isStarting = startingInstanceId === instId || rawStatus === 'starting';
+                const currentTask = memberCurrentTaskMap.get(instId);
+                const isCoordinator =
+                  String(role).toLowerCase() === 'coordinator' ||
+                  instId === chain?.coordinatorInstanceId ||
+                  instId === chain?.coordinator_instance_id;
 
-              return (
-                <div
-                  key={instId}
-                  data-debug-id={`chain-overview-agent-row-${instId}`}
-                  onClick={() => handleNavigateToAgent(instId)}
-                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-lg border border-subtle bg-surface-secondary/30 p-2.5 transition-colors hover:bg-neutral-soft/50 cursor-pointer"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="relative shrink-0">
-                      <Avatar name={name} size="sm" />
-                      <div className="absolute -bottom-0.5 -right-0.5">
-                        <StatusDot tone={statusTone(rawStatus)} label={rawStatus} size="sm" />
+                const coordinatorClasses = isCoordinator
+                  ? 'border-accent/50 bg-gradient-to-br from-accent/10 to-accent/5 ring-1 ring-accent/20'
+                  : 'border-subtle bg-surface-secondary/30';
+
+                return (
+                  <div
+                    key={instId}
+                    data-debug-id={`chain-overview-agent-row-${instId}`}
+                    onClick={() => handleNavigateToAgent(instId)}
+                    className={`flex flex-col justify-between gap-2 rounded-lg border p-2.5 transition-colors hover:bg-neutral-soft/50 cursor-pointer ${coordinatorClasses}`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="relative shrink-0">
+                        <Avatar name={name} size="sm" />
+                        <div className="absolute -bottom-0.5 -right-0.5">
+                          <StatusDot tone={statusTone(rawStatus)} label={rawStatus} size="sm" />
+                        </div>
                       </div>
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-semibold text-xs text-primary truncate max-w-[140px] sm:max-w-[180px]">
-                          {name}
-                        </span>
-                        <Badge tone={roleTone(role)}>
-                          {role}
-                        </Badge>
-                        <StatusPill tone={statusTone(rawStatus)}>
-                          {rawStatus}
-                        </StatusPill>
-                      </div>
-                      <div className="text-[11px] text-muted truncate max-w-[240px] mt-0.5">
-                        {currentTask ? (
-                          <span className="flex items-center gap-1 text-accent">
-                            <Icon name="tasks" size={10} />
-                            <span className="truncate">{currentTask.title}</span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-semibold text-xs text-primary truncate max-w-[140px] sm:max-w-[180px]">
+                            {name}
                           </span>
-                        ) : (
-                          <span className="text-faint">Idle / No active task</span>
-                        )}
+                          <Badge tone={roleTone(role)}>
+                            {role}
+                          </Badge>
+                          <StatusPill tone={statusTone(rawStatus)}>
+                            {rawStatus}
+                          </StatusPill>
+                        </div>
+                        <div className="text-[11px] text-muted truncate max-w-[240px] mt-0.5">
+                          {currentTask ? (
+                            <span className="flex items-center gap-1 text-accent">
+                              <Icon name="tasks" size={10} />
+                              <span className="truncate">{currentTask.title}</span>
+                            </span>
+                          ) : (
+                            <span className="text-faint">Idle / No active task</span>
+                          )}
+                        </div>
                       </div>
                     </div>
+
+                    {isStopped && (
+                      <div className="shrink-0 flex justify-end">
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          disabled={isStarting}
+                          data-debug-id={`chain-overview-start-agent-${instId}`}
+                          onClick={(e) => handleStartAgent(instId, e)}
+                          className="text-xs"
+                        >
+                          {isStarting ? (
+                            <span className="flex items-center gap-1">
+                              <Spinner size="sm" /> Starting…
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1">
+                              <Icon name="play" size={12} /> Start Agent
+                            </span>
+                          )}
+                        </Button>
+                      </div>
+                    )}
                   </div>
-
-                  {isStopped && (
-                    <div className="shrink-0 flex justify-end">
-                      <Button
-                        type="button"
-                        variant="primary"
-                        size="sm"
-                        disabled={isStarting}
-                        data-debug-id={`chain-overview-start-agent-${instId}`}
-                        onClick={(e) => handleStartAgent(instId, e)}
-                        className="text-xs"
-                      >
-                        {isStarting ? (
-                          <span className="flex items-center gap-1">
-                            <Spinner size="sm" /> Starting…
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1">
-                            <Icon name="play" size={12} /> Start Agent
-                          </span>
-                        )}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )
         )}
       </section>
 
       {/* SECTION 5: Attention Needed (Placed high for urgent visibility) */}
       {attentionTasks.length > 0 && (
         <section data-debug-id="chain-overview-section-attention" className="space-y-2.5">
-          <div className="flex items-center gap-1.5">
-            <Icon name="alert" size={14} className="text-warning" />
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-warning">
-              Attention Needed ({attentionTasks.length})
-            </h3>
-          </div>
+          <button
+            type="button"
+            data-debug-id="chain-overview-section-toggle-attention"
+            onClick={() => toggleSection('attention')}
+            aria-expanded={!isCollapsed('attention')}
+            className="flex w-full items-center justify-between text-left group cursor-pointer"
+          >
+            <div className="flex items-center gap-1.5">
+              <Icon
+                name={isCollapsed('attention') ? 'chevron-right' : 'chevron-down'}
+                size={14}
+                className="text-warning group-hover:text-warning/80 transition-colors"
+              />
+              <Icon name="alert" size={14} className="text-warning" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-warning group-hover:text-warning/80 transition-colors">
+                Attention Needed ({attentionTasks.length})
+              </h3>
+            </div>
+          </button>
 
-          <div className="grid gap-2">
-            {attentionTasks.map((task) => {
-              const taskId = task.taskId || task.id;
-              const isExpanded = expandedAttentionTaskId === taskId;
-              const reason = attentionReason(task);
+          {!isCollapsed('attention') && (
+            <div className="grid gap-2">
+              {attentionTasks.map((task) => {
+                const taskId = task.taskId || task.id;
+                const isExpanded = expandedAttentionTaskId === taskId;
+                const reason = attentionReason(task);
 
-              return (
-                <div
-                  key={taskId}
-                  data-debug-id={`chain-overview-attention-task-${taskId}`}
-                  className="rounded-lg border border-warning/30 bg-warning-soft/20 p-2.5 transition-colors"
-                >
+                return (
                   <div
-                    onClick={() => setExpandedAttentionTaskId((prev) => (prev === taskId ? null : taskId))}
-                    className="flex items-start justify-between gap-2 cursor-pointer"
+                    key={taskId}
+                    data-debug-id={`chain-overview-attention-task-${taskId}`}
+                    className="rounded-lg border border-warning/30 bg-warning-soft/20 p-2.5 transition-colors"
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <Badge tone={priorityTone(task.priority)}>
-                          {task.priority || 'P2'}
-                        </Badge>
-                        <StatusPill tone={statusTone(task.status)}>
-                          {task.status}
-                        </StatusPill>
-                        <span className="text-[11px] font-medium text-warning truncate">
-                          {reason}
-                        </span>
-                      </div>
-                      <h4 className="text-xs font-semibold text-primary mt-1 line-clamp-2">
-                        {task.title}
-                      </h4>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Toggle review panel"
-                      className="text-muted hover:text-primary mt-0.5 shrink-0"
+                    <div
+                      onClick={() => setExpandedAttentionTaskId((prev) => (prev === taskId ? null : taskId))}
+                      className="flex items-start justify-between gap-2 cursor-pointer"
                     >
-                      <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={14} />
-                    </button>
-                  </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <Badge tone={priorityTone(task.priority)}>
+                            {task.priority || 'P2'}
+                          </Badge>
+                          <StatusPill tone={statusTone(task.status)}>
+                            {task.status}
+                          </StatusPill>
+                          <span className="text-[11px] font-medium text-warning truncate">
+                            {reason}
+                          </span>
+                        </div>
+                        <h4 className="text-xs font-semibold text-primary mt-1 line-clamp-2">
+                          {task.title}
+                        </h4>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Toggle review panel"
+                        className="text-muted hover:text-primary mt-0.5 shrink-0"
+                      >
+                        <Icon name={isExpanded ? 'chevron-down' : 'chevron-right'} size={14} />
+                      </button>
+                    </div>
 
-                  {isExpanded && (
-                    <AttentionTaskReviewCard
-                      chainId={chainId}
-                      task={task}
-                      onVoteSuccess={() => {
-                        refetchChain();
-                        setExpandedAttentionTaskId(null);
-                      }}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                    {isExpanded && (
+                      <AttentionTaskReviewCard
+                        chainId={chainId}
+                        task={task}
+                        onVoteSuccess={() => {
+                          refetchChain();
+                          setExpandedAttentionTaskId(null);
+                        }}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
 
       {/* SECTION 4: Ongoing Tasks */}
       <section data-debug-id="chain-overview-section-ongoing-tasks" className="space-y-2.5">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            data-debug-id="chain-overview-section-toggle-ongoingTasks"
+            onClick={() => toggleSection('ongoingTasks')}
+            aria-expanded={!isCollapsed('ongoingTasks')}
+            className="flex items-center gap-1.5 text-left group cursor-pointer"
+          >
+            <Icon
+              name={isCollapsed('ongoingTasks') ? 'chevron-right' : 'chevron-down'}
+              size={14}
+              className="text-muted group-hover:text-primary transition-colors"
+            />
             <Icon name="tasks" size={14} className="text-muted" />
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted group-hover:text-primary transition-colors">
               Ongoing Tasks ({ongoingTasks.length})
             </h3>
-          </div>
+          </button>
           {onSelectTask && tasks.length > 0 && (
             <button
               type="button"
@@ -605,127 +660,153 @@ export default function ChainOverviewPanel({
           )}
         </div>
 
-        {ongoingTasks.length === 0 ? (
-          <p className="text-xs text-muted py-1">No active in_progress or in_validation tasks.</p>
-        ) : (
-          <div className="grid gap-2">
-            {ongoingTasks.map((task) => {
-              const taskId = task.taskId || task.id;
-              const assignee =
-                task.assignee_ref?.display_name ||
-                task.assigneeRef?.displayName ||
-                task.assignee_ref?.agent_instance_id ||
-                task.assigneeRef?.agentInstanceId ||
-                'Unassigned';
-              const reviewer =
-                task.reviewer_refs?.[0]?.display_name ||
-                task.reviewerRefs?.[0]?.displayName ||
-                task.reviewer_refs?.[0]?.agent_instance_id ||
-                task.reviewerRefs?.[0]?.agentInstanceId ||
-                (task.reviewers?.[0] ? String(task.reviewers[0]) : 'None');
+        {!isCollapsed('ongoingTasks') && (
+          ongoingTasks.length === 0 ? (
+            <p className="text-xs text-muted py-1">No active in_progress or in_validation tasks.</p>
+          ) : (
+            <div className="grid gap-2">
+              {ongoingTasks.map((task) => {
+                const taskId = task.taskId || task.id;
+                const assignee =
+                  task.assignee_ref?.display_name ||
+                  task.assigneeRef?.displayName ||
+                  task.assignee_ref?.agent_instance_id ||
+                  task.assigneeRef?.agentInstanceId ||
+                  'Unassigned';
+                const reviewer =
+                  task.reviewer_refs?.[0]?.display_name ||
+                  task.reviewerRefs?.[0]?.displayName ||
+                  task.reviewer_refs?.[0]?.agent_instance_id ||
+                  task.reviewerRefs?.[0]?.agentInstanceId ||
+                  (task.reviewers?.[0] ? String(task.reviewers[0]) : 'None');
 
-              return (
-                <div
-                  key={taskId}
-                  data-debug-id={`chain-overview-ongoing-task-${taskId}`}
-                  onClick={() => onSelectTask?.(taskId)}
-                  className="rounded-lg border border-subtle bg-surface-secondary/30 p-2.5 transition-colors hover:bg-neutral-soft/50 cursor-pointer"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
-                      <Badge tone={priorityTone(task.priority)}>
-                        {task.priority || 'P2'}
-                      </Badge>
-                      <StatusPill tone={statusTone(task.status)}>
-                        {task.status}
-                      </StatusPill>
+                return (
+                  <div
+                    key={taskId}
+                    data-debug-id={`chain-overview-ongoing-task-${taskId}`}
+                    onClick={() => onSelectTask?.(taskId)}
+                    className="rounded-lg border border-subtle bg-surface-secondary/30 p-2.5 transition-colors hover:bg-neutral-soft/50 cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <Badge tone={priorityTone(task.priority)}>
+                          {task.priority || 'P2'}
+                        </Badge>
+                        <StatusPill tone={statusTone(task.status)}>
+                          {task.status}
+                        </StatusPill>
+                      </div>
+                      <span className="font-mono text-[10px] text-muted">{taskId}</span>
                     </div>
-                    <span className="font-mono text-[10px] text-muted">{taskId}</span>
-                  </div>
 
-                  <h4 className="text-xs font-semibold text-primary mt-1 line-clamp-1">
-                    {task.title}
-                  </h4>
+                    <h4 className="text-xs font-semibold text-primary mt-1 line-clamp-1">
+                      {task.title}
+                    </h4>
 
-                  <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted">
-                    <span className="truncate max-w-[140px]">
-                      Worker: <strong className="text-primary font-normal">{assignee}</strong>
-                    </span>
-                    <span className="truncate max-w-[140px]">
-                      Reviewer: <strong className="text-primary font-normal">{reviewer}</strong>
-                    </span>
+                    <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted">
+                      <span className="truncate max-w-[140px]">
+                        Worker: <strong className="text-primary font-normal">{assignee}</strong>
+                      </span>
+                      <span className="truncate max-w-[140px]">
+                        Reviewer: <strong className="text-primary font-normal">{reviewer}</strong>
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )
         )}
       </section>
 
       {/* SECTION 2: Chain Artifacts */}
       <section data-debug-id="chain-overview-section-artifacts" className="space-y-2.5">
-        <div className="flex items-center justify-between">
+        <button
+          type="button"
+          data-debug-id="chain-overview-section-toggle-artifacts"
+          onClick={() => toggleSection('artifacts')}
+          aria-expanded={!isCollapsed('artifacts')}
+          className="flex w-full items-center justify-between text-left group cursor-pointer"
+        >
           <div className="flex items-center gap-1.5">
+            <Icon
+              name={isCollapsed('artifacts') ? 'chevron-right' : 'chevron-down'}
+              size={14}
+              className="text-muted group-hover:text-primary transition-colors"
+            />
             <Icon name="file" size={14} className="text-muted" />
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted group-hover:text-primary transition-colors">
               Chain Artifacts ({artifacts.length})
             </h3>
           </div>
-        </div>
+        </button>
 
-        {isArtifactsLoading ? (
-          <div className="flex items-center gap-2 text-xs text-muted py-2">
-            <Spinner size="sm" /> Loading artifacts…
-          </div>
-        ) : artifacts.length === 0 ? (
-          <p className="text-xs text-muted py-1">No artifacts produced in this chain yet.</p>
-        ) : (
-          <div className="grid gap-1.5 max-h-56 overflow-y-auto pr-1">
-            {artifacts.map((artifact) => {
-              const artId = artifact.artifact_id || artifact.artifactId || artifact.id;
-              const name = artifact.name || artId;
-              const kind = String(artifact.kind || 'file').toLowerCase();
-              const size = formatBytes(artifact.size_bytes || artifact.sizeBytes || 0);
-              const time = formatRelativeTime(artifact.created_unix_ms || artifact.createdAt || artifact.created_at);
+        {!isCollapsed('artifacts') && (
+          isArtifactsLoading ? (
+            <div className="flex items-center gap-2 text-xs text-muted py-2">
+              <Spinner size="sm" /> Loading artifacts…
+            </div>
+          ) : artifacts.length === 0 ? (
+            <p className="text-xs text-muted py-1">No artifacts produced in this chain yet.</p>
+          ) : (
+            <div className="grid gap-1.5 max-h-56 overflow-y-auto pr-1">
+              {artifacts.map((artifact) => {
+                const artId = artifact.artifact_id || artifact.artifactId || artifact.id;
+                const name = artifact.name || artId;
+                const kind = String(artifact.kind || 'file').toLowerCase();
+                const size = formatBytes(artifact.size_bytes || artifact.sizeBytes || 0);
+                const time = formatRelativeTime(artifact.created_unix_ms || artifact.createdAt || artifact.created_at);
 
-              let iconName: any = 'file';
-              if (kind === 'image' || kind.startsWith('image/')) iconName = 'eye';
-              else if (kind === 'log' || kind === 'terminal') iconName = 'terminal';
-              else if (kind === 'diff' || kind === 'code') iconName = 'spark';
+                let iconName: any = 'file';
+                if (kind === 'image' || kind.startsWith('image/')) iconName = 'eye';
+                else if (kind === 'log' || kind === 'terminal') iconName = 'terminal';
+                else if (kind === 'diff' || kind === 'code') iconName = 'spark';
 
-              return (
-                <div
-                  key={artId}
-                  data-debug-id={`chain-overview-artifact-${artId}`}
-                  onClick={() => setActiveArtifactId(artId)}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-subtle bg-surface-secondary/20 px-2.5 py-1.5 transition-colors hover:bg-neutral-soft/60 cursor-pointer"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Icon name={iconName} size={14} className="text-accent shrink-0" />
-                    <span className="text-xs font-medium text-primary truncate" title={name}>
-                      {name}
-                    </span>
+                return (
+                  <div
+                    key={artId}
+                    data-debug-id={`chain-overview-artifact-${artId}`}
+                    onClick={() => setActiveArtifactId(artId)}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-subtle bg-surface-secondary/20 px-2.5 py-1.5 transition-colors hover:bg-neutral-soft/60 cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Icon name={iconName} size={14} className="text-accent shrink-0" />
+                      <span className="text-xs font-medium text-primary truncate" title={name}>
+                        {name}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] text-muted shrink-0">
+                      <span>{size}</span>
+                      {time && <span>· {time}</span>}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 text-[10px] text-muted shrink-0">
-                    <span>{size}</span>
-                    {time && <span>· {time}</span>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )
         )}
       </section>
 
       {/* SECTION 3: VCS Changes */}
       <section data-debug-id="chain-overview-section-vcs" className="space-y-2.5">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            data-debug-id="chain-overview-section-toggle-vcs"
+            onClick={() => toggleSection('vcs')}
+            aria-expanded={!isCollapsed('vcs')}
+            className="flex items-center gap-1.5 text-left group cursor-pointer"
+          >
+            <Icon
+              name={isCollapsed('vcs') ? 'chevron-right' : 'chevron-down'}
+              size={14}
+              className="text-muted group-hover:text-primary transition-colors"
+            />
             <Icon name="layers" size={14} className="text-muted" />
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted group-hover:text-primary transition-colors">
               VCS Changes
             </h3>
-          </div>
+          </button>
           {onOpenVcsFiles && (
             <button
               type="button"
@@ -738,199 +819,216 @@ export default function ChainOverviewPanel({
           )}
         </div>
 
-        <div className="rounded-lg border border-subtle bg-surface-secondary/30 p-2.5 space-y-2">
-          {/* Status summary chips */}
-          <div className="flex items-center gap-2 flex-wrap text-xs">
-            <span className="rounded bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">
-              {vcsModifiedCount} Modified
-            </span>
-            <span className="rounded bg-success-soft px-2 py-0.5 text-[11px] font-semibold text-success">
-              {vcsStagedCount} Staged
-            </span>
-            <span className="rounded bg-neutral-soft px-2 py-0.5 text-[11px] font-semibold text-muted">
-              {vcsUntrackedCount} Untracked
-            </span>
-            {vcsStatusQuery.data?.branch && (
-              <span className="ml-auto text-[11px] font-mono text-muted truncate max-w-[120px]">
-                {vcsStatusQuery.data.branch}
+        {!isCollapsed('vcs') && (
+          <div className="rounded-lg border border-subtle bg-surface-secondary/30 p-2.5 space-y-2">
+            {/* Status summary chips */}
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              <span className="rounded bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">
+                {vcsModifiedCount} Modified
               </span>
+              <span className="rounded bg-success-soft px-2 py-0.5 text-[11px] font-semibold text-success">
+                {vcsStagedCount} Staged
+              </span>
+              <span className="rounded bg-neutral-soft px-2 py-0.5 text-[11px] font-semibold text-muted">
+                {vcsUntrackedCount} Untracked
+              </span>
+              {vcsStatusQuery.data?.branch && (
+                <span className="ml-auto text-[11px] font-mono text-muted truncate max-w-[120px]">
+                  {vcsStatusQuery.data.branch}
+                </span>
+              )}
+            </div>
+
+            {/* Changed files preview list */}
+            {vcsFiles.length === 0 ? (
+              <p className="text-xs text-muted pt-1">Working tree is clean.</p>
+            ) : (
+              <div className="space-y-1 pt-1 max-h-48 overflow-y-auto">
+                {vcsFiles.slice(0, 10).map((file) => {
+                  const statusChar =
+                    file.status === 'modified' ? 'M'
+                    : file.status === 'added' ? 'A'
+                    : file.status === 'deleted' ? 'D'
+                    : file.status === 'renamed' ? 'R'
+                    : 'U';
+                  const statusColor =
+                    file.status === 'modified' ? 'text-warning bg-warning-soft'
+                    : file.status === 'added' ? 'text-success bg-success-soft'
+                    : file.status === 'deleted' ? 'text-danger bg-danger-soft'
+                    : 'text-muted bg-neutral-soft';
+
+                  return (
+                    <div
+                      key={file.path}
+                      data-debug-id={`chain-overview-vcs-file-${file.path}`}
+                      onClick={() => {
+                        if (onOpenFileDiff) {
+                          onOpenFileDiff(file.path);
+                        }
+                      }}
+                      className="flex items-center justify-between gap-2 rounded px-2 py-1 text-xs transition-colors hover:bg-neutral-soft cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`grid h-4 w-4 place-items-center rounded text-[10px] font-bold ${statusColor}`}>
+                          {statusChar}
+                        </span>
+                        <span className="font-mono text-[11px] text-primary truncate" title={file.path}>
+                          {file.path}
+                        </span>
+                      </div>
+                      {(file.additions > 0 || file.deletions > 0) && (
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <div className="font-mono text-[10px]">
+                            {file.additions > 0 && <span className="text-success">+{file.additions} </span>}
+                            {file.deletions > 0 && <span className="text-danger">-{file.deletions}</span>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {vcsFiles.length > 10 && (
+                  <div className="text-center pt-1">
+                    <button
+                      type="button"
+                      onClick={onOpenVcsFiles}
+                      className="text-[11px] text-accent hover:underline"
+                    >
+                      + {vcsFiles.length - 10} more files
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
+        )}
+      </section>
 
-          {/* Changed files preview list */}
-          {vcsFiles.length === 0 ? (
-            <p className="text-xs text-muted pt-1">Working tree is clean.</p>
+      {/* SECTION 6: Fleet Terminals */}
+      <section data-debug-id="chain-overview-section-fleet-terminals" className="space-y-2.5">
+        <button
+          type="button"
+          data-debug-id="chain-overview-section-toggle-terminals"
+          onClick={() => toggleSection('terminals')}
+          aria-expanded={!isCollapsed('terminals')}
+          className="flex w-full items-center justify-between text-left group cursor-pointer"
+        >
+          <div className="flex items-center gap-1.5">
+            <Icon
+              name={isCollapsed('terminals') ? 'chevron-right' : 'chevron-down'}
+              size={14}
+              className="text-muted group-hover:text-primary transition-colors"
+            />
+            <Icon name="terminal" size={14} className="text-muted" />
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted group-hover:text-primary transition-colors">
+              Fleet Terminals ({members.length})
+            </h3>
+          </div>
+        </button>
+
+        {!isCollapsed('terminals') && (
+          members.length === 0 ? (
+            <p className="text-xs text-muted py-1">No member agents available.</p>
           ) : (
-            <div className="space-y-1 pt-1 max-h-48 overflow-y-auto">
-              {vcsFiles.slice(0, 10).map((file) => {
-                const statusChar =
-                  file.status === 'modified' ? 'M'
-                  : file.status === 'added' ? 'A'
-                  : file.status === 'deleted' ? 'D'
-                  : file.status === 'renamed' ? 'R'
-                  : 'U';
-                const statusColor =
-                  file.status === 'modified' ? 'text-warning bg-warning-soft'
-                  : file.status === 'added' ? 'text-success bg-success-soft'
-                  : file.status === 'deleted' ? 'text-danger bg-danger-soft'
-                  : 'text-muted bg-neutral-soft';
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+              {members.map((member) => {
+                const instId = member.agentInstanceId || member.agent_instance_id;
+                const name = member.displayName || member.display_name || instId;
+                const role = member.role || 'worker';
+                const rawStatus = String(member.runtimeStatus || member.runtime_status || 'stopped').toLowerCase();
+                const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
+                const isOpen = Boolean(openTerminalIds[instId]);
 
                 return (
                   <div
-                    key={file.path}
-                    data-debug-id={`chain-overview-vcs-file-${file.path}`}
-                    onClick={() => {
-                      if (onOpenFileDiff) {
-                        onOpenFileDiff(file.path);
-                      }
-                    }}
-                    className="flex items-center justify-between gap-2 rounded px-2 py-1 text-xs transition-colors hover:bg-neutral-soft cursor-pointer"
+                    key={instId}
+                    data-debug-id={`chain-overview-terminal-accordion-${instId}`}
+                    className="rounded-lg border border-subtle bg-surface-secondary/20 overflow-hidden"
                   >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={`grid h-4 w-4 place-items-center rounded text-[10px] font-bold ${statusColor}`}>
-                        {statusChar}
-                      </span>
-                      <span className="font-mono text-[11px] text-primary truncate" title={file.path}>
-                        {file.path}
-                      </span>
+                    {/* Accordion Header */}
+                    <div
+                      onClick={() => toggleTerminal(instId)}
+                      className="flex items-center justify-between p-2.5 transition-colors hover:bg-neutral-soft/40 cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={14} className="text-muted shrink-0" />
+                        <StatusDot tone={statusTone(rawStatus)} label={rawStatus} size="sm" />
+                        <span className="text-xs font-semibold text-primary truncate max-w-[160px]">
+                          {name}
+                        </span>
+                        <Badge tone={roleTone(role)}>
+                          {role}
+                        </Badge>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[11px] text-muted">
+                          {rawStatus}
+                        </span>
+                        {/* Maximize / Pop out button */}
+                        <button
+                          type="button"
+                          title="Maximize terminal"
+                          aria-label="Maximize terminal"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMaximizedTerminalInstanceId(instId);
+                          }}
+                          className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"
+                        >
+                          <Icon name="maximize" size={12} />
+                        </button>
+                      </div>
                     </div>
-                    {(file.additions > 0 || file.deletions > 0) && (
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <div className="font-mono text-[10px]">
-                          {file.additions > 0 && <span className="text-success">+{file.additions} </span>}
-                          {file.deletions > 0 && <span className="text-danger">-{file.deletions}</span>}
-                        </div>
+
+                    {/* STRICT Lazy Rendering: only mounted when accordion is OPEN */}
+                    {isOpen && (
+                      <div className="border-t border-subtle bg-canvas p-2">
+                        {isStopped ? (
+                          <div
+                            data-debug-id={`chain-overview-stopped-terminal-${instId}`}
+                            className="flex flex-col items-center justify-center h-44 rounded border border-subtle bg-surface-secondary/40 p-4 text-center space-y-2.5"
+                          >
+                            <div className="flex items-center gap-2 text-muted">
+                              <Icon name="terminal" size={18} />
+                              <span className="font-mono text-xs font-medium">Agent instance is stopped</span>
+                            </div>
+                            <p className="text-[11px] text-muted max-w-xs">
+                              Start this agent to launch its container and subscribe to its interactive terminal pane feed.
+                            </p>
+                            <Button
+                              type="button"
+                              variant="primary"
+                              size="sm"
+                              disabled={startingInstanceId === instId}
+                              onClick={(e) => handleStartAgent(instId, e)}
+                            >
+                              {startingInstanceId === instId ? (
+                                <span className="flex items-center gap-1.5">
+                                  <Spinner size="sm" /> Starting…
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1.5">
+                                  <Icon name="play" size={12} /> Start Agent
+                                </span>
+                              )}
+                            </Button>
+                          </div>
+                        ) : (
+                          <AgentPaneComposerPanel
+                            agentInstanceId={instId}
+                            isExpanded={true}
+                            isActiveTab={true}
+                            runtimeStatus={rawStatus}
+                          />
+                        )}
                       </div>
                     )}
                   </div>
                 );
               })}
-              {vcsFiles.length > 10 && (
-                <div className="text-center pt-1">
-                  <button
-                    type="button"
-                    onClick={onOpenVcsFiles}
-                    className="text-[11px] text-accent hover:underline"
-                  >
-                    + {vcsFiles.length - 10} more files
-                  </button>
-                </div>
-              )}
             </div>
-          )}
-        </div>
-      </section>
-
-      {/* SECTION 6: Fleet Terminals */}
-      <section data-debug-id="chain-overview-section-fleet-terminals" className="space-y-2.5">
-        <div className="flex items-center gap-1.5">
-          <Icon name="terminal" size={14} className="text-muted" />
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
-            Fleet Terminals ({members.length})
-          </h3>
-        </div>
-
-        {members.length === 0 ? (
-          <p className="text-xs text-muted py-1">No member agents available.</p>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {members.map((member) => {
-              const instId = member.agentInstanceId || member.agent_instance_id;
-              const name = member.displayName || member.display_name || instId;
-              const role = member.role || 'worker';
-              const rawStatus = String(member.runtimeStatus || member.runtime_status || 'stopped').toLowerCase();
-              const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
-              const isOpen = Boolean(openTerminalIds[instId]);
-
-              return (
-                <div
-                  key={instId}
-                  data-debug-id={`chain-overview-terminal-accordion-${instId}`}
-                  className="rounded-lg border border-subtle bg-surface-secondary/20 overflow-hidden"
-                >
-                  {/* Accordion Header */}
-                  <div
-                    onClick={() => toggleTerminal(instId)}
-                    className="flex items-center justify-between p-2.5 transition-colors hover:bg-neutral-soft/40 cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={14} className="text-muted shrink-0" />
-                      <StatusDot tone={statusTone(rawStatus)} label={rawStatus} size="sm" />
-                      <span className="text-xs font-semibold text-primary truncate max-w-[160px]">
-                        {name}
-                      </span>
-                      <Badge tone={roleTone(role)}>
-                        {role}
-                      </Badge>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-[11px] text-muted">
-                        {rawStatus}
-                      </span>
-                      {/* Maximize / Pop out button */}
-                      <button
-                        type="button"
-                        title="Maximize terminal"
-                        aria-label="Maximize terminal"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setMaximizedTerminalInstanceId(instId);
-                        }}
-                        className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"
-                      >
-                        <Icon name="maximize" size={12} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* STRICT Lazy Rendering: only mounted when accordion is OPEN */}
-                  {isOpen && (
-                    <div className="border-t border-subtle bg-canvas p-2">
-                      {isStopped ? (
-                        <div
-                          data-debug-id={`chain-overview-stopped-terminal-${instId}`}
-                          className="flex flex-col items-center justify-center h-44 rounded border border-subtle bg-surface-secondary/40 p-4 text-center space-y-2.5"
-                        >
-                          <div className="flex items-center gap-2 text-muted">
-                            <Icon name="terminal" size={18} />
-                            <span className="font-mono text-xs font-medium">Agent instance is stopped</span>
-                          </div>
-                          <p className="text-[11px] text-muted max-w-xs">
-                            Start this agent to launch its container and subscribe to its interactive terminal pane feed.
-                          </p>
-                          <Button
-                            type="button"
-                            variant="primary"
-                            size="sm"
-                            disabled={startingInstanceId === instId}
-                            onClick={(e) => handleStartAgent(instId, e)}
-                          >
-                            {startingInstanceId === instId ? (
-                              <span className="flex items-center gap-1.5">
-                                <Spinner size="sm" /> Starting…
-                              </span>
-                            ) : (
-                              <span className="flex items-center gap-1.5">
-                                <Icon name="play" size={12} /> Start Agent
-                              </span>
-                            )}
-                          </Button>
-                        </div>
-                      ) : (
-                        <AgentPaneComposerPanel
-                          agentInstanceId={instId}
-                          isExpanded={true}
-                          isActiveTab={true}
-                          runtimeStatus={rawStatus}
-                        />
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          )
         )}
       </section>
 

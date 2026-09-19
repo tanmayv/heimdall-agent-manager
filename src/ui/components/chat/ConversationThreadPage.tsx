@@ -1487,6 +1487,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               chainId={chainId}
               projectId={projectId}
               bridgeId={instanceBridgeId}
+              agentInstanceId={agentInstanceId}
               onClose={closeRightPanel}
               onSelectTask={(taskId) => {
                 if (taskId) setFocusedTaskId(taskId);
@@ -1616,10 +1617,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         aria-haspopup={isMobile ? 'dialog' : undefined}
         aria-expanded={isMobile ? (agentPickerOpen ? 'true' : 'false') : undefined}
         onClick={isMobile ? () => setAgentPickerOpen((open) => !open) : undefined}
-        className="inline-flex h-9 items-center gap-1.5 rounded-xl px-2.5 text-[13px] text-muted hover:bg-neutral-soft hover:text-primary"
+        className="inline-flex h-9 min-w-0 items-center gap-1.5 rounded-xl px-2.5 text-[13px] text-muted hover:bg-neutral-soft hover:text-primary"
       >
-        <span className="max-w-[140px] truncate font-medium">{agentDisplayName || agentInstanceId || 'Agent'}</span>
-        <Icon name="chevron-down" size={13} />
+        <span className="max-w-[120px] truncate font-medium">{agentDisplayName || agentInstanceId || 'Agent'}</span>
+        <Icon name="chevron-down" size={13} className="shrink-0" />
       </button>
     );
     return (
@@ -1761,7 +1762,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             />
           </div>
 
-          <div className="mt-1 flex items-center gap-1.5">
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 min-w-0">
             <button data-debug-id="conversation-attach-btn" type="button" onClick={openAttachmentPicker} aria-label="Upload attachment" title="Upload attachment" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-neutral-soft hover:text-primary"><Icon name="plus" size={19} /></button>
             <button
               data-debug-id="conversation-request-pane-btn"
@@ -1779,7 +1780,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               <Icon name="terminal" size={18} />
             </button>
 
-            <div className="flex-1" />
+            <div className="flex-1 min-w-[8px]" />
 
             {/* Agent chip: shows the current agent's display name, centered
                 between the pane-capture controls and the model switcher. Clicking
@@ -1807,7 +1808,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               </>
             )}
 
-            <div className="flex-1" />
+            <div className="flex-1 min-w-[8px]" />
 
             {/* Model switcher: shows current provider · tier; opens the runtime
                 menu to change them (which restarts the agent). */}
@@ -1820,10 +1821,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 onOpenChange={setRuntimeMenuOpen}
                 className="w-[min(92vw,430px)]"
                 trigger={
-                  <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft">
-                    <span className="font-semibold">{instanceProvider || 'model'}</span>
-                    <span className="hidden text-muted sm:inline">· {instanceTier || '—'}</span>
-                    <Icon name="chevron-down" size={14} />
+                  <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" className="inline-flex h-9 min-w-0 max-w-[160px] items-center gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft">
+                    <span className="font-semibold truncate">{instanceProvider || 'model'}</span>
+                    <span className="hidden text-muted sm:inline truncate">· {instanceTier || '—'}</span>
+                    <Icon name="chevron-down" size={14} className="shrink-0" />
                   </button>
                 }
               >
@@ -1831,10 +1832,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               </Popover>
             ) : (
               <>
-                <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" aria-haspopup="dialog" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft">
-                  <span className="font-semibold">{instanceProvider || 'model'}</span>
-                  <span className="hidden text-muted sm:inline">· {instanceTier || '—'}</span>
-                  <Icon name="chevron-down" size={14} />
+                <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Change provider and tier" title="Change provider / tier — restarts the agent" aria-haspopup="dialog" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="inline-flex h-9 min-w-0 max-w-[160px] items-center gap-1.5 rounded-xl border border-subtle bg-surface-raised px-2.5 text-[13px] text-primary hover:bg-neutral-soft">
+                  <span className="font-semibold truncate">{instanceProvider || 'model'}</span>
+                  <span className="hidden text-muted sm:inline truncate">· {instanceTier || '—'}</span>
+                  <Icon name="chevron-down" size={14} className="shrink-0" />
                 </button>
                 <Drawer side="bottom" title="Runtime controls" open={runtimeMenuOpen} onOpenChange={setRuntimeMenuOpen} data-debug-id="conversation-runtime-mobile-sheet">
                   <Drawer.Body>{runtimeControls}</Drawer.Body>
@@ -1892,7 +1893,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     <section
       data-debug-id="conversation-thread-page"
       ref={containerRef}
-      className="relative flex flex-col sm:flex-row h-full min-h-0 w-full max-w-full overflow-x-hidden bg-canvas p-0 text-left"
+      className="relative flex flex-col sm:flex-row h-full min-h-0 w-full max-w-full overflow-hidden bg-canvas p-0 text-left"
     >
       {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
       {panelOpen ? (
