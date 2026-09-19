@@ -18,6 +18,7 @@ import "core:path/filepath"
 import "core:time"
 import "core:c/libc"
 import base64 "core:encoding/base64"
+import json "core:encoding/json"
 import ws "odin_test:lib/ws"
 
 // The resolved (symlink-free, absolute) sandbox root. Set once at startup by
@@ -118,6 +119,41 @@ Bridge_Fs_Create_File_Result :: struct {
 	within_root: bool,
 	error_code:  string,
 	message:     string,
+}
+
+Bridge_Fs_Write_File_Result :: struct {
+	ok:            bool,
+	path:          string,
+	bytes_written: int,
+	modified_at:   string,
+	within_root:   bool,
+	error_code:    string,
+	message:       string,
+}
+
+Bridge_Fs_Write_Item :: struct {
+	path:    string,
+	content: string,
+}
+
+Bridge_Fs_Saved_Item :: struct {
+	path:          string,
+	bytes_written: int,
+	modified_at:   string,
+}
+
+Bridge_Fs_Error_Item :: struct {
+	path:       string,
+	error_code: string,
+	message:    string,
+}
+
+Bridge_Fs_Batch_Write_Result :: struct {
+	ok:         bool,
+	saved:      []Bridge_Fs_Saved_Item,
+	errors:     []Bridge_Fs_Error_Item,
+	error_code: string,
+	message:    string,
 }
 
 Bridge_Fs_Move_Result :: struct {
@@ -643,6 +679,121 @@ bridge_fs_create_file :: proc(requested: string, sandbox_root: string = "") -> B
 	return Bridge_Fs_Create_File_Result{ok = true, path = canonical, created = true, within_root = true}
 }
 
+// bridge_fs_write_file writes `content` to `requested` atomically.
+// The parent directory must exist within the sandbox root.
+// Target cannot be a directory. Outside root => path_outside_root.
+bridge_fs_write_file :: proc(requested: string, content: string, sandbox_root: string = "") -> Bridge_Fs_Write_File_Result {
+	root, root_ok := bridge_fs_effective_root(sandbox_root)
+	if !root_ok {
+		return Bridge_Fs_Write_File_Result{ok = false, path = requested, within_root = false, error_code = "path_outside_root", message = "Project root is outside the allowed root"}
+	}
+	canonical, within := bridge_fs_resolve_within(requested, root)
+	if !within {
+		return Bridge_Fs_Write_File_Result{ok = false, path = requested, within_root = false, error_code = "path_outside_root", message = "Path is outside the allowed root"}
+	}
+	if canonical == root {
+		return Bridge_Fs_Write_File_Result{ok = false, path = canonical, within_root = true, error_code = "path_is_directory", message = "Target path is the root directory"}
+	}
+	if os.exists(canonical) && os.is_dir(canonical) {
+		return Bridge_Fs_Write_File_Result{ok = false, path = canonical, within_root = true, error_code = "path_is_directory", message = "Target path is a directory"}
+	}
+	parent := filepath.dir(canonical)
+	if !os.exists(parent) || !os.is_dir(parent) {
+		return Bridge_Fs_Write_File_Result{ok = false, path = canonical, within_root = true, error_code = "path_not_found", message = "Parent directory does not exist"}
+	}
+
+	temp_name := fmt.tprintf(".tmp_write_%d_%s", time.to_unix_nanoseconds(time.now()), filepath.base(canonical))
+	temp_path, jerr := filepath.join([]string{parent, temp_name}, context.allocator)
+	if jerr != nil {
+		temp_path = strings.concatenate({parent, "/", temp_name}, context.allocator)
+	}
+	defer delete(temp_path, context.allocator)
+
+	written_cleanly := false
+	if err := os.write_entire_file_from_string(temp_path, content); err == nil {
+		temp_c := strings.clone_to_cstring(temp_path, context.temp_allocator)
+		canon_c := strings.clone_to_cstring(canonical, context.temp_allocator)
+		if libc.rename(temp_c, canon_c) == 0 {
+			written_cleanly = true
+		} else {
+			_ = os.remove(temp_path)
+		}
+	}
+
+	if !written_cleanly {
+		if err := os.write_entire_file_from_string(canonical, content); err != nil {
+			return Bridge_Fs_Write_File_Result{ok = false, path = canonical, within_root = true, error_code = "write_failed", message = "Could not write file"}
+		}
+	}
+
+	modified_at := ""
+	if info, ierr := os.stat(canonical, context.allocator); ierr == nil {
+		modified_at = bridge_fs_format_mtime(info.modification_time)
+		os.file_info_delete(info, context.allocator)
+	} else {
+		modified_at = action_scheduler_format_rfc3339_utc(time.to_unix_nanoseconds(time.now()) / 1_000_000)
+	}
+
+	return Bridge_Fs_Write_File_Result{
+		ok = true,
+		path = canonical,
+		bytes_written = len(content),
+		modified_at = modified_at,
+		within_root = true,
+	}
+}
+
+// bridge_fs_batch_write writes multiple files atomically within the sandbox root.
+// Returns saved list for succeeded files and errors list for failed files.
+bridge_fs_batch_write :: proc(files: [dynamic]Bridge_Fs_Write_Item, sandbox_root: string = "") -> Bridge_Fs_Batch_Write_Result {
+	root, root_ok := bridge_fs_effective_root(sandbox_root)
+	if !root_ok {
+		return Bridge_Fs_Batch_Write_Result{
+			ok = false,
+			saved = make([]Bridge_Fs_Saved_Item, 0),
+			errors = make([]Bridge_Fs_Error_Item, 0),
+			error_code = "path_outside_root",
+			message = "Project root is outside the allowed root",
+		}
+	}
+
+	saved_dyn := make([dynamic]Bridge_Fs_Saved_Item, context.allocator)
+	errors_dyn := make([dynamic]Bridge_Fs_Error_Item, context.allocator)
+
+	for item in files {
+		res := bridge_fs_write_file(item.path, item.content, root)
+		if res.ok {
+			append(&saved_dyn, Bridge_Fs_Saved_Item{
+				path = res.path,
+				bytes_written = res.bytes_written,
+				modified_at = res.modified_at,
+			})
+		} else {
+			append(&errors_dyn, Bridge_Fs_Error_Item{
+				path = strings.clone(item.path),
+				error_code = strings.clone(res.error_code),
+				message = strings.clone(res.message),
+			})
+		}
+	}
+
+	ok := len(errors_dyn) == 0
+	err_code := ""
+	err_msg := ""
+	if !ok {
+		err_code = "batch_write_partial"
+		err_msg = fmt.tprintf("%d of %d file(s) failed to save", len(errors_dyn), len(files))
+	}
+
+	return Bridge_Fs_Batch_Write_Result{
+		ok = ok,
+		saved = saved_dyn[:],
+		errors = errors_dyn[:],
+		error_code = err_code,
+		message = err_msg,
+	}
+}
+
 // bridge_fs_move renames/moves a path. Both endpoints are sandboxed; the source
 // must exist and the destination must not (dest_exists). Works for files + dirs.
 bridge_fs_move :: proc(from_req, to_req: string, sandbox_root: string = "") -> Bridge_Fs_Move_Result {
@@ -866,6 +1017,54 @@ bridge_fs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> bo
 		bridge_runtime_cache_command(command_id, out)
 		_ = bridge_hub_send(conn, out)
 		return true
+	case "fs_write_file":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		path := extract_json_string(text, "path", "")
+		content := extract_json_string(text, "content", "")
+		root := extract_json_string(text, "root", "")
+		result := bridge_fs_write_file(path, content, root)
+		out := bridge_fs_write_file_result_json(command_id, result)
+		bridge_runtime_cache_command(command_id, out)
+		_ = bridge_hub_send(conn, out)
+		return true
+	case "fs_batch_write":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
+		root := extract_json_string(text, "root", "")
+		files := make([dynamic]Bridge_Fs_Write_Item, context.allocator)
+		defer {
+			for f in files {
+				delete(f.path)
+				delete(f.content)
+			}
+			delete(files)
+		}
+		parsed, err := json.parse(transmute([]byte)text)
+		if err == .None {
+			defer json.destroy_value(parsed)
+			if root_obj, is_obj := parsed.(json.Object); is_obj {
+				if files_arr, is_arr := root_obj["files"].(json.Array); is_arr {
+					for item_val in files_arr {
+						if item_obj, ok := item_val.(json.Object); ok {
+							p, has_p := item_obj["path"].(json.String)
+							c, has_c := item_obj["content"].(json.String)
+							if has_p {
+								append(&files, Bridge_Fs_Write_Item{
+									path = strings.clone(string(p)),
+									content = strings.clone(string(c)) if has_c else "",
+								})
+							}
+						}
+					}
+				}
+			}
+		}
+		result := bridge_fs_batch_write(files, root)
+		out := bridge_fs_batch_write_result_json(command_id, result)
+		bridge_runtime_cache_command(command_id, out)
+		_ = bridge_hub_send(conn, out)
+		return true
 	case "fs_move":
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = bridge_hub_send(conn, cached); return true }
@@ -1020,6 +1219,46 @@ bridge_fs_mkdir_result_json :: proc(command_id: string, r: Bridge_Fs_Mkdir_Resul
 	strings.write_string(&b, "\",\"created\":"); strings.write_string(&b, "true" if r.created else "false")
 	strings.write_string(&b, ",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
 	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
+	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
+	strings.write_string(&b, "\"}}")
+	return strings.to_string(b)
+}
+
+bridge_fs_write_file_result_json :: proc(command_id: string, r: Bridge_Fs_Write_File_Result) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"fs_write_file_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
+	strings.write_string(&b, ",\"path\":\""); json_write_string(&b, r.path)
+	strings.write_string(&b, "\",\"bytes_written\":"); strings.write_int(&b, r.bytes_written)
+	strings.write_string(&b, ",\"modified_at\":\""); json_write_string(&b, r.modified_at)
+	strings.write_string(&b, "\",\"within_root\":"); strings.write_string(&b, "true" if r.within_root else "false")
+	strings.write_string(&b, ",\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
+	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
+	strings.write_string(&b, "\"}}")
+	return strings.to_string(b)
+}
+
+bridge_fs_batch_write_result_json :: proc(command_id: string, r: Bridge_Fs_Batch_Write_Result) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"fs_batch_write_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if r.ok else "false")
+	strings.write_string(&b, ",\"saved\":[")
+	for s, i in r.saved {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, s.path)
+		strings.write_string(&b, "\",\"bytes_written\":"); strings.write_int(&b, s.bytes_written)
+		strings.write_string(&b, ",\"modified_at\":\""); json_write_string(&b, s.modified_at)
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_string(&b, "],\"errors\":[")
+	for e, i in r.errors {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_string(&b, "{\"path\":\""); json_write_string(&b, e.path)
+		strings.write_string(&b, "\",\"error_code\":\""); json_write_string(&b, e.error_code)
+		strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, e.message)
+		strings.write_string(&b, "\"}")
+	}
+	strings.write_string(&b, "],\"error\":{\"code\":\""); json_write_string(&b, r.error_code)
 	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, r.message)
 	strings.write_string(&b, "\"}}")
 	return strings.to_string(b)

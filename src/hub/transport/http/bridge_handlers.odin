@@ -320,6 +320,12 @@ Project_Fs_Command :: struct {
 	send_offset: bool,
 	read_limit: int,
 	send_read_limit: bool,
+	// single-file write
+	content: string,
+	send_content: bool,
+	// multi-file batch write
+	raw_files_json: string,
+	send_raw_files: bool,
 }
 
 project_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Fs_Command) -> (string, bool, domain.Domain_Error) {
@@ -370,6 +376,12 @@ project_fs_command_json :: proc(cmd: Project_Fs_Command, command_id, root_path: 
 	if cmd.send_read_limit {
 		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.read_limit)
 	}
+	if cmd.send_content {
+		strings.write_string(&b, ",\"content\":\""); write_handler_json_string(&b, cmd.content); strings.write_string(&b, "\"")
+	}
+	if cmd.send_raw_files {
+		strings.write_string(&b, ",\"files\":"); strings.write_string(&b, cmd.raw_files_json)
+	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
@@ -408,6 +420,41 @@ read_project_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
 create_project_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{command_type = "fs_create_file", path = json_string(req.body, "path")})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+write_project_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	path := json_string(req.body, "path")
+	if path == "" do return respond_error(domain.domain_error(.Validation_Failed, "path is required"), req.request_id)
+	content := json_string(req.body, "content")
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_write_file",
+		path = path,
+		content = content,
+		send_content = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+batch_write_project_files_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	files_json, has_files := json_array_raw_balanced(req.body, "files")
+	if !has_files {
+		trimmed := strings.trim_space(req.body)
+		if strings.has_prefix(trimmed, "[") && strings.has_suffix(trimmed, "]") {
+			files_json = trimmed
+			has_files = true
+		}
+	}
+	if !has_files do return respond_error(domain.domain_error(.Validation_Failed, "files array is required"), req.request_id)
+	result, ok, err := project_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_batch_write",
+		raw_files_json = files_json,
+		send_raw_files = true,
+	})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }

@@ -66,6 +66,38 @@ export type FsMutationResult = {
   error: { code: string; message: string };
 };
 
+export type FsWriteResult = {
+  ok: boolean;
+  path: string;
+  bytes_written?: number;
+  modified_at?: string;
+  within_root?: boolean;
+  error_code?: string;
+  message?: string;
+  error?: { code: string; message: string };
+};
+
+export type FsSavedItem = {
+  path: string;
+  bytes_written: number;
+  modified_at: string;
+};
+
+export type FsErrorItem = {
+  path: string;
+  error_code: string;
+  message: string;
+};
+
+export type FsBatchWriteResult = {
+  ok: boolean;
+  saved: FsSavedItem[];
+  errors: FsErrorItem[];
+  error_code?: string;
+  message?: string;
+  error?: { code: string; message: string };
+};
+
 // The shared error vocabulary from the contract, exported for callers that want
 // to branch on specific failures (e.g. friendly "already exists" messaging).
 export const FS_ERROR_CODES = [
@@ -107,6 +139,8 @@ type ListArgs = {
 };
 type ReadFileArgs = { projectId: string; bridgeId?: string; path: string; offset?: number; limit?: number };
 type CreateArgs = { projectId: string; bridgeId?: string; path: string };
+type WriteFileArgs = { projectId: string; bridgeId?: string; path: string; content: string; encoding?: 'utf8' | 'base64' };
+type BatchWriteFilesArgs = { projectId: string; bridgeId?: string; files: Array<{ path: string; content: string }> };
 type MoveArgs = { projectId: string; bridgeId?: string; from: string; to: string };
 type DeleteArgs = { projectId: string; bridgeId?: string; path: string; recursive?: boolean };
 
@@ -241,6 +275,56 @@ export const projectFsApi = heimdallApi.injectEndpoints({
         { type: 'ProjectFs' as const, id: fsListTagId(projectId, bridgeId, parentOf(path)) },
       ],
     }),
+
+    // Write / overwrite file content at `path` (PUT /projects/{projectId}/fs/file).
+    writeProjectFile: build.mutation<FsWriteResult, WriteFileArgs>({
+      queryFn: async ({ projectId, bridgeId = '', path, content, encoding }) => {
+        try {
+          const bp = bridgeParam(bridgeId);
+          const data = await cookieMutation(
+            `${base(projectId)}/file${bp ? `?${bp}` : ''}`,
+            'PUT',
+            { path, content, encoding },
+          );
+          return { data: data as FsWriteResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '', path }) => [
+        { type: 'ProjectFs' as const, id: `file::${fsListTagId(projectId, bridgeId, path)}` },
+        { type: 'ProjectFs' as const, id: fsListTagId(projectId, bridgeId, parentOf(path)) },
+      ],
+    }),
+
+    // Batch write multiple files (PUT /projects/{projectId}/fs/files).
+    batchWriteProjectFiles: build.mutation<FsBatchWriteResult, BatchWriteFilesArgs>({
+      queryFn: async ({ projectId, bridgeId = '', files }) => {
+        try {
+          const bp = bridgeParam(bridgeId);
+          const data = await cookieMutation(
+            `${base(projectId)}/files${bp ? `?${bp}` : ''}`,
+            'PUT',
+            { files },
+          );
+          return { data: data as FsBatchWriteResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '', files }) => {
+        const tags: Array<{ type: 'ProjectFs'; id: string }> = [];
+        const parents = new Set<string>();
+        for (const file of files || []) {
+          tags.push({ type: 'ProjectFs' as const, id: `file::${fsListTagId(projectId, bridgeId, file.path)}` });
+          parents.add(parentOf(file.path));
+        }
+        for (const parent of parents) {
+          tags.push({ type: 'ProjectFs' as const, id: fsListTagId(projectId, bridgeId, parent) });
+        }
+        return tags;
+      },
+    }),
   }),
 });
 
@@ -261,4 +345,6 @@ export const {
   useCreateProjectDirMutation,
   useMoveProjectPathMutation,
   useDeleteProjectPathMutation,
+  useWriteProjectFileMutation,
+  useBatchWriteProjectFilesMutation,
 } = projectFsApi;

@@ -19,10 +19,12 @@
 // compatible virtualizer or a React bump. Tracked as a Phase-4 follow-up.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Editor, { type OnMount, type EditorProps } from '@monaco-editor/react';
 
 import MarkdownBody from '../MarkdownBody';
 import ProjectVcsPanel from './ProjectVcsPanel';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
+import { useTheme } from '../../store/themeSlice';
 import { Icon, IconButton } from '@ui';
 import {
   useLazyListProjectDirQuery,
@@ -31,11 +33,60 @@ import {
   useCreateProjectDirMutation,
   useMoveProjectPathMutation,
   useDeleteProjectPathMutation,
+  useWriteProjectFileMutation,
+  useBatchWriteProjectFilesMutation,
   type FsEntry,
   type FsListResult,
   type FsReadFileResult,
 } from '../../api/endpoints/projectFs';
 import { useLazyGetVcsCapabilitiesQuery } from '../../api/endpoints/projectVcs';
+
+export type EditorTab = {
+  path: string;
+  content: string;
+  initialContent: string;
+  isDirty: boolean;
+  isNew?: boolean;
+};
+
+function getLanguageForMonaco(filePath: string): string {
+  const lang = languageForFile(filePath);
+  const map: Record<string, string> = {
+    bash: 'shell',
+    zsh: 'shell',
+    sh: 'shell',
+    fish: 'shell',
+    docker: 'dockerfile',
+    yml: 'yaml',
+    yaml: 'yaml',
+    js: 'javascript',
+    ts: 'typescript',
+    tsx: 'typescript',
+    jsx: 'javascript',
+    md: 'markdown',
+    markdown: 'markdown',
+    py: 'python',
+    rb: 'ruby',
+    rs: 'rust',
+    cs: 'csharp',
+    go: 'go',
+    json: 'json',
+    jsonc: 'json',
+    html: 'html',
+    xml: 'xml',
+    css: 'css',
+    scss: 'scss',
+    less: 'less',
+    sql: 'sql',
+    graphql: 'graphql',
+    proto: 'protobuf',
+    odin: 'c',
+    zig: 'c',
+    toml: 'ini',
+    ini: 'ini',
+  };
+  return map[lang] || lang || 'plaintext';
+}
 
 function str(v: any): string {
   return String(v ?? '').trim();
@@ -169,6 +220,20 @@ export default function ProjectFilesPanel({
   const [createDir, createDirState] = useCreateProjectDirMutation();
   const [movePath, moveState] = useMoveProjectPathMutation();
   const [deletePath, deleteState] = useDeleteProjectPathMutation();
+  const [writeProjectFile, writeState] = useWriteProjectFileMutation();
+  const [batchWriteProjectFiles, batchWriteState] = useBatchWriteProjectFilesMutation();
+  const { theme } = useTheme();
+
+  // Multi-file editor state
+  const [openTabs, setOpenTabs] = useState<EditorTab[]>([]);
+  const [activeTabPath, setActiveTabPath] = useState<string>('');
+  const [isEditMode, setIsEditMode] = useState<boolean>(false);
+  const [saveFeedback, setSaveFeedback] = useState<{
+    type: 'success' | 'warning' | 'error';
+    message: string;
+  } | null>(null);
+  const [confirmClosePath, setConfirmClosePath] = useState<string | null>(null);
+  const [openingInEditor, setOpeningInEditor] = useState<string>('');
 
   const [cwd, setCwd] = useState(''); // project-root-relative path ('' = root)
   const [rootAbs, setRootAbs] = useState('');
@@ -290,6 +355,11 @@ export default function ProjectFilesPanel({
   useEffect(() => {
     setViewFile(null);
     setPending(null);
+    setOpenTabs([]);
+    setActiveTabPath('');
+    setIsEditMode(false);
+    setSaveFeedback(null);
+    setConfirmClosePath(null);
     void load('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, bridgeId]);
@@ -432,6 +502,287 @@ export default function ProjectFilesPanel({
     }
   }, [projectId, bridgeId, readFile, viewFile, viewNextOffset, viewEof, loadingMoreFile]);
 
+  // Auto-dismiss save feedback after 3s
+  useEffect(() => {
+    if (saveFeedback) {
+      const timer = setTimeout(() => {
+        setSaveFeedback(null);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [saveFeedback]);
+
+  const activeEditorTab = useMemo(
+    () => openTabs.find((t) => t.path === activeTabPath),
+    [openTabs, activeTabPath]
+  );
+
+  // Fetch full file content across all byte pages before editing
+  const fetchAllFileContent = useCallback(
+    async (filePath: string): Promise<string> => {
+      if (viewFile && viewFile.path === filePath && viewEof) {
+        return viewContent;
+      }
+      let acc = '';
+      let offset = 0;
+      let eof = false;
+      let iterations = 0;
+      while (!eof && iterations < 100) {
+        iterations++;
+        const res: FsReadFileResult = await readFile({
+          projectId,
+          bridgeId,
+          path: filePath,
+          offset,
+        }).unwrap();
+
+        if (!res.ok) {
+          throw new Error(res.error?.message || 'Could not read file');
+        }
+        if (!res.viewable || res.encoding === 'base64') {
+          throw new Error('This file cannot be edited as text');
+        }
+
+        acc += res.content || '';
+        const bytesReturned = Number(
+          res.bytes_returned ?? (res.content ? res.content.length : 0)
+        );
+        offset = Number(res.offset ?? 0) + bytesReturned;
+        eof = res.eof !== false || bytesReturned === 0;
+      }
+      return acc;
+    },
+    [viewFile, viewEof, viewContent, readFile, projectId, bridgeId]
+  );
+
+  const openFileInEditor = useCallback(
+    async (filePath: string) => {
+      setError('');
+      const existing = openTabs.find((t) => t.path === filePath);
+      if (existing) {
+        setActiveTabPath(filePath);
+        setIsEditMode(true);
+        setViewFile(null);
+        return;
+      }
+      setOpeningInEditor(filePath);
+      try {
+        const completeContent = await fetchAllFileContent(filePath);
+        const newTab: EditorTab = {
+          path: filePath,
+          content: completeContent,
+          initialContent: completeContent,
+          isDirty: false,
+          isNew: false,
+        };
+        setOpenTabs((prev) => [...prev, newTab]);
+        setActiveTabPath(filePath);
+        setIsEditMode(true);
+        setViewFile(null);
+      } catch (e: any) {
+        setError(str(e?.message) || 'Could not open file in editor');
+      } finally {
+        setOpeningInEditor('');
+      }
+    },
+    [openTabs, fetchAllFileContent]
+  );
+
+  const handleEditorNewFile = useCallback(
+    async (inputPath: string) => {
+      setError('');
+      const raw = inputPath.trim().replace(/^\/+/, '');
+      if (!raw) return;
+      const targetPath = cwd && !raw.includes('/') ? joinPath(cwd, raw) : raw;
+
+      const existing = openTabs.find((t) => t.path === targetPath);
+      if (existing) {
+        setActiveTabPath(targetPath);
+        setIsEditMode(true);
+        setViewFile(null);
+        return;
+      }
+
+      setOpeningInEditor(targetPath);
+      try {
+        const existingContent = await fetchAllFileContent(targetPath);
+        const newTab: EditorTab = {
+          path: targetPath,
+          content: existingContent,
+          initialContent: existingContent,
+          isDirty: false,
+          isNew: false,
+        };
+        setOpenTabs((prev) => [...prev, newTab]);
+        setActiveTabPath(targetPath);
+        setIsEditMode(true);
+        setViewFile(null);
+      } catch {
+        const newTab: EditorTab = {
+          path: targetPath,
+          content: '',
+          initialContent: '',
+          isDirty: true,
+          isNew: true,
+        };
+        setOpenTabs((prev) => [...prev, newTab]);
+        setActiveTabPath(targetPath);
+        setIsEditMode(true);
+        setViewFile(null);
+      } finally {
+        setOpeningInEditor('');
+      }
+    },
+    [cwd, openTabs, fetchAllFileContent]
+  );
+
+  const saveActiveFile = useCallback(async () => {
+    if (!activeEditorTab || writeState.isLoading) return;
+    setSaveFeedback(null);
+    try {
+      const res = await writeProjectFile({
+        projectId,
+        bridgeId,
+        path: activeEditorTab.path,
+        content: activeEditorTab.content,
+        encoding: 'utf8',
+      }).unwrap();
+
+      if (res.ok) {
+        setOpenTabs((prev) =>
+          prev.map((t) =>
+            t.path === activeEditorTab.path
+              ? { ...t, initialContent: t.content, isDirty: false, isNew: false }
+              : t
+          )
+        );
+        setSaveFeedback({
+          type: 'success',
+          message: `Saved ${baseName(activeEditorTab.path)}`,
+        });
+        void load(cwd);
+      } else {
+        setSaveFeedback({
+          type: 'error',
+          message: res.error_code || res.message || res.error?.message || 'Failed to save file',
+        });
+      }
+    } catch (err: any) {
+      setSaveFeedback({
+        type: 'error',
+        message: str(err?.message || err?.error) || 'Failed to save file',
+      });
+    }
+  }, [activeEditorTab, writeState.isLoading, writeProjectFile, projectId, bridgeId, cwd, load]);
+
+  const saveAllFiles = useCallback(async () => {
+    const dirtyTabs = openTabs.filter((t) => t.isDirty);
+    if (dirtyTabs.length === 0 || batchWriteState.isLoading) return;
+    setSaveFeedback(null);
+    try {
+      const res = await batchWriteProjectFiles({
+        projectId,
+        bridgeId,
+        files: dirtyTabs.map((t) => ({ path: t.path, content: t.content })),
+      }).unwrap();
+
+      if (res.ok) {
+        const errorPaths = new Set((res.errors || []).map((e) => e.path));
+        setOpenTabs((prev) =>
+          prev.map((t) => {
+            if (dirtyTabs.some((d) => d.path === t.path) && !errorPaths.has(t.path)) {
+              return { ...t, initialContent: t.content, isDirty: false, isNew: false };
+            }
+            return t;
+          })
+        );
+        void load(cwd);
+        if (res.errors && res.errors.length > 0) {
+          setSaveFeedback({
+            type: 'warning',
+            message: `Saved ${res.saved?.length || 0} files with ${res.errors.length} errors`,
+          });
+        } else {
+          setSaveFeedback({
+            type: 'success',
+            message: `Saved all ${dirtyTabs.length} modified file${dirtyTabs.length === 1 ? '' : 's'}`,
+          });
+        }
+      } else {
+        setSaveFeedback({
+          type: 'error',
+          message: res.error_code || res.message || res.error?.message || 'Failed to save files',
+        });
+      }
+    } catch (err: any) {
+      setSaveFeedback({
+        type: 'error',
+        message: str(err?.message || err?.error) || 'Failed to save files',
+      });
+    }
+  }, [openTabs, batchWriteState.isLoading, batchWriteProjectFiles, projectId, bridgeId, cwd, load]);
+
+  const handleContentChange = useCallback(
+    (path: string, newContent: string) => {
+      setOpenTabs((prev) =>
+        prev.map((t) => {
+          if (t.path !== path) return t;
+          const isDirty = t.isNew ? true : newContent !== t.initialContent;
+          return { ...t, content: newContent, isDirty };
+        })
+      );
+    },
+    []
+  );
+
+  const selectTab = useCallback((path: string) => {
+    setActiveTabPath(path);
+  }, []);
+
+  const closeTab = useCallback(
+    (path: string, force = false) => {
+      const tab = openTabs.find((t) => t.path === path);
+      if (!tab) return;
+      if (!force && tab.isDirty) {
+        setConfirmClosePath(path);
+        return;
+      }
+      setOpenTabs((prev) => {
+        const next = prev.filter((t) => t.path !== path);
+        if (activeTabPath === path) {
+          if (next.length > 0) {
+            const idx = prev.findIndex((t) => t.path === path);
+            const nextActive = next[Math.min(idx, next.length - 1)].path;
+            setActiveTabPath(nextActive);
+          } else {
+            setActiveTabPath('');
+            setIsEditMode(false);
+          }
+        }
+        return next;
+      });
+    },
+    [openTabs, activeTabPath]
+  );
+
+  // Global keyboard shortcuts for Cmd+S / Ctrl+S and Cmd+Shift+S / Ctrl+Shift+S
+  useEffect(() => {
+    if (!isEditMode) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.shiftKey) {
+          void saveAllFiles();
+        } else {
+          void saveActiveFile();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [isEditMode, saveActiveFile, saveAllFiles]);
+
   // ---- Mutations ------------------------------------------------------------
 
   async function submitPending() {
@@ -441,8 +792,14 @@ export default function ProjectFilesPanel({
     try {
       if (pending.kind === 'new-file') {
         if (!name) return;
-        const res = await createFile({ projectId, bridgeId, path: joinPath(cwd, name) }).unwrap();
+        const targetPath = joinPath(cwd, name);
+        const res = await createFile({ projectId, bridgeId, path: targetPath }).unwrap();
         if (!res.ok) return setError(mutationError(res.error?.code, res.error?.message) || 'Could not create file');
+        setPending(null);
+        setNameDraft('');
+        await load(cwd);
+        void openFileInEditor(targetPath);
+        return;
       } else if (pending.kind === 'new-dir') {
         if (!name) return;
         const res = await createDir({ projectId, bridgeId, path: joinPath(cwd, name) }).unwrap();
@@ -561,6 +918,31 @@ export default function ProjectFilesPanel({
         <div data-debug-id={`${debugPrefix}-no-project`} className="grid flex-1 place-items-center p-6 text-center text-xs text-muted">
           No project is associated with this conversation.
         </div>
+      ) : isEditMode && activeEditorTab ? (
+        <MonacoMultiFileEditor
+          tabs={openTabs}
+          activeTab={activeEditorTab}
+          onSelectTab={selectTab}
+          onCloseTab={closeTab}
+          onContentChange={handleContentChange}
+          onSaveActive={saveActiveFile}
+          onSaveAll={saveAllFiles}
+          isSaving={writeState.isLoading}
+          isBatchSaving={batchWriteState.isLoading}
+          saveFeedback={saveFeedback}
+          onSwitchToViewMode={() => {
+            setIsEditMode(false);
+            if (activeEditorTab) void openFile(activeEditorTab.path);
+          }}
+          onBackToFiles={() => {
+            setIsEditMode(false);
+            setViewFile(null);
+          }}
+          onNewFile={handleEditorNewFile}
+          cwd={cwd}
+          debugPrefix={debugPrefix}
+          themeAppearance={theme?.appearance}
+        />
       ) : viewFile ? (
         <FileView
           file={viewFile}
@@ -576,6 +958,7 @@ export default function ProjectFilesPanel({
           onDeleteComment={deleteComment}
           onCommentFile={() => { setPathCommentDraft(''); setPathCommentFor({ path: viewFile.path, label: `file: ${baseName(viewFile.path)}` }); }}
           onBack={() => setViewFile(null)}
+          onOpenInEditor={() => void openFileInEditor(viewFile.path)}
         />
       ) : (
         <>
@@ -642,6 +1025,17 @@ export default function ProjectFilesPanel({
             >
               <Icon name="folder" size={12} /> New folder
             </button>
+            {openTabs.length > 0 ? (
+              <button
+                data-debug-id={`${debugPrefix}-toolbar-editor-btn`}
+                type="button"
+                onClick={() => setIsEditMode(true)}
+                className="inline-flex items-center gap-1 rounded-lg border border-accent/40 bg-accent/10 px-2 py-1 text-caption font-medium text-accent hover:bg-accent/20"
+                title="Return to code editor"
+              >
+                <Icon name="pencil" size={12} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
+              </button>
+            ) : null}
             <button
               data-debug-id={`${debugPrefix}-hidden-toggle`}
               type="button"
@@ -703,7 +1097,7 @@ export default function ProjectFilesPanel({
             ) : (
               <ul>
                 {sortedEntries.map((e) => {
-                  const isOpening = !e.is_dir && openingPath === joinPath(cwd, e.name);
+                  const isOpening = !e.is_dir && (openingPath === joinPath(cwd, e.name) || openingInEditor === joinPath(cwd, e.name));
                   return (
                   <li key={`${e.is_dir ? 'd' : 'f'}:${e.name}`} className="group flex items-center gap-2 border-b border-subtle/40 px-3 py-1.5 hover:bg-neutral-soft">
                     <button
@@ -724,8 +1118,20 @@ export default function ProjectFilesPanel({
                       {e.modified_at ? <span className="hidden shrink-0 text-[10px] text-faint sm:inline">{formatModified(e.modified_at)}</span> : null}
                       {e.is_dir ? <Icon name="chevron-right" size={13} className="shrink-0 text-faint" /> : null}
                     </button>
-                    {/* Row actions (rename / delete) — visible on hover/focus. */}
+                    {/* Row actions (edit / rename / delete) — visible on hover/focus. */}
                     <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      {!e.is_dir ? (
+                        <button
+                          data-debug-id={`${debugPrefix}-edit-${e.name}`}
+                          type="button"
+                          onClick={() => void openFileInEditor(joinPath(cwd, e.name))}
+                          title={`Edit ${e.name}`}
+                          aria-label={`Edit ${e.name}`}
+                          className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
+                        >
+                          <Icon name="pencil" size={13} />
+                        </button>
+                      ) : null}
                       <IconButton icon="pencil" label={`Rename ${e.name}`} size="sm" data-debug-id={`${debugPrefix}-rename-${e.name}`} onClick={() => beginAction({ kind: 'rename', entry: e })} />
                       <button
                         data-debug-id={`${debugPrefix}-delete-${e.name}`}
@@ -813,6 +1219,49 @@ export default function ProjectFilesPanel({
       ) : null}
       </>
       )}
+
+      {/* Confirmation modal for closing dirty tabs */}
+      {confirmClosePath ? (
+        <div
+          data-debug-id={`${debugPrefix}-close-confirm-modal`}
+          className="absolute inset-0 z-50 flex items-center justify-center bg-canvas/80 backdrop-blur-sm p-4"
+        >
+          <div className="w-full max-w-sm rounded-xl border border-subtle bg-surface-raised p-4 shadow-xl">
+            <div className="flex items-center gap-2 text-warning mb-2">
+              <Icon name="alert" size={16} />
+              <h4 className="text-body font-semibold text-primary">Unsaved Changes</h4>
+            </div>
+            <p className="text-caption text-muted mb-4">
+              You have unsaved changes in{' '}
+              <span className="font-mono text-primary font-medium">
+                {baseName(confirmClosePath)}
+              </span>
+              . Are you sure you want to discard your changes and close this tab?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                data-debug-id={`${debugPrefix}-confirm-close-cancel`}
+                type="button"
+                onClick={() => setConfirmClosePath(null)}
+                className="rounded-lg border border-subtle px-3 py-1.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+              >
+                Cancel
+              </button>
+              <button
+                data-debug-id={`${debugPrefix}-confirm-close-discard`}
+                type="button"
+                onClick={() => {
+                  closeTab(confirmClosePath, true);
+                  setConfirmClosePath(null);
+                }}
+                className="rounded-lg bg-danger px-3 py-1.5 text-caption font-semibold text-white hover:opacity-90"
+              >
+                Discard & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -837,6 +1286,310 @@ function mutationError(code?: string, message?: string): string {
   }
 }
 
+// ---- Multi-file Monaco Code Editor ------------------------------------------
+
+function MonacoMultiFileEditor({
+  tabs,
+  activeTab,
+  onSelectTab,
+  onCloseTab,
+  onContentChange,
+  onSaveActive,
+  onSaveAll,
+  isSaving,
+  isBatchSaving,
+  saveFeedback,
+  onSwitchToViewMode,
+  onBackToFiles,
+  onNewFile,
+  debugPrefix,
+  themeAppearance,
+  cwd,
+}: {
+  tabs: EditorTab[];
+  activeTab: EditorTab;
+  onSelectTab: (path: string) => void;
+  onCloseTab: (path: string) => void;
+  onContentChange: (path: string, content: string) => void;
+  onSaveActive: () => void;
+  onSaveAll: () => void;
+  isSaving: boolean;
+  isBatchSaving: boolean;
+  saveFeedback: { type: 'success' | 'warning' | 'error'; message: string } | null;
+  onSwitchToViewMode: () => void;
+  onBackToFiles: () => void;
+  onNewFile: (path: string) => void;
+  debugPrefix: string;
+  themeAppearance?: string;
+  cwd?: string;
+}) {
+  const monacoTheme = themeAppearance === 'light' ? 'light' : 'vs-dark';
+  const language = useMemo(() => getLanguageForMonaco(activeTab.path), [activeTab.path]);
+  const dirtyCount = useMemo(() => tabs.filter((t) => t.isDirty).length, [tabs]);
+
+  const [isPromptingNewFile, setIsPromptingNewFile] = useState(false);
+  const [newFileName, setNewFileName] = useState('');
+
+  const onSaveActiveRef = useRef(onSaveActive);
+  const onSaveAllRef = useRef(onSaveAll);
+  useEffect(() => {
+    onSaveActiveRef.current = onSaveActive;
+  }, [onSaveActive]);
+  useEffect(() => {
+    onSaveAllRef.current = onSaveAll;
+  }, [onSaveAll]);
+
+  const handleEditorMount: OnMount = (editor, monaco) => {
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      onSaveActiveRef.current();
+    });
+    editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS,
+      () => {
+        onSaveAllRef.current();
+      }
+    );
+  };
+
+  const options: EditorProps['options'] = {
+    minimap: { enabled: true },
+    wordWrap: 'on',
+    lineNumbers: 'on',
+    scrollBeyondLastLine: false,
+    automaticLayout: true,
+    fontSize: 13,
+    fontFamily:
+      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    tabSize: 2,
+    renderWhitespace: 'selection',
+    smoothScrolling: true,
+  };
+
+  return (
+    <div
+      data-debug-id={`${debugPrefix}-monaco-editor`}
+      className="flex min-h-0 flex-1 flex-col bg-surface"
+    >
+      {/* Editor Header */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-subtle px-3 py-1.5 bg-surface">
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            data-debug-id={`${debugPrefix}-editor-back-files-btn`}
+            type="button"
+            onClick={onBackToFiles}
+            className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+            title="Browse files"
+          >
+            <Icon name="folder" size={13} /> Files
+          </button>
+          <button
+            data-debug-id={`${debugPrefix}-editor-new-file-btn`}
+            type="button"
+            onClick={() => setIsPromptingNewFile(true)}
+            className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+            title="Create new file"
+          >
+            <Icon name="plus" size={12} /> New
+          </button>
+          <div className="text-[12px] font-mono text-faint truncate" title={activeTab.path}>
+            {activeTab.path}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 ml-auto">
+          {saveFeedback ? (
+            <div
+              data-debug-id={`${debugPrefix}-save-toast`}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-caption font-medium transition-all ${
+                saveFeedback.type === 'success'
+                  ? 'bg-success-soft text-success border border-success/30'
+                  : saveFeedback.type === 'warning'
+                  ? 'bg-warning-soft text-warning border border-warning/30'
+                  : 'bg-danger-soft text-danger border border-danger/30'
+              }`}
+            >
+              <Icon name={saveFeedback.type === 'success' ? 'check' : 'alert'} size={12} />
+              <span>{saveFeedback.message}</span>
+            </div>
+          ) : null}
+
+          <button
+            data-debug-id={`${debugPrefix}-editor-save-btn`}
+            type="button"
+            disabled={isSaving || !activeTab.isDirty}
+            onClick={onSaveActive}
+            className="inline-flex items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-40"
+            title="Save active file (Cmd+S / Ctrl+S)"
+          >
+            {isSaving ? <Icon name="refresh" size={12} className="animate-spin" /> : null}
+            Save
+          </button>
+
+          <button
+            data-debug-id={`${debugPrefix}-editor-save-all-btn`}
+            type="button"
+            disabled={isBatchSaving || dirtyCount === 0}
+            onClick={onSaveAll}
+            className="inline-flex items-center gap-1 rounded-lg border border-accent/40 bg-accent/10 px-2.5 py-1 text-caption font-semibold text-accent hover:bg-accent/20 disabled:opacity-40"
+            title="Save all modified files (Cmd+Shift+S / Ctrl+Shift+S)"
+          >
+            {isBatchSaving ? <Icon name="refresh" size={12} className="animate-spin" /> : null}
+            Save All {dirtyCount > 0 ? `(${dirtyCount})` : ''}
+          </button>
+
+          <button
+            data-debug-id={`${debugPrefix}-editor-view-mode-btn`}
+            type="button"
+            onClick={onSwitchToViewMode}
+            className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+            title="Switch to Read-only View Mode"
+          >
+            View
+          </button>
+        </div>
+      </div>
+
+      {/* Tab Strip */}
+      <div
+        data-debug-id={`${debugPrefix}-tab-strip`}
+        className="flex items-center overflow-x-auto border-b border-subtle bg-surface-raised px-1 py-1 gap-1 text-[12px] select-none"
+      >
+        {tabs.map((tab) => {
+          const isActive = tab.path === activeTab.path;
+          const name = baseName(tab.path);
+          return (
+            <div
+              key={tab.path}
+              data-debug-id={`${debugPrefix}-editor-tab-${name}`}
+              data-active={isActive ? 'true' : 'false'}
+              onClick={() => onSelectTab(tab.path)}
+              title={tab.path}
+              className={`group relative flex items-center gap-1.5 rounded-md px-2.5 py-1 cursor-pointer transition-colors ${
+                isActive
+                  ? 'bg-surface text-primary font-medium border border-subtle shadow-sm'
+                  : 'text-muted hover:bg-neutral-soft hover:text-primary border border-transparent'
+              }`}
+            >
+              <Icon name="file" size={12} className={isActive ? 'text-accent' : 'text-muted'} />
+              <span className="max-w-[140px] truncate">{name}</span>
+              {tab.isDirty ? (
+                <span
+                  data-debug-id={`${debugPrefix}-tab-dirty-bullet-${name}`}
+                  className="text-accent font-bold text-[14px] leading-none"
+                  title="Unsaved changes"
+                >
+                  •
+                </span>
+              ) : null}
+              <button
+                data-debug-id={`${debugPrefix}-tab-close-btn-${name}`}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCloseTab(tab.path);
+                }}
+                title={tab.isDirty ? 'Close (unsaved changes)' : 'Close'}
+                className="grid h-4 w-4 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary ml-0.5 opacity-60 group-hover:opacity-100"
+              >
+                <Icon name="close" size={10} />
+              </button>
+            </div>
+          );
+        })}
+
+        {/* Tab strip new file prompt / plus button */}
+        {isPromptingNewFile ? (
+          <div
+            data-debug-id={`${debugPrefix}-new-file-inline-prompt`}
+            className="flex items-center gap-1 rounded bg-surface border border-accent/40 px-1.5 py-0.5 shadow-sm"
+          >
+            <Icon name="file" size={12} className="text-accent" />
+            <input
+              data-debug-id={`${debugPrefix}-new-file-input`}
+              autoFocus
+              type="text"
+              value={newFileName}
+              onChange={(e) => setNewFileName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const target = newFileName.trim();
+                  if (target) {
+                    onNewFile(target);
+                    setIsPromptingNewFile(false);
+                    setNewFileName('');
+                  }
+                } else if (e.key === 'Escape') {
+                  setIsPromptingNewFile(false);
+                  setNewFileName('');
+                }
+              }}
+              placeholder={cwd ? `${cwd}/filename` : 'path/to/file'}
+              className="w-36 bg-transparent text-[12px] text-primary placeholder:text-muted focus:outline-none"
+            />
+            <button
+              data-debug-id={`${debugPrefix}-new-file-confirm-btn`}
+              type="button"
+              disabled={!newFileName.trim()}
+              onClick={() => {
+                const target = newFileName.trim();
+                if (target) {
+                  onNewFile(target);
+                  setIsPromptingNewFile(false);
+                  setNewFileName('');
+                }
+              }}
+              className="text-accent hover:text-accent/80 p-0.5 disabled:opacity-40"
+              title="Create"
+            >
+              <Icon name="check" size={12} />
+            </button>
+            <button
+              data-debug-id={`${debugPrefix}-new-file-cancel-btn`}
+              type="button"
+              onClick={() => {
+                setIsPromptingNewFile(false);
+                setNewFileName('');
+              }}
+              className="text-muted hover:text-primary p-0.5"
+              title="Cancel"
+            >
+              <Icon name="close" size={10} />
+            </button>
+          </div>
+        ) : (
+          <button
+            data-debug-id={`${debugPrefix}-new-tab-btn`}
+            type="button"
+            onClick={() => setIsPromptingNewFile(true)}
+            title="New file"
+            className="grid h-6 w-6 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors ml-0.5"
+          >
+            <Icon name="plus" size={12} />
+          </button>
+        )}
+      </div>
+
+      {/* Monaco Editor Canvas */}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <Editor
+          path={activeTab.path}
+          value={activeTab.content}
+          language={language}
+          theme={monacoTheme}
+          options={options}
+          onChange={(val) => onContentChange(activeTab.path, val ?? '')}
+          onMount={handleEditorMount}
+          loading={
+            <div className="p-4 text-center text-xs text-muted">
+              Loading editor…
+            </div>
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
 // ---- Read-only file viewer --------------------------------------------------
 
 function isMarkdownFile(pathOrName: string): boolean {
@@ -858,6 +1611,7 @@ function FileView({
   onDeleteComment,
   onCommentFile,
   onBack,
+  onOpenInEditor,
 }: {
   file: FsReadFileResult;
   content: string; // stitched text content across paged reads
@@ -872,6 +1626,7 @@ function FileView({
   onDeleteComment: (id: string) => void;
   onCommentFile: () => void;
   onBack: () => void;
+  onOpenInEditor?: () => void;
 }) {
   const name = baseName(file.path);
   const fileLevelCount = comments.filter((c) => c.line === 0).length;
@@ -939,6 +1694,17 @@ function FileView({
             title={wrap ? 'Disable soft wrap' : 'Enable soft wrap'}
           >
             Wrap
+          </button>
+        ) : null}
+        {isText && onOpenInEditor ? (
+          <button
+            data-debug-id={`${debugPrefix}-file-edit-mode-btn`}
+            type="button"
+            onClick={onOpenInEditor}
+            className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+            title="Edit file in code editor"
+          >
+            <Icon name="pencil" size={12} /> Edit
           </button>
         ) : null}
       </div>
