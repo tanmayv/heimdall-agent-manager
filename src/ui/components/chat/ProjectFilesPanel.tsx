@@ -239,6 +239,41 @@ export default function ProjectFilesPanel({
   const [confirmClosePath, setConfirmClosePath] = useState<string | null>(null);
   const [openingInEditor, setOpeningInEditor] = useState<string>('');
 
+  // Split-pane & explorer collapse/resizing state (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE)
+  const [isExplorerCollapsed, setIsExplorerCollapsed] = useState<boolean>(false);
+  const [explorerWidth, setExplorerWidth] = useState<number>(280);
+  const [isResizing, setIsResizing] = useState<boolean>(false);
+  const resizerRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const startResizing = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      setIsResizing(true);
+      resizerRef.current = { startX: e.clientX, startWidth: explorerWidth };
+    },
+    [explorerWidth]
+  );
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizerRef.current) return;
+      const delta = e.clientX - resizerRef.current.startX;
+      const newWidth = Math.max(200, Math.min(600, resizerRef.current.startWidth + delta));
+      setExplorerWidth(newWidth);
+    };
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      resizerRef.current = null;
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
+
   const [cwd, setCwd] = useState(''); // project-root-relative path ('' = root)
   const [rootAbs, setRootAbs] = useState('');
   const [entries, setEntries] = useState<FsEntry[]>([]);
@@ -529,6 +564,7 @@ export default function ProjectFilesPanel({
       if (existing) {
         setActiveTabPath(filePath);
         setIsEditMode(true);
+        if (isMobile) setIsExplorerCollapsed(true);
         return;
       }
       setOpeningInEditor(filePath);
@@ -548,13 +584,14 @@ export default function ProjectFilesPanel({
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(filePath);
         setIsEditMode(true);
+        if (isMobile) setIsExplorerCollapsed(true);
       } catch (e: any) {
         setError(str(e?.message) || 'Could not open file in editor');
       } finally {
         setOpeningInEditor('');
       }
     },
-    [cwd, openTabs, fetchAllFileContent]
+    [cwd, openTabs, fetchAllFileContent, isMobile]
   );
 
   const handleEditorNewFile = useCallback(
@@ -568,6 +605,7 @@ export default function ProjectFilesPanel({
       if (existing) {
         setActiveTabPath(targetPath);
         setIsEditMode(true);
+        if (isMobile) setIsExplorerCollapsed(true);
         return;
       }
 
@@ -588,6 +626,7 @@ export default function ProjectFilesPanel({
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(targetPath);
         setIsEditMode(true);
+        if (isMobile) setIsExplorerCollapsed(true);
       } catch {
         const newTab: EditorTab = {
           path: targetPath,
@@ -599,12 +638,28 @@ export default function ProjectFilesPanel({
         setOpenTabs((prev) => [...prev, newTab]);
         setActiveTabPath(targetPath);
         setIsEditMode(true);
+        if (isMobile) setIsExplorerCollapsed(true);
       } finally {
         setOpeningInEditor('');
       }
     },
-    [cwd, openTabs, fetchAllFileContent]
+    [cwd, openTabs, fetchAllFileContent, isMobile]
   );
+
+  // When no tabs are open, pressing '+' creates a new file (REQ-IDE-SPLIT-PANE)
+  useEffect(() => {
+    if (openTabs.length > 0) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+      if (!isInput && (e.key === '+' || e.key === '=')) {
+        e.preventDefault();
+        void handleEditorNewFile('untitled.txt');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [openTabs.length, handleEditorNewFile]);
 
   const saveActiveFile = useCallback(async () => {
     if (!activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable || writeState.isLoading) return;
@@ -888,247 +943,333 @@ export default function ProjectFilesPanel({
         <div data-debug-id={`${debugPrefix}-no-project`} className="grid flex-1 place-items-center p-6 text-center text-xs text-muted">
           No project is associated with this conversation.
         </div>
-      ) : (isEditMode || openTabs.length > 0) && isEditMode && activeEditorTab ? (
-        <MonacoMultiFileEditor
-          tabs={openTabs}
-          activeTab={activeEditorTab}
-          onSelectTab={selectTab}
-          onCloseTab={closeTab}
-          onContentChange={handleContentChange}
-          onSaveActive={saveActiveFile}
-          onSaveAll={saveAllFiles}
-          isSaving={writeState.isLoading}
-          isBatchSaving={batchWriteState.isLoading}
-          saveFeedback={saveFeedback}
-          onBackToFiles={() => setIsEditMode(false)}
-          onNewFile={handleEditorNewFile}
-          cwd={cwd}
-          debugPrefix={debugPrefix}
-          themeAppearance={theme?.appearance}
-          comments={commentsForPath(activeEditorTab.path)}
-          onAddComment={(line, lineText, body) => addComment(activeEditorTab.path, line, lineText, body)}
-          onEditComment={editComment}
-          onDeleteComment={deleteComment}
-          onCommentFile={() => {
-            setPathCommentDraft('');
-            setPathCommentFor({
-              path: activeEditorTab.path,
-              label: `file: ${baseName(activeEditorTab.path)}`,
-            });
-          }}
-        />
       ) : (
-        <>
-          {/* Breadcrumb */}
-          <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex items-center justify-between gap-1 border-b border-subtle px-3 py-1.5 text-[12px] text-muted">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
-              {(() => {
-                const folderCount = comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length;
-                return (
-                  <button
-                    data-debug-id={`${debugPrefix}-folder-comment-btn`}
-                    type="button"
-                    onClick={() => { setPathCommentDraft(''); setPathCommentFor({ path: cwd || '/', label: `folder: ${cwd || 'project root'}` }); }}
-                    title="Comment on this folder"
-                    aria-label="Comment on this folder"
-                    className={`mr-1 relative grid h-6 w-6 shrink-0 place-items-center rounded border ${folderCount > 0 ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-                  >
-                    <Icon name="chat" size={12} />
-                    {folderCount > 0 ? <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">{folderCount}</span> : null}
-                  </button>
-                );
-              })()}
-              {crumbs.map((c, i) => (
-                <span key={c.path || 'root'} className="flex items-center gap-0.5">
-                  {i > 0 ? <Icon name="chevron-right" size={12} className="text-faint" /> : null}
-                  <button
-                    data-debug-id={`${debugPrefix}-crumb-${i}`}
-                    type="button"
-                    onClick={() => openDir(c.path)}
-                    disabled={i === crumbs.length - 1}
-                    className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
-                  >
-                    {c.label}
-                  </button>
-                </span>
-              ))}
-            </div>
-            <IconButton
-              icon="refresh"
-              label={lastRefreshed ? `Refresh (last: ${new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` : 'Refresh'}
-              variant="solid"
-              size="sm"
-              data-debug-id={`${debugPrefix}-refresh-btn`}
-              onClick={refresh}
-              className="shrink-0"
-            />
-          </div>
-
-          {/* Toolbar */}
-          <div className="flex flex-wrap items-center gap-1.5 border-b border-subtle px-3 py-2">
-            <button
-              data-debug-id={`${debugPrefix}-new-file-btn`}
-              type="button"
-              onClick={() => beginAction({ kind: 'new-file' })}
-              className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            >
-              <Icon name="file" size={12} /> New file
-            </button>
-            <button
-              data-debug-id={`${debugPrefix}-new-dir-btn`}
-              type="button"
-              onClick={() => beginAction({ kind: 'new-dir' })}
-              className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            >
-              <Icon name="folder" size={12} /> New folder
-            </button>
-            {openTabs.length > 0 ? (
-              <button
-                data-debug-id={`${debugPrefix}-toolbar-editor-btn`}
-                type="button"
-                onClick={() => setIsEditMode(true)}
-                className="inline-flex items-center gap-1 rounded-lg border border-accent/40 bg-accent/10 px-2 py-1 text-caption font-medium text-accent hover:bg-accent/20"
-                title="Return to code editor"
-              >
-                <Icon name="pencil" size={12} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
-              </button>
-            ) : null}
-            <button
-              data-debug-id={`${debugPrefix}-hidden-toggle`}
-              type="button"
-              onClick={() => setIncludeHidden((v) => !v)}
-              aria-pressed={includeHidden ? 'true' : 'false'}
-              title={includeHidden ? 'Hide dotfiles (names starting with ".")' : 'Show hidden dotfiles (names starting with ".")'}
-              className={`ml-auto rounded-lg border px-2 py-1 text-caption ${includeHidden ? 'border-accent bg-accent/10 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
-            >
-              {includeHidden ? 'Hide hidden' : 'Show hidden'}
-            </button>
-          </div>
-
-          {/* Inline create/rename input */}
-          {pending ? (
-            <div data-debug-id={`${debugPrefix}-name-editor`} className="flex items-center gap-1.5 border-b border-subtle bg-surface-raised px-3 py-2">
-              <Icon name={pending.kind === 'new-dir' ? 'folder' : 'file'} size={13} className="text-muted" />
-              <input
-                data-debug-id={`${debugPrefix}-name-input`}
-                autoFocus
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void submitPending();
-                  if (e.key === 'Escape') { setPending(null); setNameDraft(''); }
-                }}
-                placeholder={pending.kind === 'rename' ? 'new name' : pending.kind === 'new-dir' ? 'folder name' : 'file name'}
-                className="min-w-0 flex-1 rounded-lg border border-subtle bg-surface-raised px-2 py-1 text-[12px] text-primary placeholder:text-muted focus:border-accent focus:outline-none"
-              />
-              <button
-                data-debug-id={`${debugPrefix}-name-submit-btn`}
-                type="button"
-                disabled={mutating || !nameDraft.trim()}
-                onClick={() => void submitPending()}
-                className="rounded-lg bg-accent px-2 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
-              >
-                {pending.kind === 'rename' ? 'Rename' : 'Create'}
-              </button>
-              <button
-                type="button"
-                onClick={() => { setPending(null); setNameDraft(''); }}
-                className="rounded-lg px-1.5 py-1 text-caption text-muted hover:text-primary"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : null}
-
-          {/* Directory list */}
-          <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto">
-            {loading ? (
-              <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-muted">Loading…</div>
-            ) : error && sortedEntries.length === 0 ? (
-              // Don't show the misleading "empty folder" placeholder when the load
-              // actually FAILED (e.g. project not configured on this bridge, or the
-              // bridge is offline). The error banner below carries the reason.
-              <div data-debug-id={`${debugPrefix}-load-error`} className="p-6 text-center text-xs text-muted">Couldn’t load files — see the message below.</div>
-            ) : sortedEntries.length === 0 ? (
-              <div data-debug-id={`${debugPrefix}-empty`} className="p-6 text-center text-xs text-faint">This folder is empty.</div>
-            ) : (
-              <ul>
-                {sortedEntries.map((e) => {
-                  const isOpening = !e.is_dir && openingInEditor === joinPath(cwd, e.name);
+        <div data-debug-id={`${debugPrefix}-split-container`} className="flex min-h-0 flex-1 w-full flex-row overflow-hidden">
+          {/* Left Column: Directory Explorer */}
+          <div
+            data-debug-id={`${debugPrefix}-explorer-pane`}
+            style={!isExplorerCollapsed && !isMobile ? { width: explorerWidth } : undefined}
+            className={`${
+              isExplorerCollapsed ? 'hidden' : 'flex'
+            } min-h-0 flex-col border-r border-subtle bg-surface shrink-0 ${isMobile ? 'w-full' : ''}`}
+          >
+            {/* Breadcrumb */}
+            <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex items-center justify-between gap-1 border-b border-subtle px-3 py-1.5 text-[12px] text-muted">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
+                {(() => {
+                  const folderCount = comments.filter((c) => c.path === (cwd || '/') && c.line === 0).length;
                   return (
-                  <li key={`${e.is_dir ? 'd' : 'f'}:${e.name}`} className="group flex items-center gap-2 border-b border-subtle/40 px-3 py-1.5 hover:bg-neutral-soft">
                     <button
-                      data-debug-id={`${debugPrefix}-entry-${e.name}`}
+                      data-debug-id={`${debugPrefix}-folder-comment-btn`}
                       type="button"
-                      disabled={isOpening}
-                      onClick={() => (e.is_dir ? openDir(joinPath(cwd, e.name)) : void openFileInEditor(joinPath(cwd, e.name)))}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      onClick={() => { setPathCommentDraft(''); setPathCommentFor({ path: cwd || '/', label: `folder: ${cwd || 'project root'}` }); }}
+                      title="Comment on this folder"
+                      aria-label="Comment on this folder"
+                      className={`mr-1 relative grid h-6 w-6 shrink-0 place-items-center rounded border ${folderCount > 0 ? 'border-accent bg-accent/20 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
                     >
-                      {isOpening ? (
-                        <Icon name="refresh" size={15} className="shrink-0 animate-spin text-accent" title="Loading file…" />
-                      ) : (
-                        <Icon name={e.is_dir ? 'folder' : 'file'} size={15} className={`shrink-0 ${e.is_dir ? 'text-accent' : 'text-muted'}`} />
-                      )}
-                      <span className={`min-w-0 flex-1 truncate text-[13px] ${e.hidden ? 'text-faint' : 'text-primary'}`}>{e.name}</span>
-                      {e.has_git ? <span className="shrink-0 rounded bg-success-soft px-1.5 py-0.5 text-[9px] font-bold text-success">git</span> : null}
-                      {!e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-faint">{formatBytes(e.size)}</span> : null}
-                      {e.modified_at ? <span className="hidden shrink-0 text-[10px] text-faint sm:inline">{formatModified(e.modified_at)}</span> : null}
-                      {e.is_dir ? <Icon name="chevron-right" size={13} className="shrink-0 text-faint" /> : null}
+                      <Icon name="chat" size={12} />
+                      {folderCount > 0 ? <span className="absolute -right-1 -top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[8px] font-bold text-accent-fg">{folderCount}</span> : null}
                     </button>
-                    {/* Row actions (edit / rename / delete) — visible on hover/focus. */}
-                    <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                      {!e.is_dir ? (
-                        <button
-                          data-debug-id={`${debugPrefix}-edit-${e.name}`}
-                          type="button"
-                          onClick={() => void openFileInEditor(joinPath(cwd, e.name))}
-                          title={`Edit ${e.name}`}
-                          aria-label={`Edit ${e.name}`}
-                          className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
-                        >
-                          <Icon name="pencil" size={13} />
-                        </button>
-                      ) : null}
-                      <IconButton icon="pencil" label={`Rename ${e.name}`} size="sm" data-debug-id={`${debugPrefix}-rename-${e.name}`} onClick={() => beginAction({ kind: 'rename', entry: e })} />
-                      <button
-                        data-debug-id={`${debugPrefix}-delete-${e.name}`}
-                        type="button"
-                        disabled={mutating}
-                        onClick={() => void removeEntry(e)}
-                        title={`Delete ${e.name}`}
-                        aria-label={`Delete ${e.name}`}
-                        className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-40"
-                      >
-                        <Icon name="trash" size={13} />
-                      </button>
-                    </div>
-                  </li>
                   );
-                })}
-              </ul>
-            )}
+                })()}
+                {crumbs.map((c, i) => (
+                  <span key={c.path || 'root'} className="flex items-center gap-0.5">
+                    {i > 0 ? <Icon name="chevron-right" size={12} className="text-faint" /> : null}
+                    <button
+                      data-debug-id={`${debugPrefix}-crumb-${i}`}
+                      type="button"
+                      onClick={() => openDir(c.path)}
+                      disabled={i === crumbs.length - 1}
+                      className="max-w-[160px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
+                    >
+                      {c.label}
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <IconButton
+                icon="refresh"
+                label={lastRefreshed ? `Refresh (last: ${new Date(lastRefreshed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` : 'Refresh'}
+                variant="solid"
+                size="sm"
+                data-debug-id={`${debugPrefix}-refresh-btn`}
+                onClick={refresh}
+                className="shrink-0"
+              />
+            </div>
 
-            {/* Load more (cursor pagination) */}
-            {hasMore ? (
-              <div className="p-3 text-center">
+            {/* Toolbar */}
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-subtle px-3 py-2">
+              <button
+                data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
+                type="button"
+                onClick={() => setIsExplorerCollapsed(true)}
+                title="Collapse file explorer (maximize editor)"
+                aria-label="Collapse file explorer"
+                className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+              >
+                <Icon name="panel-left" size={12} />
+                <span className="hidden sm:inline">Collapse</span>
+              </button>
+              <button
+                data-debug-id={`${debugPrefix}-new-file-btn`}
+                type="button"
+                onClick={() => beginAction({ kind: 'new-file' })}
+                className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+              >
+                <Icon name="file" size={12} /> New file
+              </button>
+              <button
+                data-debug-id={`${debugPrefix}-new-dir-btn`}
+                type="button"
+                onClick={() => beginAction({ kind: 'new-dir' })}
+                className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+              >
+                <Icon name="folder" size={12} /> New folder
+              </button>
+              {openTabs.length > 0 ? (
                 <button
-                  data-debug-id={`${debugPrefix}-load-more-btn`}
+                  data-debug-id={`${debugPrefix}-toolbar-editor-btn`}
                   type="button"
-                  disabled={loadingMore}
-                  onClick={() => void load(cwd, { cursor: nextCursor, append: true })}
-                  className="rounded-lg border border-subtle px-3 py-1.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
+                  onClick={() => {
+                    setIsEditMode(true);
+                    if (isMobile) setIsExplorerCollapsed(true);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-accent/40 bg-accent/10 px-2 py-1 text-caption font-medium text-accent hover:bg-accent/20"
+                  title="Return to code editor"
                 >
-                  {loadingMore ? 'Loading…' : 'Load more'}
+                  <Icon name="pencil" size={12} /> Editor ({openTabs.length}){openTabs.some((t) => t.isDirty) ? ' •' : ''}
+                </button>
+              ) : null}
+              <button
+                data-debug-id={`${debugPrefix}-hidden-toggle`}
+                type="button"
+                onClick={() => setIncludeHidden((v) => !v)}
+                aria-pressed={includeHidden ? 'true' : 'false'}
+                title={includeHidden ? 'Hide dotfiles (names starting with ".")' : 'Show hidden dotfiles (names starting with ".")'}
+                className={`ml-auto rounded-lg border px-2 py-1 text-caption ${includeHidden ? 'border-accent bg-accent/10 text-accent' : 'border-subtle text-muted hover:bg-neutral-soft hover:text-primary'}`}
+              >
+                {includeHidden ? 'Hide hidden' : 'Show hidden'}
+              </button>
+            </div>
+
+            {/* Inline create/rename input */}
+            {pending ? (
+              <div data-debug-id={`${debugPrefix}-name-editor`} className="flex items-center gap-1.5 border-b border-subtle bg-surface-raised px-3 py-2">
+                <Icon name={pending.kind === 'new-dir' ? 'folder' : 'file'} size={13} className="text-muted" />
+                <input
+                  data-debug-id={`${debugPrefix}-name-input`}
+                  autoFocus
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void submitPending();
+                    if (e.key === 'Escape') { setPending(null); setNameDraft(''); }
+                  }}
+                  placeholder={pending.kind === 'rename' ? 'new name' : pending.kind === 'new-dir' ? 'folder name' : 'file name'}
+                  className="min-w-0 flex-1 rounded-lg border border-subtle bg-surface-raised px-2 py-1 text-[12px] text-primary placeholder:text-muted focus:border-accent focus:outline-none"
+                />
+                <button
+                  data-debug-id={`${debugPrefix}-name-submit-btn`}
+                  type="button"
+                  disabled={mutating || !nameDraft.trim()}
+                  onClick={() => void submitPending()}
+                  className="rounded-lg bg-accent px-2 py-1 text-caption font-semibold text-accent-fg hover:opacity-90 disabled:opacity-50"
+                >
+                  {pending.kind === 'rename' ? 'Rename' : 'Create'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setPending(null); setNameDraft(''); }}
+                  className="rounded-lg px-1.5 py-1 text-caption text-muted hover:text-primary"
+                >
+                  Cancel
                 </button>
               </div>
             ) : null}
-            {truncated ? (
-              <div data-debug-id={`${debugPrefix}-truncated`} className="px-3 pb-3 text-center text-[10px] text-warning">
-                Listing truncated to the server maximum.
-              </div>
-            ) : null}
+
+            {/* Directory list */}
+            <div data-debug-id={`${debugPrefix}-list`} className="min-h-0 flex-1 overflow-y-auto">
+              {loading ? (
+                <div data-debug-id={`${debugPrefix}-loading`} className="p-4 text-center text-xs text-muted">Loading…</div>
+              ) : error && sortedEntries.length === 0 ? (
+                // Don't show the misleading "empty folder" placeholder when the load
+                // actually FAILED (e.g. project not configured on this bridge, or the
+                // bridge is offline). The error banner below carries the reason.
+                <div data-debug-id={`${debugPrefix}-load-error`} className="p-6 text-center text-xs text-muted">Couldn’t load files — see the message below.</div>
+              ) : sortedEntries.length === 0 ? (
+                <div data-debug-id={`${debugPrefix}-empty`} className="p-6 text-center text-xs text-faint">This folder is empty.</div>
+              ) : (
+                <ul>
+                  {sortedEntries.map((e) => {
+                    const isOpening = !e.is_dir && openingInEditor === joinPath(cwd, e.name);
+                    const isActiveFile = !e.is_dir && activeTabPath === joinPath(cwd, e.name);
+                    return (
+                    <li key={`${e.is_dir ? 'd' : 'f'}:${e.name}`} className={`group flex items-center gap-2 border-b border-subtle/40 px-3 py-1.5 ${isActiveFile ? 'bg-accent/10 border-accent/20' : 'hover:bg-neutral-soft'}`}>
+                      <button
+                        data-debug-id={`${debugPrefix}-entry-${e.name}`}
+                        type="button"
+                        disabled={isOpening}
+                        onClick={() => (e.is_dir ? openDir(joinPath(cwd, e.name)) : void openFileInEditor(joinPath(cwd, e.name)))}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      >
+                        {isOpening ? (
+                          <Icon name="refresh" size={15} className="shrink-0 animate-spin text-accent" title="Loading file…" />
+                        ) : (
+                          <Icon name={e.is_dir ? 'folder' : 'file'} size={15} className={`shrink-0 ${e.is_dir ? 'text-accent' : isActiveFile ? 'text-accent' : 'text-muted'}`} />
+                        )}
+                        <span className={`min-w-0 flex-1 truncate text-[13px] ${isActiveFile ? 'font-medium text-accent' : e.hidden ? 'text-faint' : 'text-primary'}`}>{e.name}</span>
+                        {e.has_git ? <span className="shrink-0 rounded bg-success-soft px-1.5 py-0.5 text-[9px] font-bold text-success">git</span> : null}
+                        {!e.is_dir ? <span className="shrink-0 text-[10px] tabular-nums text-faint">{formatBytes(e.size)}</span> : null}
+                        {e.modified_at ? <span className="hidden shrink-0 text-[10px] text-faint sm:inline">{formatModified(e.modified_at)}</span> : null}
+                        {e.is_dir ? <Icon name="chevron-right" size={13} className="shrink-0 text-faint" /> : null}
+                      </button>
+                      {/* Row actions (edit / rename / delete) — visible on hover/focus. */}
+                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                        {!e.is_dir ? (
+                          <button
+                            data-debug-id={`${debugPrefix}-edit-${e.name}`}
+                            type="button"
+                            onClick={() => void openFileInEditor(joinPath(cwd, e.name))}
+                            title={`Edit ${e.name}`}
+                            aria-label={`Edit ${e.name}`}
+                            className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
+                          >
+                            <Icon name="pencil" size={13} />
+                          </button>
+                        ) : null}
+                        <IconButton icon="pencil" label={`Rename ${e.name}`} size="sm" data-debug-id={`${debugPrefix}-rename-${e.name}`} onClick={() => beginAction({ kind: 'rename', entry: e })} />
+                        <button
+                          data-debug-id={`${debugPrefix}-delete-${e.name}`}
+                          type="button"
+                          disabled={mutating}
+                          onClick={() => void removeEntry(e)}
+                          title={`Delete ${e.name}`}
+                          aria-label={`Delete ${e.name}`}
+                          className="grid h-7 w-7 place-items-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-40"
+                        >
+                          <Icon name="trash" size={13} />
+                        </button>
+                      </div>
+                    </li>
+                    );
+                  })}
+                </ul>
+              )}
+
+              {/* Load more (cursor pagination) */}
+              {hasMore ? (
+                <div className="p-3 text-center">
+                  <button
+                    data-debug-id={`${debugPrefix}-load-more-btn`}
+                    type="button"
+                    disabled={loadingMore}
+                    onClick={() => void load(cwd, { cursor: nextCursor, append: true })}
+                    className="rounded-lg border border-subtle px-3 py-1.5 text-caption text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
+                  >
+                    {loadingMore ? 'Loading…' : 'Load more'}
+                  </button>
+                </div>
+              ) : null}
+              {truncated ? (
+                <div data-debug-id={`${debugPrefix}-truncated`} className="px-3 pb-3 text-center text-[10px] text-warning">
+                  Listing truncated to the server maximum.
+                </div>
+              ) : null}
+            </div>
           </div>
-        </>
+
+          {/* Resizer Divider */}
+          {!isExplorerCollapsed && !isMobile ? (
+            <div
+              data-debug-id={`${debugPrefix}-resizer`}
+              onMouseDown={startResizing}
+              className="w-1 cursor-col-resize hover:bg-accent/40 active:bg-accent transition-colors shrink-0 select-none bg-subtle/20"
+              title="Drag to resize explorer"
+            />
+          ) : null}
+
+          {/* Right Column: Monaco Editor or Empty State */}
+          <div
+            data-debug-id={`${debugPrefix}-editor-pane`}
+            className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-surface ${
+              isMobile && !isExplorerCollapsed ? 'hidden' : 'flex'
+            }`}
+          >
+            {openTabs.length > 0 && activeEditorTab ? (
+              <MonacoMultiFileEditor
+                tabs={openTabs}
+                activeTab={activeEditorTab}
+                onSelectTab={selectTab}
+                onCloseTab={closeTab}
+                onContentChange={handleContentChange}
+                onSaveActive={saveActiveFile}
+                onSaveAll={saveAllFiles}
+                isSaving={writeState.isLoading}
+                isBatchSaving={batchWriteState.isLoading}
+                saveFeedback={saveFeedback}
+                onBackToFiles={() => setIsExplorerCollapsed((prev) => !prev)}
+                onToggleExplorer={() => setIsExplorerCollapsed((prev) => !prev)}
+                isExplorerCollapsed={isExplorerCollapsed}
+                onNewFile={handleEditorNewFile}
+                cwd={cwd}
+                debugPrefix={debugPrefix}
+                themeAppearance={theme?.appearance}
+                comments={commentsForPath(activeEditorTab.path)}
+                onAddComment={(line, lineText, body) => addComment(activeEditorTab.path, line, lineText, body)}
+                onEditComment={editComment}
+                onDeleteComment={deleteComment}
+                onCommentFile={() => {
+                  setPathCommentDraft('');
+                  setPathCommentFor({
+                    path: activeEditorTab.path,
+                    label: `file: ${baseName(activeEditorTab.path)}`,
+                  });
+                }}
+              />
+            ) : (
+              <div
+                data-debug-id={`${debugPrefix}-editor-empty-state`}
+                className="flex min-h-0 flex-1 flex-col bg-surface"
+              >
+                {isExplorerCollapsed ? (
+                  <div className="flex items-center border-b border-subtle px-3 py-1.5 bg-surface">
+                    <button
+                      data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
+                      type="button"
+                      onClick={() => setIsExplorerCollapsed(false)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+                      title="Expand file explorer"
+                    >
+                      <Icon name="panel-left" size={13} /> Files
+                    </button>
+                  </div>
+                ) : null}
+                <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-neutral-soft text-muted mb-3">
+                    <Icon name="file" size={28} />
+                  </div>
+                  <h3 className="text-body font-semibold text-primary mb-1">No Files Open</h3>
+                  <p
+                    data-debug-id={`${debugPrefix}-empty-prompt`}
+                    className="max-w-md text-caption text-muted mb-4"
+                  >
+                    Select a file from the explorer to view or edit, or press + to create a new file
+                  </p>
+                  <button
+                    data-debug-id={`${debugPrefix}-empty-new-file-btn`}
+                    type="button"
+                    onClick={() => void handleEditorNewFile('untitled.txt')}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-semibold text-accent-fg hover:opacity-90"
+                    title="Create new file (+)"
+                  >
+                    <Icon name="plus" size={14} /> + New File
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Path-level (file/folder) comment composer overlay. */}
@@ -1257,6 +1398,8 @@ function MonacoMultiFileEditor({
   isBatchSaving,
   saveFeedback,
   onBackToFiles,
+  onToggleExplorer,
+  isExplorerCollapsed = false,
   onNewFile,
   debugPrefix,
   themeAppearance,
@@ -1278,6 +1421,8 @@ function MonacoMultiFileEditor({
   isBatchSaving: boolean;
   saveFeedback: { type: 'success' | 'warning' | 'error'; message: string } | null;
   onBackToFiles: () => void;
+  onToggleExplorer?: () => void;
+  isExplorerCollapsed?: boolean;
   onNewFile: (path: string) => void;
   debugPrefix: string;
   themeAppearance?: string;
@@ -1344,9 +1489,19 @@ function MonacoMultiFileEditor({
             type="button"
             onClick={onBackToFiles}
             className="inline-flex items-center gap-1 rounded-lg border border-subtle px-2 py-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
-            title="Browse files"
+            title={isExplorerCollapsed ? 'Show file explorer' : 'Toggle file explorer'}
           >
-            <Icon name="chevron-left" size={13} /> Files
+            <Icon name={isExplorerCollapsed ? 'panel-left' : 'chevron-left'} size={13} /> Files
+          </button>
+          <button
+            data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
+            type="button"
+            onClick={onToggleExplorer || onBackToFiles}
+            className="inline-flex items-center justify-center rounded-lg border border-subtle p-1 text-caption text-muted hover:bg-neutral-soft hover:text-primary"
+            title={isExplorerCollapsed ? 'Expand file explorer' : 'Collapse file explorer (maximize editor)'}
+            aria-label={isExplorerCollapsed ? 'Expand file explorer' : 'Collapse file explorer'}
+          >
+            <Icon name="panel-left" size={13} />
           </button>
           <button
             data-debug-id={`${debugPrefix}-editor-new-file-btn`}

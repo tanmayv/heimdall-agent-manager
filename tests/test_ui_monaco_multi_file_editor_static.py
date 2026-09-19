@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Static verification for multi-file Monaco Code Editor with dirty state tracking,
-tabs, and single/batch save (REQ-UI-MONACO-EDITOR, REQ-UI-MULTI-FILE-TABS, REQ-UI-BATCH-SAVE-ACTION, REQ-UI-REMOVE-FILEVIEW, REQ-UI-DIRECT-MONACO-OPEN).
+tabs, single/batch save, and collapsible split-pane layout alongside directory explorer
+(REQ-UI-MONACO-EDITOR, REQ-UI-MULTI-FILE-TABS, REQ-UI-BATCH-SAVE-ACTION, REQ-UI-REMOVE-FILEVIEW,
+REQ-UI-DIRECT-MONACO-OPEN, REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE).
 """
 
 from pathlib import Path
@@ -103,7 +105,17 @@ def main() -> None:
     require("CodeLines" in panel_src, "Must preserve existing CodeLines component")
     require("LineComment" in panel_src, "Must preserve LineComment component")
     require("LineComposer" in panel_src, "Must preserve LineComposer component")
-    print("  [+] ProjectFilesPanel.tsx editor features verified successfully.")
+
+    # Split-pane IDE layout alongside Monaco Editor (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE)
+    require("split-container" in panel_src, "ProjectFilesPanel must implement a split container layout")
+    require("explorer-pane" in panel_src, "Split container must include left-side directory explorer pane")
+    require("editor-pane" in panel_src, "Split container must include right-side editor pane")
+    require("isExplorerCollapsed" in panel_src and "setIsExplorerCollapsed" in panel_src, "Must maintain isExplorerCollapsed state")
+    require("explorer-toggle-btn" in panel_src or "explorer-toggle" in panel_src, "Must provide explorer collapse/expand toggle button")
+    require("editor-empty-state" in panel_src, "Must provide empty editor state when no tabs are open")
+    require("Select a file from the explorer to view or edit, or press + to create a new file" in panel_src, "Must display clean empty state prompt when openTabs is empty")
+    require("explorerWidth" in panel_src, "Must maintain explorer width (default ~260-280px / resizable)")
+    print("  [+] ProjectFilesPanel.tsx editor features and split-pane layout verified successfully.")
 
     print("\n[SUCCESS] All static verification checks passed cleanly!")
 
