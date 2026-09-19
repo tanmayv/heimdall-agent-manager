@@ -207,7 +207,7 @@ def main() -> None:
     require("viewportWidth < 640" in panel_src and "containerWidth < 480" in panel_src, "Must detect viewport <640px or sidebar/container <480px")
     require("mobile-back-files-btn" in panel_src, "Must render mobile ← Files navigation back button")
     require("← Files" in panel_src, "Must display '← Files' label on back button")
-    require("mobile-segmented-switcher" in panel_src, "Must render [ Files | Editor ] segmented switcher")
+    require("explorer-toggle-btn" in panel_src, "Must render explorer toggle button")
     require("activePane" in panel_src, "Must manage activePane state for full-width pane switching")
 
     # REQ-UI-MOBILE-WORD-WRAP: Line wrapping in Monaco Editor
