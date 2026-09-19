@@ -27,6 +27,7 @@ import {
   type VcsFilesResult,
   type VcsDiffResult,
 } from '../../api/endpoints/projectVcs';
+import MonacoDiffViewer from './MonacoDiffViewer';
 
 function str(v: any): string {
   return String(v ?? '').trim();
@@ -110,6 +111,7 @@ export default function ProjectVcsPanel({
   const [filesHasMore, setFilesHasMore] = useState(false);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesLoadingMore, setFilesLoadingMore] = useState(false);
+  const [sideBySide, setSideBySide] = useState(false);
 
   // Per-file inline diff state, keyed by path.
   const [fileStates, setFileStates] = useState<Record<string, FileState>>({});
@@ -352,6 +354,26 @@ export default function ProjectVcsPanel({
 
   return (
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
+      {/* Top toolbar with side-by-side vs unified diff toggle */}
+      <div data-debug-id={`${debugPrefix}-toolbar`} className="flex shrink-0 items-center justify-between border-b border-subtle bg-surface px-3 py-1.5 text-caption">
+        <span className="font-medium text-muted">
+          {files.length} changed {files.length === 1 ? 'file' : 'files'}
+        </span>
+        <button
+          type="button"
+          data-debug-id={`${debugPrefix}-diff-mode-toggle`}
+          onClick={() => setSideBySide((prev) => !prev)}
+          className={`rounded border px-2 py-0.5 text-caption font-medium transition-colors ${
+            sideBySide
+              ? 'border-accent bg-accent/20 text-accent'
+              : 'border-subtle bg-neutral-soft text-muted hover:text-primary'
+          }`}
+          title={sideBySide ? 'Switch to Unified diff' : 'Switch to Side-by-Side diff'}
+        >
+          {sideBySide ? 'Side-by-Side' : 'Unified'}
+        </button>
+      </div>
+
       {/* Scrollable body: single column of files, each with its inline diff. */}
       <div ref={scrollContainerRef} data-debug-id={`${debugPrefix}-body`} className="min-h-0 flex-1 overflow-y-auto">
         {filesLoading ? (
@@ -402,25 +424,7 @@ export default function ProjectVcsPanel({
                     ) : fs.hunks.length === 0 ? (
                       <div data-debug-id={`${debugPrefix}-diff-no-hunks-${f.path}`} className="p-3 text-center text-xs text-muted">No diff to show.</div>
                     ) : (
-                      fs.hunks.map((h, hi) => (
-                        <div key={`${h.old_start}-${h.new_start}-${hi}`} data-debug-id={`${debugPrefix}-hunk-${f.path}-${hi}`}>
-                          <div className="border-y border-info/30 bg-info-soft px-3 py-0.5 text-info">
-                            @@ -{h.old_start},{h.old_len} +{h.new_start},{h.new_len} @@
-                          </div>
-                          {h.lines.map((ln, li) => {
-                            const bg =
-                              ln.op === '+' ? 'bg-success-soft text-success'
-                              : ln.op === '-' ? 'bg-danger-soft text-danger'
-                              : 'text-primary';
-                            return (
-                              <div key={li} className={`flex whitespace-pre px-3 ${bg}`}>
-                                <span className="w-3 shrink-0 select-none text-muted">{ln.op === ' ' ? ' ' : ln.op}</span>
-                                <span className="min-w-0 flex-1">{ln.text || ' '}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ))
+                      <MonacoDiffViewer hunks={fs.hunks} filePath={f.path} sideBySide={sideBySide} />
                     )}
 
                     {/* Per-file diff infinite-scroll sentinel. */}
