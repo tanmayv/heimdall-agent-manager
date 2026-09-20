@@ -1,4 +1,5 @@
 import TaskChainsPage from '../taskchain/TaskChainsPage';
+import ProjectChainTree from '../chains/ProjectChainTree';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
@@ -14,6 +15,7 @@ import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListSidebarConversationsQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
 import { useGetAgentsLiveQuery, type LiveProject } from '../../api/endpoints/agentsLive';
+import { useFetchTaskChainGroupsQuery } from '../../api/endpoints/tasks';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { buildRouteHash, getRoutePathname, getRouteSearch } from '../../utils/appLocation';
 import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
@@ -775,48 +777,6 @@ function ProjectGroupItem({
   );
 }
 
-function ProjectConversationTree({
-  groups,
-  loading = false,
-  error = '',
-  currentPath = '',
-  onLaunchProject,
-}: {
-  groups: ProjectGroup[];
-  loading?: boolean;
-  error?: string;
-  currentPath?: string;
-  onLaunchProject?: (project: { projectId: string; name: string }) => void;
-}) {
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
-  const bridges = (bridgesQuery.data?.bridges || []).filter((bridge: any) => !bridgeIsRevoked(bridge));
-
-  // Bridge liveness still informs the per-conversation status dots; the legend row
-  // itself was visual clutter and has been removed from the rail.
-  void bridges;
-  return (
-    <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4">
-      <div className="mb-1.5 flex items-center justify-between px-2.5 text-[10.5px] font-bold uppercase tracking-[0.16em] text-faint">
-        <span>Active</span>
-        {loading ? <span data-debug-id="sidebar-project-agent-session-loading" className="normal-case tracking-normal text-faint">Loading…</span> : null}
-      </div>
-      {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-danger/30 bg-danger-soft px-2 py-1.5 text-caption leading-4 text-danger">{error}</div> : null}
-      {!loading && !error && groups.length === 0 ? (
-        <div data-debug-id="sidebar-active-empty" className="px-2.5 py-2 text-[11.5px] leading-5 text-faint">No running agents. Open Search (⌘K) to start one.</div>
-      ) : null}
-      <div className="space-y-0.5">
-        {groups.map((projectGroup) => (
-          <ProjectGroupItem
-            key={projectGroup.project.projectId}
-            projectGroup={projectGroup}
-            currentPath={currentPath}
-            onLaunchProject={onLaunchProject}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
 
 function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; active: boolean; collapsed: boolean; badge?: number }) {
   const activeClass = active
@@ -1177,6 +1137,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     [agentNamesById, conversationsQuery.data],
   );
   const liveProjects = useMemo(() => agentsLiveQuery.data || [], [agentsLiveQuery.data]);
+  const chainGroupsQuery = useFetchTaskChainGroupsQuery();
 
   // UI-14: the shell owns exactly one user WebSocket connection (cookie-auth
   // `/api/v1/user-ws`). Its events flow through the single `handleUserWsEvent`
@@ -1398,7 +1359,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
-          {!collapsed && <ProjectConversationTree groups={conversationTree} loading={sidebarLoading} error={sidebarError} currentPath={path} onLaunchProject={setLaunchModalProject} />}
+          {!collapsed && <ProjectChainTree projects={liveProjects.map((p) => ({ projectId: p.projectId, projectName: p.name }))} currentPath={path} onNavigate={handlePaletteNavigate} />}
         </div>
 
         <div className="border-t border-subtle p-3">
@@ -1449,7 +1410,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         />
       ) : null}
 
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} onAction={handlePaletteAction} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, isCoordinator: c.isCoordinator, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} onAction={handlePaletteAction} currentPath={path} conversationGroups={conversationTree.map((group) => ({ projectId: group.project.projectId, projectName: group.project.name, conversations: group.conversations.map((c) => ({ conversationId: c.conversationId, agentInstanceId: c.agentInstanceId, title: displayConversationTitle(c), agentName: c.agentName, isCoordinator: c.isCoordinator, runtimeStatus: c.runtimeStatus, activityStatus: c.activityStatus, unreadCount: c.unreadCount })) }))} chainGroups={chainGroupsQuery.data?.groups ?? []} />
       <ProjectLaunchModal
         isOpen={Boolean(launchModalProject)}
         project={launchModalProject}

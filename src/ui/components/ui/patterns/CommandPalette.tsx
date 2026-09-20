@@ -31,6 +31,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGlobalSearchQuery, useLazyGlobalSearchQuery, type SearchHit } from '../../../api/endpoints/search';
+import type { ChainProjectGroup } from '../../../api/endpoints/tasks';
 import { hitRoute, renderPreview } from '../../../utils/searchHit';
 import { Icon, Spinner, StatusDot, type IconName } from '../primitives';
 import { runtimeStatusToTone } from './RuntimeChip';
@@ -78,6 +79,8 @@ export type CommandPaletteProps = {
   // Live conversations grouped by project — mirrors the sidebar rail so the
   // palette doubles as the conversation switcher (replaces the drawer on mobile).
   conversationGroups?: PaletteConversationGroup[];
+  // Task chains grouped by project — shown alongside agent conversations in search.
+  chainGroups?: ChainProjectGroup[];
   // Current active route path for persistent selected highlight.
   currentPath?: string;
   // Present → open in scoped-search mode (see PaletteScope).
@@ -94,7 +97,7 @@ export type PaletteAction = {
 };
 
 export type PaletteResult =
-  | { kind: 'navigate'; label: string; hint?: string; icon?: IconName; route: string; group: 'Navigate' }
+  | { kind: 'navigate'; label: string; hint?: string; icon?: IconName; route: string; group: string }
   | { kind: 'action'; label: string; hint?: string; badge?: string; icon?: IconName; actionId: string; route?: string; group: 'Actions' }
   | { kind: 'conversation'; label: string; hint?: string; route: string; group: string; convo: PaletteConversation }
   | { kind: 'entity'; label: string; hint?: string; hit: SearchHit; group: string; route?: string };
@@ -181,7 +184,7 @@ const ENTITY_GROUP_LABEL: Record<string, string> = {
 /** Stable id for the option at flat index `i` (target of aria-activedescendant). */
 const optionId = (i: number) => `command-palette-option-${i}`;
 
-export function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [], currentPath = '', scope }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, onNavigate, onAction, actions = DEFAULT_ACTIONS, conversationGroups = [], chainGroups = [], currentPath = '', scope }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [debounced, setDebounced] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -319,6 +322,26 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
           convo: c,
         }));
       }
+
+      // Task chains grouped by project — shown as navigate rows alongside conversations.
+      for (const group of chainGroups) {
+        const chains = q
+          ? group.chains.filter((ch) => matches(`${ch.title} ${group.projectName}`, q))
+          : group.chains;
+        chains.forEach((ch) => {
+          const route = ch.coordinatorAgentInstanceId
+            ? `/conversations/${encodeURIComponent(ch.coordinatorAgentInstanceId)}`
+            : `/chains/${encodeURIComponent(ch.chainId)}`;
+          out.push({
+            kind: 'navigate',
+            label: ch.title || 'Untitled chain',
+            hint: group.projectName || undefined,
+            icon: 'tasks',
+            route,
+            group: group.projectName ? `${group.projectName} — Chains` : 'Chains',
+          });
+        });
+      }
     }
 
     // Entities from backend search (first page + loaded pages), grouped by type.
@@ -338,7 +361,7 @@ export function CommandPalette({ open, onClose, onNavigate, onAction, actions = 
       }
     }
     return out;
-  }, [query, trimmed, searchQuery.isFetching, entityHits, actions, conversationGroups, hasScope, scopeActive]);
+  }, [query, trimmed, searchQuery.isFetching, entityHits, actions, conversationGroups, chainGroups, hasScope, scopeActive]);
 
   // Reset active index when results change.
   useEffect(() => {

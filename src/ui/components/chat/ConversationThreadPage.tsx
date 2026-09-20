@@ -628,6 +628,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [editorFileToOpen, setEditorFileToOpen] = useState<string | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Guards the one-shot chain-tab auto-open so it only fires once per conversation load.
+  const chainAutoOpenedRef = useRef(false);
+
+  // REQ-SIDEBAR-5: coordinator conversations with a chainId default the right sidebar
+  // to the 'chain' tab. Fires once when chainId first becomes available and the panel
+  // is still closed (user hasn't explicitly chosen a tab or opened it manually).
+  useEffect(() => {
+    if (!chainId || isMobile || chainAutoOpenedRef.current) return;
+    if (rightPanel === 'closed') {
+      chainAutoOpenedRef.current = true;
+      setRightPanel('chain');
+    }
+  }, [chainId, isMobile, rightPanel]);
 
   // Synchronize sidebar state when agentInstanceId changes (REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE)
   useEffect(() => {

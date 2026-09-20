@@ -161,7 +161,7 @@
           # try to locally build compiler-rt against a newer Apple SDK/libc++ and fail.
           # Building Odin with LLVM 21 avoids that compiler-rt mismatch and stays on
           # nixpkgs-unstable.
-          odin = pkgs.odin.override { llvmPackages_18 = pkgs.llvmPackages_21; };
+          odin = pkgs.odin.override { llvmPackages = pkgs.llvmPackages_21; };
         in
         {
           ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
@@ -383,7 +383,7 @@
       devShells = forAllSystems (system:
         let
           pkks = pkgsFor system;
-          odin = pkks.odin.override { llvmPackages_18 = pkks.llvmPackages_21; };
+          odin = pkks.odin.override { llvmPackages = pkks.llvmPackages_21; };
           ols = pkks.ols.override { inherit odin; };
         in
         {
