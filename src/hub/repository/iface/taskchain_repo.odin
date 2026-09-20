@@ -33,6 +33,7 @@ Task_Dependency_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Ch
 
 Task_Vote_Save_Proc :: proc(ctx: rawptr, vote: domain.Task_Vote) -> (domain.Task_Vote, bool, domain.Domain_Error)
 Task_Vote_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Vote, domain.Domain_Error)
+Task_Vote_Delete_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (int, domain.Domain_Error)
 
 Taskchain_Repository :: struct {
 	ctx: rawptr,
@@ -56,6 +57,7 @@ Taskchain_Repository :: struct {
 	list_dependencies_by_chain: Task_Dependency_List_By_Chain_Proc,
 	save_vote: Task_Vote_Save_Proc,
 	list_votes_by_task: Task_Vote_List_By_Task_Proc,
+	delete_votes_by_task: Task_Vote_Delete_By_Task_Proc,
 }
 
 taskchain_get_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
@@ -158,4 +160,9 @@ taskchain_save_vote :: proc(repo: ^Taskchain_Repository, vote: domain.Task_Vote)
 taskchain_list_votes_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Vote, domain.Domain_Error) {
 	if repo == nil || repo.list_votes_by_task == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	return repo.list_votes_by_task(repo.ctx, task_id, owner_user_id)
+}
+
+taskchain_delete_votes_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (int, domain.Domain_Error) {
+	if repo == nil || repo.delete_votes_by_task == nil do return 0, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.delete_votes_by_task(repo.ctx, task_id, owner_user_id)
 }

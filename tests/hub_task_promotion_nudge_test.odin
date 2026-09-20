@@ -8,16 +8,22 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import taskchain_service "odin_test:hub/service/taskchain"
 import platform "odin_test:hub/platform"
+import project "odin_test:hub/service/project"
+import agent "odin_test:hub/service/agent"
 
 // Fake repo with tasks + dependencies to exercise auto-promotion.
 Fake_Repo :: struct {
-	chains:     [8]domain.Task_Chain,
-	chain_count: int,
-	tasks:      [16]domain.Task,
-	task_count: int,
-	deps:       [16]domain.Task_Dependency,
-	dep_count:  int,
-	seq:        int,
+	chains:       [8]domain.Task_Chain,
+	chain_count:  int,
+	tasks:        [16]domain.Task,
+	task_count:   int,
+	deps:         [16]domain.Task_Dependency,
+	dep_count:    int,
+	votes:        [16]domain.Task_Vote,
+	vote_count:   int,
+	members:      [8]domain.Task_Chain_Member,
+	member_count: int,
+	seq:          int,
 }
 
 fixed_clock_now :: proc(ctx: rawptr) -> string { _ = ctx; return "2026-07-22T10:00:00Z" }
@@ -58,6 +64,88 @@ dep_list_by_chain :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner: do
 	for i in 0..<r.dep_count { if r.deps[i].chain_id == chain_id do append(&out, r.deps[i]) }
 	return out[:], {}
 }
+vote_save :: proc(ctx: rawptr, vote: domain.Task_Vote) -> (domain.Task_Vote, bool, domain.Domain_Error) {
+	r := (^Fake_Repo)(ctx)
+	for i in 0..<r.vote_count {
+		if r.votes[i].task_id == vote.task_id && r.votes[i].reviewer_agent_instance_id == vote.reviewer_agent_instance_id {
+			r.votes[i] = vote; return vote, true, {}
+		}
+	}
+	r.votes[r.vote_count] = vote; r.vote_count += 1; return vote, true, {}
+}
+votes_by_task :: proc(ctx: rawptr, task_id: domain.Task_ID, owner: domain.User_ID) -> ([]domain.Task_Vote, domain.Domain_Error) {
+	r := (^Fake_Repo)(ctx)
+	out := make([dynamic]domain.Task_Vote)
+	for i in 0..<r.vote_count { if r.votes[i].task_id == task_id do append(&out, r.votes[i]) }
+	return out[:], {}
+}
+delete_votes_by_task :: proc(ctx: rawptr, task_id: domain.Task_ID, owner: domain.User_ID) -> (int, domain.Domain_Error) {
+	r := (^Fake_Repo)(ctx)
+	deleted := 0
+	new_count := 0
+	for i in 0..<r.vote_count {
+		if r.votes[i].task_id == task_id {
+			deleted += 1
+		} else {
+			r.votes[new_count] = r.votes[i]
+			new_count += 1
+		}
+	}
+	r.vote_count = new_count
+	return deleted, {}
+}
+members_by_chain :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner: domain.User_ID) -> ([]domain.Task_Chain_Member, domain.Domain_Error) {
+	r := (^Fake_Repo)(ctx)
+	out := make([dynamic]domain.Task_Chain_Member)
+	for i in 0..<r.member_count { if r.members[i].chain_id == chain_id do append(&out, r.members[i]) }
+	return out[:], {}
+}
+seed_member :: proc(repo: ^Fake_Repo, chain_id: domain.Task_Chain_ID, instance_id: string, role: string) {
+	repo.members[repo.member_count] = domain.Task_Chain_Member{chain_id = chain_id, agent_instance_id = instance_id, owner_user_id = "alice", role = role}
+	repo.member_count += 1
+}
+
+Agents :: struct {
+	instances: [8]domain.Agent_Instance,
+	count:     int,
+}
+agent_get :: proc(ctx: rawptr, id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	a := (^Agents)(ctx)
+	for i in 0..<a.count { if a.instances[i].agent_instance_id == id do return a.instances[i], true, {} }
+	return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "instance")
+}
+agent_save :: proc(ctx: rawptr, inst: domain.Agent_Instance) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	a := (^Agents)(ctx)
+	for i in 0..<a.count {
+		if a.instances[i].agent_instance_id == inst.agent_instance_id {
+			a.instances[i] = inst; return inst, true, {}
+		}
+	}
+	a.instances[a.count] = inst; a.count += 1; return inst, true, {}
+}
+agent_list_by_owner :: proc(ctx: rawptr, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+	a := (^Agents)(ctx)
+	out := make([dynamic]domain.Agent_Instance)
+	for i in 0..<a.count {
+		if a.instances[i].owner_user_id == owner do append(&out, a.instances[i])
+	}
+	return out[:], {}
+}
+
+Captured :: struct {
+	commands: [16]project.Runtime_Command,
+	count:    int,
+}
+captured: Captured
+capture_send :: proc(ctx: rawptr, command: project.Runtime_Command) -> (bool, domain.Domain_Error) {
+	captured.commands[captured.count] = project.Runtime_Command{
+		bridge_id = strings.clone(command.bridge_id),
+		command_id = strings.clone(command.command_id),
+		body_json = strings.clone(command.body_json),
+	}
+	captured.count += 1
+	return true, {}
+}
 
 make_repo :: proc(r: ^Fake_Repo) -> iface.Taskchain_Repository {
 	return iface.Taskchain_Repository{
@@ -66,6 +154,10 @@ make_repo :: proc(r: ^Fake_Repo) -> iface.Taskchain_Repository {
 		get_task = task_get, save_task = task_save,
 		list_tasks_by_chain = task_list_by_chain,
 		list_dependencies_by_chain = dep_list_by_chain,
+		save_vote = vote_save,
+		list_votes_by_task = votes_by_task,
+		delete_votes_by_task = delete_votes_by_task,
+		list_members_by_chain = members_by_chain,
 	}
 }
 
@@ -82,6 +174,7 @@ main :: proc() {
 	test_manual_start_demotes_in_progress()
 	test_ngtm_rework_precedence()
 	test_pending_validation_demotes_other_tasks()
+	test_reviewer_restarts_on_resubmission_after_ngtm()
 	fmt.println("PASS: hub task promotion + nudge decision")
 }
 
@@ -503,6 +596,150 @@ test_pending_validation_demotes_other_tasks :: proc() {
 	oth, _, _ := task_get(&r, "task_other")
 	check(val.status == .In_Validation, "task_val must stay In_Validation")
 	check(oth.status == .Queued, "task_other must be demoted to Queued while awaiting review")
+}
+
+// --- Invariant: Reviewer stops on NGTM, restarts on In_Validation resubmission with fresh ballot ---
+test_reviewer_restarts_on_resubmission_after_ngtm :: proc() {
+	r: Fake_Repo
+	clock_time := "2026-07-22T09:00:00Z"
+	clock := platform.Clock{
+		ctx = &clock_time,
+		now = proc(ctx: rawptr) -> string { return (^string)(ctx)^ },
+	}
+	ids := platform.ID_Generator{ctx = rawptr(&r), generate = fake_id}
+	repo := make_repo(&r)
+
+	agents_data: Agents
+	// Seed reviewer instance (rev_1) and worker instance (worker_1)
+	agents_data.instances[0] = domain.Agent_Instance{
+		agent_instance_id = "rev_1",
+		chain_id          = "chain_restart",
+		owner_user_id     = "alice",
+		bridge_id         = "brg_1",
+		runtime_status    = "running", // initially running
+	}
+	agents_data.instances[1] = domain.Agent_Instance{
+		agent_instance_id = "worker_1",
+		chain_id          = "chain_restart",
+		owner_user_id     = "alice",
+		bridge_id         = "brg_1",
+		runtime_status    = "running",
+	}
+	agents_data.count = 2
+	agents := iface.Agent_Repository{
+		ctx = rawptr(&agents_data),
+		get_instance = agent_get,
+		save_instance = agent_save,
+		list_instances_by_owner = agent_list_by_owner,
+	}
+
+	captured.count = 0
+	sink := project.Bridge_Command_Sink{ctx = nil, send_runtime_command = capture_send}
+	service := taskchain_service.new_taskchain_service_with_runtime(&repo, &agents, sink, &clock, &ids)
+
+	chain := domain.Task_Chain{
+		chain_id = "chain_restart",
+		owner_user_id = "alice",
+		publish_state = .Published,
+		status = .Active,
+		coordinator_agent_instance_id = "coord_1",
+	}
+	chain_save(&r, chain)
+	seed_member(&r, "chain_restart", "rev_1", "reviewer")
+	seed_member(&r, "chain_restart", "worker_1", "worker")
+
+	t := domain.Task{
+		task_id = "task_cycle",
+		chain_id = "chain_restart",
+		owner_user_id = "alice",
+		title = "task_cycle",
+		publish_state = .Published,
+		status = .In_Validation,
+		priority = .P1,
+		assignee_ref_json = assignee_ref("worker_1"),
+		reviewer_refs_json = `[{"type":"agent_instance","agent_instance_id":"rev_1"}]`,
+		created_at = "2026-07-22T09:00:00Z",
+		updated_at = "2026-07-22T09:00:00Z",
+	}
+	task_save(&r, t)
+
+	// Step 1: Initial reconcile puts rev_1 in Review focus on task_cycle
+	_ = taskchain_service.recompute_chain_promotions(&service, chain)
+	rev_inst, _, _ := agent_get(&agents_data, "rev_1")
+	check(rev_inst.current_task_id == "task_cycle", "reviewer must initially focus on task_cycle")
+	check(rev_inst.current_task_role == .Review, "reviewer role must be Review")
+
+	// Step 2: Reviewer votes NGTM
+	clock_time = "2026-07-22T09:05:00Z"
+	_, v_ok, v_err := taskchain_service.record_task_vote(&service, contracts.Auth_Context{
+		kind = .Instance_Token,
+		user_id = "alice",
+		agent_instance_id = "rev_1",
+	}, taskchain_service.Vote_Input{task_id = "task_cycle", vote = "ngtm", comment = "needs work"})
+	check(v_ok, v_err.message)
+
+	// After NGTM: task goes to Validated_Not_Good, then auto-promotes back to In_Progress for worker_1.
+	t_after_ngtm, _, _ := task_get(&r, "task_cycle")
+	check(t_after_ngtm.status == .In_Progress, "task must be back In_Progress after NGTM rework promotion")
+
+	// Reconcile cleared reviewer's focus because task is no longer in validation
+	rev_inst, _, _ = agent_get(&agents_data, "rev_1")
+	check(rev_inst.current_task_id == "", "reviewer focus must be cleared after task leaves In_Validation")
+
+	// Simulate reviewer process terminating / stopping (runtime_status = "stopped")
+	agents_data.instances[0].runtime_status = "stopped"
+
+	// Step 3: Assignee finishes rework and resubmits task to In_Validation at 09:10:00
+	clock_time = "2026-07-22T09:10:00Z"
+	captured.count = 0
+	_, s_ok, s_err := taskchain_service.change_task_status(&service, contracts.Auth_Context{
+		kind = .Instance_Token,
+		user_id = "alice",
+		agent_instance_id = "worker_1",
+	}, "task_cycle", .In_Validation)
+	check(s_ok, s_err.message)
+
+	// Verify old votes were purged by change_task_status
+	votes, _ := votes_by_task(&r, "task_cycle", "alice")
+	check(len(votes) == 0, "stale votes must be deleted on entry to In_Validation")
+
+	// Step 4: Reconcile must set rev_1 focus back to task_cycle (.Review)
+	// and emit a wake_agent command for rev_1 because it was non-running ("stopped")
+	_ = taskchain_service.recompute_chain_promotions(&service, chain)
+
+	rev_inst, _, _ = agent_get(&agents_data, "rev_1")
+	check(rev_inst.current_task_id == "task_cycle", "reviewer focus must be restored to task_cycle on resubmission")
+	check(rev_inst.current_task_role == .Review, "reviewer role must be Review")
+
+	// Verify wake command was emitted containing rev_1
+	saw_wake := false
+	for i in 0..<captured.count {
+		cmd := captured.commands[i]
+		if strings.contains(cmd.body_json, `"agent_instance_id":"rev_1"`) &&
+		   strings.contains(cmd.body_json, `"role":"reviewer"`) &&
+		   strings.contains(cmd.body_json, `"task_id":"task_cycle"`) {
+			saw_wake = true
+			break
+		}
+	}
+	check(saw_wake, "reconciliation must emit wake_agent for non-running reviewer on resubmitted task")
+
+	// Simulate reviewer starting up again
+	agents_data.instances[0].runtime_status = "running"
+
+	// Step 5: Reviewer now votes LGTM
+	clock_time = "2026-07-22T09:15:00Z"
+	_, v2_ok, v2_err := taskchain_service.record_task_vote(&service, contracts.Auth_Context{
+		kind = .Instance_Token,
+		user_id = "alice",
+		agent_instance_id = "rev_1",
+	}, taskchain_service.Vote_Input{task_id = "task_cycle", vote = "lgtm", comment = "looks good now"})
+	check(v2_ok, v2_err.message)
+
+	// Task must now be Completed!
+	t_final, _, _ := task_get(&r, "task_cycle")
+	check(t_final.status == .Completed, "task must be Completed after LGTM quorum")
+	check(t_final.completed_at != "", "completed_at must be stamped")
 }
 
 check :: proc(ok: bool, message: string) { if ok do return; fmt.eprintln("FAIL:", message); os.exit(1) }

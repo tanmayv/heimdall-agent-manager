@@ -32,6 +32,7 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		list_dependencies_by_chain = taskchain_list_dependencies_by_chain_sqlite,
 		save_vote = taskchain_save_vote_sqlite,
 		list_votes_by_task = taskchain_list_votes_by_task_sqlite,
+		delete_votes_by_task = taskchain_delete_votes_by_task_sqlite,
 	}
 }
 
@@ -325,6 +326,18 @@ taskchain_list_votes_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID
 	out := make([dynamic]domain.Task_Vote)
 	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, vote_from_stmt(stmt))
 	return out[:], domain.Domain_Error{}
+}
+
+taskchain_delete_votes_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (int, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "DELETE FROM task_votes WHERE task_id = ? AND owner_user_id = ?;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return 0, domain.domain_error(.Internal_Error, "failed to prepare vote deletion")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(task_id)); bind_text(stmt, 2, string(owner_user_id))
+	if sqlite3_step(stmt) != SQLITE_DONE do return 0, domain.domain_error(.Internal_Error, "failed to delete task votes")
+	changes := int(sqlite3_changes(impl.conn.db))
+	return changes, domain.Domain_Error{}
 }
 
 bind_task :: proc(stmt: sqlite3_stmt, task: domain.Task) {
