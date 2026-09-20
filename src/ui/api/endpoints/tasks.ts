@@ -466,33 +466,53 @@ export const tasksApi = heimdallApi.injectEndpoints({
       ],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    createTaskChain: build.mutation<any, { title: string; description?: string; kind?: string; coordinatorAgentId?: string }>({
-      queryFn: async ({ title, description, kind, coordinatorAgentId }) => {
+    createTaskChain: build.mutation<any, {
+      title: string;
+      description?: string;
+      kind?: string;
+      coordinatorAgentId?: string;
+      bridgeId?: string;
+      provider?: string;
+      tier?: string;
+      projectId?: string;
+    }>({
+      queryFn: async ({ title, description, kind, coordinatorAgentId, bridgeId, provider, tier, projectId }) => {
         try {
-          const data = await cookieMutation('/task-chains', 'POST', { title, description: description || '', kind: kind || 'team_work', coordinator_agent_id: coordinatorAgentId || '' });
+          const body: any = {
+            title,
+            description: description || '',
+            kind: kind || 'team_work',
+          };
+          if (coordinatorAgentId) body.coordinator_agent_id = coordinatorAgentId;
+          if (bridgeId) body.bridge_id = bridgeId;
+          if (provider) body.provider = provider;
+          if (tier) body.tier = tier;
+          if (projectId) body.project_id = projectId;
+          const data = await cookieMutation('/task-chains', 'POST', body);
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: ['ChainList'],
+      invalidatesTags: ['ChainList', { type: 'Chain' as const }],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    updateTaskChain: build.mutation<any, { chainId: string; title?: string; description?: string; status?: string }>({
-      queryFn: async ({ chainId, title, description, status }) => {
+    updateTaskChain: build.mutation<any, { chainId: string; title?: string; description?: string; status?: string; coordinatorAgentInstanceId?: string }>({
+      queryFn: async ({ chainId, title, description, status, coordinatorAgentInstanceId }) => {
         try {
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const body: any = {};
           if (title !== undefined) body.title = title;
           if (description !== undefined) body.description = description;
           if (status !== undefined) body.status = status;
+          if (coordinatorAgentInstanceId !== undefined) body.coordinator_agent_instance_id = coordinatorAgentInstanceId;
           const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}`, 'PATCH', body);
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList'],
+      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList', { type: 'Chain' as const }],
     }),
     // Explicit self-heal: promote actionable tasks, set current-tasks, nudge idle
     // agents. Coordinator/owner only (enforced hub-side). Invalidates the chain so

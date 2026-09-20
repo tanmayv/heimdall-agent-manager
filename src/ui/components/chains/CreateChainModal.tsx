@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Modal, Select, Button } from '@ui';
-import { useCreateTaskChainMutation } from '../../api/endpoints/tasks';
+import { useCreateTaskChainMutation, useUpdateTaskChainMutation } from '../../api/endpoints/tasks';
 import {
   useCreateAgentInstanceInChainMutation,
   useListAgentIdentitiesQuery,
@@ -145,6 +145,7 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
 
   const [createChain, createChainState] = useCreateTaskChainMutation();
   const [createInstance, createInstanceState] = useCreateAgentInstanceInChainMutation();
+  const [updateChain] = useUpdateTaskChainMutation();
 
   const loading =
     bridgesQuery.isLoading ||
@@ -158,26 +159,46 @@ export default function CreateChainModal({ projectId, isOpen, onClose, onCreated
       const chainResult = await createChain({
         title: 'New chain',
         kind: 'team_work',
-      }).unwrap();
-      const chainId = String(
-        chainResult?.chain_id ?? chainResult?.chainId ?? chainResult?.data?.chain_id ?? '',
-      );
-      if (!chainId) throw new Error('Chain creation returned no chain ID');
-
-      const instanceResult = await createInstance({
-        agentId,
-        chainId,
+        coordinatorAgentId: agentId,
         bridgeId: bridgeId || undefined,
-        providerProfile: provider,
-        modelTier: tier,
+        provider: provider,
+        tier: tier,
         projectId,
       }).unwrap();
-      const instanceId = String(
-        instanceResult?.agent_instance_id ??
-          instanceResult?.agentInstanceId ??
-          instanceResult?.data?.agent_instance_id ??
+
+      let instanceId = String(
+        chainResult?.coordinator_agent_instance_id ??
+          chainResult?.coordinatorAgentInstanceId ??
+          chainResult?.data?.coordinator_agent_instance_id ??
+          chainResult?.data?.coordinatorAgentInstanceId ??
           '',
       );
+
+      if (!instanceId) {
+        const chainId = String(
+          chainResult?.chain_id ?? chainResult?.chainId ?? chainResult?.data?.chain_id ?? '',
+        );
+        if (!chainId) throw new Error('Chain creation returned no chain ID');
+
+        const instanceResult = await createInstance({
+          agentId,
+          chainId,
+          bridgeId: bridgeId || undefined,
+          providerProfile: provider,
+          modelTier: tier,
+          projectId,
+        }).unwrap();
+        instanceId = String(
+          instanceResult?.agent_instance_id ??
+            instanceResult?.agentInstanceId ??
+            instanceResult?.data?.agent_instance_id ??
+            '',
+        );
+        if (instanceId) {
+          await updateChain({ chainId, coordinatorAgentInstanceId: instanceId }).unwrap();
+        }
+      }
+
       if (!instanceId) throw new Error('Agent instance creation returned no instance ID');
 
       onCreated('/conversations/' + instanceId);

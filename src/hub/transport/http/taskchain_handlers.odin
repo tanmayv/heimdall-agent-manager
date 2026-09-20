@@ -189,7 +189,8 @@ Chain_List_Item :: struct {
 // returned dynamic array is caller-owned (delete it); its strings are not.
 enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, chains: []domain.Task_Chain, only_with_tasks: bool) -> [dynamic]Chain_List_Item {
 	items := make([dynamic]Chain_List_Item)
-	project_by_instance := conversation_project_index(h, auth); defer delete(project_by_instance)
+	proj_idx := conversation_project_index(h, auth)
+	defer destroy_conversation_project_index(&proj_idx)
 	name_by_project := make(map[string]string); defer delete(name_by_project)
 	// One grouped rollup for every chain, not one query per chain.
 	task_counts, counts_err := taskchain_service.task_counts_by_chain(h.taskchains, auth)
@@ -200,14 +201,19 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 	for c in chains {
 		count := task_counts[string(c.chain_id)] or_else 0
 		if only_with_tasks && counts_ok && count == 0 do continue
-		project_id := project_by_instance[c.coordinator_agent_instance_id] or_else ""
+		coord_id := c.coordinator_agent_instance_id
+		if coord_id == "" do coord_id = proj_idx.coord_by_chain[string(c.chain_id)] or_else ""
+		project_id := proj_idx.by_instance[c.coordinator_agent_instance_id] or_else ""
+		if project_id == "" && string(c.chain_id) in proj_idx.by_chain {
+			project_id = proj_idx.by_chain[string(c.chain_id)]
+		}
 		append(&items, Chain_List_Item{
 			chain_id = string(c.chain_id),
 			title = c.title,
 			status = chain_status_http(c.status),
 			created_at = c.created_at,
 			updated_at = c.updated_at,
-			coordinator_agent_instance_id = c.coordinator_agent_instance_id,
+			coordinator_agent_instance_id = coord_id,
 			project_id = project_id,
 			project_name = resolve_project_name(h, auth, project_id, &name_by_project),
 			task_count = count,
@@ -216,8 +222,20 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 	return items
 }
 
-// conversation_project_index maps coordinator instance -> project id for the whole
-// request in ONE conversation listing.
+Conversation_Project_Index :: struct {
+	by_instance:    map[string]string,
+	by_chain:       map[string]string,
+	coord_by_chain: map[string]string,
+}
+
+destroy_conversation_project_index :: proc(idx: ^Conversation_Project_Index) {
+	delete(idx.by_instance)
+	delete(idx.by_chain)
+	delete(idx.coord_by_chain)
+}
+
+// conversation_project_index maps coordinator instance -> project id AND chain id -> project id
+// for the whole request in ONE conversation listing.
 //
 // This used to be a per-chain lookup (get_conversation_by_instance), memoized by
 // coordinator instance. The memo never hit: coordinator instances are unique per
@@ -232,17 +250,30 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 // NOTE: the listing is bounded (the repository clamps to 200), so an owner with more
 // conversations than that would misfile the overflow as "Unassigned" — the same
 // bound the old per-chain path had. A by-instance index is the real fix.
-conversation_project_index :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context) -> map[string]string {
-	index := make(map[string]string)
-	if h.content == nil do return index
+conversation_project_index :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context) -> Conversation_Project_Index {
+	idx := Conversation_Project_Index{
+		by_instance    = make(map[string]string),
+		by_chain       = make(map[string]string),
+		coord_by_chain = make(map[string]string),
+	}
+	if h.content == nil do return idx
 	rows, err := content_service.list_conversations(h.content, auth, 200, "")
-	if err.code != .None do return index
+	if err.code != .None do return idx
 	defer delete(rows)
 	for c in rows {
-		if c.agent_instance_id == "" do continue
-		index[c.agent_instance_id] = string(c.project_id)
+		if c.agent_instance_id != "" && string(c.project_id) != "" {
+			idx.by_instance[c.agent_instance_id] = string(c.project_id)
+		}
+		if c.chain_id != "" {
+			if string(c.project_id) != "" {
+				idx.by_chain[c.chain_id] = string(c.project_id)
+			}
+			if c.agent_instance_id != "" && !(c.chain_id in idx.coord_by_chain) {
+				idx.coord_by_chain[c.chain_id] = c.agent_instance_id
+			}
+		}
 	}
-	return index
+	return idx
 }
 
 // resolve_project_name looks up a project's display name, memoized by project id.
