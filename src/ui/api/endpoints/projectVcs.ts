@@ -304,10 +304,11 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
     stageVcsFile: build.mutation<VcsMutationResult, VcsFileMutationArgs>({
       queryFn: async ({ projectId, bridgeId = '', file, worktree_path }) => {
         try {
-          const body: Record<string, string> = { file };
-          if (bridgeId) body.bridge_id = bridgeId;
-          if (worktree_path) body.worktree_path = worktree_path;
-          const data = await cookieMutation(`${base(projectId)}/stage`, 'POST', body);
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const url = `${base(projectId)}/stage${qs.size ? `?${qs}` : ''}`;
+          const data = await cookieMutation(url, 'POST', { file });
           return { data: data as VcsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -322,10 +323,11 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
     unstageVcsFile: build.mutation<VcsMutationResult, VcsFileMutationArgs>({
       queryFn: async ({ projectId, bridgeId = '', file, worktree_path }) => {
         try {
-          const body: Record<string, string> = { file };
-          if (bridgeId) body.bridge_id = bridgeId;
-          if (worktree_path) body.worktree_path = worktree_path;
-          const data = await cookieMutation(`${base(projectId)}/unstage`, 'POST', body);
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const url = `${base(projectId)}/unstage${qs.size ? `?${qs}` : ''}`;
+          const data = await cookieMutation(url, 'POST', { file });
           return { data: data as VcsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -340,10 +342,11 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
     revertVcsFile: build.mutation<VcsMutationResult, VcsFileMutationArgs>({
       queryFn: async ({ projectId, bridgeId = '', file, worktree_path }) => {
         try {
-          const body: Record<string, string> = { file };
-          if (bridgeId) body.bridge_id = bridgeId;
-          if (worktree_path) body.worktree_path = worktree_path;
-          const data = await cookieMutation(`${base(projectId)}/revert`, 'POST', body);
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const url = `${base(projectId)}/revert${qs.size ? `?${qs}` : ''}`;
+          const data = await cookieMutation(url, 'POST', { file });
           return { data: data as VcsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -359,10 +362,11 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
     saveVcsFile: build.mutation<VcsMutationResult, VcsSaveFileArgs>({
       queryFn: async ({ projectId, bridgeId = '', file, content, worktree_path }) => {
         try {
-          const body: Record<string, string> = { file, content };
-          if (bridgeId) body.bridge_id = bridgeId;
-          if (worktree_path) body.worktree_path = worktree_path;
-          const data = await cookieMutation(`${base(projectId)}/save-file`, 'POST', body);
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const url = `${base(projectId)}/save-file${qs.size ? `?${qs}` : ''}`;
+          const data = await cookieMutation(url, 'POST', { file, content });
           return { data: data as VcsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
