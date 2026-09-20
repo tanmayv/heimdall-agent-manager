@@ -1,5 +1,9 @@
 package iface
 
+// RETIRED: replaced by Shell_Session_Repository in T1/T5. Stubs kept so
+// repos.odin (shell_jobs: Shell_Job_Repository) and agent_action_handlers
+// continue to compile until T5 completes the migration.
+
 import domain "odin_test:hub/domain"
 
 Shell_Job_Upsert_Proc :: proc(ctx: rawptr, job: domain.Shell_Job) -> (bool, domain.Domain_Error)

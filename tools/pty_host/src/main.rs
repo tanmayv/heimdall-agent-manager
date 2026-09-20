@@ -277,6 +277,10 @@ fn ctl_spawn(
         rows,
         cols,
         display_name,
+        kind: None,
+        label: None,
+        meta: None,
+        tee_path: None,
     };
     match request(&socket, &CtlMsg::Spawn(req))? {
         CtlReply::Spawned { instance, pid } => {

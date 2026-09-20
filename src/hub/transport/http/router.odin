@@ -61,6 +61,11 @@ router_add_upgrade :: proc(router: ^Router, method, path: string, ctx: rawptr, h
 
 route_matches :: proc(pattern, path: string) -> bool {
 	if pattern == path do return true
+	// Trailing /** matches any number of remaining path segments.
+	if strings.has_suffix(pattern, "/**") {
+		prefix := pattern[:len(pattern) - 3]
+		if strings.has_prefix(path, prefix) && (len(path) == len(prefix) || path[len(prefix)] == '/') do return true
+	}
 	pattern_parts := strings.split(pattern, "/")
 	defer delete(pattern_parts)
 	path_parts := strings.split(path, "/")
@@ -76,7 +81,7 @@ route_matches :: proc(pattern, path: string) -> bool {
 router_dispatch_upgrade :: proc(router: ^Router, req: Request, client: net.TCP_Socket) -> bool {
 	if router == nil || !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) do return false
 	for route in router.upgrade_routes {
-		if route.method == req.method && route.handler != nil && route_matches(route.path, req.path) { route.handler(route.ctx, req, client); return true }
+		if (route.method == req.method || route.method == "ANY") && route.handler != nil && route_matches(route.path, req.path) { route.handler(route.ctx, req, client); return true }
 	}
 	return false
 }
@@ -89,7 +94,7 @@ router_dispatch :: proc(router: ^Router, req: Request) -> Response {
 		return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
 	}
 	for route in router.routes {
-		if route.method == req.method && route.handler != nil && route_matches(route.path, req.path) {
+		if (route.method == req.method || route.method == "ANY") && route.handler != nil && route_matches(route.path, req.path) {
 			return route.handler(route.ctx, req)
 		}
 	}

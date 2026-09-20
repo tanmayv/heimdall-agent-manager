@@ -51,6 +51,7 @@ PTY_HOST_T_SCREEN_CHANGED :: 0xAB
 PTY_HOST_T_SHUTTING_DOWN :: 0xAC
 PTY_HOST_T_HOST_HEARTBEAT :: 0xAD
 PTY_HOST_T_WATCH_EVENTS :: 0x38
+PTY_HOST_T_SIGNAL :: 0x39 // Send POSIX signal to a shell's process group (T2/REQ-SH-CONTRACT §4)
 
 PTY_HOST_MAX_FRAME_BYTES :: 64 * 1024 * 1024
 
@@ -88,9 +89,16 @@ Pty_Host_Spawn_Request :: struct {
 	env:              [][2]string,
 	detect:           string, // "" => None on the wire
 	display_name:     string, // "" => None on the wire
+	// T4 fields: kind/tee_path appended after display_name per dproto.rs §T2.
+	// Rust decoder uses backward-compat guard (off < rest.len()), so old senders
+	// that omit these fields still work — just set has_* = false.
+	kind:             string, // "agent"|"interactive"|"server"|"command"
+	tee_path:         string, // absolute path; "" => None (no tee)
 	has_cwd:          bool,
 	has_detect:       bool,
 	has_display_name: bool,
+	has_kind:         bool,
+	has_tee_path:     bool,
 	rows:             u16,
 	cols:             u16,
 }
@@ -158,6 +166,25 @@ Pty_Host_Screen :: struct {
 	cursor_row: u16,
 	cursor_col: u16,
 	lines:      []string,
+}
+
+// Pty_Host_Client wraps the daemon unix socket path for typed call sites that
+// need more than a bare string (e.g. bridge_pty_host_signal).
+Pty_Host_Client :: struct {
+	socket: string,
+}
+
+// Pty_Host_Shell_Info is the bridge-side representation of the daemon's
+// ShellInfo struct (dproto.rs). It carries the fields needed for session
+// reconcile (shell_id, pid, alive) plus bound_port added in T2.
+Pty_Host_Shell_Info :: struct {
+	shell_id:       string,
+	pid:            i32,
+	alive:          bool,
+	exit_code:      i32,
+	has_exit_code:  bool,
+	bound_port:     u16,
+	has_bound_port: bool,
 }
 
 // ---- primitive encoders (match dproto.rs put_*) -------------------------
@@ -264,6 +291,12 @@ pty_host_encode_spawn :: proc(req: Pty_Host_Spawn_Request) -> []byte {
 	pty_host_put_u16(&p, req.rows)
 	pty_host_put_u16(&p, req.cols)
 	pty_host_put_opt_str(&p, req.has_display_name, req.display_name)
+	// T4/T2 backward-compat fields (dproto.rs order: kind, label, meta, tee_path).
+	// Rust decoder guards each with `if off < rest.len()` so old bridges are fine.
+	pty_host_put_opt_str(&p, req.has_kind, req.kind)
+	pty_host_put_opt_str(&p, false, "") // label (None — display_name carries the label)
+	pty_host_put_opt_str(&p, false, "") // meta  (None — not used by shell sessions)
+	pty_host_put_opt_str(&p, req.has_tee_path, req.tee_path)
 	return pty_host_frame(p[:])
 }
 
@@ -518,7 +551,7 @@ pty_host_dial :: proc(socket_path: string) -> (posix.FD, bool) {
 	fd := posix.socket(.UNIX, .STREAM)
 	if fd < 0 do return -1, false
 	addr: posix.sockaddr_un
-	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD || ODIN_OS == .Haiku {
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD {
 		addr.sun_len = c.uchar(size_of(addr))
 	}
 	addr.sun_family = .UNIX
@@ -620,4 +653,30 @@ pty_host_read_control_reply :: proc(fd: posix.FD) -> (Pty_Host_Reply, bool) {
 		return reply, true
 	}
 	return {}, false
+}
+
+// ---- Signal (tag 0x39) --------------------------------------------------
+
+// pty_host_encode_signal builds a framed Signal control message. The daemon
+// delivers POSIX signal `signal` to the process group of `shell_id` via
+// killpg. Caller owns the result.
+pty_host_encode_signal :: proc(shell_id: string, signal: u8) -> []byte {
+	p := make([dynamic]byte)
+	defer delete(p)
+	append(&p, PTY_HOST_T_SIGNAL)
+	pty_host_put_str(&p, shell_id)
+	append(&p, signal)
+	return pty_host_frame(p[:])
+}
+
+// bridge_pty_host_signal sends a POSIX signal to the process group of
+// shell_id and waits for the daemon's ack (Closed on success, Error on
+// failure). Returns true on success.
+bridge_pty_host_signal :: proc(client: ^Pty_Host_Client, shell_id: string, signal: u8) -> bool {
+	frame := pty_host_encode_signal(shell_id, signal)
+	defer delete(frame)
+	reply, ok := pty_host_request(client.socket, frame)
+	if !ok do return false
+	defer pty_host_reply_delete(reply)
+	return reply.kind == .Closed
 }

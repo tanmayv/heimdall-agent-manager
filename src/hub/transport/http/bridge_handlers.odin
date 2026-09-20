@@ -18,6 +18,7 @@ import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 import taskchain_service "odin_test:hub/service/taskchain"
+import shell_session_svc "odin_test:hub/service/shell_session"
 
 Bridge_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
@@ -30,6 +31,7 @@ Bridge_Handlers :: struct {
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
 	actions: rawptr,
 	scheduled_prompts: rawptr,
+	shell_sessions: ^shell_session_svc.Shell_Session_Service,
 }
 
 create_bridge_enrollment_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -1273,7 +1275,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
-	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result":
+	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result", "shell_start_result", "shell_restart_result", "shell_list_result", "shell_logs_result", "shell_capture_result":
 		command_id := json_string(text, "command_id")
 		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		if existed {
@@ -1313,6 +1315,54 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		}
 	case "capability_report":
 		_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
+	case "shell_pty_output":
+		if h.shell_sessions != nil {
+			session_id := json_string(text, "session_id")
+			data_b64 := json_string(text, "data_b64")
+			if session_id != "" && data_b64 != "" {
+				shell_session_svc.shell_session_broadcast_output(h.shell_sessions, session_id, data_b64)
+			}
+			delete(session_id)
+			delete(data_b64)
+		}
+	case "shell_exited":
+		if h.shell_sessions != nil {
+			session_id := json_string(text, "session_id")
+			status := json_string(text, "status")
+			if status == "" do status = strings.clone("exited")
+			exit_code := json_int(text, "exit_code", 0)
+			exit_code_set := json_key_present(text, "exit_code")
+			if session_id != "" {
+				shell_session_svc.shell_session_broadcast_status(h.shell_sessions, session_id, status, exit_code, exit_code_set)
+				shell_session_svc.shell_session_handle_exited(h.shell_sessions, session_id, status, exit_code, exit_code_set)
+			}
+			delete(session_id)
+			delete(status)
+		}
+	// tunnel_data: bridge→hub direction — response bytes from the dev server.
+	case "tunnel_data":
+		if h.shell_sessions != nil {
+			stream_id := json_string(text, "stream_id")
+			data_b64 := json_string(text, "data_b64")
+			if stream_id != "" && data_b64 != "" {
+				decoded, decode_err := base64.decode(data_b64)
+				if decode_err == nil && len(decoded) > 0 {
+					shell_session_svc.shell_session_tunnel_deliver(h.shell_sessions, stream_id, decoded)
+				}
+				delete(decoded)
+			}
+			delete(stream_id)
+			delete(data_b64)
+		}
+	// tunnel_close: bridge→hub direction — dev server connection closed.
+	case "tunnel_close":
+		if h.shell_sessions != nil {
+			stream_id := json_string(text, "stream_id")
+			if stream_id != "" {
+				shell_session_svc.shell_session_tunnel_close_stream(h.shell_sessions, stream_id)
+			}
+			delete(stream_id)
+		}
 	}
 
 	return true

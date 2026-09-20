@@ -18,6 +18,7 @@
 //! thread; HOST-3/4 attach TUIs are just [`crate::dproto`] clients.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -28,7 +29,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Context, Result};
 
 use crate::detect::{screen_hash, DetectAction, Detector, StartupDetectionConfig, StartupOutcome};
-use crate::dproto::{self, AgentInfo, CtlMsg, CtlReply, HostHeartbeatAgent, SpawnRequest};
+use crate::dproto::{self, AgentInfo, CtlMsg, CtlReply, HostHeartbeatAgent, SignalRequest, SpawnRequest};
 use crate::host::{PtyHost, SpawnConfig};
 use crate::proto::ScreenSnapshot;
 
@@ -46,6 +47,60 @@ const HOST_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 /// CRT resolution constants for unattached agents (REQ-CRT-1).
 pub const CRT_COLS: u16 = 80;
 pub const CRT_ROWS: u16 = 25;
+
+/// Maximum tee log file size before rotation (50 MiB).
+const TEE_MAX_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Writes PTY output chunks to a tee file, rotating at [`TEE_MAX_BYTES`].
+///
+/// Rotation renames `path` → `path.1` (overwriting any prior rotation) then
+/// creates a fresh empty file at `path`.  Only one rotation file is kept.
+struct TeeWriter {
+    file: std::fs::File,
+    path: String,
+    /// Running total of bytes written to the current `file`.
+    written: u64,
+}
+
+impl TeeWriter {
+    /// Open (or create) `path` in append mode. Returns `None` on I/O error.
+    fn open(path: &str) -> Option<Self> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()?;
+        let written = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        Some(TeeWriter { file, path: path.to_string(), written })
+    }
+
+    fn write_chunk(&mut self, data: &[u8]) {
+        let _ = self.file.write_all(data);
+        self.written += data.len() as u64;
+        if self.written >= TEE_MAX_BYTES {
+            self.rotate();
+        }
+    }
+
+    fn rotate(&mut self) {
+        let rotated = format!("{}.1", self.path);
+        let _ = std::fs::rename(&self.path, &rotated);
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)
+        {
+            Ok(f) => {
+                self.file = f;
+                self.written = 0;
+            }
+            Err(e) => {
+                eprintln!("[ham-pty-host] tee rotate failed for {}: {e}", self.path);
+            }
+        }
+    }
+}
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -253,8 +308,9 @@ impl Daemon {
             let subs = Arc::clone(&self.subs);
             let last_activity = Arc::clone(&last_activity);
             let instance = instance.clone();
+            let tee_path = spec.tee_path.clone();
             std::thread::spawn(move || {
-                pump_output(output_rx, subs, instance, last_activity);
+                pump_output(output_rx, subs, instance, last_activity, tee_path);
             })
         };
 
@@ -402,6 +458,28 @@ impl Daemon {
             .get(instance)
             .map(|a| a.alive.load(Ordering::SeqCst))
             .unwrap_or(false)
+    }
+
+    /// Send POSIX signal `signum` to the process group of `shell_id` via `killpg`.
+    /// Returns `Ok(())` on success; `Err` if the instance is unknown or the syscall
+    /// fails (e.g. ESRCH if the process group no longer exists).
+    pub fn signal(&self, shell_id: &str, signum: u8) -> Result<()> {
+        let pid = {
+            let agents = self.agents.lock().unwrap();
+            let a = agents
+                .get(shell_id)
+                .ok_or_else(|| anyhow!("signal: no such instance {shell_id}"))?;
+            a.pid
+        };
+        let ret = unsafe { libc::killpg(pid as libc::pid_t, signum as libc::c_int) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "killpg({pid}, {signum}) failed: {}",
+                std::io::Error::last_os_error()
+            ))
+        }
     }
 
     /// Exit code of `instance` (or `shell_id`) if it exists and has exited.
@@ -609,12 +687,16 @@ impl Daemon {
 }
 
 /// Pump one agent's raw PTY output to its subscribers + stamp activity.
+/// When `tee_path` is `Some`, also writes every chunk to that file, rotating
+/// at [`TEE_MAX_BYTES`].
 fn pump_output(
     output_rx: Receiver<Vec<u8>>,
     subs: Subscribers,
     instance: String,
     last_activity: Arc<AtomicU64>,
+    tee_path: Option<String>,
 ) {
+    let mut tee: Option<TeeWriter> = tee_path.as_deref().and_then(TeeWriter::open);
     while let Ok(chunk) = output_rx.recv() {
         last_activity.store(now_secs(), Ordering::SeqCst);
         let map = subs.lock().unwrap();
@@ -625,6 +707,10 @@ fn pump_output(
                     data: chunk.clone(),
                 });
             }
+        }
+        drop(map);
+        if let Some(ref mut t) = tee {
+            t.write_chunk(&chunk);
         }
     }
 }
@@ -982,6 +1068,19 @@ fn handle_ctl(daemon: &Daemon, id: u64, msg: CtlMsg, tx: &Sender<CtlReply>) {
             let _ = tx.send(CtlReply::ShuttingDown);
             STOP_REQUESTED.store(true, Ordering::SeqCst);
         }
+        CtlMsg::Signal(SignalRequest { shell_id, signal }) => {
+            match daemon.signal(&shell_id, signal) {
+                Ok(()) => {
+                    let _ = tx.send(CtlReply::Closed { instance: shell_id });
+                }
+                Err(e) => {
+                    let _ = tx.send(CtlReply::Error {
+                        instance: shell_id,
+                        message: e.to_string(),
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -1051,6 +1150,10 @@ mod tests {
             rows: 20,
             cols: 60,
             display_name: None,
+            kind: None,
+            label: None,
+            meta: None,
+            tee_path: None,
         }
     }
 
@@ -1167,6 +1270,7 @@ mod tests {
             rows: 10,
             cols: 40,
             display_name: None,
+                ..Default::default()
         })
         .unwrap();
         assert!(
@@ -1204,6 +1308,7 @@ mod tests {
             rows: 20,
             cols: 60,
             display_name: None,
+                ..Default::default()
         };
         d.spawn(spec).unwrap();
         // Marker must appear on the ORIGINAL child (env applied on first spawn).
@@ -1251,6 +1356,7 @@ mod tests {
                 rows: 10,
                 cols: 40,
                 display_name: None,
+                        ..Default::default()
             })
             .unwrap();
         }
@@ -1396,6 +1502,7 @@ mod tests {
                     rows: 20,
                     cols: 60,
                     display_name: None,
+                                ..Default::default()
                 }),
             )
             .unwrap();
@@ -1487,6 +1594,7 @@ mod tests {
             rows: 20,
             cols: 60,
             display_name: None,
+                ..Default::default()
         });
         dproto::write_ctl_msg(&mut c, &spec).unwrap();
         assert!(await_reply(
@@ -1645,6 +1753,7 @@ mod tests {
             rows: 20,
             cols: 60,
             display_name: None,
+                ..Default::default()
         })
         .unwrap();
 
@@ -1747,6 +1856,7 @@ mod tests {
                 rows: 20,
                 cols: 60,
                 display_name: None,
+                        ..Default::default()
             }),
         )
         .unwrap();
@@ -1813,6 +1923,7 @@ mod tests {
                 rows: 20,
                 cols: 60,
                 display_name: None,
+                        ..Default::default()
             }),
         )
         .unwrap();
@@ -1867,6 +1978,7 @@ mod tests {
                 rows: 20,
                 cols: 60,
                 display_name: None,
+                        ..Default::default()
             }),
         )
         .unwrap();
@@ -1911,6 +2023,7 @@ mod tests {
                 rows: 20,
                 cols: 60,
                 display_name: None,
+                        ..Default::default()
             }),
         )
         .unwrap();
@@ -1974,6 +2087,7 @@ mod tests {
             rows: 0,
             cols: 0,
             display_name: None,
+                ..Default::default()
         })
         .unwrap();
 
@@ -2005,6 +2119,7 @@ mod tests {
             rows: 20,
             cols: 60,
             display_name: None,
+                ..Default::default()
         })
         .unwrap();
 
@@ -2052,6 +2167,7 @@ mod tests {
             rows: 20,
             cols: 60,
             display_name: None,
+                ..Default::default()
         })
         .unwrap();
 
@@ -2099,6 +2215,7 @@ mod tests {
             rows: 0,
             cols: 0,
             display_name: None,
+                ..Default::default()
         })
         .unwrap();
 
@@ -2143,6 +2260,7 @@ mod tests {
                 rows: 25,
                 cols: 80,
                 display_name: Some("test-shell".into()),
+                ..Default::default()
             })
             .unwrap();
 

@@ -60,7 +60,7 @@ pub enum Focus {
 }
 
 /// Messages to send to the daemon as a result of handling one event.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Outcome {
     pub messages: Vec<CtlMsg>,
 }

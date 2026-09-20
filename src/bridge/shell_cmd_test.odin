@@ -160,7 +160,7 @@ bridge_shell_cmd_exec_sync_completed :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(resp, "hello"), "output contains hello")
 
 	exec_id := bridge_local_extract_json_string(resp, "exec_id", "")
-	testing.expect(t, strings.has_prefix(exec_id, "sexc_"), "exec_id has sexc_ prefix")
+	testing.expect(t, strings.has_prefix(exec_id, "shl_"), "exec_id has shl_ prefix")
 	loc := bridge_local_extract_json_string(resp, "raw_output_location", "")
 	testing.expect(t, strings.has_prefix(loc, "/tmp/ham-shell-sync-test/shell_jobs/"), "raw_output_location under data_dir/shell_jobs")
 	testing.expect(t, os.exists(loc), "output file written to disk")
@@ -233,7 +233,7 @@ bridge_shell_cmd_read_paging_reaches_early_lines :: proc(t: ^testing.T) {
 	resp := bridge_shell_cmd_exec("rp1", "{\"cmd\":\"for i in $(seq 1 300); do echo line$i; done\"}", rec)
 	testing.expect(t, strings.contains(resp, "\"status\":\"completed\""), "exec completed")
 	exec_id := bridge_local_extract_json_string(resp, "exec_id", "")
-	testing.expect(t, strings.has_prefix(exec_id, "sexc_"), "got exec id")
+	testing.expect(t, strings.has_prefix(exec_id, "shl_"), "got exec id")
 
 	// grep reaches an early line the default tail would hide, tagged with its number.
 	gp := strings.concatenate({"{\"exec_id\":\"", exec_id, "\",\"grep_pattern\":\"line150\"}"})
