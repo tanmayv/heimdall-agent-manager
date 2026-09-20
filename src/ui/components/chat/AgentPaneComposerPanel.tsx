@@ -23,6 +23,7 @@ export interface AgentPaneComposerPanelProps {
   isActiveTab?: boolean;
   runtimeStatus?: string;
   className?: string;
+  hideHeader?: boolean;
   onPin?: (agentInstanceId: string) => void;
 }
 
@@ -34,6 +35,7 @@ export function AgentPaneComposerPanel({
   isActiveTab = true,
   runtimeStatus,
   className = '',
+  hideHeader = false,
   onPin,
 }: AgentPaneComposerPanelProps) {
   const { theme } = useTheme();
@@ -306,6 +308,7 @@ export function AgentPaneComposerPanel({
       className={`overflow-hidden rounded-xl border border-subtle bg-surface ${className}`}
     >
       {/* Header controls */}
+      {!hideHeader && (
       <div
         data-debug-id="agent-pane-composer-header"
         className="flex items-center justify-between border-b border-subtle bg-surface-raised px-3 py-1.5 text-xs text-muted"
@@ -379,6 +382,7 @@ export function AgentPaneComposerPanel({
           ) : null}
         </div>
       </div>
+      )}
 
       {/* Interactive xterm terminal container */}
       <style>{`

@@ -129,9 +129,9 @@ export function AgentCellComposer({ agentInstanceId, conversationId }: AgentCell
           aria-label="Attach file"
           disabled={uploading || !conversationId}
           onClick={() => fileInputRef.current?.click()}
-          className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-40"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-40"
         >
-          <Icon name="file" size={12} />
+          <Icon name="file" size={14} />
         </button>
         <button
           type="button"
@@ -140,9 +140,9 @@ export function AgentCellComposer({ agentInstanceId, conversationId }: AgentCell
           disabled={sendDisabled}
           onClick={() => void send()}
           data-debug-id={`monitor-composer-send-${agentInstanceId}`}
-          className="grid h-6 w-6 shrink-0 place-items-center rounded bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-40"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-40"
         >
-          <Icon name="arrow-up" size={12} />
+          <Icon name="arrow-up" size={14} />
         </button>
       </div>
     </div>

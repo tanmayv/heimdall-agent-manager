@@ -68,7 +68,7 @@ function MonitorCell({ agentInstanceId, onUnpin }: { agentInstanceId: string; on
         </button>
       </div>
       {/* Live terminal (fills remaining height; only it scrolls) */}
-      <AgentPaneComposerPanel agentInstanceId={agentInstanceId} isExpanded={true} className="min-h-0 flex-1 overflow-hidden" />
+      <AgentPaneComposerPanel agentInstanceId={agentInstanceId} isExpanded={true} hideHeader={true} className="min-h-0 flex-1 overflow-hidden" />
       {/* Slim composer */}
       <AgentCellComposer agentInstanceId={agentInstanceId} conversationId={conversationId} />
     </div>
