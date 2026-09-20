@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 
@@ -77,4 +78,137 @@ vcs_api_diff_missing_path_key_no_crash :: proc(t: ^testing.T) {
 	out := bridge_vcs_diff_json("t7", `{"command_id":"t7","root":"/home/tanmay/heimdall-agent-manager"}`)
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":false`), "missing path key must return ok:false")
+}
+
+// --- new VCS command handlers (TASK-1-TEST Part A) ------------------------
+// Coverage for the vcs_stage/unstage/revert/log/commit_diff/workspaces handlers added
+// in TASK-1. Empty-root cases prove the shared no_vcs fail-safe. Detection-only cases
+// (missing-file, jj not_supported, same-ref) run against a hermetic marker repo — a
+// temp dir carrying just a .git/.jj entry, which vcs_detect_provider recognizes without
+// the real tool, and whose handler path returns before any subprocess runs. The
+// real-repo cases run against this checkout and skip (like
+// vcs_api_capabilities_git_repo_returns_provider) when it is not a git repo. The
+// vcs_test_* helpers live in vcs_integration_test.odin (same package).
+//
+// vcs_stage_not_cached (task item): the write handlers must NOT be command_id-cached,
+// because a mutation is not idempotent. This is enforced in vcs_api.odin —
+// bridge_vcs_handle_command's vcs_stage/vcs_unstage/vcs_revert cases call
+// bridge_vcs_*_json DIRECTLY, with no bridge_runtime_cached_command lookup or
+// bridge_runtime_cache_command store (unlike every read handler). Verified by
+// inspection of the dispatch; it needs a live ws.Connection to exercise at runtime, so
+// there is no hermetic assertion for it here.
+
+@(test)
+vcs_api_capabilities_new_fields :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_capabilities_json("c", `{"command_id":"c","root":"."}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "git repo returns ok:true")
+	testing.expect(t, strings.contains(out, `"staging_model":"index"`), "git staging_model is index")
+	testing.expect(t, strings.contains(out, `"stage"`), "supported_actions include stage")
+	testing.expect(t, strings.contains(out, `"unstage"`), "supported_actions include unstage")
+	testing.expect(t, strings.contains(out, `"workspaces"`), "supported_actions include workspaces")
+}
+
+@(test)
+vcs_api_stage_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_stage_json("s", `{"command_id":"s","root":"","path":"f.txt"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root stage ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root stage -> no_vcs")
+}
+
+@(test)
+vcs_api_stage_empty_file :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("stage-empty-file", ".git")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_stage_json("s", fmt.tprintf(`{"command_id":"s","root":"%s","path":""}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty file stage ok:false")
+	testing.expect(t, strings.contains(out, `"code":"missing_file"`), "empty file -> missing_file")
+}
+
+@(test)
+vcs_api_unstage_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_unstage_json("u", `{"command_id":"u","root":"","path":"f.txt"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root unstage ok:false")
+}
+
+@(test)
+vcs_api_unstage_not_supported_jj :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("unstage-jj", ".jj")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_unstage_json("u", fmt.tprintf(`{"command_id":"u","root":"%s","path":"f.txt"}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "jj unstage ok:false")
+	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
+	testing.expect(t, strings.contains(out, `"code":"not_supported"`), "jj unstage -> not_supported")
+}
+
+@(test)
+vcs_api_revert_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_revert_json("r", `{"command_id":"r","root":"","path":"f.txt"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root revert ok:false")
+}
+
+@(test)
+vcs_api_revert_missing_file :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("revert-missing", ".git")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_revert_json("r", fmt.tprintf(`{"command_id":"r","root":"%s","path":""}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "missing file revert ok:false")
+	testing.expect(t, strings.contains(out, `"code":"missing_file"`), "missing file -> missing_file")
+}
+
+@(test)
+vcs_api_log_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_log_json("l", `{"command_id":"l","root":""}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root log ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root log -> no_vcs")
+}
+
+@(test)
+vcs_api_log_real_repo :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_log_json("l", `{"command_id":"l","root":".","limit":5}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "log ok:true on real repo")
+	testing.expect(t, strings.contains(out, `"entries":[`), "entries is an array")
+}
+
+@(test)
+vcs_api_commit_diff_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_commit_diff_json("cd", `{"command_id":"cd","root":"","base_ref":"HEAD"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root commit_diff ok:false")
+}
+
+@(test)
+vcs_api_commit_diff_same_ref :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("commit-diff-same", ".git")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_commit_diff_json("cd", fmt.tprintf(`{"command_id":"cd","root":"%s","base_ref":"HEAD","head_ref":"HEAD"}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "base_ref == head_ref -> ok:true")
+	testing.expect(t, strings.contains(out, `"hunks":[]`), "base_ref == head_ref -> empty hunks")
+}
+
+@(test)
+vcs_api_workspaces_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_workspaces_json("w", `{"command_id":"w","root":""}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root workspaces ok:false")
+}
+
+@(test)
+vcs_api_workspaces_real_repo :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_workspaces_json("w", `{"command_id":"w","root":"."}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "workspaces ok:true on real repo")
+	testing.expect(t, strings.contains(out, `"is_current":true`), "the queried worktree is current")
 }

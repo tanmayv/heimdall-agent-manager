@@ -498,13 +498,19 @@ delete_project_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // online guards as project_fs_relay. The bridge result JSON is returned verbatim.
 
 Project_Vcs_Command :: struct {
-	command_type: string, // vcs_capabilities | vcs_status | vcs_files | vcs_diff
-	path:         string, // file path for diff; empty for others
-	cursor:       string,
-	limit:        int,
-	send_path:    bool, // whether to include path in JSON body
-	send_cursor:  bool,
-	send_limit:   bool,
+	command_type:  string, // vcs_capabilities | vcs_status | vcs_files | vcs_diff | vcs_log | vcs_commit_diff | vcs_workspaces | vcs_stage | vcs_unstage | vcs_revert
+	path:          string, // file path for diff/write commands; empty for others
+	cursor:        string,
+	limit:         int,
+	base_ref:      string, // vcs_commit_diff: compare base
+	head_ref:      string, // vcs_commit_diff: compare head (empty/WORKDIR = worktree)
+	content:       string, // vcs_save_file: full file text to write
+	send_path:     bool, // whether to include path in JSON body
+	send_cursor:   bool,
+	send_limit:    bool,
+	send_base_ref: bool,
+	send_head_ref: bool,
+	send_content:  bool, // whether to include content in JSON body
 }
 
 project_vcs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Vcs_Command) -> (string, bool, domain.Domain_Error) {
@@ -518,11 +524,65 @@ project_vcs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Vcs_Co
 	if !bridge_ok do return "", false, bridge_err
 	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	// Resolve the effective repo root, honoring an optional ?worktree_path override
+	// validated against the bridge's vcs_workspaces whitelist (path-traversal guard).
+	root_path, root_ok, root_err := project_vcs_effective_root(h, req, bridge.bridge_id, target.root_path)
+	if !root_ok do return "", false, root_err
+	return project_vcs_send(h, bridge.bridge_id, cmd, root_path)
+}
+
+// project_vcs_send builds the vcs_* WS command carrying root_path and relays it to
+// the bridge, returning the bridge result JSON verbatim.
+project_vcs_send :: proc(h: ^Bridge_Handlers, bridge_id: string, cmd: Project_Vcs_Command, root_path: string) -> (string, bool, domain.Domain_Error) {
 	command_id := fmt.tprintf("cmd_pvcs_%d", time.to_unix_nanoseconds(time.now()))
-	cmd_body := project_vcs_command_json(cmd, command_id, target.root_path)
-	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	cmd_body := project_vcs_command_json(cmd, command_id, root_path)
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
 	if !reply_ok do return "", false, reply_err
 	return reply, true, domain.Domain_Error{}
+}
+
+// project_vcs_effective_root resolves the repo root the vcs_* command runs against.
+// Absent/empty ?worktree_path keeps the project's registered root_path (unchanged
+// behavior). When supplied, the path must be absolute AND appear in the bridge's
+// vcs_workspaces list for the project root; otherwise the request is rejected with
+// HTTP 400 (validation_failed). This is the path-traversal guard: only paths the
+// bridge itself advertises as workspaces may be targeted.
+project_vcs_effective_root :: proc(h: ^Bridge_Handlers, req: Request, bridge_id: string, root_path: string) -> (string, bool, domain.Domain_Error) {
+	worktree := strings.trim_space(query_value(req.query, "worktree_path"))
+	if worktree == "" do return root_path, true, domain.Domain_Error{}
+	if !strings.has_prefix(worktree, "/") do return "", false, worktree_path_rejected_error(worktree)
+	ws_reply, ws_ok, ws_err := project_vcs_send(h, bridge_id, Project_Vcs_Command{command_type = "vcs_workspaces"}, root_path)
+	if !ws_ok do return "", false, ws_err
+	if vcs_workspaces_has_path(ws_reply, worktree) do return worktree, true, domain.Domain_Error{}
+	return "", false, worktree_path_rejected_error(worktree)
+}
+
+// worktree_path_rejected_error is the shared 400 for a worktree_path that is not in
+// the project's vcs_workspaces whitelist. details carries the machine-readable code
+// and the supplied path so callers can surface exactly which override was refused.
+worktree_path_rejected_error :: proc(supplied: string) -> domain.Domain_Error {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"error\":\"worktree_path_not_in_workspaces\",\"path\":\"")
+	write_handler_json_string(&b, supplied)
+	strings.write_string(&b, "\"}")
+	return domain.domain_error(.Validation_Failed, "worktree_path_not_in_workspaces", strings.to_string(b))
+}
+
+// vcs_workspaces_has_path reports whether target exactly equals one of the workspace
+// paths in a vcs_workspaces_result. Each workspace object carries a single "path"
+// member; we scan every one in the workspaces array and compare unescaped values.
+vcs_workspaces_has_path :: proc(ws_reply, target: string) -> bool {
+	arr, ok := json_array_raw_balanced(ws_reply, "workspaces")
+	if !ok do return false
+	needle := "\"path\""
+	off := 0
+	for {
+		idx := strings.index(arr[off:], needle)
+		if idx < 0 do break
+		if json_string_unescaped(arr[off + idx:], "path") == target do return true
+		off += idx + len(needle)
+	}
+	return false
 }
 
 project_vcs_command_json :: proc(cmd: Project_Vcs_Command, command_id, root_path: string) -> string {
@@ -534,11 +594,20 @@ project_vcs_command_json :: proc(cmd: Project_Vcs_Command, command_id, root_path
 	if cmd.send_path {
 		strings.write_string(&b, ",\"path\":\""); write_handler_json_string(&b, cmd.path); strings.write_string(&b, "\"")
 	}
+	if cmd.send_base_ref {
+		strings.write_string(&b, ",\"base_ref\":\""); write_handler_json_string(&b, cmd.base_ref); strings.write_string(&b, "\"")
+	}
+	if cmd.send_head_ref {
+		strings.write_string(&b, ",\"head_ref\":\""); write_handler_json_string(&b, cmd.head_ref); strings.write_string(&b, "\"")
+	}
 	if cmd.send_cursor && cmd.cursor != "" {
 		strings.write_string(&b, ",\"cursor\":\""); write_handler_json_string(&b, cmd.cursor); strings.write_string(&b, "\"")
 	}
 	if cmd.send_limit {
 		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.limit)
+	}
+	if cmd.send_content {
+		strings.write_string(&b, ",\"content\":\""); write_handler_json_string(&b, cmd.content); strings.write_string(&b, "\"")
 	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
@@ -576,6 +645,79 @@ project_handle_vcs_diff :: proc(ctx: rawptr, req: Request) -> Response {
 		path = query_value(req.query, "file"), send_path = true,
 		cursor = query_value(req.query, "cursor"), send_cursor = true,
 		limit = query_int(req.query, "limit", 50), send_limit = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_log :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_log",
+		cursor = query_value(req.query, "cursor"), send_cursor = true,
+		limit = query_int(req.query, "limit", 50), send_limit = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_commit_diff :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_commit_diff",
+		base_ref = query_value(req.query, "base_ref"), send_base_ref = true,
+		head_ref = query_value(req.query, "head_ref"), send_head_ref = true,
+		path = query_value(req.query, "file"), send_path = true,
+		cursor = query_value(req.query, "cursor"), send_cursor = true,
+		limit = query_int(req.query, "limit", 50), send_limit = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_workspaces :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{command_type = "vcs_workspaces"})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// project_handle_vcs_write is the shared body for the stage/unstage/revert POST
+// endpoints: it maps the JSON body {"file":"<relative-path>"} onto the bridge write
+// command's "path" field and relays it. Not cached (mutation).
+project_handle_vcs_write :: proc(h: ^Bridge_Handlers, req: Request, command_type: string) -> Response {
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = command_type,
+		path = json_string(req.body, "file"), send_path = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+project_handle_vcs_stage :: proc(ctx: rawptr, req: Request) -> Response {
+	return project_handle_vcs_write((^Bridge_Handlers)(ctx), req, "vcs_stage")
+}
+
+project_handle_vcs_unstage :: proc(ctx: rawptr, req: Request) -> Response {
+	return project_handle_vcs_write((^Bridge_Handlers)(ctx), req, "vcs_unstage")
+}
+
+project_handle_vcs_revert :: proc(ctx: rawptr, req: Request) -> Response {
+	return project_handle_vcs_write((^Bridge_Handlers)(ctx), req, "vcs_revert")
+}
+
+// project_handle_vcs_save_file relays an editor save: body {"file":"<relative>",
+// "content":"<full text>"[, "worktree_path":".."]} maps onto the bridge vcs_save_file
+// command's "path"/"content" fields. worktree_path (query) is validated against the
+// vcs_workspaces whitelist by project_vcs_relay like every other write. Not cached.
+project_handle_vcs_save_file :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	file := json_string(req.body, "file")
+	if file == "" do return respond_error(domain.domain_error(.Validation_Failed, "file is required"), req.request_id)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_save_file",
+		path = file, send_path = true,
+		content = json_string(req.body, "content"), send_content = true,
 	})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
@@ -1097,7 +1239,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
-	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "fs_find_files_result", "fs_grep_result":
+	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "fs_find_files_result", "fs_grep_result":
 		command_id := json_string(text, "command_id")
 		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		if existed {

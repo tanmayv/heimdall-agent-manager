@@ -13,7 +13,7 @@
 // (projectId, bridgeId[, file]) so switching project/bridge only refetches what changed.
 
 import { heimdallApi } from '../heimdallApi';
-import { cookieJsonFetch } from '../cookieFetch';
+import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 
 // ---- Contract types (mirror the bridge vcs_* result JSON exactly) -----------
 
@@ -24,6 +24,11 @@ export type VcsCapabilities = {
   ok: boolean;
   provider: string;
   supports_staging: boolean;
+  // Redesign fields (TASK-3): how the provider stages, how it commits, and which
+  // write actions the VCS panel may offer. ok/error retained for existing callers.
+  staging_model: 'index' | 'none';
+  commit_model: 'branch' | 'revision';
+  supported_actions: string[];
   error: VcsError;
 };
 
@@ -75,6 +80,35 @@ export type VcsDiffResult = {
   error: VcsError;
 };
 
+// Commit log entry (one revision). Mirrors the bridge vcs_log serialization.
+export type VcsLogEntry = {
+  hash: string;
+  short_hash: string;
+  subject: string;
+  author: string;
+  date: string;
+};
+
+// A named workspace/worktree the provider exposes.
+export type VcsWorkspace = {
+  path: string;
+  label: string;
+  is_current: boolean;
+  is_locked: boolean;
+};
+
+export type VcsLogResult = {
+  ok: boolean;
+  entries: VcsLogEntry[];
+  has_more: boolean;
+  next_cursor?: string;
+};
+
+export type VcsWorkspacesResult = {
+  ok: boolean;
+  workspaces: VcsWorkspace[];
+};
+
 // ---- Cache key helpers ------------------------------------------------------
 
 // Tag id for a project's VCS data. Keyed by (projectId, bridgeId[, suffix]) so a
@@ -88,6 +122,23 @@ function vcsTagId(projectId: string, bridgeId: string, suffix = ''): string {
 type CapabilitiesArgs = { projectId: string; bridgeId?: string };
 type FilesArgs = { projectId: string; bridgeId?: string; cursor?: string | null; limit?: number };
 type DiffArgs = { projectId: string; bridgeId?: string; file: string; cursor?: string | null; limit?: number };
+type LogArgs = { projectId: string; bridgeId?: string; cursor?: string | null; limit?: number; worktree_path?: string };
+type CommitDiffArgs = {
+  projectId: string;
+  bridgeId?: string;
+  base_ref: string;
+  head_ref: string;
+  file?: string;
+  cursor?: string | null;
+  worktree_path?: string;
+};
+type WorkspacesArgs = { projectId: string; bridgeId?: string; worktree_path?: string };
+// Write-operation args (stage/unstage/revert): all take a single file path and an
+// optional worktree_path.
+type VcsFileMutationArgs = { projectId: string; bridgeId?: string; file: string; worktree_path?: string };
+// Save (editor write): a file path plus the full buffer text.
+type VcsSaveFileArgs = { projectId: string; bridgeId?: string; file: string; content: string; worktree_path?: string };
+type VcsMutationResult = { ok: boolean; error?: VcsError };
 
 function base(projectId: string): string {
   return `/projects/${encodeURIComponent(projectId)}/vcs`;
@@ -185,6 +236,142 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
         ];
       },
     }),
+
+    // Paginated commit log. Pages are stitched in the component, so the cache is
+    // keyed by (project, bridge[, worktree]) — not by cursor.
+    listVcsLog: build.query<VcsLogResult, LogArgs>({
+      queryFn: async ({ projectId, bridgeId = '', cursor = null, limit, worktree_path }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (cursor) qs.set('cursor', cursor);
+          if (limit != null) qs.set('limit', String(limit));
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = await cookieJsonFetch(`${base(projectId)}/log${suffix}`);
+          return { data: data as VcsLogResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId, bridgeId = '', worktree_path }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `log::${worktree_path || ''}`) },
+      ],
+    }),
+
+    // Diff between two refs (base_ref..head_ref), optionally scoped to one file.
+    // Reuses the VcsDiffResult shape from the single-file working-tree diff.
+    getVcsCommitDiff: build.query<VcsDiffResult, CommitDiffArgs>({
+      queryFn: async ({ projectId, bridgeId = '', base_ref, head_ref, file, cursor = null, worktree_path }) => {
+        try {
+          const qs = new URLSearchParams({ base_ref, head_ref });
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (file) qs.set('file', file);
+          if (cursor) qs.set('cursor', cursor);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const data = await cookieJsonFetch(`${base(projectId)}/commit-diff?${qs.toString()}`);
+          return { data: data as VcsDiffResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId, bridgeId = '', base_ref, head_ref, file }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `commit-diff::${base_ref}..${head_ref}::${file || ''}`) },
+      ],
+    }),
+
+    // Workspaces/worktrees the provider exposes.
+    listVcsWorkspaces: build.query<VcsWorkspacesResult, WorkspacesArgs>({
+      queryFn: async ({ projectId, bridgeId = '', worktree_path }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = await cookieJsonFetch(`${base(projectId)}/workspaces${suffix}`);
+          return { data: data as VcsWorkspacesResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'workspaces') },
+      ],
+    }),
+
+    // Stage one file (git add / equivalent). Invalidates the changed-files list so
+    // the panel refetches staged/unstaged state after the write.
+    stageVcsFile: build.mutation<VcsMutationResult, VcsFileMutationArgs>({
+      queryFn: async ({ projectId, bridgeId = '', file, worktree_path }) => {
+        try {
+          const body: Record<string, string> = { file };
+          if (bridgeId) body.bridge_id = bridgeId;
+          if (worktree_path) body.worktree_path = worktree_path;
+          const data = await cookieMutation(`${base(projectId)}/stage`, 'POST', body);
+          return { data: data as VcsMutationResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+      ],
+    }),
+
+    // Unstage one file (git reset / equivalent). Invalidates the changed-files list.
+    unstageVcsFile: build.mutation<VcsMutationResult, VcsFileMutationArgs>({
+      queryFn: async ({ projectId, bridgeId = '', file, worktree_path }) => {
+        try {
+          const body: Record<string, string> = { file };
+          if (bridgeId) body.bridge_id = bridgeId;
+          if (worktree_path) body.worktree_path = worktree_path;
+          const data = await cookieMutation(`${base(projectId)}/unstage`, 'POST', body);
+          return { data: data as VcsMutationResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+      ],
+    }),
+
+    // Revert one file's working-tree changes. Invalidates the changed-files list.
+    revertVcsFile: build.mutation<VcsMutationResult, VcsFileMutationArgs>({
+      queryFn: async ({ projectId, bridgeId = '', file, worktree_path }) => {
+        try {
+          const body: Record<string, string> = { file };
+          if (bridgeId) body.bridge_id = bridgeId;
+          if (worktree_path) body.worktree_path = worktree_path;
+          const data = await cookieMutation(`${base(projectId)}/revert`, 'POST', body);
+          return { data: data as VcsMutationResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+      ],
+    }),
+
+    // Save one file's full text (editor write / Ctrl+S). Invalidates the changed-
+    // files list so the panel refetches add/del counts and staged/unstaged state.
+    saveVcsFile: build.mutation<VcsMutationResult, VcsSaveFileArgs>({
+      queryFn: async ({ projectId, bridgeId = '', file, content, worktree_path }) => {
+        try {
+          const body: Record<string, string> = { file, content };
+          if (bridgeId) body.bridge_id = bridgeId;
+          if (worktree_path) body.worktree_path = worktree_path;
+          const data = await cookieMutation(`${base(projectId)}/save-file`, 'POST', body);
+          return { data: data as VcsMutationResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+      ],
+    }),
   }),
 });
 
@@ -197,4 +384,14 @@ export const {
   useLazyGetVcsDiffQuery,
   useGetProjectVcsStatusQuery,
   useLazyGetProjectVcsStatusQuery,
+  useListVcsLogQuery,
+  useLazyListVcsLogQuery,
+  useGetVcsCommitDiffQuery,
+  useLazyGetVcsCommitDiffQuery,
+  useListVcsWorkspacesQuery,
+  useLazyListVcsWorkspacesQuery,
+  useStageVcsFileMutation,
+  useUnstageVcsFileMutation,
+  useRevertVcsFileMutation,
+  useSaveVcsFileMutation,
 } = projectVcsApi;

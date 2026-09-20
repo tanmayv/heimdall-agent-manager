@@ -51,7 +51,7 @@ export const RIGHT_SIDEBAR_DEFAULT_WIDTH = 480;
 export const RIGHT_SIDEBAR_MIN_WIDTH = 360;
 export const CHAT_VIEW_MIN_WIDTH = 380;
 
-export type RightSidebarTab = 'tasks' | 'files' | 'rundir' | 'jobs' | 'chain';
+export type RightSidebarTab = 'tasks' | 'files' | 'rundir' | 'jobs' | 'chain' | 'vcs';
 
 export function clampRightSidebarWidth(width: number, maxAllowedWidth?: number): number {
   if (!Number.isFinite(width) || Number.isNaN(width) || width <= 0) {
@@ -121,12 +121,12 @@ export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null
   try {
     if (instanceId) {
       const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:tab:${instanceId}`);
-      if (instanceRaw === 'tasks' || instanceRaw === 'files' || instanceRaw === 'rundir' || instanceRaw === 'jobs' || instanceRaw === 'chain') {
+      if (instanceRaw === 'tasks' || instanceRaw === 'files' || instanceRaw === 'rundir' || instanceRaw === 'jobs' || instanceRaw === 'chain' || instanceRaw === 'vcs') {
         return instanceRaw;
       }
     }
     const raw = window.localStorage.getItem(RIGHT_SIDEBAR_TAB_KEY);
-    if (raw === 'tasks' || raw === 'files' || raw === 'rundir' || raw === 'jobs' || raw === 'chain') {
+    if (raw === 'tasks' || raw === 'files' || raw === 'rundir' || raw === 'jobs' || raw === 'chain' || raw === 'vcs') {
       return raw;
     }
     return null;
@@ -138,7 +138,7 @@ export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null
 export function writeRightSidebarTab(tab: RightSidebarTab, instanceId?: string): void {
   if (typeof window === 'undefined') return;
   try {
-    if (tab === 'tasks' || tab === 'files' || tab === 'rundir' || tab === 'jobs' || tab === 'chain') {
+    if (tab === 'tasks' || tab === 'files' || tab === 'rundir' || tab === 'jobs' || tab === 'chain' || tab === 'vcs') {
       window.localStorage.setItem(RIGHT_SIDEBAR_TAB_KEY, tab);
       if (instanceId) {
         window.localStorage.setItem(`heimdall:sidebar:tab:${instanceId}`, tab);
