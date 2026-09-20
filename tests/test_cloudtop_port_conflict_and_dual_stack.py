@@ -19,7 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "scripts" / "install.sh"
 PACKAGE_SH = ROOT / "scripts" / "package-cloudtop-bundle.sh"
 DEV_PROXY_MAIN = ROOT / "src" / "dev_proxy" / "main.odin"
-ODIN_BIN = "/nix/store/lrzcmy4vglphhshdpsqmsgjpnf5z1yhi-odin-dev-2026-05/bin/odin"
+ODIN_BIN = (
+    "/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin"
+    if os.path.exists("/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin")
+    else (shutil.which("odin") or "/nix/store/lrzcmy4vglphhshdpsqmsgjpnf5z1yhi-odin-dev-2026-05/bin/odin")
+)
 
 
 def require(condition: bool, message: str) -> None:

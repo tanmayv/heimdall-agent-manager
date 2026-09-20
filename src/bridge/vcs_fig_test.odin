@@ -1,7 +1,6 @@
 package main
 
 import "core:os"
-import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 import "core:time"
@@ -33,13 +32,6 @@ test_vcs_fig_provider_and_capabilities :: proc(t: ^testing.T) {
 	testing.expect(t, p.status != nil, "status proc present")
 	testing.expect(t, p.changed_files != nil, "changed_files proc present")
 	testing.expect(t, p.diff_file != nil, "diff_file proc present")
-	testing.expect(t, p.diff_targets != nil, "diff_targets proc present")
-	testing.expect(t, p.log != nil, "log proc present")
-	testing.expect(t, p.file_content != nil, "file_content proc present")
-	testing.expect(t, p.add_file != nil, "add_file proc present")
-	testing.expect(t, p.revert_file != nil, "revert_file proc present")
-	testing.expect(t, p.revert_all != nil, "revert_all proc present")
-	testing.expect(t, p.commit != nil, "commit proc present")
 	testing.expect(t, p.capabilities != nil, "capabilities proc present")
 
 	caps := p.capabilities("/dummy/path")
@@ -214,83 +206,86 @@ test_vcs_fig_detect_live_citc :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_vcs_fig_full_workflow :: proc(t: ^testing.T) {
-	root := vcs_fig_test_make_dir(t, "workflow")
-	defer {
-		os.remove_all(root)
-		delete(root)
-	}
+test_vcs_fig_extract_citc_info :: proc(t: ^testing.T) {
+	deep_path := "/google/src/cloud/tanmayvijay/teloneum-processor/google3/monitoring/cloud_latency/billing/teloneum/processor"
+	ws1, rel1, ok1 := vcs_fig_extract_citc_info(deep_path)
+	testing.expect(t, ok1, "deep path is recognized as citc")
+	testing.expect_value(t, ws1, "teloneum-processor")
+	testing.expect_value(t, rel1, "monitoring/cloud_latency/billing/teloneum/processor")
 
-	// Initialize a local hg repo
-	_, init_ok := vcs_run([]string{"hg", "--cwd", root, "init"})
-	if !init_ok do return // skip if hg not installed/usable
+	g3_root := "/google/src/cloud/tanmayvijay/teloneum-processor/google3"
+	ws2, rel2, ok2 := vcs_fig_extract_citc_info(g3_root)
+	testing.expect(t, ok2, "google3 root is recognized as citc")
+	testing.expect_value(t, ws2, "teloneum-processor")
+	testing.expect_value(t, rel2, "")
 
-	p := vcs_fig_provider()
+	ws_root := "/google/src/cloud/tanmayvijay/teloneum-processor"
+	ws3, rel3, ok3 := vcs_fig_extract_citc_info(ws_root)
+	testing.expect(t, ok3, "workspace root is recognized as citc")
+	testing.expect_value(t, ws3, "teloneum-processor")
+	testing.expect_value(t, rel3, "")
 
-	// 1. Initial targets before commits
-	targets, tok := p.diff_targets(root)
-	testing.expect(t, tok, "targets ok")
-	testing.expect(t, len(targets) >= 4, "at least 4 standard fig targets")
-	testing.expect_value(t, targets[0].id, ".")
-	testing.expect(t, targets[0].is_default, "current rev is default")
-	testing.expect_value(t, targets[1].id, "pdiff")
-	testing.expect_value(t, targets[2].id, "p4base")
-	testing.expect_value(t, targets[3].id, "p4head")
-
-	// 2. Create initial commit
-	f1_path, jerr1 := filepath.join([]string{root, "hello.txt"}, context.temp_allocator)
-	if jerr1 != nil do return
-	_ = os.write_entire_file(f1_path, transmute([]byte)string("initial content\n"))
-	p.add_file(root, "hello.txt")
-	_, cok := p.commit(root, "Initial commit", false)
-	testing.expect(t, cok, "initial commit succeeded")
-
-	// 3. Test log
-	entries, lok := p.log(root, 10)
-	testing.expect(t, lok, "log ok")
-	testing.expect(t, len(entries) >= 1, "at least 1 log entry")
-	testing.expect_value(t, entries[0].title, "Initial commit")
-	testing.expect(t, entries[0].is_current, "latest entry is current")
-
-	// 4. Test file_content
-	content, f_ok := p.file_content(root, "hello.txt", ".")
-	testing.expect(t, f_ok, "file_content ok")
-	testing.expect(t, strings.contains(content, "initial content"), "content matches")
-
-	// 5. Newly added file diff against /dev/null
-	new_file_path, jerr2 := filepath.join([]string{root, "new_file.txt"}, context.temp_allocator)
-	if jerr2 != nil do return
-	_ = os.write_entire_file(new_file_path, transmute([]byte)string("new line 1\nnew line 2\n"))
-	hunks_added, _, _, d_added_ok := p.diff_file(root, "new_file.txt", ".", "", 50)
-	testing.expect(t, d_added_ok, "new file diff ok")
-	testing.expect_value(t, len(hunks_added), 1)
-	testing.expect_value(t, hunks_added[0].old_start, 0)
-	testing.expect_value(t, hunks_added[0].old_len, 0)
-	testing.expect_value(t, hunks_added[0].new_start, 1)
-	testing.expect_value(t, hunks_added[0].new_len, 2)
-	for ln in hunks_added[0].lines {
-		testing.expect_value(t, ln.op, "+")
-	}
-
-	// 6. Deleted file diff against /dev/null
-	_ = os.remove(f1_path)
-	hunks_del, _, _, d_del_ok := p.diff_file(root, "hello.txt", ".", "", 50)
-	testing.expect(t, d_del_ok, "deleted file diff ok")
-	testing.expect_value(t, len(hunks_del), 1)
-	testing.expect_value(t, hunks_del[0].old_start, 1)
-	testing.expect_value(t, hunks_del[0].new_start, 0)
-	testing.expect_value(t, hunks_del[0].new_len, 0)
-	for ln in hunks_del[0].lines {
-		testing.expect_value(t, ln.op, "-")
-	}
-
-	// 7. Revert file restores hello.txt
-	rev_ok := p.revert_file(root, "hello.txt")
-	testing.expect(t, rev_ok, "revert_file ok")
-	testing.expect(t, os.exists(f1_path), "hello.txt restored")
-
-	// Revert untracked deletes new_file.txt
-	p.revert_file(root, "new_file.txt")
-	testing.expect(t, !os.exists(new_file_path), "new_file.txt deleted by revert")
+	not_citc := "/home/tanmay/some/project"
+	_, _, ok4 := vcs_fig_extract_citc_info(not_citc)
+	testing.expect(t, !ok4, "non-citc path is not recognized as citc")
 }
 
+@(test)
+test_vcs_fig_live_google3_citc_workspace :: proc(t: ^testing.T) {
+	test_path := "/google/src/cloud/tanmayvijay/teloneum-processor/google3/monitoring/cloud_latency/billing/teloneum/processor"
+	if !os.exists(test_path) do return
+
+	// 1. Detect provider
+	p, ok := vcs_detect_provider(test_path)
+	testing.expect(t, ok, "detect_provider succeeded on Google3 CitC directory")
+	testing.expect_value(t, p.name(), "fig")
+
+	// 2. Capabilities
+	caps := p.capabilities(test_path)
+	testing.expect_value(t, caps.provider, "fig")
+	testing.expect(t, !caps.supports_staging, "supports_staging false")
+	testing.expect_value(t, caps.staging_model, "none")
+
+	// 3. Status
+	st, sok := p.status(test_path)
+	testing.expect(t, sok, "status succeeded")
+	testing.expect_value(t, st.provider, "fig")
+	testing.expect_value(t, st.branch, "teloneum-processor")
+	testing.expect_value(t, st.remote, "//depot/google3/monitoring/cloud_latency/billing/teloneum/processor")
+	if st.branch != "" do delete(st.branch)
+	if st.remote != "" do delete(st.remote)
+
+	// 4. Changed files
+	files, _, _, fok := p.changed_files(test_path, "", 10)
+	testing.expect(t, fok, "changed_files succeeded")
+	for f in files do delete(f.path)
+	delete(files)
+
+	// 5. Log
+	entries, _, _, lok := p.log(test_path, "", 5)
+	testing.expect(t, lok, "log succeeded")
+	testing.expect(t, len(entries) > 0, "log returned entries")
+	for e in entries {
+		delete(e.hash)
+		delete(e.short_hash)
+		delete(e.subject)
+		delete(e.author)
+		delete(e.date)
+	}
+	delete(entries)
+
+	// 6. Workspaces
+	ws_list, wok := p.list_workspaces(test_path)
+	testing.expect(t, wok, "list_workspaces succeeded")
+	testing.expect(t, len(ws_list) > 0, "workspaces returned entries")
+	found_current := false
+	for w in ws_list {
+		if w.label == "teloneum-processor" && w.is_current {
+			found_current = true
+		}
+		delete(w.path)
+		delete(w.label)
+	}
+	delete(ws_list)
+	testing.expect(t, found_current, "teloneum-processor marked as is_current")
+}

@@ -175,6 +175,7 @@ Chain_List_Item :: struct {
 	chain_id:                      string,
 	title:                         string,
 	status:                        string,
+	created_at:                    string,
 	updated_at:                    string,
 	coordinator_agent_instance_id: string,
 	project_id:                    string,
@@ -204,6 +205,7 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 			chain_id = string(c.chain_id),
 			title = c.title,
 			status = chain_status_http(c.status),
+			created_at = c.created_at,
 			updated_at = c.updated_at,
 			coordinator_agent_instance_id = c.coordinator_agent_instance_id,
 			project_id = project_id,
@@ -257,33 +259,33 @@ resolve_project_name :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Contex
 	return name
 }
 
-// chain_list_item_less orders items newest-first by updated_at, breaking ties on
+// chain_list_item_less orders items newest-first by created_at, breaking ties on
 // chain_id (descending) so pagination and grouping are deterministic.
 chain_list_item_less :: proc(a, b: Chain_List_Item) -> bool {
-	if a.updated_at != b.updated_at do return a.updated_at > b.updated_at
+	if a.created_at != b.created_at do return a.created_at > b.created_at
 	return a.chain_id > b.chain_id
 }
 
-// chain_cursor_encode / _decode form a COMPOSITE (updated_at, chain_id)
-// pagination cursor. updated_at alone is ambiguous when chains share a timestamp:
-// a purely-updated_at cursor with a `>=`/`<` filter drops (or repeats) a tied row
+// chain_cursor_encode / _decode form a COMPOSITE (created_at, chain_id)
+// pagination cursor. created_at alone is ambiguous when chains share a timestamp:
+// a purely-created_at cursor with a `>=`/`<` filter drops (or repeats) a tied row
 // that straddles a page boundary. Carrying chain_id (the sort's tie-breaker) lets
-// resumption land strictly AFTER (updated_at, chain_id) in the newest-first order,
+// resumption land strictly AFTER (created_at, chain_id) in the newest-first order,
 // so every chain is returned exactly once. Separator mirrors the chat-conversation
 // repo's `order|id` cursor convention. Caller owns the returned string.
 chain_cursor_encode :: proc(it: Chain_List_Item) -> string {
-	return strings.concatenate({it.updated_at, "|", it.chain_id})
+	return strings.concatenate({it.created_at, "|", it.chain_id})
 }
-chain_cursor_decode :: proc(cursor: string) -> (updated_at: string, chain_id: string) {
+chain_cursor_decode :: proc(cursor: string) -> (created_at: string, chain_id: string) {
 	if sep := strings.index_byte(cursor, '|'); sep >= 0 do return cursor[:sep], cursor[sep + 1:]
 	return cursor, ""
 }
 // chain_after_cursor reports whether `it` sorts strictly after the cursor in the
-// newest-first (updated_at desc, then chain_id desc) order used throughout. An
+// newest-first (created_at desc, then chain_id desc) order used throughout. An
 // empty cursor means "from the start" (include everything).
-chain_after_cursor :: proc(it: Chain_List_Item, cur_updated_at, cur_chain_id: string) -> bool {
-	if cur_updated_at == "" do return true
-	if it.updated_at != cur_updated_at do return it.updated_at < cur_updated_at
+chain_after_cursor :: proc(it: Chain_List_Item, cur_created_at, cur_chain_id: string) -> bool {
+	if cur_created_at == "" do return true
+	if it.created_at != cur_created_at do return it.created_at < cur_created_at
 	return it.chain_id < cur_chain_id
 }
 
@@ -339,7 +341,7 @@ group_chains_by_project :: proc(items: []Chain_List_Item, preview_cap: int) -> [
 		has_more := total > preview_n
 		next_cursor := ""
 		// Composite cursor so the client can page the rest of THIS project via the
-		// per-project view without losing a chain tied on updated_at at the handoff.
+		// per-project view without losing a chain tied on created_at at the handoff.
 		if has_more && preview_n > 0 do next_cursor = chain_cursor_encode(preview[preview_n - 1])
 		append(&groups, Chain_Project_Group{
 			project_id = project_id,
@@ -382,9 +384,9 @@ Chain_Project_Page :: struct {
 }
 
 // paginate_project_chains returns one page of a single project's chains,
-// newest-first. `cursor` is a composite (updated_at, chain_id) watermark (see
+// newest-first. `cursor` is a composite (created_at, chain_id) watermark (see
 // chain_cursor_encode): only chains that sort strictly after it are returned, so
-// chains sharing an updated_at across a page boundary are never skipped. The
+// chains sharing a created_at across a page boundary are never skipped. The
 // returned chains slice and next_cursor are caller-owned (delete them).
 paginate_project_chains :: proc(items: []Chain_List_Item, project_id: string, limit: int, cursor: string) -> Chain_Project_Page {
 	cur_at, cur_id := chain_cursor_decode(cursor)

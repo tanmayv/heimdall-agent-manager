@@ -10,22 +10,32 @@ package main
 
 import "core:strings"
 
+// Static-storage action whitelist (see vcs_git_actions). jj has no index, so
+// "stage"/"unstage" are deliberately absent.
+vcs_jj_actions := [5]string{"diff", "log", "commit_diff", "revert", "workspaces"}
+
 // vcs_jj_provider returns the jj proc-table.
 vcs_jj_provider :: proc() -> VCS_Provider {
 	return VCS_Provider{
-		name          = vcs_jj_name,
-		detect        = vcs_jj_detect,
-		status        = vcs_jj_status,
-		changed_files = vcs_jj_changed_files,
-		diff_file     = vcs_jj_diff_file,
-		diff_targets  = vcs_jj_diff_targets,
-		log           = vcs_jj_log,
-		file_content  = vcs_jj_file_content,
-		add_file      = vcs_jj_add_file,
-		revert_file   = vcs_jj_revert_file,
-		revert_all    = vcs_jj_revert_all,
-		commit        = vcs_jj_commit,
-		capabilities  = vcs_jj_capabilities,
+		name            = vcs_jj_name,
+		detect          = vcs_jj_detect,
+		status          = vcs_jj_status,
+		changed_files   = vcs_jj_changed_files,
+		diff_file       = vcs_jj_diff_file,
+		capabilities    = vcs_jj_capabilities,
+		stage_file      = vcs_jj_stage_file,
+		unstage_file    = vcs_jj_unstage_file,
+		revert_file     = vcs_jj_revert_file,
+		save_file       = vcs_jj_save_file,
+		log             = vcs_jj_log,
+		commit_diff     = vcs_jj_commit_diff,
+		// commit_diff_files intentionally nil: the Log tab file-list mode is git-only
+		// for now (jj is compile-only here, no live test). nil = "not_supported".
+		commit_diff_files = nil,
+		// commit intentionally nil: staged-commit is git-only for now (jj commits
+		// differently and is compile-only here). nil = "not_supported".
+		commit = nil,
+		list_workspaces = vcs_jj_list_workspaces,
 	}
 }
 
@@ -39,7 +49,13 @@ vcs_jj_detect :: proc(path: string) -> bool {
 }
 
 vcs_jj_capabilities :: proc(path: string) -> VCS_Capabilities {
-	return VCS_Capabilities{provider = "jj", supports_staging = false}
+	return VCS_Capabilities{
+		provider          = "jj",
+		supports_staging  = false,
+		staging_model     = "none",
+		commit_model      = "revision",
+		supported_actions = vcs_jj_actions[:],
+	}
 }
 
 // vcs_jj_status collects the current branch(es), origin remote, and clean flag.
@@ -80,8 +96,7 @@ vcs_jj_pick_remote :: proc(out: string) -> string {
 // vcs_jj_changed_files parses `jj diff --summary` (each line "<code> <path>") into
 // the neutral shape, then paginates (default 100, max 500). Every entry is staged
 // (jj's working copy is always committed-in-place).
-vcs_jj_changed_files :: proc(path, target, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
-	_ = target
+vcs_jj_changed_files :: proc(path, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
 	out, ok := vcs_run([]string{"jj", "-R", path, "diff", "--summary"})
 	if !ok do return nil, "", false, false
 
@@ -117,8 +132,7 @@ vcs_jj_status_word :: proc(code: u8) -> string {
 
 // vcs_jj_diff_file parses `jj diff --git -- <file>` (unified/git format) into
 // hunks, then paginates (default 50, max 200).
-vcs_jj_diff_file :: proc(path, file, target, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
-	_ = target
+vcs_jj_diff_file :: proc(path, file, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
 	out, ok := vcs_run([]string{"jj", "-R", path, "diff", "--git", "--", file})
 	if !ok do return nil, "", false, false
 	hunks := vcs_parse_unified_diff(out)
@@ -126,47 +140,99 @@ vcs_jj_diff_file :: proc(path, file, target, cursor: string, limit: int) -> ([]V
 	return page, next_cursor, has_more, true
 }
 
-vcs_jj_diff_targets :: proc(path: string) -> ([]VCS_Diff_Target, bool) {
-	targets := make([]VCS_Diff_Target, 1, context.allocator)
-	targets[0] = VCS_Diff_Target{
-		id          = "@",
-		label       = "@",
-		description = "Current working copy commit",
-		is_default  = true,
+// --- write commands ------------------------------------------------------
+
+// jj has no staging index — the working copy is always an implicit commit — so
+// stage/unstage are unsupported. Reported via msg "not_supported" (mirrors the
+// nil-proc contract) rather than a nil pointer, so callers get a clear code.
+vcs_jj_stage_file :: proc(path, file: string) -> (ok: bool, msg: string) {
+	return false, "not_supported"
+}
+
+vcs_jj_unstage_file :: proc(path, file: string) -> (ok: bool, msg: string) {
+	return false, "not_supported"
+}
+
+// vcs_jj_revert_file discards a file's changes in the working-copy commit by
+// restoring it from the parent (`jj restore --changes-in @ -- <file>`).
+vcs_jj_revert_file :: proc(path, file: string) -> (ok: bool, msg: string) {
+	if _, rok := vcs_run([]string{"jj", "-R", path, "restore", "--changes-in", "@", "--", file}); !rok {
+		return false, "revert_failed"
 	}
-	return targets, true
+	return true, ""
 }
 
-vcs_jj_log :: proc(path: string, limit: int) -> ([]VCS_Log_Entry, bool) {
-	_ = path
-	_ = limit
-	return nil, true
+// vcs_jj_save_file writes the editor buffer back to the working-copy file. jj's
+// working copy is an implicit commit, so a plain filesystem write is picked up by
+// the next jj snapshot (surfaced on the next vcs_status/vcs_diff) — no jj command
+// needed, identical to the git adapter.
+vcs_jj_save_file :: proc(path, file, content: string) -> (ok: bool, msg: string) {
+	return vcs_write_file_impl(path, file, content)
 }
 
-vcs_jj_file_content :: proc(path, file, target: string) -> (string, bool) {
-	eff_target := target
-	if eff_target == "" do eff_target = "@"
-	return vcs_run([]string{"jj", "-R", path, "file", "show", "-r", eff_target, file})
+// --- log -----------------------------------------------------------------
+
+// vcs_jj_log lists all revisions via a template that emits the same
+// "hash|short|subject|author|date" 5-field row the git adapter's parser expects
+// (shared vcs_parse_log_line). --no-graph keeps one commit per line. The template
+// uses jj's builtin methods (commit_id.short(), description.first_line(),
+// author.name(), committer.timestamp()); a trailing newline separates rows.
+vcs_jj_log :: proc(path, cursor: string, limit: int) -> ([]VCS_Log_Entry, string, bool, bool) {
+	template := `commit_id ++ "|" ++ commit_id.short() ++ "|" ++ description.first_line() ++ "|" ++ author.name() ++ "|" ++ committer.timestamp() ++ "\n"`
+	out, ok := vcs_run([]string{"jj", "-R", path, "log", "-r", "all()", "--no-graph", "--template", template})
+	if !ok do return nil, "", false, false
+	all := make([dynamic]VCS_Log_Entry, context.allocator)
+	lines := strings.split_lines(out, context.temp_allocator)
+	for line in lines {
+		if strings.trim_space(line) == "" do continue
+		if e, eok := vcs_parse_log_line(line); eok do append(&all, e)
+	}
+	page, next_cursor, has_more := vcs_paginate_log(all[:], cursor, limit, VCS_LOG_DEFAULT_LIMIT, VCS_LOG_MAX_LIMIT)
+	return page, next_cursor, has_more, true
 }
 
-vcs_jj_add_file :: proc(path, file: string) -> bool {
-	_ = path
-	_ = file
-	return true // jj automatically tracks working copy files
+// --- commit_diff ---------------------------------------------------------
+
+// vcs_jj_commit_diff diffs base_ref (optionally --to head_ref) in --git format so
+// it shares the unified parser. head_ref == "WORKDIR"/empty omits --to (compares to
+// the working copy); base_ref == head_ref is an empty diff.
+vcs_jj_commit_diff :: proc(path, base_ref, head_ref, file, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
+	if base_ref == head_ref do return nil, "", false, true
+	args := make([dynamic]string, context.temp_allocator)
+	append(&args, "jj", "-R", path, "diff", "--git", "-r", base_ref)
+	if head_ref != "" && head_ref != "WORKDIR" do append(&args, "--to", head_ref)
+	if file != "" do append(&args, "--", file)
+	out, ok := vcs_run(args[:])
+	if !ok do return nil, "", false, false
+	hunks := vcs_parse_unified_diff(out)
+	page, next_cursor, has_more := vcs_paginate_hunks(hunks, cursor, limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
+	return page, next_cursor, has_more, true
 }
 
-vcs_jj_revert_file :: proc(path, file: string) -> bool {
-	_, ok := vcs_run([]string{"jj", "-R", path, "restore", file})
-	return ok
-}
+// --- workspaces ----------------------------------------------------------
 
-vcs_jj_revert_all :: proc(path: string) -> bool {
-	_, ok := vcs_run([]string{"jj", "-R", path, "restore"})
-	return ok
+// vcs_jj_list_workspaces parses `jj workspace list`, whose rows read
+// "<name>: <change_id> <desc>" with the active workspace marked "(current)". jj
+// exposes no per-workspace path, so path mirrors the workspace name; label is the
+// name and is_locked is always false (jj has no worktree lock concept).
+vcs_jj_list_workspaces :: proc(path: string) -> ([]VCS_Workspace, bool) {
+	out, ok := vcs_run([]string{"jj", "-R", path, "workspace", "list"})
+	if !ok do return nil, false
+	all := make([dynamic]VCS_Workspace, context.allocator)
+	lines := strings.split_lines(out, context.temp_allocator)
+	for raw in lines {
+		line := strings.trim_space(raw)
+		if line == "" do continue
+		colon := strings.index_byte(line, ':')
+		if colon < 0 do continue
+		name := strings.trim_space(line[:colon])
+		if name == "" do continue
+		append(&all, VCS_Workspace{
+			path       = strings.clone(name),
+			label      = strings.clone(name),
+			is_current = strings.contains(line, "(current)"),
+			is_locked  = false,
+		})
+	}
+	return all[:], true
 }
-
-vcs_jj_commit :: proc(path, message: string, amend: bool) -> (string, bool) {
-	_ = amend
-	return vcs_run([]string{"jj", "-R", path, "describe", "-m", message})
-}
-

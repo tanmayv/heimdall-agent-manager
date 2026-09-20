@@ -1146,6 +1146,7 @@ export default function ChainOverviewPanel({
                             isExpanded={true}
                             isActiveTab={true}
                             runtimeStatus={rawStatus}
+                            hideHeader={true}
                           />
                         )}
                       </div>
@@ -1199,6 +1200,7 @@ export default function ChainOverviewPanel({
               isExpanded={true}
               isActiveTab={true}
               className="h-full !max-h-full"
+              hideHeader={true}
             />
           </div>
         </div>

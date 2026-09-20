@@ -7,27 +7,30 @@ package main
 // probe. All commands fail soft: a missing upstream, no origin remote, or a
 // non-git path degrade to empty/zero values rather than surfacing an error.
 
-import "core:fmt"
-import "core:os"
-import "core:path/filepath"
 import "core:strings"
+
+// Static-storage action whitelist so vcs_git_capabilities can hand out a slice with
+// package lifetime (a slice of a proc-local composite literal would dangle).
+vcs_git_actions := [7]string{"diff", "log", "commit_diff", "revert", "stage", "unstage", "workspaces"}
 
 // vcs_git_provider returns the git proc-table.
 vcs_git_provider :: proc() -> VCS_Provider {
 	return VCS_Provider{
-		name          = vcs_git_name,
-		detect        = vcs_git_detect,
-		status        = vcs_git_status,
-		changed_files = vcs_git_changed_files,
-		diff_file     = vcs_git_diff_file,
-		diff_targets  = vcs_git_diff_targets,
-		log           = vcs_git_log,
-		file_content  = vcs_git_file_content,
-		add_file      = vcs_git_add_file,
-		revert_file   = vcs_git_revert_file,
-		revert_all    = vcs_git_revert_all,
-		commit        = vcs_git_commit,
-		capabilities  = vcs_git_capabilities,
+		name            = vcs_git_name,
+		detect          = vcs_git_detect,
+		status          = vcs_git_status,
+		changed_files   = vcs_git_changed_files,
+		diff_file       = vcs_git_diff_file,
+		capabilities    = vcs_git_capabilities,
+		stage_file      = vcs_git_stage_file,
+		unstage_file    = vcs_git_unstage_file,
+		revert_file     = vcs_git_revert_file,
+		save_file       = vcs_git_save_file,
+		log               = vcs_git_log,
+		commit_diff       = vcs_git_commit_diff,
+		commit_diff_files = vcs_git_commit_diff_files,
+		commit            = vcs_git_commit,
+		list_workspaces   = vcs_git_list_workspaces,
 	}
 }
 
@@ -42,7 +45,13 @@ vcs_git_detect :: proc(path: string) -> bool {
 }
 
 vcs_git_capabilities :: proc(path: string) -> VCS_Capabilities {
-	return VCS_Capabilities{provider = "git", supports_staging = true}
+	return VCS_Capabilities{
+		provider          = "git",
+		supports_staging  = true,
+		staging_model     = "index",
+		commit_model      = "branch",
+		supported_actions = vcs_git_actions[:],
+	}
 }
 
 // vcs_git_status collects branch, origin remote, ahead/behind vs upstream, and the
@@ -72,110 +81,48 @@ vcs_git_status :: proc(path: string) -> (VCS_Status, bool) {
 	return st, true
 }
 
-// vcs_git_changed_files parses changed files against HEAD, cached, or a specified target revision,
-// joins per-file addition/deletion counts from `git diff --numstat`, then paginates (default 100, max 500).
-vcs_git_changed_files :: proc(path, target, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
-	all := make([dynamic]VCS_Changed_File, context.allocator)
+// vcs_git_changed_files parses `git status --porcelain` into the neutral changed-
+// file shape, joins per-file addition/deletion counts from `git diff --numstat`,
+// then paginates (default 100, max 500).
+vcs_git_changed_files :: proc(path, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool) {
+	out, ok := vcs_run([]string{"git", "-C", path, "status", "--porcelain"})
+	if !ok do return nil, "", false, false
+
+	// Per-file +/- counts. Unstaged edits show up in `diff HEAD` numstat; staged-
+	// only changes need the `--cached HEAD` pass. A later entry wins on overlap,
+	// but a path is normally only in one of the two sets.
 	stats := make(map[string][2]int, 0, context.temp_allocator)
+	vcs_git_numstat_into(&stats, path, []string{"git", "-C", path, "diff", "--numstat", "HEAD"})
+	vcs_git_numstat_into(&stats, path, []string{"git", "-C", path, "diff", "--numstat", "--cached", "HEAD"})
 
-	eff_target := strings.trim_space(target)
-	if eff_target == "" || eff_target == "HEAD" {
-		out, ok := vcs_run([]string{"git", "-C", path, "status", "--porcelain"})
-		if !ok do return nil, "", false, false
-
-		vcs_git_numstat_into(&stats, path, []string{"git", "-C", path, "diff", "--numstat", "HEAD"})
-		vcs_git_numstat_into(&stats, path, []string{"git", "-C", path, "diff", "--numstat", "--cached", "HEAD"})
-
-		lines := strings.split_lines(out, context.temp_allocator)
-		for line in lines {
-			if len(line) < 4 do continue // "XY p" is the shortest meaningful record
-			x := line[0]
-			y := line[1]
-			raw_path := line[3:]
-			if arrow := strings.index(raw_path, " -> "); arrow >= 0 {
-				raw_path = raw_path[arrow + 4:]
-			}
-			status := vcs_git_status_word(x, y)
-			staged := x != ' ' && x != '?'
-			clean_path := strings.clone(strings.trim_space(raw_path))
-			counts := stats[clean_path]
-			append(&all, VCS_Changed_File{
-				path      = clean_path,
-				status    = status,
-				staged    = staged,
-				additions = counts[0],
-				deletions = counts[1],
-			})
+	all := make([dynamic]VCS_Changed_File, context.allocator)
+	lines := strings.split_lines(out, context.temp_allocator)
+	for line in lines {
+		if len(line) < 4 do continue // "XY p" is the shortest meaningful record
+		x := line[0]
+		y := line[1]
+		// Porcelain v1: index status, worktree status, a space, then the path at
+		// column 3.
+		raw_path := line[3:]
+		// Renamed/copied records read "old -> new"; keep the destination path.
+		if arrow := strings.index(raw_path, " -> "); arrow >= 0 {
+			raw_path = raw_path[arrow + 4:]
 		}
-	} else if eff_target == "cached" {
-		out, ok := vcs_run([]string{"git", "-C", path, "diff", "--name-status", "--cached", "HEAD"})
-		if !ok do return nil, "", false, false
-
-		vcs_git_numstat_into(&stats, path, []string{"git", "-C", path, "diff", "--numstat", "--cached", "HEAD"})
-
-		lines := strings.split_lines(out, context.temp_allocator)
-		for line in lines {
-			trimmed := strings.trim_space(line)
-			if len(trimmed) < 2 do continue
-			parts := strings.split(trimmed, "\t", context.temp_allocator)
-			if len(parts) < 2 do continue
-			code := parts[0][0]
-			raw_path := parts[len(parts) - 1]
-			status := vcs_git_status_word(code, ' ')
-			clean_path := strings.clone(strings.trim_space(raw_path))
-			counts := stats[clean_path]
-			append(&all, VCS_Changed_File{
-				path      = clean_path,
-				status    = status,
-				staged    = true,
-				additions = counts[0],
-				deletions = counts[1],
-			})
-		}
-	} else {
-		// Diffs working tree against specified target revision
-		out, ok := vcs_run([]string{"git", "-C", path, "diff", "--name-status", eff_target})
-		if !ok do return nil, "", false, false
-
-		vcs_git_numstat_into(&stats, path, []string{"git", "-C", path, "diff", "--numstat", eff_target})
-
-		lines := strings.split_lines(out, context.temp_allocator)
-		for line in lines {
-			trimmed := strings.trim_space(line)
-			if len(trimmed) < 2 do continue
-			parts := strings.split(trimmed, "\t", context.temp_allocator)
-			if len(parts) < 2 do continue
-			code := parts[0][0]
-			raw_path := parts[len(parts) - 1]
-			status := vcs_git_status_word(code, ' ')
-			clean_path := strings.clone(strings.trim_space(raw_path))
-			counts := stats[clean_path]
-			append(&all, VCS_Changed_File{
-				path      = clean_path,
-				status    = status,
-				staged    = false,
-				additions = counts[0],
-				deletions = counts[1],
-			})
-		}
-
-		// Also append untracked files
-		if untracked_out, uok := vcs_run([]string{"git", "-C", path, "ls-files", "--others", "--exclude-standard"}); uok {
-			ulines := strings.split_lines(untracked_out, context.temp_allocator)
-			for uline in ulines {
-				utrimmed := strings.trim_space(uline)
-				if utrimmed == "" do continue
-				append(&all, VCS_Changed_File{
-					path      = strings.clone(utrimmed),
-					status    = "untracked",
-					staged    = false,
-					additions = 0,
-					deletions = 0,
-				})
-			}
-		}
+		status := vcs_git_status_word(x, y)
+		// staged when the index column carries a real (non-space, non-untracked)
+		// status.
+		staged := x != ' ' && x != '?'
+		clean_path := strings.clone(strings.trim_space(raw_path))
+		// Untracked files never appear in numstat; they stay 0/0.
+		counts := stats[clean_path] // zero value {0, 0} when absent
+		append(&all, VCS_Changed_File{
+			path      = clean_path,
+			status    = status,
+			staged    = staged,
+			additions = counts[0],
+			deletions = counts[1],
+		})
 	}
-
 	page, next_cursor, has_more := vcs_paginate_files(all[:], cursor, limit, VCS_FILES_DEFAULT_LIMIT, VCS_FILES_MAX_LIMIT)
 	return page, next_cursor, has_more, true
 }
@@ -223,229 +170,267 @@ vcs_git_status_word :: proc(x, y: u8) -> string {
 	}
 }
 
-// vcs_git_diff_file parses unified diffs against a target revision, staging area, or /dev/null
-// for newly added and deleted files.
-vcs_git_diff_file :: proc(path, file, target, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
-	eff_target := strings.trim_space(target)
-	full_path, jerr := filepath.join([]string{path, file}, context.temp_allocator)
-	if jerr != nil do return nil, "", false, false
-	file_exists := os.exists(full_path)
-
-	target_ref := eff_target
-	if target_ref == "" || target_ref == "cached" do target_ref = "HEAD"
-	_, in_target := vcs_run([]string{"git", "-C", path, "cat-file", "-e", fmt.tprintf("%s:%s", target_ref, file)})
-
-	hunks: []VCS_Diff_Hunk
-
-	if !in_target && file_exists {
-		// Newly added or untracked file -> diff against /dev/null (+ lines)
-		if content_bytes, err := os.read_entire_file(full_path, context.temp_allocator); err == nil {
-			hunks = vcs_synthetic_diff_added(string(content_bytes))
-		}
-	} else if in_target && !file_exists {
-		// Deleted file -> diff against /dev/null (- lines)
-		if target_content, ok := vcs_git_file_content(path, file, target_ref); ok {
-			hunks = vcs_synthetic_diff_deleted(target_content)
-		}
-	} else {
-		diff_args: [dynamic]string
-		append(&diff_args, "git", "-C", path, "diff")
-		if eff_target == "cached" {
-			append(&diff_args, "--cached", "HEAD")
-		} else if eff_target != "" && eff_target != "HEAD" {
-			append(&diff_args, eff_target)
-		} else {
-			append(&diff_args, "HEAD")
-		}
-		append(&diff_args, "--", file)
-
-		out, ok := vcs_run(diff_args[:])
-		if !ok do return nil, "", false, false
-		if strings.trim_space(out) != "" {
-			hunks = vcs_parse_unified_diff(out)
-		}
-	}
-
+// vcs_git_diff_file parses `git diff HEAD -- <file>` into hunks, then paginates
+// (default 50, max 200).
+vcs_git_diff_file :: proc(path, file, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
+	out, ok := vcs_run([]string{"git", "-C", path, "diff", "HEAD", "--", file})
+	if !ok do return nil, "", false, false
+	hunks := vcs_parse_unified_diff(out)
 	page, next_cursor, has_more := vcs_paginate_hunks(hunks, cursor, limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
 	return page, next_cursor, has_more, true
 }
 
-// vcs_git_diff_targets collects available diff targets: HEAD, cached, HEAD~1, upstream, and recent commits.
-vcs_git_diff_targets :: proc(path: string) -> ([]VCS_Diff_Target, bool) {
-	targets := make([dynamic]VCS_Diff_Target, context.allocator)
+// --- write commands ------------------------------------------------------
 
-	// 1. HEAD (default)
-	append(&targets, VCS_Diff_Target{
-		id          = "HEAD",
-		label       = "HEAD",
-		description = "Latest commit on current branch",
-		is_default  = true,
-	})
-
-	// 2. cached (if staged changes exist)
-	if cached_out, ok := vcs_run([]string{"git", "-C", path, "diff", "--cached", "--name-only"}); ok {
-		if strings.trim_space(cached_out) != "" {
-			append(&targets, VCS_Diff_Target{
-				id          = "cached",
-				label       = "Staged Changes",
-				description = "Changes staged in the index",
-				is_default  = false,
-			})
-		}
+// vcs_git_stage_file stages one path into the index (`git add -- <file>`).
+vcs_git_stage_file :: proc(path, file: string) -> (ok: bool, msg: string) {
+	if _, rok := vcs_run([]string{"git", "-C", path, "add", "--", file}); !rok {
+		return false, "stage_failed"
 	}
-
-	// 3. HEAD~1 (if exists)
-	if _, ok := vcs_run([]string{"git", "-C", path, "rev-parse", "--verify", "HEAD~1"}); ok {
-		append(&targets, VCS_Diff_Target{
-			id          = "HEAD~1",
-			label       = "HEAD~1",
-			description = "Previous commit",
-			is_default  = false,
-		})
-	}
-
-	// 4. Upstream @{u} (if exists)
-	if u_name, ok := vcs_run([]string{"git", "-C", path, "rev-parse", "--abbrev-ref", "@{u}"}); ok {
-		u_trimmed := strings.trim_space(u_name)
-		if u_trimmed != "" {
-			append(&targets, VCS_Diff_Target{
-				id          = "@{u}",
-				label       = strings.clone(u_trimmed),
-				description = "Upstream tracking branch",
-				is_default  = false,
-			})
-		}
-	}
-
-	// 5. Last 5 commit SHAs
-	if log_out, ok := vcs_run([]string{"git", "-C", path, "log", "-n", "5", "--skip=1", "--pretty=format:%h%x09%s"}); ok {
-		lines := strings.split_lines(log_out, context.temp_allocator)
-		for line in lines {
-			trimmed := strings.trim_space(line)
-			if trimmed == "" do continue
-			tab_idx := strings.index_byte(trimmed, '\t')
-			if tab_idx < 0 {
-				append(&targets, VCS_Diff_Target{
-					id          = strings.clone(trimmed),
-					label       = strings.clone(trimmed),
-					description = "",
-					is_default  = false,
-				})
-			} else {
-				sha := strings.trim_space(trimmed[:tab_idx])
-				subj := strings.trim_space(trimmed[tab_idx + 1:])
-				append(&targets, VCS_Diff_Target{
-					id          = strings.clone(sha),
-					label       = strings.clone(sha),
-					description = strings.clone(subj),
-					is_default  = false,
-				})
-			}
-		}
-	}
-
-	return targets[:], true
+	return true, ""
 }
 
-// vcs_git_log queries recent commits formatted as neutral VCS_Log_Entry structs.
-vcs_git_log :: proc(path: string, limit: int) -> ([]VCS_Log_Entry, bool) {
-	eff_limit := limit
-	if eff_limit <= 0 do eff_limit = 20
-	if eff_limit > 100 do eff_limit = 100
+// vcs_git_unstage_file removes one path's staged changes. Normally
+// `git restore --staged`, but on an initial commit there is no HEAD to restore
+// from, so we detect that (rev-parse --verify HEAD fails) and fall back to
+// `git rm --cached`, which simply drops the path from the index.
+vcs_git_unstage_file :: proc(path, file: string) -> (ok: bool, msg: string) {
+	if _, hok := vcs_run([]string{"git", "-C", path, "rev-parse", "--verify", "HEAD"}); !hok {
+		if _, rok := vcs_run([]string{"git", "-C", path, "rm", "--cached", "--", file}); !rok {
+			return false, "unstage_failed"
+		}
+		return true, ""
+	}
+	if _, rok := vcs_run([]string{"git", "-C", path, "restore", "--staged", "--", file}); !rok {
+		return false, "unstage_failed"
+	}
+	return true, ""
+}
 
-	limit_str := fmt.tprintf("-n%d", eff_limit)
-	out, ok := vcs_run([]string{
-		"git", "-C", path, "log", limit_str,
-		"--pretty=format:%h%x09%s%x09%an%x09%ad%x09%D",
-	})
-	if !ok do return nil, false
+// vcs_git_revert_file discards a tracked file's working-tree changes
+// (`git restore -- <file>`). An untracked file has no committed/indexed version to
+// restore to, so `git restore` cannot revert it; we detect that up front
+// (ls-files --error-unmatch exits non-zero for an untracked path) and report the
+// distinct "untracked_file" code instead of a generic failure.
+vcs_git_revert_file :: proc(path, file: string) -> (ok: bool, msg: string) {
+	if _, tok := vcs_run([]string{"git", "-C", path, "ls-files", "--error-unmatch", "--", file}); !tok {
+		return false, "untracked_file"
+	}
+	if _, rok := vcs_run([]string{"git", "-C", path, "restore", "--", file}); !rok {
+		return false, "revert_failed"
+	}
+	return true, ""
+}
 
-	entries := make([dynamic]VCS_Log_Entry, context.allocator)
+// vcs_git_save_file writes the editor buffer back to the working-tree file. This is
+// a plain filesystem write (no git command) — the change surfaces on the next
+// vcs_status/vcs_diff like any other working-tree edit.
+vcs_git_save_file :: proc(path, file, content: string) -> (ok: bool, msg: string) {
+	return vcs_write_file_impl(path, file, content)
+}
+
+// --- log -----------------------------------------------------------------
+
+// vcs_git_log lists commits newest-first via `git log --format=%H|%h|%s|%an|%ci`,
+// one commit per line, then paginates over the parsed entries.
+vcs_git_log :: proc(path, cursor: string, limit: int) -> ([]VCS_Log_Entry, string, bool, bool) {
+	out, ok := vcs_run([]string{"git", "-C", path, "log", "--format=%H|%h|%s|%an|%ci"})
+	if !ok do return nil, "", false, false
+	all := make([dynamic]VCS_Log_Entry, context.allocator)
 	lines := strings.split_lines(out, context.temp_allocator)
-	for line, idx in lines {
-		trimmed := strings.trim_space(line)
-		if trimmed == "" do continue
-		parts := strings.split(trimmed, "\t", context.temp_allocator)
-		rev := ""
-		title := ""
-		author := ""
-		timestamp := ""
-		ref_names := ""
-		if len(parts) > 0 do rev = strings.trim_space(parts[0])
-		if len(parts) > 1 do title = strings.trim_space(parts[1])
-		if len(parts) > 2 do author = strings.trim_space(parts[2])
-		if len(parts) > 3 do timestamp = strings.trim_space(parts[3])
-		if len(parts) > 4 do ref_names = strings.trim_space(parts[4])
+	for line in lines {
+		if strings.trim_space(line) == "" do continue
+		if e, eok := vcs_parse_log_line(line); eok do append(&all, e)
+	}
+	page, next_cursor, has_more := vcs_paginate_log(all[:], cursor, limit, VCS_LOG_DEFAULT_LIMIT, VCS_LOG_MAX_LIMIT)
+	return page, next_cursor, has_more, true
+}
 
-		is_current := idx == 0 || strings.contains(ref_names, "HEAD")
-		status := "committed"
-		if is_current do status = "HEAD"
+// vcs_parse_log_line parses one "%H|%h|%s|%an|%ci" row. The hashes and the ISO
+// date never contain a '|', while the subject and author theoretically can, so we
+// anchor from both ends: the first two pipes bound the hashes, the last pipe bounds
+// the date, and the author is the field just before it — any surplus pipes fall
+// into the subject. Shared with the jj adapter, which emits the same 5-field shape.
+vcs_parse_log_line :: proc(line: string) -> (VCS_Log_Entry, bool) {
+	p1 := strings.index_byte(line, '|')
+	if p1 < 0 do return {}, false
+	hash := line[:p1]
+	rest := line[p1 + 1:]
+	p2 := strings.index_byte(rest, '|')
+	if p2 < 0 do return {}, false
+	short_hash := rest[:p2]
+	tail := rest[p2 + 1:] // "<subject>|<author>|<date>"
+	last := strings.last_index_byte(tail, '|')
+	if last < 0 do return {}, false
+	date := tail[last + 1:]
+	before_date := tail[:last] // "<subject>|<author>"
+	alast := strings.last_index_byte(before_date, '|')
+	if alast < 0 do return {}, false
+	author := before_date[alast + 1:]
+	subject := before_date[:alast]
+	return VCS_Log_Entry{
+		hash       = strings.clone(strings.trim_space(hash)),
+		short_hash = strings.clone(strings.trim_space(short_hash)),
+		subject    = strings.clone(subject),
+		author     = strings.clone(author),
+		date       = strings.clone(strings.trim_space(date)),
+	}, true
+}
 
-		append(&entries, VCS_Log_Entry{
-			revision   = strings.clone(rev),
-			cl_number  = "",
-			title      = strings.clone(title),
-			author     = strings.clone(author),
-			timestamp  = strings.clone(timestamp),
-			is_current = is_current,
-			status     = status,
+// --- commit_diff ---------------------------------------------------------
+
+// vcs_git_commit_diff diffs base_ref against head_ref (optionally scoped to one
+// file). head_ref == "WORKDIR" (or empty) omits the head so git compares base to
+// the working tree; base_ref == head_ref is an empty diff by definition. A git
+// error (e.g. an unknown ref) surfaces as ok=false, which the caller maps to the
+// "invalid_ref" error code.
+vcs_git_commit_diff :: proc(path, base_ref, head_ref, file, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool) {
+	if base_ref == head_ref do return nil, "", false, true
+	args := vcs_git_commit_diff_args(path, base_ref, head_ref, file)
+	out, ok := vcs_run(args[:])
+	if !ok do return nil, "", false, false
+	hunks := vcs_parse_unified_diff(out)
+	page, next_cursor, has_more := vcs_paginate_hunks(hunks, cursor, limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
+	return page, next_cursor, has_more, true
+}
+
+// vcs_git_commit_diff_args builds the `git -C <path> diff <base_ref> [head_ref] [-- <file>]`
+// argv for a commit diff. A head_ref of "" or the "WORKDIR" sentinel is omitted so git
+// diffs base_ref against the working tree; a non-empty file scopes the diff after a "--"
+// separator. Split out of vcs_git_commit_diff (pure, builds argv only) so the sentinel
+// handling is unit-testable. Allocates on context.temp_allocator, matching the previous
+// inline build — the caller passes args[:] straight to vcs_run in the same scope.
+vcs_git_commit_diff_args :: proc(path, base_ref, head_ref, file: string) -> [dynamic]string {
+	args := make([dynamic]string, context.temp_allocator)
+	append(&args, "git", "-C", path, "diff", base_ref)
+	if head_ref != "" && head_ref != "WORKDIR" do append(&args, head_ref)
+	if file != "" do append(&args, "--", file)
+	return args
+}
+
+// vcs_ns_char_to_status maps a `git diff --name-status` status char to the neutral
+// status word. A/D/R are exact; M, C, T, and anything else collapse to "modified"
+// (the closest neutral bucket, matching vcs_git_status_word's fallbacks).
+vcs_ns_char_to_status :: proc(sc: rune) -> string {
+	switch sc {
+	case 'A': return "added"
+	case 'D': return "deleted"
+	case 'R': return "renamed"
+	case:     return "modified" // M, C, T, and anything else
+	}
+}
+
+// vcs_git_commit_diff_files lists the files changed between base_ref and head_ref
+// (the file-list mode of vcs_commit_diff): `git diff --name-status` for path+status
+// and `git diff --numstat` for +/- counts, joined by path. head_ref "" or "WORKDIR"
+// omits the head so git compares base_ref to the working tree; base_ref == head_ref
+// is an empty list by definition. A git error (e.g. an unknown ref) surfaces as
+// ok=false, which the caller maps to "invalid_ref". The returned slice and its path
+// strings are owned by context.allocator.
+vcs_git_commit_diff_files :: proc(path, base_ref, head_ref: string) -> ([]VCS_Changed_File, bool) {
+	if base_ref == head_ref do return []VCS_Changed_File{}, true
+	// Run git diff --name-status base_ref [head_ref] for path + status.
+	ns_args := make([dynamic]string, context.temp_allocator)
+	append(&ns_args, "git", "-C", path, "diff", "--name-status", base_ref)
+	if head_ref != "" && head_ref != "WORKDIR" do append(&ns_args, head_ref)
+	ns_out, ns_ok := vcs_run(ns_args[:])
+	if !ns_ok do return nil, false
+	// Run git diff --numstat base_ref [head_ref] for +/- counts.
+	num_args := make([dynamic]string, context.temp_allocator)
+	append(&num_args, "git", "-C", path, "diff", "--numstat", base_ref)
+	if head_ref != "" && head_ref != "WORKDIR" do append(&num_args, head_ref)
+	stats := make(map[string][2]int, 0, context.temp_allocator)
+	vcs_git_numstat_into(&stats, path, num_args[:])
+	// Parse --name-status lines: "<sc>\t<path>" or "<sc>\t<old>\t<new>" for renames.
+	all := make([dynamic]VCS_Changed_File, context.allocator)
+	for raw in strings.split_lines(ns_out, context.temp_allocator) {
+		line := strings.trim_space(raw)
+		if len(line) == 0 do continue
+		sc := rune(line[0])
+		rest := strings.trim_left(line[1:], "\t ")
+		// Renames/copies read "<sc>\t<old>\t<new>": the destination is the last
+		// tab-separated segment.
+		file_path := rest
+		if tab := strings.last_index_byte(rest, '\t'); tab >= 0 {
+			file_path = strings.trim_space(rest[tab + 1:])
+		}
+		if file_path == "" do continue
+		file_path = strings.clone(file_path)
+		counts := stats[file_path] // zero value {0, 0} when absent (renames, binaries)
+		append(&all, VCS_Changed_File{
+			path      = file_path,
+			status    = vcs_ns_char_to_status(sc),
+			staged    = false,
+			additions = counts[0],
+			deletions = counts[1],
 		})
 	}
-
-	return entries[:], true
+	return all[:], true
 }
 
-// vcs_git_file_content fetches historical file content at requested target revision.
-vcs_git_file_content :: proc(path, file, target: string) -> (string, bool) {
-	eff_target := target
-	if eff_target == "" do eff_target = "HEAD"
-	spec := fmt.tprintf("%s:%s", eff_target, file)
-	return vcs_run([]string{"git", "-C", path, "show", spec})
+// --- commit --------------------------------------------------------------
+
+// vcs_git_commit commits the currently-staged changes with `message`
+// (`git -C path commit -m <message>`). Returns ok=true only on exit 0; a git error
+// (nothing staged, bad identity, hook rejection, ...) surfaces as ok=false, which the
+// caller maps to the "commit_failed" error code. The caller guards against an empty
+// message before dispatch, so `message` is always non-empty here.
+vcs_git_commit :: proc(path, message: string) -> (ok: bool) {
+	_, rok := vcs_run([]string{"git", "-C", path, "commit", "-m", message})
+	return rok
 }
 
-// vcs_git_add_file stages a file in Git.
-vcs_git_add_file :: proc(path, file: string) -> bool {
-	_, ok := vcs_run([]string{"git", "-C", path, "add", "--", file})
-	return ok
+// --- workspaces ----------------------------------------------------------
+
+// vcs_git_list_workspaces parses `git worktree list --porcelain`. Records are
+// blank-line-separated blocks of "worktree <path>", "HEAD <sha>",
+// "branch refs/heads/<name>", and an optional "locked [reason]" / "detached".
+// is_current is set on the worktree whose path matches the queried path (both
+// normalized via vcs_clean_path); label is the branch short-name, or "(detached)".
+vcs_git_list_workspaces :: proc(path: string) -> ([]VCS_Workspace, bool) {
+	out, ok := vcs_run([]string{"git", "-C", path, "worktree", "list", "--porcelain"})
+	if !ok do return nil, false
+	return vcs_git_parse_worktree_list(out, vcs_clean_path(path)), true
 }
 
-// vcs_git_revert_file restores a tracked file or deletes an untracked file.
-vcs_git_revert_file :: proc(path, file: string) -> bool {
-	_, tracked := vcs_run([]string{"git", "-C", path, "ls-files", "--error-unmatch", "--", file})
-	if tracked {
-		_, ok := vcs_run([]string{"git", "-C", path, "checkout", "HEAD", "--", file})
-		if !ok {
-			_, ok = vcs_run([]string{"git", "-C", path, "restore", "--staged", "--worktree", "--", file})
+// vcs_git_parse_worktree_list parses `git worktree list --porcelain` output into the
+// workspace rows, marking the block whose path equals `want` (an already-cleaned path)
+// as is_current. Split out of vcs_git_list_workspaces (pure, no subprocess) so the
+// record splitting and the branch/locked handling are unit-testable.
+vcs_git_parse_worktree_list :: proc(out, want: string) -> []VCS_Workspace {
+	all := make([dynamic]VCS_Workspace, context.allocator)
+	cur := VCS_Workspace{}
+	have := false
+	lines := strings.split_lines(out, context.temp_allocator)
+	for raw in lines {
+		line := strings.trim_right(raw, "\r")
+		if strings.has_prefix(line, "worktree ") {
+			if have {
+				vcs_git_finalize_workspace(&cur, want)
+				append(&all, cur)
+			}
+			cur = VCS_Workspace{path = strings.clone(strings.trim_space(line[len("worktree "):]))}
+			have = true
+			continue
 		}
-		return ok
-	} else {
-		full_path, jerr := filepath.join([]string{path, file}, context.temp_allocator)
-		if jerr != nil do return false
-		if os.exists(full_path) {
-			rerr := os.remove(full_path)
-			return rerr == nil
+		if !have do continue
+		if strings.has_prefix(line, "branch ") {
+			ref := strings.trim_space(line[len("branch "):])
+			cur.label = strings.clone(vcs_strip_branch_ref(ref))
+		} else if line == "locked" || strings.has_prefix(line, "locked ") {
+			cur.is_locked = true
 		}
-		return true
+		// "HEAD <sha>", "bare", "detached", "prunable ..." carry nothing we surface.
 	}
-}
-
-// vcs_git_revert_all discards all changes and untracked files in the working copy.
-vcs_git_revert_all :: proc(path: string) -> bool {
-	_, ok1 := vcs_run([]string{"git", "-C", path, "reset", "--hard", "HEAD"})
-	_, ok2 := vcs_run([]string{"git", "-C", path, "clean", "-fd"})
-	return ok1 && ok2
-}
-
-// vcs_git_commit creates a commit or amends the current commit.
-vcs_git_commit :: proc(path, message: string, amend: bool) -> (string, bool) {
-	if amend {
-		if message != "" {
-			return vcs_run([]string{"git", "-C", path, "commit", "--amend", "-m", message})
-		} else {
-			return vcs_run([]string{"git", "-C", path, "commit", "--amend", "--no-edit"})
-		}
-	} else {
-		return vcs_run([]string{"git", "-C", path, "commit", "-m", message})
+	if have {
+		vcs_git_finalize_workspace(&cur, want)
+		append(&all, cur)
 	}
+	return all[:]
 }
 
+// vcs_git_finalize_workspace fills the derived fields once a worktree block ends.
+vcs_git_finalize_workspace :: proc(w: ^VCS_Workspace, want: string) {
+	if w.label == "" do w.label = "(detached)"
+	w.is_current = vcs_clean_path(w.path) == want
+}

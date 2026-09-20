@@ -968,7 +968,7 @@ ctl_agent_send_unix :: proc(endpoint, line: string) -> (string, bool) {
 	if fd < 0 do return "", false
 	defer posix.close(fd)
 	addr: posix.sockaddr_un
-	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD || ODIN_OS == .Haiku {
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD {
 		addr.sun_len = c.uchar(size_of(addr))
 	}
 	addr.sun_family = .UNIX

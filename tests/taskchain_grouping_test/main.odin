@@ -8,7 +8,7 @@ package taskchain_grouping_test
 //       has_more + next_cursor, and labels the empty-project bucket "Unassigned".
 //   G2. groups are ordered by most-recent chain activity (newest chain first).
 //   P1. per-project pagination returns `limit` newest, sets has_more/next_cursor.
-//   P2. walking the updated_at cursor to exhaustion yields every chain once, in
+//   P2. walking the created_at cursor to exhaustion yields every chain once, in
 //       order, with no duplicates and a clean final page.
 //   P3. the Unassigned bucket is pageable via project_id="".
 //   S1. the chain serializer emits exactly the contractual field set.
@@ -23,6 +23,7 @@ mk :: proc(chain_id, updated_at, project_id, project_name: string) -> http.Chain
 		chain_id = chain_id,
 		title = strings.concatenate({"title-", chain_id}),
 		status = "active",
+		created_at = updated_at,
 		updated_at = updated_at,
 		coordinator_agent_instance_id = strings.concatenate({"inst-", chain_id}),
 		project_id = project_id,
@@ -69,7 +70,7 @@ main :: proc() {
 	// Preview is newest-first: a6,a5,a4,a3,a2; next_cursor is the last previewed.
 	check(p1.chains[0].chain_id == "a6", fmt.tprintf("G1: p1 newest must be a6, got %q", p1.chains[0].chain_id))
 	check(p1.chains[4].chain_id == "a2", fmt.tprintf("G1: p1 5th must be a2, got %q", p1.chains[4].chain_id))
-	// next_cursor is the COMPOSITE (updated_at|chain_id) of the last previewed chain.
+	// next_cursor is the COMPOSITE (created_at|chain_id) of the last previewed chain.
 	check(p1.next_cursor == "2026-09-06T10:00:02Z|a2", fmt.tprintf("G1: p1 next_cursor must be a2's composite cursor, got %q", p1.next_cursor))
 	check(p1.project_name == "Alpha", fmt.tprintf("G1: p1 name must be Alpha, got %q", p1.project_name))
 
@@ -99,7 +100,7 @@ main :: proc() {
 		// Each page item sorts strictly after the previous (composite) cursor.
 		if cursor != "" {
 			cur_at, _ := http.chain_cursor_decode(cursor)
-			for c in page.chains do check(c.updated_at <= cur_at, "P2: page item must be at/older than the cursor timestamp")
+			for c in page.chains do check(c.created_at <= cur_at, "P2: page item must be at/older than the cursor timestamp")
 		}
 		if !page.has_more { check(page.next_cursor == "", "P2: final page must have empty next_cursor"); break }
 		check(page.next_cursor != "", "P2: non-final page must expose a next_cursor")
@@ -117,10 +118,10 @@ main :: proc() {
 	check(len(un_page.chains) == 1 && un_page.chains[0].chain_id == "u7" && !un_page.has_more, "P3: Unassigned page must hold u7 only")
 	check(un_page.chain_total == 1, fmt.tprintf("P3: Unassigned chain_total must be 1, got %d", un_page.chain_total))
 
-	// --- P4: TIED updated_at straddling the page boundary must not drop a chain ---
+	// --- P4: TIED created_at straddling the page boundary must not drop a chain ---
 	// Reviewer's repro: one project, (T2,'tb'),(T2,'ta'),(T1,'tc'), limit=1. A
-	// pure-updated_at cursor would skip the second T2 row forever; the composite
-	// (updated_at,chain_id) cursor returns all three exactly once, newest-first.
+	// pure-created_at cursor would skip the second T2 row forever; the composite
+	// (created_at,chain_id) cursor returns all three exactly once, newest-first.
 	tied := []http.Chain_List_Item{
 		mk("tb", "2026-09-06T11:00:02Z", "pt", "Tied"),
 		mk("tc", "2026-09-06T11:00:01Z", "pt", "Tied"),
@@ -152,7 +153,7 @@ main :: proc() {
 		coordinator_agent_instance_id = "inst_x", project_id = "p1", project_name = "Alpha",
 	})
 	got := strings.to_string(b)
-	want_json := `{"chain_id":"c1","title":"t1","status":"active","updated_at":"2026-09-06T10:00:06Z","coordinator_agent_instance_id":"inst_x","project_id":"p1","project_name":"Alpha"}`
+	want_json := `{"chain_id":"c1","title":"t1","status":"active","updated_at":"2026-09-06T10:00:06Z","coordinator_agent_instance_id":"inst_x","project_id":"p1","project_name":"Alpha","task_count":0}`
 	check(got == want_json, fmt.tprintf("S1: serializer mismatch\n got: %s\nwant: %s", got, want_json))
 
 	fmt.println("PASS: TC-API task-chain grouping + per-project pagination")

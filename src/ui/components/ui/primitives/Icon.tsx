@@ -78,6 +78,7 @@ export type IconName =
   | 'minimize'
   | 'bot'
   | 'save'
+  | 'git-branch'
   | 'layers';
 
 /** Token size scale → px (the `--icon-*` sizes: 14 / 16 / 20 / 24). */
@@ -244,7 +245,7 @@ const PATHS: Record<IconName, ReactElement> = {
     </g>
   ),
   spark: <path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round" />,
-  // Celebration / success flourish (replaces the 🎉 emoji strategy).
+  // Celebration / success flourish (replaces the celebration emoji strategy).
   sparkle: (
     <g fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinejoin="round">
       <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" />
@@ -312,6 +313,15 @@ const PATHS: Record<IconName, ReactElement> = {
       <polygon points="12 2 2 7 12 12 22 7 12 2" />
       <polyline points="2 17 12 22 22 17" />
       <polyline points="2 12 12 17 22 12" />
+    </g>
+  ),
+  // Source-control glyph (two branch nodes joined to a trunk) for the VCS tab.
+  'git-branch': (
+    <g fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <line x1="6" y1="3" x2="6" y2="15" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M18 9a9 9 0 0 1-9 9" />
     </g>
   ),
 };

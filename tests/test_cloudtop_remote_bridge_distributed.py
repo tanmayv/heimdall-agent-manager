@@ -17,6 +17,7 @@ import hashlib
 import http.server
 import json
 import os
+import shutil
 import socket
 import struct
 import subprocess
@@ -257,7 +258,11 @@ def wait_for_port(port: int, proc: subprocess.Popen) -> None:
 
 def main() -> None:
     proxy_bin = Path("/tmp/ham-dev-proxy-ct8-test")
-    odin = "/nix/store/lrzcmy4vglphhshdpsqmsgjpnf5z1yhi-odin-dev-2026-05/bin/odin"
+    flake_odin = "/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin"
+    if os.path.exists(flake_odin):
+        odin = flake_odin
+    else:
+        odin = shutil.which("odin") or "/nix/store/lrzcmy4vglphhshdpsqmsgjpnf5z1yhi-odin-dev-2026-05/bin/odin"
     subprocess.check_call([odin, "build", "src/dev_proxy", f"-out:{proxy_bin}", "-collection:odin_test=src"], cwd=ROOT)
 
     expected_secret = "secret_ct8_shared_key_555"

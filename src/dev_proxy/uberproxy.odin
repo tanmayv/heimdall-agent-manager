@@ -100,7 +100,7 @@ decode_uptick_email :: proc(header_val: string, allocator := context.temp_alloca
 		strings.write_byte(&b, '=')
 	}
 
-	decoded_bytes, err := base64.decode(strings.to_string(b), base64.DEC_TABLE, allocator)
+	decoded_bytes, err := base64.decode(strings.to_string(b), base64.DEC_TABLE, nil, allocator)
 	if err != nil || len(decoded_bytes) == 0 {
 		return "", false
 	}

@@ -143,12 +143,18 @@ def test_hub_artifact_api_overhaul() -> None:
     hub_bin = ROOT / "dist" / "heimdall-cloudtop" / "bin" / "ham-hub"
     if not hub_bin.exists():
         hub_bin = ROOT / "result-hub" / "bin" / "ham-hub"
+    if not hub_bin.exists():
+        hub_bin = ROOT / "bin" / "ham-hub"
     ctl_bin = ROOT / "dist" / "heimdall-cloudtop" / "bin" / "ham-ctl"
     if not ctl_bin.exists():
         ctl_bin = ROOT / "result-ctl" / "bin" / "ham-ctl"
+    if not ctl_bin.exists():
+        ctl_bin = ROOT / "bin" / "ham-ctl"
     bridge_bin = ROOT / "dist" / "heimdall-cloudtop" / "bin" / "ham-bridge"
     if not bridge_bin.exists():
         bridge_bin = ROOT / "result-bridge" / "bin" / "ham-bridge"
+    if not bridge_bin.exists():
+        bridge_bin = ROOT / "bin" / "ham-bridge"
 
     assert hub_bin.exists(), f"ham-hub binary not found at {hub_bin}"
     assert ctl_bin.exists(), f"ham-ctl binary not found at {ctl_bin}"
@@ -193,16 +199,24 @@ def test_hub_artifact_api_overhaul() -> None:
             }
 
             # 1. Enroll bridge and create agent instance for agent actions
-            enroll_res = run_cmd(
-                [
-                    str(bridge_bin),
-                    "enroll",
-                    "--hub", hub_url,
-                    "--name", "test-bridge",
-                    "--bridge-token-file", str(bridge_token_file),
-                ],
-                env=env,
+            enroll_cmd = [
+                str(bridge_bin),
+                "enroll",
+                "--hub", hub_url,
+                "--name", "test-bridge",
+                "--bridge-token-file", str(bridge_token_file),
+            ]
+            status_enr, enroll_data, _ = http_request(
+                f"{hub_url}/api/v1/bridge-enrollments",
+                method="POST",
+                data={"label": "test-bridge"},
+                headers=auth_headers,
             )
+            if status_enr in (200, 201) and isinstance(enroll_data, dict):
+                enrollment_token = enroll_data.get("data", {}).get("enrollment_token") or enroll_data.get("enrollment_token")
+                if enrollment_token:
+                    enroll_cmd.extend(["--enrollment-token", enrollment_token])
+            enroll_res = run_cmd(enroll_cmd, env=env)
             assert enroll_res.returncode == 0, f"ham-bridge enroll failed: {enroll_res.stderr} {enroll_res.stdout}"
             bridge_token = bridge_token_file.read_text().strip()
             assert bridge_token, "Bridge token file is empty"

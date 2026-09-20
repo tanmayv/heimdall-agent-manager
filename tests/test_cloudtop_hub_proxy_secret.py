@@ -33,7 +33,11 @@ def wait_for_port(port: int, proc: subprocess.Popen) -> None:
 
 def main() -> None:
     hub_bin = Path("/tmp/ham-hub-test")
-    odin = "/nix/store/lrzcmy4vglphhshdpsqmsgjpnf5z1yhi-odin-dev-2026-05/bin/odin"
+    odin = (
+        "/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin"
+        if os.path.exists("/nix/store/4p3p3dbyygl9xj2j4rspdz7j0hw65s5c-odin-dev-2026-07a/bin/odin")
+        else (shutil.which("odin") or "/nix/store/lrzcmy4vglphhshdpsqmsgjpnf5z1yhi-odin-dev-2026-05/bin/odin")
+    )
     sqlite_lib = "/nix/store/whs07fdxlw22fi8b3jzd2z871dh41qx6-sqlite-3.51.2/lib"
     build_cmd = [odin, "build", "src/hub", f"-out:{hub_bin}", "-collection:odin_test=src"]
     if os.path.exists(sqlite_lib):

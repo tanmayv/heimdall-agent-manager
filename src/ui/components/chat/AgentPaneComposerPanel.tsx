@@ -13,6 +13,7 @@ import { useAgentPaneSubscription } from '../../hooks/useAgentPaneSubscription';
 import { useSendAgentPaneInputMutation, useSendAgentPaneResizeMutation } from '../../api/endpoints/agents';
 import { useTheme } from '../../store/themeSlice';
 import Icon from '../Icon';
+import { readPinnedMonitorAgents, addPinnedMonitorAgent, removePinnedMonitorAgent } from '../../utils/clientPersistence';
 
 export interface AgentPaneComposerPanelProps {
   agentInstanceId?: string | null;
@@ -22,6 +23,8 @@ export interface AgentPaneComposerPanelProps {
   isActiveTab?: boolean;
   runtimeStatus?: string;
   className?: string;
+  hideHeader?: boolean;
+  onPin?: (agentInstanceId: string) => void;
 }
 
 export function AgentPaneComposerPanel({
@@ -32,8 +35,30 @@ export function AgentPaneComposerPanel({
   isActiveTab = true,
   runtimeStatus,
   className = '',
+  hideHeader = false,
+  onPin,
 }: AgentPaneComposerPanelProps) {
   const { theme } = useTheme();
+  // Whether this agent is pinned to the /agent-monitor grid (per-browser localStorage).
+  const [isPinned, setIsPinned] = useState<boolean>(false);
+  useEffect(() => {
+    setIsPinned(agentInstanceId ? readPinnedMonitorAgents().includes(agentInstanceId) : false);
+  }, [agentInstanceId]);
+  const handleTogglePin = useCallback(() => {
+    if (!agentInstanceId) return;
+    if (isPinned) {
+      removePinnedMonitorAgent(agentInstanceId);
+      setIsPinned(false);
+    } else {
+      addPinnedMonitorAgent(agentInstanceId);
+      setIsPinned(true);
+      // On first pin, surface the monitor grid so the user sees where it went.
+      if (typeof window !== 'undefined') {
+        window.open(window.location.origin + '/#/agent-monitor', 'agent-monitor');
+      }
+    }
+    onPin?.(agentInstanceId);
+  }, [agentInstanceId, isPinned, onPin]);
   const [terminalDimensions, setTerminalDimensions] = useState<{ cols: number; rows: number }>({
     cols: 80,
     rows: 120,
@@ -283,6 +308,7 @@ export function AgentPaneComposerPanel({
       className={`overflow-hidden rounded-xl border border-subtle bg-surface ${className}`}
     >
       {/* Header controls */}
+      {!hideHeader && (
       <div
         data-debug-id="agent-pane-composer-header"
         className="flex items-center justify-between border-b border-subtle bg-surface-raised px-3 py-1.5 text-xs text-muted"
@@ -313,6 +339,21 @@ export function AgentPaneComposerPanel({
         </div>
 
         <div className="flex items-center gap-1">
+          {/* Pin to Agent Monitor grid */}
+          {agentInstanceId ? (
+            <button
+              type="button"
+              data-debug-id="agent-pane-pin-btn"
+              title={isPinned ? 'Unpin from monitor' : 'Pin to Agent Monitor'}
+              aria-label={isPinned ? 'Unpin from monitor' : 'Pin to Agent Monitor'}
+              aria-pressed={isPinned}
+              onClick={handleTogglePin}
+              className={`grid h-6 w-6 place-items-center rounded hover:bg-neutral-soft ${isPinned ? 'text-accent' : 'text-muted hover:text-primary'}`}
+            >
+              <Icon name="grid" size={12} />
+            </button>
+          ) : null}
+
           {/* Manual refresh button */}
           <button
             type="button"
@@ -341,6 +382,7 @@ export function AgentPaneComposerPanel({
           ) : null}
         </div>
       </div>
+      )}
 
       {/* Interactive xterm terminal container */}
       <style>{`

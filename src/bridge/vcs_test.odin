@@ -142,6 +142,105 @@ vcs_no_vcs_json_envelope :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(diff, "\"next_cursor\":"), "diff next_cursor present")
 }
 
+// vcs_test_free_workspaces releases the path clones vcs_git_parse_worktree_list
+// allocates. It intentionally frees neither the label (which may be the "(detached)"
+// string literal rather than a heap clone) nor the slice itself (which can be an
+// interior subslice of a paginated backing) — freeing either would be unsafe. The
+// small residual leak is harmless in tests (the tracking allocator reports it, it does
+// not fail the run).
+vcs_test_free_workspaces :: proc(ws: []VCS_Workspace) {
+	for w in ws do delete(w.path)
+}
+
+// vcs_test_free_log_entry frees the five string clones vcs_parse_log_line allocates.
+// A zero-value entry (parse failure) holds empty strings, which delete treats as a
+// no-op, so this is safe to defer unconditionally.
+vcs_test_free_log_entry :: proc(e: VCS_Log_Entry) {
+	delete(e.hash)
+	delete(e.short_hash)
+	delete(e.subject)
+	delete(e.author)
+	delete(e.date)
+}
+
+// --- worktree porcelain parsing (pure) -----------------------------------
+
+@(test)
+vcs_parse_worktree_list_single :: proc(t: ^testing.T) {
+	// A single porcelain block: the main worktree on branch main.
+	out := "worktree /home/u/proj\nHEAD abc123\nbranch refs/heads/main\n"
+	ws := vcs_git_parse_worktree_list(out, "")
+	defer vcs_test_free_workspaces(ws)
+	testing.expect_value(t, len(ws), 1)
+	testing.expect(t, ws[0].path == "/home/u/proj", "worktree path parsed")
+	testing.expect(t, ws[0].label == "main", "refs/heads/main -> label main")
+	testing.expect(t, !ws[0].is_locked, "single worktree is not locked")
+}
+
+@(test)
+vcs_parse_worktree_list_locked :: proc(t: ^testing.T) {
+	// Two blocks; the second carries a "locked <reason>" line and is the queried path.
+	out := "worktree /home/u/proj\nHEAD abc\nbranch refs/heads/main\n\nworktree /home/u/wt\nHEAD def\nbranch refs/heads/feat\nlocked needs review\n"
+	ws := vcs_git_parse_worktree_list(out, "/home/u/wt")
+	defer vcs_test_free_workspaces(ws)
+	testing.expect_value(t, len(ws), 2)
+	testing.expect(t, ws[1].label == "feat", "second block label feat")
+	testing.expect(t, ws[1].is_locked, "locked line -> is_locked:true")
+	testing.expect(t, !ws[0].is_locked, "first block not locked")
+	testing.expect(t, ws[1].is_current, "queried path is current")
+	testing.expect(t, !ws[0].is_current, "non-queried path is not current")
+}
+
+// --- log line parsing (pure) ---------------------------------------------
+
+@(test)
+vcs_log_entry_parse :: proc(t: ^testing.T) {
+	// "%H|%h|%s|%an|%ci" — the 5-field row emitted by both the git and jj adapters.
+	line := "deadbeef1234|deadbee|Fix the parser|Ada Lovelace|2026-09-20 10:11:12 +0000"
+	e, ok := vcs_parse_log_line(line)
+	defer vcs_test_free_log_entry(e)
+	testing.expect(t, ok, "well-formed 5-field line parses")
+	testing.expect(t, e.hash == "deadbeef1234", "hash field")
+	testing.expect(t, e.short_hash == "deadbee", "short_hash field")
+	testing.expect(t, e.subject == "Fix the parser", "subject field")
+	testing.expect(t, e.author == "Ada Lovelace", "author field")
+	testing.expect(t, e.date == "2026-09-20 10:11:12 +0000", "date field")
+}
+
+// --- commit_diff argv sentinel (pure) ------------------------------------
+
+@(test)
+vcs_commit_diff_workdir_sentinel :: proc(t: ^testing.T) {
+	// "WORKDIR" head_ref is the working-tree sentinel: it must be omitted from the argv
+	// so git diffs base_ref against the worktree.
+	args := vcs_git_commit_diff_args("/repo", "main", "WORKDIR", "")
+	testing.expect_value(t, len(args), 5) // git -C /repo diff main
+	testing.expect(t, args[len(args) - 1] == "main", "base_ref is the last arg")
+	for a in args do testing.expect(t, a != "WORKDIR", "WORKDIR sentinel omitted from argv")
+	// An empty head_ref behaves the same, and a file is scoped after a "--" separator.
+	args2 := vcs_git_commit_diff_args("/repo", "main", "", "file.txt")
+	testing.expect_value(t, len(args2), 7) // git -C /repo diff main -- file.txt
+	testing.expect(t, args2[len(args2) - 2] == "--", "file scoped after -- separator")
+	testing.expect(t, args2[len(args2) - 1] == "file.txt", "file is the last arg")
+	// A real head_ref IS appended.
+	args3 := vcs_git_commit_diff_args("/repo", "main", "feature", "")
+	testing.expect_value(t, len(args3), 6) // git -C /repo diff main feature
+	testing.expect(t, args3[len(args3) - 1] == "feature", "explicit head_ref appended")
+}
+
+// vcs_ns_char_to_status maps `git diff --name-status` status chars to the neutral
+// status word: A/D/R exact, everything else (M, C, T, junk) -> modified.
+@(test)
+vcs_ns_char_to_status_mapping :: proc(t: ^testing.T) {
+	testing.expect(t, vcs_ns_char_to_status('A') == "added", "A -> added")
+	testing.expect(t, vcs_ns_char_to_status('D') == "deleted", "D -> deleted")
+	testing.expect(t, vcs_ns_char_to_status('R') == "renamed", "R -> renamed")
+	testing.expect(t, vcs_ns_char_to_status('M') == "modified", "M -> modified")
+	testing.expect(t, vcs_ns_char_to_status('C') == "modified", "C (copy) -> modified")
+	testing.expect(t, vcs_ns_char_to_status('T') == "modified", "T (type-change) -> modified")
+	testing.expect(t, vcs_ns_char_to_status('Z') == "modified", "unknown char -> modified")
+}
+
 @(test)
 vcs_detect_provider_on_repo :: proc(t: ^testing.T) {
 	// This checkout is a git repo and (per the task) has no .jj.
@@ -154,45 +253,3 @@ vcs_detect_provider_on_repo :: proc(t: ^testing.T) {
 	testing.expect(t, provider.name() == "git", "git wins detection ordering")
 	testing.expect(t, !vcs_jj_detect(repo), "no .jj in this checkout")
 }
-
-@(test)
-vcs_synthetic_diff_added_test :: proc(t: ^testing.T) {
-	content := "line 1\nline 2\nline 3\n"
-	hunks := vcs_synthetic_diff_added(content)
-	defer vcs_test_free_hunks(hunks)
-
-	testing.expect_value(t, len(hunks), 1)
-	h := hunks[0]
-	testing.expect_value(t, h.old_start, 0)
-	testing.expect_value(t, h.old_len, 0)
-	testing.expect_value(t, h.new_start, 1)
-	testing.expect_value(t, h.new_len, 3)
-	testing.expect_value(t, len(h.lines), 3)
-	for ln, idx in h.lines {
-		testing.expect_value(t, ln.op, "+")
-	}
-	testing.expect_value(t, h.lines[0].text, "line 1")
-	testing.expect_value(t, h.lines[1].text, "line 2")
-	testing.expect_value(t, h.lines[2].text, "line 3")
-}
-
-@(test)
-vcs_synthetic_diff_deleted_test :: proc(t: ^testing.T) {
-	content := "deleted line A\ndeleted line B\n"
-	hunks := vcs_synthetic_diff_deleted(content)
-	defer vcs_test_free_hunks(hunks)
-
-	testing.expect_value(t, len(hunks), 1)
-	h := hunks[0]
-	testing.expect_value(t, h.old_start, 1)
-	testing.expect_value(t, h.old_len, 2)
-	testing.expect_value(t, h.new_start, 0)
-	testing.expect_value(t, h.new_len, 0)
-	testing.expect_value(t, len(h.lines), 2)
-	for ln, idx in h.lines {
-		testing.expect_value(t, ln.op, "-")
-	}
-	testing.expect_value(t, h.lines[0].text, "deleted line A")
-	testing.expect_value(t, h.lines[1].text, "deleted line B")
-}
-

@@ -14,7 +14,7 @@ package main
 // same command_id-cached, bridge_hub_send envelope as the fs_* commands.
 //
 // A provider is a proc-table struct; the registry is an ordered list and the first
-// adapter whose detect() returns true for a path wins (fig before git before jj).
+// adapter whose detect() returns true for a path wins (git before jj).
 
 import "core:os"
 import "core:strings"
@@ -54,26 +54,33 @@ VCS_Diff_Hunk :: struct {
 	lines:     []VCS_Diff_Line,
 }
 
+// staging_model: "index" (git) | "none" (jj/hg — every change is implicitly staged)
+// commit_model:  "branch" (git) | "revision" (jj)
+// supported_actions: whitelist the UI consults before offering an action; a member
+//   of {"diff","log","commit_diff","revert","stage","unstage","workspaces"}.
 VCS_Capabilities :: struct {
-	provider:         string,
-	supports_staging: bool,
+	provider:          string,
+	supports_staging:  bool,
+	staging_model:     string,
+	commit_model:      string,
+	supported_actions: []string,
 }
 
-VCS_Diff_Target :: struct {
-	id:          string,
-	label:       string,
-	description: string,
-	is_default:  bool,
-}
-
+// A single commit/revision row for the vcs_log command.
 VCS_Log_Entry :: struct {
-	revision:   string,
-	cl_number:  string,
-	title:      string,
+	hash:       string,
+	short_hash: string,
+	subject:    string,
 	author:     string,
-	timestamp:  string,
+	date:       string,
+}
+
+// A worktree (git) / workspace (jj) row for the vcs_workspaces command.
+VCS_Workspace :: struct {
+	path:       string,
+	label:      string,
 	is_current: bool,
-	status:     string,
+	is_locked:  bool,
 }
 
 // --- provider interface (proc-table struct) ------------------------------
@@ -83,17 +90,36 @@ VCS_Provider :: struct {
 	detect:        proc(path: string) -> bool,
 	status:        proc(path: string) -> (VCS_Status, bool),
 	// returns (files, next_cursor, has_more, ok)
-	changed_files: proc(path, target, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool),
+	changed_files: proc(path, cursor: string, limit: int) -> ([]VCS_Changed_File, string, bool, bool),
 	// returns (hunks, next_cursor, has_more, ok)
-	diff_file:     proc(path, file, target, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool),
-	diff_targets:  proc(path: string) -> ([]VCS_Diff_Target, bool),
-	log:           proc(path: string, limit: int) -> ([]VCS_Log_Entry, bool),
-	file_content:  proc(path, file, target: string) -> (string, bool),
-	add_file:      proc(path, file: string) -> bool,
-	revert_file:   proc(path, file: string) -> bool,
-	revert_all:    proc(path: string) -> bool,
-	commit:        proc(path, message: string, amend: bool) -> (string, bool),
+	diff_file:     proc(path, file, cursor: string, limit: int) -> ([]VCS_Diff_Hunk, string, bool, bool),
 	capabilities:  proc(path: string) -> VCS_Capabilities,
+	// Write commands. Each returns (ok, msg); msg carries an error code on failure
+	// (e.g. "untracked_file", "not_supported"). A nil proc pointer means the action
+	// is unsupported and callers must treat it as "not_supported" before dispatch.
+	stage_file:      proc(path, file: string) -> (ok: bool, msg: string),
+	unstage_file:    proc(path, file: string) -> (ok: bool, msg: string),
+	revert_file:     proc(path, file: string) -> (ok: bool, msg: string),
+	// Write the full text of a working-tree file (editor save). Provider-agnostic
+	// (both adapters just write the file relative to the repo root), but kept on the
+	// proc-table for uniformity with the other write commands. Returns (ok, msg);
+	// msg carries an error code on failure (e.g. "save_failed").
+	save_file:       proc(path, file, content: string) -> (ok: bool, msg: string),
+	// read-only. returns (entries, next_cursor, has_more, ok)
+	log:             proc(path, cursor: string, limit: int) -> (entries: []VCS_Log_Entry, next_cursor: string, has_more: bool, ok: bool),
+	// read-only. returns (hunks, next_cursor, has_more, ok)
+	commit_diff:     proc(path, base_ref, head_ref, file, cursor: string, limit: int) -> (hunks: []VCS_Diff_Hunk, next_cursor: string, has_more: bool, ok: bool),
+	// read-only. Flat list of files changed between base_ref and head_ref (name +
+	// status + per-file +/- counts), for the Log tab's file-list selector. head_ref
+	// "" or "WORKDIR" compares base_ref to the working tree; base_ref == head_ref is
+	// an empty list. Returns (files, ok); nil proc = not supported.
+	commit_diff_files: proc(path, base_ref, head_ref: string) -> (files: []VCS_Changed_File, ok: bool),
+	// Write command. Commits the currently-staged changes with `message`. Returns ok
+	// (true = commit succeeded). A nil proc pointer means the action is unsupported
+	// and callers must treat it as "not_supported" before dispatch.
+	commit:          proc(path, message: string) -> (ok: bool),
+	// read-only. returns (workspaces, ok)
+	list_workspaces: proc(path: string) -> (workspaces: []VCS_Workspace, ok: bool),
 }
 
 // --- registry ------------------------------------------------------------
@@ -133,6 +159,29 @@ vcs_run :: proc(args: []string) -> (out: string, ok: bool) {
 		return "", false
 	}
 	return string(stdout), state.success
+}
+
+// vcs_write_file_impl writes `content` to <root>/<file>, creating/truncating it.
+// Shared by every provider's save_file: writing a working-tree file is identical
+// across git and jj (the VCS metadata is untouched — the edit is picked up by the
+// next status/diff). Returns (ok, msg) with an error code on failure.
+//
+// The client-supplied `file` is UNTRUSTED, so we route the write through
+// bridge_fs_write_file, which resolves the path within the repo `root` via
+// bridge_fs_resolve_within (rejecting "..", symlink escapes, and out-of-root
+// targets — surfaced as error_code "path_outside_root") and writes atomically via
+// a temp file + rename. Without this containment a "../../.ssh/authorized_keys"
+// path would escape the repo and let a caller write arbitrary files as the bridge
+// process. This mirrors the fs_write_file command and the containment the VCS
+// panel's own FS reads already go through.
+vcs_write_file_impl :: proc(root, file, content: string) -> (ok: bool, msg: string) {
+	if strings.trim_space(file) == "" do return false, "missing_file"
+	res := bridge_fs_write_file(file, content, root)
+	if !res.ok {
+		if res.error_code == "path_outside_root" do return false, "path_outside_root"
+		return false, "save_failed"
+	}
+	return true, ""
 }
 
 // vcs_dir_exists reports whether `path`/<sub> exists (used by detect()).
@@ -176,6 +225,47 @@ vcs_paginate_hunks :: proc(all: []VCS_Diff_Hunk, cursor: string, limit, default_
 	next_cursor := ""
 	if has_more do next_cursor = bridge_fs_encode_cursor(end)
 	return all[start:end], next_cursor, has_more
+}
+
+// vcs_paginate_log is the log-entry analogue of vcs_paginate_files/hunks.
+vcs_paginate_log :: proc(all: []VCS_Log_Entry, cursor: string, limit, default_limit, max_limit: int) -> ([]VCS_Log_Entry, string, bool) {
+	page_limit := limit
+	if page_limit <= 0 do page_limit = default_limit
+	if page_limit > max_limit do page_limit = max_limit
+	total := len(all)
+	start := bridge_fs_decode_cursor(cursor)
+	if start < 0 do start = 0
+	if start > total do start = total
+	end := start + page_limit
+	if end > total do end = total
+	has_more := end < total
+	next_cursor := ""
+	if has_more do next_cursor = bridge_fs_encode_cursor(end)
+	return all[start:end], next_cursor, has_more
+}
+
+// vcs_clean_path normalizes a path for equality comparison: made absolute against
+// the cwd when possible, then lexically cleaned. Used by list_workspaces to decide
+// which worktree is the queried one (git reports absolute worktree paths). Symlinks
+// are not resolved — a purely lexical normalization, which is enough for the plain
+// project paths the hub forwards.
+vcs_clean_path :: proc(p: string) -> string {
+	if p == "" do return ""
+	base := p
+	if abs, aerr := filepath.abs(p, context.temp_allocator); aerr == nil {
+		base = abs
+	}
+	cleaned, cerr := filepath.clean(base, context.temp_allocator)
+	if cerr != nil do return base
+	return cleaned
+}
+
+// vcs_strip_branch_ref turns a "refs/heads/<name>" (or "refs/<...>") ref into a
+// short human label, leaving anything without that prefix unchanged.
+vcs_strip_branch_ref :: proc(ref: string) -> string {
+	if strings.has_prefix(ref, "refs/heads/") do return ref[len("refs/heads/"):]
+	if strings.has_prefix(ref, "refs/") do return ref[len("refs/"):]
+	return ref
 }
 
 // vcs_parse_unified_diff parses a unified/`--git` diff into hunks. Lines before the
@@ -281,50 +371,3 @@ vcs_atoi :: proc(s: string) -> int {
 	}
 	return n
 }
-
-// vcs_synthetic_diff_added builds hunks for a newly added file against /dev/null (+ lines)
-vcs_synthetic_diff_added :: proc(content: string) -> []VCS_Diff_Hunk {
-	lines := strings.split_lines(content, context.temp_allocator)
-	if len(lines) > 0 && len(lines[len(lines) - 1]) == 0 {
-		lines = lines[:len(lines) - 1]
-	}
-	if len(lines) == 0 do return nil
-	diff_lines := make([]VCS_Diff_Line, len(lines), context.allocator)
-	for line, i in lines {
-		diff_lines[i] = VCS_Diff_Line{op = "+", text = strings.clone(line)}
-	}
-	hunk := VCS_Diff_Hunk{
-		old_start = 0,
-		old_len   = 0,
-		new_start = 1,
-		new_len   = len(lines),
-		lines     = diff_lines,
-	}
-	hunks := make([]VCS_Diff_Hunk, 1, context.allocator)
-	hunks[0] = hunk
-	return hunks
-}
-
-// vcs_synthetic_diff_deleted builds hunks for a deleted file against /dev/null (- lines)
-vcs_synthetic_diff_deleted :: proc(content: string) -> []VCS_Diff_Hunk {
-	lines := strings.split_lines(content, context.temp_allocator)
-	if len(lines) > 0 && len(lines[len(lines) - 1]) == 0 {
-		lines = lines[:len(lines) - 1]
-	}
-	if len(lines) == 0 do return nil
-	diff_lines := make([]VCS_Diff_Line, len(lines), context.allocator)
-	for line, i in lines {
-		diff_lines[i] = VCS_Diff_Line{op = "-", text = strings.clone(line)}
-	}
-	hunk := VCS_Diff_Hunk{
-		old_start = 1,
-		old_len   = len(lines),
-		new_start = 0,
-		new_len   = 0,
-		lines     = diff_lines,
-	}
-	hunks := make([]VCS_Diff_Hunk, 1, context.allocator)
-	hunks[0] = hunk
-	return hunks
-}
-

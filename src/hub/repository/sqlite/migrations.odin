@@ -646,15 +646,17 @@ MIGRATION_038_ACTION_INSTANCE_STRATEGY :: #load("migrations/038_action_instance_
 // and is never stored in the hub.
 MIGRATION_039_SHELL_JOBS :: #load("migrations/039_shell_jobs.sql", string)
 
-MIGRATION_040_FIG_PROJECTS :: `ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'local';
+// MIGRATION_040_ARTIFACT_LIST_INDEXES creates composite covering indexes on the
+// artifacts table for fast filtering and pagination (REQ-ARTIFACT-DB-INDEXES).
+MIGRATION_040_ARTIFACT_LIST_INDEXES :: #load("migrations/040_artifact_list_indexes.sql", string)
+
+MIGRATION_041_FIG_PROJECTS :: `ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'local';
 ALTER TABLE projects ADD COLUMN workspace_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE projects ADD COLUMN relative_path TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_projects_owner_type ON projects(owner_user_id, project_type);
 `
 
-MIGRATION_041_ARTIFACT_LIST_INDEXES :: #load("migrations/041_artifact_list_indexes.sql", string)
-
-migration_order :: [41]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_fig_projects.sql", "041_artifact_list_indexes.sql"}
+migration_order :: [41]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_fig_projects.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -740,11 +742,11 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if (name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql") && table_column_exists(conn, "projects", "project_type") && table_column_exists(conn, "projects", "workspace_name") && table_column_exists(conn, "projects", "relative_path") {
+		if name == "040_artifact_list_indexes.sql" && sqlite_object_exists(conn, "idx_artifacts_owner_created") {
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if name == "041_artifact_list_indexes.sql" && sqlite_object_exists(conn, "idx_artifacts_owner_created") {
+		if (name == "041_fig_projects.sql" || name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql") && table_column_exists(conn, "projects", "project_type") && table_column_exists(conn, "projects", "workspace_name") && table_column_exists(conn, "projects", "relative_path") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -826,8 +828,8 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "037_project_state.sql" do return strings.clone(MIGRATION_037_PROJECT_STATE)
 	if name == "038_action_instance_strategy.sql" do return strings.clone(MIGRATION_038_ACTION_INSTANCE_STRATEGY)
 	if name == "039_shell_jobs.sql" do return strings.clone(MIGRATION_039_SHELL_JOBS)
-	if name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql" do return strings.clone(MIGRATION_040_FIG_PROJECTS)
-	if name == "041_artifact_list_indexes.sql" do return strings.clone(MIGRATION_041_ARTIFACT_LIST_INDEXES)
+	if name == "040_artifact_list_indexes.sql" do return strings.clone(MIGRATION_040_ARTIFACT_LIST_INDEXES)
+	if name == "041_fig_projects.sql" || name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql" do return strings.clone(MIGRATION_041_FIG_PROJECTS)
 	return ""
 }
 
@@ -1125,6 +1127,3 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_owner_task_created ON artifacts(owner_u
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_created ON artifacts(owner_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_artifacts_owner_updated ON artifacts(owner_user_id, updated_at DESC);`)
 }
-
-
-

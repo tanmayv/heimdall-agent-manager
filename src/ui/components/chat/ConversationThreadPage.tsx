@@ -3,6 +3,7 @@ import ChainOverviewPanel from './ChainOverviewPanel';
 import ProjectFilesPanel, { ProjectQuickOpenModal } from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
 import ShellJobsPanel from './ShellJobsPanel';
+import ProjectVcsPanel from './ProjectVcsPanel';
 import AtMentionPopup, { type MentionEntity } from './AtMentionPopup';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
 import { type ClipboardEvent, type FormEvent, type UIEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -606,6 +607,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       if (norm === 'files') return 'files';
       if (norm === 'rundir') return 'rundir';
       if (norm === 'jobs') return 'jobs';
+      if (norm === 'vcs') return 'vcs';
       if (norm === 'closed' || norm === 'false' || norm === '0') return 'closed';
       if (norm === 'open' || norm === 'true' || norm === '1') {
         return readRightSidebarTab(agentInstanceId) || 'tasks';
@@ -626,6 +628,19 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [editorFileToOpen, setEditorFileToOpen] = useState<string | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Guards the one-shot chain-tab auto-open so it only fires once per conversation load.
+  const chainAutoOpenedRef = useRef(false);
+
+  // REQ-SIDEBAR-5: coordinator conversations with a chainId default the right sidebar
+  // to the 'chain' tab. Fires once when chainId first becomes available and the panel
+  // is still closed (user hasn't explicitly chosen a tab or opened it manually).
+  useEffect(() => {
+    if (!chainId || isMobile || chainAutoOpenedRef.current) return;
+    if (rightPanel === 'closed') {
+      chainAutoOpenedRef.current = true;
+      setRightPanel('chain');
+    }
+  }, [chainId, isMobile, rightPanel]);
 
   // Synchronize sidebar state when agentInstanceId changes (REQ-UI-INSTANCE-SIDEBAR-TAB-PERSISTENCE)
   useEffect(() => {
@@ -635,7 +650,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const param = params.get('panel') || params.get('sidebar');
     if (param) {
       const norm = param.trim().toLowerCase();
-      if (norm === 'chain' || norm === 'tasks' || norm === 'files' || norm === 'rundir' || norm === 'jobs') {
+      if (norm === 'chain' || norm === 'tasks' || norm === 'files' || norm === 'rundir' || norm === 'jobs' || norm === 'vcs') {
         setRightPanel(norm);
         return;
       }
@@ -699,6 +714,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           setRightPanel('jobs');
           writeRightSidebarOpen(true, agentInstanceId);
           writeRightSidebarTab('jobs', agentInstanceId);
+        } else if (norm === 'vcs') {
+          setRightPanel('vcs');
+          writeRightSidebarOpen(true, agentInstanceId);
+          writeRightSidebarTab('vcs', agentInstanceId);
         } else if (norm === 'closed' || norm === 'false' || norm === '0') {
           setRightPanel('closed');
           writeRightSidebarOpen(false, agentInstanceId);
@@ -1403,6 +1422,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const hasChain = Boolean(chainId);
     const hasTasks = Boolean(chainId);
     const hasFiles = Boolean(projectId);
+    const hasVcs = Boolean(projectId);
     const hasRunDir = Boolean(agentInstanceId);
     const hasJobs = Boolean(agentInstanceId);
     // The two file-explorer tabs are labeled with a folder icon + the resource
@@ -1413,6 +1433,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const active: RightSidebarTab =
       rightPanel === 'chain' && hasChain ? 'chain'
       : rightPanel === 'files' && hasFiles ? 'files'
+      : rightPanel === 'vcs' && hasVcs ? 'vcs'
       : rightPanel === 'rundir' && hasRunDir ? 'rundir'
       : rightPanel === 'jobs' && hasJobs ? 'jobs'
       : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
@@ -1448,6 +1469,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 <Icon name="folder" size={20} />
               </button>
             ) : null}
+            {hasVcs ? (
+              <button type="button" title="VCS" aria-label="VCS" data-debug-id="conversation-right-panel-tab-vcs" onClick={() => selectRightPanelTab('vcs')} aria-pressed={active === 'vcs' ? 'true' : 'false'} className={`${tabBase} ${active === 'vcs' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
+                <Icon name="git-branch" size={20} />
+              </button>
+            ) : null}
             {hasRunDir ? (
               <button type="button" title={`Run dir — ${instanceDisplayName}`} aria-label={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
                 <Icon name="folder" size={20} />
@@ -1460,6 +1486,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             ) : null}
           </div>
           <div className="ml-auto shrink-0 flex items-center gap-1.5 pl-2">
+
             <button
               type="button"
               data-debug-id="conversation-right-panel-maximize-btn"
@@ -1500,7 +1527,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 setEditorFileToOpen(filePath);
               }}
               onOpenVcsFiles={() => {
-                selectRightPanelTab('files');
+                selectRightPanelTab('vcs');
               }}
               isMobile={isMobilePanel}
             />
@@ -1518,6 +1545,15 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               openFilePath={editorFileToOpen}
               onFileOpened={() => setEditorFileToOpen(null)}
               onOpenQuickOpen={() => setIsQuickOpenOpen(true)}
+            />
+          ) : active === 'vcs' && hasVcs ? (
+            <ProjectVcsPanel
+              key={`vcs:${projectId}`}
+              projectId={projectId}
+              bridgeId={instanceBridgeId}
+              onClose={closeRightPanel}
+              isMobile={isMobilePanel}
+              onOpenDirectory={() => selectRightPanelTab('files')}
             />
           ) : active === 'rundir' && hasRunDir ? (
             <InstanceRunDirPanel
