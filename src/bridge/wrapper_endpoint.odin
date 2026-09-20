@@ -61,7 +61,7 @@ bridge_local_endpoint_start_unix :: proc(config: Bridge_Local_Endpoint_Config) -
 	defer if !success { _ = posix.close(fd) }
 	_ = posix.unlink(cstring(raw_data(path)))
 	addr: posix.sockaddr_un
-	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD || ODIN_OS == .Haiku {
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD {
 		addr.sun_len = c.uchar(size_of(addr))
 	}
 	addr.sun_family = .UNIX

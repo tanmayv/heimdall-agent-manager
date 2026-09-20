@@ -518,7 +518,7 @@ pty_host_dial :: proc(socket_path: string) -> (posix.FD, bool) {
 	fd := posix.socket(.UNIX, .STREAM)
 	if fd < 0 do return -1, false
 	addr: posix.sockaddr_un
-	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD || ODIN_OS == .Haiku {
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD {
 		addr.sun_len = c.uchar(size_of(addr))
 	}
 	addr.sun_family = .UNIX
