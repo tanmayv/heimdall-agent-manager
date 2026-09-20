@@ -1,11 +1,14 @@
 import { useMemo } from 'react';
 import { DiffEditor, type DiffEditorProps } from '@monaco-editor/react';
-import type { VcsDiffHunk } from '../../api/endpoints/projectVcs';
+import type { VcsDiffHunk, VcsFileStatus } from '../../api/endpoints/projectVcs';
 import { useTheme } from '../../store/themeSlice';
 import { languageForFile } from '../../utils/codeHighlight';
 
 export interface MonacoDiffViewerProps {
-  hunks: VcsDiffHunk[];
+  hunks?: VcsDiffHunk[];
+  original?: string;
+  modified?: string;
+  status?: VcsFileStatus;
   filePath: string;
   className?: string;
   sideBySide?: boolean;
@@ -31,6 +34,9 @@ function getLanguageForMonaco(filePath: string): string {
 
 export default function MonacoDiffViewer({
   hunks,
+  original: originalProp,
+  modified: modifiedProp,
+  status,
   filePath,
   className = '',
   sideBySide = false,
@@ -40,26 +46,44 @@ export default function MonacoDiffViewer({
   const monacoTheme = theme?.appearance === 'light' ? 'light' : 'vs-dark';
 
   const { original, modified, lineCount } = useMemo(() => {
-    const origLines: string[] = [];
-    const modLines: string[] = [];
+    let orig = originalProp;
+    let mod = modifiedProp;
 
-    for (const hunk of hunks || []) {
-      for (const line of hunk.lines || []) {
-        if (line.op === ' ' || line.op === '-') {
-          origLines.push(line.text);
-        }
-        if (line.op === ' ' || line.op === '+') {
-          modLines.push(line.text);
+    if (orig === undefined || mod === undefined) {
+      const origLines: string[] = [];
+      const modLines: string[] = [];
+
+      for (const hunk of hunks || []) {
+        for (const line of hunk.lines || []) {
+          if (line.op === ' ' || line.op === '-') {
+            origLines.push(line.text);
+          }
+          if (line.op === ' ' || line.op === '+') {
+            modLines.push(line.text);
+          }
         }
       }
+
+      if (orig === undefined) orig = origLines.join('\n');
+      if (mod === undefined) mod = modLines.join('\n');
     }
 
+    // Handle added files (empty original) and deleted files (empty modified)
+    if (status === 'added' || status === 'untracked') {
+      orig = '';
+    } else if (status === 'deleted') {
+      mod = '';
+    }
+
+    const origCount = orig ? orig.split('\n').length : 0;
+    const modCount = mod ? mod.split('\n').length : 0;
+
     return {
-      original: origLines.join('\n'),
-      modified: modLines.join('\n'),
-      lineCount: Math.max(origLines.length, modLines.length, 1),
+      original: orig,
+      modified: mod,
+      lineCount: Math.max(origCount, modCount, 1),
     };
-  }, [hunks]);
+  }, [hunks, originalProp, modifiedProp, status]);
 
   const language = useMemo(() => getLanguageForMonaco(filePath), [filePath]);
 

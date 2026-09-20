@@ -113,6 +113,15 @@ body {
   background: var(--color-canvas);
 }
 
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 ::selection {
   background: var(--color-accent, var(--fd-accent-blue));
   color: var(--color-accent-fg, var(--fd-on-primary));

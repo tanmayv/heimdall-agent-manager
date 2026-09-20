@@ -640,9 +640,13 @@ project_handle_vcs_files :: proc(ctx: rawptr, req: Request) -> Response {
 
 project_handle_vcs_diff :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
+	// Accept either "file" or "path" as the query param (diff-view fallback from
+	// origin/main ae48d955): the file panel calls with "path", the VCS tab with "file".
+	file := query_value(req.query, "file")
+	if file == "" do file = query_value(req.query, "path")
 	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
 		command_type = "vcs_diff",
-		path = query_value(req.query, "file"), send_path = true,
+		path = file, send_path = true,
 		cursor = query_value(req.query, "cursor"), send_cursor = true,
 		limit = query_int(req.query, "limit", 50), send_limit = true,
 	})

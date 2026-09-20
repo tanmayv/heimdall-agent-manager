@@ -59,12 +59,28 @@ export function taskStatusOf(task: TaskLike | null | undefined): string {
 
 export function taskAssigneeOf(task: TaskLike | null | undefined): string {
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  return String(task?.assigneeAgentInstanceId || task?.assignee_agent_instance_id || '');
+  return String(
+    task?.assigneeAgentInstanceId ||
+    task?.assignee_agent_instance_id ||
+    (task as any)?.assigneeRef?.agentInstanceId ||
+    (task as any)?.assignee_ref?.agent_instance_id ||
+    (task as any)?.assigneeRef?.agent_instance_id ||
+    (task as any)?.assignee_ref?.agentInstanceId ||
+    ''
+  );
 }
 
 export function taskReviewerOf(task: TaskLike | null | undefined): string {
   // TODO(FIX): Replace loose fallback chain with canonical typed schema property
-  return String(task?.reviewerAgentInstanceId || task?.reviewer_agent_instance_id || '');
+  return String(
+    task?.reviewerAgentInstanceId ||
+    task?.reviewer_agent_instance_id ||
+    (task as any)?.reviewerRefs?.[0]?.agentInstanceId ||
+    (task as any)?.reviewer_refs?.[0]?.agent_instance_id ||
+    (task as any)?.reviewerRefs?.[0]?.agent_instance_id ||
+    (task as any)?.reviewer_refs?.[0]?.agentInstanceId ||
+    ''
+  );
 }
 
 export function taskCreatedMs(task: TaskLike | null | undefined): number {
