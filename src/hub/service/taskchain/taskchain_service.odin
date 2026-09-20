@@ -722,6 +722,9 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	}
 
 	now := platform.clock_now(service.clock)
+	if task.status != .In_Validation && next == .In_Validation {
+		_, _ = iface.taskchain_delete_votes_by_task(service.repo, task.task_id, task.owner_user_id)
+	}
 	task.status = next
 	task.updated_at = now
 	if next == .In_Progress && task.started_at == "" do task.started_at = now
