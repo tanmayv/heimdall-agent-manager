@@ -32,6 +32,69 @@ project_vcs_command_json_commit_diff_contract :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, "\"limit\":25"), "limit present")
 }
 
+// list_files mode (TASK-B): project_handle_vcs_commit_diff sets send_list_files=true
+// and, when ?list_files=true, list_files=true with send_cursor/send_limit=false. The
+// relayed body must then carry "list_files":true and NOT carry cursor/limit (the file
+// list is not paginated).
+@(test)
+project_vcs_command_json_commit_diff_list_files :: proc(t: ^testing.T) {
+	cmd := Project_Vcs_Command{
+		command_type = "vcs_commit_diff",
+		base_ref = "abc123", send_base_ref = true,
+		head_ref = "def456", send_head_ref = true,
+		list_files = true, send_list_files = true,
+		send_cursor = false, // handler drops cursor/limit in list_files mode
+		send_limit = false,
+	}
+	out := project_vcs_command_json(cmd, "cmd_cd_lf", "/repo/root")
+	testing.expect(t, strings.contains(out, "\"list_files\":true"), "list_files:true emitted")
+	testing.expect(t, strings.contains(out, "\"base_ref\":\"abc123\""), "base_ref present")
+	testing.expect(t, strings.contains(out, "\"head_ref\":\"def456\""), "head_ref present")
+	testing.expect(t, !strings.contains(out, "\"cursor\""), "cursor omitted in list_files mode")
+	testing.expect(t, !strings.contains(out, "\"limit\""), "limit omitted in list_files mode")
+}
+
+// Default hunk mode (list_files=false, even with send_list_files=true) must NOT emit
+// the list_files field, and still forwards cursor/limit — no regression.
+@(test)
+project_vcs_command_json_commit_diff_no_list_files :: proc(t: ^testing.T) {
+	cmd := Project_Vcs_Command{
+		command_type = "vcs_commit_diff",
+		base_ref = "HEAD~1", send_base_ref = true,
+		head_ref = "HEAD", send_head_ref = true,
+		list_files = false, send_list_files = true,
+		cursor = "c1", send_cursor = true,
+		limit = 50, send_limit = true,
+	}
+	out := project_vcs_command_json(cmd, "cmd_cd_nolf", "/repo")
+	testing.expect(t, !strings.contains(out, "\"list_files\""), "list_files omitted when false")
+	testing.expect(t, strings.contains(out, "\"cursor\":\"c1\""), "cursor still forwarded in hunk mode")
+	testing.expect(t, strings.contains(out, "\"limit\":50"), "limit still forwarded in hunk mode")
+}
+
+// vcs_commit (TASK-E): project_handle_vcs_commit relays message with send_message=true.
+// The body must carry "message":"<escaped>" and the command type vcs_commit.
+@(test)
+project_vcs_command_json_commit_message :: proc(t: ^testing.T) {
+	cmd := Project_Vcs_Command{
+		command_type = "vcs_commit",
+		message = "fix: repair the "+`"parser"`, send_message = true,
+	}
+	out := project_vcs_command_json(cmd, "cmd_commit_1", "/repo")
+	testing.expect(t, strings.contains(out, "\"type\":\"vcs_commit\""), "type is vcs_commit")
+	// The embedded quotes must be JSON-escaped by write_handler_json_string.
+	testing.expect(t, strings.contains(out, "\"message\":\"fix: repair the \\\"parser\\\"\""), "message present and escaped")
+	testing.expect(t, !strings.contains(out, "\"path\""), "no path field for commit")
+}
+
+// An empty message (or send_message=false) must NOT emit the message field.
+@(test)
+project_vcs_command_json_commit_omits_empty_message :: proc(t: ^testing.T) {
+	cmd := Project_Vcs_Command{command_type = "vcs_commit", message = "", send_message = true}
+	out := project_vcs_command_json(cmd, "cmd_commit_2", "/repo")
+	testing.expect(t, !strings.contains(out, "\"message\""), "empty message omitted")
+}
+
 @(test)
 project_vcs_command_json_omits_unset_refs :: proc(t: ^testing.T) {
 	// vcs_log-style command: no refs, no path.

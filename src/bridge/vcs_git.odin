@@ -26,9 +26,11 @@ vcs_git_provider :: proc() -> VCS_Provider {
 		unstage_file    = vcs_git_unstage_file,
 		revert_file     = vcs_git_revert_file,
 		save_file       = vcs_git_save_file,
-		log             = vcs_git_log,
-		commit_diff     = vcs_git_commit_diff,
-		list_workspaces = vcs_git_list_workspaces,
+		log               = vcs_git_log,
+		commit_diff       = vcs_git_commit_diff,
+		commit_diff_files = vcs_git_commit_diff_files,
+		commit            = vcs_git_commit,
+		list_workspaces   = vcs_git_list_workspaces,
 	}
 }
 
@@ -304,6 +306,78 @@ vcs_git_commit_diff_args :: proc(path, base_ref, head_ref, file: string) -> [dyn
 	if head_ref != "" && head_ref != "WORKDIR" do append(&args, head_ref)
 	if file != "" do append(&args, "--", file)
 	return args
+}
+
+// vcs_ns_char_to_status maps a `git diff --name-status` status char to the neutral
+// status word. A/D/R are exact; M, C, T, and anything else collapse to "modified"
+// (the closest neutral bucket, matching vcs_git_status_word's fallbacks).
+vcs_ns_char_to_status :: proc(sc: rune) -> string {
+	switch sc {
+	case 'A': return "added"
+	case 'D': return "deleted"
+	case 'R': return "renamed"
+	case:     return "modified" // M, C, T, and anything else
+	}
+}
+
+// vcs_git_commit_diff_files lists the files changed between base_ref and head_ref
+// (the file-list mode of vcs_commit_diff): `git diff --name-status` for path+status
+// and `git diff --numstat` for +/- counts, joined by path. head_ref "" or "WORKDIR"
+// omits the head so git compares base_ref to the working tree; base_ref == head_ref
+// is an empty list by definition. A git error (e.g. an unknown ref) surfaces as
+// ok=false, which the caller maps to "invalid_ref". The returned slice and its path
+// strings are owned by context.allocator.
+vcs_git_commit_diff_files :: proc(path, base_ref, head_ref: string) -> ([]VCS_Changed_File, bool) {
+	if base_ref == head_ref do return []VCS_Changed_File{}, true
+	// Run git diff --name-status base_ref [head_ref] for path + status.
+	ns_args := make([dynamic]string, context.temp_allocator)
+	append(&ns_args, "git", "-C", path, "diff", "--name-status", base_ref)
+	if head_ref != "" && head_ref != "WORKDIR" do append(&ns_args, head_ref)
+	ns_out, ns_ok := vcs_run(ns_args[:])
+	if !ns_ok do return nil, false
+	// Run git diff --numstat base_ref [head_ref] for +/- counts.
+	num_args := make([dynamic]string, context.temp_allocator)
+	append(&num_args, "git", "-C", path, "diff", "--numstat", base_ref)
+	if head_ref != "" && head_ref != "WORKDIR" do append(&num_args, head_ref)
+	stats := make(map[string][2]int, 0, context.temp_allocator)
+	vcs_git_numstat_into(&stats, path, num_args[:])
+	// Parse --name-status lines: "<sc>\t<path>" or "<sc>\t<old>\t<new>" for renames.
+	all := make([dynamic]VCS_Changed_File, context.allocator)
+	for raw in strings.split_lines(ns_out, context.temp_allocator) {
+		line := strings.trim_space(raw)
+		if len(line) == 0 do continue
+		sc := rune(line[0])
+		rest := strings.trim_left(line[1:], "\t ")
+		// Renames/copies read "<sc>\t<old>\t<new>": the destination is the last
+		// tab-separated segment.
+		file_path := rest
+		if tab := strings.last_index_byte(rest, '\t'); tab >= 0 {
+			file_path = strings.trim_space(rest[tab + 1:])
+		}
+		if file_path == "" do continue
+		file_path = strings.clone(file_path)
+		counts := stats[file_path] // zero value {0, 0} when absent (renames, binaries)
+		append(&all, VCS_Changed_File{
+			path      = file_path,
+			status    = vcs_ns_char_to_status(sc),
+			staged    = false,
+			additions = counts[0],
+			deletions = counts[1],
+		})
+	}
+	return all[:], true
+}
+
+// --- commit --------------------------------------------------------------
+
+// vcs_git_commit commits the currently-staged changes with `message`
+// (`git -C path commit -m <message>`). Returns ok=true only on exit 0; a git error
+// (nothing staged, bad identity, hook rejection, ...) surfaces as ok=false, which the
+// caller maps to the "commit_failed" error code. The caller guards against an empty
+// message before dispatch, so `message` is always non-empty here.
+vcs_git_commit :: proc(path, message: string) -> (ok: bool) {
+	_, rok := vcs_run([]string{"git", "-C", path, "commit", "-m", message})
+	return rok
 }
 
 // --- workspaces ----------------------------------------------------------

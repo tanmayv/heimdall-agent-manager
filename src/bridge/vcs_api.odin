@@ -11,6 +11,10 @@ package main
 //   vcs_files         params: {path, cursor?, limit?}     -> paginated changed files
 //   vcs_diff          params: {path, file, cursor?, limit?}-> paginated diff hunks
 //
+// vcs_commit_diff has two modes: the default returns paginated diff hunks; with
+// list_files:true it returns a flat "files":[] list (path/status/+/-) between the
+// two refs instead, for the Log tab's file-list selector.
+//
 // On a path with no recognized VCS, every command returns {ok:false,
 // error:{code:"no_vcs"}}. The provider is resolved per request via
 // vcs_detect_provider; the caller-supplied path is home-expanded (so "~/proj"
@@ -78,6 +82,10 @@ bridge_vcs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> b
 	case "vcs_save_file":
 		command_id := extract_json_string(text, "command_id", "")
 		_ = bridge_hub_send(conn, bridge_vcs_save_json(command_id, text))
+		return true
+	case "vcs_commit":
+		command_id := extract_json_string(text, "command_id", "")
+		_ = bridge_hub_send(conn, bridge_vcs_commit_json(command_id, text))
 		return true
 	// --- read-only commands: cached by command_id like the other read handlers. ---
 	case "vcs_log":
@@ -420,6 +428,50 @@ bridge_vcs_save_json :: proc(command_id, text: string) -> string {
 	return strings.to_string(b)
 }
 
+// --- vcs_commit (write command) ------------------------------------------
+// Commits the currently-staged changes with the client-supplied "message". Params:
+// repo in "root", message in "message". Never cached (mutation). Result type
+// "vcs_commit_result". A nil provider.commit proc surfaces "not_supported"; an empty
+// message surfaces "missing_message"; a failed git commit surfaces "commit_failed".
+bridge_vcs_commit_json :: proc(command_id, text: string) -> string {
+	path := vcs_request_path(text)
+	message := strings.trim_space(extract_json_string(text, "message", ""))
+	provider, ok := vcs_detect_provider(path)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"vcs_commit_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	if !ok {
+		strings.write_string(&b, "\",\"ok\":false")
+		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
+		strings.write_string(&b, "}")
+		return strings.to_string(b)
+	}
+	if message == "" {
+		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
+		strings.write_string(&b, "\"")
+		vcs_write_error(&b, "missing_message", "The 'message' parameter is required")
+		strings.write_string(&b, "}")
+		return strings.to_string(b)
+	}
+	if provider.commit == nil {
+		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
+		strings.write_string(&b, "\"")
+		vcs_write_error(&b, "not_supported", "Commit is not supported by this provider")
+		strings.write_string(&b, "}")
+		return strings.to_string(b)
+	}
+	aok := provider.commit(path, message)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
+	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
+	strings.write_string(&b, "\"")
+	if aok {
+		vcs_write_error(&b, "", "")
+	} else {
+		vcs_write_error(&b, "commit_failed", vcs_action_error_message("commit_failed"))
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
 // vcs_action_error_message maps a write-action error code to a human message.
 vcs_action_error_message :: proc(code: string) -> string {
 	switch code {
@@ -429,6 +481,8 @@ vcs_action_error_message :: proc(code: string) -> string {
 	case "unstage_failed": return "Could not unstage file"
 	case "revert_failed":  return "Could not revert file"
 	case "save_failed":    return "Could not save file"
+	case "commit_failed":  return "Could not create commit (nothing staged, or git rejected it)"
+	case "missing_message": return "The 'message' parameter is required"
 	case "missing_file":   return "The 'path' parameter is required"
 	case "path_outside_root": return "File path is outside the repository root"
 	case:                  return "VCS action failed"
@@ -499,6 +553,7 @@ bridge_vcs_commit_diff_json :: proc(command_id, text: string) -> string {
 	base_ref := strings.trim_space(extract_json_string(text, "base_ref", ""))
 	head_ref := strings.trim_space(extract_json_string(text, "head_ref", ""))
 	file := strings.trim_space(extract_json_string(text, "path", ""))
+	list_files := bridge_fs_extract_json_bool(text, "list_files", false)
 	cursor := extract_json_string(text, "cursor", "")
 	limit := extract_json_int(text, "limit", VCS_DIFF_DEFAULT_LIMIT)
 	eff_limit := vcs_clamp_limit(limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
@@ -519,6 +574,47 @@ bridge_vcs_commit_diff_json :: proc(command_id, text: string) -> string {
 		bridge_vcs_commit_diff_meta(&b, base_ref, head_ref, cursor, eff_limit)
 		strings.write_string(&b, ",\"hunks\":[],\"has_more\":false,\"next_cursor\":null")
 		vcs_write_error(&b, "invalid_ref", "The 'base_ref' parameter is required")
+		strings.write_string(&b, "}")
+		return strings.to_string(b)
+	}
+	// File-list mode: return the flat list of changed files (name + status + +/-
+	// counts) instead of diff hunks. The response echoes "list_files":true and a
+	// "files":[] array (never "hunks"); the hub relays it verbatim and the UI's Log
+	// tab renders the selector before loading any per-file diff.
+	if list_files {
+		if provider.commit_diff_files == nil {
+			strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
+			strings.write_string(&b, "\",\"list_files\":true")
+			bridge_vcs_list_files_refs(&b, base_ref, head_ref)
+			strings.write_string(&b, ",\"files\":[]")
+			vcs_write_error(&b, "not_supported", "Commit diff file list is not supported by this provider")
+			strings.write_string(&b, "}")
+			return strings.to_string(b)
+		}
+		files, dok := provider.commit_diff_files(path, base_ref, head_ref)
+		if !dok {
+			strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
+			strings.write_string(&b, "\",\"list_files\":true")
+			bridge_vcs_list_files_refs(&b, base_ref, head_ref)
+			strings.write_string(&b, ",\"files\":[]")
+			vcs_write_error(&b, "invalid_ref", "Could not diff the requested revisions")
+			strings.write_string(&b, "}")
+			return strings.to_string(b)
+		}
+		strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, provider.name())
+		strings.write_string(&b, "\",\"list_files\":true")
+		bridge_vcs_list_files_refs(&b, base_ref, head_ref)
+		strings.write_string(&b, ",\"files\":[")
+		for f, i in files {
+			if i > 0 do strings.write_byte(&b, ',')
+			strings.write_string(&b, "{\"path\":\""); json_write_string(&b, f.path)
+			strings.write_string(&b, "\",\"status\":\""); json_write_string(&b, f.status)
+			strings.write_string(&b, "\",\"additions\":"); strings.write_string(&b, fmt.tprintf("%d", f.additions))
+			strings.write_string(&b, ",\"deletions\":"); strings.write_string(&b, fmt.tprintf("%d", f.deletions))
+			strings.write_byte(&b, '}')
+		}
+		strings.write_string(&b, "]")
+		vcs_write_error(&b, "", "")
 		strings.write_string(&b, "}")
 		return strings.to_string(b)
 	}
@@ -580,6 +676,17 @@ bridge_vcs_commit_diff_meta :: proc(b: ^strings.Builder, base_ref, head_ref, cur
 	strings.write_string(b, "\",\"head_ref\":\""); json_write_string(b, head_ref)
 	strings.write_string(b, "\",\"cursor\":\""); json_write_string(b, cursor)
 	strings.write_string(b, "\",\"limit\":"); strings.write_string(b, fmt.tprintf("%d", eff_limit))
+}
+
+// bridge_vcs_list_files_refs writes the ,"base_ref":..,"head_ref":.. pair for the
+// list_files-mode response. Unlike bridge_vcs_commit_diff_meta it does NOT start with
+// a closing quote (the file-list branches write a bare `,"list_files":true` token, not
+// an open string), and it omits the paginated-only cursor/limit fields which the flat
+// file list does not use.
+bridge_vcs_list_files_refs :: proc(b: ^strings.Builder, base_ref, head_ref: string) {
+	strings.write_string(b, ",\"base_ref\":\""); json_write_string(b, base_ref)
+	strings.write_string(b, "\",\"head_ref\":\""); json_write_string(b, head_ref)
+	strings.write_string(b, "\"")
 }
 
 // --- vcs_workspaces ------------------------------------------------------

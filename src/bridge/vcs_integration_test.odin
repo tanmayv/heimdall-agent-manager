@@ -217,6 +217,67 @@ vcs_git_log_pagination :: proc(t: ^testing.T) {
 	testing.expect(t, cur2 == "", "final page returns no next_cursor")
 }
 
+// commit_diff_files: two commits (add README; then modify README + add new.txt),
+// diff the two revisions in file-list mode and confirm both files appear with the
+// right status words. Also confirms same-ref -> empty list.
+@(test)
+vcs_git_commit_diff_files_real :: proc(t: ^testing.T) {
+	dir, ok := vcs_test_git_repo("commit-diff-files")
+	defer vcs_test_rm(dir)
+	if !ok do return
+	// Commit 1: add README.md.
+	vcs_test_write(dir, "README.md", "hello\n")
+	if !vcs_test_git("git", "-C", dir, "add", "README.md") do return
+	if !vcs_test_git("git", "-C", dir, "commit", "-m", "c1") do return
+	// Commit 2: modify README.md and add new.txt.
+	vcs_test_write(dir, "README.md", "hello\nworld\n")
+	vcs_test_write(dir, "new.txt", "brand new\n")
+	if !vcs_test_git("git", "-C", dir, "add", "README.md", "new.txt") do return
+	if !vcs_test_git("git", "-C", dir, "commit", "-m", "c2") do return
+
+	files, dok := vcs_git_commit_diff_files(dir, "HEAD~1", "HEAD")
+	defer vcs_test_free_files(files)
+	testing.expect(t, dok, "commit_diff_files ok on a valid ref pair")
+	testing.expect_value(t, len(files), 2)
+	readme, rfound := vcs_test_find_file(files, "README.md")
+	testing.expect(t, rfound, "README.md listed in the commit diff")
+	testing.expect(t, readme.status == "modified", "README.md status is modified")
+	testing.expect(t, readme.additions == 1, "README.md has 1 addition")
+	newf, nfound := vcs_test_find_file(files, "new.txt")
+	testing.expect(t, nfound, "new.txt listed in the commit diff")
+	testing.expect(t, newf.status == "added", "new.txt status is added")
+
+	// Same ref -> empty list, ok:true (short-circuits before any git call).
+	same, sok := vcs_git_commit_diff_files(dir, "HEAD", "HEAD")
+	defer vcs_test_free_files(same)
+	testing.expect(t, sok, "commit_diff_files ok when base_ref == head_ref")
+	testing.expect_value(t, len(same), 0)
+}
+
+// commit: stage a new file, commit it via vcs_git_commit, and confirm the commit
+// landed (git log shows the subject) and the tree is clean afterward.
+@(test)
+vcs_git_commit_real :: proc(t: ^testing.T) {
+	dir, ok := vcs_test_git_repo("commit")
+	defer vcs_test_rm(dir)
+	if !ok do return
+	vcs_test_write(dir, "a.txt", "hello\n")
+	if !vcs_test_git("git", "-C", dir, "add", "a.txt") do return
+
+	cok := vcs_git_commit(dir, "add a.txt")
+	testing.expect(t, cok, "commit succeeds with a staged file")
+
+	// The commit exists with our subject.
+	out, lok := vcs_run([]string{"git", "-C", dir, "log", "--format=%s", "-1"})
+	defer if len(out) > 0 do delete(out)
+	testing.expect(t, lok, "git log ok after commit")
+	testing.expect(t, strings.contains(out, "add a.txt"), "commit subject recorded")
+
+	// With nothing staged, a second commit fails (git exits non-zero).
+	cok2 := vcs_git_commit(dir, "empty commit")
+	testing.expect(t, !cok2, "commit with nothing staged fails")
+}
+
 // worktrees_list: add a linked worktree, then list from each side and confirm exactly
 // the queried worktree is reported is_current.
 @(test)

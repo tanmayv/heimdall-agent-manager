@@ -228,6 +228,19 @@ vcs_commit_diff_workdir_sentinel :: proc(t: ^testing.T) {
 	testing.expect(t, args3[len(args3) - 1] == "feature", "explicit head_ref appended")
 }
 
+// vcs_ns_char_to_status maps `git diff --name-status` status chars to the neutral
+// status word: A/D/R exact, everything else (M, C, T, junk) -> modified.
+@(test)
+vcs_ns_char_to_status_mapping :: proc(t: ^testing.T) {
+	testing.expect(t, vcs_ns_char_to_status('A') == "added", "A -> added")
+	testing.expect(t, vcs_ns_char_to_status('D') == "deleted", "D -> deleted")
+	testing.expect(t, vcs_ns_char_to_status('R') == "renamed", "R -> renamed")
+	testing.expect(t, vcs_ns_char_to_status('M') == "modified", "M -> modified")
+	testing.expect(t, vcs_ns_char_to_status('C') == "modified", "C (copy) -> modified")
+	testing.expect(t, vcs_ns_char_to_status('T') == "modified", "T (type-change) -> modified")
+	testing.expect(t, vcs_ns_char_to_status('Z') == "modified", "unknown char -> modified")
+}
+
 @(test)
 vcs_detect_provider_on_repo :: proc(t: ^testing.T) {
 	// This checkout is a git repo and (per the task) has no .jj.

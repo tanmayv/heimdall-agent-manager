@@ -109,6 +109,15 @@ VCS_Provider :: struct {
 	log:             proc(path, cursor: string, limit: int) -> (entries: []VCS_Log_Entry, next_cursor: string, has_more: bool, ok: bool),
 	// read-only. returns (hunks, next_cursor, has_more, ok)
 	commit_diff:     proc(path, base_ref, head_ref, file, cursor: string, limit: int) -> (hunks: []VCS_Diff_Hunk, next_cursor: string, has_more: bool, ok: bool),
+	// read-only. Flat list of files changed between base_ref and head_ref (name +
+	// status + per-file +/- counts), for the Log tab's file-list selector. head_ref
+	// "" or "WORKDIR" compares base_ref to the working tree; base_ref == head_ref is
+	// an empty list. Returns (files, ok); nil proc = not supported.
+	commit_diff_files: proc(path, base_ref, head_ref: string) -> (files: []VCS_Changed_File, ok: bool),
+	// Write command. Commits the currently-staged changes with `message`. Returns ok
+	// (true = commit succeeded). A nil proc pointer means the action is unsupported
+	// and callers must treat it as "not_supported" before dispatch.
+	commit:          proc(path, message: string) -> (ok: bool),
 	// read-only. returns (workspaces, ok)
 	list_workspaces: proc(path: string) -> (workspaces: []VCS_Workspace, ok: bool),
 }

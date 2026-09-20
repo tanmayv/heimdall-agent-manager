@@ -38,6 +38,7 @@ import MemoryDetailPage from '../memory/MemoryDetailPage';
 import SkillViewerPage from '../skills/SkillViewerPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
 import LibraryPage from '../LibraryPage';
+import AgentMonitorPage from '../monitor/AgentMonitorPage';
 import ArtifactViewer from '../ArtifactViewer';
 import { clearUserClientState } from '../../store/chatSlice';
 import { priorUserClientStateCleared } from '../../store/store';
@@ -1011,7 +1012,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
     path.startsWith('/c/');
   const isKnownRoute = useMemo(() => {
     return [
-      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings',
+      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings', '/agent-monitor',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/c/') ||
       path.startsWith('/settings/bridges') ||
@@ -1328,6 +1329,16 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const hideMobileShellChrome = isMobile && mobileChromeSuppressed;
   const sidebarError = String((conversationsQuery.error as any)?.error || (agentsLiveQuery.error as any)?.error || '');
   const sidebarLoading = conversationsQuery.isLoading || agentsLiveQuery.isLoading;
+
+  // /agent-monitor is a bare full-screen page: it owns the whole viewport and renders
+  // WITHOUT the shell sidebar/chrome (like a standalone dashboard).
+  if (path === '/agent-monitor') {
+    return (
+      <main data-debug-id="shell-main-agent-monitor" className="h-screen w-screen overflow-hidden">
+        <AgentMonitorPage />
+      </main>
+    );
+  }
 
   return (
     <div data-debug-id="app-shell" className="flex h-screen bg-canvas text-primary">

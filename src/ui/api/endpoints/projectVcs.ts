@@ -109,6 +109,26 @@ export type VcsWorkspacesResult = {
   workspaces: VcsWorkspace[];
 };
 
+// One changed file in the commit-diff file-list mode (list_files=true). Mirrors the
+// bridge vcs_commit_diff serializer's per-file object (path/status/additions/deletions).
+export type VcsCommitDiffFile = {
+  path: string;
+  status: VcsFileStatus;
+  additions: number;
+  deletions: number;
+};
+
+// Commit-diff response in file-list mode: a flat list of changed files between two
+// refs, for the Log tab's file selector (no hunks, no pagination).
+export type VcsCommitDiffFilesResult = {
+  ok: boolean;
+  list_files: true;
+  base_ref: string;
+  head_ref: string;
+  files: VcsCommitDiffFile[];
+  error?: VcsError;
+};
+
 // ---- Cache key helpers ------------------------------------------------------
 
 // Tag id for a project's VCS data. Keyed by (projectId, bridgeId[, suffix]) so a
@@ -132,12 +152,21 @@ type CommitDiffArgs = {
   cursor?: string | null;
   worktree_path?: string;
 };
+type CommitDiffFilesArgs = {
+  projectId: string;
+  bridgeId?: string;
+  base_ref: string;
+  head_ref?: string;
+  worktree_path?: string;
+};
 type WorkspacesArgs = { projectId: string; bridgeId?: string; worktree_path?: string };
 // Write-operation args (stage/unstage/revert): all take a single file path and an
 // optional worktree_path.
 type VcsFileMutationArgs = { projectId: string; bridgeId?: string; file: string; worktree_path?: string };
 // Save (editor write): a file path plus the full buffer text.
 type VcsSaveFileArgs = { projectId: string; bridgeId?: string; file: string; content: string; worktree_path?: string };
+// Commit: the staged changes are committed with `message`.
+type CommitArgs = { projectId: string; bridgeId?: string; message: string; worktree_path?: string };
 type VcsMutationResult = { ok: boolean; error?: VcsError };
 
 function base(projectId: string): string {
@@ -280,6 +309,29 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
+    // Commit-diff in file-list mode (list_files=true): the flat list of files changed
+    // between two refs, for the Log tab's file selector. head_ref omitted/"WORKDIR"
+    // compares base_ref to the working tree. Not paginated (no cursor/limit).
+    listCommitDiffFiles: build.query<VcsCommitDiffFilesResult, CommitDiffFilesArgs>({
+      queryFn: async ({ projectId, bridgeId = '', base_ref, head_ref, worktree_path }) => {
+        try {
+          const qs = new URLSearchParams();
+          qs.set('list_files', 'true');
+          qs.set('base_ref', base_ref);
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (head_ref) qs.set('head_ref', head_ref);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const data = await cookieJsonFetch(`${base(projectId)}/commit-diff?${qs.toString()}`);
+          return { data: data as VcsCommitDiffFilesResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'commit-diff-files') },
+      ],
+    }),
+
     // Workspaces/worktrees the provider exposes.
     listVcsWorkspaces: build.query<VcsWorkspacesResult, WorkspacesArgs>({
       queryFn: async ({ projectId, bridgeId = '', worktree_path }) => {
@@ -376,6 +428,28 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
         { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
       ],
     }),
+
+    // Commit the staged changes with a message. worktree_path (when present) rides as a
+    // query param so the hub's vcs_workspaces whitelist guard can validate it, matching
+    // the other write mutations; the body carries only the message. Invalidates the
+    // changed-files list so the panel refetches clean state after the commit.
+    commitVcs: build.mutation<VcsMutationResult, CommitArgs>({
+      queryFn: async ({ projectId, bridgeId = '', message, worktree_path }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const url = `${base(projectId)}/commit${qs.size ? `?${qs}` : ''}`;
+          const data = await cookieMutation(url, 'POST', { message });
+          return { data: data as VcsMutationResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '' }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+      ],
+    }),
   }),
 });
 
@@ -392,10 +466,13 @@ export const {
   useLazyListVcsLogQuery,
   useGetVcsCommitDiffQuery,
   useLazyGetVcsCommitDiffQuery,
+  useListCommitDiffFilesQuery,
+  useLazyListCommitDiffFilesQuery,
   useListVcsWorkspacesQuery,
   useLazyListVcsWorkspacesQuery,
   useStageVcsFileMutation,
   useUnstageVcsFileMutation,
   useRevertVcsFileMutation,
   useSaveVcsFileMutation,
+  useCommitVcsMutation,
 } = projectVcsApi;

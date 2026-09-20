@@ -197,6 +197,83 @@ vcs_api_commit_diff_same_ref :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `"hunks":[]`), "base_ref == head_ref -> empty hunks")
 }
 
+// list_files mode: a real repo with list_files:true returns "list_files":true and a
+// "files":[ array (never "hunks"). Skips when this checkout is not a git repo.
+@(test)
+vcs_api_commit_diff_list_files_real :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_commit_diff_json("cd", `{"command_id":"cd","root":".","base_ref":"HEAD~1","head_ref":"HEAD","list_files":true}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "list_files real repo -> ok:true")
+	testing.expect(t, strings.contains(out, `"list_files":true`), "response echoes list_files:true")
+	testing.expect(t, strings.contains(out, `"files":[`), "response carries a files array")
+	testing.expect(t, !strings.contains(out, `"hunks":`), "list_files response has no hunks field")
+	// Well-formedness: list_files is a bare bool token, so it must be immediately
+	// followed by a proper key separator (,"base_ref"), never a stray quote (`true"`).
+	testing.expect(t, strings.contains(out, `"list_files":true,"base_ref":`), "list_files:true is followed by a clean key separator")
+	testing.expect(t, !strings.contains(out, `true",`), "no stray quote after the list_files bool (malformed-JSON guard)")
+	testing.expect(t, strings.contains(out, `"head_ref":"HEAD"`), "head_ref echoed back verbatim")
+}
+
+// no-regression: list_files absent (default false) still returns the hunk shape.
+@(test)
+vcs_api_commit_diff_hunks_default :: proc(t: ^testing.T) {
+	if !vcs_git_detect(".") do return
+	out := bridge_vcs_commit_diff_json("cd", `{"command_id":"cd","root":".","base_ref":"HEAD~1","head_ref":"HEAD"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":true`), "default mode real repo -> ok:true")
+	testing.expect(t, strings.contains(out, `"hunks":[`), "default mode carries a hunks array")
+	testing.expect(t, !strings.contains(out, `"list_files":true`), "default mode does not set list_files")
+}
+
+// jj provider has commit_diff_files=nil, so list_files mode on a .jj marker repo
+// must fail safe to not_supported (detection-only path, no jj binary needed).
+@(test)
+vcs_api_commit_diff_list_files_jj_not_supported :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("commit-diff-files-jj", ".jj")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_commit_diff_json("cd", fmt.tprintf(`{"command_id":"cd","root":"%s","base_ref":"HEAD","head_ref":"HEAD~1","list_files":true}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "jj list_files -> ok:false")
+	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
+	testing.expect(t, strings.contains(out, `"list_files":true`), "error still echoes list_files:true")
+	testing.expect(t, strings.contains(out, `"code":"not_supported"`), "jj list_files -> not_supported")
+}
+
+// vcs_commit handler: empty root -> no_vcs (fail-safe, no crash).
+@(test)
+vcs_api_commit_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_commit_json("cm", `{"command_id":"cm","root":"","message":"x"}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root commit ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root commit -> no_vcs")
+}
+
+// vcs_commit handler: a real (marker) git repo but an empty message -> missing_message,
+// before any git runs.
+@(test)
+vcs_api_commit_missing_message :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("commit-missing-msg", ".git")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_commit_json("cm", fmt.tprintf(`{"command_id":"cm","root":"%s","message":""}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty message commit ok:false")
+	testing.expect(t, strings.contains(out, `"provider":"git"`), "provider resolves to git")
+	testing.expect(t, strings.contains(out, `"code":"missing_message"`), "empty message -> missing_message")
+}
+
+// vcs_commit handler: jj provider has commit=nil -> not_supported (detection-only path).
+@(test)
+vcs_api_commit_jj_not_supported :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("commit-jj", ".jj")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_commit_json("cm", fmt.tprintf(`{"command_id":"cm","root":"%s","message":"hi"}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "jj commit ok:false")
+	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
+	testing.expect(t, strings.contains(out, `"code":"not_supported"`), "jj commit -> not_supported")
+}
+
 @(test)
 vcs_api_workspaces_empty_root :: proc(t: ^testing.T) {
 	out := bridge_vcs_workspaces_json("w", `{"command_id":"w","root":""}`)

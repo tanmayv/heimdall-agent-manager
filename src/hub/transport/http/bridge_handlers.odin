@@ -505,12 +505,16 @@ Project_Vcs_Command :: struct {
 	base_ref:      string, // vcs_commit_diff: compare base
 	head_ref:      string, // vcs_commit_diff: compare head (empty/WORKDIR = worktree)
 	content:       string, // vcs_save_file: full file text to write
+	message:       string, // vcs_commit: commit message
+	list_files:    bool, // vcs_commit_diff: return a changed-file list instead of hunks
 	send_path:     bool, // whether to include path in JSON body
 	send_cursor:   bool,
 	send_limit:    bool,
 	send_base_ref: bool,
 	send_head_ref: bool,
 	send_content:  bool, // whether to include content in JSON body
+	send_list_files: bool, // whether to include list_files in JSON body
+	send_message:  bool, // whether to include message in JSON body
 }
 
 project_vcs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Vcs_Command) -> (string, bool, domain.Domain_Error) {
@@ -609,6 +613,12 @@ project_vcs_command_json :: proc(cmd: Project_Vcs_Command, command_id, root_path
 	if cmd.send_content {
 		strings.write_string(&b, ",\"content\":\""); write_handler_json_string(&b, cmd.content); strings.write_string(&b, "\"")
 	}
+	if cmd.send_list_files && cmd.list_files {
+		strings.write_string(&b, ",\"list_files\":true")
+	}
+	if cmd.send_message && cmd.message != "" {
+		strings.write_string(&b, ",\"message\":\""); write_handler_json_string(&b, cmd.message); strings.write_string(&b, "\"")
+	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
@@ -667,13 +677,17 @@ project_handle_vcs_log :: proc(ctx: rawptr, req: Request) -> Response {
 
 project_handle_vcs_commit_diff :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
+	// list_files mode returns a flat changed-file list (not paginated), so cursor and
+	// limit are only forwarded in the default hunk mode.
+	list_files := query_bool(req.query, "list_files", false)
 	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
 		command_type = "vcs_commit_diff",
 		base_ref = query_value(req.query, "base_ref"), send_base_ref = true,
 		head_ref = query_value(req.query, "head_ref"), send_head_ref = true,
 		path = query_value(req.query, "file"), send_path = true,
-		cursor = query_value(req.query, "cursor"), send_cursor = true,
-		limit = query_int(req.query, "limit", 50), send_limit = true,
+		list_files = list_files, send_list_files = true,
+		cursor = query_value(req.query, "cursor"), send_cursor = !list_files,
+		limit = query_int(req.query, "limit", 50), send_limit = !list_files,
 	})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
@@ -722,6 +736,22 @@ project_handle_vcs_save_file :: proc(ctx: rawptr, req: Request) -> Response {
 		command_type = "vcs_save_file",
 		path = file, send_path = true,
 		content = json_string(req.body, "content"), send_content = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// project_handle_vcs_commit relays a commit: body {"message":"<text>"[, "worktree_path"]}
+// maps onto the bridge vcs_commit command's "message" field. worktree_path (query) is
+// validated against the vcs_workspaces whitelist by project_vcs_relay like every other
+// write. Not cached (mutation). An empty message is rejected with 400 before relaying.
+project_handle_vcs_commit :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	message := strings.trim_space(json_string(req.body, "message"))
+	if message == "" do return respond_error(domain.domain_error(.Validation_Failed, "message is required"), req.request_id)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_commit",
+		message = message, send_message = true,
 	})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
@@ -1243,7 +1273,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		delete(instance_id)
 		delete(runtime_status)
 		delete(activity_status)
-	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "fs_find_files_result", "fs_grep_result":
+	case "command_result", "project_path_validation_result", "providers_report", "fs_list_dir_result", "fs_stat_result", "fs_make_dir_result", "fs_read_file_result", "fs_create_file_result", "fs_write_file_result", "fs_batch_write_result", "fs_move_result", "fs_delete_result", "vcs_capabilities_result", "vcs_status_result", "vcs_files_result", "vcs_diff_result", "vcs_log_result", "vcs_commit_diff_result", "vcs_workspaces_result", "vcs_stage_result", "vcs_unstage_result", "vcs_revert_result", "vcs_save_file_result", "vcs_commit_result", "fs_find_files_result", "fs_grep_result":
 		command_id := json_string(text, "command_id")
 		_, existed := bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		if existed {

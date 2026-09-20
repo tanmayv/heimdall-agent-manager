@@ -1514,7 +1514,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
                 setEditorFileToOpen(filePath);
               }}
               onOpenVcsFiles={() => {
-                selectRightPanelTab('files');
+                selectRightPanelTab('vcs');
               }}
               isMobile={isMobilePanel}
             />
@@ -1540,6 +1540,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               bridgeId={instanceBridgeId}
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
+              onOpenDirectory={() => selectRightPanelTab('files')}
             />
           ) : active === 'rundir' && hasRunDir ? (
             <InstanceRunDirPanel

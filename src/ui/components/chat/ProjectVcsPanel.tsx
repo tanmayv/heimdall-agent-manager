@@ -26,15 +26,18 @@ import {
   useGetVcsDiffQuery,
   useLazyListVcsLogQuery,
   useLazyGetVcsCommitDiffQuery,
+  useLazyListCommitDiffFilesQuery,
   useListVcsWorkspacesQuery,
   useStageVcsFileMutation,
   useUnstageVcsFileMutation,
   useRevertVcsFileMutation,
   useSaveVcsFileMutation,
+  useCommitVcsMutation,
   type VcsChangedFile,
   type VcsFileStatus,
   type VcsLogEntry,
   type VcsDiffHunk,
+  type VcsCommitDiffFile,
 } from '../../api/endpoints/projectVcs';
 import { useReadProjectFileQuery, useDeleteProjectPathMutation } from '../../api/endpoints/projectFs';
 import { useTheme } from '../../store/themeSlice';
@@ -116,13 +119,21 @@ export type ProjectVcsPanelProps = {
   onClose?: () => void;
   isMobile?: boolean;
   debugPrefix?: string;
+  // Invoked when an untracked directory row is opened from the Changes tab. The host
+  // switches the sidebar to the Files explorer (directories have no diffable content).
+  onOpenDirectory?: (path: string) => void;
 };
 
 export default function ProjectVcsPanel({
   projectId,
   bridgeId = '',
   debugPrefix = 'project-vcs',
+  isMobile = false,
+  onOpenDirectory,
 }: ProjectVcsPanelProps) {
+  // On a narrow (mobile) panel we show one column at a time — either the list or the
+  // diff — toggled by activePane, instead of the side-by-side two-pane layout.
+  const isSinglePane = isMobile;
   // ---- Capabilities (drives every feature gate) -----------------------------
   const capsQ = useGetVcsCapabilitiesQuery({ projectId, bridgeId }, { skip: !projectId });
   const caps = capsQ.data;
@@ -132,8 +143,14 @@ export default function ProjectVcsPanel({
 
   // ---- Panel state ----------------------------------------------------------
   const [activeSubTab, setActiveSubTab] = useState<'changes' | 'log'>('changes');
+  // Single-pane column shown on mobile: the list of files/commits, or the diff.
+  const [activePane, setActivePane] = useState<'list' | 'diff'>('list');
   const [selectedFile, setSelectedFile] = useState<VcsChangedFile | null>(null);
+  // Files checked in the Changes tab for bulk stage/unstage/revert/track/delete.
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [selectedCommit, setSelectedCommit] = useState<VcsLogEntry | null>(null);
+  // Which file in the commit's changed-file list is open in the Monaco pane (Log tab).
+  const [selectedCommitFile, setSelectedCommitFile] = useState<string | null>(null);
   const [activeWorktreePath, setActiveWorktreePath] = useState<string | null>(null);
   const worktreeArg = activeWorktreePath ?? undefined;
 
@@ -173,7 +190,57 @@ export default function ProjectVcsPanel({
   // filesystem remove via the project FS endpoint (VcsFiles isn't in its tags, so
   // we refetch the changed-files list ourselves after a delete).
   const [deleteProjectPath, deleteState] = useDeleteProjectPathMutation();
+  const [commitVcs, commitState] = useCommitVcsMutation();
   const busyWrite = stageState.isLoading || unstageState.isLoading || revertState.isLoading || deleteState.isLoading;
+
+  // ---- Commit ---------------------------------------------------------------
+  const [commitMessage, setCommitMessage] = useState('');
+  const [commitError, setCommitError] = useState('');
+  const handleCommit = useCallback(async () => {
+    const msg = commitMessage.trim();
+    if (!msg) return;
+    setCommitError('');
+    try {
+      const res = await commitVcs({ projectId, bridgeId, message: msg, worktree_path: worktreeArg }).unwrap();
+      if (!res.ok) { setCommitError(str(res.error?.message) || 'Commit failed'); return; }
+      setCommitMessage('');
+    } catch (e: any) {
+      setCommitError(str(e?.error || e?.message) || 'Commit failed');
+    }
+  }, [commitVcs, projectId, bridgeId, commitMessage, worktreeArg]);
+
+  // ---- Checkbox selection helpers (Changes tab bulk actions) ----------------
+  const toggleFileSelected = useCallback((path: string) => {
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  }, []);
+  // Rows a section action targets: the checked rows, or ALL rows when none are checked.
+  const sectionTargets = useCallback((rows: VcsChangedFile[]): VcsChangedFile[] => {
+    const checked = rows.filter((r) => selectedFiles.has(r.path));
+    return checked.length > 0 ? checked : rows;
+  }, [selectedFiles]);
+  // Apply a per-file action to a section's targets, then drop them from the selection.
+  const runSectionAction = useCallback((rows: VcsChangedFile[], action: (path: string) => void) => {
+    const targets = sectionTargets(rows);
+    targets.forEach((f) => action(f.path));
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      targets.forEach((f) => next.delete(f.path));
+      return next;
+    });
+  }, [sectionTargets]);
+  const toggleSectionAll = useCallback((rows: VcsChangedFile[]) => {
+    setSelectedFiles((prev) => {
+      const allSelected = rows.length > 0 && rows.every((r) => prev.has(r.path));
+      const next = new Set(prev);
+      if (allSelected) rows.forEach((r) => next.delete(r.path));
+      else rows.forEach((r) => next.add(r.path));
+      return next;
+    });
+  }, []);
 
   const onStage = useCallback((path: string) => {
     void stageFile({ projectId, bridgeId, file: path, worktree_path: worktreeArg });
@@ -252,9 +319,19 @@ export default function ProjectVcsPanel({
   const [commitDiffLoading, setCommitDiffLoading] = useState(false);
   const [commitDiffError, setCommitDiffError] = useState('');
 
-  const loadCommitDiff = useCallback(async (opts?: { append?: boolean }) => {
+  // Commit-diff file list (Log left column; loaded via list_files=true, not paginated).
+  const [commitDiffFiles, setCommitDiffFiles] = useState<VcsCommitDiffFile[]>([]);
+  const [commitDiffFilesLoading, setCommitDiffFilesLoading] = useState(false);
+  const [commitDiffFilesError, setCommitDiffFilesError] = useState('');
+  const [triggerListCommitDiffFiles] = useLazyListCommitDiffFilesQuery();
+
+  // loadCommitDiff loads (or appends) the per-file hunks for the selected commit file.
+  // An explicit opts.file overrides the selectedCommitFile state, so a file click can
+  // diff the just-clicked path without waiting for the state update to settle.
+  const loadCommitDiff = useCallback(async (opts?: { append?: boolean; file?: string | null }) => {
     if (!projectId || !diffBaseRef) return;
     const append = Boolean(opts?.append);
+    const fileArg = opts && 'file' in opts ? opts.file : selectedCommitFile;
     setCommitDiffLoading(true);
     setCommitDiffError('');
     try {
@@ -262,6 +339,7 @@ export default function ProjectVcsPanel({
         projectId, bridgeId,
         base_ref: diffBaseRef,
         head_ref: diffHeadRef || 'WORKDIR',
+        file: fileArg ?? undefined,
         cursor: append ? commitCursor : null,
         worktree_path: worktreeArg,
       }).unwrap();
@@ -274,22 +352,59 @@ export default function ProjectVcsPanel({
     } finally {
       setCommitDiffLoading(false);
     }
-  }, [projectId, bridgeId, diffBaseRef, diffHeadRef, commitCursor, triggerCommitDiff, worktreeArg]);
+  }, [projectId, bridgeId, diffBaseRef, diffHeadRef, commitCursor, triggerCommitDiff, worktreeArg, selectedCommitFile]);
 
-  // Selecting a commit sets it as the diff base (head defaults to the working copy).
+  // loadCommitDiffFiles loads the flat list of files changed between the two refs.
+  const loadCommitDiffFiles = useCallback(async () => {
+    if (!projectId || !diffBaseRef) return;
+    setCommitDiffFilesLoading(true);
+    setCommitDiffFilesError('');
+    try {
+      const res = await triggerListCommitDiffFiles({
+        projectId, bridgeId,
+        base_ref: diffBaseRef,
+        head_ref: diffHeadRef || 'WORKDIR',
+        worktree_path: worktreeArg,
+      }).unwrap();
+      if (!res.ok) { setCommitDiffFilesError(str(res.error?.message) || 'Could not list files'); setCommitDiffFiles([]); return; }
+      setCommitDiffFiles(res.files || []);
+    } catch (e: any) {
+      setCommitDiffFilesError(str(e?.error || e?.message) || 'Could not list files');
+      setCommitDiffFiles([]);
+    } finally {
+      setCommitDiffFilesLoading(false);
+    }
+  }, [projectId, bridgeId, diffBaseRef, diffHeadRef, triggerListCommitDiffFiles, worktreeArg]);
+
+  // Selecting a commit sets it as the diff base (head defaults to the working copy) and
+  // clears any prior file selection + stale file list/hunks.
   const onSelectCommit = useCallback((entry: VcsLogEntry) => {
     setSelectedCommit(entry);
     setDiffBaseRef(entry.hash);
     setDiffHeadRef('WORKDIR');
+    setSelectedCommitFile(null);
+    setCommitDiffFiles([]);
+    setCommitHunks([]);
+    setCommitCursor(null);
+    setActivePane('diff');
   }, []);
 
-  // Reload the commit diff whenever the refs change (and we're on the Log tab).
+  // When the refs change (and we're on the Log tab), reload the changed-file list and
+  // reset the per-file diff selection. The hunk diff loads only once a file is picked.
   useEffect(() => {
-    if (activeSubTab === 'log' && diffBaseRef) void loadCommitDiff();
+    if (activeSubTab === 'log' && diffBaseRef) {
+      setSelectedCommitFile(null);
+      setCommitHunks([]);
+      setCommitCursor(null);
+      void loadCommitDiffFiles();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diffBaseRef, diffHeadRef, activeSubTab]);
 
-  const onSelectFile = useCallback((f: VcsChangedFile) => setSelectedFile(f), []);
+  const onSelectFile = useCallback((f: VcsChangedFile) => {
+    setSelectedFile(f);
+    setActivePane('diff');
+  }, []);
 
   // ---- Loading / empty states ----------------------------------------------
   const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-surface';
@@ -321,31 +436,76 @@ export default function ProjectVcsPanel({
   }
 
   // ---- Section renderer -----------------------------------------------------
+  // Rows carry checkboxes (bulk selection) instead of per-row hover buttons; the
+  // section header bar carries a select-all checkbox + the bulk action buttons that
+  // apply to the checked rows (or all rows when none are checked).
+  const sectionActionCls = 'rounded border border-subtle px-1.5 py-0.5 text-[10px] font-medium text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50';
   function renderSection(key: string, title: string, rows: VcsChangedFile[]) {
     if (rows.length === 0) return null;
     const isCollapsed = collapsed[key];
+    const selCount = rows.filter((r) => selectedFiles.has(r.path)).length;
+    const allSelected = selCount === rows.length;
+    const someSelected = selCount > 0 && !allSelected;
+    const sel = selCount > 0 ? 'selected' : 'all';
     return (
       <div data-debug-id={`${debugPrefix}-section-${key}`} className="border-b border-subtle">
-        <button
-          type="button"
-          onClick={() => toggleSection(key)}
-          className="flex w-full items-center gap-2 bg-canvas px-3 py-1.5 text-left hover:bg-neutral-soft"
-        >
-          <ChevronIcon collapsed={isCollapsed} />
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">{title}</span>
-          <span className="ml-auto rounded-full bg-neutral-soft px-1.5 text-[10px] font-bold text-muted">{rows.length}</span>
-        </button>
+        <div className="flex items-center gap-1.5 border-b border-subtle bg-surface-raised px-2 py-1 text-[11px] font-semibold text-muted">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            ref={(el) => { if (el) el.indeterminate = someSelected; }}
+            onChange={() => toggleSectionAll(rows)}
+            aria-label={`Select all ${title.toLowerCase()}`}
+            data-debug-id={`${debugPrefix}-section-selectall-${key}`}
+            className="h-3.5 w-3.5 shrink-0 accent-accent"
+          />
+          <button type="button" onClick={() => toggleSection(key)} className="flex items-center gap-1.5 text-left hover:text-primary">
+            <ChevronIcon collapsed={isCollapsed} />
+            <span className="uppercase tracking-wide">{title} ({rows.length})</span>
+          </button>
+          <div className="ml-auto flex items-center gap-1">
+            {key === 'staged' && can('unstage') ? (
+              <button type="button" disabled={busyWrite} onClick={() => runSectionAction(rows, onUnstage)} className={sectionActionCls} data-debug-id={`${debugPrefix}-bulk-unstage`}>Unstage {sel}</button>
+            ) : null}
+            {key === 'unstaged' && can('stage') ? (
+              <button type="button" disabled={busyWrite} onClick={() => runSectionAction(rows, onStage)} className={sectionActionCls} data-debug-id={`${debugPrefix}-bulk-stage`}>Stage {sel}</button>
+            ) : null}
+            {key === 'unstaged' && can('revert') ? (
+              <button type="button" disabled={busyWrite} onClick={() => runSectionAction(rows, onRevert)} className={sectionActionCls} data-debug-id={`${debugPrefix}-bulk-revert`}>Revert {sel}</button>
+            ) : null}
+            {key === 'untracked' && can('stage') ? (
+              <button type="button" disabled={busyWrite} onClick={() => runSectionAction(rows, onStage)} className={sectionActionCls} data-debug-id={`${debugPrefix}-bulk-track`}>Track {sel}</button>
+            ) : null}
+            {key === 'untracked' ? (
+              <button type="button" disabled={busyWrite} onClick={() => runSectionAction(rows, (p) => void onDeleteUntracked(p))} className={sectionActionCls} data-debug-id={`${debugPrefix}-bulk-delete`}>Delete {sel}</button>
+            ) : null}
+          </div>
+        </div>
         {!isCollapsed ? (
           <div>
             {rows.map((f) => {
               const badge = statusBadge(f.status);
               const isSel = selectedFile?.path === f.path && selectedFile?.staged === f.staged;
+              const isDir = f.path.endsWith('/');
+              const bare = isDir ? f.path.slice(0, -1) : f.path;
+              const slash = bare.lastIndexOf('/');
+              const baseName = (slash >= 0 ? bare.slice(slash + 1) : bare) + (isDir ? '/' : '');
+              const dirName = slash >= 0 ? bare.slice(0, slash + 1) : '';
               return (
                 <div
                   key={`${f.path}:${f.staged ? 's' : 'u'}`}
                   data-debug-id={`${debugPrefix}-row-${f.path}`}
-                  className={`group flex items-center gap-2 px-3 py-1.5 ${isSel ? 'bg-accent/15' : 'hover:bg-neutral-soft'}`}
+                  className={`flex items-center gap-2 px-3 py-1 ${isSel ? 'bg-accent/15' : 'hover:bg-neutral-soft'}`}
                 >
+                  <input
+                    type="checkbox"
+                    checked={selectedFiles.has(f.path)}
+                    onChange={() => toggleFileSelected(f.path)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Select ${f.path}`}
+                    data-debug-id={`${debugPrefix}-row-check-${f.path}`}
+                    className="h-3.5 w-3.5 shrink-0 accent-accent"
+                  />
                   <button
                     type="button"
                     onClick={() => onSelectFile(f)}
@@ -356,29 +516,15 @@ export default function ProjectVcsPanel({
                     <span className={`grid h-4 w-4 shrink-0 place-items-center rounded text-[9px] font-bold ${badge.cls}`} title={f.status}>
                       {badge.label}
                     </span>
-                    <span className={`min-w-0 flex-1 truncate text-[12.5px] ${isSel ? 'text-accent' : 'text-primary'}`}>{f.path}</span>
+                    <span className="flex min-w-0 flex-1 flex-col" title={f.path}>
+                      <span className={`truncate font-mono text-[11px] font-medium ${isSel ? 'text-accent' : 'text-primary'}`}>{baseName}</span>
+                      {dirName ? <span className="truncate font-mono text-[10px] text-muted">{dirName}</span> : null}
+                    </span>
                     <span className="flex shrink-0 gap-1 font-mono text-[10px]">
                       {f.additions > 0 ? <span className="text-success">+{f.additions}</span> : null}
                       {f.deletions > 0 ? <span className="text-danger">-{f.deletions}</span> : null}
                     </span>
                   </button>
-                  <div className="flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
-                    {f.staged && can('unstage') ? (
-                      <RowButton label="Unstage" onClick={() => onUnstage(f.path)} disabled={busyWrite} debugId={`${debugPrefix}-unstage-${f.path}`} />
-                    ) : null}
-                    {!f.staged && f.status !== 'untracked' && can('stage') ? (
-                      <RowButton label="Stage" onClick={() => onStage(f.path)} disabled={busyWrite} debugId={`${debugPrefix}-stage-${f.path}`} />
-                    ) : null}
-                    {f.status === 'untracked' && can('stage') ? (
-                      <RowButton label="Track" onClick={() => onStage(f.path)} disabled={busyWrite} debugId={`${debugPrefix}-track-${f.path}`} />
-                    ) : null}
-                    {f.status === 'untracked' ? (
-                      <RowButton label="Delete" tone="danger" onClick={() => void onDeleteUntracked(f.path)} disabled={busyWrite} debugId={`${debugPrefix}-delete-${f.path}`} />
-                    ) : null}
-                    {f.status !== 'untracked' && can('revert') ? (
-                      <RowButton label="Revert" tone="danger" onClick={() => onRevert(f.path)} disabled={busyWrite} debugId={`${debugPrefix}-revert-${f.path}`} />
-                    ) : null}
-                  </div>
                 </div>
               );
             })}
@@ -393,9 +539,9 @@ export default function ProjectVcsPanel({
     <div data-debug-id={`${debugPrefix}-panel`} className={wrapperCls}>
       {/* Sub-tab row */}
       <div data-debug-id={`${debugPrefix}-subtabs`} className="flex shrink-0 items-center gap-1 border-b border-subtle bg-surface px-2 py-1.5">
-        <SubTabButton label="Changes" active={activeSubTab === 'changes'} onClick={() => setActiveSubTab('changes')} debugId={`${debugPrefix}-subtab-changes`} />
+        <SubTabButton label="Changes" active={activeSubTab === 'changes'} onClick={() => { setActiveSubTab('changes'); setActivePane('list'); }} debugId={`${debugPrefix}-subtab-changes`} />
         {can('log') ? (
-          <SubTabButton label="Log" active={activeSubTab === 'log'} onClick={() => setActiveSubTab('log')} debugId={`${debugPrefix}-subtab-log`} />
+          <SubTabButton label="Log" active={activeSubTab === 'log'} onClick={() => { setActiveSubTab('log'); setActivePane('list'); }} debugId={`${debugPrefix}-subtab-log`} />
         ) : null}
         <span className="ml-auto pr-1 text-[11px] text-muted">{caps?.provider}</span>
       </div>
@@ -410,10 +556,11 @@ export default function ProjectVcsPanel({
         </div>
       ) : null}
 
-      {/* Two-pane body */}
+      {/* Two-pane body (single column at a time on mobile, toggled by activePane) */}
       <div className="flex min-h-0 flex-1">
-        {/* Left pane */}
-        <div data-debug-id={`${debugPrefix}-left`} className="flex min-h-0 w-[32%] min-w-[220px] flex-col border-r border-subtle">
+        {/* Left pane — the list of changes / commits */}
+        {(!isSinglePane || activePane === 'list') ? (
+        <div data-debug-id={`${debugPrefix}-left`} className={`flex min-h-0 flex-col ${isSinglePane ? 'w-full' : 'w-[32%] min-w-[220px] border-r border-subtle'}`}>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {activeSubTab === 'changes' ? (
               <>
@@ -509,39 +656,113 @@ export default function ProjectVcsPanel({
             ) : null}
           </div>
 
-          {/* Footer (Changes only) */}
+          {/* Footer (Changes only): refresh + commit message/button */}
           {activeSubTab === 'changes' ? (
-            <div className="flex shrink-0 items-center gap-2 border-t border-subtle bg-surface px-2 py-1.5">
-              <RowButton label="Refresh" onClick={() => void filesQ.refetch()} disabled={filesQ.isFetching} debugId={`${debugPrefix}-refresh`} />
+            <div className="flex shrink-0 flex-col gap-1.5 border-t border-subtle bg-surface px-2 py-1.5">
+              <div className="flex items-center gap-2">
+                <RowButton label="Refresh" onClick={() => void filesQ.refetch()} disabled={filesQ.isFetching} debugId={`${debugPrefix}-refresh`} />
+                <span className="ml-auto text-[11px] text-muted">{files.length} file{files.length === 1 ? '' : 's'}</span>
+              </div>
               {caps?.commit_model ? (
-                <button
-                  type="button"
-                  disabled
-                  title="Commit (coming soon)"
-                  data-debug-id={`${debugPrefix}-commit`}
-                  className="rounded border border-subtle bg-neutral-soft px-2 py-0.5 text-[11px] font-medium text-muted opacity-60"
-                >
-                  Commit
-                </button>
+                <>
+                  <textarea
+                    rows={2}
+                    value={commitMessage}
+                    onChange={(e) => setCommitMessage(e.target.value)}
+                    placeholder="Commit message..."
+                    data-debug-id={`${debugPrefix}-commit-message`}
+                    className="w-full resize-none rounded border border-subtle bg-surface px-2 py-1 text-[11px] font-mono text-primary placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  {commitError ? <p data-debug-id={`${debugPrefix}-commit-error`} className="text-[11px] text-danger">{commitError}</p> : null}
+                  <button
+                    type="button"
+                    disabled={staged.length === 0 || !commitMessage.trim() || busyWrite || commitState.isLoading}
+                    onClick={() => void handleCommit()}
+                    data-debug-id={`${debugPrefix}-commit`}
+                    className="inline-flex items-center justify-center rounded border border-subtle bg-accent/15 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/25 disabled:opacity-50"
+                  >
+                    {commitState.isLoading ? 'Committing…' : `Commit${staged.length > 0 ? ` (${staged.length})` : ''}`}
+                  </button>
+                </>
               ) : null}
-              <span className="ml-auto text-[11px] text-muted">{files.length} file{files.length === 1 ? '' : 's'}</span>
             </div>
           ) : null}
         </div>
+        ) : null}
 
-        {/* Right pane */}
+        {/* Right pane — diff / commit detail. On mobile a back button returns to the list. */}
+        {(!isSinglePane || activePane === 'diff') ? (
         <div data-debug-id={`${debugPrefix}-right`} className="flex min-h-0 flex-1 flex-col">
+          {isSinglePane ? (
+            <button
+              type="button"
+              onClick={() => setActivePane('list')}
+              data-debug-id={`${debugPrefix}-back-to-list`}
+              className="flex shrink-0 items-center gap-1 border-b border-subtle bg-surface-raised px-2 py-0.5 text-[11px] text-muted hover:text-primary"
+            >
+              <Icon name="arrow-left" size={13} />
+              <span>{activeSubTab === 'changes' ? 'Changes' : 'Log'}</span>
+            </button>
+          ) : null}
           {activeSubTab === 'changes' ? (
             selectedFile ? (
-              <VcsFileEditor
-                key={`${selectedFile.path}:${selectedFile.staged ? 's' : 'u'}`}
-                projectId={projectId}
-                bridgeId={bridgeId}
-                file={selectedFile}
-                worktreePath={activeWorktreePath}
-                saveVcsFile={saveVcsFile}
-                debugPrefix={debugPrefix}
-              />
+              // Untracked directories surface as "dirname/" in git --porcelain; they have
+              // no file content to diff, so show a navigate-to-explorer placeholder instead
+              // of mounting Monaco.
+              selectedFile.path.endsWith('/') ? (
+                <div data-debug-id={`${debugPrefix}-dir-placeholder`} className="grid flex-1 place-items-center p-6 text-center">
+                  <div className="flex max-w-xs flex-col items-center gap-3">
+                    <Icon name="folder" size={32} className="text-muted" />
+                    <div className="break-all font-mono text-[12.5px] text-primary">{selectedFile.path}</div>
+                    <p className="text-xs text-muted">Directories cannot be diffed. Open it in the Files explorer to browse its contents.</p>
+                    <button
+                      type="button"
+                      data-debug-id={`${debugPrefix}-open-dir-btn`}
+                      onClick={() => onOpenDirectory?.(selectedFile.path)}
+                      disabled={!onOpenDirectory}
+                      className="inline-flex items-center gap-1.5 rounded border border-subtle bg-neutral-soft px-2.5 py-1 text-[11.5px] font-medium text-muted hover:text-primary disabled:opacity-50"
+                    >
+                      <Icon name="folder" size={13} />
+                      <span>Open in Files tab</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-h-0 flex-1 flex-col">
+                  {/* Contextual action toolbar for the selected file */}
+                  <div className="flex shrink-0 items-center justify-between gap-2 border-b border-subtle px-2 py-1">
+                    <span className="min-w-0 truncate font-mono text-[11px] text-primary" title={selectedFile.path}>
+                      {selectedFile.path.slice(selectedFile.path.lastIndexOf('/') + 1)}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {selectedFile.staged && can('unstage') ? (
+                        <button type="button" onClick={() => onUnstage(selectedFile.path)} disabled={busyWrite} data-debug-id={`${debugPrefix}-toolbar-unstage`} className="inline-flex h-6 items-center gap-1 rounded border border-subtle px-2 text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50">Unstage</button>
+                      ) : null}
+                      {!selectedFile.staged && selectedFile.status !== 'untracked' && can('stage') ? (
+                        <button type="button" onClick={() => onStage(selectedFile.path)} disabled={busyWrite} data-debug-id={`${debugPrefix}-toolbar-stage`} className="inline-flex h-6 items-center gap-1 rounded border border-subtle px-2 text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50">Stage</button>
+                      ) : null}
+                      {selectedFile.status === 'untracked' && can('stage') ? (
+                        <button type="button" onClick={() => onStage(selectedFile.path)} disabled={busyWrite} data-debug-id={`${debugPrefix}-toolbar-track`} className="inline-flex h-6 items-center gap-1 rounded border border-subtle px-2 text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50">Track</button>
+                      ) : null}
+                      {selectedFile.status !== 'untracked' && can('revert') ? (
+                        <button type="button" onClick={() => onRevert(selectedFile.path)} disabled={busyWrite} data-debug-id={`${debugPrefix}-toolbar-revert`} className="inline-flex h-6 items-center gap-1 rounded border border-subtle px-2 text-[11px] font-medium text-danger hover:bg-danger-soft disabled:opacity-50">Revert</button>
+                      ) : null}
+                      {selectedFile.status === 'untracked' ? (
+                        <button type="button" onClick={() => void onDeleteUntracked(selectedFile.path)} disabled={busyWrite} data-debug-id={`${debugPrefix}-toolbar-delete`} className="inline-flex h-6 items-center gap-1 rounded border border-subtle px-2 text-[11px] font-medium text-danger hover:bg-danger-soft disabled:opacity-50">Delete</button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <VcsFileEditor
+                    key={`${selectedFile.path}:${selectedFile.staged ? 's' : 'u'}`}
+                    projectId={projectId}
+                    bridgeId={bridgeId}
+                    file={selectedFile}
+                    worktreePath={activeWorktreePath}
+                    saveVcsFile={saveVcsFile}
+                    debugPrefix={debugPrefix}
+                  />
+                </div>
+              )
             ) : (
               <div data-debug-id={`${debugPrefix}-no-selection`} className="grid flex-1 place-items-center p-6 text-center text-xs text-muted">
                 Select a file to view its diff.
@@ -569,39 +790,95 @@ export default function ProjectVcsPanel({
                 />
                 <button
                   type="button"
-                  onClick={() => void loadCommitDiff()}
-                  disabled={!diffBaseRef || commitDiffLoading}
+                  onClick={() => {
+                    setSelectedCommitFile(null);
+                    setCommitHunks([]);
+                    setCommitCursor(null);
+                    void loadCommitDiffFiles();
+                  }}
+                  disabled={!diffBaseRef || commitDiffFilesLoading}
+                  data-debug-id={`${debugPrefix}-diff-btn`}
                   className="rounded border border-subtle bg-neutral-soft px-2 py-0.5 font-medium text-muted hover:text-primary disabled:opacity-50"
                 >
-                  {commitDiffLoading ? 'Diffing…' : 'Diff'}
+                  {commitDiffFilesLoading ? 'Loading…' : 'Diff'}
                 </button>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                {!diffBaseRef ? (
-                  <div className="grid h-full place-items-center p-6 text-center text-xs text-muted">Select a commit to diff.</div>
-                ) : commitDiffError && commitHunks.length === 0 ? (
-                  <div className="p-4 text-center text-xs text-muted">{commitDiffError}</div>
-                ) : commitHunks.length === 0 && commitDiffLoading ? (
-                  <div className="p-4 text-center text-xs text-muted">Loading…</div>
-                ) : commitHunks.length === 0 ? (
-                  <div className="p-4 text-center text-xs text-muted">No differences.</div>
-                ) : (
-                  <MonacoDiffViewer hunks={commitHunks} filePath={selectedCommit?.subject || 'diff'} sideBySide />
-                )}
-                {commitHasMore ? (
-                  <button
-                    type="button"
-                    onClick={() => void loadCommitDiff({ append: true })}
-                    disabled={commitDiffLoading}
-                    className="w-full px-3 py-2 text-center text-[11px] font-medium text-accent hover:bg-neutral-soft disabled:opacity-50"
-                  >
-                    {commitDiffLoading ? 'Loading…' : 'Load more'}
-                  </button>
-                ) : null}
+              {/* Body: file list (left) + Monaco diff (right) */}
+              <div className="flex min-h-0 flex-1">
+                {/* File list column */}
+                <div className="flex w-[30%] min-h-0 flex-col overflow-y-auto border-r border-subtle" data-debug-id={`${debugPrefix}-commit-files`}>
+                  {!diffBaseRef ? (
+                    <div className="p-3 text-center text-xs text-muted">Select a commit to see its files.</div>
+                  ) : commitDiffFilesLoading ? (
+                    <div className="p-3 text-center text-xs text-muted">Loading…</div>
+                  ) : commitDiffFilesError ? (
+                    <div className="p-3 text-center text-xs text-danger">{commitDiffFilesError}</div>
+                  ) : commitDiffFiles.length === 0 ? (
+                    <div className="p-3 text-center text-xs text-muted">No changed files.</div>
+                  ) : (
+                    commitDiffFiles.map((f) => {
+                      const badge = statusBadge(f.status);
+                      const isSel = selectedCommitFile === f.path;
+                      return (
+                        <button
+                          key={f.path}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCommitFile(f.path);
+                            setCommitHunks([]);
+                            setCommitCursor(null);
+                            void loadCommitDiff({ file: f.path });
+                          }}
+                          title={f.path}
+                          data-debug-id={`${debugPrefix}-commit-file-${f.path}`}
+                          className={`flex items-center gap-2 px-2 py-1.5 text-left text-[11.5px] ${isSel ? 'bg-accent/15' : 'hover:bg-neutral-soft'}`}
+                        >
+                          <span className={`grid h-4 w-4 shrink-0 place-items-center rounded text-[9px] font-bold ${badge.cls}`} title={f.status}>
+                            {badge.label}
+                          </span>
+                          <span className={`min-w-0 flex-1 truncate ${isSel ? 'text-accent' : 'text-primary'}`}>{f.path}</span>
+                          <span className="flex shrink-0 gap-1 font-mono text-[10px]">
+                            {f.additions > 0 ? <span className="text-success">+{f.additions}</span> : null}
+                            {f.deletions > 0 ? <span className="text-danger">-{f.deletions}</span> : null}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+                {/* Monaco diff column */}
+                <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                  {!diffBaseRef ? (
+                    <div className="grid h-full place-items-center p-6 text-center text-xs text-muted">Select a commit or enter refs to diff.</div>
+                  ) : !selectedCommitFile ? (
+                    <div className="grid h-full place-items-center p-6 text-center text-xs text-muted">Select a file to view its diff.</div>
+                  ) : commitDiffError && commitHunks.length === 0 ? (
+                    <div className="p-4 text-center text-xs text-muted">{commitDiffError}</div>
+                  ) : commitHunks.length === 0 && commitDiffLoading ? (
+                    <div className="grid h-full place-items-center p-6 text-center text-xs text-muted">Loading diff…</div>
+                  ) : commitHunks.length === 0 ? (
+                    <div className="p-4 text-center text-xs text-muted">No differences in this file.</div>
+                  ) : (
+                    <>
+                      <MonacoDiffViewer hunks={commitHunks} filePath={selectedCommitFile} sideBySide />
+                      {commitHasMore ? (
+                        <button
+                          type="button"
+                          onClick={() => void loadCommitDiff({ append: true })}
+                          disabled={commitDiffLoading}
+                          className="w-full px-3 py-2 text-center text-[11px] font-medium text-accent hover:bg-neutral-soft disabled:opacity-50"
+                        >
+                          {commitDiffLoading ? 'Loading…' : 'Load more'}
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           )}
         </div>
+        ) : null}
       </div>
     </div>
   );

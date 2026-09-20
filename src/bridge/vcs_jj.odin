@@ -29,6 +29,12 @@ vcs_jj_provider :: proc() -> VCS_Provider {
 		save_file       = vcs_jj_save_file,
 		log             = vcs_jj_log,
 		commit_diff     = vcs_jj_commit_diff,
+		// commit_diff_files intentionally nil: the Log tab file-list mode is git-only
+		// for now (jj is compile-only here, no live test). nil = "not_supported".
+		commit_diff_files = nil,
+		// commit intentionally nil: staged-commit is git-only for now (jj commits
+		// differently and is compile-only here). nil = "not_supported".
+		commit = nil,
 		list_workspaces = vcs_jj_list_workspaces,
 	}
 }

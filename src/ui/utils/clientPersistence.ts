@@ -175,3 +175,36 @@ export function writeChainOverviewCollapsedState(state: Record<string, boolean>,
   }
 }
 
+// --- Agent Monitor pinned agents (REQ-AM-1) --------------------------------
+// The set of agent-instance ids the user has pinned to the /agent-monitor grid,
+// persisted per-browser. Reads fail soft to an empty list; writes are best-effort.
+const MONITOR_KEY = 'heimdall:monitor:pinned-agents';
+
+export function readPinnedMonitorAgents(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(MONITOR_KEY) || '[]');
+    return Array.isArray(parsed) ? (parsed as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writePinnedMonitorAgents(ids: string[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(MONITOR_KEY, JSON.stringify(ids));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function addPinnedMonitorAgent(id: string): void {
+  const cur = readPinnedMonitorAgents();
+  if (!cur.includes(id)) writePinnedMonitorAgents([...cur, id]);
+}
+
+export function removePinnedMonitorAgent(id: string): void {
+  writePinnedMonitorAgents(readPinnedMonitorAgents().filter((x) => x !== id));
+}
+
