@@ -49,7 +49,7 @@ base64url_decode :: proc(encoded: string, allocator := context.allocator) -> ([]
 		strings.write_byte(&builder, '=')
 	}
 
-	decoded, err := base64.decode(strings.to_string(builder), base64.DEC_URL_TABLE, allocator)
+	decoded, err := base64.decode(strings.to_string(builder), base64.DEC_URL_TABLE, nil, allocator)
 	if err != nil {
 		if decoded != nil {
 			delete(decoded, allocator)
