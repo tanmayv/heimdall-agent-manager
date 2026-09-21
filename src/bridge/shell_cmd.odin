@@ -71,7 +71,9 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	}
 
 	session_id := bridge_shell_session_next_id()
+	defer delete(session_id)
 	output_path := bridge_shell_output_path(session_id)
+	defer delete(output_path)
 	if slash := strings.last_index_byte(output_path, '/'); slash > 0 do _ = os.make_directory_all(output_path[:slash])
 
 	// The child writes stdout+stderr straight into the output file (2>&1). We keep
@@ -82,6 +84,7 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 
 	started_ms := bridge_now_unix_ms()
 	start_time := strings.clone(action_scheduler_format_rfc3339_utc(started_ms))
+	defer delete(start_time)
 
 	// setsid creates a new session so the spawned sh becomes the session/group
 	// leader (PGID == PID). On timeout we kill the entire group with kill(-pgid)
@@ -95,7 +98,6 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	process, perr := os.process_start(os.Process_Desc{command = command, stdout = out_file, stderr = out_file, working_dir = working_dir})
 	_ = os.close(out_file)
 	if perr != nil {
-		delete(start_time)
 		return bridge_local_response_error(request_id, "spawn_failed", "failed to start shell subprocess")
 	}
 
@@ -431,13 +433,17 @@ bridge_shell_page :: proc(output: string, offset, limit: int, grep: string) -> (
 }
 
 bridge_shell_jobs_dir :: proc() -> string {
-	data_dir := bridge_expand_home(bridge_config.data_dir)
-	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
+	raw_dir := strings.trim_space(bridge_config.data_dir)
+	if raw_dir == "" do raw_dir = "~/.local/share/heimdall"
+	data_dir := bridge_expand_home(raw_dir)
+	defer if raw_data(data_dir) != raw_data(raw_dir) do delete(data_dir)
 	return strings.concatenate({strings.trim_right(data_dir, "/"), "/shell_jobs"})
 }
 
 bridge_shell_output_path :: proc(session_id: string) -> string {
-	return strings.concatenate({bridge_shell_jobs_dir(), "/", session_id, ".out"})
+	jobs_dir := bridge_shell_jobs_dir()
+	defer delete(jobs_dir)
+	return strings.concatenate({jobs_dir, "/", session_id, ".out"})
 }
 
 bridge_shell_append_line :: proc(path, line: string) {

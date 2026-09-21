@@ -108,6 +108,7 @@ bridge_pty_host_events_worker :: proc() {
 		if !bridge_pty_host_events_run_once(socket) {
 			time.sleep(500 * time.Millisecond)
 		}
+		delete(socket)
 	}
 }
 

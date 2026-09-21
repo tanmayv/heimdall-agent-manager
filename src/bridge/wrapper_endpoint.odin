@@ -126,7 +126,9 @@ bridge_local_endpoint_unix_client_thread :: proc(client: posix.FD) {
 			if line == "" do continue
 			if inst, sub_ok := bridge_local_subscribe_instance(line); sub_ok { registered_instance = inst; bridge_wrapper_push_register_unix(inst, client) }
 			resp := bridge_local_endpoint_handle_jsonl_line(line)
+			defer delete(resp)
 			resp_line := strings.concatenate({resp, "\n"})
+			defer delete(resp_line)
 			bytes := transmute([]byte)resp_line
 			_ = posix.send(client, raw_data(bytes), c.size_t(len(bytes)), {})
 		}
@@ -180,7 +182,9 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 			if line == "" do continue
 			if inst, sub_ok := bridge_local_subscribe_instance(line); sub_ok { registered_instance = inst; bridge_wrapper_push_register_tcp(inst, client) }
 			resp := bridge_local_endpoint_handle_jsonl_line(line)
+			defer delete(resp)
 			resp_line := strings.concatenate({resp, "\n"})
+			defer delete(resp_line)
 			_, _ = net.send_tcp(client, transmute([]byte)resp_line)
 		}
 	}
@@ -609,6 +613,7 @@ bridge_local_json_is_ws :: proc(ch: byte) -> bool {
 
 bridge_local_extract_json_object :: proc(json, key: string) -> string {
 	needle := strings.concatenate({"\"", key, "\""})
+	defer delete(needle)
 	idx := strings.index(json, needle)
 	if idx < 0 do return "{}"
 	rest := json[idx + len(needle):]

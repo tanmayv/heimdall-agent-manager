@@ -125,6 +125,8 @@ pty_host_encode_spawn_full_shape :: proc(t: ^testing.T) {
 	full_want := make([dynamic]byte); defer delete(full_want)
 	append(&full_want, ..want)
 	for i in 0..<len(disp_name) do append(&full_want, disp_name[i])
+	// opt kind(0), label(0), meta(0), tee_path(0)
+	append(&full_want, 0, 0, 0, 0)
 
 	testing.expect_value(t, len(pl), len(full_want))
 	for i in 0..<len(full_want) do testing.expect_value(t, pl[i], full_want[i])
@@ -145,6 +147,7 @@ pty_host_encode_spawn_minimal_omits_opts :: proc(t: ^testing.T) {
 	defer delete(msg)
 	pl := pty_host_test_reframe(t, msg)
 	// opt cwd absent => single 0 byte; envc 0; opt detect absent => single 0 byte; rows; cols; opt display_name absent => single 0 byte
+	// opt kind, label, meta, tee_path absent => each single 0 byte
 	want := []byte{
 		PTY_HOST_T_SPAWN,
 		0, 0, 0, 1, 'i',
@@ -156,6 +159,10 @@ pty_host_encode_spawn_minimal_omits_opts :: proc(t: ^testing.T) {
 		0, 24,
 		0, 80,
 		0, // opt display_name absent
+		0, // opt kind absent
+		0, // opt label absent
+		0, // opt meta absent
+		0, // opt tee_path absent
 	}
 	testing.expect_value(t, len(pl), len(want))
 	for i in 0..<len(want) do testing.expect_value(t, pl[i], want[i])

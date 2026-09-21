@@ -670,7 +670,7 @@ shell_session_tunnel_deliver :: proc(svc: ^Shell_Session_Service, stream_id: str
 			append(&stream.chunks, chunk)
 			sync.cond_signal(&stream.cond)
 		} else {
-			delete(chunk)
+			delete(chunk, heap)
 		}
 		sync.mutex_unlock(&stream.mu)
 	}
@@ -696,6 +696,7 @@ shell_session_tunnel_close_stream :: proc(svc: ^Shell_Session_Service, stream_id
 // Must be called after the proxy handler has finished reading all chunks.
 shell_session_tunnel_unregister :: proc(svc: ^Shell_Session_Service, stream_id: string) {
 	if svc == nil do return
+	heap := runtime.heap_allocator()
 	sync.mutex_lock(&svc.tunnel_mu)
 	stream: ^Preview_Tunnel_Stream
 	found := false
@@ -703,16 +704,16 @@ shell_session_tunnel_unregister :: proc(svc: ^Shell_Session_Service, stream_id: 
 		if k == stream_id {
 			stream = svc.tunnel_streams[k]
 			delete_key(&svc.tunnel_streams, k)
-			delete(k)
+			delete(k, heap)
 			found = true
 			break
 		}
 	}
 	sync.mutex_unlock(&svc.tunnel_mu)
 	if !found do return
-	for chunk in stream.chunks do delete(chunk)
+	for chunk in stream.chunks do delete(chunk, heap)
 	delete(stream.chunks)
-	free(stream)
+	free(stream, heap)
 }
 
 // --- private helpers ---

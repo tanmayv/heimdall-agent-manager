@@ -62,7 +62,8 @@ bridge_pty_host_truthy :: proc(v: string) -> bool {
 // ---- daemon lazy-start --------------------------------------------------
 
 pty_host_daemon_started: bool
-pty_host_daemon_lock: sync.Mutex
+pty_host_daemon_socket:  string
+pty_host_daemon_lock:    sync.Mutex
 
 // bridge_pty_host_bin resolves the ham-pty-host binary: the HEIMDALL_HAM_PTY_HOST_BIN
 // env override (set by the flake app to the matching build) wins, else PATH.
@@ -83,9 +84,13 @@ bridge_pty_host_bin :: proc() -> string {
 // daemon. Adopting it is correct-by-identity: we never cross-wire two bridges to
 // one daemon, and each bridge owns exactly one daemon serving its own agent set.
 bridge_pty_host_ensure_daemon :: proc() -> (string, bool) {
-	socket := pty_host_socket_path()
 	sync.mutex_lock(&pty_host_daemon_lock)
 	defer sync.mutex_unlock(&pty_host_daemon_lock)
+
+	if pty_host_daemon_socket == "" {
+		pty_host_daemon_socket = pty_host_socket_path()
+	}
+	socket := pty_host_daemon_socket
 
 	// Already up on this bridge's own socket (this process started it, or a prior
 	// instance of THIS bridge left it running across a restart)?

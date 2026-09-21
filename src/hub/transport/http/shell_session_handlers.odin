@@ -54,6 +54,7 @@ shell_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_
 		write_http_response(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
 		return
 	}
+	defer domain.shell_session_destroy(session)
 	if session.owner_user_id != auth_ctx.user_id {
 		write_http_response(client, respond_error(domain.domain_error(.Forbidden, "not the session owner"), req.request_id))
 		return
@@ -215,6 +216,7 @@ shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request, client: n
 		write_upgrade_error(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
 		return
 	}
+	defer domain.shell_session_destroy(session)
 	if session.owner_user_id != string(auth_ctx.user_id) {
 		write_upgrade_error(client, Response{status = 403, content_type = "application/json", body = "{\"error\":\"session is owned by another user\"}"})
 		return

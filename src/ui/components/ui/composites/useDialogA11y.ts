@@ -78,6 +78,7 @@ export function useDialogA11y(
       document.removeEventListener('keydown', onKeyDown, true);
       document.body.style.overflow = prevOverflow;
       restoreRef.current?.focus?.();
+      restoreRef.current = null;
     };
     // Intentionally keyed on `open` only: setup/focus-in/scroll-lock/restore-capture
     // must happen once per open, not on every render. `onClose` is read via a ref,
