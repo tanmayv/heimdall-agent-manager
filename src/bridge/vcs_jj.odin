@@ -35,6 +35,8 @@ vcs_jj_provider :: proc() -> VCS_Provider {
 		// commit intentionally nil: staged-commit is git-only for now (jj commits
 		// differently and is compile-only here). nil = "not_supported".
 		commit = nil,
+		upload = nil,
+		sync = nil,
 		list_workspaces = vcs_jj_list_workspaces,
 	}
 }
@@ -55,6 +57,8 @@ vcs_jj_capabilities :: proc(path: string) -> VCS_Capabilities {
 		staging_model     = "none",
 		commit_model      = "revision",
 		supports_amend    = false,
+		supports_upload   = false,
+		supports_sync     = false,
 		supported_actions = vcs_jj_actions[:],
 	}
 }

@@ -764,6 +764,28 @@ project_handle_vcs_commit :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+// project_handle_vcs_upload relays an upload mutation: runs provider.upload on the
+// project repository (e.g. `hg upload chain` for fig).
+project_handle_vcs_upload :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_upload",
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// project_handle_vcs_sync relays a sync mutation: runs provider.sync on the
+// project repository (e.g. `hg sync` or `git pull --rebase`).
+project_handle_vcs_sync :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_sync",
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
 // --- Agent instance run-dir browser (READ-ONLY) ---------------------------
 // Resolves (instance_id -> owner-checked instance -> bridge_id) then relays a
 // read-only agent_run_dir_* command carrying the instance_id. The bridge computes

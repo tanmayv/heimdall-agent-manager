@@ -330,6 +330,8 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/revert", rawptr(&graph.bridge_handlers), http.project_handle_vcs_revert)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/save-file", rawptr(&graph.bridge_handlers), http.project_handle_vcs_save_file)
 	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/commit", rawptr(&graph.bridge_handlers), http.project_handle_vcs_commit)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/upload", rawptr(&graph.bridge_handlers), http.project_handle_vcs_upload)
+	http.router_add(&graph.router, "POST", "/api/v1/projects/*/vcs/sync", rawptr(&graph.bridge_handlers), http.project_handle_vcs_sync)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.list_task_chains_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains", rawptr(&graph.taskchain_handlers), http.create_task_chain_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)
