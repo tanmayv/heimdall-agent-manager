@@ -63,6 +63,7 @@ VCS_Capabilities :: struct {
 	supports_staging:  bool,
 	staging_model:     string,
 	commit_model:      string,
+	supports_amend:    bool,
 	supported_actions: []string,
 }
 
@@ -114,10 +115,10 @@ VCS_Provider :: struct {
 	// "" or "WORKDIR" compares base_ref to the working tree; base_ref == head_ref is
 	// an empty list. Returns (files, ok); nil proc = not supported.
 	commit_diff_files: proc(path, base_ref, head_ref: string) -> (files: []VCS_Changed_File, ok: bool),
-	// Write command. Commits the currently-staged changes with `message`. Returns ok
+	// Write command. Commits the currently-staged changes with `message` (and optional amend). Returns ok
 	// (true = commit succeeded). A nil proc pointer means the action is unsupported
 	// and callers must treat it as "not_supported" before dispatch.
-	commit:          proc(path, message: string) -> (ok: bool),
+	commit:          proc(path, message: string, amend: bool) -> (ok: bool),
 	// read-only. returns (workspaces, ok)
 	list_workspaces: proc(path: string) -> (workspaces: []VCS_Workspace, ok: bool),
 }

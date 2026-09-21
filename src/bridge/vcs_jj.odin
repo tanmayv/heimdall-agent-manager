@@ -54,6 +54,7 @@ vcs_jj_capabilities :: proc(path: string) -> VCS_Capabilities {
 		supports_staging  = false,
 		staging_model     = "none",
 		commit_model      = "revision",
+		supports_amend    = false,
 		supported_actions = vcs_jj_actions[:],
 	}
 }
