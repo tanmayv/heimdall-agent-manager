@@ -38,25 +38,21 @@ function httpToWsUrl(base: string, path: string): string {
 
 async function shellStreamUrl(sessionId: string): Promise<string> {
   const path = `/api/v1/shells/${encodeURIComponent(sessionId)}/stream`;
-  if (hasElectronDeviceAuth()) {
-    const res = await fetch('/api/v1/me/ws-ticket', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    const text = await res.text();
-    let body: any = {};
-    try { body = JSON.parse(text); } catch { body = {}; }
-    const data = body?.data !== undefined ? body.data : body;
-    if (!res.ok) throw new Error(String(data?.error?.message || data?.message || `WS ticket failed (${res.status})`));
-    const ticket = String(data?.ticket || '');
-    if (!ticket) throw new Error('WS ticket missing ticket field');
-    const base = await electronApiBaseUrl();
-    const url = new URL(httpToWsUrl(base, path));
-    url.searchParams.set('ticket', ticket);
-    return url.toString();
-  }
-  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${scheme}//${window.location.host}${path}`;
+  const base = hasElectronDeviceAuth() ? await electronApiBaseUrl() : window.location.origin;
+  const res = await fetch(`${base}/api/v1/me/ws-ticket`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const text = await res.text();
+  let body: any = {};
+  try { body = JSON.parse(text); } catch { body = {}; }
+  const data = body?.data !== undefined ? body.data : body;
+  if (!res.ok) throw new Error(String(data?.error?.message || data?.message || `WS ticket failed (${res.status})`));
+  const ticket = String(data?.ticket || '');
+  if (!ticket) throw new Error('WS ticket missing ticket field');
+  const url = new URL(httpToWsUrl(base, path));
+  url.searchParams.set('ticket', ticket);
+  return url.toString();
 }
 
 export function useShellStream({ sessionId, onOutput, onStatus, onError }: UseShellStreamOptions) {
