@@ -203,6 +203,13 @@ bridge_hub_runtime_worker :: proc() {
 		if ready {
 			fmt.println("bridge hub runtime ready")
 			last_failure = ""; attempts = 0
+			// REQ-RECON-1: reconcile persisted shell sessions against the live
+			// pty-host agent list on every hub-WS reconnect. Runs on a background
+			// thread: bridge_pty_host_ensure_daemon may spawn the daemon and poll it
+			// for up to 5s, and doing that inline would stall the WS service loop
+			// (heartbeats and command replies) on every reconnect. The shell_exited
+			// events it enqueues are drained by the loop started just below.
+			thread.run(bridge_shell_session_reconcile_now)
 			bridge_hub_runtime_loop(&conn)
 			fmt.println("bridge hub runtime: connection closed, reconnecting…")
 		} else if got_error {

@@ -174,19 +174,6 @@ Pty_Host_Client :: struct {
 	socket: string,
 }
 
-// Pty_Host_Shell_Info is the bridge-side representation of the daemon's
-// ShellInfo struct (dproto.rs). It carries the fields needed for session
-// reconcile (shell_id, pid, alive) plus bound_port added in T2.
-Pty_Host_Shell_Info :: struct {
-	shell_id:       string,
-	pid:            i32,
-	alive:          bool,
-	exit_code:      i32,
-	has_exit_code:  bool,
-	bound_port:     u16,
-	has_bound_port: bool,
-}
-
 // ---- primitive encoders (match dproto.rs put_*) -------------------------
 
 pty_host_put_u16 :: proc(p: ^[dynamic]byte, v: u16) {
