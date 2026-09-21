@@ -61,6 +61,10 @@ export interface DrawerProps
   size?: DrawerSize;
   /** Which edge it anchors to. Default `right`. */
   side?: DrawerSide;
+  /** Suppress the default header bar (title and close button). */
+  hideHeader?: boolean;
+  /** On side='bottom', expand to full viewport height instead of max-h-[85vh]. */
+  fullHeight?: boolean;
   children?: React.ReactNode;
 }
 
@@ -75,6 +79,8 @@ const DrawerBase: React.FC<DrawerProps> = ({
   title,
   size = 'md',
   side = 'right',
+  hideHeader = false,
+  fullHeight = false,
   className,
   children,
   ...rest
@@ -88,6 +94,11 @@ const DrawerBase: React.FC<DrawerProps> = ({
   if (!open) return null;
 
   const isBottom = side === 'bottom';
+  const sideClass = isBottom
+    ? (fullHeight ? 'h-full max-h-full w-full rounded-none border-t-0' : SIDE_CLASS.bottom)
+    : SIDE_CLASS[side];
+
+  const accessibleLabel = typeof title === 'string' ? title : (typeof title === 'number' ? String(title) : (rest['aria-label'] || 'Drawer'));
 
   return createPortal(
     <div
@@ -103,23 +114,26 @@ const DrawerBase: React.FC<DrawerProps> = ({
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={titleId}
+        aria-labelledby={hideHeader ? undefined : titleId}
+        aria-label={hideHeader ? accessibleLabel : rest['aria-label']}
         tabIndex={-1}
         className={[
           'flex flex-col overflow-hidden border-subtle bg-surface-overlay text-primary shadow-overlay outline-none',
           isBottom ? '' : SIZE_W[size],
-          SIDE_CLASS[side],
+          sideClass,
           className,
         ]
           .filter(Boolean)
           .join(' ')}
       >
-        <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3">
-          <h2 id={titleId} className="text-title text-primary">
-            {title}
-          </h2>
-          <IconButton icon="close" label="Close" size="sm" onClick={close} className="-mr-1.5 -mt-0.5" />
-        </div>
+        {!hideHeader && (
+          <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3">
+            <h2 id={titleId} className="text-title text-primary">
+              {title}
+            </h2>
+            <IconButton icon="close" label="Close" size="sm" onClick={close} className="-mr-1.5 -mt-0.5" />
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-auto">{children}</div>
       </div>
     </div>,
