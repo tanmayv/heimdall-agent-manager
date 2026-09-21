@@ -27,6 +27,8 @@ export type VcsCapabilities = {
   supports_amend?: boolean;
   supports_upload?: boolean;
   supports_sync?: boolean;
+  upload_label?: string;
+  sync_label?: string;
   // Redesign fields (TASK-3): how the provider stages, how it commits, and which
   // write actions the VCS panel may offer. ok/error retained for existing callers.
   staging_model: 'index' | 'none';

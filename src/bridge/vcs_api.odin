@@ -87,11 +87,11 @@ bridge_vcs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> b
 		command_id := extract_json_string(text, "command_id", "")
 		_ = bridge_hub_send(conn, bridge_vcs_commit_json(command_id, text))
 		return true
-	case "vcs_upload":
+	case "vcs_upload", "vcs_push":
 		command_id := extract_json_string(text, "command_id", "")
 		_ = bridge_hub_send(conn, bridge_vcs_upload_json(command_id, text))
 		return true
-	case "vcs_sync":
+	case "vcs_sync", "vcs_pull":
 		command_id := extract_json_string(text, "command_id", "")
 		_ = bridge_hub_send(conn, bridge_vcs_sync_json(command_id, text))
 		return true
@@ -145,7 +145,7 @@ bridge_vcs_capabilities_json :: proc(command_id, text: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"vcs_capabilities_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"supports_staging\":false,\"supports_amend\":false,\"supports_upload\":false,\"supports_sync\":false,\"staging_model\":\"\",\"commit_model\":\"\",\"supported_actions\":[]")
+		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"supports_staging\":false,\"supports_amend\":false,\"supports_upload\":false,\"supports_sync\":false,\"upload_label\":\"\",\"sync_label\":\"\",\"staging_model\":\"\",\"commit_model\":\"\",\"supported_actions\":[]")
 		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
 		strings.write_string(&b, "}")
 		return strings.to_string(b)
@@ -156,7 +156,9 @@ bridge_vcs_capabilities_json :: proc(command_id, text: string) -> string {
 	strings.write_string(&b, ",\"supports_amend\":"); strings.write_string(&b, "true" if caps.supports_amend else "false")
 	strings.write_string(&b, ",\"supports_upload\":"); strings.write_string(&b, "true" if caps.supports_upload else "false")
 	strings.write_string(&b, ",\"supports_sync\":"); strings.write_string(&b, "true" if caps.supports_sync else "false")
-	strings.write_string(&b, ",\"staging_model\":\""); json_write_string(&b, caps.staging_model)
+	strings.write_string(&b, ",\"upload_label\":\""); json_write_string(&b, caps.upload_label)
+	strings.write_string(&b, "\",\"sync_label\":\""); json_write_string(&b, caps.sync_label)
+	strings.write_string(&b, "\",\"staging_model\":\""); json_write_string(&b, caps.staging_model)
 	strings.write_string(&b, "\",\"commit_model\":\""); json_write_string(&b, caps.commit_model)
 	strings.write_string(&b, "\",\"supported_actions\":[")
 	for a, i in caps.supported_actions {
@@ -259,6 +261,9 @@ bridge_vcs_files_json :: proc(command_id, text: string) -> string {
 bridge_vcs_diff_json :: proc(command_id, text: string) -> string {
 	path := vcs_request_path(text)
 	file := strings.trim_space(extract_json_string(text, "path", ""))
+	if file == "" {
+		file = strings.trim_space(extract_json_string(text, "file", ""))
+	}
 	cursor := extract_json_string(text, "cursor", "")
 	limit := extract_json_int(text, "limit", VCS_DIFF_DEFAULT_LIMIT)
 	eff_limit := vcs_clamp_limit(limit, VCS_DIFF_DEFAULT_LIMIT, VCS_DIFF_MAX_LIMIT)
@@ -568,6 +573,8 @@ vcs_action_error_message :: proc(code: string) -> string {
 	case "commit_failed":  return "Could not create commit (nothing staged, or git rejected it)"
 	case "upload_failed":  return "Could not upload changes to remote/Critique"
 	case "sync_failed":    return "Could not sync repository with head"
+	case "push_failed":    return "Could not push commits to remote repository"
+	case "pull_failed":    return "Could not pull commits from remote repository"
 	case "missing_message": return "The 'message' parameter is required"
 	case "missing_file":   return "The 'path' parameter is required"
 	case "path_outside_root": return "File path is outside the repository root"

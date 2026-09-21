@@ -143,6 +143,11 @@ export default function ProjectVcsPanel({
   const supportedActions = caps?.supported_actions ?? [];
   const can = useCallback((action: string) => supportedActions.includes(action), [supportedActions]);
 
+  const uploadLabel = caps?.upload_label || 'Upload';
+  const uploadBusyLabel = uploadLabel === 'Push' ? 'Pushing…' : (uploadLabel === 'Upload to Critique' ? 'Uploading…' : `${uploadLabel}ing…`);
+  const syncLabel = caps?.sync_label || 'Sync';
+  const syncBusyLabel = syncLabel === 'Pull' ? 'Pulling…' : (syncLabel === 'Sync with Head' ? 'Syncing…' : `${syncLabel}ing…`);
+
   // ---- Panel state ----------------------------------------------------------
   const [activeSubTab, setActiveSubTab] = useState<'changes' | 'log'>('changes');
   // Single-pane column shown on mobile: the list of files/commits, or the diff.
@@ -276,21 +281,21 @@ export default function ProjectVcsPanel({
     setActionError('');
     try {
       const res = await uploadVcs({ projectId, bridgeId, worktree_path: worktreeArg }).unwrap();
-      if (!res.ok) { setActionError(str(res.error?.message) || 'Upload failed'); return; }
+      if (!res.ok) { setActionError(str(res.error?.message) || `${uploadLabel} failed`); return; }
     } catch (e: any) {
-      setActionError(str(e?.error || e?.message) || 'Upload failed');
+      setActionError(str(e?.error || e?.message) || `${uploadLabel} failed`);
     }
-  }, [uploadVcs, projectId, bridgeId, worktreeArg]);
+  }, [uploadVcs, projectId, bridgeId, worktreeArg, uploadLabel]);
 
   const handleSync = useCallback(async () => {
     setActionError('');
     try {
       const res = await syncVcs({ projectId, bridgeId, worktree_path: worktreeArg }).unwrap();
-      if (!res.ok) { setActionError(str(res.error?.message) || 'Sync failed'); return; }
+      if (!res.ok) { setActionError(str(res.error?.message) || `${syncLabel} failed`); return; }
     } catch (e: any) {
-      setActionError(str(e?.error || e?.message) || 'Sync failed');
+      setActionError(str(e?.error || e?.message) || `${syncLabel} failed`);
     }
-  }, [syncVcs, projectId, bridgeId, worktreeArg]);
+  }, [syncVcs, projectId, bridgeId, worktreeArg, syncLabel]);
 
   // ---- Checkbox selection helpers (Changes tab bulk actions) ----------------
   const toggleFileSelected = useCallback((path: string) => {
@@ -600,17 +605,17 @@ export default function ProjectVcsPanel({
         {can('log') ? (
           <SubTabButton label="Log" active={activeSubTab === 'log'} onClick={() => { setActiveSubTab('log'); setActivePane('list'); }} debugId={`${debugPrefix}-subtab-log`} />
         ) : null}
-        {(can('sync') || caps?.supports_sync) ? (
+        {(can('sync') || can('pull') || caps?.supports_sync) ? (
           <button
             type="button"
             disabled={syncState.isLoading || busyWrite}
             onClick={() => void handleSync()}
             data-debug-id={`${debugPrefix}-sync-header`}
-            title="Sync with upstream head"
+            title={syncLabel === 'Pull' ? 'Pull latest changes from upstream' : 'Sync with upstream head'}
             className="ml-2 inline-flex items-center gap-1 rounded border border-subtle bg-surface px-2 py-0.5 text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
           >
             <Icon name="refresh" className={`h-3 w-3 ${syncState.isLoading ? 'animate-spin' : ''}`} />
-            <span>{syncState.isLoading ? 'Syncing…' : 'Sync'}</span>
+            <span>{syncState.isLoading ? syncBusyLabel : syncLabel}</span>
           </button>
         ) : null}
         <span className="ml-auto pr-1 text-[11px] text-muted">{caps?.provider}</span>
@@ -764,9 +769,9 @@ export default function ProjectVcsPanel({
             <div className="flex shrink-0 flex-col gap-1.5 border-t border-subtle bg-surface px-2 py-1.5">
               <div className="flex items-center gap-2">
                 <RowButton label="Refresh" onClick={() => void filesQ.refetch()} disabled={filesQ.isFetching} debugId={`${debugPrefix}-refresh`} />
-                {(can('sync') || caps?.supports_sync) ? (
+                {(can('sync') || can('pull') || caps?.supports_sync) ? (
                   <RowButton
-                    label={syncState.isLoading ? 'Syncing…' : 'Sync with Head'}
+                    label={syncState.isLoading ? syncBusyLabel : (caps?.sync_label || 'Sync with Head')}
                     onClick={() => void handleSync()}
                     disabled={syncState.isLoading || busyWrite}
                     debugId={`${debugPrefix}-sync-footer`}
@@ -800,16 +805,16 @@ export default function ProjectVcsPanel({
                       </label>
                     ) : <span />}
                     <div className="flex items-center gap-1.5">
-                      {(can('upload') || caps?.supports_upload) ? (
+                      {(can('upload') || can('push') || caps?.supports_upload) ? (
                         <button
                           type="button"
                           disabled={uploadState.isLoading || busyWrite}
                           onClick={() => void handleUpload()}
                           data-debug-id={`${debugPrefix}-upload`}
-                          title="Upload changes to Critique / remote"
+                          title={uploadLabel === 'Push' ? 'Push changes to remote repository' : 'Upload changes to Critique / remote'}
                           className="inline-flex items-center justify-center rounded border border-subtle bg-accent/15 px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-accent/25 disabled:opacity-50"
                         >
-                          {uploadState.isLoading ? 'Uploading…' : 'Upload to Critique'}
+                          {uploadState.isLoading ? uploadBusyLabel : (caps?.upload_label || 'Upload to Critique')}
                         </button>
                       ) : null}
                       <button

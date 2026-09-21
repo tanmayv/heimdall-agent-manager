@@ -11,7 +11,7 @@ import "core:strings"
 
 // Static-storage action whitelist so vcs_git_capabilities can hand out a slice with
 // package lifetime (a slice of a proc-local composite literal would dangle).
-vcs_git_actions := [9]string{"diff", "log", "commit_diff", "revert", "stage", "unstage", "workspaces", "amend", "sync"}
+vcs_git_actions := [12]string{"diff", "log", "commit_diff", "revert", "stage", "unstage", "workspaces", "amend", "sync", "upload", "push", "pull"}
 
 // vcs_git_provider returns the git proc-table.
 vcs_git_provider :: proc() -> VCS_Provider {
@@ -30,7 +30,7 @@ vcs_git_provider :: proc() -> VCS_Provider {
 		commit_diff       = vcs_git_commit_diff,
 		commit_diff_files = vcs_git_commit_diff_files,
 		commit            = vcs_git_commit,
-		upload            = nil,
+		upload            = vcs_git_push,
 		sync              = vcs_git_sync,
 		list_workspaces   = vcs_git_list_workspaces,
 	}
@@ -53,8 +53,10 @@ vcs_git_capabilities :: proc(path: string) -> VCS_Capabilities {
 		staging_model     = "index",
 		commit_model      = "branch",
 		supports_amend    = true,
-		supports_upload   = false,
+		supports_upload   = true,
 		supports_sync     = true,
+		upload_label      = "Push",
+		sync_label        = "Pull",
 		supported_actions = vcs_git_actions[:],
 	}
 }
@@ -409,6 +411,13 @@ vcs_git_commit :: proc(path, message: string, amend: bool = false) -> (ok: bool)
 	append(&cmd, "-m", message)
 	_, rok := vcs_run(cmd[:])
 	return rok
+}
+
+// vcs_git_push pushes committed changes to upstream remote.
+vcs_git_push :: proc(path: string) -> (ok: bool, msg: string) {
+	_, rok := vcs_run([]string{"git", "-C", path, "push"})
+	if !rok do return false, "push_failed"
+	return true, ""
 }
 
 // vcs_git_sync pulls latest changes from upstream with rebase.

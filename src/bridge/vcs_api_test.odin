@@ -105,12 +105,16 @@ vcs_api_capabilities_new_fields :: proc(t: ^testing.T) {
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":true`), "git repo returns ok:true")
 	testing.expect(t, strings.contains(out, `"staging_model":"index"`), "git staging_model is index")
-	testing.expect(t, strings.contains(out, `"supports_upload":false`), "git supports_upload is false")
+	testing.expect(t, strings.contains(out, `"supports_upload":true`), "git supports_upload is true")
 	testing.expect(t, strings.contains(out, `"supports_sync":true`), "git supports_sync is true")
+	testing.expect(t, strings.contains(out, `"upload_label":"Push"`), "git upload_label is Push")
+	testing.expect(t, strings.contains(out, `"sync_label":"Pull"`), "git sync_label is Pull")
 	testing.expect(t, strings.contains(out, `"stage"`), "supported_actions include stage")
 	testing.expect(t, strings.contains(out, `"unstage"`), "supported_actions include unstage")
 	testing.expect(t, strings.contains(out, `"workspaces"`), "supported_actions include workspaces")
 	testing.expect(t, strings.contains(out, `"sync"`), "supported_actions include sync")
+	testing.expect(t, strings.contains(out, `"push"`), "supported_actions include push")
+	testing.expect(t, strings.contains(out, `"pull"`), "supported_actions include pull")
 }
 
 @(test)
