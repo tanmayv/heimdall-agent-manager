@@ -184,6 +184,12 @@
           ham-taskchain-grouping-test = mkOdinPackage pkgs odin "ham-taskchain-grouping-test" "tests/taskchain_grouping_test";
           ham-bootstrap-golden-test = mkOdinPackage pkgs odin "ham-bootstrap-golden-test" "tests/hub_bootstrap_golden_test";
           ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
+          # BUG-14 / REQ-MIGRATE-1: boots an EMPTY database to migration head on
+          # both the embedded-constant path (what a packaged binary uses when
+          # --migrations-dir is absent) and the on-disk path, and fails if the
+          # two build different schemas. Pass the migrations dir as argv[1] to
+          # enable the disk half from outside the repo root.
+          ham-migration-bootstrap-test = mkOdinPackageWithRuntime pkgs odin "ham-migration-bootstrap-test" "tests/migration_bootstrap_test" [ pkgs.sqlite ];
           ham-pty-host = mkPtyHost pkgs;
           heimdall = mkOdinUiPackage pkgs;
           heimdall-node-modules = mkNodeModules pkgs;
