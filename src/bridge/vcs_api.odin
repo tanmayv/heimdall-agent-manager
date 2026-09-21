@@ -137,7 +137,7 @@ bridge_vcs_capabilities_json :: proc(command_id, text: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"vcs_capabilities_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"supports_staging\":false,\"staging_model\":\"\",\"commit_model\":\"\",\"supported_actions\":[]")
+		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"supports_staging\":false,\"supports_amend\":false,\"staging_model\":\"\",\"commit_model\":\"\",\"supported_actions\":[]")
 		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
 		strings.write_string(&b, "}")
 		return strings.to_string(b)
@@ -145,6 +145,7 @@ bridge_vcs_capabilities_json :: proc(command_id, text: string) -> string {
 	caps := provider.capabilities(path)
 	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, caps.provider)
 	strings.write_string(&b, "\",\"supports_staging\":"); strings.write_string(&b, "true" if caps.supports_staging else "false")
+	strings.write_string(&b, ",\"supports_amend\":"); strings.write_string(&b, "true" if caps.supports_amend else "false")
 	strings.write_string(&b, ",\"staging_model\":\""); json_write_string(&b, caps.staging_model)
 	strings.write_string(&b, "\",\"commit_model\":\""); json_write_string(&b, caps.commit_model)
 	strings.write_string(&b, "\",\"supported_actions\":[")
@@ -439,6 +440,7 @@ bridge_vcs_save_json :: proc(command_id, text: string) -> string {
 bridge_vcs_commit_json :: proc(command_id, text: string) -> string {
 	path := vcs_request_path(text)
 	message := strings.trim_space(extract_json_string(text, "message", ""))
+	amend := bridge_fs_extract_json_bool(text, "amend", false)
 	provider, ok := vcs_detect_provider(path)
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"vcs_commit_result\",\"command_id\":\""); json_write_string(&b, command_id)
@@ -462,7 +464,7 @@ bridge_vcs_commit_json :: proc(command_id, text: string) -> string {
 		strings.write_string(&b, "}")
 		return strings.to_string(b)
 	}
-	aok := provider.commit(path, message)
+	aok := provider.commit(path, message, amend)
 	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
 	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
 	strings.write_string(&b, "\"")

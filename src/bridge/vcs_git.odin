@@ -11,7 +11,7 @@ import "core:strings"
 
 // Static-storage action whitelist so vcs_git_capabilities can hand out a slice with
 // package lifetime (a slice of a proc-local composite literal would dangle).
-vcs_git_actions := [7]string{"diff", "log", "commit_diff", "revert", "stage", "unstage", "workspaces"}
+vcs_git_actions := [8]string{"diff", "log", "commit_diff", "revert", "stage", "unstage", "workspaces", "amend"}
 
 // vcs_git_provider returns the git proc-table.
 vcs_git_provider :: proc() -> VCS_Provider {
@@ -50,6 +50,7 @@ vcs_git_capabilities :: proc(path: string) -> VCS_Capabilities {
 		supports_staging  = true,
 		staging_model     = "index",
 		commit_model      = "branch",
+		supports_amend    = true,
 		supported_actions = vcs_git_actions[:],
 	}
 }
@@ -370,13 +371,19 @@ vcs_git_commit_diff_files :: proc(path, base_ref, head_ref: string) -> ([]VCS_Ch
 
 // --- commit --------------------------------------------------------------
 
-// vcs_git_commit commits the currently-staged changes with `message`
-// (`git -C path commit -m <message>`). Returns ok=true only on exit 0; a git error
+// vcs_git_commit commits the currently-staged changes with `message` (and optional amend)
+// (`git -C path commit [-m <message>] [--amend]`). Returns ok=true only on exit 0; a git error
 // (nothing staged, bad identity, hook rejection, ...) surfaces as ok=false, which the
 // caller maps to the "commit_failed" error code. The caller guards against an empty
 // message before dispatch, so `message` is always non-empty here.
-vcs_git_commit :: proc(path, message: string) -> (ok: bool) {
-	_, rok := vcs_run([]string{"git", "-C", path, "commit", "-m", message})
+vcs_git_commit :: proc(path, message: string, amend: bool = false) -> (ok: bool) {
+	cmd := make([dynamic]string, context.temp_allocator)
+	append(&cmd, "git", "-C", path, "commit")
+	if amend {
+		append(&cmd, "--amend")
+	}
+	append(&cmd, "-m", message)
+	_, rok := vcs_run(cmd[:])
 	return rok
 }
 

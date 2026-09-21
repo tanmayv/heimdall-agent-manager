@@ -24,6 +24,7 @@ export type VcsCapabilities = {
   ok: boolean;
   provider: string;
   supports_staging: boolean;
+  supports_amend?: boolean;
   // Redesign fields (TASK-3): how the provider stages, how it commits, and which
   // write actions the VCS panel may offer. ok/error retained for existing callers.
   staging_model: 'index' | 'none';
@@ -166,7 +167,7 @@ type VcsFileMutationArgs = { projectId: string; bridgeId?: string; file: string;
 // Save (editor write): a file path plus the full buffer text.
 type VcsSaveFileArgs = { projectId: string; bridgeId?: string; file: string; content: string; worktree_path?: string };
 // Commit: the staged changes are committed with `message`.
-type CommitArgs = { projectId: string; bridgeId?: string; message: string; worktree_path?: string };
+type CommitArgs = { projectId: string; bridgeId?: string; message: string; amend?: boolean; worktree_path?: string };
 type VcsMutationResult = { ok: boolean; error?: VcsError };
 
 function base(projectId: string): string {
@@ -434,13 +435,13 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
     // the other write mutations; the body carries only the message. Invalidates the
     // changed-files list so the panel refetches clean state after the commit.
     commitVcs: build.mutation<VcsMutationResult, CommitArgs>({
-      queryFn: async ({ projectId, bridgeId = '', message, worktree_path }) => {
+      queryFn: async ({ projectId, bridgeId = '', message, amend = false, worktree_path }) => {
         try {
           const qs = new URLSearchParams();
           if (bridgeId) qs.set('bridge_id', bridgeId);
           if (worktree_path) qs.set('worktree_path', worktree_path);
           const url = `${base(projectId)}/commit${qs.size ? `?${qs}` : ''}`;
-          const data = await cookieMutation(url, 'POST', { message });
+          const data = await cookieMutation(url, 'POST', { message, amend });
           return { data: data as VcsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
