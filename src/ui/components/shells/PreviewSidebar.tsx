@@ -73,6 +73,17 @@ function PreviewTabWatcher({ sessionId }: { sessionId: string }) {
   return null;
 }
 
+function getIframeRelativePath(win: Window, sessionId: string): string {
+  try {
+    const url = new URL(win.location.href);
+    const prefix = `/api/v1/preview/${encodeURIComponent(sessionId)}/`;
+    const full = url.pathname + url.search + url.hash;
+    return full.startsWith(prefix) ? full.slice(prefix.length) : full.replace(/^\//, '');
+  } catch {
+    return '';
+  }
+}
+
 function PreviewFrame({ tab, hidden }: { tab: PreviewTab; hidden: boolean }) {
   const dispatch = useDispatch();
   // Read-only: the watcher above owns the polling for this session, and this
@@ -87,10 +98,71 @@ function PreviewFrame({ tab, hidden }: { tab: PreviewTab; hidden: boolean }) {
   // that does not depend on reaching into the frame's contentWindow.
   const [reloadKey, setReloadKey] = useState(0);
   const src = useMemo(() => previewUrlFor(tab), [tab]);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Local nav stack so the back button can go to the previous path, not just root.
+  const navStackRef = useRef<string[]>([]);
+  const [canGoBack, setCanGoBack] = useState(false);
 
   // Keep the draft in step when the path changes from outside this input (a tab
   // reopened at a remembered path, say).
   useEffect(() => { setDraft(tab.currentPath); }, [tab.currentPath]);
+
+  // Sync URL bar from iframe navigation (load, hash changes, and popstate).
+  // Works because the preview URL (/api/v1/preview/…) is same-origin with the hub.
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    navStackRef.current = [];
+    setCanGoBack(false);
+
+    function syncFromIframe() {
+      const win = iframeRef.current?.contentWindow;
+      if (!win) return;
+      try {
+        const path = getIframeRelativePath(win, tab.sessionId);
+        setDraft(path);
+        navStackRef.current = [...navStackRef.current, path];
+        setCanGoBack(navStackRef.current.length > 1);
+      } catch { /* cross-origin — nothing to do */ }
+    }
+
+    function onLoad() {
+      syncFromIframe();
+      // Re-attach inner-window events after each full page load (they're lost on
+      // document replace). SPA hash/popstate navigation won't fire a frame load,
+      // so we attach them here to catch back/forward inside the embedded app.
+      try {
+        const win = iframe.contentWindow;
+        if (!win) return;
+        win.addEventListener('hashchange', syncFromIframe);
+        win.addEventListener('popstate', syncFromIframe);
+      } catch { /* cross-origin */ }
+    }
+
+    iframe.addEventListener('load', onLoad);
+    return () => { iframe.removeEventListener('load', onLoad); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey, tab.sessionId]);
+
+  const handleBack = () => {
+    const stack = navStackRef.current;
+    if (stack.length > 1) {
+      // Pop current, show previous.
+      stack.pop();
+      const prev = stack[stack.length - 1] ?? '';
+      navStackRef.current = stack;
+      setCanGoBack(stack.length > 1);
+      setDraft(prev);
+      // Prefer the iframe's own history so SPA state is preserved.
+      try {
+        iframeRef.current?.contentWindow?.history.back();
+        return;
+      } catch { /* cross-origin */ }
+      // Fallback: full reload to the previous path.
+      dispatch(setTabPath({ sessionId: tab.sessionId, path: prev }));
+      setReloadKey((key) => key + 1);
+    }
+  };
 
   const submitPath = (event: React.FormEvent) => {
     event.preventDefault();
@@ -112,14 +184,11 @@ function PreviewFrame({ tab, hidden }: { tab: PreviewTab; hidden: boolean }) {
       >
         <button
           type="button"
-          title="Back to server root"
-          aria-label="Back to server root"
+          title="Back"
+          aria-label="Back"
           data-debug-id={`preview-sidebar-back-${tab.sessionId}`}
-          disabled={!tab.currentPath}
-          onClick={() => {
-            dispatch(setTabPath({ sessionId: tab.sessionId, path: '' }));
-            setReloadKey((key) => key + 1);
-          }}
+          disabled={!canGoBack}
+          onClick={handleBack}
           className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Icon name="arrow-left" size={13} />
@@ -152,6 +221,7 @@ function PreviewFrame({ tab, hidden }: { tab: PreviewTab; hidden: boolean }) {
           <div className="absolute inset-0 grid place-items-center text-xs text-muted">Starting…</div>
         ) : null}
         <iframe
+          ref={iframeRef}
           // Remounting on reloadKey IS the refresh.
           key={`${tab.sessionId}:${reloadKey}`}
           src={src}
