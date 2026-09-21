@@ -200,25 +200,36 @@ proxy_tunnel_bidirectional :: proc(client, upstream: net.TCP_Socket) {
 	// literal 0 panics set_option).
 	_ = net.set_option(client, .Receive_Timeout, time.Duration(0))
 	_ = net.set_option(upstream, .Receive_Timeout, time.Duration(0))
-	// Pump upstream -> client on a worker thread (fire-and-forget, matching the
-	// codebase's thread pattern). Each direction, when it ends, closes BOTH
-	// sockets — so whichever side closes first also unblocks the peer direction's
-	// blocking recv, and both halves exit. (Double-close of an fd microseconds
-	// apart is harmless for this local dev tool; net.close on a closed socket is
-	// a no-op error.) The deferred net.close(upstream) in forward_request is a
-	// backstop for the same fd.
+	// Pump upstream -> client on a joinable thread (self_cleanup=false so we
+	// can join it here). The callers own the fd lifecycle: forward_request has
+	// `defer net.close(upstream)` and handle_dev_proxy_client has
+	// `defer net.close(client)`. This proc only shuts down the receive sides to
+	// wake both pumps, then joins — it does NOT close the fds. Closing here would
+	// double-close: an fd freed by a first close can be reused before the second
+	// close arrives, landing on an unrelated connection (the original fd-reuse bug
+	// class). Fire-and-forget (run_with_poly_data) caused the same hazard; joining
+	// before the caller's defer fires is what makes single-close safe here.
 	half := new(Proxy_Tunnel_Half)
 	half.src = upstream; half.dst = client
-	thread.run_with_poly_data(half, proxy_tunnel_pump)
+	pump := thread.create_and_start_with_data(rawptr(half), proxy_tunnel_pump, self_cleanup = false)
 	// Pump client -> upstream on this thread until either side closes.
 	proxy_tunnel_copy(client, upstream)
+	// Wake the pump if it is still blocked on recv(upstream). shutdown(SHUT_RD)
+	// is required; close(fd) from another thread does not unblock recv(fd) on Linux.
+	net.shutdown(upstream, .Receive)
+	thread.join(pump)
+	thread.destroy(pump)
+	// Both fds are closed by the callers' defers after this proc returns.
 }
 
-proxy_tunnel_pump :: proc(half: ^Proxy_Tunnel_Half) {
-	src := half.src
-	dst := half.dst
+proxy_tunnel_pump :: proc(data: rawptr) {
+	half := (^Proxy_Tunnel_Half)(data)
+	src := half.src  // upstream
+	dst := half.dst  // client
 	free(half)
 	proxy_tunnel_copy(src, dst)
+	// Wake the main thread if it is still blocked on recv(client).
+	net.shutdown(dst, .Receive)
 }
 
 proxy_tunnel_copy :: proc(src, dst: net.TCP_Socket) {
@@ -229,9 +240,7 @@ proxy_tunnel_copy :: proc(src, dst: net.TCP_Socket) {
 		_, send_err := net.send_tcp(dst, buf[:n])
 		if send_err != nil do break
 	}
-	// End of this direction: close both so the peer direction unblocks and exits.
-	net.close(src)
-	net.close(dst)
+	// Copy loop only; the caller owns socket teardown.
 }
 
 proxy_copy_response :: proc(client, upstream: net.TCP_Socket) {
