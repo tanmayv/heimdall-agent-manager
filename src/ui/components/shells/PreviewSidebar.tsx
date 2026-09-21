@@ -31,7 +31,7 @@ import {
 const DEAD_STATUSES = new Set(['exited', 'killed', 'failed']);
 
 const MIN_WIDTH = 320;
-const MAX_WIDTH = 900;
+const MAX_WIDTH = 1800;
 const DEFAULT_WIDTH = 480;
 const WIDTH_STORAGE_KEY = 'heimdall:shell:preview-sidebar-width';
 
@@ -364,7 +364,8 @@ export function PreviewSidebar() {
   useEffect(() => {
     function onMove(event: MouseEvent) {
       if (!draggingRef.current) return;
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - event.clientX));
+      const maxAllowed = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, window.innerWidth - 320));
+      const next = Math.min(maxAllowed, Math.max(MIN_WIDTH, window.innerWidth - event.clientX));
       setWidth(next);
     }
     function onUp() {

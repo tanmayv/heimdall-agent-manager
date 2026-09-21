@@ -1,6 +1,5 @@
 // migrated: ui-audit W2
 import React, { useEffect, useRef, useState } from 'react';
-import { ShellsPanel } from '../shells/ShellsPanel';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import { TaskCommentsThread } from './TaskCommentsThread';
@@ -1449,10 +1448,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
         </div>
       </div>
 
-      {/* Shells Panel */}
-      {chainId && (
-        <ShellsPanel chainId={chainId} />
-      )}
 
       {/* Task List Header */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">

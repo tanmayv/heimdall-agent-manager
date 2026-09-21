@@ -2,7 +2,6 @@ import TaskChainOverview from '../taskchain/TaskChainOverview';
 import ChainOverviewPanel from './ChainOverviewPanel';
 import ProjectFilesPanel, { ProjectQuickOpenModal } from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
-import ShellJobsPanel from './ShellJobsPanel';
 import { ShellsPanel } from '../shells/ShellsPanel';
 import { ShellsTabBadge } from '../shells/ShellsTabBadge';
 import ProjectVcsPanel from './ProjectVcsPanel';
@@ -1402,8 +1401,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const hasFiles = Boolean(projectId);
     const hasVcs = Boolean(projectId);
     const hasRunDir = Boolean(agentInstanceId);
-    const hasJobs = Boolean(agentInstanceId);
-    // T11-UI-1: Shells sits next to Background jobs and needs the same context —
+    // T11-UI-1: Shells needs the same context —
     // a bridge to start sessions on comes from the instance behind this conversation.
     const hasShells = Boolean(agentInstanceId);
     // The two file-explorer tabs are labeled with a folder icon + the resource
@@ -1416,7 +1414,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       : rightPanel === 'files' && hasFiles ? 'files'
       : rightPanel === 'vcs' && hasVcs ? 'vcs'
       : rightPanel === 'rundir' && hasRunDir ? 'rundir'
-      : rightPanel === 'jobs' && hasJobs ? 'jobs'
       : rightPanel === 'shells' && hasShells ? 'shells'
       : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
       : hasTasks ? 'tasks'
@@ -1459,11 +1456,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             {hasRunDir ? (
               <button type="button" title={`Run dir — ${instanceDisplayName}`} aria-label={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
                 <Icon name="folder" size={20} />
-              </button>
-            ) : null}
-            {hasJobs ? (
-              <button type="button" title="Background jobs" aria-label="Background jobs" data-debug-id="conversation-right-panel-tab-jobs" onClick={() => selectRightPanelTab('jobs')} aria-pressed={active === 'jobs' ? 'true' : 'false'} className={`${tabBase} ${active === 'jobs' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
-                <Icon name="terminal" size={20} />
               </button>
             ) : null}
             {hasShells ? (
@@ -1549,13 +1541,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               rootLabel={instanceDisplayName}
               conversationKey={conversationId}
               onPublishComments={publishFileComments}
-              onClose={closeRightPanel}
-              isMobile={isMobilePanel}
-            />
-          ) : active === 'jobs' && hasJobs ? (
-            <ShellJobsPanel
-              agentInstanceId={agentInstanceId}
-              rootLabel={instanceDisplayName}
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
             />
@@ -1674,7 +1659,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         <div className="mx-auto w-full max-w-4xl">
           {/* Push-only ephemeral ham-ctl activity bubbles for THIS instance, just
               above the composer (co-located with the working indicator). */}
-          <AgentActivityBubbles instanceId={agentInstanceId} onOpenJobs={() => openRightPanel('jobs')} />
+          <AgentActivityBubbles instanceId={agentInstanceId} />
           {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">{error}</div> : null}
           {attachments.length > 0 && (
             <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-subtle bg-surface-raised p-2 text-xs text-primary">
