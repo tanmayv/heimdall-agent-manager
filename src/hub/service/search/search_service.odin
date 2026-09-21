@@ -36,9 +36,44 @@ new_search_service :: proc(repo: ^iface.Search_Repository) -> Search_Service {
 	return Search_Service{search_repo = repo}
 }
 
+// validate_types_csv rejects a scope token that does not name a real search type
+// (REQ-CLI-5). Before this, an unrecognized scope simply matched no per-type query
+// and the search returned ok + zero hits — a typo turned a populated Hub into an
+// apparently empty one, which is a FALSE NEGATIVE that looks exactly like a
+// correct "no results" answer.
+//
+// Membership is checked AFTER normalization, via domain.search_type_is_valid:
+// domain.normalize_search_type returns unknown input UNCHANGED, so leaning on
+// normalization to reject would reproduce the defect being fixed here.
+//
+// An empty/absent csv still means "all scopes" — no behavior change. The `all`
+// wildcard is still accepted, but it excuses only ITSELF: `all,bogusscope` is
+// rejected rather than silently succeeding, so a typo is reported wherever it
+// appears instead of being masked by a wildcard next to it. The result set is
+// unaffected either way, so no caller loses hits.
+validate_types_csv :: proc(types_csv: string) -> (bool, domain.Domain_Error) {
+	trimmed := strings.trim_space(types_csv)
+	if trimmed == "" do return true, domain.Domain_Error{}
+	parts := strings.split(trimmed, ",")
+	defer delete(parts)
+	for raw in parts {
+		token := strings.trim_space(raw)
+		if token == "all" do continue
+		if domain.search_type_is_valid(token) do continue
+		valid := domain.search_type_names_csv()
+		defer delete(valid)
+		msg := strings.concatenate({"unknown search scope \"", token, "\"; valid scopes are: ", valid})
+		return false, domain.domain_error(.Validation_Failed, msg)
+	}
+	return true, domain.Domain_Error{}
+}
+
 search_resources :: proc(service: ^Search_Service, auth: contracts.Auth_Context, input: Search_Input) -> (iface.Search_Result, bool, domain.Domain_Error) {
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
 	if !owner_ok do return iface.Search_Result{}, false, owner_err
+	if types_ok, types_err := validate_types_csv(input.types_csv); !types_ok {
+		return iface.Search_Result{}, false, types_err
+	}
 	q := strings.trim_space(input.q)
 	response_limit := input.limit
 	if response_limit <= 0 do response_limit = DEFAULT_SEARCH_LIMIT

@@ -30,12 +30,21 @@ Search_Row :: struct {
 	matched_field: string,
 }
 
+// print_search_help documents `ham-ctl search`. The --scope line lists all ELEVEN
+// scope names (REQ-CLI-5): an unknown scope is now a validation error, so the help
+// has to state the vocabulary it is validated against — `message` is real and was
+// missing here before.
+//
+// NOTE this help is currently unreachable in agent mode (main.odin routes to
+// print_agent_help there); making it reachable, and the agent-mode flag surface
+// (--cursor instead of --json), is REQ-CLI-3's job, not this change's.
 print_search_help :: proc() {
 	fmt.println("ham-ctl search <query> [--scope csv] [typed id filters] [--exclude text] [--limit n] [--json]")
 	fmt.println("Purpose: global entity search across the Hub (GET /api/v1/search).")
 	fmt.println("Flags:")
-	fmt.println("  --scope             CSV of scopes: conversation,agent,agent_instance,task-chain,")
-	fmt.println("                      task,comment,project,artifact,memory,skill (default: all)")
+	fmt.println("  --scope             CSV of scopes (default: all). Eleven names:")
+	fmt.println("                      conversation, message, agent, agent_instance, task-chain,")
+	fmt.println("                      task, comment, project, artifact, memory, skill")
 	fmt.println("  Typed parent-id filters (CSV; keep only rows under the named parent):")
 	fmt.println("    --task-ids, --chain-ids, --project-ids, --conversation-ids")
 	fmt.println("  Negations (CSV; drop rows under the named parent):")
@@ -50,7 +59,113 @@ print_search_help :: proc() {
 	fmt.println("  ham-ctl search zebra --project-ids proj_1 --not-in-chain-ids chain_9")
 }
 
+// ---- unknown-flag rejection (REQ-CLI-4) ---------------------------------
+// `search` previously parsed only the flags it recognised and ignored every
+// other `--…` argument, so `--zzz-invented foo` produced ok:true and the exact
+// baseline result set — a typo'd flag was indistinguishable from a working one,
+// and the "foo" it was given silently became the query. These tables make the
+// accepted surface explicit so anything else is a usage error.
+//
+// SEARCH_*_VALUE_FLAGS consume the NEXT argument; that value is skipped by the
+// scanner so a value that itself looks like a flag (`--exclude --weird`) is not
+// mistaken for one. Globals are allowlisted from main.odin's dispatch and the
+// transport resolvers, so `search q --hub-url … --user-token …` keeps working.
+
+SEARCH_COMMON_VALUE_FLAGS :: [?]string{
+	"--scope", "--limit", "--exclude",
+	"--task-ids", "--chain-ids", "--project-ids", "--conversation-ids",
+	"--not-in-task-ids", "--not-in-chain-ids", "--not-in-project-ids", "--not-in-conversation-ids",
+}
+
+// Agent mode reaches the Hub over the agent.search RPC: it pages with --cursor
+// (--since is a historical alias) and always prints the raw envelope, so --json
+// is deliberately NOT accepted there. User mode is the mirror image.
+SEARCH_AGENT_ONLY_VALUE_FLAGS :: [?]string{"--cursor", "--since"}
+SEARCH_USER_ONLY_BOOL_FLAGS :: [?]string{"--json"}
+
+// Global flags handled by main.odin / the transport resolvers, valid alongside
+// any command. Enumerated from source, not from memory.
+SEARCH_GLOBAL_VALUE_FLAGS :: [?]string{
+	"--config", "--as", "--daemon-url", "--hub-url", "--user-token", "--token",
+	"--bridge-endpoint", "--agent-token",
+}
+SEARCH_GLOBAL_BOOL_FLAGS :: [?]string{"--hub", "--agent-mode", "--help", "-h", "--version"}
+
+search_flag_in :: proc(name: string, table: []string) -> bool {
+	for known in table do if known == name do return true
+	return false
+}
+
+// search_validate_flags reports the first unrecognised `--…` argument, or "" when
+// every flag is known. Positional arguments (the query, and any flag value) never
+// start with "--" and are skipped.
+//
+// A query that itself begins with "--" is therefore reported as an unknown flag.
+// That is a deliberate, stated behavior and not a regression: command_tokens
+// already discards every "--"-prefixed argument before the query is read, so such
+// a query never reached the Hub — it silently searched for the following word
+// instead. Erroring is strictly better than that. There is no "--" end-of-flags
+// separator today; adding one is out of scope here.
+search_validate_flags :: proc(args: []string, agent_mode: bool) -> string {
+	// The tables above are compile-time array constants, which are not addressable
+	// and so cannot be sliced directly; copy them into locals once per call.
+	common_value := SEARCH_COMMON_VALUE_FLAGS
+	global_value := SEARCH_GLOBAL_VALUE_FLAGS
+	agent_value := SEARCH_AGENT_ONLY_VALUE_FLAGS
+	global_bool := SEARCH_GLOBAL_BOOL_FLAGS
+	user_bool := SEARCH_USER_ONLY_BOOL_FLAGS
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+		i += 1
+		if !strings.has_prefix(arg, "-") do continue
+		if arg == "-h" do continue
+		if !strings.has_prefix(arg, "--") do return arg
+		// `--flag=value` is not a form this CLI parses (option_value only reads the
+		// NEXT argument), so it would silently take the default. Report it as such
+		// rather than as an unknown flag, which would misdirect the fix.
+		if strings.contains(arg, "=") do return arg
+		if search_flag_in(arg, common_value[:]) || search_flag_in(arg, global_value[:]) {
+			i += 1 // consume the value so it is never scanned as a flag
+			continue
+		}
+		if agent_mode && search_flag_in(arg, agent_value[:]) {
+			i += 1
+			continue
+		}
+		if search_flag_in(arg, global_bool[:]) do continue
+		if !agent_mode && search_flag_in(arg, user_bool[:]) do continue
+		return arg
+	}
+	return ""
+}
+
+// search_reject_unknown_flag prints the usage error for `bad`. Agent mode prints
+// the machine-readable envelope its callers parse; user mode prints plain text.
+//
+// The envelope is built with json_object/json_kv, NOT fmt.printf: fmt treats the
+// braces in a JSON literal as format syntax and emits
+// `%!(MISSING CLOSE BRACE)`, which would make this error unparseable for exactly
+// the agent callers it exists to inform — a silent-failure bug inside the
+// silent-failure fix. json_kv also escapes the offending flag text.
+search_reject_unknown_flag :: proc(bad: string, agent_mode: bool) {
+	hint := "unknown flag"
+	if strings.contains(bad, "=") do hint = "flags take their value as the next argument (use `--scope task`, not `--scope=task`)"
+	msg := strings.concatenate({"search: ", hint, ": ", bad, ". Run `ham-ctl search --help` for the accepted flags."})
+	defer delete(msg)
+	if agent_mode {
+		fmt.println(json_object(json_kv_raw("ok", "false"), json_kv("message", msg)))
+		return
+	}
+	fmt.printfln("search: %s: %s", hint, bad)
+	fmt.println("Run `ham-ctl search --help` for the accepted flags.")
+}
+
 ctl_search_command :: proc(cmd: []string, args: []string) {
+	if bad := search_validate_flags(args, false); bad != "" {
+		search_reject_unknown_flag(bad, false)
+		os.exit(1)
+	}
 	query := ""
 	if len(cmd) >= 2 do query = cmd[1]
 	if strings.trim_space(query) == "" {

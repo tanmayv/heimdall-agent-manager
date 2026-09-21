@@ -75,7 +75,8 @@ search_groups_json :: proc(hits: []iface.Search_Hit) -> string {
 	return strings.to_string(b)
 }
 
-// Kept in sync with the repository's SEARCH_TYPE_ORDER and the ctl's
+// Kept in sync with domain.SEARCH_TYPE_ORDER (moved there from the sqlite
+// repository by REQ-CLI-5 so the service can validate scopes against it) and the ctl's
 // SEARCH_GROUP_ORDER (message is the 2nd group). Omitting a type here silently
 // drops its hits from BOTH /api/v1/search and /api/v1/agent-actions/search, since
 // search_groups_json only emits groups it lists.
