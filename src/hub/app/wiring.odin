@@ -476,6 +476,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/restart", rawptr(&graph.shell_session_rest_handlers), http.shell_session_restart_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*/log", rawptr(&graph.shell_session_rest_handlers), http.shell_session_log_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*/capture", rawptr(&graph.shell_session_rest_handlers), http.shell_session_capture_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/shells/*/pane", rawptr(&graph.shell_session_rest_handlers), http.shell_session_pane_handler)
 }
 
 health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {

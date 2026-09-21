@@ -147,6 +147,14 @@ export function ShellsPanel({ chainId, bridgeId, standalone = false, isMobile = 
 
   const sessions = data?.sessions ?? [];
 
+  // The open pane must follow the LIVE session row, not the snapshot captured when the
+  // row was clicked: the terminal pane pauses its polling on a terminal status, and a
+  // frozen "running" snapshot would keep it polling forever after the shell died.
+  // Falls back to the snapshot while the list is between refetches.
+  const activePaneSession = activePane
+    ? sessions.find((s) => s.session_id === activePane.session.session_id) ?? activePane.session
+    : null;
+
   // Previewable servers open in the right-hand sidebar rather than an inline pane,
   // so the preview survives navigating away from this table.
   const handleRowClick = (session: ShellSession) => {
@@ -292,15 +300,15 @@ export function ShellsPanel({ chainId, bridgeId, standalone = false, isMobile = 
         {/* Active pane */}
         {activePane && (
           <div className="mt-3">
-            {activePane.type === 'terminal' && (
+            {activePane.type === 'terminal' && activePaneSession && (
               <ShellTerminalPane
-                session={activePane.session}
+                session={activePaneSession}
                 onClose={() => setActivePane(null)}
               />
             )}
-            {activePane.type === 'log' && (
+            {activePane.type === 'log' && activePaneSession && (
               <ShellLogViewer
-                session={activePane.session}
+                session={activePaneSession}
                 onClose={() => setActivePane(null)}
               />
             )}

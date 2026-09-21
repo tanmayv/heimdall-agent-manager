@@ -315,6 +315,32 @@ shell_session_capture_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
 }
 
+// GET /api/v1/shells/{session_id}/pane — polled screen snapshot with since_hash diffing
+// (REQ-PTY-STREAM-1). Modelled on get_agent_instance_pane_handler and returns the same
+// payload shape. Owner scoping goes through shell_session_svc.shell_session_get, the
+// auth-scoped getter — deliberately NOT the unscoped get_by_id BUG-8 added for the
+// bridge-event path.
+shell_session_pane_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Shell_Session_Rest_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+
+	session_id := path_part(req.path, 4)
+	if session_id == "" || strings.contains(session_id, "/") {
+		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
+	}
+
+	since_hash := query_value(req.query, "since_hash")
+	width := query_int(req.query, "width", 80)
+	if width <= 0 do width = 80
+	line_limit := query_int(req.query, "line_limit", 120)
+	if line_limit <= 0 do line_limit = 120
+
+	reply, got, err := shell_session_svc.shell_session_get_pane(h.shell_sessions, auth_ctx, session_id, since_hash, width, line_limit)
+	if !got do return respond_error(err, req.request_id)
+	return respond_success(reply, req.request_id, auth_ctx_server_time(req))
+}
+
 // --- private ---
 
 _shell_session_list_json :: proc(sessions: []domain.Shell_Session, next_cursor: string) -> string {

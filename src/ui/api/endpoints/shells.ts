@@ -56,6 +56,26 @@ type CreateShellArgs = {
   chain_id?: string;
 };
 
+export interface GetShellPaneArgs {
+  sessionId: string;
+  sinceHash?: string;
+  width?: number;
+  lineLimit?: number;
+}
+
+// Same payload shape the agent pane returns (see AgentPaneResult): on unchanged the
+// bridge omits output entirely rather than resending the screen.
+export interface ShellPaneResult {
+  ok?: boolean;
+  status?: string;
+  unchanged?: boolean;
+  hash?: string;
+  output?: string;
+  line_count?: number;
+  truncated?: boolean;
+  [key: string]: any;
+}
+
 type ShellSignalArgs = { sessionId: string; signal: number };
 type ShellLogArgs = { sessionId: string; offset?: number; limit?: number; grep?: string };
 
@@ -174,6 +194,69 @@ export const shellsApi = heimdallApi.injectEndpoints({
       },
     }),
 
+    getShellPane: build.query<ShellPaneResult, GetShellPaneArgs>({
+      queryFn: async ({ sessionId, sinceHash, width = 80, lineLimit = 120 }) => {
+        if (!sessionId) {
+          return { data: { ok: false, unchanged: true, hash: '', output: '' } };
+        }
+        try {
+          const path = `/shells/${encodeURIComponent(sessionId)}/pane?since_hash=${encodeURIComponent(sinceHash || '')}&width=${width || 80}&line_limit=${lineLimit || 120}`;
+          const data = await cookieJsonFetch(path);
+          return { data: data || {} };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      serializeQueryArgs: ({ endpointName, queryArgs }) => {
+        return `${endpointName}-${queryArgs.sessionId}-${queryArgs.width || 80}-${queryArgs.lineLimit || 120}`;
+      },
+      // An unchanged reply carries no output; keep the last rendered screen in cache so the
+      // consumer sees a referentially identical value and skips the repaint entirely.
+      merge: (currentCache, newItems) => {
+        if (newItems?.unchanged && currentCache?.output !== undefined) {
+          return {
+            ...currentCache,
+            ...newItems,
+            output: currentCache.output,
+            line_count: currentCache.line_count ?? newItems.line_count,
+            truncated: currentCache.truncated ?? newItems.truncated,
+          };
+        }
+        return newItems;
+      },
+      providesTags: (_result, _error, { sessionId }) => [
+        { type: 'ShellSession' as const, id: `${sessionId}:PANE` },
+      ],
+    }),
+
+    sendShellInput: build.mutation<{ ok?: boolean; [key: string]: any }, { sessionId: string; data: string }>({
+      queryFn: async ({ sessionId, data }) => {
+        if (!sessionId) {
+          return { error: { status: 'CUSTOM_ERROR', error: 'Missing sessionId' } as any };
+        }
+        try {
+          const res = await cookieMutation(`/shells/${encodeURIComponent(sessionId)}/input`, 'POST', { data });
+          return { data: res || { ok: true } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+    }),
+
+    sendShellResize: build.mutation<{ ok?: boolean; [key: string]: any }, { sessionId: string; rows: number; cols: number }>({
+      queryFn: async ({ sessionId, rows, cols }) => {
+        if (!sessionId) {
+          return { error: { status: 'CUSTOM_ERROR', error: 'Missing sessionId' } as any };
+        }
+        try {
+          const res = await cookieMutation(`/shells/${encodeURIComponent(sessionId)}/resize`, 'POST', { rows, cols });
+          return { data: res || { ok: true } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+    }),
+
     getShellLog: build.query<ShellLogResponse, ShellLogArgs>({
       queryFn: async ({ sessionId, offset = 0, limit = 100, grep }) => {
         try {
@@ -208,4 +291,8 @@ export const {
   useRestartShellMutation,
   useSignalShellMutation,
   useGetShellLogQuery,
+  useGetShellPaneQuery,
+  useLazyGetShellPaneQuery,
+  useSendShellInputMutation,
+  useSendShellResizeMutation,
 } = shellsApi;

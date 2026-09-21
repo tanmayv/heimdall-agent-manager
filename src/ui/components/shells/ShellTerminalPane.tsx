@@ -11,8 +11,14 @@ const FitAddon = (fitAddonObj.FitAddon || fitAddonObj['default']?.FitAddon || fi
 
 import { useTheme } from '../../store/themeSlice';
 import Icon from '../Icon';
-import { useShellStream } from './useShellStream';
-import { useKillShellMutation, useRestartShellMutation, useSignalShellMutation } from '../../api/endpoints/shells';
+import { useShellPaneSubscription } from '../../hooks/useShellPaneSubscription';
+import {
+  useKillShellMutation,
+  useRestartShellMutation,
+  useSendShellInputMutation,
+  useSendShellResizeMutation,
+  useSignalShellMutation,
+} from '../../api/endpoints/shells';
 import type { ShellSession } from '../../api/endpoints/shells';
 
 interface ShellTerminalPaneProps {
@@ -41,24 +47,30 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
   const isTerminal = session.kind === 'interactive' || session.kind === 'agent';
   const isRunning = session.status === 'running' || session.status === 'starting';
 
-  const { connected, sendInput, sendResize } = useShellStream({
-    sessionId: isTerminal && isRunning ? session.session_id : null,
-    onOutput: (bytes) => {
-      const term = terminalRef.current;
-      if (!term) return;
-      term.write(bytes);
-    },
-    onStatus: (status) => {
-      const term = terminalRef.current;
-      if (!term) return;
-      term.write(`\r\n\x1b[90m[session ${status}]\x1b[0m\r\n`);
-    },
-    onError: (msg) => {
-      const term = terminalRef.current;
-      if (!term) return;
-      term.write(`\r\n\x1b[31m[stream error: ${msg}]\x1b[0m\r\n`);
-    },
+  // Output arrives by polled capture with since_hash diffing — the model the agent pane
+  // uses — not by a PTY output stream. See useShellPaneSubscription.
+  const paneSessionId = isTerminal && isRunning ? session.session_id : null;
+  const { output, isFetching, lastUpdatedAt, polling, refetch } = useShellPaneSubscription({
+    sessionId: paneSessionId,
+    status: session.status,
   });
+
+  const [sendShellInput] = useSendShellInputMutation();
+  const [sendShellResize] = useSendShellResizeMutation();
+
+  const sessionIdRef = useRef<string | null>(paneSessionId);
+  useEffect(() => {
+    sessionIdRef.current = paneSessionId;
+  }, [paneSessionId]);
+
+  const refetchRef = useRef(refetch);
+  useEffect(() => {
+    refetchRef.current = refetch;
+  }, [refetch]);
+
+  const keystrokeDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const lastWrittenOutputRef = useRef<string>('');
+  const userScrolledUpRef = useRef(false);
 
   useEffect(() => {
     const container = terminalContainerRef.current;
@@ -81,12 +93,32 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
 
+    // Keystrokes go to the HTTP input route, then a debounced refetch pulls the echo back
+    // so typing feels immediate between poll ticks.
     const dataDisposable = term.onData((data) => {
-      sendInput(data);
+      const targetId = sessionIdRef.current;
+      if (targetId) {
+        sendShellInput({ sessionId: targetId, data }).catch(() => {});
+      }
+      if (keystrokeDebounceTimerRef.current) {
+        clearTimeout(keystrokeDebounceTimerRef.current);
+      }
+      keystrokeDebounceTimerRef.current = setTimeout(() => {
+        refetchRef.current?.();
+      }, 50);
     });
 
     const resizeDisposable = term.onResize(({ cols, rows }) => {
-      sendResize(rows, cols);
+      const targetId = sessionIdRef.current;
+      if (targetId) {
+        sendShellResize({ sessionId: targetId, rows, cols }).catch(() => {});
+      }
+    });
+
+    // Track manual scroll-up so a repaint does not yank the viewport back down.
+    term.onScroll(() => {
+      const buffer = term.buffer.active;
+      userScrolledUpRef.current = buffer.viewportY < buffer.baseY;
     });
 
     const dispatchResize = () => {
@@ -96,7 +128,10 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
           if (term.cols === 0 || term.rows === 0) {
             term.resize(Math.max(term.cols, 80), Math.max(term.rows, 24));
           }
-          sendResize(term.rows, term.cols);
+          const targetId = sessionIdRef.current;
+          if (targetId) {
+            sendShellResize({ sessionId: targetId, rows: term.rows, cols: term.cols }).catch(() => {});
+          }
         }
       } catch { /* ignore */ }
     };
@@ -125,8 +160,18 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
     };
     window.addEventListener('resize', handleWindowResize);
 
+    // Paint whatever screen we already hold, so a remount is not blank until the next tick.
+    if (output) {
+      term.reset();
+      term.write('\x1b[?25l' + output);
+      lastWrittenOutputRef.current = output;
+    }
+
     return () => {
       window.removeEventListener('resize', handleWindowResize);
+      if (keystrokeDebounceTimerRef.current) {
+        clearTimeout(keystrokeDebounceTimerRef.current);
+      }
       clearTimeout(timer);
       resizeObserver.disconnect();
       dataDisposable.dispose();
@@ -134,8 +179,25 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
       term.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      lastWrittenOutputRef.current = '';
     };
-  }, [sendInput, sendResize]);
+  }, [sendShellInput, sendShellResize]);
+
+  // Repaint on a changed screen snapshot. An unchanged poll leaves `output`
+  // referentially identical, so this effect short-circuits and xterm is never touched.
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (!term || output === undefined) return;
+    if (output === lastWrittenOutputRef.current) return;
+
+    lastWrittenOutputRef.current = output;
+    term.reset();
+    term.write('\x1b[?25l' + (output || ''), () => {
+      if (!userScrolledUpRef.current) {
+        term.scrollToBottom();
+      }
+    });
+  }, [output]);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -187,11 +249,14 @@ export function ShellTerminalPane({ session, onClose }: ShellTerminalPaneProps) 
               up {relativeTime(session.started_at)}
             </span>
           )}
-          {connected ? (
+          {polling && lastUpdatedAt !== null ? (
             <span className="text-[10px] text-success">● live</span>
-          ) : (
+          ) : polling ? (
             <span className="text-[10px] text-faint">○ connecting…</span>
+          ) : (
+            <span className="text-[10px] text-faint">○ paused</span>
           )}
+          {isFetching && <span className="sr-only">refreshing</span>}
         </div>
 
         <div className="flex items-center gap-1">

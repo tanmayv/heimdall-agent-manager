@@ -545,6 +545,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_shell_capture(conn, text)
 		return
 	}
+	if type == "shell_get_pane" {
+		bridge_hub_handle_shell_get_pane(conn, text)
+		return
+	}
 	if type == "tunnel_open" {
 		bridge_hub_handle_tunnel_open(conn, text)
 		return
@@ -2458,6 +2462,67 @@ bridge_hub_handle_shell_logs :: proc(conn: ^ws.Connection, text: string) {
 	result := strings.to_string(b)
 	if conn != nil do _ = bridge_hub_send(conn, result)
 	delete(result)
+}
+
+// bridge_hub_handle_shell_get_pane handles the "shell_get_pane" command (REQ-PTY-STREAM-1).
+// This is the shell-session twin of bridge_hub_handle_get_agent_pane: same polled-capture
+// model, same since_hash diffing, same command_result shape — the only shell-specific part
+// is resolving session_id to the pty-host instance key. A shell session IS a pty-host
+// instance keyed by its shell_id, with the session_id fallback the T4 registration and the
+// BUG-7 reconcile both use, so bridge_pty_host_get_pane is reused verbatim and no new
+// pty-host primitive is introduced.
+//
+// Deliberately distinct from "shell_capture": that command's {content,rows,cols} reply is a
+// shipped contract consumed by ham-ctl and GET /shells/*/capture, and it runs on a 30s hub
+// timeout. This one is polled twice a second, so it carries the pane shape instead.
+bridge_hub_handle_shell_get_pane :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		_ = bridge_hub_send(conn, cached)
+		return
+	}
+
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	session_id := extract_json_string(text, "session_id", "")
+	if session_id == "" && has_payload do session_id = extract_json_string(payload, "session_id", "")
+	since_hash := extract_json_string(text, "since_hash", "")
+	if since_hash == "" && has_payload do since_hash = extract_json_string(payload, "since_hash", "")
+	width := extract_json_int(text, "width", 0)
+	if width <= 0 && has_payload do width = extract_json_int(payload, "width", 0)
+	if width <= 0 do width = 80
+	line_limit := extract_json_int(text, "line_limit", 0)
+	if line_limit <= 0 && has_payload do line_limit = extract_json_int(payload, "line_limit", 0)
+	if line_limit <= 0 do line_limit = 120
+
+	send_failure :: proc(conn: ^ws.Connection, command_id, msg: string) {
+		result := bridge_get_agent_pane_result_json(command_id, false, false, "", "", 0, false, msg)
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		_ = bridge_hub_send(conn, result)
+	}
+
+	if session_id == "" {
+		send_failure(conn, command_id, "missing session_id")
+		return
+	}
+
+	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !ok {
+		send_failure(conn, command_id, "session not found")
+		return
+	}
+
+	shell_id := sess.shell_id
+	if shell_id == "" do shell_id = sess.session_id
+
+	pane_ok, unchanged, h, output, line_count, truncated, err_msg := bridge_pty_host_get_pane(shell_id, since_hash, line_limit, width)
+	defer if h != "" do delete(h)
+	defer if output != "" do delete(output)
+
+	result := bridge_get_agent_pane_result_json(command_id, pane_ok, unchanged, h, output, line_count, truncated, err_msg)
+	defer delete(result)
+	bridge_runtime_cache_command(command_id, result)
+	_ = bridge_hub_send(conn, result)
 }
 
 // bridge_hub_handle_shell_capture handles the "shell_capture" command.

@@ -404,6 +404,64 @@ shell_session_capture :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 	return Shell_Session_Capture_Result{content = content, rows = rows, cols = cols}, true, domain.Domain_Error{}
 }
 
+// shell_session_pane_terminal_status reports whether a session has reached a terminal
+// state, in which case there is nothing live to capture and the pane must not cost a
+// bridge round trip. Mirrors the agent pane's stopped/failed short-circuit
+// (agent_service.get_instance_pane).
+shell_session_pane_terminal_status :: proc(status: string) -> bool {
+	return status == "exited" || status == "killed" || status == "failed"
+}
+
+// shell_session_get_pane returns a polled screen snapshot for an interactive shell
+// session (REQ-PTY-STREAM-1), diffed against since_hash by the bridge so an idle screen
+// costs an empty reply. This is the shell twin of agent_service.get_instance_pane and
+// returns the identical payload shape {ok,unchanged,hash,output,line_count,truncated}.
+//
+// Owner scoping runs through shell_session_get (owner_from_auth + owner-keyed repo
+// lookup), the same auth-scoped getter every other shell endpoint uses.
+//
+// The 5s bridge timeout is deliberate and differs from shell_session_capture's 30s: this
+// command is polled twice a second while a pane is open, so a long timeout would let
+// pending commands pile up under bridge slowness.
+shell_session_get_pane :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Context, session_id, since_hash: string, width, line_limit: int) -> (string, bool, domain.Domain_Error) {
+	if svc == nil || svc.repo == nil do return "", false, domain.domain_error(.Internal_Error, "shell session service is not configured")
+	session, found, err := shell_session_get(svc, auth, session_id)
+	if err.code != .None do return "", false, err
+	if !found do return "", false, domain.domain_error(.Not_Found, "session not found")
+
+	// Terminal session: answer locally, never touch the bridge.
+	if shell_session_pane_terminal_status(session.status) {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"ok\":true,\"status\":\"")
+		contracts.write_json_string(&b, session.status)
+		strings.write_string(&b, "\",\"unchanged\":true,\"hash\":\"\",\"output\":\"\"}")
+		return strings.to_string(b), true, domain.Domain_Error{}
+	}
+
+	if strings.trim_space(session.bridge_id) == "" {
+		return "", false, domain.domain_error(.Bridge_Offline, "shell session has no bridge")
+	}
+
+	w := width
+	if w <= 0 do w = 80
+	limit := line_limit
+	if limit <= 0 do limit = 120
+
+	cmd_id := platform.generate_id(svc.ids, "cmd_sh_pane_")
+	cmd_json := _shell_get_pane_command_json(cmd_id, session_id, since_hash, w, limit)
+	defer delete(cmd_json)
+
+	reply, reply_ok, reply_err := project_service.bridge_command_send_runtime_wait(
+		svc.bridge_command_sink,
+		project_service.Runtime_Command{bridge_id = session.bridge_id, command_id = cmd_id, body_json = cmd_json},
+		5_000,
+	)
+	delete(cmd_id)
+
+	if !reply_ok do return "", false, reply_err
+	return reply, true, domain.Domain_Error{}
+}
+
 // shell_session_handle_exited is called by bridge_handlers when a shell_exited event
 // arrives from the bridge. It updates the hub DB row and publishes a push event.
 //
@@ -684,6 +742,22 @@ _shell_logs_command_json :: proc(cmd_id, session_id: string, offset, limit_val: 
 	strings.write_string(&b, ",\"grep\":\"")
 	contracts.write_json_string(&b, grep)
 	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+_shell_get_pane_command_json :: proc(cmd_id, session_id, since_hash: string, width, line_limit: int) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_get_pane\",\"command_id\":\"")
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, "\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"since_hash\":\"")
+	contracts.write_json_string(&b, since_hash)
+	strings.write_string(&b, "\",\"width\":")
+	strings.write_int(&b, width)
+	strings.write_string(&b, ",\"line_limit\":")
+	strings.write_int(&b, line_limit)
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 
