@@ -1334,7 +1334,7 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			exit_code_set := json_key_present(text, "exit_code")
 			if session_id != "" {
 				shell_session_svc.shell_session_broadcast_status(h.shell_sessions, session_id, status, exit_code, exit_code_set)
-				shell_session_svc.shell_session_handle_exited(h.shell_sessions, session_id, status, exit_code, exit_code_set)
+				shell_session_svc.shell_session_handle_exited(h.shell_sessions, session_id, bridge_id, status, exit_code, exit_code_set)
 			}
 			delete(session_id)
 			delete(status)

@@ -16,6 +16,7 @@ new_shell_session_repository :: proc(impl: ^Shell_Session_Repo_SQLite, conn: ^Co
 		ctx             = rawptr(impl),
 		upsert          = shell_session_upsert_sqlite,
 		get             = shell_session_get_sqlite,
+		get_by_id       = shell_session_get_by_id_sqlite,
 		list_by_bridge  = shell_session_list_by_bridge_sqlite,
 		list_by_project = shell_session_list_by_project_sqlite,
 		list_by_chain   = shell_session_list_by_chain_sqlite,
@@ -129,6 +130,26 @@ shell_session_get_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: string)
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, owner_user_id)
 	bind_text(stmt, 2, session_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Shell_Session{}, false, domain.Domain_Error{}
+	return shell_session_from_stmt(stmt), true, domain.Domain_Error{}
+}
+
+// shell_session_get_by_id_sqlite mirrors shell_session_get_sqlite but selects on
+// session_id alone. session_id is the table's primary key, so this returns at
+// most one row. Unscoped by design — see Shell_Session_Get_By_Id_Proc; it backs
+// the shell_exited event path only and must not be reached from an HTTP handler.
+shell_session_get_by_id_sqlite :: proc(ctx: rawptr, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	stmt: sqlite3_stmt = nil
+	query := strings.concatenate({"SELECT ", shell_session_select_cols, " FROM shell_sessions WHERE session_id = ? LIMIT 1;"}, context.temp_allocator)
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
+		return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "failed to prepare shell session get by id")
+	}
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, session_id)
 	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Shell_Session{}, false, domain.Domain_Error{}
 	return shell_session_from_stmt(stmt), true, domain.Domain_Error{}
 }

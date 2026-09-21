@@ -4,6 +4,12 @@ import domain "odin_test:hub/domain"
 
 Shell_Session_Upsert_Proc        :: proc(ctx: rawptr, session: domain.Shell_Session) -> (bool, domain.Domain_Error)
 Shell_Session_Get_Proc            :: proc(ctx: rawptr, owner_user_id, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error)
+// Shell_Session_Get_By_Id_Proc looks a session up by session_id ALONE, with no
+// owner scoping. It exists for the internal bridge-event path (shell_exited),
+// where the caller is a trusted bridge event and there is no authenticated user
+// to scope by. It MUST NOT be used from any user-facing handler: those keep
+// using Shell_Session_Get_Proc, or they leak sessions across tenants.
+Shell_Session_Get_By_Id_Proc      :: proc(ctx: rawptr, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error)
 Shell_Session_List_By_Bridge_Proc :: proc(ctx: rawptr, owner_user_id, bridge_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
 Shell_Session_List_By_Project_Proc :: proc(ctx: rawptr, owner_user_id, project_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
 Shell_Session_List_By_Chain_Proc  :: proc(ctx: rawptr, owner_user_id, chain_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
@@ -13,6 +19,7 @@ Shell_Session_Repository :: struct {
 	ctx:             rawptr,
 	upsert:          Shell_Session_Upsert_Proc,
 	get:             Shell_Session_Get_Proc,
+	get_by_id:       Shell_Session_Get_By_Id_Proc,
 	list_by_bridge:  Shell_Session_List_By_Bridge_Proc,
 	list_by_project: Shell_Session_List_By_Project_Proc,
 	list_by_chain:   Shell_Session_List_By_Chain_Proc,
@@ -27,6 +34,13 @@ shell_session_upsert :: proc(repo: ^Shell_Session_Repository, session: domain.Sh
 shell_session_get :: proc(repo: ^Shell_Session_Repository, owner_user_id, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
 	if repo == nil || repo.get == nil do return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "shell session repository is not configured")
 	return repo.get(repo.ctx, owner_user_id, session_id)
+}
+
+// shell_session_get_by_id is the unscoped lookup described on
+// Shell_Session_Get_By_Id_Proc. Internal bridge-event path only.
+shell_session_get_by_id :: proc(repo: ^Shell_Session_Repository, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
+	if repo == nil || repo.get_by_id == nil do return domain.Shell_Session{}, false, domain.domain_error(.Internal_Error, "shell session repository is not configured")
+	return repo.get_by_id(repo.ctx, session_id)
 }
 
 shell_session_list_by_bridge :: proc(repo: ^Shell_Session_Repository, owner_user_id, bridge_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {

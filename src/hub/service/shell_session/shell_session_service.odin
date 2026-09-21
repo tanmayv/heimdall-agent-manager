@@ -406,8 +406,13 @@ shell_session_capture :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 
 // shell_session_handle_exited is called by bridge_handlers when a shell_exited event
 // arrives from the bridge. It updates the hub DB row and publishes a push event.
-shell_session_handle_exited :: proc(svc: ^Shell_Session_Service, session_id, status: string, exit_code: int, exit_code_set: bool) {
-	if svc == nil || svc.repo == nil || session_id == "" do return
+//
+// bridge_id is the authenticated id of the bridge the event arrived on. It is
+// required: the row is only touched when it belongs to that same bridge, so a
+// bridge cannot terminate the record of a session running on another bridge
+// (and so, in practice, of another user). See the check below the lookup.
+shell_session_handle_exited :: proc(svc: ^Shell_Session_Service, session_id, bridge_id, status: string, exit_code: int, exit_code_set: bool) {
+	if svc == nil || svc.repo == nil || session_id == "" || bridge_id == "" do return
 
 	// Remove the entry from session_owners under the lock, capturing the heap strings.
 	sync.mutex_lock(&svc.mu)
@@ -425,14 +430,41 @@ shell_session_handle_exited :: proc(svc: ^Shell_Session_Service, session_id, sta
 	}
 	sync.mutex_unlock(&svc.mu)
 
-	if !found_entry do return
-	defer delete(map_key)
-	defer delete(map_val) // map_val is the owner_user_id
+	// Fast path frees remain exactly as before; they only apply when the map hit.
+	defer if found_entry do delete(map_key)
+	defer if found_entry do delete(map_val) // map_val is the owner_user_id
 
-	owner := map_val
+	owner:    string
+	session:  domain.Shell_Session
+	found:    bool
+	repo_err: domain.Domain_Error
 
-	session, found, repo_err := iface.shell_session_get(svc.repo, string(owner), session_id)
-	if !found || repo_err.code != .None do return
+	if found_entry {
+		owner = map_val
+		session, found, repo_err = iface.shell_session_get(svc.repo, owner, session_id)
+	} else {
+		// session_owners is in-memory only and is never rehydrated from the DB,
+		// so it is empty for every session created before the current hub
+		// process. Dropping the event here left those rows stuck at "running"
+		// forever — an unkillable ghost in the UI (REQ-RECON-5). Fall back to an
+		// unscoped lookup to recover the owner from the row itself.
+		//
+		// Safe here and only here: the caller is a trusted bridge event with no
+		// authenticated user to scope by. User-facing handlers keep using the
+		// owner-scoped shell_session_get.
+		session, found, repo_err = iface.shell_session_get_by_id(svc.repo, session_id)
+		if found do owner = session.owner_user_id
+	}
+	if !found || repo_err.code != .None || owner == "" do return
+
+	// Bridge scoping. Losing the owner check on the by-id path would otherwise let
+	// ANY connected bridge terminate ANY user's session record by emitting
+	// shell_exited with that session_id — session_owners used to make that
+	// unreachable by accident, and the fallback above removes that accident. The
+	// row names the bridge it runs on, so require the event to come from it.
+	// Applied to both paths: a bridge has no business reporting an exit for a
+	// session that is not its own either way.
+	if session.bridge_id != bridge_id do return
 
 	now := platform.clock_now(svc.clock)
 	effective_status := status
