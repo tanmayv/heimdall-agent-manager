@@ -246,6 +246,7 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 	case "", "list":
 		fields := make([dynamic]string)
 		if has_flag(args, "--mine") do append(&fields, json_kv_raw("coordinated_by_me", "true"))
+		if has_flag(args, "--pinned") do append(&fields, json_kv_raw("pinned", "true"))
 		if v := option_value(args, "--project", ""); v != "" do append(&fields, json_kv("project_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.list", json_object_from_slice(fields[:]))
 	case "show":
@@ -285,6 +286,14 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
 		ctl_agent_call(endpoint, token, "agent.task_chain.publish", json_object(json_kv("chain_id", cid)))
+	case "pin":
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.pin", json_object(json_kv("chain_id", cid), json_kv_raw("pinned", "true")))
+	case "unpin":
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.pin", json_object(json_kv("chain_id", cid), json_kv_raw("pinned", "false")))
 	case:
 		print_agent_help([]string{"task-chain"})
 	}
@@ -1290,8 +1299,10 @@ print_help_task_chain :: proc() {
 	fmt.println("ham-ctl task-chain — your task chains")
 	fmt.println("")
 	fmt.println("VERBS")
-	fmt.println("  list [--mine] [--project <id>]      List chains (--mine = ones you coordinate).")
+	fmt.println("  list [--mine] [--pinned] [--project <id>]   List chains (--mine = ones you coordinate, --pinned = pinned).")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
+	fmt.println("  pin <chain-id>                      Pin a task chain to the top of the sidebar.")
+	fmt.println("  unpin <chain-id>                    Unpin a task chain.")
 	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
 	fmt.println("                                      (coordinator only; pass \"\" to clear).")

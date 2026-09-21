@@ -139,7 +139,7 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen|pin|unpin>")
 	fmt.println("  coordinated [--agent-id <instance_id>]  list chains an agent coordinates (default: your own instance)")
 }
 
@@ -171,6 +171,10 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	if !ok do return
 
 	if action == "" || action == "list" {
+		if has_flag(args, "--pinned") {
+			ctl_tasks_request(transport, "GET", "/api/v1/task-chains?pinned=1", "")
+			return
+		}
 		ctl_tasks_request(transport, "GET", "/api/v1/task-chains", "")
 		return
 	}
@@ -286,13 +290,23 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
+	if action == "pin" {
+		ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/pin", safe_path_part(chain_id)), "{\"pinned\":true}")
+		return
+	}
+
+	if action == "unpin" {
+		ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/pin", safe_path_part(chain_id)), "{\"pinned\":false}")
+		return
+	}
+
 	// Coordinator-only recovery: return an accidentally-completed chain to active.
 	if action == "reopen" {
 		ctl_tasks_request(transport, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", "active")))
 		return
 	}
 
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen|pin|unpin>")
 }
 
 ctl_tasks_command :: proc(cmd: []string, args: []string) {

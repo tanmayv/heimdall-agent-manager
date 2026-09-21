@@ -298,6 +298,8 @@ export type ChainListItem = {
   projectId: string;
   projectName: string;
   taskCount: number;
+  isPinned: boolean;
+  pinnedAt: string;
 };
 export type ChainProjectGroup = {
   projectId: string;
@@ -317,6 +319,8 @@ function normalizeChainListItem(c: any): ChainListItem {
     projectId: String(c?.project_id ?? c?.projectId ?? ''),
     projectName: String(c?.project_name ?? c?.projectName ?? ''),
     taskCount: Number(c?.task_count ?? c?.taskCount ?? 0),
+    isPinned: Boolean(c?.is_pinned ?? c?.isPinned ?? false),
+    pinnedAt: String(c?.pinned_at ?? c?.pinnedAt ?? ''),
   };
 }
 function normalizeChainProjectGroup(g: any): ChainProjectGroup {
@@ -382,6 +386,32 @@ export const tasksApi = heimdallApi.injectEndpoints({
         }
       },
       providesTags: (_result, _error, { projectId }) => [{ type: 'Chain' as const, id: `PROJECT_LIST:${projectId}` }],
+    }),
+    listPinnedTaskChains: build.query<{ chains: ChainListItem[] }, void>({
+      queryFn: async () => {
+        try {
+          const raw = await cookieJsonFetch('/task-chains?pinned=1');
+          const data = unwrapData(raw);
+          const arr = Array.isArray(data) ? data : (Array.isArray(raw) ? raw : (raw?.chains || []));
+          return { data: { chains: arr.map(normalizeChainListItem) } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: [{ type: 'Chain' as const, id: 'PINNED_LIST' }],
+    }),
+    fetchPinnedTaskChains: build.query<{ chains: ChainListItem[] }, void>({
+      queryFn: async () => {
+        try {
+          const raw = await cookieJsonFetch('/task-chains?pinned=1');
+          const data = unwrapData(raw);
+          const arr = Array.isArray(data) ? data : (Array.isArray(raw) ? raw : (raw?.chains || []));
+          return { data: { chains: arr.map(normalizeChainListItem) } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: [{ type: 'Chain' as const, id: 'PINNED_LIST' }],
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
     fetchTaskChainDetail: build.query<any, { chainId: string }>({
@@ -512,7 +542,25 @@ export const tasksApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList', { type: 'Chain' as const }],
+      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList', { type: 'Chain' as const, id: 'GROUPED_LIST' }, { type: 'Chain' as const, id: 'PINNED_LIST' }],
+    }),
+    togglePinTaskChain: build.mutation<any, { chainId: string; pinned?: boolean }>({
+      queryFn: async ({ chainId, pinned }) => {
+        try {
+          const body = typeof pinned === 'boolean' ? { pinned } : {};
+          const raw = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/pin`, 'POST', body);
+          const data = unwrapData(raw);
+          return { data: { chain: data } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { chainId }) => [
+        { type: 'Chain' as const, id: chainId },
+        { type: 'Chain' as const, id: 'GROUPED_LIST' },
+        { type: 'Chain' as const, id: 'PINNED_LIST' },
+        { type: 'Chain' as const },
+      ],
     }),
     // Explicit self-heal: promote actionable tasks, set current-tasks, nudge idle
     // agents. Coordinator/owner only (enforced hub-side). Invalidates the chain so
@@ -1008,6 +1056,8 @@ export const {
   useLazyFetchTaskChainProjectPageQuery,
   useListTaskChainsQuery,
   useLazyListTaskChainsQuery,
+  useListPinnedTaskChainsQuery,
+  useFetchPinnedTaskChainsQuery,
   useFetchTaskChainDetailQuery,
   useFetchChainTaskDetailQuery,
   useFetchChainTaskCommentsQuery,
@@ -1015,6 +1065,7 @@ export const {
   useListChainsByCoordinatorQuery,
   useCreateTaskChainMutation,
   useUpdateTaskChainMutation,
+  useTogglePinTaskChainMutation,
   useReconcileTaskChainMutation,
   useUpdateTaskDetailMutation,
   useCancelTaskDetailMutation,
