@@ -188,6 +188,8 @@ bridge_pty_host_spawn_request_delete :: proc(req: Pty_Host_Spawn_Request) {
 	if req.env != nil do delete(req.env)
 	if req.detect != "" do delete(req.detect)
 	if req.display_name != "" do delete(req.display_name)
+	if req.kind != "" do delete(req.kind)
+	if req.tee_path != "" do delete(req.tee_path)
 }
 
 // ---- control-plane ops --------------------------------------------------
@@ -573,6 +575,27 @@ bridge_pty_host_apply_child_exited :: proc(instance: string, code: i32) {
 	fmt.println("bridge pty-host: child exited", instance, "code", code)
 	bridge_runtime_remove_launch(instance)
 	bridge_runtime_set_status(instance, "stopped", "idle")
+
+	// Emit shell_exited WS event for any T4-registered shell session matching this daemon shell_id.
+	if sess, ok := bridge_shell_session_get_by_shell_id(&bridge_shell_session_map, instance); ok {
+		final_status := Bridge_Shell_Session_Status.Exited
+		status_str := "exited"
+		if sess.status == .Killed {
+			final_status = .Killed
+			status_str = "killed"
+		}
+		bridge_shell_session_update_status(&bridge_shell_session_map, sess.session_id, final_status, int(code), true)
+		data_dir := bridge_expand_home(bridge_config.data_dir)
+		if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
+		updated, has := bridge_shell_session_get(&bridge_shell_session_map, sess.session_id)
+		if has {
+			bridge_shell_session_save_spec(data_dir, updated)
+		}
+		bridge_shell_session_delete_spec(data_dir, sess.session_id)
+		event := bridge_shell_exited_event_json(sess.session_id, int(code), true, status_str)
+		bridge_shell_exited_enqueue(event)
+		delete(event)
+	}
 }
 
 // bridge_pty_host_apply_startup_ready maps a StartupReady event: the startup probe

@@ -104,7 +104,14 @@ Pane_Capture_Input :: struct { width, settle_ms, line_limit: int }
 Pane_Capture_Result_Input :: struct { command_id,pane_capture_request_id,conversation_id,message_id,agent_instance_id,output,error_code,message: string, ok,truncated: bool, width,line_count: int }
 Agent_Inbox_Filter :: struct { agent_instance_id: string, unread_only: bool, receiver_only: bool, include_outgoing: bool, include_debug: bool, limit: int, cursor: string }
 Artifact_Input :: struct { kind,name,description,content_type,content,mime,ext,sha256,origin_kind,origin_ref,filename,agent_id,agent_instance_id,chain_id,task_id: string, project_id: domain.Project_ID }
-Template_Input :: struct { name,description,persona,instructions: string }
+// Template_Input carries a template create/update payload. The has_<field> flags
+// distinguish "absent from the PATCH body" from "explicitly set to empty"
+// (REQ-CLI-8) — without them, update_template assigned description/persona/
+// instructions unconditionally, so a PATCH sending only `name` BLANKED the other
+// three and returned 200. Same presence-flag convention as Memory_Update_Input
+// just above, and Update_Task_Input in taskchain_service.
+// create_template ignores the flags and reads the values directly.
+Template_Input :: struct { name,description,persona,instructions: string, has_name,has_description,has_persona,has_instructions: bool }
 
 new_content_service :: proc(content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Content_Service { return Content_Service{content=content, agents=agents, bridges=bridges, projects=projects, taskchains=taskchains, clock=clock, ids=ids} }
 new_content_service_with_runtime :: proc(content: ^iface.Content_Repository, agents: ^iface.Agent_Repository, bridges: ^iface.Bridge_Repository, projects: ^iface.Project_Repository, taskchains: ^iface.Taskchain_Repository, sink: project_service.Bridge_Command_Sink, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Content_Service { return Content_Service{content=content, agents=agents, bridges=bridges, projects=projects, taskchains=taskchains, bridge_command_sink=sink, clock=clock, ids=ids} }
@@ -314,10 +321,19 @@ update_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:strin
 	t,ok2,err2:=iface.content_get_template(s.content,id); if !ok2 do return {},false,err2;
 	if t.is_system do return {},false,domain.domain_error(.Validation_Failed,"built-in templates cannot be edited");
 	if t.owner_user_id!=owner do return {},false,domain.domain_error(.Not_Found,"template not found");
-	if input.name!="" do t.name=input.name;
-	t.description=input.description;
-	t.persona=input.persona;
-	t.instructions=input.instructions;
+	// PATCH semantics (REQ-CLI-8): a field ABSENT from the body is left unchanged;
+	// a field PRESENT and empty is an explicit clear. Previously only `name` was
+	// presence-checked and the other three were assigned unconditionally, so the
+	// obvious partial PATCH silently destroyed them. `name` is the exception to
+	// clearing: it is required, so an explicit empty name is rejected rather than
+	// stored (same shape as has_body in update_memory).
+	if input.has_name {
+		if strings.trim_space(input.name)=="" do return {},false,domain.domain_error(.Validation_Failed,"template name is required")
+		t.name=input.name
+	}
+	if input.has_description do t.description=input.description
+	if input.has_persona do t.persona=input.persona
+	if input.has_instructions do t.instructions=input.instructions
 	t.updated_at=platform.clock_now(s.clock);
 	return iface.content_save_template(s.content,t)
 }

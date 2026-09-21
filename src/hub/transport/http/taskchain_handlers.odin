@@ -117,6 +117,16 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		strings.write_byte(&cb, ']')
 		return respond_list(strings.to_string(cb), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 	}
+	if query_bool(req.query, "pinned", false) || query_value(req.query, "pinned") == "1" {
+		pinned_chains, pinned_err := taskchain_service.list_pinned_chains(h.taskchains, auth_ctx)
+		if pinned_err.code != .None do return respond_error(pinned_err, req.request_id)
+		defer delete(pinned_chains)
+		items := enrich_chain_list_items(h, auth_ctx, pinned_chains, false)
+		defer delete(items)
+		b := strings.builder_make()
+		write_chain_list_items_json(&b, items[:])
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+	}
 	// Default (no ?coordinated_by): the project-grouped task-chains list (TC-API).
 	// Enrich every visible chain with its project (resolved via the coordinator
 	// instance's conversation), then either page ONE project or group them ALL.
@@ -181,6 +191,8 @@ Chain_List_Item :: struct {
 	project_id:                    string,
 	project_name:                  string,
 	task_count:                    int,
+	is_pinned:                     bool,
+	pinned_at:                     string,
 }
 
 // enrich_chain_list_items resolves each chain's project once, memoizing the
@@ -217,6 +229,8 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 			project_id = project_id,
 			project_name = resolve_project_name(h, auth, project_id, &name_by_project),
 			task_count = count,
+			is_pinned = c.is_pinned,
+			pinned_at = c.pinned_at,
 		})
 	}
 	return items
@@ -464,7 +478,9 @@ write_chain_list_item_json :: proc(b: ^strings.Builder, it: Chain_List_Item) {
 	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, it.project_id)
 	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, it.project_name)
 	strings.write_string(b, "\",\"task_count\":"); strings.write_int(b, it.task_count)
-	strings.write_byte(b, '}')
+	strings.write_string(b, ",\"is_pinned\":"); strings.write_string(b, "true" if it.is_pinned else "false")
+	strings.write_string(b, ",\"pinned_at\":\""); write_handler_json_string(b, it.pinned_at)
+	strings.write_string(b, "\"}")
 }
 
 write_chain_list_items_json :: proc(b: ^strings.Builder, items: []Chain_List_Item) {
@@ -516,7 +532,17 @@ patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
-	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), status = json_string(req.body, "status"), coordinator_agent_instance_id = json_string(req.body, "coordinator_agent_instance_id"), has_coordinator = strings.contains(req.body, "\"coordinator_agent_instance_id\"")})
+	has_pinned := strings.contains(req.body, "\"is_pinned\"") || strings.contains(req.body, "\"pinned\"")
+	is_pinned_val := json_bool(req.body, "is_pinned") if strings.contains(req.body, "\"is_pinned\"") else json_bool(req.body, "pinned")
+	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{
+		title = json_string(req.body, "title"),
+		description = json_string(req.body, "description"),
+		status = json_string(req.body, "status"),
+		coordinator_agent_instance_id = json_string(req.body, "coordinator_agent_instance_id"),
+		has_coordinator = strings.contains(req.body, "\"coordinator_agent_instance_id\""),
+		is_pinned = is_pinned_val,
+		has_is_pinned = has_pinned,
+	})
 	if !updated do return respond_error(err, req.request_id)
 	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
 	b := strings.builder_make(); write_chain_json(&b, chain)
@@ -547,6 +573,8 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, "\",\"default_reviewer_refs\":"); strings.write_string(&b, json_or_empty_array(chain.default_reviewer_refs_json))
 	strings.write_string(&b, ",\"created_at\":\""); write_handler_json_string(&b, chain.created_at)
 	strings.write_string(&b, "\",\"updated_at\":\""); write_handler_json_string(&b, chain.updated_at)
+	strings.write_string(&b, "\",\"is_pinned\":"); strings.write_string(&b, "true" if chain.is_pinned else "false")
+	strings.write_string(&b, ",\"pinned_at\":\""); write_handler_json_string(&b, chain.pinned_at)
 	strings.write_string(&b, "\",\"members\":[")
 	for m, i in members {
 		if i > 0 do strings.write_byte(&b, ',')
@@ -605,6 +633,27 @@ complete_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+pin_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := path_part(req.path, 4)
+	has_pinned_field := strings.contains(req.body, "\"pinned\"") || strings.contains(req.body, "\"is_pinned\"")
+	pinned := true
+	if has_pinned_field {
+		pinned = json_bool(req.body, "is_pinned") if strings.contains(req.body, "\"is_pinned\"") else json_bool(req.body, "pinned")
+	} else {
+		cur_chain, cur_ok, cur_err := taskchain_service.get_chain_for_read(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
+		if !cur_ok do return respond_error(cur_err, req.request_id)
+		pinned = !cur_chain.is_pinned
+	}
+	chain, updated, err := taskchain_service.pin_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), pinned)
+	if !updated do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
+	b := strings.builder_make(); write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 list_tasks_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
@@ -643,13 +692,32 @@ get_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+// create_priority_from_body reads an optional "priority" field for a task CREATE.
+// Unlike domain.task_priority_from_string — which coerces anything unrecognised to
+// P2 — an explicitly present but invalid value is REJECTED here (REQ-CLI-2): a
+// create that silently seats "urgent" at p2 is the exact failure this fixes. Absent
+// means absent (has = false) and the service applies the documented P2 default.
+// Scoped to create on purpose; the update/patch path keeps its existing behaviour.
+create_priority_from_body :: proc(body: string) -> (priority: domain.Task_Priority, has: bool, ok: bool, err: domain.Domain_Error) {
+	if !strings.contains(body, "\"priority\"") do return .P2, false, true, {}
+	raw := strings.trim_space(json_string(body, "priority"))
+	switch raw {
+	case "p0", "P0": return .P0, true, true, {}
+	case "p1", "P1": return .P1, true, true, {}
+	case "p2", "P2": return .P2, true, true, {}
+	}
+	return .P2, false, false, domain.domain_error(.Validation_Failed, "priority must be one of p0, p1, p2")
+}
+
 create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
 	deps := json_array_of_strings(req.body, "depends_on")
-	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), depends_on = deps})
+	priority, has_priority, prio_ok, prio_err := create_priority_from_body(req.body)
+	if !prio_ok do return respond_error(prio_err, req.request_id)
+	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps})
 	if !created do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "created")
 	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
@@ -902,7 +970,7 @@ remove_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {
-	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, c.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(c.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, chain_status_http(c.status)); strings.write_string(b, "\",\"kind\":\""); write_handler_json_string(b, c.kind); strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id); strings.write_string(b, "\",\"default_reviewer_refs\":"); strings.write_string(b, json_or_empty_array(c.default_reviewer_refs_json)); strings.write_string(b, ",\"created_at\":\""); write_handler_json_string(b, c.created_at); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, c.updated_at); strings.write_string(b, "\"}")
+	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, c.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(c.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, chain_status_http(c.status)); strings.write_string(b, "\",\"kind\":\""); write_handler_json_string(b, c.kind); strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id); strings.write_string(b, "\",\"default_reviewer_refs\":"); strings.write_string(b, json_or_empty_array(c.default_reviewer_refs_json)); strings.write_string(b, ",\"created_at\":\""); write_handler_json_string(b, c.created_at); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, c.updated_at); strings.write_string(b, "\",\"is_pinned\":"); strings.write_string(b, "true" if c.is_pinned else "false"); strings.write_string(b, ",\"pinned_at\":\""); write_handler_json_string(b, c.pinned_at); strings.write_string(b, "\"}")
 }
 
 write_task_json :: proc(b: ^strings.Builder, t: domain.Task) {

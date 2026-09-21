@@ -18,6 +18,17 @@ Ctl_Transport :: struct {
 	agent_token: string,
 }
 
+// ctl_valid_task_priority gates --priority on task CREATE in both CLI modes.
+// The Hub coerces an unrecognised priority to p2, so an unvalidated flag value
+// would land silently at the default; REQ-CLI-2 requires a usage error instead.
+// Create-only by design: the update path's existing behaviour is unchanged.
+ctl_valid_task_priority :: proc(value: string) -> bool {
+	switch value {
+	case "p0", "p1", "p2": return true
+	}
+	return false
+}
+
 resolve_ctl_transport :: proc(args: []string) -> (Ctl_Transport, bool) {
 	as_override := option_value(args, "--as", "")
 	hub_url := hub_user_mode_url(args)
@@ -128,7 +139,7 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen|pin|unpin>")
 	fmt.println("  coordinated [--agent-id <instance_id>]  list chains an agent coordinates (default: your own instance)")
 }
 
@@ -160,6 +171,10 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 	if !ok do return
 
 	if action == "" || action == "list" {
+		if has_flag(args, "--pinned") {
+			ctl_tasks_request(transport, "GET", "/api/v1/task-chains?pinned=1", "")
+			return
+		}
 		ctl_tasks_request(transport, "GET", "/api/v1/task-chains", "")
 		return
 	}
@@ -275,13 +290,23 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
+	if action == "pin" {
+		ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/pin", safe_path_part(chain_id)), "{\"pinned\":true}")
+		return
+	}
+
+	if action == "unpin" {
+		ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/pin", safe_path_part(chain_id)), "{\"pinned\":false}")
+		return
+	}
+
 	// Coordinator-only recovery: return an accidentally-completed chain to active.
 	if action == "reopen" {
 		ctl_tasks_request(transport, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", "active")))
 		return
 	}
 
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen|pin|unpin>")
 }
 
 ctl_tasks_command :: proc(cmd: []string, args: []string) {
@@ -328,7 +353,15 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		fields := make([dynamic]string)
 		append(&fields, json_kv("title", title))
 		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
-		if prio := option_value(args, "--priority", ""); prio != "" do append(&fields, json_kv("priority", prio))
+		if prio := option_value(args, "--priority", ""); prio != "" {
+			// REQ-CLI-2: this field was already being sent and silently discarded by
+			// the Hub; now that create honours it, a bad value must not slide to p2.
+			if !ctl_valid_task_priority(prio) {
+				fmt.printfln("usage: --priority must be one of p0, p1, p2 (got %q)", prio)
+				return
+			}
+			append(&fields, json_kv("priority", prio))
+		}
 		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" {
 			append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
 		}

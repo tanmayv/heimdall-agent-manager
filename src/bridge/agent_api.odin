@@ -104,6 +104,9 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 		if bridge_agent_params_bool(params, "coordinated_by_me") {
 			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = "/api/v1/task-chains?coordinated_by="}
 		}
+		if bridge_agent_params_bool(params, "pinned") {
+			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = "/api/v1/task-chains?pinned=1"}
+		}
 		if pid := bridge_local_extract_json_string(params, "project_id", ""); strings.trim_space(pid) != "" {
 			return Bridge_Agent_Route{kind = .Raw, http_method = "GET", path = strings.concatenate({"/api/v1/task-chains?project_id=", pid})}
 		}
@@ -125,6 +128,21 @@ bridge_agent_route :: proc(method, params: string) -> Bridge_Agent_Route {
 			return Bridge_Agent_Route{kind = .Raw, http_method = "POST", path = strings.concatenate({"/api/v1/task-chains/", cid, "/reconcile"})}
 		}
 		return Bridge_Agent_Route{kind = .Bad_Request, message = "task-chain reconcile requires a chain id: pass <chain-id> (or --chain <id>)"}
+	case "agent.task_chain.publish":
+		// REQ-CLI-1: draft chains never promote and their tasks cannot be nudged, so a
+		// coordinator agent must be able to publish the chain it built. The hub already
+		// permits an instance token that is the chain coordinator (publish_chain) and
+		// cascades Published to every task; this is purely the missing agent surface.
+		// Needs chain_id — publish has no "your own chain" default hub-side.
+		if cid := bridge_local_extract_json_string(params, "chain_id", ""); strings.trim_space(cid) != "" {
+			return Bridge_Agent_Route{kind = .Raw, http_method = "POST", path = strings.concatenate({"/api/v1/task-chains/", cid, "/publish"})}
+		}
+		return Bridge_Agent_Route{kind = .Bad_Request, message = "task-chain publish requires a chain id: pass <chain-id> (or --chain <id>)"}
+	case "agent.task_chain.pin":
+		if cid := bridge_local_extract_json_string(params, "chain_id", ""); strings.trim_space(cid) != "" {
+			return Bridge_Agent_Route{kind = .Raw, http_method = "POST", path = strings.concatenate({"/api/v1/task-chains/", cid, "/pin"}), send_body = true}
+		}
+		return Bridge_Agent_Route{kind = .Bad_Request, message = "task-chain pin requires a chain id: pass <chain-id> (or --chain <id>)"}
 
 	// ---- task -------------------------------------------------------------
 	case "agent.task.list":
@@ -235,6 +253,7 @@ bridge_agent_method_allowed :: proc(method: string) -> bool {
 	     // task-chain + task
 	     "agent.task_chain.list", "agent.task_chain.show", "agent.task_chain.set_title",
 	     "agent.task_chain.set_description", "agent.task_chain.set_status", "agent.task_chain.reconcile",
+	     "agent.task_chain.publish", "agent.task_chain.pin",
 	     "agent.task.list", "agent.task.show", "agent.task.comments", "agent.task.create",
 	     "agent.task.update", "agent.task.depend", "agent.task.comment", "agent.task.status",
 	     "agent.task.set_current", "agent.task.vote", "agent.task.nudge",

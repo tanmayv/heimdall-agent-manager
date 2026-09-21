@@ -45,7 +45,7 @@ search_resources_sqlite :: proc(ctx: rawptr, query: iface.Search_Query) -> (ifac
 	messages_fts_ready := sqlite_object_exists(impl.conn, "chat_messages_fts") // migration 031 (MSG-1)
 	all_hits := make([dynamic]iface.Search_Hit)
 	defer delete(all_hits)
-	for resource_type in SEARCH_TYPE_ORDER {
+	for resource_type in domain.SEARCH_TYPE_ORDER {
 		if !search_type_enabled(query.types_csv, resource_type) do continue
 		rows: []iface.Search_Hit
 		err: domain.Domain_Error
@@ -253,7 +253,9 @@ write_collapsed :: proc(b: ^strings.Builder, s: string) {
 	}
 }
 
-SEARCH_TYPE_ORDER :: [?]string{"conversation", "message", "agent", "agent_instance", "task-chain", "task", "comment", "project", "artifact", "memory", "skill"}
+// The search-type vocabulary moved to package domain so the service layer can
+// validate against it too (REQ-CLI-5); the repository must not import the
+// service, and the service cannot import this package. One list, shared.
 
 search_type_enabled :: proc(types_csv, resource_type: string) -> bool {
 	trimmed := strings.trim_space(types_csv)
@@ -263,29 +265,9 @@ search_type_enabled :: proc(types_csv, resource_type: string) -> bool {
 	for raw in parts {
 		candidate := strings.trim_space(raw)
 		if candidate == "all" do return true
-		if normalize_search_type(candidate) == resource_type do return true
+		if domain.normalize_search_type(candidate) == resource_type do return true
 	}
 	return false
-}
-
-// normalize_search_type maps accepted `types` aliases to their canonical name.
-// It is additive: every historical spelling still resolves, and new plural /
-// short forms (and comment/skill for the upcoming providers) are accepted too.
-normalize_search_type :: proc(t: string) -> string {
-	switch t {
-	case "conversations": return "conversation"
-	case "agents": return "agent"
-	case "instance", "instances", "agent_instances": return "agent_instance"
-	case "task_chain", "task_chains", "chain", "chains", "taskchain": return "task-chain"
-	case "tasks": return "task"
-	case "projects": return "project"
-	case "artifacts": return "artifact"
-	case "memories": return "memory"
-	case "comments": return "comment"
-	case "skills": return "skill"
-	case "messages", "msg": return "message"
-	}
-	return t
 }
 
 // SCOPE_SQL_ANCHOR is the exact tail shared by every per-type query. The scope

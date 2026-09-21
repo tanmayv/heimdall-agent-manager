@@ -48,6 +48,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
 	case "search":        ctl_agentmode_search(endpoint, token, rest, args); return
 	case "shell-cmd":     ctl_agentmode_shell_cmd(endpoint, token, rest, args); return
+	case "shell":         ctl_agentmode_shell(endpoint, token, rest, args); return
 	}
 	print_agent_help(cmd[idx:])
 }
@@ -59,6 +60,13 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 // programmatically — the human pagination view of ctl_search_command is not
 // used here). The non-agent user-mode path (ctl_search_command) is untouched.
 ctl_agentmode_search :: proc(endpoint, token: string, tokens, args: []string) {
+	// REQ-CLI-4: reject unrecognised flags before searching. Agent mode shares the
+	// validator with user mode (src/ctl/search.odin) so the two accepted surfaces
+	// cannot drift; agent_mode=true swaps --json for --cursor/--since.
+	if bad := search_validate_flags(args, true); bad != "" {
+		search_reject_unknown_flag(bad, true)
+		return
+	}
 	query := pos(tokens, 0)
 	if strings.trim_space(query) == "" {
 		fmt.println(`{"ok":false,"message":"search requires a query: ham-ctl search <query> [--scope csv] [--limit N] [--cursor C] [--task-ids csv] [--chain-ids csv] [--project-ids csv] [--conversation-ids csv] [--not-in-task-ids csv] [--not-in-chain-ids csv] [--not-in-project-ids csv] [--not-in-conversation-ids csv] [--exclude text]"}`)
@@ -238,6 +246,7 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 	case "", "list":
 		fields := make([dynamic]string)
 		if has_flag(args, "--mine") do append(&fields, json_kv_raw("coordinated_by_me", "true"))
+		if has_flag(args, "--pinned") do append(&fields, json_kv_raw("pinned", "true"))
 		if v := option_value(args, "--project", ""); v != "" do append(&fields, json_kv("project_id", v))
 		ctl_agent_call(endpoint, token, "agent.task_chain.list", json_object_from_slice(fields[:]))
 	case "show":
@@ -271,6 +280,20 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
 		ctl_agent_call(endpoint, token, "agent.task_chain.reconcile", json_object(json_kv("chain_id", cid)))
+	case "publish":
+		// Coordinator only (enforced hub-side). Flips the chain Draft -> Published and
+		// cascades Published to its tasks, which is what makes them promotable/nudgeable.
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.publish", json_object(json_kv("chain_id", cid)))
+	case "pin":
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.pin", json_object(json_kv("chain_id", cid), json_kv_raw("pinned", "true")))
+	case "unpin":
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.pin", json_object(json_kv("chain_id", cid), json_kv_raw("pinned", "false")))
 	case:
 		print_agent_help([]string{"task-chain"})
 	}
@@ -306,6 +329,16 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("title", title))
 		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		// REQ-CLI-2: --priority was advertised on create, accepted, and never sent.
+		// Reject a bad value here rather than forwarding it — silently seating an
+		// unrecognised priority at p2 is the defect this fixes, not the fix.
+		if v := option_value(args, "--priority", ""); v != "" {
+			if !ctl_valid_task_priority(v) {
+				fmt.printfln("usage: --priority must be one of p0, p1, p2 (got %q)", v)
+				return
+			}
+			append(&fields, json_kv("priority", v))
+		}
 		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", a))}))
 		// --reviewer accepts a comma-separated list for multiple reviewers.
 		if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
@@ -1148,6 +1181,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "memory": print_help_memory(); return
 	case "cards", "card": print_help_cards(); return
 	case "shell-cmd": print_help_shell_cmd(); return
+	case "shell":     print_help_shell(); return
 	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
 	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
 	}
@@ -1171,6 +1205,7 @@ print_help_overview :: proc() {
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")
 	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
+	fmt.println("  shell       Manage PTY/shell sessions on the Bridge host (start/kill/signal/restart/list/log/capture)")
 	fmt.println("  shell-cmd   Run a shell command on your local Bridge host (exec, read)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")
@@ -1264,12 +1299,17 @@ print_help_task_chain :: proc() {
 	fmt.println("ham-ctl task-chain — your task chains")
 	fmt.println("")
 	fmt.println("VERBS")
-	fmt.println("  list [--mine] [--project <id>]      List chains (--mine = ones you coordinate).")
+	fmt.println("  list [--mine] [--pinned] [--project <id>]   List chains (--mine = ones you coordinate, --pinned = pinned).")
 	fmt.println("  show [<chain-id>]                   Show a chain (defaults to your current chain).")
+	fmt.println("  pin <chain-id>                      Pin a task chain to the top of the sidebar.")
+	fmt.println("  unpin <chain-id>                    Unpin a task chain.")
 	fmt.println("  set-title <title> [--chain <id>]    Rename a chain (coordinator only).")
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
 	fmt.println("                                      (coordinator only; pass \"\" to clear).")
 	fmt.println("  set-status <active|completed> [--chain <id>]    Change chain status (coordinator only).")
+	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only). Cascades")
+	fmt.println("                                      published to its tasks — until then nothing in the")
+	fmt.println("                                      chain promotes or can be nudged.")
 	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
 	fmt.println("                                      actionable tasks, set current-tasks, nudge agents.")
 	fmt.println("                                      Coordinator/owner only. Run after staging tasks/deps.")
@@ -1279,6 +1319,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  ham-ctl task-chain show chain_abc")
 	fmt.println("  ham-ctl task-chain set-title 'Auth hardening' --chain chain_abc")
 	fmt.println("  ham-ctl task-chain set-description 'Harden auth: rotate tokens, add tests.'")
+	fmt.println("  ham-ctl task-chain publish chain_abc")
 }
 
 print_help_task :: proc() {

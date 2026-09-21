@@ -11,6 +11,7 @@ import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
+import shell_session_svc "odin_test:hub/service/shell_session"
 import content_service "odin_test:hub/service/content"
 import device_auth_service "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
@@ -21,7 +22,6 @@ import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
 import card_service "odin_test:hub/service/card"
-import shell_job_service "odin_test:hub/service/shell_job"
 import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
@@ -44,7 +44,7 @@ App_Graph :: struct {
 	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_push: sqlite.Push_Repo_SQLite,
 	sqlite_cards: sqlite.Card_Repo_SQLite,
-	sqlite_shell_jobs: sqlite.Shell_Job_Repo_SQLite,
+	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
 	uow_factory: iface.Unit_Of_Work_Factory,
@@ -73,9 +73,11 @@ App_Graph :: struct {
 	action_handlers: http.Action_Handlers,
 	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
 	cards: card_service.Card_Service,
-	shell_jobs: shell_job_service.Shell_Job_Service,
+	shell_session_repo: iface.Shell_Session_Repository,
+	shell_session_service: shell_session_svc.Shell_Session_Service,
+	shell_session_stream_handlers: http.Shell_Session_Stream_Handlers,
+	shell_session_rest_handlers: http.Shell_Session_Rest_Handlers,
 	card_handlers: http.Card_Handlers,
-	shell_job_handlers: http.Shell_Job_Handlers,
 	action_mutex: sync.Mutex,
 	action_bridge_versions: map[string]int,
 	router: http.Router,
@@ -178,7 +180,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.repos.cards = sqlite.new_card_repository(&graph.sqlite_cards, &graph.db)
-	graph.repos.shell_jobs = sqlite.new_shell_job_repository(&graph.sqlite_shell_jobs, &graph.db)
+	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
@@ -198,7 +200,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content.audit_mode = cfg.audit_mode
 	graph.content.title_nudge_cooldown_seconds = cfg.title_nudge_cooldown_seconds
 	graph.taskchains = taskchain_service.new_taskchain_service_with_runtime(&graph.repos.taskchains, &graph.repos.agents, bridge_command_sink, &graph.clock, &graph.ids)
-	graph.shell_jobs = shell_job_service.new_shell_job_service(&graph.repos.shell_jobs, bridge_command_sink, &graph.clock, &graph.ids, &graph.repos.agents)
 	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.push = push_service.new_push_service(&graph.repos.push_subscriptions, &graph.clock, &graph.ids, push_service.Vapid_Config{
 		public_key = cfg.vapid_public_key,
@@ -232,7 +233,26 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// owner and the grant holds the plaintext for the first poll.
 	device_auth_service.with_token_minter(&graph.device_auth, device_minter, rawptr(graph))
 	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store()}
-	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry}
+	graph.shell_session_service = shell_session_svc.new_shell_session_service(
+		repo                = &graph.shell_session_repo,
+		bridge_command_sink = bridge_command_sink,
+		event_bus           = &graph.event_bus,
+		ids                 = &graph.ids,
+		clock               = &graph.clock,
+	)
+	graph.shell_session_stream_handlers = http.Shell_Session_Stream_Handlers{
+		auth                = &graph.auth,
+		ws_tickets          = &graph.user_handlers.ws_tickets,
+		bridges             = &graph.bridges,
+		shell_sessions      = &graph.shell_session_service,
+		shell_repo          = &graph.shell_session_repo,
+		bridge_command_sink = bridge_command_sink,
+	}
+	graph.shell_session_rest_handlers = http.Shell_Session_Rest_Handlers{
+		auth           = &graph.auth,
+		shell_sessions = &graph.shell_session_service,
+	}
+	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry, shell_sessions = &graph.shell_session_service}
 	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
@@ -270,8 +290,6 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	)
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
-	graph.agent_action_handlers.shell_jobs = &graph.shell_jobs
-	graph.shell_job_handlers = http.Shell_Job_Handlers{auth = &graph.auth, shell_jobs = &graph.shell_jobs}
 	graph.router = http.new_router()
 	register_routes(graph)
 	// Log the Web Push send status ONCE at startup. Never log the private key.
@@ -287,6 +305,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 shutdown_graph :: proc(graph: ^App_Graph) {
 	http.router_free(&graph.router)
 	http.user_ws_ticket_store_free(&graph.user_handlers.ws_tickets)
+	shell_session_svc.shell_session_service_free(&graph.shell_session_service)
 	device_auth_service.grant_store_free(&graph.device_auth_store)
 	delete(graph.action_bridge_versions)
 	sqlite.close(&graph.db)
@@ -349,9 +368,6 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/start", rawptr(&graph.agent_handlers), http.start_agent_instance_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/restart", rawptr(&graph.agent_handlers), http.restart_agent_instance_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-instances/*/stop", rawptr(&graph.agent_handlers), http.stop_agent_instance_handler)
-	// Read-only agent run-dir browser (list + bounded file read), owner-scoped.
-	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/shell-jobs", rawptr(&graph.shell_job_handlers), http.list_instance_shell_jobs_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/shell-jobs/*/output", rawptr(&graph.shell_job_handlers), http.get_instance_shell_job_output_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs", rawptr(&graph.bridge_handlers), http.list_instance_dir_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agent-instances/*/fs/file", rawptr(&graph.bridge_handlers), http.read_instance_file_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/agents", rawptr(&graph.agent_handlers), http.list_agents_handler)
@@ -406,6 +422,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*", rawptr(&graph.taskchain_handlers), http.task_chain_detail_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/publish", rawptr(&graph.taskchain_handlers), http.publish_task_chain_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/complete", rawptr(&graph.taskchain_handlers), http.complete_task_chain_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/pin", rawptr(&graph.taskchain_handlers), http.pin_task_chain_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/reconcile", rawptr(&graph.taskchain_handlers), http.reconcile_task_chain_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks", rawptr(&graph.taskchain_handlers), http.list_tasks_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks", rawptr(&graph.taskchain_handlers), http.create_task_handler)
@@ -518,6 +535,25 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "PATCH", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.patch_card_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.delete_card_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/cards/*/*", rawptr(&graph.card_handlers), http.card_action_handler)
+
+	// Shell session WS stream + HTTP input/resize fallback (T7).
+	http.router_add_upgrade(&graph.router, "GET", "/api/v1/shells/*/stream", rawptr(&graph.shell_session_stream_handlers), http.shell_session_stream_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/shells/*/input", rawptr(&graph.shell_session_stream_handlers), http.shell_session_input_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/shells/*/resize", rawptr(&graph.shell_session_stream_handlers), http.shell_session_resize_handler)
+	// Preview tunnel proxy (T8).
+	http.router_add(&graph.router, "ANY", "/api/v1/preview/**", rawptr(&graph.shell_session_stream_handlers), http.shell_session_preview_proxy_handler)
+	// Shell session REST API (T5).
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_create_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_list_by_bridge_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/projects/*/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_list_by_project_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_list_by_chain_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/shells/*", rawptr(&graph.shell_session_rest_handlers), http.shell_session_get_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/shells/*", rawptr(&graph.shell_session_rest_handlers), http.shell_session_kill_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/shells/*/signal", rawptr(&graph.shell_session_rest_handlers), http.shell_session_signal_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/shells/*/restart", rawptr(&graph.shell_session_rest_handlers), http.shell_session_restart_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/shells/*/log", rawptr(&graph.shell_session_rest_handlers), http.shell_session_log_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/shells/*/capture", rawptr(&graph.shell_session_rest_handlers), http.shell_session_capture_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/shells/*/pane", rawptr(&graph.shell_session_rest_handlers), http.shell_session_pane_handler)
 }
 
 health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {

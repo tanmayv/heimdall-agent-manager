@@ -31,6 +31,8 @@ foreign sqlite3_lib {
 	sqlite3_errmsg :: proc(db: sqlite3) -> cstring ---
 	sqlite3_bind_text :: proc(pStmt: sqlite3_stmt, index: c.int, value: cstring, n: c.int, destructor: rawptr) -> c.int ---
 	sqlite3_bind_double :: proc(pStmt: sqlite3_stmt, index: c.int, value: c.double) -> c.int ---
+	sqlite3_bind_int :: proc(pStmt: sqlite3_stmt, index: c.int, value: c.int) -> c.int ---
+	sqlite3_bind_null :: proc(pStmt: sqlite3_stmt, index: c.int) -> c.int ---
 	sqlite3_column_text :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> cstring ---
 	sqlite3_column_double :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> c.double ---
 	sqlite3_column_bytes :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> c.int ---

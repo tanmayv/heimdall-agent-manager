@@ -521,7 +521,18 @@ multipart_set_artifact_field :: proc(input:^content_service.Artifact_Input,name,
 	case "project_id": input.project_id = domain.Project_ID(value)
 	}
 }
-template_input :: proc(body:string)->content_service.Template_Input{ return content_service.Template_Input{name=json_string(body,"name"),description=json_string(body,"description"),persona=json_string(body,"persona"),instructions=json_string(body,"instructions")} }
+// template_input parses a template create/update body. It uses json_property (not
+// json_string) so the service can tell an ABSENT field from one explicitly set to
+// empty — a PATCH that omits a field must leave it alone rather than blank it
+// (REQ-CLI-8). Same parser the memory PATCH already uses.
+template_input :: proc(body:string)->content_service.Template_Input{
+	input := content_service.Template_Input{}
+	if val, ok := json_property(body,"name"); ok { input.name=val; input.has_name=true }
+	if val, ok := json_property(body,"description"); ok { input.description=val; input.has_description=true }
+	if val, ok := json_property(body,"persona"); ok { input.persona=val; input.has_persona=true }
+	if val, ok := json_property(body,"instructions"); ok { input.instructions=val; input.has_instructions=true }
+	return input
+}
 
 // write_memory_json emits a memory as JSON. Targeting is exposed as string
 // arrays agent_ids/project_ids/template_ids/bridge_ids (empty array = applies to

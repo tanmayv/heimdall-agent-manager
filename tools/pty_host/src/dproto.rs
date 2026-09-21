@@ -49,7 +49,8 @@ use crate::proto::{read_frame, NamedKey, ScreenSnapshot};
 
 /// Everything the daemon needs to (re-)spawn an agent. The daemon stores this so
 /// `Restart` re-spawns the exact same command without the caller re-plumbing it.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+// serde_json::Value is PartialEq but not Eq (f64 NaN), so Eq is not derived here.
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct SpawnRequest {
     /// Agent-instance id (the registry key). Required + unique.
     pub instance: String,
@@ -66,6 +67,14 @@ pub struct SpawnRequest {
     pub cols: u16,
     /// Human-readable agent display name (e.g. "default-agent #20").
     pub display_name: Option<String>,
+    /// Session kind: "agent" | "interactive" | "server" | "command".
+    pub kind: Option<String>,
+    /// Human label for the session.
+    pub label: Option<String>,
+    /// Opaque metadata bag (arbitrary JSON).
+    pub meta: Option<serde_json::Value>,
+    /// Absolute path to tee output file; None = no tee.
+    pub tee_path: Option<String>,
 }
 
 impl SpawnRequest {
@@ -122,6 +131,8 @@ pub struct ShellInfo {
     pub last_activity: u64,
     /// Human-readable display name (e.g. "default-agent #20").
     pub display_name: Option<String>,
+    /// TCP port bound by this shell session; None when unknown (Phase 1: always None).
+    pub bound_port: Option<u16>,
 }
 
 impl ShellInfo {
@@ -151,6 +162,8 @@ pub struct Shell {
     pub last_activity: u64,
     /// Human-readable display name (e.g. "default-agent #20").
     pub display_name: Option<String>,
+    /// TCP port bound by this shell session; None when unknown (Phase 1: always None).
+    pub bound_port: Option<u16>,
 }
 
 impl Shell {
@@ -175,6 +188,7 @@ impl Shell {
             started_at: self.started_at,
             last_activity: self.last_activity,
             display_name: self.display_name.clone(),
+            bound_port: self.bound_port,
         }
     }
 }
@@ -198,6 +212,7 @@ impl From<ShellInfo> for Shell {
             started_at: info.started_at,
             last_activity: info.last_activity,
             display_name: info.display_name,
+            bound_port: info.bound_port,
         }
     }
 }
@@ -215,6 +230,7 @@ impl From<AgentInfo> for ShellInfo {
             started_at: a.started_at,
             last_activity: a.last_activity,
             display_name: a.display_name,
+            bound_port: None,
         }
     }
 }
@@ -248,8 +264,17 @@ impl From<Shell> for AgentInfo {
     }
 }
 
-/// client -> daemon.
+/// Signal request: send a POSIX signal to a shell's process group.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignalRequest {
+    pub shell_id: String,
+    /// POSIX signal number (e.g. 15=SIGTERM, 2=SIGINT, 9=SIGKILL).
+    pub signal: u8,
+}
+
+/// client -> daemon.
+// SpawnRequest contains serde_json::Value (not Eq), so Eq is not derived.
+#[derive(Clone, Debug, PartialEq)]
 pub enum CtlMsg {
     // control plane
     Spawn(SpawnRequest),
@@ -273,6 +298,8 @@ pub enum CtlMsg {
     WatchEvents,
     /// Stop every agent and terminate the daemon process (HOST-1 `stop`).
     Shutdown,
+    /// Send a POSIX signal to a shell's process group (tag 0x39).
+    Signal(SignalRequest),
 }
 
 /// daemon -> client.
@@ -334,6 +361,7 @@ const T_DETACH: u8 = 0x35;
 const T_PING: u8 = 0x36;
 const T_SHUTDOWN: u8 = 0x37;
 const T_WATCH_EVENTS: u8 = 0x38;
+const T_SIGNAL: u8 = 0x39;
 
 const T_SPAWNED: u8 = 0xA0;
 const T_CLOSED: u8 = 0xA1;
@@ -477,6 +505,7 @@ impl CtlMsg {
             CtlMsg::Resize { instance, .. } => Some(instance),
             CtlMsg::Capture { instance } => Some(instance),
             CtlMsg::Detach { instance } => Some(instance),
+            CtlMsg::Signal(req) => Some(&req.shell_id),
             _ => None,
         }
     }
@@ -505,6 +534,12 @@ impl CtlMsg {
                 put_u16(&mut p, req.rows);
                 put_u16(&mut p, req.cols);
                 put_opt_str(&mut p, &req.display_name);
+                // Backward-compat appended fields (absent on old clients → None).
+                put_opt_str(&mut p, &req.kind);
+                put_opt_str(&mut p, &req.label);
+                let meta_str = req.meta.as_ref().map(|v| v.to_string());
+                put_opt_str(&mut p, &meta_str);
+                put_opt_str(&mut p, &req.tee_path);
             }
             CtlMsg::Close { instance } => {
                 p.push(T_CLOSE);
@@ -546,6 +581,11 @@ impl CtlMsg {
             CtlMsg::Ping => p.push(T_PING),
             CtlMsg::WatchEvents => p.push(T_WATCH_EVENTS),
             CtlMsg::Shutdown => p.push(T_SHUTDOWN),
+            CtlMsg::Signal(req) => {
+                p.push(T_SIGNAL);
+                put_str(&mut p, &req.shell_id);
+                p.push(req.signal);
+            }
         }
         frame(&p)
     }
@@ -574,6 +614,12 @@ impl CtlMsg {
                 let rows = get_u16(rest, &mut off)?;
                 let cols = get_u16(rest, &mut off)?;
                 let display_name = get_opt_str(rest, &mut off)?;
+                // Backward-compat: old senders stop here; new fields default to None.
+                let kind = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
+                let label = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
+                let meta_str = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
+                let meta = meta_str.and_then(|s| serde_json::from_str(&s).ok());
+                let tee_path = if off < rest.len() { get_opt_str(rest, &mut off)? } else { None };
                 CtlMsg::Spawn(SpawnRequest {
                     instance,
                     argv,
@@ -583,6 +629,10 @@ impl CtlMsg {
                     rows,
                     cols,
                     display_name,
+                    kind,
+                    label,
+                    meta,
+                    tee_path,
                 })
             }
             T_CLOSE => CtlMsg::Close {
@@ -625,6 +675,11 @@ impl CtlMsg {
             T_PING => CtlMsg::Ping,
             T_WATCH_EVENTS => CtlMsg::WatchEvents,
             T_SHUTDOWN => CtlMsg::Shutdown,
+            T_SIGNAL => {
+                let shell_id = get_str(rest, &mut off)?;
+                let signal = *rest.get(off).ok_or_else(|| bad("signal byte missing"))?;
+                CtlMsg::Signal(SignalRequest { shell_id, signal })
+            }
             _ => return Err(bad("unknown ctl tag")),
         })
     }
@@ -945,6 +1000,10 @@ mod tests {
             rows: 40,
             cols: 120,
             display_name: Some("default-agent #20".into()),
+            kind: Some("agent".into()),
+            label: Some("my-worker".into()),
+            meta: Some(serde_json::json!({"project": "acme", "priority": 1})),
+            tee_path: Some("/var/log/agent_abc.log".into()),
         }));
     }
 
@@ -959,7 +1018,36 @@ mod tests {
             rows: 24,
             cols: 80,
             display_name: None,
+            kind: None,
+            label: None,
+            meta: None,
+            tee_path: None,
         }));
+    }
+
+    #[test]
+    fn spawn_request_backward_compat_old_sender() {
+        // Simulate an old client that sends a SpawnRequest without the new fields.
+        // The decoder must default kind/label/meta/tee_path to None.
+        let old = CtlMsg::Spawn(SpawnRequest {
+            instance: "old".into(),
+            argv: vec!["sh".into()],
+            cwd: None,
+            env: vec![],
+            detect: None,
+            rows: 24,
+            cols: 80,
+            display_name: None,
+            kind: None,
+            label: None,
+            meta: None,
+            tee_path: None,
+        });
+        // Encode with new format (all None → same bytes as old format).
+        let bytes = old.encode();
+        let mut cur = std::io::Cursor::new(bytes);
+        let decoded = read_ctl_msg(&mut cur).unwrap().unwrap();
+        assert_eq!(decoded, old);
     }
 
     #[test]
@@ -970,6 +1058,17 @@ mod tests {
         round_msg(CtlMsg::Ping);
         round_msg(CtlMsg::WatchEvents);
         round_msg(CtlMsg::Shutdown);
+    }
+
+    #[test]
+    fn signal_msg_roundtrips() {
+        round_msg(CtlMsg::Signal(SignalRequest { shell_id: "sh_1".into(), signal: 15 }));
+        round_msg(CtlMsg::Signal(SignalRequest { shell_id: "sh_2".into(), signal: 9 }));
+        round_msg(CtlMsg::Signal(SignalRequest { shell_id: "sh_3".into(), signal: 2 }));
+        // shell_id accessor
+        let msg = CtlMsg::Signal(SignalRequest { shell_id: "target".into(), signal: 15 });
+        assert_eq!(msg.shell_id(), Some("target"));
+        assert_eq!(msg.instance_id(), Some("target"));
     }
 
     #[test]
@@ -1111,6 +1210,7 @@ mod tests {
             started_at: 1_700_000_000,
             last_activity: 1_700_000_010,
             display_name: Some("test shell".into()),
+            bound_port: None,
         };
 
         assert_eq!(shell.shell_id(), "shell_123");

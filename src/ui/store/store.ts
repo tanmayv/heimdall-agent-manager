@@ -16,6 +16,7 @@ import notificationsReducer from './notificationsSlice';
 import agentActivityReducer from './agentActivitySlice';
 import cardsReducer from './cardsSlice';
 import themeReducer from './themeSlice';
+import previewTabsReducer from './previewTabsSlice';
 
 export const priorUserClientStateCleared = createAction('heimdall/priorUserClientStateCleared');
 
@@ -31,6 +32,8 @@ const appReducer = combineReducers({
   notifications: notificationsReducer,
   cards: cardsReducer,
   theme: themeReducer,
+  // T11-UI-5: open Preview Sidebar tabs (server shell sessions being previewed).
+  previewTabs: previewTabsReducer,
   // Ephemeral, non-cache agent activity (push-only bubbles). Reset with the rest
   // of client state on user switch via the priorUserClientStateCleared handling
   // in rootReducer below.
