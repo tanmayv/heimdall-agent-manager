@@ -20,7 +20,7 @@ Conventions used below:
   `./.heimdall/bin/ham-ctl --help` lists all groups.
 
 Groups: `bridge`, `agents`, `task-chain`, `task`, `chat`, `memory`, `artifact`,
-`shell-cmd`, `context`, `start-success`.
+`shell`, `shell-cmd`, `context`, `start-success`.
 
 ---
 
@@ -96,6 +96,74 @@ the reviewer's job is `--result lgtm|ngtm`; completion happens on its own.
   agent-to-agent.
 - `chat set-title <title>` — rename THIS conversation (the chat thread shown in the UI).
   Distinct from `task-chain set-title`, which renames the chain board.
+
+## shell — long-lived PTY/shell sessions on the Bridge host
+Distinct from `shell-cmd`: `shell-cmd` runs one command and returns its output; `shell`
+creates a NAMED, durable session (a process that keeps running) you can later signal,
+log, or reach over HTTP. Authenticates with your agent token, same as `shell-cmd`.
+- `shell start --bridge <id> [--kind interactive|server|command] [--cmd <cmd>]
+  [--cwd <dir>] [--label <lbl>] [--port <n>] [--project <id>] [--chain <id>]` — launch a
+  session. Returns `{session_id, status, pid}`.
+  - `--kind server` + `--port <n>` declares the port the process binds. That pair is what
+    makes the session reachable over HTTP (see below); a server session started without
+    `--port` can never be proxied to.
+- `shell list --bridge <id> | --chain <id> [--project <id>] [--status <s>]` — one of
+  `--bridge` or `--chain` is REQUIRED. `--project` alone fails with
+  `chain_id query parameter is required`. Columns: session_id, kind, label, status, pid,
+  server_port, uptime.
+- `shell log <session_id> [--offset N] [--limit N] [--grep <pattern>]` — returns
+  `{lines, truncated, total_lines}`. Same paging shape as `shell-cmd read`.
+- `shell capture <session_id>` — snapshot of the current terminal screen.
+- `shell signal <session_id> --signal <int>` — send a POSIX signal (e.g. 2 = SIGINT).
+- `shell restart <session_id>` — stop then start; returns `{session_id, pid, status}`.
+- `shell kill <session_id>` — terminate the session.
+
+### Sending an HTTP request to a server session, via the Bridge
+A `--kind server --port N` session is reachable from this host through the Bridge's
+local endpoint — the same endpoint `ham-ctl` itself talks to. No inbound port is opened
+and no user token or browser session is involved:
+
+```
+http://127.0.0.1:<local_endpoint_port>/proxy/<session_id>/<path>
+```
+
+The Bridge relays over the WebSocket it already holds to the Hub; the Hub splices it to
+the Bridge that owns `<session_id>`, and that Bridge dials `127.0.0.1:<declared port>`.
+Method, path, query string and body are all forwarded.
+
+Find the local endpoint port (TCP fallback; default `49324`) with
+`bridge list --scope configured` -> `{"local_endpoint_port": 49324}`. The unix socket
+path is in `$HEIMDALL_BRIDGE_ENDPOINT` (`unix:/path/to/bridge.sock`).
+
+```bash
+# start a server session
+ham-ctl shell start --bridge brg_abc --kind server --port 8000 \
+  --cwd /srv/site --cmd 'python3 -m http.server 8000 --bind 127.0.0.1'
+# -> {"session_id":"sh_123","status":"running","pid":...}
+
+# reach it over TCP
+curl http://127.0.0.1:49324/proxy/sh_123/index.html
+
+# or over the unix socket ham-ctl already uses
+curl --unix-socket "${HEIMDALL_BRIDGE_ENDPOINT#unix:}" \
+  http://localhost/proxy/sh_123/index.html
+```
+
+The target must be `kind=server`, `status=running`, have a bound port, and be owned by
+you. Refusals come back as JSON `{"error":"<reason>"}`:
+
+| status | reason | meaning |
+| --- | --- | --- |
+| 404 | `session_not_found` | no such session, or it is not yours |
+| 409 | `not_a_server_session` | target is interactive/command |
+| 409 | `session_not_running` | session has exited |
+| 409 | `no_server_port` | started without `--port` |
+| 403 | `cross_owner` | belongs to another user |
+| 503 | `unavailable` | Bridge cannot reach the Hub |
+
+Any process on this host that can reach the local endpoint can use this path and acts
+with the Bridge owner's authority; it is disabled by `--no-local-proxy` or
+`[bridge] local_proxy_enabled=false`.
 
 ## shell-cmd — run a shell command on your local Bridge host
 - `shell-cmd exec --cmd <command> [--cwd <dir>]` — run a shell command locally on the
