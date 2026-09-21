@@ -17,7 +17,7 @@ vcs_fig_name :: proc() -> string {
 }
 
 // vcs_fig_actions declares actions supported by Fig.
-vcs_fig_actions := [5]string{"diff", "log", "commit_diff", "revert", "workspaces"}
+vcs_fig_actions := [8]string{"diff", "log", "commit_diff", "revert", "workspaces", "stage", "unstage", "amend"}
 
 // vcs_fig_capabilities indicates Fig/Hg features: no index/staging area.
 vcs_fig_capabilities :: proc(path: string) -> VCS_Capabilities {
@@ -27,8 +27,25 @@ vcs_fig_capabilities :: proc(path: string) -> VCS_Capabilities {
 		supports_staging  = false,
 		staging_model     = "none",
 		commit_model      = "revision",
+		supports_amend    = true,
 		supported_actions = vcs_fig_actions[:],
 	}
+}
+
+// vcs_fig_stage_file tracks an untracked file via `hg add <file>`.
+vcs_fig_stage_file :: proc(path, file: string) -> (ok: bool, msg: string) {
+	if strings.trim_space(file) == "" do return false, "missing_file"
+	_, ok_run := vcs_run([]string{"hg", "--cwd", path, "add", file})
+	if !ok_run do return false, "stage_failed"
+	return true, ""
+}
+
+// vcs_fig_unstage_file reverts an added file to untracked via `hg forget <file>`.
+vcs_fig_unstage_file :: proc(path, file: string) -> (ok: bool, msg: string) {
+	if strings.trim_space(file) == "" do return false, "missing_file"
+	_, ok_run := vcs_run([]string{"hg", "--cwd", path, "forget", file})
+	if !ok_run do return false, "unstage_failed"
+	return true, ""
 }
 
 // vcs_fig_revert_file reverts changes to a tracked file or deletes an untracked file.
@@ -59,8 +76,8 @@ vcs_fig_provider :: proc() -> VCS_Provider {
 		changed_files     = vcs_fig_changed_files,
 		diff_file         = vcs_fig_diff_file,
 		capabilities      = vcs_fig_capabilities,
-		stage_file        = nil,
-		unstage_file      = nil,
+		stage_file        = vcs_fig_stage_file,
+		unstage_file      = vcs_fig_unstage_file,
 		revert_file       = vcs_fig_revert_file,
 		save_file         = vcs_write_file_impl,
 		log               = vcs_fig_log,
@@ -376,10 +393,16 @@ vcs_fig_log :: proc(path, cursor: string, limit: int) -> ([]VCS_Log_Entry, strin
 	return page, next_cursor, has_more, true
 }
 
-// vcs_fig_commit commits changes with the supplied message.
-vcs_fig_commit :: proc(path, message: string) -> (ok: bool) {
+// vcs_fig_commit commits changes with the supplied message (and optional amend).
+vcs_fig_commit :: proc(path, message: string, amend: bool = false) -> (ok: bool) {
 	if strings.trim_space(message) == "" do return false
-	_, rok := vcs_run([]string{"hg", "--cwd", path, "commit", "-m", message})
+	cmd := make([dynamic]string, context.temp_allocator)
+	append(&cmd, "hg", "--cwd", path, "commit")
+	if amend {
+		append(&cmd, "--amend")
+	}
+	append(&cmd, "-m", message)
+	_, rok := vcs_run(cmd[:])
 	return rok
 }
 

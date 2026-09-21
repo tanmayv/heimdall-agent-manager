@@ -33,10 +33,13 @@ test_vcs_fig_provider_and_capabilities :: proc(t: ^testing.T) {
 	testing.expect(t, p.changed_files != nil, "changed_files proc present")
 	testing.expect(t, p.diff_file != nil, "diff_file proc present")
 	testing.expect(t, p.capabilities != nil, "capabilities proc present")
+	testing.expect(t, p.stage_file != nil, "stage_file proc present")
+	testing.expect(t, p.unstage_file != nil, "unstage_file proc present")
 
 	caps := p.capabilities("/dummy/path")
 	testing.expect_value(t, caps.provider, "fig")
 	testing.expect(t, !caps.supports_staging, "fig supports_staging must be false")
+	testing.expect(t, caps.supports_amend, "fig supports_amend must be true")
 }
 
 @(test)
@@ -288,4 +291,19 @@ test_vcs_fig_live_google3_citc_workspace :: proc(t: ^testing.T) {
 	}
 	delete(ws_list)
 	testing.expect(t, found_current, "teloneum-processor marked as is_current")
+}
+
+@(test)
+test_vcs_fig_stage_unstage_and_amend :: proc(t: ^testing.T) {
+	p := vcs_fig_provider()
+	s_ok, s_err := p.stage_file("/dummy", "")
+	testing.expect(t, !s_ok, "empty file stage fails")
+	testing.expect_value(t, s_err, "missing_file")
+
+	u_ok, u_err := p.unstage_file("/dummy", "")
+	testing.expect(t, !u_ok, "empty file unstage fails")
+	testing.expect_value(t, u_err, "missing_file")
+
+	c_ok := p.commit("/dummy", "", false)
+	testing.expect(t, !c_ok, "empty commit message fails")
 }
