@@ -6,7 +6,6 @@ package http
 import base64 "core:encoding/base64"
 import "core:fmt"
 import "core:net"
-import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:time"
@@ -178,51 +177,64 @@ shell_session_resize_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success("{\"ok\":true}", req.request_id, auth_ctx_server_time(req))
 }
 
+// Idle timeout for the preview streaming relay: if no bytes arrive from the upstream
+// server for this duration the tunnel is torn down.  A response can be arbitrarily long
+// or slow; only a complete absence of activity triggers this.
+PREVIEW_IDLE_TIMEOUT :: 120 * time.Second
+
 // ANY /api/v1/preview/{session_id}/**  — preview tunnel proxy; REQ-SH-CONTRACT §6.
-shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request) -> Response {
+// Registered as an upgrade route so the handler owns the raw TCP socket and can relay
+// bytes to the client as they arrive rather than buffering the full response.
+shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socket) {
 	h := (^Shell_Session_Stream_Handlers)(ctx)
 
-	// Standard session auth.
+	// Standard session auth. (unchanged)
 	auth_ctx, auth_ok, auth_resp := require_auth(h.auth, req)
-	if !auth_ok do return auth_resp
+	if !auth_ok { write_upgrade_error(client, auth_resp); return }
 
 	session_id := path_part(req.path, 4)
 	if session_id == "" {
-		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
+		write_upgrade_error(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
+		return
 	}
 
-	// Resolve session: must be kind=server, running, server_port>0.
+	// Resolve session: must be kind=server, running, server_port>0. (unchanged)
 	session, found, _ := iface.shell_session_get(h.shell_repo, string(auth_ctx.user_id), session_id)
 	if !found {
-		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
+		write_upgrade_error(client, respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id))
+		return
 	}
 	if session.owner_user_id != string(auth_ctx.user_id) {
-		return Response{status = 403, content_type = "application/json", body = "{\"error\":\"session is owned by another user\"}"}
+		write_upgrade_error(client, Response{status = 403, content_type = "application/json", body = "{\"error\":\"session is owned by another user\"}"})
+		return
 	}
 	if session.kind != "server" {
-		return Response{status = 409, content_type = "application/json", body = "{\"error\":\"session is not a server session\"}"}
+		write_upgrade_error(client, Response{status = 409, content_type = "application/json", body = "{\"error\":\"session is not a server session\"}"})
+		return
 	}
 	if session.status != "running" {
-		return Response{status = 409, content_type = "application/json", body = "{\"error\":\"session is not running\"}"}
+		write_upgrade_error(client, Response{status = 409, content_type = "application/json", body = "{\"error\":\"session is not running\"}"})
+		return
 	}
 	if session.server_port <= 0 {
-		return Response{status = 409, content_type = "application/json", body = "{\"error\":\"session has no server port\"}"}
+		write_upgrade_error(client, Response{status = 409, content_type = "application/json", body = "{\"error\":\"session has no server port\"}"})
+		return
 	}
 
-	// Allocate stream_id.
+	// Allocate stream_id. (unchanged)
 	stream_id := fmt.tprintf("st_%x", time.to_unix_nanoseconds(time.now()))
 
-	// Register tunnel stream BEFORE sending tunnel_open to bridge.
+	// Register tunnel stream BEFORE sending tunnel_open to bridge. (unchanged)
 	stream := shell_session_svc.shell_session_tunnel_register(h.shell_sessions, stream_id)
 	defer shell_session_svc.shell_session_tunnel_unregister(h.shell_sessions, stream_id)
 
-	// Compute forwarded path (strip /api/v1/preview/{session_id}).
+	// Compute forwarded path (strip /api/v1/preview/{session_id}). (unchanged)
 	session_prefix := strings.concatenate({"/api/v1/preview/", session_id})
 	defer delete(session_prefix)
 	forwarded_path := req.path[len(session_prefix):]
 	if forwarded_path == "" do forwarded_path = "/"
 
-	// Send tunnel_open to bridge (fire-and-forget).
+	// Send tunnel_open to bridge (fire-and-forget). (unchanged)
 	open_json := _preview_tunnel_open_json(stream_id, session_id, req.remote_addr)
 	defer delete(open_json)
 	project_service.bridge_command_send_runtime(
@@ -230,7 +242,7 @@ shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request) -> Respon
 		project_service.Runtime_Command{bridge_id = session.bridge_id, body_json = open_json},
 	)
 
-	// Build and send raw HTTP request as tunnel_data frames (≤48KB base64 chunks).
+	// Build and send raw HTTP request as tunnel_data frames (≤48KB base64 chunks). (unchanged)
 	raw_req := _preview_build_http_request(req.method, forwarded_path, req.query, req.headers, req.body, session.server_port)
 	defer delete(raw_req)
 	raw_bytes := transmute([]byte)raw_req
@@ -255,45 +267,65 @@ shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request) -> Respon
 		if is_last do break
 	}
 
-	// Poll for response (bridge sends tunnel_data back, then tunnel_close).
-	TIMEOUT_NS :: i64(30 * 1_000_000_000)
-	deadline := time.to_unix_nanoseconds(time.now()) + TIMEOUT_NS
+	// Streaming relay: forward upstream bytes to client as they arrive.
+	// cond_wait_with_timeout blocks efficiently until tunnel_deliver/close_stream
+	// signals stream.cond; no sleep-poll and no full-response buffer.
 	for {
-		if time.to_unix_nanoseconds(time.now()) >= deadline {
-			close_json := _preview_tunnel_close_json(stream_id, "timeout")
+		sync.mutex_lock(&stream.mu)
+		for len(stream.chunks) == 0 && !stream.closed {
+			signaled := sync.cond_wait_with_timeout(&stream.cond, &stream.mu, PREVIEW_IDLE_TIMEOUT)
+			if !signaled && len(stream.chunks) == 0 && !stream.closed {
+				// Re-checked predicate after timeout: truly idle (no bytes arrived at the
+				// same instant the timer fired).  Tear the tunnel down.
+				sync.mutex_unlock(&stream.mu)
+				idle_close := _preview_tunnel_close_json(stream_id, "idle_timeout")
+				project_service.bridge_command_send_runtime(
+					h.bridge_command_sink,
+					project_service.Runtime_Command{bridge_id = session.bridge_id, body_json = idle_close},
+				)
+				delete(idle_close)
+				return
+			}
+		}
+		// Drain available chunks under the lock, then release before writing.
+		// Ownership transfers to to_write; unregister's free loop is a no-op for these.
+		to_write := make([][]byte, len(stream.chunks))
+		copy(to_write, stream.chunks[:])
+		clear(&stream.chunks)
+		done := stream.closed
+		sync.mutex_unlock(&stream.mu)
+
+		// Relay each chunk verbatim; loop until fully written (partial-write guard).
+		write_ok := true
+		for chunk in to_write {
+			if write_ok {
+				write_ok = _preview_write_all(client, chunk)
+			}
+			delete(chunk)
+		}
+		delete(to_write)
+
+		if !write_ok {
+			// Client disconnected mid-response: close the bridge-side tunnel.
+			disc_close := _preview_tunnel_close_json(stream_id, "client_disconnect")
 			project_service.bridge_command_send_runtime(
 				h.bridge_command_sink,
-				project_service.Runtime_Command{bridge_id = session.bridge_id, body_json = close_json},
+				project_service.Runtime_Command{bridge_id = session.bridge_id, body_json = disc_close},
 			)
-			delete(close_json)
-			return Response{status = 504, content_type = "application/json", body = "{\"error\":\"preview tunnel timeout\"}"}
+			delete(disc_close)
+			return
 		}
-		sync.mutex_lock(&stream.mu)
-		is_closed := stream.closed
-		sync.mutex_unlock(&stream.mu)
-		if is_closed do break
-		time.sleep(10 * time.Millisecond)
+
+		if done do break
 	}
 
-	// Reassemble response bytes from all delivered chunks.
-	sync.mutex_lock(&stream.mu)
-	resp_bytes := make([dynamic]byte)
-	for chunk in stream.chunks do append(&resp_bytes, ..chunk)
-	sync.mutex_unlock(&stream.mu)
-	defer delete(resp_bytes)
-
-	// Send tunnel_close to bridge to signal we are done.
+	// Normal completion: signal the bridge that we are done reading.
 	close_json := _preview_tunnel_close_json(stream_id, "done")
 	project_service.bridge_command_send_runtime(
 		h.bridge_command_sink,
 		project_service.Runtime_Command{bridge_id = session.bridge_id, body_json = close_json},
 	)
 	delete(close_json)
-
-	if len(resp_bytes) == 0 {
-		return Response{status = 502, content_type = "application/json", body = "{\"error\":\"empty response from tunnel\"}"}
-	}
-	return _preview_parse_http_response(string(resp_bytes[:]))
 }
 
 // --- preview tunnel helpers ---
@@ -363,42 +395,14 @@ _preview_build_http_request :: proc(method, fwd_path, query: string, headers: []
 	return strings.to_string(b)
 }
 
-_preview_parse_http_response :: proc(raw: string) -> Response {
-	header_end := strings.index(raw, "\r\n\r\n")
-	status_code := 200
-	content_type := strings.clone("application/octet-stream")
-	body_raw := raw
-
-	if header_end >= 0 {
-		header_section := raw[:header_end]
-		body_raw = raw[header_end + 4:]
-
-		// Parse status line: "HTTP/1.1 200 OK"
-		line_end := strings.index(header_section, "\r\n")
-		status_line := header_section[:line_end if line_end >= 0 else len(header_section)]
-		parts := strings.split(status_line, " ")
-		defer delete(parts)
-		if len(parts) >= 2 {
-			if code, ok := strconv.parse_int(parts[1]); ok do status_code = code
-		}
-
-		// Find Content-Type header.
-		rest_hdr := header_section
-		if line_end >= 0 do rest_hdr = header_section[line_end + 2:]
-		hdr_lines := strings.split(rest_hdr, "\r\n")
-		defer delete(hdr_lines)
-		for line in hdr_lines {
-			colon := strings.index_byte(line, ':')
-			if colon < 0 do continue
-			name_lower := strings.to_lower(line[:colon])
-			defer delete(name_lower)
-			if name_lower == "content-type" {
-				delete(content_type)
-				content_type = strings.clone(strings.trim_space(line[colon + 1:]))
-				break
-			}
-		}
+// _preview_write_all writes all of data to client, looping on short writes.
+// Returns false if the client socket is gone.
+_preview_write_all :: proc(client: net.TCP_Socket, data: []byte) -> bool {
+	remaining := data
+	for len(remaining) > 0 {
+		n, err := net.send_tcp(client, remaining)
+		if err != nil || n <= 0 do return false
+		remaining = remaining[n:]
 	}
-
-	return Response{status = status_code, content_type = content_type, body = strings.clone(body_raw)}
+	return true
 }

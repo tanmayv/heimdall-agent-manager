@@ -18,10 +18,11 @@ import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
 import project_service "odin_test:hub/service/project"
 
-// Preview_Tunnel_Stream is a in-flight hub-side tunnel stream. The proxy handler
-// polls it until closed; the bridge WS handler appends chunks via deliver.
+// Preview_Tunnel_Stream is an in-flight hub-side tunnel stream.
+// Chunks are signalled via cond as they arrive; the proxy handler wakes and relays them.
 Preview_Tunnel_Stream :: struct {
 	mu:     sync.Mutex,
+	cond:   sync.Cond,
 	chunks: [dynamic][]byte,
 	closed: bool,
 }
@@ -574,6 +575,7 @@ shell_session_tunnel_deliver :: proc(svc: ^Shell_Session_Service, stream_id: str
 		sync.mutex_lock(&stream.mu)
 		if !stream.closed {
 			append(&stream.chunks, chunk)
+			sync.cond_signal(&stream.cond)
 		} else {
 			delete(chunk)
 		}
@@ -591,6 +593,7 @@ shell_session_tunnel_close_stream :: proc(svc: ^Shell_Session_Service, stream_id
 	if ok {
 		sync.mutex_lock(&stream.mu)
 		stream.closed = true
+		sync.cond_signal(&stream.cond)
 		sync.mutex_unlock(&stream.mu)
 	}
 	sync.mutex_unlock(&svc.tunnel_mu)
