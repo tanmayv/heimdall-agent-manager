@@ -84,6 +84,8 @@ function getIframeRelativePath(win: Window, sessionId: string): string {
   }
 }
 
+const MAX_NAV_STACK = 50;
+
 function PreviewFrame({ tab, hidden }: { tab: PreviewTab; hidden: boolean }) {
   const dispatch = useDispatch();
   // Read-only: the watcher above owns the polling for this session, and this
@@ -107,6 +109,19 @@ function PreviewFrame({ tab, hidden }: { tab: PreviewTab; hidden: boolean }) {
   // reopened at a remembered path, say).
   useEffect(() => { setDraft(tab.currentPath); }, [tab.currentPath]);
 
+  // Terminate active network connections, audio/video playback, and worker threads
+  // in the embedded document when the frame is unmounted.
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    return () => {
+      if (iframe) {
+        try {
+          iframe.src = 'about:blank';
+        } catch { /* ignore */ }
+      }
+    };
+  }, []);
+
   // Sync URL bar from iframe navigation (load, hash changes, and popstate).
   // Works because the preview URL (/api/v1/preview/…) is same-origin with the hub.
   useEffect(() => {
@@ -115,18 +130,34 @@ function PreviewFrame({ tab, hidden }: { tab: PreviewTab; hidden: boolean }) {
     navStackRef.current = [];
     setCanGoBack(false);
 
+    let attachedWin: Window | null = null;
+
+    function detachInnerWindow() {
+      if (!attachedWin) return;
+      try {
+        attachedWin.removeEventListener('hashchange', syncFromIframe);
+        attachedWin.removeEventListener('popstate', syncFromIframe);
+      } catch { /* cross-origin / destroyed */ }
+      attachedWin = null;
+    }
+
     function syncFromIframe() {
       const win = iframeRef.current?.contentWindow;
       if (!win) return;
       try {
         const path = getIframeRelativePath(win, tab.sessionId);
         setDraft(path);
-        navStackRef.current = [...navStackRef.current, path];
+        const currentStack = navStackRef.current;
+        if (currentStack.length === 0 || currentStack[currentStack.length - 1] !== path) {
+          const next = [...currentStack, path];
+          navStackRef.current = next.length > MAX_NAV_STACK ? next.slice(next.length - MAX_NAV_STACK) : next;
+        }
         setCanGoBack(navStackRef.current.length > 1);
       } catch { /* cross-origin — nothing to do */ }
     }
 
     function onLoad() {
+      detachInnerWindow();
       syncFromIframe();
       // Re-attach inner-window events after each full page load (they're lost on
       // document replace). SPA hash/popstate navigation won't fire a frame load,
@@ -136,11 +167,15 @@ function PreviewFrame({ tab, hidden }: { tab: PreviewTab; hidden: boolean }) {
         if (!win) return;
         win.addEventListener('hashchange', syncFromIframe);
         win.addEventListener('popstate', syncFromIframe);
+        attachedWin = win;
       } catch { /* cross-origin */ }
     }
 
     iframe.addEventListener('load', onLoad);
-    return () => { iframe.removeEventListener('load', onLoad); };
+    return () => {
+      iframe.removeEventListener('load', onLoad);
+      detachInnerWindow();
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey, tab.sessionId]);
 
@@ -346,6 +381,7 @@ export function PreviewSidebar() {
     return () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = '';
     };
   }, []);
 

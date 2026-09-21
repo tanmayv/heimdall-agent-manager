@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import { useKillShellMutation, useListShellsQuery } from '../../api/endpoints/shells';
 import type { ShellSession, ShellSessionKind, ShellSessionStatus } from '../../api/endpoints/shells';
@@ -171,6 +171,15 @@ function ShellRowMenu({
   const [copied, setCopied] = useState<CopyOutcome>(null);
   const [killError, setKillError] = useState('');
   const [portDialogOpen, setPortDialogOpen] = useState(false);
+  const copyTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== undefined) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const canCopy = canPreview(session);
   const terminal = isTerminalStatus(session);
@@ -184,7 +193,10 @@ function ShellRowMenu({
       if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
       await navigator.clipboard.writeText(url);
       setCopied({ ok: true, url });
-      window.setTimeout(() => setCopied((c) => (c?.ok ? null : c)), 2000);
+      if (copyTimerRef.current !== undefined) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => setCopied((c) => (c?.ok ? null : c)), 2000);
     } catch {
       // A failure stays on screen until the next attempt: it carries the URL the user
       // now has to copy manually, so auto-dismissing it would lose the only copy.
