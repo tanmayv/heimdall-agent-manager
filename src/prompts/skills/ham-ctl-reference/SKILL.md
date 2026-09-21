@@ -1,6 +1,6 @@
 ---
 name: ham-ctl-reference
-description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, chat, memory, artifact, context, start-success) with exact verbs, flags, and valid values. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
+description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, chat, memory, artifact, shell, shell-cmd, context, start-success) with exact verbs, flags, and valid values. Also covers shell sessions as a way to put a running process in front of the user — they can watch its stdout live and, if it serves HTTP on a declared port, open its UI as a preview in Heimdall — no inbound port on either machine, and it works when the Hub is on a different host. Includes how two services in separate sessions call each other through the Hub. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
 ---
 
 # ham-ctl command reference
@@ -175,6 +175,70 @@ Refusals come back as JSON `{"error":"<reason>"}`:
 Any process on this host that can reach the local endpoint can use this path and acts
 with the Bridge owner's authority; it is disabled by `--no-local-proxy` or
 `[bridge] local_proxy_enabled=false`.
+
+### Showing a running process to the user
+A session serves two user-facing surfaces at once, and both are live:
+
+- **stdout** — any session, no port needed. The user sees it in the session pane; you
+  read the same stream with `shell log <session_id>`.
+- **a preview** — any session with a declared port. The Hub serves it to the user's
+  browser at `<hub-origin>/api/v1/preview/<session_id>/`, tunnelled to the Bridge that
+  owns the session. Nothing is exposed: no inbound port is opened on the Bridge host or
+  the Hub, and it works with the Hub on a different machine.
+
+So `shell start --port N` is the way to hand someone a dev server, a report, a
+dashboard, or any HTTP UI running on a Bridge host they cannot reach directly.
+
+### Two sessions calling each other through the Hub
+Every preview lives under the same parent path, so a page in one session reaches a
+service in another with a **relative** URL — no host, no port, no Hub name in the page:
+
+```js
+// page served at <hub>/api/v1/preview/<FE_SESSION>/
+const api = (p) => new URL(`../${BACKEND_SESSION}/${p}`, location.href).toString();
+//   -> <hub>/api/v1/preview/<BACKEND_SESSION>/<p>
+```
+
+Both sessions are then same-origin with the Hub and with each other, so this needs no
+CORS headers and triggers no preflight. The same relative form also resolves correctly
+under the Bridge-local `/proxy/<session_id>/` path above, because that path has the same
+`<prefix>/<session_id>/` shape — which means you can verify a browser flow server-side
+with `curl` before anyone opens it.
+
+Verified end to end: `POST` crosses the tunnel with method and body intact, responses
+carry real server state across calls, and non-2xx statuses propagate unchanged (a 404
+from the target arrives as a 404, not as a tunnel error).
+
+**Limitation — no service discovery.** A session id does not exist until
+`shell start` returns, and it is *not* injected into the process environment. There is no
+name resolution between sessions. Start the callee first and pass its id to the caller
+(env var, config file, or generated markup); or start the caller, then bind the port
+later with `set-port`. Two services that must reference each other need one of them to
+learn the other's id after the fact.
+
+### Limitations when a session is previewed in a browser
+The Hub strips `/api/v1/preview/<session_id>` before forwarding and does **not** rewrite
+HTML. Your process therefore sees ordinary root-relative paths, while the browser sees
+the prefix. That asymmetry is behind every problem below.
+
+- **Absolute URLs break.** A page emitting `/assets/app.js` makes the browser resolve it
+  against the Hub root, not your session — the preview renders blank. Emit
+  **relative** URLs (`./assets/app.js`) and it works at any prefix, unchanged.
+- **Emitting the prefix instead is not enough on its own.** Telling a dev server its
+  public base is `/api/v1/preview/<id>/` fixes the HTML, but that server will then `404`
+  the stripped paths the Hub forwards. Satisfying both ends needs a small reverse proxy
+  on the declared port that re-adds the prefix before the dev server sees it (and relays
+  `Upgrade`, or HMR dies).
+- **Path-routed SPAs match no route.** The app reads `location.pathname` and gets
+  `/api/v1/preview/<id>/`. Hash routing avoids this — but check the no-hash fallback:
+  Heimdall's own UI falls back to the real pathname when the hash is empty
+  (`src/ui/utils/appLocation.ts`), and the preview URL carries no hash, so it must be
+  seeded (`location.replace(location.pathname + '#/')`) before app code runs.
+- **A previewed page is same-origin with the Hub.** Its own absolute `/api/v1/...`
+  requests go to the **Hub**, authenticated as the viewing user — not to your session,
+  and not through any proxy your dev server configures, because those requests never
+  reach your dev server at all. Use the relative `../<session_id>/` form above to address
+  a session deliberately.
 
 ## shell-cmd — run a shell command on your local Bridge host
 - `shell-cmd exec --cmd <command> [--cwd <dir>]` — run a shell command locally on the
