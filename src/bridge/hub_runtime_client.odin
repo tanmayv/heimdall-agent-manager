@@ -2069,21 +2069,13 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		spawn_cmd_owned = true
 	}
 
-	// Build argv: wrap cmd in sh -c. Server sessions skip setsid so the pty-host
-	// tracks the correct PID: setsid forks when already a session leader (PTY spawn
-	// calls setsid() internally), making the direct child exit immediately while the
-	// actual server runs under a grandchild PID. For server kind, exec already ensures
-	// sh is replaced by the server process, so no setsid is needed.
+	// Build argv: wrap cmd in sh -c. No external setsid: portable-pty's pre_exec
+	// calls setsid(2) before exec, making the child a session leader. If we also
+	// exec the setsid binary, it sees EPERM (already a leader), forks, and the
+	// parent exits immediately with code 0 — pty-host sees the direct child exit
+	// while the actual shell runs as an orphan grandchild disconnected from the PTY.
 	argv: []string
-	when ODIN_OS == .Darwin {
-		argv = []string{"sh", "-c", spawn_cmd}
-	} else {
-		if kind == .Server {
-			argv = []string{"sh", "-c", spawn_cmd}
-		} else {
-			argv = []string{"setsid", "sh", "-c", spawn_cmd}
-		}
-	}
+	argv = []string{"sh", "-c", spawn_cmd}
 	cloned_argv := make([]string, len(argv))
 	for a, i in argv { cloned_argv[i] = strings.clone(a) }
 
@@ -2274,11 +2266,7 @@ bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
 
 	// Re-spawn with same cmd/cwd/label.
 	argv: []string
-	when ODIN_OS == .Darwin {
-		argv = []string{"sh", "-c", sess.cmd}
-	} else {
-		argv = []string{"setsid", "sh", "-c", sess.cmd}
-	}
+	argv = []string{"sh", "-c", sess.cmd}
 	cloned_argv := make([]string, len(argv))
 	for a, i in argv { cloned_argv[i] = strings.clone(a) }
 
