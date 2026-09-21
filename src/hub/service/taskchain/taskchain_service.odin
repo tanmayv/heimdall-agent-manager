@@ -77,6 +77,8 @@ Update_Chain_Input :: struct {
 	// agent or user explicitly renames the chain we stamp this so the activity-
 	// gated title-nudge engine (T2) stops nudging. Empty = leave unchanged.
 	title_source: string,
+	is_pinned: bool,
+	has_is_pinned: bool,
 }
 
 Create_Task_Input :: struct {
@@ -376,8 +378,48 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 			}
 		}
 	}
+	if input.has_is_pinned {
+		if input.is_pinned && !chain.is_pinned {
+			pinned_count, count_err := iface.taskchain_count_pinned_chains(service.repo, chain.owner_user_id)
+			if count_err.code == .None && pinned_count >= domain.TASK_CHAINS_MAX_PINNED {
+				return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "maximum of 10 pinned task chains allowed; unpin an existing chain first")
+			}
+			chain.is_pinned = true
+			chain.pinned_at = platform.clock_now(service.clock)
+		} else if !input.is_pinned && chain.is_pinned {
+			chain.is_pinned = false
+			chain.pinned_at = ""
+		}
+	}
 	chain.updated_at = platform.clock_now(service.clock)
 	return iface.taskchain_save_chain(service.repo, chain)
+}
+
+pin_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, pinned: bool) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
+	if !ok do return domain.Task_Chain{}, false, err
+	if owner_ok, owner_err := ownership.require_owner(auth, chain.owner_user_id); !owner_ok do return domain.Task_Chain{}, false, owner_err
+	if pinned {
+		if chain.is_pinned do return chain, true, domain.Domain_Error{}
+		count, count_err := iface.taskchain_count_pinned_chains(service.repo, chain.owner_user_id)
+		if count_err.code == .None && count >= domain.TASK_CHAINS_MAX_PINNED {
+			return domain.Task_Chain{}, false, domain.domain_error(.Validation_Failed, "maximum of 10 pinned task chains allowed; unpin an existing chain first")
+		}
+		chain.is_pinned = true
+		chain.pinned_at = platform.clock_now(service.clock)
+	} else {
+		if !chain.is_pinned do return chain, true, domain.Domain_Error{}
+		chain.is_pinned = false
+		chain.pinned_at = ""
+	}
+	chain.updated_at = platform.clock_now(service.clock)
+	return iface.taskchain_save_chain(service.repo, chain)
+}
+
+list_pinned_chains :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -> ([]domain.Task_Chain, domain.Domain_Error) {
+	owner, ok, err := ownership.owner_from_auth(auth)
+	if !ok do return nil, err
+	return iface.taskchain_list_pinned_chains(service.repo, owner)
 }
 
 // set_own_chain_title lets an authenticated agent instance rename the chain it
@@ -729,6 +771,9 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	}
 
 	now := platform.clock_now(service.clock)
+	if task.status != .In_Validation && next == .In_Validation {
+		_, _ = iface.taskchain_delete_votes_by_task(service.repo, task.task_id, task.owner_user_id)
+	}
 	task.status = next
 	task.updated_at = now
 	if next == .In_Progress && task.started_at == "" do task.started_at = now

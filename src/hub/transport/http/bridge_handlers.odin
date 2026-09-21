@@ -509,6 +509,7 @@ Project_Vcs_Command :: struct {
 	content:       string, // vcs_save_file: full file text to write
 	message:       string, // vcs_commit: commit message
 	list_files:    bool, // vcs_commit_diff: return a changed-file list instead of hunks
+	amend:         bool, // vcs_commit: amend the parent commit/CL
 	send_path:     bool, // whether to include path in JSON body
 	send_cursor:   bool,
 	send_limit:    bool,
@@ -517,6 +518,7 @@ Project_Vcs_Command :: struct {
 	send_content:  bool, // whether to include content in JSON body
 	send_list_files: bool, // whether to include list_files in JSON body
 	send_message:  bool, // whether to include message in JSON body
+	send_amend:    bool, // whether to include amend in JSON body
 }
 
 project_vcs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Vcs_Command) -> (string, bool, domain.Domain_Error) {
@@ -620,6 +622,9 @@ project_vcs_command_json :: proc(cmd: Project_Vcs_Command, command_id, root_path
 	}
 	if cmd.send_message && cmd.message != "" {
 		strings.write_string(&b, ",\"message\":\""); write_handler_json_string(&b, cmd.message); strings.write_string(&b, "\"")
+	}
+	if cmd.send_amend {
+		strings.write_string(&b, ",\"amend\":"); strings.write_string(&b, "true" if cmd.amend else "false")
 	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
@@ -751,9 +756,33 @@ project_handle_vcs_commit :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	message := strings.trim_space(json_string(req.body, "message"))
 	if message == "" do return respond_error(domain.domain_error(.Validation_Failed, "message is required"), req.request_id)
+	amend := json_bool(req.body, "amend")
 	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
 		command_type = "vcs_commit",
 		message = message, send_message = true,
+		amend = amend, send_amend = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// project_handle_vcs_upload relays an upload mutation: runs provider.upload on the
+// project repository (e.g. `hg upload chain` for fig).
+project_handle_vcs_upload :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_upload",
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+// project_handle_vcs_sync relays a sync mutation: runs provider.sync on the
+// project repository (e.g. `hg sync` or `git pull --rebase`).
+project_handle_vcs_sync :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := project_vcs_relay(h, req, Project_Vcs_Command{
+		command_type = "vcs_sync",
 	})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))

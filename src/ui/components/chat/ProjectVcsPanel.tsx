@@ -33,6 +33,8 @@ import {
   useRevertVcsFileMutation,
   useSaveVcsFileMutation,
   useCommitVcsMutation,
+  useUploadVcsMutation,
+  useSyncVcsMutation,
   type VcsChangedFile,
   type VcsFileStatus,
   type VcsLogEntry,
@@ -141,6 +143,11 @@ export default function ProjectVcsPanel({
   const supportedActions = caps?.supported_actions ?? [];
   const can = useCallback((action: string) => supportedActions.includes(action), [supportedActions]);
 
+  const uploadLabel = caps?.upload_label || 'Upload';
+  const uploadBusyLabel = uploadLabel === 'Push' ? 'Pushing…' : (uploadLabel === 'Upload to Critique' ? 'Uploading…' : `${uploadLabel}ing…`);
+  const syncLabel = caps?.sync_label || 'Sync';
+  const syncBusyLabel = syncLabel === 'Pull' ? 'Pulling…' : (syncLabel === 'Sync with Head' ? 'Syncing…' : `${syncLabel}ing…`);
+
   // ---- Panel state ----------------------------------------------------------
   const [activeSubTab, setActiveSubTab] = useState<'changes' | 'log'>('changes');
   // Single-pane column shown on mobile: the list of files/commits, or the diff.
@@ -191,23 +198,104 @@ export default function ProjectVcsPanel({
   // we refetch the changed-files list ourselves after a delete).
   const [deleteProjectPath, deleteState] = useDeleteProjectPathMutation();
   const [commitVcs, commitState] = useCommitVcsMutation();
-  const busyWrite = stageState.isLoading || unstageState.isLoading || revertState.isLoading || deleteState.isLoading;
+  const [uploadVcs, uploadState] = useUploadVcsMutation();
+  const [syncVcs, syncState] = useSyncVcsMutation();
+  const busyWrite = stageState.isLoading || unstageState.isLoading || revertState.isLoading || deleteState.isLoading || uploadState.isLoading || syncState.isLoading;
+
+  // ---- Commit log (lazy, accumulated) ---------------------------------------
+  const [triggerLog] = useLazyListVcsLogQuery();
+  const [logEntries, setLogEntries] = useState<VcsLogEntry[]>([]);
+  const [logCursor, setLogCursor] = useState<string | null>(null);
+  const [logHasMore, setLogHasMore] = useState(false);
+  const [logLoading, setLogLoading] = useState(false);
+  const [logError, setLogError] = useState('');
+
+  const loadLog = useCallback(async (opts?: { append?: boolean }) => {
+    if (!projectId || !can('log')) return;
+    const append = Boolean(opts?.append);
+    setLogLoading(true);
+    setLogError('');
+    try {
+      const res = await triggerLog({
+        projectId, bridgeId, limit: 100,
+        cursor: append ? logCursor : null,
+        worktree_path: worktreeArg,
+      }).unwrap();
+      if (!res.ok) { setLogError('Could not read commit log'); return; }
+      setLogEntries((prev) => (append ? [...prev, ...(res.entries || [])] : (res.entries || [])));
+      setLogHasMore(Boolean(res.has_more));
+      setLogCursor(res.next_cursor ?? null);
+    } catch (e: any) {
+      setLogError(str(e?.error || e?.message) || 'Could not read commit log');
+    } finally {
+      setLogLoading(false);
+    }
+  }, [projectId, bridgeId, can, triggerLog, logCursor, worktreeArg]);
+
+  // (Re)load the log when the Log tab opens or the active worktree changes.
+  useEffect(() => {
+    if (activeSubTab === 'log' && can('log')) void loadLog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSubTab, activeWorktreePath, hasVcs]);
 
   // ---- Commit ---------------------------------------------------------------
   const [commitMessage, setCommitMessage] = useState('');
   const [commitError, setCommitError] = useState('');
+  const [isAmend, setIsAmend] = useState(false);
+
+  const onToggleAmend = useCallback(async (checked: boolean) => {
+    setIsAmend(checked);
+    if (checked && !commitMessage.trim()) {
+      if (logEntries.length > 0 && logEntries[0]?.subject) {
+        setCommitMessage(logEntries[0].subject);
+      } else if (can('log') && projectId) {
+        try {
+          const res = await triggerLog({ projectId, bridgeId, limit: 1, worktree_path: worktreeArg }).unwrap();
+          if (res.ok && res.entries && res.entries.length > 0 && res.entries[0].subject) {
+            setCommitMessage(res.entries[0].subject);
+          }
+        } catch {
+          // ignore error fetching latest commit message
+        }
+      }
+    }
+  }, [commitMessage, logEntries, can, projectId, bridgeId, worktreeArg, triggerLog]);
+
   const handleCommit = useCallback(async () => {
     const msg = commitMessage.trim();
     if (!msg) return;
     setCommitError('');
     try {
-      const res = await commitVcs({ projectId, bridgeId, message: msg, worktree_path: worktreeArg }).unwrap();
+      const res = await commitVcs({ projectId, bridgeId, message: msg, amend: isAmend, worktree_path: worktreeArg }).unwrap();
       if (!res.ok) { setCommitError(str(res.error?.message) || 'Commit failed'); return; }
       setCommitMessage('');
+      setIsAmend(false);
     } catch (e: any) {
       setCommitError(str(e?.error || e?.message) || 'Commit failed');
     }
-  }, [commitVcs, projectId, bridgeId, commitMessage, worktreeArg]);
+  }, [commitVcs, projectId, bridgeId, commitMessage, isAmend, worktreeArg]);
+
+  const [actionError, setActionError] = useState('');
+
+  const handleUpload = useCallback(async () => {
+    setActionError('');
+    try {
+      const res = await uploadVcs({ projectId, bridgeId, worktree_path: worktreeArg }).unwrap();
+      if (!res.ok) { setActionError(str(res.error?.message) || `${uploadLabel} failed`); return; }
+    } catch (e: any) {
+      setActionError(str(e?.error || e?.message) || `${uploadLabel} failed`);
+    }
+  }, [uploadVcs, projectId, bridgeId, worktreeArg, uploadLabel]);
+
+  const handleSync = useCallback(async () => {
+    setActionError('');
+    try {
+      const res = await syncVcs({ projectId, bridgeId, worktree_path: worktreeArg }).unwrap();
+      if (!res.ok) { setActionError(str(res.error?.message) || `${syncLabel} failed`); return; }
+    } catch (e: any) {
+      setActionError(str(e?.error || e?.message) || `${syncLabel} failed`);
+    }
+  }, [syncVcs, projectId, bridgeId, worktreeArg, syncLabel]);
 
   // ---- Checkbox selection helpers (Changes tab bulk actions) ----------------
   const toggleFileSelected = useCallback((path: string) => {
@@ -261,41 +349,6 @@ export default function ProjectVcsPanel({
     }
   }, [deleteProjectPath, projectId, bridgeId, filesQ]);
 
-  // ---- Commit log (lazy, accumulated) ---------------------------------------
-  const [triggerLog] = useLazyListVcsLogQuery();
-  const [logEntries, setLogEntries] = useState<VcsLogEntry[]>([]);
-  const [logCursor, setLogCursor] = useState<string | null>(null);
-  const [logHasMore, setLogHasMore] = useState(false);
-  const [logLoading, setLogLoading] = useState(false);
-  const [logError, setLogError] = useState('');
-
-  const loadLog = useCallback(async (opts?: { append?: boolean }) => {
-    if (!projectId || !can('log')) return;
-    const append = Boolean(opts?.append);
-    setLogLoading(true);
-    setLogError('');
-    try {
-      const res = await triggerLog({
-        projectId, bridgeId, limit: 100,
-        cursor: append ? logCursor : null,
-        worktree_path: worktreeArg,
-      }).unwrap();
-      if (!res.ok) { setLogError('Could not read commit log'); return; }
-      setLogEntries((prev) => (append ? [...prev, ...(res.entries || [])] : (res.entries || [])));
-      setLogHasMore(Boolean(res.has_more));
-      setLogCursor(res.next_cursor ?? null);
-    } catch (e: any) {
-      setLogError(str(e?.error || e?.message) || 'Could not read commit log');
-    } finally {
-      setLogLoading(false);
-    }
-  }, [projectId, bridgeId, can, triggerLog, logCursor, worktreeArg]);
-
-  // (Re)load the log when the Log tab opens or the active worktree changes.
-  useEffect(() => {
-    if (activeSubTab === 'log' && can('log')) void loadLog();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSubTab, activeWorktreePath, hasVcs]);
 
   // ---- Workspaces -----------------------------------------------------------
   const workspacesQ = useListVcsWorkspacesQuery(
@@ -406,6 +459,15 @@ export default function ProjectVcsPanel({
     setActivePane('diff');
   }, []);
 
+  const committableCount = caps?.supports_staging ? staged.length : unstaged.length;
+  const hasChanges = isAmend ? true : committableCount > 0;
+  const commitDisabled = !hasChanges || !commitMessage.trim() || busyWrite || commitState.isLoading;
+  const commitButtonLabel = commitState.isLoading
+    ? (isAmend ? 'Amending…' : 'Committing…')
+    : isAmend
+      ? `Amend Commit${committableCount > 0 ? ` (${committableCount})` : ''}`
+      : `Commit${committableCount > 0 ? ` (${committableCount})` : ''}`;
+
   // ---- Loading / empty states ----------------------------------------------
   const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-surface';
 
@@ -467,7 +529,7 @@ export default function ProjectVcsPanel({
             {key === 'staged' && can('unstage') ? (
               <button type="button" disabled={busyWrite} onClick={() => runSectionAction(rows, onUnstage)} className={sectionActionCls} data-debug-id={`${debugPrefix}-bulk-unstage`}>Unstage {sel}</button>
             ) : null}
-            {key === 'unstaged' && can('stage') ? (
+            {key === 'unstaged' && caps?.supports_staging && can('stage') ? (
               <button type="button" disabled={busyWrite} onClick={() => runSectionAction(rows, onStage)} className={sectionActionCls} data-debug-id={`${debugPrefix}-bulk-stage`}>Stage {sel}</button>
             ) : null}
             {key === 'unstaged' && can('revert') ? (
@@ -543,6 +605,19 @@ export default function ProjectVcsPanel({
         {can('log') ? (
           <SubTabButton label="Log" active={activeSubTab === 'log'} onClick={() => { setActiveSubTab('log'); setActivePane('list'); }} debugId={`${debugPrefix}-subtab-log`} />
         ) : null}
+        {(can('sync') || can('pull') || caps?.supports_sync) ? (
+          <button
+            type="button"
+            disabled={syncState.isLoading || busyWrite}
+            onClick={() => void handleSync()}
+            data-debug-id={`${debugPrefix}-sync-header`}
+            title={syncLabel === 'Pull' ? 'Pull latest changes from upstream' : 'Sync with upstream head'}
+            className="ml-2 inline-flex items-center gap-1 rounded border border-subtle bg-surface px-2 py-0.5 text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50"
+          >
+            <Icon name="refresh" className={`h-3 w-3 ${syncState.isLoading ? 'animate-spin' : ''}`} />
+            <span>{syncState.isLoading ? syncBusyLabel : syncLabel}</span>
+          </button>
+        ) : null}
         <span className="ml-auto pr-1 text-[11px] text-muted">{caps?.provider}</span>
       </div>
 
@@ -570,8 +645,14 @@ export default function ProjectVcsPanel({
                   <div data-debug-id={`${debugPrefix}-changes-empty`} className="p-6 text-center text-xs text-muted">No changes.</div>
                 ) : (
                   <>
-                    {renderSection('staged', 'Staged', staged)}
-                    {renderSection('unstaged', 'Unstaged', unstaged)}
+                    {caps?.supports_staging ? (
+                      <>
+                        {renderSection('staged', 'Staged', staged)}
+                        {renderSection('unstaged', 'Unstaged', unstaged)}
+                      </>
+                    ) : (
+                      renderSection('unstaged', 'Changes', unstaged)
+                    )}
                     {renderSection('untracked', 'Untracked', untracked)}
                   </>
                 )}
@@ -595,6 +676,33 @@ export default function ProjectVcsPanel({
                       >
                         <div className="flex items-center gap-2">
                           <span className="shrink-0 rounded bg-neutral-soft px-1 font-mono text-[10px] text-accent">{e.short_hash}</span>
+                          {e.cl_number ? (
+                            <a
+                              href={`http://critique/${e.cl_number}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(ev) => ev.stopPropagation()}
+                              data-debug-id={`${debugPrefix}-log-cl-${e.cl_number}`}
+                              className="shrink-0 rounded bg-info-soft px-1 font-mono text-[10px] font-semibold text-info hover:underline"
+                              title={`Critique CL ${e.cl_number}`}
+                            >
+                              CL {e.cl_number}
+                            </a>
+                          ) : null}
+                          {e.review_status ? (
+                            <span
+                              data-debug-id={`${debugPrefix}-log-status-${e.short_hash}`}
+                              className={`shrink-0 rounded px-1 text-[10px] font-medium ${
+                                e.review_status === 'LGTM'
+                                  ? 'bg-success-soft text-success'
+                                  : e.review_status === 'Mailed'
+                                  ? 'bg-info-soft text-info'
+                                  : 'bg-neutral-soft text-muted'
+                              }`}
+                            >
+                              {e.review_status}
+                            </span>
+                          ) : null}
                           <span className="min-w-0 flex-1 truncate text-[12px] text-primary" title={e.subject}>{e.subject || '(no message)'}</span>
                         </div>
                         <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted">
@@ -661,6 +769,14 @@ export default function ProjectVcsPanel({
             <div className="flex shrink-0 flex-col gap-1.5 border-t border-subtle bg-surface px-2 py-1.5">
               <div className="flex items-center gap-2">
                 <RowButton label="Refresh" onClick={() => void filesQ.refetch()} disabled={filesQ.isFetching} debugId={`${debugPrefix}-refresh`} />
+                {(can('sync') || can('pull') || caps?.supports_sync) ? (
+                  <RowButton
+                    label={syncState.isLoading ? syncBusyLabel : (caps?.sync_label || 'Sync with Head')}
+                    onClick={() => void handleSync()}
+                    disabled={syncState.isLoading || busyWrite}
+                    debugId={`${debugPrefix}-sync-footer`}
+                  />
+                ) : null}
                 <span className="ml-auto text-[11px] text-muted">{files.length} file{files.length === 1 ? '' : 's'}</span>
               </div>
               {caps?.commit_model ? (
@@ -669,20 +785,49 @@ export default function ProjectVcsPanel({
                     rows={2}
                     value={commitMessage}
                     onChange={(e) => setCommitMessage(e.target.value)}
-                    placeholder="Commit message..."
+                    placeholder={isAmend ? 'Amend commit message...' : 'Commit message...'}
                     data-debug-id={`${debugPrefix}-commit-message`}
                     className="w-full resize-none rounded border border-subtle bg-surface px-2 py-1 text-[11px] font-mono text-primary placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
                   />
                   {commitError ? <p data-debug-id={`${debugPrefix}-commit-error`} className="text-[11px] text-danger">{commitError}</p> : null}
-                  <button
-                    type="button"
-                    disabled={staged.length === 0 || !commitMessage.trim() || busyWrite || commitState.isLoading}
-                    onClick={() => void handleCommit()}
-                    data-debug-id={`${debugPrefix}-commit`}
-                    className="inline-flex items-center justify-center rounded border border-subtle bg-accent/15 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/25 disabled:opacity-50"
-                  >
-                    {commitState.isLoading ? 'Committing…' : `Commit${staged.length > 0 ? ` (${staged.length})` : ''}`}
-                  </button>
+                  {actionError ? <p data-debug-id={`${debugPrefix}-action-error`} className="text-[11px] text-danger">{actionError}</p> : null}
+                  <div className="flex items-center justify-between gap-2">
+                    {can('amend') || caps?.supports_amend ? (
+                      <label className="flex items-center gap-1.5 text-[11px] text-muted cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={isAmend}
+                          onChange={(e) => void onToggleAmend(e.target.checked)}
+                          data-debug-id={`${debugPrefix}-amend-checkbox`}
+                          className="h-3.5 w-3.5 accent-accent"
+                        />
+                        <span>Amend</span>
+                      </label>
+                    ) : <span />}
+                    <div className="flex items-center gap-1.5">
+                      {(can('upload') || can('push') || caps?.supports_upload) ? (
+                        <button
+                          type="button"
+                          disabled={uploadState.isLoading || busyWrite}
+                          onClick={() => void handleUpload()}
+                          data-debug-id={`${debugPrefix}-upload`}
+                          title={uploadLabel === 'Push' ? 'Push changes to remote repository' : 'Upload changes to Critique / remote'}
+                          className="inline-flex items-center justify-center rounded border border-subtle bg-accent/15 px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-accent/25 disabled:opacity-50"
+                        >
+                          {uploadState.isLoading ? uploadBusyLabel : (caps?.upload_label || 'Upload to Critique')}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={commitDisabled}
+                        onClick={() => void handleCommit()}
+                        data-debug-id={`${debugPrefix}-commit`}
+                        className="inline-flex items-center justify-center rounded border border-subtle bg-accent/15 px-2.5 py-1 text-[11px] font-medium text-accent hover:bg-accent/25 disabled:opacity-50"
+                      >
+                        {commitButtonLabel}
+                      </button>
+                    </div>
+                  </div>
                 </>
               ) : null}
             </div>
@@ -738,7 +883,7 @@ export default function ProjectVcsPanel({
                       {selectedFile.staged && can('unstage') ? (
                         <button type="button" onClick={() => onUnstage(selectedFile.path)} disabled={busyWrite} data-debug-id={`${debugPrefix}-toolbar-unstage`} className="inline-flex h-6 items-center gap-1 rounded border border-subtle px-2 text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50">Unstage</button>
                       ) : null}
-                      {!selectedFile.staged && selectedFile.status !== 'untracked' && can('stage') ? (
+                      {!selectedFile.staged && selectedFile.status !== 'untracked' && caps?.supports_staging && can('stage') ? (
                         <button type="button" onClick={() => onStage(selectedFile.path)} disabled={busyWrite} data-debug-id={`${debugPrefix}-toolbar-stage`} className="inline-flex h-6 items-center gap-1 rounded border border-subtle px-2 text-[11px] font-medium text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-50">Stage</button>
                       ) : null}
                       {selectedFile.status === 'untracked' && can('stage') ? (

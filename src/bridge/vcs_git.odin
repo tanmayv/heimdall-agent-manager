@@ -11,7 +11,7 @@ import "core:strings"
 
 // Static-storage action whitelist so vcs_git_capabilities can hand out a slice with
 // package lifetime (a slice of a proc-local composite literal would dangle).
-vcs_git_actions := [7]string{"diff", "log", "commit_diff", "revert", "stage", "unstage", "workspaces"}
+vcs_git_actions := [12]string{"diff", "log", "commit_diff", "revert", "stage", "unstage", "workspaces", "amend", "sync", "upload", "push", "pull"}
 
 // vcs_git_provider returns the git proc-table.
 vcs_git_provider :: proc() -> VCS_Provider {
@@ -30,6 +30,8 @@ vcs_git_provider :: proc() -> VCS_Provider {
 		commit_diff       = vcs_git_commit_diff,
 		commit_diff_files = vcs_git_commit_diff_files,
 		commit            = vcs_git_commit,
+		upload            = vcs_git_push,
+		sync              = vcs_git_sync,
 		list_workspaces   = vcs_git_list_workspaces,
 	}
 }
@@ -50,6 +52,11 @@ vcs_git_capabilities :: proc(path: string) -> VCS_Capabilities {
 		supports_staging  = true,
 		staging_model     = "index",
 		commit_model      = "branch",
+		supports_amend    = true,
+		supports_upload   = true,
+		supports_sync     = true,
+		upload_label      = "Push",
+		sync_label        = "Pull",
 		supported_actions = vcs_git_actions[:],
 	}
 }
@@ -246,11 +253,9 @@ vcs_git_log :: proc(path, cursor: string, limit: int) -> ([]VCS_Log_Entry, strin
 	return page, next_cursor, has_more, true
 }
 
-// vcs_parse_log_line parses one "%H|%h|%s|%an|%ci" row. The hashes and the ISO
-// date never contain a '|', while the subject and author theoretically can, so we
-// anchor from both ends: the first two pipes bound the hashes, the last pipe bounds
-// the date, and the author is the field just before it — any surplus pipes fall
-// into the subject. Shared with the jj adapter, which emits the same 5-field shape.
+// vcs_parse_log_line parses one log row: either the standard 5-field shape
+// ("%H|%h|%s|%an|%ci") or the Google/Fig 7-field shape ("%H|%h|%s|%an|%ci|%cl|%status").
+// The hashes and date do not contain '|'; any extra middle pipes are retained in subject.
 vcs_parse_log_line :: proc(line: string) -> (VCS_Log_Entry, bool) {
 	p1 := strings.index_byte(line, '|')
 	if p1 < 0 do return {}, false
@@ -259,7 +264,27 @@ vcs_parse_log_line :: proc(line: string) -> (VCS_Log_Entry, bool) {
 	p2 := strings.index_byte(rest, '|')
 	if p2 < 0 do return {}, false
 	short_hash := rest[:p2]
-	tail := rest[p2 + 1:] // "<subject>|<author>|<date>"
+	tail := rest[p2 + 1:] // "<subject>|<author>|<date>" OR "<subject>|<author>|<date>|<clnumber>|<review_status>"
+
+	parts := strings.split(tail, "|", context.temp_allocator)
+	if len(parts) >= 5 {
+		review_status := strings.trim_space(parts[len(parts) - 1])
+		cl_num := strings.trim_space(parts[len(parts) - 2])
+		date := strings.trim_space(parts[len(parts) - 3])
+		author := strings.trim_space(parts[len(parts) - 4])
+		subj_parts := parts[:len(parts) - 4]
+		subject := strings.join(subj_parts, "|", context.temp_allocator)
+		return VCS_Log_Entry{
+			hash          = strings.clone(strings.trim_space(hash)),
+			short_hash    = strings.clone(strings.trim_space(short_hash)),
+			subject       = strings.clone(subject),
+			author        = strings.clone(author),
+			date          = strings.clone(date),
+			cl_number     = strings.clone(cl_num),
+			review_status = strings.clone(review_status),
+		}, true
+	}
+
 	last := strings.last_index_byte(tail, '|')
 	if last < 0 do return {}, false
 	date := tail[last + 1:]
@@ -269,11 +294,13 @@ vcs_parse_log_line :: proc(line: string) -> (VCS_Log_Entry, bool) {
 	author := before_date[alast + 1:]
 	subject := before_date[:alast]
 	return VCS_Log_Entry{
-		hash       = strings.clone(strings.trim_space(hash)),
-		short_hash = strings.clone(strings.trim_space(short_hash)),
-		subject    = strings.clone(subject),
-		author     = strings.clone(author),
-		date       = strings.clone(strings.trim_space(date)),
+		hash          = strings.clone(strings.trim_space(hash)),
+		short_hash    = strings.clone(strings.trim_space(short_hash)),
+		subject       = strings.clone(subject),
+		author        = strings.clone(author),
+		date          = strings.clone(strings.trim_space(date)),
+		cl_number     = "",
+		review_status = "",
 	}, true
 }
 
@@ -370,14 +397,34 @@ vcs_git_commit_diff_files :: proc(path, base_ref, head_ref: string) -> ([]VCS_Ch
 
 // --- commit --------------------------------------------------------------
 
-// vcs_git_commit commits the currently-staged changes with `message`
-// (`git -C path commit -m <message>`). Returns ok=true only on exit 0; a git error
+// vcs_git_commit commits the currently-staged changes with `message` (and optional amend)
+// (`git -C path commit [-m <message>] [--amend]`). Returns ok=true only on exit 0; a git error
 // (nothing staged, bad identity, hook rejection, ...) surfaces as ok=false, which the
 // caller maps to the "commit_failed" error code. The caller guards against an empty
 // message before dispatch, so `message` is always non-empty here.
-vcs_git_commit :: proc(path, message: string) -> (ok: bool) {
-	_, rok := vcs_run([]string{"git", "-C", path, "commit", "-m", message})
+vcs_git_commit :: proc(path, message: string, amend: bool = false) -> (ok: bool) {
+	cmd := make([dynamic]string, context.temp_allocator)
+	append(&cmd, "git", "-C", path, "commit")
+	if amend {
+		append(&cmd, "--amend")
+	}
+	append(&cmd, "-m", message)
+	_, rok := vcs_run(cmd[:])
 	return rok
+}
+
+// vcs_git_push pushes committed changes to upstream remote.
+vcs_git_push :: proc(path: string) -> (ok: bool, msg: string) {
+	_, rok := vcs_run([]string{"git", "-C", path, "push"})
+	if !rok do return false, "push_failed"
+	return true, ""
+}
+
+// vcs_git_sync pulls latest changes from upstream with rebase.
+vcs_git_sync :: proc(path: string) -> (ok: bool, msg: string) {
+	_, rok := vcs_run([]string{"git", "-C", path, "pull", "--rebase"})
+	if !rok do return false, "sync_failed"
+	return true, ""
 }
 
 // --- workspaces ----------------------------------------------------------

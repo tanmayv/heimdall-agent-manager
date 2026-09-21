@@ -243,8 +243,11 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		if t.status != .In_Validation do continue
 		votes, verr := iface.taskchain_list_votes_by_task(service.repo, t.task_id, chain.owner_user_id)
 		if verr.code != .None do continue
-		voter_ids := make([dynamic]string, len(votes))
-		for v, i in votes do voter_ids[i] = v.reviewer_agent_instance_id
+		voter_ids := make([dynamic]string)
+		for v in votes {
+			if t.updated_at != "" && v.created_at < t.updated_at do continue
+			append(&voter_ids, v.reviewer_agent_instance_id)
+		}
 		votes_by_task[t.task_id] = voter_ids[:]
 		delete(votes)
 	}
@@ -422,12 +425,6 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 		for _, entries in stops do delete(entries)
 		delete(runs); delete(stops); delete(bridge_order); delete(seen_bridge)
 	}
-	note_bridge_local :: proc(order: ^[dynamic]string, seen: ^map[string]bool, bridge_id: string) {
-		if bridge_id == "" || seen[bridge_id] do return
-		seen[bridge_id] = true
-		append(order, bridge_id)
-	}
-
 	for cf in changed_focus {
 		inst, inst_ok, _ := iface.agent_get_instance(service.agents, cf.instance_id)
 		if !inst_ok {
@@ -459,7 +456,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 			}
 			// BUG-49 Fix A: an instance with no bound bridge cannot receive a wake_agent
 			// command — the run[] entry would be appended under an empty bridge_id key
-			// and note_bridge_local() no-ops on "", so the entry is silently dropped and
+			// and note_bridge() no-ops on "", so the entry is silently dropped and
 			// the agent (e.g. a reviewer whose task just entered in_validation) is never
 			// started. Emit a WARNING so this previously invisible condition is
 			// detectable, then skip the undeliverable entry instead of accumulating a
@@ -484,7 +481,7 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 				project_path      = inst.project_path,
 			})
 			runs[inst.bridge_id] = entries
-			note_bridge_local(&bridge_order, &seen_bridge, inst.bridge_id)
+			note_bridge(&bridge_order, &seen_bridge, inst.bridge_id)
 		} else if instance_is_live(inst) {
 			// BUG-49 Bug 1 assessment (assignee stopped on in_validation): this stop[]
 			// is INTENTIONAL — fresh-context-per-task means an assignee whose focus just
@@ -500,7 +497,36 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 			entries := stops[inst.bridge_id]
 			append(&entries, cf.instance_id)
 			stops[inst.bridge_id] = entries
-			note_bridge_local(&bridge_order, &seen_bridge, inst.bridge_id)
+			note_bridge(&bridge_order, &seen_bridge, inst.bridge_id)
+		}
+	}
+
+	// Actionable tasks sweep: evaluate current running states for all actionable
+	// tasks. If an In_Progress task has a non-running assignee or an In_Validation task
+	// has an unvoted non-running reviewer, ensure reconciliation starts them.
+	eval_tasks := fresh_tasks if ft_err.code == .None else tasks[:]
+	for t in eval_tasks {
+		if t.status == .In_Progress {
+			assignee_id := primary_assignee_instance(t.assignee_ref_json)
+			if assignee_id != "" {
+				ensure_actionable_agent_started(service, chain, t, assignee_id, .Work, &runs, &stops, &bridge_order, &seen_bridge)
+				delete(assignee_id)
+			}
+		} else if t.status == .In_Validation {
+			reviewers := extract_instances_from_ref_blob(t.reviewer_refs_json)
+			for rev_id in reviewers {
+				if instance_reviews_task(t, chain, rev_id) && !instance_has_voted(votes_by_task, t.task_id, rev_id) {
+					ensure_actionable_agent_started(service, chain, t, rev_id, .Review, &runs, &stops, &bridge_order, &seen_bridge)
+				}
+			}
+			delete(reviewers)
+			def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
+			for rev_id in def_reviewers {
+				if instance_reviews_task(t, chain, rev_id) && !instance_has_voted(votes_by_task, t.task_id, rev_id) {
+					ensure_actionable_agent_started(service, chain, t, rev_id, .Review, &runs, &stops, &bridge_order, &seen_bridge)
+				}
+			}
+			delete(def_reviewers)
 		}
 	}
 
@@ -521,6 +547,102 @@ reconcile_chain :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain) -
 	}
 
 	return promoted
+}
+
+note_bridge :: proc(order: ^[dynamic]string, seen: ^map[string]bool, bridge_id: string) {
+	if bridge_id == "" || seen[bridge_id] do return
+	seen[bridge_id] = true
+	append(order, bridge_id)
+}
+
+instance_in_runs :: proc(runs: map[string][dynamic]agent.Wake_Agent_Run_Entry, instance_id: string) -> bool {
+	for _, entries in runs {
+		for entry in entries {
+			if entry.agent_instance_id == instance_id do return true
+		}
+	}
+	return false
+}
+
+remove_from_all_stops :: proc(stops: ^map[string][dynamic]string, instance_id: string) {
+	if stops == nil do return
+	for bridge_id in stops^ {
+		entries := stops^[bridge_id]
+		removed := false
+		for i := len(entries) - 1; i >= 0; i -= 1 {
+			if entries[i] == instance_id {
+				ordered_remove(&entries, i)
+				removed = true
+			}
+		}
+		if removed {
+			stops^[bridge_id] = entries
+		}
+	}
+}
+
+ensure_actionable_agent_started :: proc(
+	service: ^Taskchain_Service,
+	chain: domain.Task_Chain,
+	task: domain.Task,
+	instance_id: string,
+	task_role: domain.Current_Task_Role,
+	runs: ^map[string][dynamic]agent.Wake_Agent_Run_Entry,
+	stops: ^map[string][dynamic]string,
+	bridge_order: ^[dynamic]string,
+	seen_bridge: ^map[string]bool,
+) {
+	if instance_id == "" || instance_id == chain.coordinator_agent_instance_id do return
+	if service == nil || service.agents == nil do return
+
+	inst, ok, _ := iface.agent_get_instance(service.agents, instance_id)
+	if !ok do return
+
+	// Actionable instance must never be stopped
+	remove_from_all_stops(stops, instance_id)
+
+	if inst.bridge_id == "" {
+		fmt.eprintfln("[reconcile] actionable agent check: WARNING instance %s has empty bridge_id", instance_id)
+		return
+	}
+
+	if instance_is_live(inst) || instance_in_runs(runs^, instance_id) {
+		return
+	}
+
+	role_str := "worker"
+	if task_role == .Review do role_str = "reviewer"
+
+	agent_name := ""
+	if inst.agent_id != "" {
+		if ag, ag_ok, _ := iface.agent_get(service.agents, inst.agent_id); ag_ok do agent_name = ag.name
+	}
+
+	entries := runs[inst.bridge_id]
+	append(&entries, agent.Wake_Agent_Run_Entry{
+		agent_instance_id = instance_id,
+		task_id           = string(task.task_id),
+		role              = role_str,
+		provider          = inst.provider,
+		tier              = inst.tier,
+		agent_id          = inst.agent_id,
+		agent_name        = agent_name,
+		chain_id          = string(chain.chain_id),
+		chain_title       = chain.title,
+		coordinator_id    = chain.coordinator_agent_instance_id,
+		project_id        = string(inst.project_id),
+		project_path      = inst.project_path,
+	})
+	runs[inst.bridge_id] = entries
+	note_bridge(bridge_order, seen_bridge, inst.bridge_id)
+
+	if inst.current_task_id != string(task.task_id) || inst.current_task_role != task_role {
+		inst.current_task_id = string(task.task_id)
+		inst.current_task_role = task_role
+		inst.updated_at = platform.clock_now(service.clock)
+		_, _, _ = iface.agent_save_instance(service.agents, inst)
+	}
+	fmt.eprintfln("[reconcile] actionable agent check: starting non-running agent %s for task %s (role=%s)", instance_id, task.task_id, role_str)
 }
 
 // instance_is_live reports whether an instance currently has a running process

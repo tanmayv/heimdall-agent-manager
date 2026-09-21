@@ -117,6 +117,16 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		strings.write_byte(&cb, ']')
 		return respond_list(strings.to_string(cb), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 	}
+	if query_bool(req.query, "pinned", false) || query_value(req.query, "pinned") == "1" {
+		pinned_chains, pinned_err := taskchain_service.list_pinned_chains(h.taskchains, auth_ctx)
+		if pinned_err.code != .None do return respond_error(pinned_err, req.request_id)
+		defer delete(pinned_chains)
+		items := enrich_chain_list_items(h, auth_ctx, pinned_chains, false)
+		defer delete(items)
+		b := strings.builder_make()
+		write_chain_list_items_json(&b, items[:])
+		return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+	}
 	// Default (no ?coordinated_by): the project-grouped task-chains list (TC-API).
 	// Enrich every visible chain with its project (resolved via the coordinator
 	// instance's conversation), then either page ONE project or group them ALL.
@@ -181,6 +191,8 @@ Chain_List_Item :: struct {
 	project_id:                    string,
 	project_name:                  string,
 	task_count:                    int,
+	is_pinned:                     bool,
+	pinned_at:                     string,
 }
 
 // enrich_chain_list_items resolves each chain's project once, memoizing the
@@ -189,7 +201,8 @@ Chain_List_Item :: struct {
 // returned dynamic array is caller-owned (delete it); its strings are not.
 enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, chains: []domain.Task_Chain, only_with_tasks: bool) -> [dynamic]Chain_List_Item {
 	items := make([dynamic]Chain_List_Item)
-	project_by_instance := conversation_project_index(h, auth); defer delete(project_by_instance)
+	proj_idx := conversation_project_index(h, auth)
+	defer destroy_conversation_project_index(&proj_idx)
 	name_by_project := make(map[string]string); defer delete(name_by_project)
 	// One grouped rollup for every chain, not one query per chain.
 	task_counts, counts_err := taskchain_service.task_counts_by_chain(h.taskchains, auth)
@@ -200,24 +213,43 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 	for c in chains {
 		count := task_counts[string(c.chain_id)] or_else 0
 		if only_with_tasks && counts_ok && count == 0 do continue
-		project_id := project_by_instance[c.coordinator_agent_instance_id] or_else ""
+		coord_id := c.coordinator_agent_instance_id
+		if coord_id == "" do coord_id = proj_idx.coord_by_chain[string(c.chain_id)] or_else ""
+		project_id := proj_idx.by_instance[c.coordinator_agent_instance_id] or_else ""
+		if project_id == "" && string(c.chain_id) in proj_idx.by_chain {
+			project_id = proj_idx.by_chain[string(c.chain_id)]
+		}
 		append(&items, Chain_List_Item{
 			chain_id = string(c.chain_id),
 			title = c.title,
 			status = chain_status_http(c.status),
 			created_at = c.created_at,
 			updated_at = c.updated_at,
-			coordinator_agent_instance_id = c.coordinator_agent_instance_id,
+			coordinator_agent_instance_id = coord_id,
 			project_id = project_id,
 			project_name = resolve_project_name(h, auth, project_id, &name_by_project),
 			task_count = count,
+			is_pinned = c.is_pinned,
+			pinned_at = c.pinned_at,
 		})
 	}
 	return items
 }
 
-// conversation_project_index maps coordinator instance -> project id for the whole
-// request in ONE conversation listing.
+Conversation_Project_Index :: struct {
+	by_instance:    map[string]string,
+	by_chain:       map[string]string,
+	coord_by_chain: map[string]string,
+}
+
+destroy_conversation_project_index :: proc(idx: ^Conversation_Project_Index) {
+	delete(idx.by_instance)
+	delete(idx.by_chain)
+	delete(idx.coord_by_chain)
+}
+
+// conversation_project_index maps coordinator instance -> project id AND chain id -> project id
+// for the whole request in ONE conversation listing.
 //
 // This used to be a per-chain lookup (get_conversation_by_instance), memoized by
 // coordinator instance. The memo never hit: coordinator instances are unique per
@@ -232,17 +264,30 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 // NOTE: the listing is bounded (the repository clamps to 200), so an owner with more
 // conversations than that would misfile the overflow as "Unassigned" — the same
 // bound the old per-chain path had. A by-instance index is the real fix.
-conversation_project_index :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context) -> map[string]string {
-	index := make(map[string]string)
-	if h.content == nil do return index
+conversation_project_index :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context) -> Conversation_Project_Index {
+	idx := Conversation_Project_Index{
+		by_instance    = make(map[string]string),
+		by_chain       = make(map[string]string),
+		coord_by_chain = make(map[string]string),
+	}
+	if h.content == nil do return idx
 	rows, err := content_service.list_conversations(h.content, auth, 200, "")
-	if err.code != .None do return index
+	if err.code != .None do return idx
 	defer delete(rows)
 	for c in rows {
-		if c.agent_instance_id == "" do continue
-		index[c.agent_instance_id] = string(c.project_id)
+		if c.agent_instance_id != "" && string(c.project_id) != "" {
+			idx.by_instance[c.agent_instance_id] = string(c.project_id)
+		}
+		if c.chain_id != "" {
+			if string(c.project_id) != "" {
+				idx.by_chain[c.chain_id] = string(c.project_id)
+			}
+			if c.agent_instance_id != "" && !(c.chain_id in idx.coord_by_chain) {
+				idx.coord_by_chain[c.chain_id] = c.agent_instance_id
+			}
+		}
 	}
-	return index
+	return idx
 }
 
 // resolve_project_name looks up a project's display name, memoized by project id.
@@ -433,7 +478,9 @@ write_chain_list_item_json :: proc(b: ^strings.Builder, it: Chain_List_Item) {
 	strings.write_string(b, "\",\"project_id\":\""); write_handler_json_string(b, it.project_id)
 	strings.write_string(b, "\",\"project_name\":\""); write_handler_json_string(b, it.project_name)
 	strings.write_string(b, "\",\"task_count\":"); strings.write_int(b, it.task_count)
-	strings.write_byte(b, '}')
+	strings.write_string(b, ",\"is_pinned\":"); strings.write_string(b, "true" if it.is_pinned else "false")
+	strings.write_string(b, ",\"pinned_at\":\""); write_handler_json_string(b, it.pinned_at)
+	strings.write_string(b, "\"}")
 }
 
 write_chain_list_items_json :: proc(b: ^strings.Builder, items: []Chain_List_Item) {
@@ -485,7 +532,17 @@ patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
-	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), status = json_string(req.body, "status"), coordinator_agent_instance_id = json_string(req.body, "coordinator_agent_instance_id"), has_coordinator = strings.contains(req.body, "\"coordinator_agent_instance_id\"")})
+	has_pinned := strings.contains(req.body, "\"is_pinned\"") || strings.contains(req.body, "\"pinned\"")
+	is_pinned_val := json_bool(req.body, "is_pinned") if strings.contains(req.body, "\"is_pinned\"") else json_bool(req.body, "pinned")
+	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{
+		title = json_string(req.body, "title"),
+		description = json_string(req.body, "description"),
+		status = json_string(req.body, "status"),
+		coordinator_agent_instance_id = json_string(req.body, "coordinator_agent_instance_id"),
+		has_coordinator = strings.contains(req.body, "\"coordinator_agent_instance_id\""),
+		is_pinned = is_pinned_val,
+		has_is_pinned = has_pinned,
+	})
 	if !updated do return respond_error(err, req.request_id)
 	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
 	b := strings.builder_make(); write_chain_json(&b, chain)
@@ -516,6 +573,8 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&b, "\",\"default_reviewer_refs\":"); strings.write_string(&b, json_or_empty_array(chain.default_reviewer_refs_json))
 	strings.write_string(&b, ",\"created_at\":\""); write_handler_json_string(&b, chain.created_at)
 	strings.write_string(&b, "\",\"updated_at\":\""); write_handler_json_string(&b, chain.updated_at)
+	strings.write_string(&b, "\",\"is_pinned\":"); strings.write_string(&b, "true" if chain.is_pinned else "false")
+	strings.write_string(&b, ",\"pinned_at\":\""); write_handler_json_string(&b, chain.pinned_at)
 	strings.write_string(&b, "\",\"members\":[")
 	for m, i in members {
 		if i > 0 do strings.write_byte(&b, ',')
@@ -569,6 +628,27 @@ complete_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := path_part(req.path, 4)
 	chain, got, err := taskchain_service.change_chain_status(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), .Completed)
 	if !got do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
+	b := strings.builder_make(); write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
+pin_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := path_part(req.path, 4)
+	has_pinned_field := strings.contains(req.body, "\"pinned\"") || strings.contains(req.body, "\"is_pinned\"")
+	pinned := true
+	if has_pinned_field {
+		pinned = json_bool(req.body, "is_pinned") if strings.contains(req.body, "\"is_pinned\"") else json_bool(req.body, "pinned")
+	} else {
+		cur_chain, cur_ok, cur_err := taskchain_service.get_chain_for_read(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
+		if !cur_ok do return respond_error(cur_err, req.request_id)
+		pinned = !cur_chain.is_pinned
+	}
+	chain, updated, err := taskchain_service.pin_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), pinned)
+	if !updated do return respond_error(err, req.request_id)
 	publish_chain_changed(h, string(chain.owner_user_id), string(chain.chain_id), "updated")
 	b := strings.builder_make(); write_chain_json(&b, chain)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
@@ -890,7 +970,7 @@ remove_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {
-	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, c.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(c.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, chain_status_http(c.status)); strings.write_string(b, "\",\"kind\":\""); write_handler_json_string(b, c.kind); strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id); strings.write_string(b, "\",\"default_reviewer_refs\":"); strings.write_string(b, json_or_empty_array(c.default_reviewer_refs_json)); strings.write_string(b, ",\"created_at\":\""); write_handler_json_string(b, c.created_at); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, c.updated_at); strings.write_string(b, "\"}")
+	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, c.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(c.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, chain_status_http(c.status)); strings.write_string(b, "\",\"kind\":\""); write_handler_json_string(b, c.kind); strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id); strings.write_string(b, "\",\"default_reviewer_refs\":"); strings.write_string(b, json_or_empty_array(c.default_reviewer_refs_json)); strings.write_string(b, ",\"created_at\":\""); write_handler_json_string(b, c.created_at); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, c.updated_at); strings.write_string(b, "\",\"is_pinned\":"); strings.write_string(b, "true" if c.is_pinned else "false"); strings.write_string(b, ",\"pinned_at\":\""); write_handler_json_string(b, c.pinned_at); strings.write_string(b, "\"}")
 }
 
 write_task_json :: proc(b: ^strings.Builder, t: domain.Task) {

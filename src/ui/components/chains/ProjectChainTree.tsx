@@ -1,8 +1,14 @@
 import { useState } from 'react';
-import { useListTaskChainsQuery } from '../../api/endpoints/tasks';
+import { useDispatch } from 'react-redux';
+import {
+  useListTaskChainsQuery,
+  useListPinnedTaskChainsQuery,
+  useTogglePinTaskChainMutation,
+} from '../../api/endpoints/tasks';
 import type { ChainListItem } from '../../api/endpoints/tasks';
+import { showToast } from '../../store/toastSlice';
 import CreateChainModal from './CreateChainModal';
-import { StatusDot } from '@ui';
+import { StatusDot, Icon } from '@ui';
 
 type Props = {
   projects: Array<{ projectId: string; projectName: string }>;
@@ -42,10 +48,12 @@ function ChainRow({
   chain,
   currentPath,
   onNavigate,
+  onTogglePin,
 }: {
   chain: ChainListItem;
   currentPath: string;
   onNavigate: (path: string) => void;
+  onTogglePin?: (chain: ChainListItem, e: React.MouseEvent) => void;
 }) {
   const path = chain.coordinatorAgentInstanceId
     ? `/conversations/${encodeURIComponent(chain.coordinatorAgentInstanceId)}`
@@ -59,7 +67,7 @@ function ChainRow({
     <a
       href={`#${path}`}
       onClick={(e) => { e.preventDefault(); onNavigate(path); }}
-      className={`flex min-h-8 w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-[12.5px] transition ${
+      className={`group flex h-8 min-h-8 w-full items-center gap-2 rounded-xl px-2.5 text-[12.5px] transition ${
         active
           ? 'bg-neutral-soft text-primary font-semibold'
           : 'text-muted hover:bg-neutral-soft hover:text-primary'
@@ -72,7 +80,26 @@ function ChainRow({
         size="sm"
       />
       <span className="min-w-0 flex-1 truncate">{title}</span>
-      {timestamp ? <span className="shrink-0 text-[10px] text-faint">{timestamp}</span> : null}
+      {timestamp ? (
+        <span className={`shrink-0 text-[10px] leading-none text-faint ${chain.isPinned ? 'hidden' : 'group-hover:hidden'}`}>
+          {timestamp}
+        </span>
+      ) : null}
+      {onTogglePin ? (
+        <button
+          type="button"
+          aria-label={chain.isPinned ? 'Unpin chain' : 'Pin chain'}
+          title={chain.isPinned ? 'Unpin chain' : 'Pin chain'}
+          onClick={(e) => onTogglePin(chain, e)}
+          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded transition ${
+            chain.isPinned
+              ? 'text-accent hover:text-accent/80'
+              : 'hidden text-faint hover:text-primary group-hover:flex'
+          }`}
+        >
+          <Icon name="pin" size={11} />
+        </button>
+      ) : null}
     </a>
   );
 }
@@ -83,12 +110,14 @@ function ProjectChainGroup({
   currentPath,
   onNavigate,
   onOpenModal,
+  onTogglePin,
 }: {
   projectId: string;
   projectName: string;
   currentPath: string;
   onNavigate: (path: string) => void;
   onOpenModal: (projectId: string) => void;
+  onTogglePin: (chain: ChainListItem, e: React.MouseEvent) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [cursor, setCursor] = useState('');
@@ -132,6 +161,7 @@ function ProjectChainGroup({
               chain={chain}
               currentPath={currentPath}
               onNavigate={onNavigate}
+              onTogglePin={onTogglePin}
             />
           ))}
           {!isFetching && chains.length === 0 ? (
@@ -154,12 +184,68 @@ function ProjectChainGroup({
 
 export default function ProjectChainTree({ projects, currentPath, onNavigate }: Props) {
   const [modalProjectId, setModalProjectId] = useState<string | null>(null);
+  const dispatch = useDispatch();
+  const { data: pinnedData } = useListPinnedTaskChainsQuery();
+  const [togglePin] = useTogglePinTaskChainMutation();
+  const pinnedChains = pinnedData?.chains ?? [];
+
+  const handleTogglePin = async (chain: ChainListItem, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (!chain.isPinned && pinnedChains.length >= 10) {
+      dispatch(
+        showToast({
+          kind: 'error',
+          title: 'Maximum pinned chains reached',
+          message: 'You can pin up to 10 task chains. Unpin an existing chain first.',
+        })
+      );
+      return;
+    }
+
+    try {
+      await togglePin({ chainId: chain.chainId, pinned: !chain.isPinned }).unwrap();
+    } catch (err: any) {
+      dispatch(
+        showToast({
+          kind: 'error',
+          title: 'Failed to update pin status',
+          message: String(err?.data?.error?.message || err?.message || 'Unknown error'),
+        })
+      );
+    }
+  };
 
   return (
     <section data-debug-id="sidebar-project-chain-tree" className="mt-4">
       <div className="mb-1.5 px-2.5 text-[10.5px] font-bold uppercase tracking-[0.16em] text-faint">
         Chains
       </div>
+
+      {/* Pinned chains at top of Chains section */}
+      {pinnedChains.length > 0 && (
+        <div className="mb-3" data-debug-id="pinned-task-chains">
+          <div className="mb-1 flex items-center justify-between px-2.5 text-[10.5px] font-bold uppercase tracking-[0.14em] text-faint">
+            <span>Pinned</span>
+            <span className="text-[10px] font-normal tracking-normal text-faint">
+              {pinnedChains.length}/10
+            </span>
+          </div>
+          <div className="space-y-0.5">
+            {pinnedChains.map((chain) => (
+              <ChainRow
+                key={`pinned-${chain.chainId}`}
+                chain={chain}
+                currentPath={currentPath}
+                onNavigate={onNavigate}
+                onTogglePin={handleTogglePin}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {projects.length === 0 ? (
         <div className="px-2.5 py-2 text-[11.5px] text-faint">No projects.</div>
       ) : (
@@ -171,6 +257,7 @@ export default function ProjectChainTree({ projects, currentPath, onNavigate }: 
             currentPath={currentPath}
             onNavigate={onNavigate}
             onOpenModal={setModalProjectId}
+            onTogglePin={handleTogglePin}
           />
         ))
       )}

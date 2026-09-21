@@ -71,7 +71,12 @@ Task_Chain :: struct {
 	updated_at:                    string,
 	published_at:                  string,
 	completed_at:                  string,
+	is_pinned:                     bool,
+	pinned_at:                     string,
 }
+
+TASK_CHAINS_MAX_PINNED :: 10
+
 
 Task :: struct {
 	task_id:            Task_ID,

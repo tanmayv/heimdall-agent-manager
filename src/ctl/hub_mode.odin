@@ -97,7 +97,11 @@ ctl_hub_chats :: proc(base, token, action: string, args: []string) {
 }
 
 ctl_hub_task_chains :: proc(base, token, action: string, args: []string) {
-	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/task-chains", ""); return }
+	if action == "" || action == "list" {
+		if has_flag(args, "--pinned") { ctl_hub_request(base, token, "GET", "/api/v1/task-chains?pinned=1", ""); return }
+		ctl_hub_request(base, token, "GET", "/api/v1/task-chains", "")
+		return
+	}
 	if action == "create" {
 		title := option_value(args, "--title", "")
 		if title == "" { fmt.println("usage: ham-ctl hub task-chains create --title <title> [--description <text>] [--kind <kind>] [--coordinator <id>]"); return }
@@ -107,7 +111,9 @@ ctl_hub_task_chains :: proc(base, token, action: string, args: []string) {
 		return
 	}
 	chain_id := option_value(args, "--chain-id", option_value(args, "--chain", ""))
-	if chain_id == "" { fmt.println("usage: ham-ctl hub task-chains <show|update|members|publish|complete> --chain-id <id>"); return }
+	if chain_id == "" { fmt.println("usage: ham-ctl hub task-chains <show|update|members|publish|complete|pin|unpin> --chain-id <id>"); return }
+	if action == "pin" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/pin", safe_path_part(chain_id)), "{\"pinned\":true}"); return }
+	if action == "unpin" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/pin", safe_path_part(chain_id)), "{\"pinned\":false}"); return }
 	if action == "show" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), ""); return }
 	if action == "update" {
 		fields := make([dynamic]string)
@@ -153,7 +159,7 @@ ctl_hub_task_chains :: proc(base, token, action: string, args: []string) {
 		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object(json_kv("status", status)))
 		return
 	}
-	fmt.println("usage: ham-ctl hub task-chains <list|create|show|update|members|add-agent|publish|complete|set-status>")
+	fmt.println("usage: ham-ctl hub task-chains <list|create|show|update|members|add-agent|publish|complete|set-status|pin|unpin>")
 }
 
 ctl_hub_tasks :: proc(base, token, action: string, args: []string) {
@@ -617,7 +623,7 @@ print_hub_help :: proc(cmd: []string) {
 	if resource == "launch" { fmt.println("ham-ctl hub launch --agent-id <id> [--bridge-id <id>] [--tier <tier>]\nPurpose: start a new agent instance through Hub/Bridge.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... launch --agent-id reviewer --tier normal"); return }
 	if resource == "chats" { fmt.println("ham-ctl hub chats <list|create|send|messages>\nPurpose: read/write user chat conversations.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... chats list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... chats send --conversation-id chat_123 --body 'Hello'"); return }
 	if resource == "tasks" { fmt.println("ham-ctl hub tasks <list|create|publish|status|nudge> --chain-id <id>\nPurpose: manage Hub task records.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... tasks list --chain-id chain_123"); return }
-	if resource == "task-chains" { fmt.println("ham-ctl hub task-chains <list|create|show|publish|complete>\nPurpose: manage Hub task chains.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... task-chains create --title 'Fix bug'"); return }
+	if resource == "task-chains" { fmt.println("ham-ctl hub task-chains <list|create|show|publish|complete|pin|unpin>\nPurpose: manage Hub task chains.\nExample:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... task-chains create --title 'Fix bug'"); return }
 	if resource == "projects" { fmt.println("ham-ctl hub projects <list|create|show|update>\nPurpose: manage Hub projects.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... projects list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... projects create --name demo --repo-url https://example/repo.git"); return }
 	if resource == "artifacts" { fmt.println("ham-ctl hub artifacts <list|create|show|content|update|delete>\nPurpose: manage Hub artifacts.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... artifacts list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... artifacts create --name notes --content 'hello'"); return }
 	if resource == "memories" || resource == "memory" { fmt.println("ham-ctl hub memories <list|create|show|content|approve|reject|archive>\nPurpose: manage Hub memories.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories show mem_123\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories content mem_123\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... memories create --body 'Use nix check.' --title 'Test command'"); return }

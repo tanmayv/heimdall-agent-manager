@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
-import { Modal } from '@ui';
+import { Modal, Select } from '@ui';
 import { useCreateShellMutation } from '../../api/endpoints/shells';
 import type { ShellSessionKind } from '../../api/endpoints/shells';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
@@ -101,11 +101,11 @@ export function NewShellDialog({ bridgeId, chainId, onClose, onCreated }: NewShe
           {/* Bridge (T11-UI-2) */}
           <div className="mb-3">
             <label htmlFor="new-shell-bridge" className="mb-1 block font-semibold text-muted">Bridge</label>
-            <select
+            <Select
               id="new-shell-bridge"
               data-debug-id="new-shell-dialog-bridge-select"
               value={selectedBridgeId}
-              onChange={(e) => setSelectedBridgeId(e.target.value)}
+              onChange={(value) => setSelectedBridgeId(value)}
               disabled={bridgesQuery.isLoading}
               className={FIELD_CLASS}
             >
@@ -122,7 +122,7 @@ export function NewShellDialog({ bridgeId, chainId, onClose, onCreated }: NewShe
                   </option>
                 );
               })}
-            </select>
+            </Select>
             {effectiveChainId && (
               <p className="mt-1 text-[10px] text-faint">
                 Tagged with chain <span className="font-mono">{effectiveChainId}</span>
