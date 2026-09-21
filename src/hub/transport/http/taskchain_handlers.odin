@@ -643,13 +643,32 @@ get_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+// create_priority_from_body reads an optional "priority" field for a task CREATE.
+// Unlike domain.task_priority_from_string — which coerces anything unrecognised to
+// P2 — an explicitly present but invalid value is REJECTED here (REQ-CLI-2): a
+// create that silently seats "urgent" at p2 is the exact failure this fixes. Absent
+// means absent (has = false) and the service applies the documented P2 default.
+// Scoped to create on purpose; the update/patch path keeps its existing behaviour.
+create_priority_from_body :: proc(body: string) -> (priority: domain.Task_Priority, has: bool, ok: bool, err: domain.Domain_Error) {
+	if !strings.contains(body, "\"priority\"") do return .P2, false, true, {}
+	raw := strings.trim_space(json_string(body, "priority"))
+	switch raw {
+	case "p0", "P0": return .P0, true, true, {}
+	case "p1", "P1": return .P1, true, true, {}
+	case "p2", "P2": return .P2, true, true, {}
+	}
+	return .P2, false, false, domain.domain_error(.Validation_Failed, "priority must be one of p0, p1, p2")
+}
+
 create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
 	deps := json_array_of_strings(req.body, "depends_on")
-	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), depends_on = deps})
+	priority, has_priority, prio_ok, prio_err := create_priority_from_body(req.body)
+	if !prio_ok do return respond_error(prio_err, req.request_id)
+	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), priority = priority, has_priority = has_priority, depends_on = deps})
 	if !created do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "created")
 	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")

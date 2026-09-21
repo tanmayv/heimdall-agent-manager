@@ -634,12 +634,26 @@ agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 			return respond_error(domain.domain_error(.Forbidden, "only chain coordinator can create tasks"), req.request_id)
 		}
 	}
+	// Agent mode reaches create through THIS handler, not the user-mode POST, so the
+	// priority parse has to exist in both places (REQ-CLI-2).
+	priority, has_priority, prio_ok, prio_err := create_priority_from_body(params)
+	if !prio_ok do return respond_error(prio_err, req.request_id)
+	// REQ-CLI-10: --depends-on was sent by the ctl (agent_mode.odin:330) and dropped
+	// here, so agent-created tasks silently got an EMPTY dependency list and this
+	// chain's dep graph never existed. Same helper and same field as the user-mode
+	// create (taskchain_handlers.odin:637) so the two cannot diverge. An unknown or
+	// malformed id is REJECTED, not dropped: create_task runs each one through
+	// add_task_dependency, which fails the whole call.
+	deps := json_array_of_strings(params, "depends_on")
 	task, created, err := taskchain_service.create_task(h.taskchains, auth, taskchain_service.Create_Task_Input{
 		chain_id = domain.Task_Chain_ID(chain_id),
 		title = json_string(params, "title"),
 		description = json_string(params, "description"),
 		assignee_ref_json = json_object_or_empty(params, "assignee_ref"),
 		reviewer_refs_json = json_array_optional(params, "reviewer_refs"),
+		priority = priority,
+		has_priority = has_priority,
+		depends_on = deps,
 	})
 	if !created do return respond_error(err, req.request_id)
 	publish_agent_action(h, inst, "task_create", fmt.tprintf("created task \"%s\"", task.title))

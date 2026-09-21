@@ -60,6 +60,13 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 // programmatically — the human pagination view of ctl_search_command is not
 // used here). The non-agent user-mode path (ctl_search_command) is untouched.
 ctl_agentmode_search :: proc(endpoint, token: string, tokens, args: []string) {
+	// REQ-CLI-4: reject unrecognised flags before searching. Agent mode shares the
+	// validator with user mode (src/ctl/search.odin) so the two accepted surfaces
+	// cannot drift; agent_mode=true swaps --json for --cursor/--since.
+	if bad := search_validate_flags(args, true); bad != "" {
+		search_reject_unknown_flag(bad, true)
+		return
+	}
 	query := pos(tokens, 0)
 	if strings.trim_space(query) == "" {
 		fmt.println(`{"ok":false,"message":"search requires a query: ham-ctl search <query> [--scope csv] [--limit N] [--cursor C] [--task-ids csv] [--chain-ids csv] [--project-ids csv] [--conversation-ids csv] [--not-in-task-ids csv] [--not-in-chain-ids csv] [--not-in-project-ids csv] [--not-in-conversation-ids csv] [--exclude text]"}`)
@@ -272,6 +279,12 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
 		ctl_agent_call(endpoint, token, "agent.task_chain.reconcile", json_object(json_kv("chain_id", cid)))
+	case "publish":
+		// Coordinator only (enforced hub-side). Flips the chain Draft -> Published and
+		// cascades Published to its tasks, which is what makes them promotable/nudgeable.
+		cid := option_value(args, "--chain", pos(tokens, 1))
+		if cid == "" { print_agent_help([]string{"task-chain"}); return }
+		ctl_agent_call(endpoint, token, "agent.task_chain.publish", json_object(json_kv("chain_id", cid)))
 	case:
 		print_agent_help([]string{"task-chain"})
 	}
@@ -307,6 +320,16 @@ ctl_v2_task :: proc(endpoint, token: string, tokens, args: []string) {
 		append(&fields, json_kv("title", title))
 		if v := option_value(args, "--description", ""); v != "" do append(&fields, json_kv("description", v))
 		if v := option_value(args, "--chain", ""); v != "" do append(&fields, json_kv("chain_id", v))
+		// REQ-CLI-2: --priority was advertised on create, accepted, and never sent.
+		// Reject a bad value here rather than forwarding it — silently seating an
+		// unrecognised priority at p2 is the defect this fixes, not the fix.
+		if v := option_value(args, "--priority", ""); v != "" {
+			if !ctl_valid_task_priority(v) {
+				fmt.printfln("usage: --priority must be one of p0, p1, p2 (got %q)", v)
+				return
+			}
+			append(&fields, json_kv("priority", v))
+		}
 		if a := option_value(args, "--assignee", ""); a != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", a))}))
 		// --reviewer accepts a comma-separated list for multiple reviewers.
 		if r := option_value(args, "--reviewer", ""); r != "" do append(&fields, ctl_v2_reviewer_refs(r))
@@ -1273,6 +1296,9 @@ print_help_task_chain :: proc() {
 	fmt.println("  set-description <text> [--chain <id>] | --stdin   Set the chain description")
 	fmt.println("                                      (coordinator only; pass \"\" to clear).")
 	fmt.println("  set-status <active|completed> [--chain <id>]    Change chain status (coordinator only).")
+	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only). Cascades")
+	fmt.println("                                      published to its tasks — until then nothing in the")
+	fmt.println("                                      chain promotes or can be nudged.")
 	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
 	fmt.println("                                      actionable tasks, set current-tasks, nudge agents.")
 	fmt.println("                                      Coordinator/owner only. Run after staging tasks/deps.")
@@ -1282,6 +1308,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  ham-ctl task-chain show chain_abc")
 	fmt.println("  ham-ctl task-chain set-title 'Auth hardening' --chain chain_abc")
 	fmt.println("  ham-ctl task-chain set-description 'Harden auth: rotate tokens, add tests.'")
+	fmt.println("  ham-ctl task-chain publish chain_abc")
 }
 
 print_help_task :: proc() {

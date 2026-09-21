@@ -18,6 +18,17 @@ Ctl_Transport :: struct {
 	agent_token: string,
 }
 
+// ctl_valid_task_priority gates --priority on task CREATE in both CLI modes.
+// The Hub coerces an unrecognised priority to p2, so an unvalidated flag value
+// would land silently at the default; REQ-CLI-2 requires a usage error instead.
+// Create-only by design: the update path's existing behaviour is unchanged.
+ctl_valid_task_priority :: proc(value: string) -> bool {
+	switch value {
+	case "p0", "p1", "p2": return true
+	}
+	return false
+}
+
 resolve_ctl_transport :: proc(args: []string) -> (Ctl_Transport, bool) {
 	as_override := option_value(args, "--as", "")
 	hub_url := hub_user_mode_url(args)
@@ -328,7 +339,15 @@ ctl_tasks_command :: proc(cmd: []string, args: []string) {
 		fields := make([dynamic]string)
 		append(&fields, json_kv("title", title))
 		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
-		if prio := option_value(args, "--priority", ""); prio != "" do append(&fields, json_kv("priority", prio))
+		if prio := option_value(args, "--priority", ""); prio != "" {
+			// REQ-CLI-2: this field was already being sent and silently discarded by
+			// the Hub; now that create honours it, a bad value must not slide to p2.
+			if !ctl_valid_task_priority(prio) {
+				fmt.printfln("usage: --priority must be one of p0, p1, p2 (got %q)", prio)
+				return
+			}
+			append(&fields, json_kv("priority", prio))
+		}
 		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" {
 			append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
 		}
