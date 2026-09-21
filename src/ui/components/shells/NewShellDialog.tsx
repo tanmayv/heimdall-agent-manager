@@ -21,7 +21,7 @@ interface NewShellDialogProps {
 const KIND_OPTIONS: { value: ShellSessionKind; label: string; description: string }[] = [
   { value: 'interactive', label: 'Interactive', description: 'PTY shell with terminal' },
   { value: 'command', label: 'Command', description: 'One-shot command with log output' },
-  { value: 'server', label: 'Server', description: 'Long-running server with preview' },
+  { value: 'server', label: 'Server', description: 'Long-running server process' },
   { value: 'agent', label: 'Agent', description: 'Agent PTY session' },
 ];
 
@@ -80,7 +80,7 @@ export function NewShellDialog({ bridgeId, chainId, onClose, onCreated }: NewShe
         cmd: cmd || undefined,
         cwd: cwd || undefined,
         label: label || undefined,
-        server_port: kind === 'server' && port ? Number(port) : undefined,
+        server_port: port ? Number(port) : undefined,
         chain_id: effectiveChainId || undefined,
       }).unwrap();
       onCreated?.(session.session_id);
@@ -194,23 +194,29 @@ export function NewShellDialog({ bridgeId, chainId, onClose, onCreated }: NewShe
             />
           </div>
 
-          {/* Port (server kind only) */}
-          {kind === 'server' && (
-            <div className="mb-3">
-              <label htmlFor="new-shell-port" className="mb-1 block font-semibold text-muted">Port (optional)</label>
-              <input
-                id="new-shell-port"
-                type="number"
-                inputMode="numeric"
-                placeholder="e.g. 3000"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-                min="1"
-                max="65535"
-                className={FIELD_CLASS}
-              />
-            </div>
-          )}
+          {/* Port. XM-12: offered for every kind, not just server. Any session that
+              declares a port is reachable (XM-8), so a terminal you already know will
+              run a server on 3000 can say so here instead of setting it afterwards. */}
+          <div className="mb-3">
+            <label htmlFor="new-shell-port" className="mb-1 block font-semibold text-muted">Port (optional)</label>
+            <input
+              id="new-shell-port"
+              data-debug-id="new-shell-dialog-port-input"
+              type="number"
+              inputMode="numeric"
+              placeholder="e.g. 3000"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              min="1"
+              max="65535"
+              className={FIELD_CLASS}
+            />
+            <p className="mt-1 text-[10px] text-faint">
+              {kind === 'server'
+                ? 'The port your server will listen on. Declaring it makes the session reachable in the preview.'
+                : 'If something inside this session will listen on a port, declare it here and the session is reachable in the preview. You can also set it later.'}
+            </p>
+          </div>
 
           {createState.isError && (
             <div className="rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-xs text-danger">
