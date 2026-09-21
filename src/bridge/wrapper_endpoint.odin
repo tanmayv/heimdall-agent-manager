@@ -93,9 +93,13 @@ bridge_local_endpoint_accept_unix_loop :: proc(listener: posix.FD) {
 
 bridge_local_endpoint_unix_client_thread :: proc(client: posix.FD) {
 	registered_instance := ""
+	// REQ-XM-4: see bridge_local_endpoint_client_thread — the proxy path takes
+	// ownership of the socket and closes it itself.
+	proxy_owned := false
+	first_line := true
 	defer {
 		if registered_instance != "" do bridge_wrapper_push_drop(registered_instance)
-		posix.close(client)
+		if !proxy_owned do posix.close(client)
 	}
 	buf: [8192]byte
 	pending := ""
@@ -103,6 +107,17 @@ bridge_local_endpoint_unix_client_thread :: proc(client: posix.FD) {
 		n := posix.recv(client, raw_data(buf[:]), c.size_t(len(buf)), {})
 		if n <= 0 do return
 		pending = strings.concatenate({pending, string(buf[:int(n)])})
+		// REQ-XM-4: same first-line HTTP demultiplex as the loopback listener.
+		if first_line && bridge_config.local_proxy_enabled {
+			if idx := strings.index_byte(pending, '\n'); idx >= 0 {
+				if bridge_proxy_looks_like_http(strings.trim_space(pending[:idx])) {
+					bridge_local_proxy_serve_unix(client, pending)
+					proxy_owned = true
+					return
+				}
+				first_line = false
+			}
+		}
 		for {
 			idx := strings.index_byte(pending, '\n')
 			if idx < 0 do break
@@ -128,9 +143,14 @@ bridge_local_endpoint_accept_loop :: proc(listener: net.TCP_Socket) {
 
 bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 	registered_instance := ""
+	// REQ-XM-4: once the proxy path takes the socket it owns its lifetime (the
+	// response streams back asynchronously via proxy_data), so this thread must
+	// NOT close it on the way out.
+	proxy_owned := false
+	first_line := true
 	defer {
 		if registered_instance != "" do bridge_wrapper_push_drop(registered_instance)
-		net.close(client)
+		if !proxy_owned do net.close(client)
 	}
 	buf: [8192]byte
 	pending := ""
@@ -138,6 +158,20 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 		n, err := net.recv_tcp(client, buf[:])
 		if err != nil || n <= 0 do return
 		pending = strings.concatenate({pending, string(buf[:n])})
+		// REQ-XM-4: demultiplex HTTP from JSONL on the first line only. An HTTP
+		// request line means this is a /proxy/<session_id>/<path> call, which owns
+		// the socket for the rest of its life; anything else is the JSONL protocol
+		// and falls through completely unchanged.
+		if first_line && bridge_config.local_proxy_enabled {
+			if idx := strings.index_byte(pending, '\n'); idx >= 0 {
+				if bridge_proxy_looks_like_http(strings.trim_space(pending[:idx])) {
+					bridge_local_proxy_serve_tcp(client, pending)
+					proxy_owned = true
+					return
+				}
+				first_line = false
+			}
+		}
 		for {
 			idx := strings.index_byte(pending, '\n')
 			if idx < 0 do break

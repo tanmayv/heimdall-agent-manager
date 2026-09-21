@@ -27,6 +27,11 @@ Bridge_Config :: struct {
 	bootstrap_cache_max_bytes: int,
 	local_endpoint_port: u16,
 	local_endpoint_run_dir: string,
+	// REQ-XM-4: serve the local HTTP proxy entry point (/proxy/<session_id>/<path>) on
+	// the local endpoint. ENABLED BY DEFAULT by user decision (2026-09-21); --no-local-proxy
+	// or [bridge] local_proxy_enabled=false turns it off. This is an off switch, not an
+	// opt-in: a deployment that sets nothing gets the proxy.
+	local_proxy_enabled: bool,
 	agent_command: string,
 	agent_commands: [dynamic]cfg_lib.Agent_Command_Config,
 	nudge_enabled: bool,
@@ -110,7 +115,7 @@ main :: proc() {
 
 print_usage :: proc() {
 	fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN|--bridge-token-file PATH] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--agent-command CMD]")
+	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN|--bridge-token-file PATH] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--no-local-proxy] [--agent-command CMD]")
 	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --provider pi --tier normal --run-dir <dir> -- <agent-command>")
 	fmt.println("enroll: ham-bridge enroll --hub http://127.0.0.1:49322 --enrollment-token TOKEN [--bridge-token-file PATH]")
 	fmt.println("TLS: https:// Hub URLs use HTTPS and wss:// with certificate/hostname validation; http:// tunnel URLs use ws://.")
@@ -243,6 +248,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		bootstrap_cache_max_bytes = 256 * 1024 * 1024,
 		local_endpoint_port = 0,
 		local_endpoint_run_dir = "/tmp/heimdall-bridge-local",
+		local_proxy_enabled = true,
 		agent_command = "sleep 3600",
 		agent_commands = make([dynamic]cfg_lib.Agent_Command_Config),
 	}
@@ -281,6 +287,12 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 			cfg.fs_read_page_bytes = i64(loaded.config.bridge.fs_read_page_bytes)
 		}
 		cfg.pty_host_runtime = loaded.config.bridge.pty_host_runtime
+		// REQ-XM-4: only an explicitly present [bridge].local_proxy_enabled key
+		// overrides the enabled-by-default. --no-local-proxy is applied after the
+		// config load below, so the CLI flag still wins over the file.
+		if loaded.config.bridge.local_proxy_configured {
+			cfg.local_proxy_enabled = loaded.config.bridge.local_proxy_enabled
+		}
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
 	}
@@ -307,6 +319,8 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	if local_port_s := option_value(args, "--local-endpoint-port", ""); local_port_s != "" {
 		if local_port_i, ok := strconv.parse_int(local_port_s); ok do cfg.local_endpoint_port = u16(local_port_i)
 	}
+	// REQ-XM-4: default is enabled, so only the negative flag is wired here.
+	if has_flag(args, "--no-local-proxy") do cfg.local_proxy_enabled = false
 	cfg.local_endpoint_run_dir = option_value(args, "--local-run-dir", cfg.local_endpoint_run_dir)
 	cfg.agent_command = option_value(args, "--agent-command", cfg.agent_command)
 	cfg.data_dir = option_value(args, "--data-dir", cfg.data_dir)

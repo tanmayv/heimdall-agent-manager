@@ -1363,6 +1363,16 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 			}
 			delete(stream_id)
 		}
+	// REQ-XM-4 (bridge_proxy_relay.odin): streams a bridge ORIGINATES toward the hub, as
+	// opposed to the tunnel_* frames above which belong to streams the hub originated
+	// toward a bridge. Deliberately separate names: the two directions have different
+	// lifecycles and sharing the names would make both harder to follow.
+	case "proxy_open":
+		if h.shell_sessions != nil do bridge_proxy_handle_open(h, bridge_id, text)
+	case "proxy_data":
+		if h.shell_sessions != nil do bridge_proxy_handle_data(h, bridge_id, text)
+	case "proxy_close":
+		if h.shell_sessions != nil do bridge_proxy_handle_close(h, bridge_id, text)
 	}
 
 	return true

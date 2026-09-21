@@ -111,7 +111,11 @@ Bridge_Tunnel_Stream :: struct {
 	closed:     bool,
 }
 Bridge_Tunnel_Data_Outgoing :: struct {
-	json: string, // pre-built tunnel_data or tunnel_close WS frame JSON
+	// Pre-built bridge→hub frame JSON. Carries tunnel_data/tunnel_close (preview
+	// responses) and, since REQ-XM-4, proxy_open/proxy_data/proxy_close for streams
+	// this bridge originated. The queue is frame-agnostic — it just hands JSON to the
+	// runtime loop that owns the WS connection.
+	json: string,
 }
 bridge_tunnel_streams:      map[string]^Bridge_Tunnel_Stream
 bridge_tunnel_mu:           sync.Mutex
@@ -139,6 +143,7 @@ bridge_hub_runtime_init :: proc() {
 	bridge_runtime_status_outgoing = make([dynamic]string)
 	bridge_tunnel_streams = make(map[string]^Bridge_Tunnel_Stream, runtime.heap_allocator())
 	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing)
+	bridge_proxy_init()
 }
 
 // Reset / clear runtime instance and launch registries under lock (for tests).
@@ -559,6 +564,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	}
 	if type == "tunnel_close" {
 		bridge_hub_handle_tunnel_close(text)
+		return
+	}
+	// REQ-XM-4: hub→bridge frames for streams this bridge ORIGINATED (local_proxy.odin).
+	// Distinct from tunnel_* above, which are streams the hub originated toward us.
+	if type == "proxy_data" {
+		bridge_hub_handle_proxy_data(text)
+		return
+	}
+	if type == "proxy_close" {
+		bridge_hub_handle_proxy_close(text)
 		return
 	}
 	if bridge_fs_handle_command(conn, type, text) do return

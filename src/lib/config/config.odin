@@ -67,6 +67,15 @@ Bridge_Config :: struct {
 	// [bridge].pty_host_runtime; default false. Also overridable at runtime via
 	// the HEIMDALL_BRIDGE_PTY_HOST env var.
 	pty_host_runtime: bool,
+	// REQ-XM-4: serve the local HTTP proxy entry point on the bridge's local
+	// endpoint. ENABLED BY DEFAULT (user decision, 2026-09-21), so this pair
+	// follows the nudge_configured idiom rather than a bare bool: the zero value
+	// of a bool cannot distinguish "absent" from "explicitly false", and absent
+	// must mean enabled. local_proxy_configured is set only when the key is
+	// actually present, and only then does local_proxy_enabled override the
+	// enabled-by-default.
+	local_proxy_configured: bool,
+	local_proxy_enabled: bool,
 }
 
 Role_Default_Agent_Config :: struct {
@@ -508,6 +517,8 @@ parse_bridge_key :: proc(key, value: string, cfg: ^Bridge_Config) {
 		if n, ok := strconv.parse_int(value); ok do cfg.fs_read_page_bytes = int(n)
 	case "pty_host_runtime":
 		cfg.pty_host_runtime = parse_bool(value)
+	case "local_proxy_enabled":
+		cfg.local_proxy_enabled = parse_bool(value); cfg.local_proxy_configured = true
 	case:
 	}
 }
