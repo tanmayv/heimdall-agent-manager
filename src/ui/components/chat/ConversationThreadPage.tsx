@@ -3,6 +3,8 @@ import ChainOverviewPanel from './ChainOverviewPanel';
 import ProjectFilesPanel, { ProjectQuickOpenModal } from './ProjectFilesPanel';
 import InstanceRunDirPanel from './InstanceRunDirPanel';
 import ShellJobsPanel from './ShellJobsPanel';
+import { ShellsPanel } from '../shells/ShellsPanel';
+import { ShellsTabBadge } from '../shells/ShellsTabBadge';
 import ProjectVcsPanel from './ProjectVcsPanel';
 import AtMentionPopup, { type MentionEntity } from './AtMentionPopup';
 import AgentPaneComposerPanel from './AgentPaneComposerPanel';
@@ -48,6 +50,7 @@ import {
   writeRightSidebarOpen,
   writeRightSidebarTab,
   writeRightSidebarWidth,
+  isRightSidebarTab,
   type RightSidebarTab,
 } from '../../utils/clientPersistence';
 import Icon from '../Icon';
@@ -602,12 +605,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const param = params.get('panel') || params.get('sidebar');
     if (param) {
       const norm = param.trim().toLowerCase();
-      if (norm === 'chain') return 'chain';
-      if (norm === 'tasks') return 'tasks';
-      if (norm === 'files') return 'files';
-      if (norm === 'rundir') return 'rundir';
-      if (norm === 'jobs') return 'jobs';
-      if (norm === 'vcs') return 'vcs';
+      if (isRightSidebarTab(norm)) return norm;
       if (norm === 'closed' || norm === 'false' || norm === '0') return 'closed';
       if (norm === 'open' || norm === 'true' || norm === '1') {
         return readRightSidebarTab(agentInstanceId) || 'tasks';
@@ -650,7 +648,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const param = params.get('panel') || params.get('sidebar');
     if (param) {
       const norm = param.trim().toLowerCase();
-      if (norm === 'chain' || norm === 'tasks' || norm === 'files' || norm === 'rundir' || norm === 'jobs' || norm === 'vcs') {
+      if (isRightSidebarTab(norm)) {
         setRightPanel(norm);
         return;
       }
@@ -694,30 +692,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       const param = params.get('panel') || params.get('sidebar');
       if (param) {
         const norm = param.trim().toLowerCase();
-        if (norm === 'chain') {
-          setRightPanel('chain');
+        if (isRightSidebarTab(norm)) {
+          setRightPanel(norm);
           writeRightSidebarOpen(true, agentInstanceId);
-          writeRightSidebarTab('chain', agentInstanceId);
-        } else if (norm === 'tasks') {
-          setRightPanel('tasks');
-          writeRightSidebarOpen(true, agentInstanceId);
-          writeRightSidebarTab('tasks', agentInstanceId);
-        } else if (norm === 'files') {
-          setRightPanel('files');
-          writeRightSidebarOpen(true, agentInstanceId);
-          writeRightSidebarTab('files', agentInstanceId);
-        } else if (norm === 'rundir') {
-          setRightPanel('rundir');
-          writeRightSidebarOpen(true, agentInstanceId);
-          writeRightSidebarTab('rundir', agentInstanceId);
-        } else if (norm === 'jobs') {
-          setRightPanel('jobs');
-          writeRightSidebarOpen(true, agentInstanceId);
-          writeRightSidebarTab('jobs', agentInstanceId);
-        } else if (norm === 'vcs') {
-          setRightPanel('vcs');
-          writeRightSidebarOpen(true, agentInstanceId);
-          writeRightSidebarTab('vcs', agentInstanceId);
+          writeRightSidebarTab(norm, agentInstanceId);
         } else if (norm === 'closed' || norm === 'false' || norm === '0') {
           setRightPanel('closed');
           writeRightSidebarOpen(false, agentInstanceId);
@@ -1425,6 +1403,9 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const hasVcs = Boolean(projectId);
     const hasRunDir = Boolean(agentInstanceId);
     const hasJobs = Boolean(agentInstanceId);
+    // T11-UI-1: Shells sits next to Background jobs and needs the same context —
+    // a bridge to start sessions on comes from the instance behind this conversation.
+    const hasShells = Boolean(agentInstanceId);
     // The two file-explorer tabs are labeled with a folder icon + the resource
     // name (project name for Files, instance display name for Run dir) and
     // truncate when long. Tasks keeps its fixed label.
@@ -1436,6 +1417,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       : rightPanel === 'vcs' && hasVcs ? 'vcs'
       : rightPanel === 'rundir' && hasRunDir ? 'rundir'
       : rightPanel === 'jobs' && hasJobs ? 'jobs'
+      : rightPanel === 'shells' && hasShells ? 'shells'
       : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
       : hasTasks ? 'tasks'
       : hasFiles ? 'files'
@@ -1482,6 +1464,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             {hasJobs ? (
               <button type="button" title="Background jobs" aria-label="Background jobs" data-debug-id="conversation-right-panel-tab-jobs" onClick={() => selectRightPanelTab('jobs')} aria-pressed={active === 'jobs' ? 'true' : 'false'} className={`${tabBase} ${active === 'jobs' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
                 <Icon name="terminal" size={20} />
+              </button>
+            ) : null}
+            {hasShells ? (
+              <button type="button" title="Shells" aria-label="Shells" data-debug-id="conversation-right-panel-tab-shells" onClick={() => selectRightPanelTab('shells')} aria-pressed={active === 'shells' ? 'true' : 'false'} className={`${tabBase} ${active === 'shells' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
+                <Icon name="device" size={20} />
+                <ShellsTabBadge chainId={chainId} />
               </button>
             ) : null}
           </div>
@@ -1569,6 +1557,13 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               agentInstanceId={agentInstanceId}
               rootLabel={instanceDisplayName}
               onClose={closeRightPanel}
+              isMobile={isMobilePanel}
+            />
+          ) : active === 'shells' && hasShells ? (
+            <ShellsPanel
+              chainId={chainId}
+              bridgeId={instanceBridgeId}
+              standalone
               isMobile={isMobilePanel}
             />
           ) : active === 'tasks' ? (

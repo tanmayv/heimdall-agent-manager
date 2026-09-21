@@ -650,7 +650,11 @@ MIGRATION_039_SHELL_JOBS :: #load("migrations/039_shell_jobs.sql", string)
 // artifacts table for fast filtering and pagination (REQ-ARTIFACT-DB-INDEXES).
 MIGRATION_040_ARTIFACT_LIST_INDEXES :: #load("migrations/040_artifact_list_indexes.sql", string)
 
-migration_order :: [40]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql"}
+// MIGRATION_041_SHELL_SESSIONS creates the shell_sessions table replacing
+// shell_jobs as the unified session concept (REQ-SH-CONTRACT §1).
+MIGRATION_041_SHELL_SESSIONS :: #load("migrations/041_shell_sessions.sql", string)
+
+migration_order :: [41]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -740,6 +744,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
+		if name == "041_shell_sessions.sql" && table_column_exists(conn, "shell_sessions", "session_id") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -818,6 +826,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "038_action_instance_strategy.sql" do return strings.clone(MIGRATION_038_ACTION_INSTANCE_STRATEGY)
 	if name == "039_shell_jobs.sql" do return strings.clone(MIGRATION_039_SHELL_JOBS)
 	if name == "040_artifact_list_indexes.sql" do return strings.clone(MIGRATION_040_ARTIFACT_LIST_INDEXES)
+	if name == "041_shell_sessions.sql" do return strings.clone(MIGRATION_041_SHELL_SESSIONS)
 	return ""
 }
 

@@ -51,7 +51,16 @@ export const RIGHT_SIDEBAR_DEFAULT_WIDTH = 480;
 export const RIGHT_SIDEBAR_MIN_WIDTH = 360;
 export const CHAT_VIEW_MIN_WIDTH = 380;
 
-export type RightSidebarTab = 'tasks' | 'files' | 'rundir' | 'jobs' | 'chain' | 'vcs';
+// Tab order here is only the set of valid values; the visual order lives in the
+// panel that renders them. Kept as one const so a new tab cannot be added to the
+// type while a storage read silently keeps rejecting it.
+export const RIGHT_SIDEBAR_TABS = ['tasks', 'files', 'rundir', 'jobs', 'shells', 'chain', 'vcs'] as const;
+
+export type RightSidebarTab = (typeof RIGHT_SIDEBAR_TABS)[number];
+
+export function isRightSidebarTab(value: unknown): value is RightSidebarTab {
+  return RIGHT_SIDEBAR_TABS.includes(value as RightSidebarTab);
+}
 
 export function clampRightSidebarWidth(width: number, maxAllowedWidth?: number): number {
   if (!Number.isFinite(width) || Number.isNaN(width) || width <= 0) {
@@ -121,14 +130,10 @@ export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null
   try {
     if (instanceId) {
       const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:tab:${instanceId}`);
-      if (instanceRaw === 'tasks' || instanceRaw === 'files' || instanceRaw === 'rundir' || instanceRaw === 'jobs' || instanceRaw === 'chain' || instanceRaw === 'vcs') {
-        return instanceRaw;
-      }
+      if (isRightSidebarTab(instanceRaw)) return instanceRaw;
     }
     const raw = window.localStorage.getItem(RIGHT_SIDEBAR_TAB_KEY);
-    if (raw === 'tasks' || raw === 'files' || raw === 'rundir' || raw === 'jobs' || raw === 'chain' || raw === 'vcs') {
-      return raw;
-    }
+    if (isRightSidebarTab(raw)) return raw;
     return null;
   } catch {
     return null;
@@ -138,7 +143,7 @@ export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null
 export function writeRightSidebarTab(tab: RightSidebarTab, instanceId?: string): void {
   if (typeof window === 'undefined') return;
   try {
-    if (tab === 'tasks' || tab === 'files' || tab === 'rundir' || tab === 'jobs' || tab === 'chain' || tab === 'vcs') {
+    if (isRightSidebarTab(tab)) {
       window.localStorage.setItem(RIGHT_SIDEBAR_TAB_KEY, tab);
       if (instanceId) {
         window.localStorage.setItem(`heimdall:sidebar:tab:${instanceId}`, tab);

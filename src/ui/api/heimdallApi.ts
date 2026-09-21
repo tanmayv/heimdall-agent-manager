@@ -47,6 +47,8 @@ export const HEIMDALL_TAG_TYPES = [
   'Action',
   'Cards',
   'Card',
+  'ShellSessions',
+  'ShellSession',
 ] as const;
 
 export type HeimdallTagType = (typeof HEIMDALL_TAG_TYPES)[number];

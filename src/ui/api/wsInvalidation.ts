@@ -658,6 +658,19 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
     case 'resource_changed':
       handleResourceChanged(dispatch, payload, ctx);
       return;
+    case 'shell_status': {
+      // Invalidate the shell sessions list for the chain so status dots update in real time.
+      const chainId = String(payload?.chain_id || '');
+      if (chainId) {
+        dispatch(heimdallApi.util.invalidateTags([{ type: 'ShellSessions' as const, id: chainId }]));
+      }
+      dispatch(heimdallApi.util.invalidateTags([{ type: 'ShellSessions' as const, id: 'LIST' }]));
+      const sessionId = String(payload?.session_id || '');
+      if (sessionId) {
+        dispatch(heimdallApi.util.invalidateTags([{ type: 'ShellSession' as const, id: sessionId }]));
+      }
+      return;
+    }
     default:
       return;
   }

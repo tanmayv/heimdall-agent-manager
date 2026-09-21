@@ -1,7 +1,9 @@
 package main
 
 import "base:runtime"
+import base64 "core:encoding/base64"
 import "core:fmt"
+import "core:net"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -95,6 +97,25 @@ Bridge_Shell_Output_Outgoing :: struct {
 	result_json: string,
 }
 bridge_shell_output_outgoing: [dynamic]Bridge_Shell_Output_Outgoing
+
+Bridge_Shell_Exited_Outgoing :: struct {
+	event_json: string,
+}
+bridge_shell_exited_outgoing: [dynamic]Bridge_Shell_Exited_Outgoing
+
+// T8: preview tunnel streams — each open tunnel maps stream_id → live TCP socket.
+Bridge_Tunnel_Stream :: struct {
+	stream_id:  string,
+	session_id: string,
+	tcp_conn:   net.TCP_Socket,
+	closed:     bool,
+}
+Bridge_Tunnel_Data_Outgoing :: struct {
+	json: string, // pre-built tunnel_data or tunnel_close WS frame JSON
+}
+bridge_tunnel_streams:      map[string]^Bridge_Tunnel_Stream
+bridge_tunnel_mu:           sync.Mutex
+bridge_tunnel_data_outgoing: [dynamic]Bridge_Tunnel_Data_Outgoing
 // Queue of instance ids whose status changed on a BACKGROUND thread (e.g. the
 // pty-host events worker applying a ChildExited) and must be pushed to the hub
 // immediately, without waiting for the next 45s bridge_heartbeat. The hub runtime
@@ -114,7 +135,10 @@ bridge_hub_runtime_init :: proc() {
 	bridge_pane_capture_pending = make([dynamic]Bridge_Pane_Capture_Pending)
 	bridge_pane_capture_outgoing = make([dynamic]Bridge_Pane_Capture_Outgoing)
 	bridge_shell_output_outgoing = make([dynamic]Bridge_Shell_Output_Outgoing)
+	bridge_shell_exited_outgoing = make([dynamic]Bridge_Shell_Exited_Outgoing)
 	bridge_runtime_status_outgoing = make([dynamic]string)
+	bridge_tunnel_streams = make(map[string]^Bridge_Tunnel_Stream, runtime.heap_allocator())
+	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing)
 }
 
 // Reset / clear runtime instance and launch registries under lock (for tests).
@@ -179,6 +203,13 @@ bridge_hub_runtime_worker :: proc() {
 		if ready {
 			fmt.println("bridge hub runtime ready")
 			last_failure = ""; attempts = 0
+			// REQ-RECON-1: reconcile persisted shell sessions against the live
+			// pty-host agent list on every hub-WS reconnect. Runs on a background
+			// thread: bridge_pty_host_ensure_daemon may spawn the daemon and poll it
+			// for up to 5s, and doing that inline would stall the WS service loop
+			// (heartbeats and command replies) on every reconnect. The shell_exited
+			// events it enqueues are drained by the loop started just below.
+			thread.run(bridge_shell_session_reconcile_now)
 			bridge_hub_runtime_loop(&conn)
 			fmt.println("bridge hub runtime: connection closed, reconnecting…")
 		} else if got_error {
@@ -212,6 +243,8 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		bridge_pane_capture_expire_pending()
 		bridge_pane_capture_drain_outgoing(conn)
 		bridge_shell_output_drain_outgoing(conn)
+		bridge_shell_exited_drain_outgoing(conn)
+		bridge_tunnel_data_drain_outgoing(conn)
 		// Flush any status transitions applied on background threads (e.g. a
 		// pty-host ChildExited) so "stopped"/"unreachable" reaches the hub now,
 		// not on the next heartbeat.
@@ -482,6 +515,50 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	}
 	if type == "shell_pty_resize" {
 		bridge_hub_handle_shell_pty_resize(conn, text)
+		return
+	}
+	if type == "shell_start" {
+		bridge_hub_handle_shell_start(conn, text)
+		return
+	}
+	if type == "shell_kill" {
+		bridge_hub_handle_shell_kill(text)
+		return
+	}
+	if type == "shell_signal" {
+		bridge_hub_handle_shell_signal(text)
+		return
+	}
+	if type == "shell_restart" {
+		bridge_hub_handle_shell_restart(conn, text)
+		return
+	}
+	if type == "shell_list" {
+		bridge_hub_handle_shell_list(conn, text)
+		return
+	}
+	if type == "shell_logs" {
+		bridge_hub_handle_shell_logs(conn, text)
+		return
+	}
+	if type == "shell_capture" {
+		bridge_hub_handle_shell_capture(conn, text)
+		return
+	}
+	if type == "shell_get_pane" {
+		bridge_hub_handle_shell_get_pane(conn, text)
+		return
+	}
+	if type == "tunnel_open" {
+		bridge_hub_handle_tunnel_open(conn, text)
+		return
+	}
+	if type == "tunnel_data" {
+		bridge_hub_handle_tunnel_data(text)
+		return
+	}
+	if type == "tunnel_close" {
+		bridge_hub_handle_tunnel_close(text)
 		return
 	}
 	if bridge_fs_handle_command(conn, type, text) do return
@@ -1875,6 +1952,649 @@ bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
 	}
 }
 
+// ---- shell_exited outgoing event queue ------------------------------------
+
+bridge_shell_exited_enqueue :: proc(event_json: string) {
+	if strings.trim_space(event_json) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	append(&bridge_shell_exited_outgoing, Bridge_Shell_Exited_Outgoing{event_json = strings.clone(event_json)})
+}
+
+bridge_shell_exited_drain_outgoing :: proc(conn: ^ws.Connection) {
+	for {
+		item: Bridge_Shell_Exited_Outgoing
+		have := false
+		sync.mutex_lock(&bridge_runtime_mutex)
+		if len(bridge_shell_exited_outgoing) > 0 {
+			item = bridge_shell_exited_outgoing[0]
+			ordered_remove(&bridge_shell_exited_outgoing, 0)
+			have = true
+		}
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		if !have do return
+		if !bridge_hub_send(conn, item.event_json) {
+			sync.mutex_lock(&bridge_runtime_mutex)
+			inject_at(&bridge_shell_exited_outgoing, 0, item)
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			conn.connected = false
+			return
+		}
+		delete(item.event_json)
+	}
+}
+
+// ---- shell_exited event JSON builder ------------------------------------
+
+bridge_shell_exited_event_json :: proc(session_id: string, exit_code: int, exit_code_set: bool, status: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_exited\",\"session_id\":\"")
+	bridge_runtime_write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"exit_code\":")
+	strings.write_string(&b, bridge_agent_itoa(exit_code))
+	strings.write_string(&b, ",\"exit_code_set\":")
+	strings.write_string(&b, "true" if exit_code_set else "false")
+	strings.write_string(&b, ",\"status\":\"")
+	bridge_runtime_write_json_string(&b, status)
+	finished_at := action_scheduler_format_rfc3339_utc(bridge_now_unix_ms())
+	strings.write_string(&b, "\",\"finished_at\":\"")
+	bridge_runtime_write_json_string(&b, finished_at)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+// ---- T4: hub→bridge WS runtime command handlers (REQ-SH-CONTRACT §3) ----
+
+// bridge_hub_handle_shell_start handles the "shell_start" command.
+// REQUEST/REPLY: spawns a new PTY session via the daemon and returns shell_start_result.
+bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
+	session_id  := extract_json_string(text, "session_id", "")
+	command_id  := extract_json_string(text, "command_id", "")
+	kind_str    := extract_json_string(text, "kind", "command")
+	cmd         := extract_json_string(text, "cmd", "")
+	cwd         := extract_json_string(text, "cwd", "")
+	label       := extract_json_string(text, "label", "")
+	project_id  := extract_json_string(text, "project_id", "")
+	chain_id    := extract_json_string(text, "chain_id", "")
+	agent_iid   := extract_json_string(text, "agent_instance_id", "")
+	owner_uid   := extract_json_string(text, "owner_user_id", "")
+	server_port := extract_json_int(text, "server_port", 0)
+
+	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"shell_start_result\",\"session_id\":\"")
+		bridge_runtime_write_json_string(&b, session_id)
+		strings.write_string(&b, "\",\"command_id\":\"")
+		bridge_runtime_write_json_string(&b, command_id)
+		strings.write_string(&b, "\",\"ok\":false,\"error\":\"")
+		bridge_runtime_write_json_string(&b, msg)
+		strings.write_string(&b, "\"}")
+		result := strings.to_string(b)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+		delete(result)
+	}
+
+	if session_id == "" {
+		send_error(conn, session_id, command_id, "missing session_id")
+		return
+	}
+
+	kind := bridge_shell_session_kind_from_str(kind_str)
+
+	// T11-BUG-3: an interactive shell has no command of its own — it *is* the
+	// user's login shell. Default to $SHELL (falling back to /bin/sh) instead of
+	// rejecting the request. Every other kind still requires an explicit cmd.
+	cmd_owned := false
+	defer if cmd_owned do delete(cmd)
+	if kind == .Interactive && cmd == "" {
+		shell_env := os.get_env("SHELL", context.temp_allocator)
+		cmd = len(shell_env) > 0 ? strings.clone(shell_env) : strings.clone("/bin/sh")
+		cmd_owned = true
+	}
+	if cmd == "" {
+		send_error(conn, session_id, command_id, "missing cmd")
+		return
+	}
+
+	// For kind=Agent: spawn instance under the agent_instance_id as daemon key.
+	// For all other kinds: spawn under session_id as daemon key.
+	spawn_instance := session_id
+	if kind == .Agent && agent_iid != "" do spawn_instance = agent_iid
+
+	socket, daemon_ok := bridge_pty_host_ensure_daemon()
+	if !daemon_ok {
+		send_error(conn, session_id, command_id, "daemon unavailable")
+		return
+	}
+
+	// T11-BUG-2: for server sessions, `exec` into the command so the shell replaces
+	// itself with the server process. Without it `sh` forks, exits as soon as the
+	// command is backgrounded/daemonised, and pty-host reports the session as exited
+	// while the real server is still running. The session still records the original
+	// cmd (below) so the UI shows what the user asked for, not the exec wrapper.
+	spawn_cmd := cmd
+	spawn_cmd_owned := false
+	defer if spawn_cmd_owned do delete(spawn_cmd)
+	if kind == .Server {
+		spawn_cmd = strings.concatenate({"exec ", cmd})
+		spawn_cmd_owned = true
+	}
+
+	// Build argv: wrap cmd in sh -c. No external setsid: portable-pty's pre_exec
+	// calls setsid(2) before exec, making the child a session leader. If we also
+	// exec the setsid binary, it sees EPERM (already a leader), forks, and the
+	// parent exits immediately with code 0 — pty-host sees the direct child exit
+	// while the actual shell runs as an orphan grandchild disconnected from the PTY.
+	argv: []string
+	argv = []string{"sh", "-c", spawn_cmd}
+	cloned_argv := make([]string, len(argv))
+	for a, i in argv { cloned_argv[i] = strings.clone(a) }
+
+	tee_path := bridge_shell_output_path(session_id)
+	// T11-BUG-1: pty-host cannot tee into a directory that does not exist yet.
+	// Mirrors the legacy shell_cmd path (src/bridge/shell_cmd.odin).
+	if slash := strings.last_index_byte(tee_path, '/'); slash > 0 do _ = os.make_directory_all(tee_path[:slash])
+
+	req := Pty_Host_Spawn_Request{
+		instance         = strings.clone(spawn_instance),
+		argv             = cloned_argv,
+		has_cwd          = cwd != "",
+		cwd              = strings.clone(cwd),
+		env              = nil,
+		rows             = PTY_HOST_DEFAULT_ROWS,
+		cols             = PTY_HOST_DEFAULT_COLS,
+		display_name     = strings.clone(label),
+		has_display_name = label != "",
+		kind             = strings.clone(kind_str),
+		has_kind         = kind_str != "",
+		tee_path         = tee_path,
+		has_tee_path     = true,
+	}
+	defer bridge_pty_host_spawn_request_delete(req)
+
+	pid, ok := bridge_pty_host_spawn(socket, req)
+	if !ok {
+		send_error(conn, session_id, command_id, "spawn failed")
+		return
+	}
+
+	now_ms := bridge_now_unix_ms()
+	started_at := strings.clone(action_scheduler_format_rfc3339_utc(now_ms))
+	defer delete(started_at)
+
+	sess := Bridge_Shell_Session{
+		session_id        = strings.clone(session_id),
+		kind              = kind,
+		label             = strings.clone(label),
+		cmd               = strings.clone(cmd),
+		cwd               = strings.clone(cwd),
+		bridge_id         = strings.clone(bridge_config.daemon_id),
+		project_id        = strings.clone(project_id),
+		chain_id          = strings.clone(chain_id),
+		agent_instance_id = strings.clone(agent_iid),
+		owner_user_id     = strings.clone(owner_uid),
+		pid               = int(pid),
+		server_port       = server_port,
+		status            = .Running,
+		started_at        = strings.clone(started_at),
+		// For kind=Agent, shell_id=spawn_instance (agent_iid) so reconcile can match d.shell_id==s.shell_id.
+		// For other kinds, shell_id==session_id.
+		shell_id          = strings.clone(spawn_instance),
+		started_unix_ms   = now_ms,
+	}
+	bridge_shell_session_register(&bridge_shell_session_map, sess)
+
+	data_dir := bridge_expand_home(bridge_config.data_dir)
+	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
+	bridge_shell_session_save_spec(data_dir, sess)
+
+	bridge_pty_host_events_ensure()
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_start_result\",\"session_id\":\"")
+	bridge_runtime_write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":true,\"pid\":")
+	strings.write_string(&b, bridge_agent_itoa(int(pid)))
+	strings.write_string(&b, ",\"shell_id\":\"")
+	bridge_runtime_write_json_string(&b, spawn_instance)
+	strings.write_string(&b, "\"}")
+	result := strings.to_string(b)
+	if conn != nil do _ = bridge_hub_send(conn, result)
+	delete(result)
+}
+
+// Bridge_Shell_Kill_Ctx carries state for the background kill thread.
+Bridge_Shell_Kill_Ctx :: struct {
+	session_id: string,
+	shell_id:   string,
+}
+
+// bridge_shell_kill_shell_is_alive asks the DAEMON whether shell_id is still a live
+// child. This is the escalation guard: it must NOT be inferred from
+// Bridge_Shell_Session.status, because bridge_hub_handle_shell_kill deliberately
+// writes .Killed before this worker even starts (so ChildExited can report
+// status="killed"). Reading that field here made the SIGKILL branch unreachable for
+// every session, which left SIGTERM-ignoring interactive shells unkillable (BUG-9).
+// A shell missing from the roster has already been reaped, so absent => not alive.
+bridge_shell_kill_shell_is_alive :: proc(socket, shell_id: string) -> bool {
+	reply, ok := bridge_pty_host_list(socket)
+	if !ok do return false
+	defer pty_host_reply_delete(reply)
+	for a in reply.agents {
+		if a.instance_id == shell_id do return a.alive
+	}
+	return false
+}
+
+// bridge_shell_kill_worker sends SIGTERM, waits 5s, then SIGKILLs if the daemon still
+// reports the child alive. The escalation stays bridge-side (rather than delegating to
+// bridge_pty_host_close) on purpose: the daemon suppresses its ChildExited broadcast
+// while tearing an instance down via close, and the bridge needs that event to fire the
+// shell_exited notification that carries status="killed" to the hub.
+bridge_shell_kill_worker :: proc(data: rawptr) {
+	ctx := (^Bridge_Shell_Kill_Ctx)(data)
+	socket, ok := bridge_pty_host_ensure_daemon()
+	if ok {
+		_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 15)
+		time.sleep(5 * time.Second)
+		if bridge_shell_kill_shell_is_alive(socket, ctx.shell_id) {
+			_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 9)
+		}
+	}
+	delete(ctx.session_id)
+	delete(ctx.shell_id)
+	free(ctx)
+}
+
+// bridge_hub_handle_shell_kill handles the "shell_kill" command.
+// FIRE-AND-FORGET: sends SIGTERM then (after 5s) SIGKILL if still alive.
+bridge_hub_handle_shell_kill :: proc(text: string) {
+	session_id := extract_json_string(text, "session_id", "")
+	if session_id == "" do return
+
+	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !ok do return
+
+	shell_id := sess.shell_id
+	if shell_id == "" do shell_id = sess.session_id
+
+	// Mark intent to kill immediately so ChildExited can report status="killed".
+	bridge_shell_session_update_status(&bridge_shell_session_map, session_id, .Killed, -1, false)
+
+	ctx := new(Bridge_Shell_Kill_Ctx)
+	ctx.session_id = strings.clone(session_id)
+	ctx.shell_id   = strings.clone(shell_id)
+	thread.run_with_data(rawptr(ctx), bridge_shell_kill_worker)
+}
+
+// bridge_hub_handle_shell_signal handles the "shell_signal" command.
+// FIRE-AND-FORGET: delivers signal to process group.
+bridge_hub_handle_shell_signal :: proc(text: string) {
+	session_id := extract_json_string(text, "session_id", "")
+	signal     := extract_json_int(text, "signal", 15)
+	if session_id == "" do return
+
+	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !ok do return
+
+	shell_id := sess.shell_id
+	if shell_id == "" do shell_id = sess.session_id
+
+	socket, daemon_ok := bridge_pty_host_ensure_daemon()
+	if !daemon_ok do return
+	_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, shell_id, u8(signal))
+}
+
+// bridge_hub_handle_shell_restart handles the "shell_restart" command.
+// REQUEST/REPLY: closes the existing child and re-spawns with same spec.
+bridge_hub_handle_shell_restart :: proc(conn: ^ws.Connection, text: string) {
+	session_id := extract_json_string(text, "session_id", "")
+	command_id := extract_json_string(text, "command_id", "")
+
+	send_result :: proc(conn: ^ws.Connection, session_id, command_id: string, ok: bool, pid: int) {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"shell_restart_result\",\"session_id\":\"")
+		bridge_runtime_write_json_string(&b, session_id)
+		strings.write_string(&b, "\",\"command_id\":\"")
+		bridge_runtime_write_json_string(&b, command_id)
+		strings.write_string(&b, "\",\"ok\":")
+		strings.write_string(&b, "true" if ok else "false")
+		if ok {
+			strings.write_string(&b, ",\"pid\":")
+			strings.write_string(&b, bridge_agent_itoa(pid))
+		}
+		strings.write_string(&b, "}")
+		result := strings.to_string(b)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+		delete(result)
+	}
+
+	if session_id == "" {
+		send_result(conn, session_id, command_id, false, 0)
+		return
+	}
+
+	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !ok {
+		send_result(conn, session_id, command_id, false, 0)
+		return
+	}
+
+	shell_id := sess.shell_id
+	if shell_id == "" do shell_id = sess.session_id
+
+	socket, daemon_ok := bridge_pty_host_ensure_daemon()
+	if !daemon_ok {
+		send_result(conn, session_id, command_id, false, 0)
+		return
+	}
+
+	// Close the existing child.
+	_ = bridge_pty_host_close(socket, shell_id)
+
+	// Re-spawn with same cmd/cwd/label.
+	argv: []string
+	argv = []string{"sh", "-c", sess.cmd}
+	cloned_argv := make([]string, len(argv))
+	for a, i in argv { cloned_argv[i] = strings.clone(a) }
+
+	req := Pty_Host_Spawn_Request{
+		instance         = strings.clone(shell_id),
+		argv             = cloned_argv,
+		has_cwd          = sess.cwd != "",
+		cwd              = strings.clone(sess.cwd),
+		env              = nil,
+		rows             = PTY_HOST_DEFAULT_ROWS,
+		cols             = PTY_HOST_DEFAULT_COLS,
+		display_name     = strings.clone(sess.label),
+		has_display_name = sess.label != "",
+	}
+	defer bridge_pty_host_spawn_request_delete(req)
+
+	pid, spawn_ok := bridge_pty_host_spawn(socket, req)
+	if !spawn_ok {
+		send_result(conn, session_id, command_id, false, 0)
+		return
+	}
+
+	bridge_shell_session_update_status(&bridge_shell_session_map, session_id, .Running, 0, false)
+	send_result(conn, session_id, command_id, true, int(pid))
+}
+
+// bridge_hub_handle_shell_list handles the "shell_list" command.
+// REQUEST/REPLY: returns the serialized session list.
+bridge_hub_handle_shell_list :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	sessions := bridge_shell_session_list(&bridge_shell_session_map)
+	defer delete(sessions)
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_list_result\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"sessions\":[")
+	for s, i in sessions {
+		if i > 0 do strings.write_byte(&b, ',')
+		bridge_shell_session_write_json(&b, s)
+	}
+	strings.write_string(&b, "]}")
+	result := strings.to_string(b)
+	if conn != nil do _ = bridge_hub_send(conn, result)
+	delete(result)
+}
+
+// bridge_shell_session_write_json serializes one session to JSON (for shell_list_result).
+bridge_shell_session_write_json :: proc(b: ^strings.Builder, s: Bridge_Shell_Session) {
+	strings.write_string(b, "{\"session_id\":\"")
+	bridge_runtime_write_json_string(b, s.session_id)
+	strings.write_string(b, "\",\"kind\":\"")
+	bridge_runtime_write_json_string(b, bridge_shell_session_kind_str(s.kind))
+	strings.write_string(b, "\",\"label\":\"")
+	bridge_runtime_write_json_string(b, s.label)
+	strings.write_string(b, "\",\"cmd\":\"")
+	bridge_runtime_write_json_string(b, s.cmd)
+	strings.write_string(b, "\",\"cwd\":\"")
+	bridge_runtime_write_json_string(b, s.cwd)
+	strings.write_string(b, "\",\"bridge_id\":\"")
+	bridge_runtime_write_json_string(b, s.bridge_id)
+	strings.write_string(b, "\",\"project_id\":\"")
+	bridge_runtime_write_json_string(b, s.project_id)
+	strings.write_string(b, "\",\"chain_id\":\"")
+	bridge_runtime_write_json_string(b, s.chain_id)
+	strings.write_string(b, "\",\"agent_instance_id\":\"")
+	bridge_runtime_write_json_string(b, s.agent_instance_id)
+	strings.write_string(b, "\",\"owner_user_id\":\"")
+	bridge_runtime_write_json_string(b, s.owner_user_id)
+	strings.write_string(b, "\",\"pid\":")
+	strings.write_string(b, bridge_agent_itoa(s.pid))
+	strings.write_string(b, ",\"server_port\":")
+	strings.write_string(b, bridge_agent_itoa(s.server_port))
+	strings.write_string(b, ",\"status\":\"")
+	bridge_runtime_write_json_string(b, bridge_shell_session_status_str(s.status))
+	strings.write_string(b, "\",\"exit_code\":")
+	strings.write_string(b, bridge_agent_itoa(s.exit_code))
+	strings.write_string(b, ",\"exit_code_set\":")
+	strings.write_string(b, "true" if s.exit_code_set else "false")
+	strings.write_string(b, ",\"started_at\":\"")
+	bridge_runtime_write_json_string(b, s.started_at)
+	strings.write_string(b, "\",\"finished_at\":\"")
+	bridge_runtime_write_json_string(b, s.finished_at)
+	strings.write_string(b, "\",\"shell_id\":\"")
+	bridge_runtime_write_json_string(b, s.shell_id)
+	strings.write_string(b, "\"}")
+}
+
+// bridge_hub_handle_shell_logs handles the "shell_logs" command.
+// REQUEST/REPLY: reads lines from the session tee_path with optional paging and grep.
+bridge_hub_handle_shell_logs :: proc(conn: ^ws.Connection, text: string) {
+	session_id := extract_json_string(text, "session_id", "")
+	command_id := extract_json_string(text, "command_id", "")
+	offset     := extract_json_int(text, "offset", 0)
+	limit      := extract_json_int(text, "limit", BRIDGE_SHELL_TAIL_KEEP)
+	grep       := extract_json_string(text, "grep", "")
+
+	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"shell_logs_result\",\"session_id\":\"")
+		bridge_runtime_write_json_string(&b, session_id)
+		strings.write_string(&b, "\",\"command_id\":\"")
+		bridge_runtime_write_json_string(&b, command_id)
+		strings.write_string(&b, "\",\"ok\":false,\"lines\":[],\"truncated\":false,\"total_lines\":0,\"error\":\"")
+		bridge_runtime_write_json_string(&b, msg)
+		strings.write_string(&b, "\"}")
+		result := strings.to_string(b)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+		delete(result)
+	}
+
+	if session_id == "" {
+		send_error(conn, session_id, command_id, "missing session_id")
+		return
+	}
+
+	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !ok {
+		send_error(conn, session_id, command_id, "session not found")
+		return
+	}
+
+	// Read from the tee output file (stored at bridge_shell_output_path for Command kind,
+	// or at the tee_path stored in the session — fall back to shell_output_path if unset).
+	output_path := bridge_shell_output_path(sess.session_id)
+	defer delete(output_path)
+
+	raw, rerr := os.read_entire_file(output_path, context.allocator)
+	defer if rerr == nil do delete(raw)
+	output_str := ""
+	if rerr == nil do output_str = string(raw)
+
+	total_lines := 0
+	for i in 0..<len(output_str) { if output_str[i] == '\n' do total_lines += 1 }
+
+	lines_str, truncated := bridge_shell_page(output_str, offset, limit, grep)
+	defer delete(lines_str)
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_logs_result\",\"session_id\":\"")
+	bridge_runtime_write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":true,\"lines\":[")
+	start := 0
+	first := true
+	for i := 0; i <= len(lines_str); i += 1 {
+		if i == len(lines_str) || lines_str[i] == '\n' {
+			line := lines_str[start:i]
+			if !first do strings.write_byte(&b, ',')
+			first = false
+			strings.write_byte(&b, '"')
+			bridge_runtime_write_json_string(&b, line)
+			strings.write_byte(&b, '"')
+			start = i + 1
+		}
+	}
+	strings.write_string(&b, "],\"truncated\":")
+	strings.write_string(&b, "true" if truncated else "false")
+	strings.write_string(&b, ",\"total_lines\":")
+	strings.write_string(&b, bridge_agent_itoa(total_lines))
+	strings.write_string(&b, "}")
+	result := strings.to_string(b)
+	if conn != nil do _ = bridge_hub_send(conn, result)
+	delete(result)
+}
+
+// bridge_hub_handle_shell_get_pane handles the "shell_get_pane" command (REQ-PTY-STREAM-1).
+// This is the shell-session twin of bridge_hub_handle_get_agent_pane: same polled-capture
+// model, same since_hash diffing, same command_result shape — the only shell-specific part
+// is resolving session_id to the pty-host instance key. A shell session IS a pty-host
+// instance keyed by its shell_id, with the session_id fallback the T4 registration and the
+// BUG-7 reconcile both use, so bridge_pty_host_get_pane is reused verbatim and no new
+// pty-host primitive is introduced.
+//
+// Deliberately distinct from "shell_capture": that command's {content,rows,cols} reply is a
+// shipped contract consumed by ham-ctl and GET /shells/*/capture, and it runs on a 30s hub
+// timeout. This one is polled twice a second, so it carries the pane shape instead.
+bridge_hub_handle_shell_get_pane :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok {
+		_ = bridge_hub_send(conn, cached)
+		return
+	}
+
+	payload, has_payload := bridge_provider_json_extract_object(text, "payload")
+	session_id := extract_json_string(text, "session_id", "")
+	if session_id == "" && has_payload do session_id = extract_json_string(payload, "session_id", "")
+	since_hash := extract_json_string(text, "since_hash", "")
+	if since_hash == "" && has_payload do since_hash = extract_json_string(payload, "since_hash", "")
+	width := extract_json_int(text, "width", 0)
+	if width <= 0 && has_payload do width = extract_json_int(payload, "width", 0)
+	if width <= 0 do width = 80
+	line_limit := extract_json_int(text, "line_limit", 0)
+	if line_limit <= 0 && has_payload do line_limit = extract_json_int(payload, "line_limit", 0)
+	if line_limit <= 0 do line_limit = 120
+
+	send_failure :: proc(conn: ^ws.Connection, command_id, msg: string) {
+		result := bridge_get_agent_pane_result_json(command_id, false, false, "", "", 0, false, msg)
+		defer delete(result)
+		bridge_runtime_cache_command(command_id, result)
+		_ = bridge_hub_send(conn, result)
+	}
+
+	if session_id == "" {
+		send_failure(conn, command_id, "missing session_id")
+		return
+	}
+
+	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !ok {
+		send_failure(conn, command_id, "session not found")
+		return
+	}
+
+	shell_id := sess.shell_id
+	if shell_id == "" do shell_id = sess.session_id
+
+	pane_ok, unchanged, h, output, line_count, truncated, err_msg := bridge_pty_host_get_pane(shell_id, since_hash, line_limit, width)
+	defer if h != "" do delete(h)
+	defer if output != "" do delete(output)
+
+	result := bridge_get_agent_pane_result_json(command_id, pane_ok, unchanged, h, output, line_count, truncated, err_msg)
+	defer delete(result)
+	bridge_runtime_cache_command(command_id, result)
+	_ = bridge_hub_send(conn, result)
+}
+
+// bridge_hub_handle_shell_capture handles the "shell_capture" command.
+// REQUEST/REPLY: returns a pty screen snapshot for the session.
+bridge_hub_handle_shell_capture :: proc(conn: ^ws.Connection, text: string) {
+	session_id := extract_json_string(text, "session_id", "")
+	command_id := extract_json_string(text, "command_id", "")
+
+	send_error :: proc(conn: ^ws.Connection, session_id, command_id, msg: string) {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"shell_capture_result\",\"session_id\":\"")
+		bridge_runtime_write_json_string(&b, session_id)
+		strings.write_string(&b, "\",\"command_id\":\"")
+		bridge_runtime_write_json_string(&b, command_id)
+		strings.write_string(&b, "\",\"ok\":false,\"content\":\"\",\"rows\":0,\"cols\":0,\"error\":\"")
+		bridge_runtime_write_json_string(&b, msg)
+		strings.write_string(&b, "\"}")
+		result := strings.to_string(b)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+		delete(result)
+	}
+
+	if session_id == "" {
+		send_error(conn, session_id, command_id, "missing session_id")
+		return
+	}
+
+	sess, ok := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !ok {
+		send_error(conn, session_id, command_id, "session not found")
+		return
+	}
+
+	shell_id := sess.shell_id
+	if shell_id == "" do shell_id = sess.session_id
+
+	socket, daemon_ok := bridge_pty_host_ensure_daemon()
+	if !daemon_ok {
+		send_error(conn, session_id, command_id, "daemon unavailable")
+		return
+	}
+
+	frame := pty_host_encode_capture(shell_id)
+	defer delete(frame)
+	reply, rok := pty_host_request(socket, frame)
+	if !rok || reply.kind != .Screen {
+		if rok do pty_host_reply_delete(reply)
+		send_error(conn, session_id, command_id, "capture failed")
+		return
+	}
+	defer pty_host_reply_delete(reply)
+
+	content, _, _ := bridge_pty_host_screen_to_output(reply.screen.lines, 0)
+	defer delete(content)
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_capture_result\",\"session_id\":\"")
+	bridge_runtime_write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"ok\":true,\"content\":\"")
+	bridge_runtime_write_json_string(&b, content)
+	strings.write_string(&b, "\",\"rows\":")
+	strings.write_string(&b, bridge_agent_itoa(int(reply.screen.rows)))
+	strings.write_string(&b, ",\"cols\":")
+	strings.write_string(&b, bridge_agent_itoa(int(reply.screen.cols)))
+	strings.write_string(&b, "}")
+	result := strings.to_string(b)
+	if conn != nil do _ = bridge_hub_send(conn, result)
+	delete(result)
+}
+
 bridge_hub_ws_url :: proc(base_url: string) -> string {
 	trimmed := bridge_hub_base_url_for_runtime(base_url)
 	if strings.has_prefix(trimmed, "http://") do return strings.concatenate({"ws://", trimmed[len("http://"):], "/api/v1/bridge-ws"})
@@ -1891,4 +2611,200 @@ bridge_hub_runtime_start :: proc() {
 	if strings.trim_space(bridge_config.bridge_token) != "" && strings.trim_space(bridge_config.daemon_url) != "" {
 		thread.run(bridge_hub_runtime_worker)
 	}
+}
+
+// ---- T8: preview tunnel frame handlers (REQ-SH-CONTRACT §6) ----
+
+// bridge_tunnel_data_drain_outgoing flushes queued tunnel_data/tunnel_close WS frames.
+bridge_tunnel_data_drain_outgoing :: proc(conn: ^ws.Connection) {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	if len(bridge_tunnel_data_outgoing) == 0 {
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		return
+	}
+	items := bridge_tunnel_data_outgoing[:]
+	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing, runtime.heap_allocator())
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	for item in items {
+		_ = ws.send_text(conn, item.json)
+		delete(item.json)
+	}
+	delete(items)
+}
+
+// bridge_hub_handle_tunnel_open handles a tunnel_open command from the hub.
+// Validates session ownership, dials 127.0.0.1:{server_port}, and starts the TCP→WS pump.
+bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
+	stream_id  := extract_json_string(text, "stream_id", "")
+	session_id := extract_json_string(text, "session_id", "")
+	defer { if stream_id == "" do delete(stream_id); if session_id == "" do delete(session_id) }
+
+	_send_tunnel_close :: proc(conn: ^ws.Connection, stream_id, reason: string) {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"tunnel_close\",\"stream_id\":\"")
+		bridge_runtime_write_json_string(&b, stream_id)
+		strings.write_string(&b, "\",\"reason\":\"")
+		bridge_runtime_write_json_string(&b, reason)
+		strings.write_string(&b, "\"}")
+		frame := strings.to_string(b)
+		_ = ws.send_text(conn, frame)
+		delete(frame)
+	}
+
+	if stream_id == "" || session_id == "" {
+		return
+	}
+
+	// Security: validate session is kind=Server, Running, has a declared server_port.
+	session, found := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !found || session.status != .Running || session.kind != .Server || session.server_port <= 0 {
+		_send_tunnel_close(conn, stream_id, "forbidden")
+		delete(stream_id)
+		delete(session_id)
+		return
+	}
+
+	// Security: only dial loopback.
+	addr := net.IP4_Loopback // {127, 0, 0, 1}
+	tcp_conn, dial_err := net.dial_tcp_from_address_and_port(addr, session.server_port)
+	if dial_err != nil {
+		_send_tunnel_close(conn, stream_id, "port_closed")
+		delete(stream_id)
+		delete(session_id)
+		return
+	}
+
+	// Register stream.
+	heap := runtime.heap_allocator()
+	stream := new(Bridge_Tunnel_Stream, heap)
+	stream.stream_id  = stream_id  // ownership transferred
+	stream.session_id = session_id // ownership transferred
+	stream.tcp_conn   = tcp_conn
+	stream.closed     = false
+
+	sync.mutex_lock(&bridge_tunnel_mu)
+	bridge_tunnel_streams[strings.clone(stream_id, heap)] = stream
+	sync.mutex_unlock(&bridge_tunnel_mu)
+
+	// Start TCP→WS pump on a background thread.
+	thread.run_with_data(rawptr(stream), bridge_tunnel_tcp_to_ws_worker)
+}
+
+// bridge_tunnel_tcp_to_ws_worker reads from the TCP socket and enqueues tunnel_data frames.
+// When the TCP connection closes, it enqueues a tunnel_close frame and removes the stream.
+//
+// Lifetime safety: capture tcp_conn and stream_id as stack-locals at entry so the recv loop
+// and teardown never dereference 'stream' after bridge_hub_handle_tunnel_close may have freed
+// it.  Whoever removes the map key is the sole freer; the loser finds the key absent and
+// returns without touching the struct pointer at all (independent-key probe pattern).
+bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
+	stream := (^Bridge_Tunnel_Stream)(data)
+	heap := runtime.heap_allocator()
+	// Local copies — valid for this goroutine's entire lifetime regardless of struct free.
+	local_tcp_conn  := stream.tcp_conn
+	local_stream_id := strings.clone(stream.stream_id, heap)
+
+	buf: [4096]byte
+	for {
+		n, recv_err := net.recv_tcp(local_tcp_conn, buf[:])
+		if recv_err != nil || n <= 0 do break
+		encoded := base64.encode(buf[:n])
+		b := strings.builder_make(heap)
+		strings.write_string(&b, "{\"type\":\"tunnel_data\",\"stream_id\":\"")
+		bridge_runtime_write_json_string(&b, local_stream_id)
+		strings.write_string(&b, "\",\"data_b64\":\"")
+		bridge_runtime_write_json_string(&b, string(encoded))
+		strings.write_string(&b, "\",\"last\":false}")
+		frame := strings.to_string(b)
+		delete(encoded)
+		sync.mutex_lock(&bridge_runtime_mutex)
+		append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = frame})
+		sync.mutex_unlock(&bridge_runtime_mutex)
+	}
+
+	// TCP closed — enqueue tunnel_close to hub.
+	b2 := strings.builder_make(heap)
+	strings.write_string(&b2, "{\"type\":\"tunnel_close\",\"stream_id\":\"")
+	bridge_runtime_write_json_string(&b2, local_stream_id)
+	strings.write_string(&b2, "\",\"reason\":\"connection_closed\"}")
+	close_frame := strings.to_string(b2)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	append(&bridge_tunnel_data_outgoing, Bridge_Tunnel_Data_Outgoing{json = close_frame})
+	sync.mutex_unlock(&bridge_runtime_mutex)
+
+	// Independent-key probe: whoever removes the map key owns the struct free.
+	// If !found, bridge_hub_handle_tunnel_close already removed+freed the struct —
+	// we must not dereference 'stream' at all in that path.
+	sync.mutex_lock(&bridge_tunnel_mu)
+	found := false
+	for k in bridge_tunnel_streams {
+		if k == local_stream_id {
+			delete_key(&bridge_tunnel_streams, k)
+			delete(k)
+			found = true
+			break
+		}
+	}
+	sync.mutex_unlock(&bridge_tunnel_mu)
+
+	delete(local_stream_id, heap)
+	if found {
+		net.close(local_tcp_conn)
+		delete(stream.stream_id, heap)
+		delete(stream.session_id, heap)
+		free(stream, heap)
+	}
+}
+
+// bridge_hub_handle_tunnel_data writes hub→bridge request bytes to the TCP socket.
+bridge_hub_handle_tunnel_data :: proc(text: string) {
+	stream_id := extract_json_string(text, "stream_id", "")
+	data_b64  := extract_json_string(text, "data_b64", "")
+	defer { delete(stream_id); delete(data_b64) }
+
+	if stream_id == "" || data_b64 == "" do return
+
+	decoded, decode_err := base64.decode(data_b64)
+	if decode_err != nil || len(decoded) == 0 {
+		delete(decoded)
+		return
+	}
+	defer delete(decoded)
+
+	// Hold bridge_tunnel_mu across the send so the worker cannot free the struct
+	// between the map lookup and the net.send_tcp dereference of stream.tcp_conn.
+	sync.mutex_lock(&bridge_tunnel_mu)
+	if stream, ok := bridge_tunnel_streams[stream_id]; ok {
+		_, _ = net.send_tcp(stream.tcp_conn, decoded)
+	}
+	sync.mutex_unlock(&bridge_tunnel_mu)
+}
+
+// bridge_hub_handle_tunnel_close closes the TCP connection for a tunnel stream.
+bridge_hub_handle_tunnel_close :: proc(text: string) {
+	stream_id := extract_json_string(text, "stream_id", "")
+	defer delete(stream_id)
+
+	if stream_id == "" do return
+
+	heap := runtime.heap_allocator()
+	sync.mutex_lock(&bridge_tunnel_mu)
+	stream, ok := bridge_tunnel_streams[stream_id]
+	if ok {
+		for k in bridge_tunnel_streams {
+			if k == stream_id {
+				delete_key(&bridge_tunnel_streams, k)
+				delete(k)
+				break
+			}
+		}
+	}
+	sync.mutex_unlock(&bridge_tunnel_mu)
+
+	// Only free if we removed the key. If !ok the worker already removed+freed the struct.
+	if !ok do return
+	net.close(stream.tcp_conn)
+	delete(stream.stream_id, heap)
+	delete(stream.session_id, heap)
+	free(stream, heap)
 }

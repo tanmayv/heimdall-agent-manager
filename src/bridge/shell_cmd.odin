@@ -6,11 +6,11 @@ package main
 // LOCALLY (sh -c) on this host and races a 15s deadline:
 //   <15s   -> returns synchronously with status="completed", the (tail-truncated)
 //            output, exit_code and timing metadata.
-//   >=15s  -> stores a job record, returns status="running" immediately, and a
+//   >=15s  -> stores a session record, returns status="running" immediately, and a
 //            background thread drains the process to completion (or a 30-minute
 //            hard cap) before reporting job status back to the hub.
 //
-// Output is written ONLY to <data_dir>/shell_jobs/<exec_id>.out on this machine
+// Output is written ONLY to <data_dir>/shell_jobs/<session_id>.out on this machine
 // and is NEVER sent to the hub. The completion report to the hub carries status
 // metadata only (exec_id, status, exit_code); the hub delivers it via the
 // transient nudge path (REQ-15), not as a stored chat message.
@@ -32,32 +32,15 @@ BRIDGE_SHELL_HARD_TIMEOUT :: 30 * time.Minute
 BRIDGE_SHELL_TAIL_THRESHOLD :: 200
 BRIDGE_SHELL_TAIL_KEEP :: 100
 
-// Bridge_Shell_Job is the durable-for-process-lifetime record for one exec. All
-// string fields are owned (cloned) so they outlive the request that created them.
-Bridge_Shell_Job :: struct {
-	exec_id:          string,
-	cmd:              string,
-	status:           string, // "running" | "completed" | "failed"
-	start_time:       string, // RFC3339 UTC
-	started_unix_ms:  i64,
-	finished_unix_ms: i64,
-	exit_code:        int,
-	output_path:      string,
-	instance_token:   string, // hub credential of the caller (for the async report)
-	instance_id:      string,
-}
-
-// bridge_shell_jobs is keyed by exec_id and guarded by bridge_shell_jobs_mutex.
-// Records are never removed (the store is small: one entry per exec).
-bridge_shell_jobs: map[string]^Bridge_Shell_Job
-bridge_shell_jobs_mutex: sync.Mutex
-bridge_shell_exec_seq: i64
+// Package-level session map (replaces the old bridge_shell_jobs map).
+// All exec sessions (kind=Command) are registered here.
+bridge_shell_session_map: Bridge_Shell_Session_Map
 
 // Bridge_Shell_Async_Ctx is heap-allocated per background job and handed to the
 // worker thread, which frees it on exit.
 Bridge_Shell_Async_Ctx :: struct {
 	process:         os.Process,
-	exec_id:         string,
+	exec_id:         string, // == session_id
 	cmd:             string,
 	start_time:      string, // RFC3339 UTC
 	output_path:     string,
@@ -87,8 +70,8 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 		if !os.is_dir(working_dir) do return bridge_local_response_error(request_id, "bad_request", strings.concatenate({"shell-cmd exec --cwd is not a directory: ", working_dir}))
 	}
 
-	exec_id := bridge_shell_next_exec_id()
-	output_path := bridge_shell_output_path(exec_id)
+	session_id := bridge_shell_session_next_id()
+	output_path := bridge_shell_output_path(session_id)
 	if slash := strings.last_index_byte(output_path, '/'); slash > 0 do _ = os.make_directory_all(output_path[:slash])
 
 	// The child writes stdout+stderr straight into the output file (2>&1). We keep
@@ -119,20 +102,21 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	state, werr := os.process_wait(process, BRIDGE_SHELL_ASYNC_THRESHOLD)
 	if bridge_shell_err_is_timeout(werr) {
 		// ---- async path: still running after the threshold --------------------
-		job := new(Bridge_Shell_Job)
-		job.exec_id = exec_id
-		job.cmd = strings.clone(cmd)
-		job.status = strings.clone("running")
-		job.start_time = start_time
-		job.started_unix_ms = started_ms
-		job.output_path = strings.clone(output_path)
-		job.instance_token = strings.clone(rec.instance_token)
-		job.instance_id = strings.clone(rec.agent_instance_id)
-		bridge_shell_jobs_put(job)
+		sess := Bridge_Shell_Session{
+			session_id      = strings.clone(session_id),
+			kind            = .Command,
+			cmd             = strings.clone(cmd),
+			cwd             = strings.clone(cwd),
+			status          = .Running,
+			started_at      = strings.clone(start_time),
+			started_unix_ms = started_ms,
+			shell_id        = strings.clone(session_id),
+		}
+		bridge_shell_session_register(&bridge_shell_session_map, sess)
 
 		ctx := new(Bridge_Shell_Async_Ctx)
 		ctx.process = process
-		ctx.exec_id = strings.clone(exec_id)
+		ctx.exec_id = strings.clone(session_id)
 		ctx.cmd = strings.clone(cmd)
 		ctx.start_time = strings.clone(start_time)
 		ctx.output_path = strings.clone(output_path)
@@ -142,48 +126,50 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 
 		// Report the job to the hub as running BEFORE spawning the worker so the UI
 		// can show it in-flight (REQ-14a). Status-only + metadata — never output.
-		bridge_shell_cmd_notify_hub(exec_id, "running", 0, false, cmd, start_time, rec)
+		bridge_shell_cmd_notify_hub(session_id, "running", 0, false, cmd, start_time, rec)
 
 		thread.run_with_data(rawptr(ctx), bridge_shell_async_worker)
 
 		b := strings.builder_make()
 		strings.write_string(&b, "{\"exec_id\":\"")
-		bridge_local_write_json_string(&b, exec_id)
+		bridge_local_write_json_string(&b, session_id)
 		strings.write_string(&b, "\",\"status\":\"running\",\"start_time\":\"")
 		bridge_local_write_json_string(&b, start_time)
 		strings.write_string(&b, "\",\"raw_output_location\":\"")
 		bridge_local_write_json_string(&b, output_path)
 		strings.write_string(&b, "\",\"message\":\"Background job started; use shell-cmd read ")
-		bridge_local_write_json_string(&b, exec_id)
+		bridge_local_write_json_string(&b, session_id)
 		strings.write_string(&b, " for output\"}")
 		return bridge_local_response_data(request_id, strings.to_string(b))
 	}
 
 	// ---- sync path: finished within the threshold ---------------------------
 	finished_ms := bridge_now_unix_ms()
-	status := "completed"
+	status := Bridge_Shell_Session_Status.Exited
 	exit_code := 0
 	if werr == nil {
 		exit_code = state.exit_code
 	} else {
 		// A non-timeout wait error means we lost track of the process; surface it
 		// as a failed job rather than a bogus success.
-		status = "failed"
+		status = .Failed
 		exit_code = -1
 	}
 
-	job := new(Bridge_Shell_Job)
-	job.exec_id = exec_id
-	job.cmd = strings.clone(cmd)
-	job.status = strings.clone(status)
-	job.start_time = start_time
-	job.started_unix_ms = started_ms
-	job.finished_unix_ms = finished_ms
-	job.exit_code = exit_code
-	job.output_path = strings.clone(output_path)
-	job.instance_token = strings.clone(rec.instance_token)
-	job.instance_id = strings.clone(rec.agent_instance_id)
-	bridge_shell_jobs_put(job)
+	sess := Bridge_Shell_Session{
+		session_id       = strings.clone(session_id),
+		kind             = .Command,
+		cmd              = strings.clone(cmd),
+		cwd              = strings.clone(cwd),
+		status           = status,
+		exit_code        = exit_code,
+		exit_code_set    = true,
+		started_at       = strings.clone(start_time),
+		started_unix_ms  = started_ms,
+		finished_unix_ms = finished_ms,
+		shell_id         = strings.clone(session_id),
+	}
+	bridge_shell_session_register(&bridge_shell_session_map, sess)
 
 	raw, rerr := os.read_entire_file(output_path, context.allocator)
 	defer if rerr == nil do delete(raw)
@@ -196,7 +182,7 @@ bridge_shell_cmd_exec :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	tail, truncated := bridge_shell_tail(output_str, BRIDGE_SHELL_TAIL_THRESHOLD, BRIDGE_SHELL_TAIL_KEEP)
 
 	b := strings.builder_make()
-	bridge_shell_write_job_json(&b, job, tail, truncated, output_size, true)
+	bridge_shell_write_session_json(&b, &sess, tail, truncated, output_size, true)
 	return bridge_local_response_data(request_id, strings.to_string(b))
 }
 
@@ -213,21 +199,14 @@ bridge_shell_cmd_read :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	grep_pattern := bridge_local_extract_json_string(params, "grep_pattern", "")
 
 	// Snapshot the record under the lock. Only `status` is mutated after creation
-	// (by the async worker), so we clone it; the other fields are set once and are
-	// safe to share since job records are never removed.
-	snap: Bridge_Shell_Job
-	ok := false
-	sync.mutex_lock(&bridge_shell_jobs_mutex)
-	if job, found := bridge_shell_jobs[exec_id]; found {
-		snap = job^
-		snap.status = strings.clone(job.status)
-		ok = true
-	}
-	sync.mutex_unlock(&bridge_shell_jobs_mutex)
+	// (by the async worker), so we snapshot the whole session value-type.
+	snap, ok := bridge_shell_session_get(&bridge_shell_session_map, exec_id)
 	if !ok do return bridge_local_response_error(request_id, "not_found", strings.concatenate({"no shell job with exec_id ", exec_id}))
-	defer delete(snap.status)
 
-	raw, rerr := os.read_entire_file(snap.output_path, context.allocator)
+	output_path := bridge_shell_output_path(exec_id)
+	defer delete(output_path)
+
+	raw, rerr := os.read_entire_file(output_path, context.allocator)
 	defer if rerr == nil do delete(raw)
 	output_str := ""
 	output_size := 0
@@ -250,7 +229,7 @@ bridge_shell_cmd_read :: proc(request_id, params: string, rec: Bridge_Local_Agen
 	defer if tail_owned do delete(tail)
 
 	b := strings.builder_make()
-	bridge_shell_write_job_json(&b, &snap, tail, truncated, output_size, true)
+	bridge_shell_write_session_json(&b, &snap, tail, truncated, output_size, true)
 	return bridge_local_response_data(request_id, strings.to_string(b))
 }
 
@@ -266,7 +245,7 @@ bridge_shell_async_worker :: proc(data: rawptr) {
 	if remaining <= 0 do remaining = time.Millisecond
 	state, werr := os.process_wait(ctx.process, remaining)
 
-	status := "completed"
+	status := Bridge_Shell_Session_Status.Exited
 	exit_code := 0
 	if bridge_shell_err_is_timeout(werr) {
 		// Exceeded the hard cap: kill the entire process group (setsid made the
@@ -279,21 +258,23 @@ bridge_shell_async_worker :: proc(data: rawptr) {
 		}
 		_, _ = os.process_wait(ctx.process)
 		bridge_shell_append_line(ctx.output_path, "[job killed: exceeded 30-minute timeout]")
-		status = "failed"
+		status = .Killed
 		exit_code = -1
 	} else if werr == nil {
 		exit_code = state.exit_code
 	} else {
-		status = "failed"
+		status = .Failed
 		exit_code = -1
 	}
 
-	bridge_shell_jobs_finish(ctx.exec_id, status, exit_code, bridge_now_unix_ms())
+	bridge_shell_session_finish(&bridge_shell_session_map, ctx.exec_id, status, exit_code, bridge_now_unix_ms())
 
 	// Report status only to the hub (never any output). rec carries just the
 	// caller's instance token, which is all bridge_local_relay_raw needs.
+	status_str := "completed"
+	if status == .Killed || status == .Failed do status_str = "failed"
 	rec := Bridge_Local_Agent_Token_Record{instance_token = ctx.instance_token, agent_instance_id = ctx.instance_id}
-	bridge_shell_cmd_notify_hub(ctx.exec_id, status, exit_code, true, ctx.cmd, ctx.start_time, rec)
+	bridge_shell_cmd_notify_hub(ctx.exec_id, status_str, exit_code, true, ctx.cmd, ctx.start_time, rec)
 
 	delete(ctx.exec_id)
 	delete(ctx.cmd)
@@ -328,56 +309,41 @@ bridge_shell_cmd_notify_hub :: proc(exec_id, status: string, exit_code: int, exi
 	_ = bridge_local_relay_raw("POST", "/api/v1/agent-actions/shell-cmd/report", strings.to_string(b), rec)
 }
 
-// ---- job store -----------------------------------------------------------
-
-bridge_shell_jobs_put :: proc(job: ^Bridge_Shell_Job) {
-	sync.mutex_lock(&bridge_shell_jobs_mutex)
-	defer sync.mutex_unlock(&bridge_shell_jobs_mutex)
-	if bridge_shell_jobs == nil do bridge_shell_jobs = make(map[string]^Bridge_Shell_Job, allocator = runtime.default_allocator())
-	bridge_shell_jobs[job.exec_id] = job
-}
-
-// Reset / clear stored shell jobs under lock (for tests).
+// bridge_shell_test_reset clears the session map (for tests).
 bridge_shell_test_reset :: proc() {
-	sync.mutex_lock(&bridge_shell_jobs_mutex)
-	defer sync.mutex_unlock(&bridge_shell_jobs_mutex)
-	clear(&bridge_shell_jobs)
-}
-
-bridge_shell_jobs_finish :: proc(exec_id, status: string, exit_code: int, finished_ms: i64) {
-	sync.mutex_lock(&bridge_shell_jobs_mutex)
-	defer sync.mutex_unlock(&bridge_shell_jobs_mutex)
-	if job, ok := bridge_shell_jobs[exec_id]; ok {
-		delete(job.status)
-		job.status = strings.clone(status)
-		job.exit_code = exit_code
-		job.finished_unix_ms = finished_ms
-	}
+	bridge_shell_session_map_reset(&bridge_shell_session_map)
 }
 
 // ---- helpers -------------------------------------------------------------
 
-// bridge_shell_write_job_json writes the rich job snapshot object. exit_code and
-// execution_time_ms are omitted while the job is still running; output/truncated
-// are included only when include_output is set.
-bridge_shell_write_job_json :: proc(b: ^strings.Builder, job: ^Bridge_Shell_Job, output_tail: string, truncated: bool, output_size: int, include_output: bool) {
+// bridge_shell_write_session_json writes the rich exec-response object for a
+// kind=Command session. exit_code and execution_time_ms are omitted while the
+// session is still running; output/truncated are included only when
+// include_output is set.
+bridge_shell_write_session_json :: proc(b: ^strings.Builder, s: ^Bridge_Shell_Session, output_tail: string, truncated: bool, output_size: int, include_output: bool) {
+	status_str := bridge_shell_session_exec_status_str(s)
+	output_path := bridge_shell_output_path(s.session_id)
+	defer delete(output_path)
+
 	strings.write_string(b, "{\"exec_id\":\"")
-	bridge_local_write_json_string(b, job.exec_id)
+	bridge_local_write_json_string(b, s.session_id)
 	strings.write_string(b, "\",\"status\":\"")
-	bridge_local_write_json_string(b, job.status)
+	bridge_local_write_json_string(b, status_str)
 	strings.write_byte(b, '"')
-	if job.status != "running" {
+	if s.status != .Running && s.status != .Starting {
 		strings.write_string(b, ",\"exit_code\":")
-		strings.write_string(b, bridge_agent_itoa(job.exit_code))
-		strings.write_string(b, ",\"execution_time_ms\":")
-		strings.write_string(b, bridge_agent_itoa(int(job.finished_unix_ms - job.started_unix_ms)))
+		strings.write_string(b, bridge_agent_itoa(s.exit_code))
+		if s.finished_unix_ms > 0 {
+			strings.write_string(b, ",\"execution_time_ms\":")
+			strings.write_string(b, bridge_agent_itoa(int(s.finished_unix_ms - s.started_unix_ms)))
+		}
 	}
 	strings.write_string(b, ",\"start_time\":\"")
-	bridge_local_write_json_string(b, job.start_time)
+	bridge_local_write_json_string(b, s.started_at)
 	strings.write_string(b, "\",\"output_size_bytes\":")
 	strings.write_string(b, bridge_agent_itoa(output_size))
 	strings.write_string(b, ",\"raw_output_location\":\"")
-	bridge_local_write_json_string(b, job.output_path)
+	bridge_local_write_json_string(b, output_path)
 	strings.write_byte(b, '"')
 	if include_output {
 		strings.write_string(b, ",\"output\":\"")
@@ -464,22 +430,14 @@ bridge_shell_page :: proc(output: string, offset, limit: int, grep: string) -> (
 	return strings.to_string(b), truncated
 }
 
-bridge_shell_next_exec_id :: proc() -> string {
-	sync.mutex_lock(&bridge_shell_jobs_mutex)
-	bridge_shell_exec_seq += 1
-	seq := bridge_shell_exec_seq
-	sync.mutex_unlock(&bridge_shell_jobs_mutex)
-	return strings.clone(fmt.tprintf("sexc_%x_%d", time.to_unix_nanoseconds(time.now()), seq))
-}
-
 bridge_shell_jobs_dir :: proc() -> string {
 	data_dir := bridge_expand_home(bridge_config.data_dir)
 	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
 	return strings.concatenate({strings.trim_right(data_dir, "/"), "/shell_jobs"})
 }
 
-bridge_shell_output_path :: proc(exec_id: string) -> string {
-	return strings.concatenate({bridge_shell_jobs_dir(), "/", exec_id, ".out"})
+bridge_shell_output_path :: proc(session_id: string) -> string {
+	return strings.concatenate({bridge_shell_jobs_dir(), "/", session_id, ".out"})
 }
 
 bridge_shell_append_line :: proc(path, line: string) {

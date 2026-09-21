@@ -48,6 +48,7 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	case "cards", "card":         ctl_v2_cards(endpoint, token, rest, args); return
 	case "search":        ctl_agentmode_search(endpoint, token, rest, args); return
 	case "shell-cmd":     ctl_agentmode_shell_cmd(endpoint, token, rest, args); return
+	case "shell":         ctl_agentmode_shell(endpoint, token, rest, args); return
 	}
 	print_agent_help(cmd[idx:])
 }
@@ -1148,6 +1149,7 @@ print_agent_help :: proc(cmd: []string) {
 	case "memory": print_help_memory(); return
 	case "cards", "card": print_help_cards(); return
 	case "shell-cmd": print_help_shell_cmd(); return
+	case "shell":     print_help_shell(); return
 	case "context": fmt.println("ham-ctl context\nOne-shot snapshot of this instance: chain, current task, unread counts.\nExample:\n  ham-ctl context"); return
 	case "start-success": fmt.println("ham-ctl start-success\nSignal this instance is ready (idempotent).\nExample:\n  ham-ctl start-success"); return
 	}
@@ -1171,6 +1173,7 @@ print_help_overview :: proc() {
 	fmt.println("  memory      List, show, read, or propose memories")
 	fmt.println("  artifact    Create / read / download artifacts")
 	fmt.println("  cards       Curator action cards (list, show, create, discard, accept)")
+	fmt.println("  shell       Manage PTY/shell sessions on the Bridge host (start/kill/signal/restart/list/log/capture)")
 	fmt.println("  shell-cmd   Run a shell command on your local Bridge host (exec, read)")
 	fmt.println("  context     One-shot snapshot of this instance (chain, task, unread)")
 	fmt.println("  start-success  Signal this instance is ready")

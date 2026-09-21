@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS shell_sessions (session_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, bridge_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT '', chain_id TEXT NOT NULL DEFAULT '', agent_instance_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'interactive', label TEXT NOT NULL DEFAULT '', cmd TEXT NOT NULL, cwd TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'starting', exit_code INTEGER, pid INTEGER NOT NULL DEFAULT 0, server_port INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL, finished_at TEXT, created_at TEXT NOT NULL, last_activity_at TEXT);
+CREATE INDEX IF NOT EXISTS shell_sessions_bridge  ON shell_sessions(owner_user_id, bridge_id);
+CREATE INDEX IF NOT EXISTS shell_sessions_project ON shell_sessions(owner_user_id, project_id);
+CREATE INDEX IF NOT EXISTS shell_sessions_chain   ON shell_sessions(owner_user_id, chain_id);
