@@ -2167,17 +2167,36 @@ Bridge_Shell_Kill_Ctx :: struct {
 	shell_id:   string,
 }
 
-// bridge_shell_kill_worker sends SIGTERM, waits 5s, then SIGKILLs if still alive.
+// bridge_shell_kill_shell_is_alive asks the DAEMON whether shell_id is still a live
+// child. This is the escalation guard: it must NOT be inferred from
+// Bridge_Shell_Session.status, because bridge_hub_handle_shell_kill deliberately
+// writes .Killed before this worker even starts (so ChildExited can report
+// status="killed"). Reading that field here made the SIGKILL branch unreachable for
+// every session, which left SIGTERM-ignoring interactive shells unkillable (BUG-9).
+// A shell missing from the roster has already been reaped, so absent => not alive.
+bridge_shell_kill_shell_is_alive :: proc(socket, shell_id: string) -> bool {
+	reply, ok := bridge_pty_host_list(socket)
+	if !ok do return false
+	defer pty_host_reply_delete(reply)
+	for a in reply.agents {
+		if a.instance_id == shell_id do return a.alive
+	}
+	return false
+}
+
+// bridge_shell_kill_worker sends SIGTERM, waits 5s, then SIGKILLs if the daemon still
+// reports the child alive. The escalation stays bridge-side (rather than delegating to
+// bridge_pty_host_close) on purpose: the daemon suppresses its ChildExited broadcast
+// while tearing an instance down via close, and the bridge needs that event to fire the
+// shell_exited notification that carries status="killed" to the hub.
 bridge_shell_kill_worker :: proc(data: rawptr) {
 	ctx := (^Bridge_Shell_Kill_Ctx)(data)
 	socket, ok := bridge_pty_host_ensure_daemon()
 	if ok {
 		_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 15)
 		time.sleep(5 * time.Second)
-		if s, ok2 := bridge_shell_session_get(&bridge_shell_session_map, ctx.session_id); ok2 {
-			if s.status == .Running || s.status == .Starting {
-				_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 9)
-			}
+		if bridge_shell_kill_shell_is_alive(socket, ctx.shell_id) {
+			_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, ctx.shell_id, 9)
 		}
 	}
 	delete(ctx.session_id)
