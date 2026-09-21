@@ -86,6 +86,12 @@ Create_Task_Input :: struct {
 	owner_user_id: string,
 	assignee_ref_json: string,
 	reviewer_refs_json: string,
+	// priority sets the task priority (P0/P1/P2) at create time. has_priority
+	// distinguishes an explicit choice from "field absent" so a create that omits
+	// priority keeps the documented P2 default. Mirrors Update_Task_Input below;
+	// its absence here is REQ-CLI-2: the CLIs sent priority and create dropped it.
+	priority: domain.Task_Priority,
+	has_priority: bool,
 	depends_on: []domain.Task_ID,
 }
 
@@ -551,8 +557,9 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 		description = input.description,
 		publish_state = chain.publish_state,
 		status = .Assigned,
-		// Tasks default to the lowest priority (P2) unless explicitly escalated.
-		priority = .P2,
+		// Tasks default to the lowest priority (P2) unless the caller explicitly
+		// escalates via input.priority (REQ-CLI-2).
+		priority = input.has_priority ? input.priority : .P2,
 		assignee_ref_json = assignee_ref,
 		reviewer_refs_json = reviewer_refs,
 		created_at = now,
