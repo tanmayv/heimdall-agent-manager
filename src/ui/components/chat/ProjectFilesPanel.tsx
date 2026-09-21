@@ -629,6 +629,38 @@ export default function ProjectFilesPanel({
     [projectId, bridgeId, includeHidden, listDir],
   );
 
+  const cwdRef = useRef(cwd);
+  useEffect(() => {
+    cwdRef.current = cwd;
+  }, [cwd]);
+
+  // Synchronize explorer directory to file location (REQ-UI-EXPLORER-ACTIVE-FILE-FOCUS)
+  const revealInExplorer = useCallback(
+    (filePath: string) => {
+      if (!filePath) return;
+      const dir = parentPath(filePath);
+      if (dir !== cwdRef.current) {
+        void load(dir);
+      }
+    },
+    [load],
+  );
+
+  // Auto-scroll active file entry in explorer into view (REQ-UI-EXPLORER-ACTIVE-FILE-FOCUS)
+  const activeEntryRef = useRef<HTMLLIElement | null>(null);
+  useEffect(() => {
+    if (activeEntryRef.current) {
+      activeEntryRef.current.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [activeTabPath, cwd, entries]);
+
+  // Keep explorer directory in sync with active editor tab (REQ-UI-EXPLORER-ACTIVE-FILE-FOCUS)
+  useEffect(() => {
+    if (activeTabPath) {
+      revealInExplorer(activeTabPath);
+    }
+  }, [activeTabPath, revealInExplorer]);
+
   // Restore / load directory and editor state for current project & instance (REQ-UI-INSTANCE-MONACO-PERSISTENCE, REQ-UI-INSTANCE-TREE-PERSISTENCE)
   const isProjectMountedRef = useRef(false);
   useEffect(() => {
@@ -670,6 +702,11 @@ export default function ProjectFilesPanel({
       } catch {}
     }
 
+    if (restoredActive) {
+      const activeParent = parentPath(restoredActive);
+      if (activeParent) restoredCwd = activeParent;
+    }
+
     setOpenTabs(restoredTabs);
     setActiveTabPath(restoredActive);
     setIsEditMode(restoredTabs.length > 0);
@@ -677,6 +714,9 @@ export default function ProjectFilesPanel({
     setIsExplorerCollapsed(restoredCollapsed);
     activeInstanceRef.current = agentInstanceId;
     void load(restoredCwd);
+    if (restoredActive) {
+      revealInExplorer(restoredActive);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, bridgeId, agentInstanceId]);
 
@@ -854,6 +894,7 @@ export default function ProjectFilesPanel({
         setIsEditMode(true);
         setActivePane('editor');
         if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
+        revealInExplorer(filePath);
         return;
       }
       setOpeningInEditor(filePath);
@@ -875,21 +916,23 @@ export default function ProjectFilesPanel({
         setIsEditMode(true);
         setActivePane('editor');
         if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
+        revealInExplorer(filePath);
       } catch (e: any) {
         setError(str(e?.message) || 'Could not open file in editor');
       } finally {
         setOpeningInEditor('');
       }
     },
-    [cwd, openTabs, fetchAllFileContent, isMobile, isSinglePane]
+    [cwd, openTabs, fetchAllFileContent, isMobile, isSinglePane, revealInExplorer]
   );
 
   useEffect(() => {
     if (openFilePath) {
       void openFileInEditor(openFilePath);
+      revealInExplorer(openFilePath);
       onFileOpened?.();
     }
-  }, [openFilePath, openFileInEditor, onFileOpened]);
+  }, [openFilePath, openFileInEditor, revealInExplorer, onFileOpened]);
 
   const handleEditorNewFile = useCallback(
     async (inputPath: string) => {
@@ -904,6 +947,7 @@ export default function ProjectFilesPanel({
         setIsEditMode(true);
         setActivePane('editor');
         if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
+        revealInExplorer(targetPath);
         return;
       }
 
@@ -926,6 +970,7 @@ export default function ProjectFilesPanel({
         setIsEditMode(true);
         setActivePane('editor');
         if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
+        revealInExplorer(targetPath);
       } catch {
         const newTab: EditorTab = {
           path: targetPath,
@@ -939,11 +984,12 @@ export default function ProjectFilesPanel({
         setIsEditMode(true);
         setActivePane('editor');
         if (isMobile || isSinglePane) setIsExplorerCollapsed(true);
+        revealInExplorer(targetPath);
       } finally {
         setOpeningInEditor('');
       }
     },
-    [cwd, openTabs, fetchAllFileContent, isMobile, isSinglePane]
+    [cwd, openTabs, fetchAllFileContent, isMobile, isSinglePane, revealInExplorer]
   );
 
   // When no tabs are open, pressing '+' creates a new file (REQ-IDE-SPLIT-PANE)
@@ -1060,10 +1106,14 @@ export default function ProjectFilesPanel({
     []
   );
 
-  const selectTab = useCallback((path: string) => {
-    setActiveTabPath(path);
-    setActivePane('editor');
-  }, []);
+  const selectTab = useCallback(
+    (path: string) => {
+      setActiveTabPath(path);
+      setActivePane('editor');
+      revealInExplorer(path);
+    },
+    [revealInExplorer]
+  );
 
   const closeTab = useCallback(
     (path: string, force = false) => {
@@ -1095,6 +1145,7 @@ export default function ProjectFilesPanel({
             const idx = prev.findIndex((t) => t.path === path);
             const nextActive = next[Math.min(idx, next.length - 1)].path;
             setActiveTabPath(nextActive);
+            revealInExplorer(nextActive);
           } else {
             setActiveTabPath('');
             setIsEditMode(false);
@@ -1104,7 +1155,7 @@ export default function ProjectFilesPanel({
         return next;
       });
     },
-    [openTabs, activeTabPath, monaco]
+    [openTabs, activeTabPath, monaco, revealInExplorer]
   );
 
   // Global keyboard shortcuts for Cmd+S / Ctrl+S and Cmd+Shift+S / Ctrl+Shift+S
@@ -1372,9 +1423,26 @@ export default function ProjectFilesPanel({
               {/* 4) Active file path breadcrumb (with ellipsis on narrow widths) */}
               <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden truncate pl-1 text-[11.5px] text-muted">
                 {activeEditorTab ? (
-                  <span className="truncate font-mono text-[11.5px] text-primary/80" title={activeEditorTab.path}>
-                    {activeEditorTab.path}
-                  </span>
+                  <div className="flex min-w-0 items-center gap-1">
+                    {/* Locate button: reveal active file in explorer and expand if collapsed (REQ-UI-EXPLORER-ACTIVE-FILE-FOCUS) */}
+                    <button
+                      data-debug-id="project-files-locate-file-btn"
+                      type="button"
+                      onClick={() => {
+                        revealInExplorer(activeEditorTab.path);
+                        if (isExplorerCollapsed) updateExplorerCollapsed(false);
+                        if (isSinglePane) setActivePane('files');
+                      }}
+                      title="Locate active file in explorer"
+                      aria-label="Locate active file in explorer"
+                      className="grid h-5 w-5 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-accent transition-colors"
+                    >
+                      <Icon name="folder-open" size={13} />
+                    </button>
+                    <span className="truncate font-mono text-[11.5px] text-primary/80" title={activeEditorTab.path}>
+                      {activeEditorTab.path}
+                    </span>
+                  </div>
                 ) : (
                   crumbs.map((c, i) => (
                     <span key={c.path || 'root'} className="flex shrink-0 items-center gap-0.5">
@@ -1716,8 +1784,11 @@ export default function ProjectFilesPanel({
                       return (
                         <li
                           key={`${e.is_dir ? 'd' : 'f'}:${e.name}`}
+                          ref={isActiveFile ? activeEntryRef : undefined}
+                          data-debug-id={isActiveFile ? 'project-files-active-entry' : undefined}
+                          data-active-file={isActiveFile ? 'true' : 'false'}
                           className={`group flex items-center h-7 py-0.5 px-2 text-[12px] rounded select-none ${
-                            isActiveFile ? 'bg-accent/10 text-accent font-medium' : 'hover:bg-neutral-soft text-primary'
+                            isActiveFile ? 'bg-accent/15 text-accent font-medium ring-1 ring-accent/30 shadow-xs' : 'hover:bg-neutral-soft text-primary'
                           }`}
                         >
                           <button
@@ -2358,9 +2429,32 @@ function MonacoMultiFileEditor({
     };
   }, [isVimMode, activeTab.path, editorInstance]);
 
+  // Auto-focus Monaco editor on open (REQ-UI-EXPLORER-ACTIVE-FILE-FOCUS)
+  useEffect(() => {
+    if (editorRef.current) {
+      try {
+        editorRef.current.focus();
+      } catch {}
+      const timer = setTimeout(() => {
+        try {
+          editorRef.current?.focus();
+        } catch {}
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [activeTab.path]);
+
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     setEditorInstance(editor);
+    try {
+      editor.focus();
+    } catch {}
+    setTimeout(() => {
+      try {
+        editor.focus();
+      } catch {}
+    }, 50);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       onSaveActiveRef.current();
     });
