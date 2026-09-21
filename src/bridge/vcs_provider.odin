@@ -66,6 +66,8 @@ VCS_Capabilities :: struct {
 	supports_amend:    bool,
 	supports_upload:   bool,
 	supports_sync:     bool,
+	upload_label:      string,
+	sync_label:        string,
 	supported_actions: []string,
 }
 

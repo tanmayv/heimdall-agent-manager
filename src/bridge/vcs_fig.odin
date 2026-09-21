@@ -30,6 +30,8 @@ vcs_fig_capabilities :: proc(path: string) -> VCS_Capabilities {
 		supports_amend    = true,
 		supports_upload   = true,
 		supports_sync     = true,
+		upload_label      = "Upload to Critique",
+		sync_label        = "Sync with Head",
 		supported_actions = vcs_fig_actions[:],
 	}
 }
