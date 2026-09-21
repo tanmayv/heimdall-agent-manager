@@ -54,7 +54,7 @@ export const CHAT_VIEW_MIN_WIDTH = 380;
 // Tab order here is only the set of valid values; the visual order lives in the
 // panel that renders them. Kept as one const so a new tab cannot be added to the
 // type while a storage read silently keeps rejecting it.
-export const RIGHT_SIDEBAR_TABS = ['tasks', 'files', 'rundir', 'jobs', 'shells', 'chain', 'vcs'] as const;
+export const RIGHT_SIDEBAR_TABS = ['tasks', 'files', 'rundir', 'shells', 'chain', 'vcs'] as const;
 
 export type RightSidebarTab = (typeof RIGHT_SIDEBAR_TABS)[number];
 
