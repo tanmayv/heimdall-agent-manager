@@ -64,16 +64,20 @@ VCS_Capabilities :: struct {
 	staging_model:     string,
 	commit_model:      string,
 	supports_amend:    bool,
+	supports_upload:   bool,
+	supports_sync:     bool,
 	supported_actions: []string,
 }
 
 // A single commit/revision row for the vcs_log command.
 VCS_Log_Entry :: struct {
-	hash:       string,
-	short_hash: string,
-	subject:    string,
-	author:     string,
-	date:       string,
+	hash:          string,
+	short_hash:    string,
+	subject:       string,
+	author:        string,
+	date:          string,
+	cl_number:     string,
+	review_status: string,
 }
 
 // A worktree (git) / workspace (jj) row for the vcs_workspaces command.
@@ -119,6 +123,10 @@ VCS_Provider :: struct {
 	// (true = commit succeeded). A nil proc pointer means the action is unsupported
 	// and callers must treat it as "not_supported" before dispatch.
 	commit:          proc(path, message: string, amend: bool) -> (ok: bool),
+	// Write command. Uploads the current branch/chain of commits to Critique/remote.
+	upload:          proc(path: string) -> (ok: bool, msg: string),
+	// Write command. Syncs/rebases current branch against head.
+	sync:            proc(path: string) -> (ok: bool, msg: string),
 	// read-only. returns (workspaces, ok)
 	list_workspaces: proc(path: string) -> (workspaces: []VCS_Workspace, ok: bool),
 }

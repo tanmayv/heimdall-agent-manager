@@ -35,11 +35,15 @@ test_vcs_fig_provider_and_capabilities :: proc(t: ^testing.T) {
 	testing.expect(t, p.capabilities != nil, "capabilities proc present")
 	testing.expect(t, p.stage_file != nil, "stage_file proc present")
 	testing.expect(t, p.unstage_file != nil, "unstage_file proc present")
+	testing.expect(t, p.upload != nil, "upload proc present")
+	testing.expect(t, p.sync != nil, "sync proc present")
 
 	caps := p.capabilities("/dummy/path")
 	testing.expect_value(t, caps.provider, "fig")
 	testing.expect(t, !caps.supports_staging, "fig supports_staging must be false")
 	testing.expect(t, caps.supports_amend, "fig supports_amend must be true")
+	testing.expect(t, caps.supports_upload, "fig supports_upload must be true")
+	testing.expect(t, caps.supports_sync, "fig supports_sync must be true")
 }
 
 @(test)

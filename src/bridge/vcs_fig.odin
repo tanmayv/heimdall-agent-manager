@@ -17,7 +17,7 @@ vcs_fig_name :: proc() -> string {
 }
 
 // vcs_fig_actions declares actions supported by Fig.
-vcs_fig_actions := [8]string{"diff", "log", "commit_diff", "revert", "workspaces", "stage", "unstage", "amend"}
+vcs_fig_actions := [10]string{"diff", "log", "commit_diff", "revert", "workspaces", "stage", "unstage", "amend", "upload", "sync"}
 
 // vcs_fig_capabilities indicates Fig/Hg features: no index/staging area.
 vcs_fig_capabilities :: proc(path: string) -> VCS_Capabilities {
@@ -28,6 +28,8 @@ vcs_fig_capabilities :: proc(path: string) -> VCS_Capabilities {
 		staging_model     = "none",
 		commit_model      = "revision",
 		supports_amend    = true,
+		supports_upload   = true,
+		supports_sync     = true,
 		supported_actions = vcs_fig_actions[:],
 	}
 }
@@ -67,6 +69,20 @@ vcs_fig_revert_file :: proc(path, file: string) -> (ok: bool, msg: string) {
 	}
 }
 
+// vcs_fig_upload exports the local commits / chain of CLs to Critique via `hg upload chain`.
+vcs_fig_upload :: proc(path: string) -> (ok: bool, msg: string) {
+	_, rok := vcs_run([]string{"hg", "--cwd", path, "upload", "chain"})
+	if !rok do return false, "upload_failed"
+	return true, ""
+}
+
+// vcs_fig_sync synchronizes local commits with Piper Head via `hg sync`.
+vcs_fig_sync :: proc(path: string) -> (ok: bool, msg: string) {
+	_, rok := vcs_run([]string{"hg", "--cwd", path, "sync"})
+	if !rok do return false, "sync_failed"
+	return true, ""
+}
+
 // vcs_fig_provider returns the fig proc-table.
 vcs_fig_provider :: proc() -> VCS_Provider {
 	return VCS_Provider{
@@ -84,6 +100,8 @@ vcs_fig_provider :: proc() -> VCS_Provider {
 		commit_diff       = vcs_fig_commit_diff,
 		commit_diff_files = vcs_fig_commit_diff_files,
 		commit            = vcs_fig_commit,
+		upload            = vcs_fig_upload,
+		sync              = vcs_fig_sync,
 		list_workspaces   = vcs_fig_list_workspaces,
 	}
 }
@@ -378,7 +396,7 @@ vcs_fig_log :: proc(path, cursor: string, limit: int) -> ([]VCS_Log_Entry, strin
 	limit_str := fmt.tprintf("%d", fetch_count)
 	out, ok := vcs_run([]string{
 		"hg", "--cwd", path, "log", "-l", limit_str,
-		"-T", "{node}|{node|short}|{desc|firstline}|{author}|{date|isodate}\n",
+		"-T", "{node}|{node|short}|{desc|firstline}|{author}|{date|isodate}|{clnumber}|{if(lgtm, 'LGTM', if(mailed, 'Mailed', ''))}\n",
 	})
 	if !ok do return nil, "", false, false
 

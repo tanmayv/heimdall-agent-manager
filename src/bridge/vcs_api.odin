@@ -87,6 +87,14 @@ bridge_vcs_handle_command :: proc(conn: ^ws.Connection, type, text: string) -> b
 		command_id := extract_json_string(text, "command_id", "")
 		_ = bridge_hub_send(conn, bridge_vcs_commit_json(command_id, text))
 		return true
+	case "vcs_upload":
+		command_id := extract_json_string(text, "command_id", "")
+		_ = bridge_hub_send(conn, bridge_vcs_upload_json(command_id, text))
+		return true
+	case "vcs_sync":
+		command_id := extract_json_string(text, "command_id", "")
+		_ = bridge_hub_send(conn, bridge_vcs_sync_json(command_id, text))
+		return true
 	// --- read-only commands: cached by command_id like the other read handlers. ---
 	case "vcs_log":
 		command_id := extract_json_string(text, "command_id", "")
@@ -137,7 +145,7 @@ bridge_vcs_capabilities_json :: proc(command_id, text: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"vcs_capabilities_result\",\"command_id\":\""); json_write_string(&b, command_id)
 	if !ok {
-		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"supports_staging\":false,\"supports_amend\":false,\"staging_model\":\"\",\"commit_model\":\"\",\"supported_actions\":[]")
+		strings.write_string(&b, "\",\"ok\":false,\"provider\":\"\",\"supports_staging\":false,\"supports_amend\":false,\"supports_upload\":false,\"supports_sync\":false,\"staging_model\":\"\",\"commit_model\":\"\",\"supported_actions\":[]")
 		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
 		strings.write_string(&b, "}")
 		return strings.to_string(b)
@@ -146,6 +154,8 @@ bridge_vcs_capabilities_json :: proc(command_id, text: string) -> string {
 	strings.write_string(&b, "\",\"ok\":true,\"provider\":\""); json_write_string(&b, caps.provider)
 	strings.write_string(&b, "\",\"supports_staging\":"); strings.write_string(&b, "true" if caps.supports_staging else "false")
 	strings.write_string(&b, ",\"supports_amend\":"); strings.write_string(&b, "true" if caps.supports_amend else "false")
+	strings.write_string(&b, ",\"supports_upload\":"); strings.write_string(&b, "true" if caps.supports_upload else "false")
+	strings.write_string(&b, ",\"supports_sync\":"); strings.write_string(&b, "true" if caps.supports_sync else "false")
 	strings.write_string(&b, ",\"staging_model\":\""); json_write_string(&b, caps.staging_model)
 	strings.write_string(&b, "\",\"commit_model\":\""); json_write_string(&b, caps.commit_model)
 	strings.write_string(&b, "\",\"supported_actions\":[")
@@ -477,6 +487,78 @@ bridge_vcs_commit_json :: proc(command_id, text: string) -> string {
 	return strings.to_string(b)
 }
 
+// --- vcs_upload (write command) ------------------------------------------
+// Uploads the current branch/chain of commits (e.g. `hg upload chain` for fig).
+// Params: repo in "root". Never cached (mutation). Result type "vcs_upload_result".
+bridge_vcs_upload_json :: proc(command_id, text: string) -> string {
+	path := vcs_request_path(text)
+	provider, ok := vcs_detect_provider(path)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"vcs_upload_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	if !ok {
+		strings.write_string(&b, "\",\"ok\":false")
+		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
+		strings.write_string(&b, "}")
+		return strings.to_string(b)
+	}
+	if provider.upload == nil {
+		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
+		strings.write_string(&b, "\"")
+		vcs_write_error(&b, "not_supported", "Upload is not supported by this provider")
+		strings.write_string(&b, "}")
+		return strings.to_string(b)
+	}
+	aok, msg := provider.upload(path)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
+	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
+	strings.write_string(&b, "\"")
+	if aok {
+		vcs_write_error(&b, "", "")
+	} else {
+		code := msg
+		if code == "" do code = "upload_failed"
+		vcs_write_error(&b, code, vcs_action_error_message(code))
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+// --- vcs_sync (write command) --------------------------------------------
+// Syncs current branch/worktree with upstream head (e.g. `hg sync` or `git pull --rebase`).
+// Params: repo in "root". Never cached (mutation). Result type "vcs_sync_result".
+bridge_vcs_sync_json :: proc(command_id, text: string) -> string {
+	path := vcs_request_path(text)
+	provider, ok := vcs_detect_provider(path)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"vcs_sync_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	if !ok {
+		strings.write_string(&b, "\",\"ok\":false")
+		vcs_write_error(&b, "no_vcs", "No supported version control system found at path")
+		strings.write_string(&b, "}")
+		return strings.to_string(b)
+	}
+	if provider.sync == nil {
+		strings.write_string(&b, "\",\"ok\":false,\"provider\":\""); json_write_string(&b, provider.name())
+		strings.write_string(&b, "\"")
+		vcs_write_error(&b, "not_supported", "Sync is not supported by this provider")
+		strings.write_string(&b, "}")
+		return strings.to_string(b)
+	}
+	aok, msg := provider.sync(path)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if aok else "false")
+	strings.write_string(&b, ",\"provider\":\""); json_write_string(&b, provider.name())
+	strings.write_string(&b, "\"")
+	if aok {
+		vcs_write_error(&b, "", "")
+	} else {
+		code := msg
+		if code == "" do code = "sync_failed"
+		vcs_write_error(&b, code, vcs_action_error_message(code))
+	}
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
 // vcs_action_error_message maps a write-action error code to a human message.
 vcs_action_error_message :: proc(code: string) -> string {
 	switch code {
@@ -487,6 +569,8 @@ vcs_action_error_message :: proc(code: string) -> string {
 	case "revert_failed":  return "Could not revert file"
 	case "save_failed":    return "Could not save file"
 	case "commit_failed":  return "Could not create commit (nothing staged, or git rejected it)"
+	case "upload_failed":  return "Could not upload changes to remote/Critique"
+	case "sync_failed":    return "Could not sync repository with head"
 	case "missing_message": return "The 'message' parameter is required"
 	case "missing_file":   return "The 'path' parameter is required"
 	case "path_outside_root": return "File path is outside the repository root"
@@ -540,7 +624,14 @@ bridge_vcs_log_json :: proc(command_id, text: string) -> string {
 		strings.write_string(&b, "\",\"subject\":\""); json_write_string(&b, e.subject)
 		strings.write_string(&b, "\",\"author\":\""); json_write_string(&b, e.author)
 		strings.write_string(&b, "\",\"date\":\""); json_write_string(&b, e.date)
-		strings.write_string(&b, "\"}")
+		strings.write_string(&b, "\"")
+		if e.cl_number != "" {
+			strings.write_string(&b, ",\"cl_number\":\""); json_write_string(&b, e.cl_number); strings.write_string(&b, "\"")
+		}
+		if e.review_status != "" {
+			strings.write_string(&b, ",\"review_status\":\""); json_write_string(&b, e.review_status); strings.write_string(&b, "\"")
+		}
+		strings.write_string(&b, "}")
 	}
 	strings.write_string(&b, "]")
 	vcs_write_error(&b, "", "")

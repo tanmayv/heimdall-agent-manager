@@ -105,9 +105,12 @@ vcs_api_capabilities_new_fields :: proc(t: ^testing.T) {
 	defer delete(out)
 	testing.expect(t, strings.contains(out, `"ok":true`), "git repo returns ok:true")
 	testing.expect(t, strings.contains(out, `"staging_model":"index"`), "git staging_model is index")
+	testing.expect(t, strings.contains(out, `"supports_upload":false`), "git supports_upload is false")
+	testing.expect(t, strings.contains(out, `"supports_sync":true`), "git supports_sync is true")
 	testing.expect(t, strings.contains(out, `"stage"`), "supported_actions include stage")
 	testing.expect(t, strings.contains(out, `"unstage"`), "supported_actions include unstage")
 	testing.expect(t, strings.contains(out, `"workspaces"`), "supported_actions include workspaces")
+	testing.expect(t, strings.contains(out, `"sync"`), "supported_actions include sync")
 }
 
 @(test)
@@ -289,3 +292,42 @@ vcs_api_workspaces_real_repo :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(out, `"ok":true`), "workspaces ok:true on real repo")
 	testing.expect(t, strings.contains(out, `"is_current":true`), "the queried worktree is current")
 }
+
+@(test)
+vcs_api_upload_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_upload_json("u", `{"command_id":"u","root":""}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root upload ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root upload -> no_vcs")
+}
+
+@(test)
+vcs_api_sync_empty_root :: proc(t: ^testing.T) {
+	out := bridge_vcs_sync_json("s", `{"command_id":"s","root":""}`)
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "empty root sync ok:false")
+	testing.expect(t, strings.contains(out, `"no_vcs"`), "empty root sync -> no_vcs")
+}
+
+@(test)
+vcs_api_upload_jj_not_supported :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("upload-jj", ".jj")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_upload_json("u", fmt.tprintf(`{"command_id":"u","root":"%s"}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "jj upload ok:false")
+	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
+	testing.expect(t, strings.contains(out, `"code":"not_supported"`), "jj upload -> not_supported")
+}
+
+@(test)
+vcs_api_sync_jj_not_supported :: proc(t: ^testing.T) {
+	repo := vcs_test_make_marker_repo("sync-jj", ".jj")
+	defer vcs_test_rm(repo)
+	out := bridge_vcs_sync_json("s", fmt.tprintf(`{"command_id":"s","root":"%s"}`, repo))
+	defer delete(out)
+	testing.expect(t, strings.contains(out, `"ok":false`), "jj sync ok:false")
+	testing.expect(t, strings.contains(out, `"provider":"jj"`), "provider resolves to jj")
+	testing.expect(t, strings.contains(out, `"code":"not_supported"`), "jj sync -> not_supported")
+}
+

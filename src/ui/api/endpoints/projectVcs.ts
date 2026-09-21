@@ -25,6 +25,8 @@ export type VcsCapabilities = {
   provider: string;
   supports_staging: boolean;
   supports_amend?: boolean;
+  supports_upload?: boolean;
+  supports_sync?: boolean;
   // Redesign fields (TASK-3): how the provider stages, how it commits, and which
   // write actions the VCS panel may offer. ok/error retained for existing callers.
   staging_model: 'index' | 'none';
@@ -88,6 +90,8 @@ export type VcsLogEntry = {
   subject: string;
   author: string;
   date: string;
+  cl_number?: string;
+  review_status?: string;
 };
 
 // A named workspace/worktree the provider exposes.
@@ -168,6 +172,8 @@ type VcsFileMutationArgs = { projectId: string; bridgeId?: string; file: string;
 type VcsSaveFileArgs = { projectId: string; bridgeId?: string; file: string; content: string; worktree_path?: string };
 // Commit: the staged changes are committed with `message`.
 type CommitArgs = { projectId: string; bridgeId?: string; message: string; amend?: boolean; worktree_path?: string };
+// Repo-level mutations (upload/sync): target the whole repository.
+type VcsRepoMutationArgs = { projectId: string; bridgeId?: string; worktree_path?: string };
 type VcsMutationResult = { ok: boolean; error?: VcsError };
 
 function base(projectId: string): string {
@@ -451,6 +457,48 @@ export const projectVcsApi = heimdallApi.injectEndpoints({
         { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
       ],
     }),
+
+    // Upload current branch/chain of commits to Critique / remote.
+    uploadVcs: build.mutation<VcsMutationResult, VcsRepoMutationArgs>({
+      queryFn: async ({ projectId, bridgeId = '', worktree_path }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const url = `${base(projectId)}/upload${qs.size ? `?${qs}` : ''}`;
+          const data = await cookieMutation(url, 'POST', {});
+          return { data: data as VcsMutationResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '', worktree_path }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'status') },
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `log::${worktree_path || ''}`) },
+      ],
+    }),
+
+    // Sync current branch/worktree with upstream head.
+    syncVcs: build.mutation<VcsMutationResult, VcsRepoMutationArgs>({
+      queryFn: async ({ projectId, bridgeId = '', worktree_path }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (worktree_path) qs.set('worktree_path', worktree_path);
+          const url = `${base(projectId)}/sync${qs.size ? `?${qs}` : ''}`;
+          const data = await cookieMutation(url, 'POST', {});
+          return { data: data as VcsMutationResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId, bridgeId = '', worktree_path }) => [
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'files') },
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, 'status') },
+        { type: 'ProjectVcs' as const, id: vcsTagId(projectId, bridgeId, `log::${worktree_path || ''}`) },
+      ],
+    }),
   }),
 });
 
@@ -476,4 +524,6 @@ export const {
   useRevertVcsFileMutation,
   useSaveVcsFileMutation,
   useCommitVcsMutation,
+  useUploadVcsMutation,
+  useSyncVcsMutation,
 } = projectVcsApi;
