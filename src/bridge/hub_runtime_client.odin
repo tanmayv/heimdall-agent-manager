@@ -538,6 +538,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_shell_restart(conn, text)
 		return
 	}
+	if type == "shell_set_port" {
+		bridge_hub_handle_shell_set_port(conn, text)
+		return
+	}
 	if type == "shell_list" {
 		bridge_hub_handle_shell_list(conn, text)
 		return
@@ -2308,6 +2312,74 @@ bridge_hub_handle_shell_signal :: proc(text: string) {
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok do return
 	_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, shell_id, u8(signal))
+}
+
+// bridge_hub_handle_shell_set_port handles the "shell_set_port" command (XM-9).
+// REQUEST/REPLY: declares (or clears, with server_port 0) the port of a session
+// that is already running.
+//
+// This exists because the bridge keeps its OWN copy of the session and
+// bridge_hub_handle_tunnel_open re-validates server_port against that copy, not
+// against the hub's row. Updating the hub alone would make the hub authorise a
+// dial the bridge then refused with no_server_port. The spec file is re-saved so
+// the port also survives a bridge restart, exactly as a start-time port does.
+//
+// Ownership is NOT re-checked here: the hub settles it before sending, the same
+// division of labour tunnel_open uses.
+bridge_hub_handle_shell_set_port :: proc(conn: ^ws.Connection, text: string) {
+	session_id := extract_json_string(text, "session_id", "")
+	command_id := extract_json_string(text, "command_id", "")
+	port       := extract_json_int(text, "server_port", 0)
+	defer delete(session_id)
+	defer delete(command_id)
+
+	send_result :: proc(conn: ^ws.Connection, session_id, command_id: string, ok: bool, reason: string) {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"shell_set_port_result\",\"session_id\":\"")
+		bridge_runtime_write_json_string(&b, session_id)
+		strings.write_string(&b, "\",\"command_id\":\"")
+		bridge_runtime_write_json_string(&b, command_id)
+		strings.write_string(&b, "\",\"ok\":")
+		strings.write_string(&b, "true" if ok else "false")
+		if !ok {
+			strings.write_string(&b, ",\"error\":\"")
+			bridge_runtime_write_json_string(&b, reason)
+			strings.write_byte(&b, '"')
+		}
+		strings.write_byte(&b, '}')
+		result := strings.to_string(b)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+		delete(result)
+	}
+
+	if session_id == "" {
+		send_result(conn, session_id, command_id, false, "session_not_found")
+		return
+	}
+
+	// Same refusal vocabulary the hub and tunnel_open use, so one set of reason
+	// strings describes a refusal wherever it is decided.
+	sess, found := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !found {
+		send_result(conn, session_id, command_id, false, "session_not_found")
+		return
+	}
+	if sess.status != .Running {
+		send_result(conn, session_id, command_id, false, "session_not_running")
+		return
+	}
+
+	updated, ok := bridge_shell_session_set_server_port(&bridge_shell_session_map, session_id, port)
+	if !ok {
+		send_result(conn, session_id, command_id, false, "session_not_found")
+		return
+	}
+
+	data_dir := bridge_expand_home(bridge_config.data_dir)
+	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
+	bridge_shell_session_save_spec(data_dir, updated)
+
+	send_result(conn, session_id, command_id, true, "")
 }
 
 // bridge_hub_handle_shell_restart handles the "shell_restart" command.

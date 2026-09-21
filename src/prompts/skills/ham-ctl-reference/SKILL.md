@@ -104,9 +104,9 @@ log, or reach over HTTP. Authenticates with your agent token, same as `shell-cmd
 - `shell start --bridge <id> [--kind interactive|server|command] [--cmd <cmd>]
   [--cwd <dir>] [--label <lbl>] [--port <n>] [--project <id>] [--chain <id>]` — launch a
   session. Returns `{session_id, status, pid}`.
-  - `--kind server` + `--port <n>` declares the port the process binds. That pair is what
-    makes the session reachable over HTTP (see below); a server session started without
-    `--port` can never be proxied to.
+  - `--port <n>` declares the port the process binds. A declared port is what makes the
+    session reachable over HTTP (see below), whatever its `--kind`. It does not have to
+    be declared at start — see `shell set-port`.
 - `shell list --bridge <id> | --chain <id> [--project <id>] [--status <s>]` — one of
   `--bridge` or `--chain` is REQUIRED. `--project` alone fails with
   `chain_id query parameter is required`. Columns: session_id, kind, label, status, pid,
@@ -116,6 +116,12 @@ log, or reach over HTTP. Authenticates with your agent token, same as `shell-cmd
 - `shell capture <session_id>` — snapshot of the current terminal screen.
 - `shell signal <session_id> --signal <int>` — send a POSIX signal (e.g. 2 = SIGINT).
 - `shell restart <session_id>` — stop then start; returns `{session_id, pid, status}`.
+- `shell set-port <session_id> --port <n> | --clear` — declare (or clear) the port of a
+  session that is ALREADY running, for the usual case: you open an interactive terminal,
+  then decide to run a server in it, so there was nothing to declare at start. Takes
+  effect immediately on both access paths, with no restart. `--port 0` and `--clear` are
+  the same request. Refused with 409 on a session that has exited, and 404 on one you do
+  not own. Returns the updated session.
 - `shell kill <session_id>` — terminate the session.
 
 ### Sending an HTTP request to a server session, via the Bridge
@@ -144,20 +150,25 @@ ham-ctl shell start --bridge brg_abc --kind server --port 8000 \
 # reach it over TCP
 curl http://127.0.0.1:49324/proxy/sh_123/index.html
 
+# or: an interactive session you started a server inside afterwards
+ham-ctl shell set-port sh_456 --port 3000
+curl http://127.0.0.1:49324/proxy/sh_456/
+
 # or over the unix socket ham-ctl already uses
 curl --unix-socket "${HEIMDALL_BRIDGE_ENDPOINT#unix:}" \
   http://localhost/proxy/sh_123/index.html
 ```
 
 The target must be `status=running`, have a declared port, and be owned by you. Any
-session kind qualifies — an interactive shell started with `--port` is reachable too.
+session kind qualifies — an interactive shell you started a server inside is reachable
+too, whether the port was declared with `start --port` or later with `set-port`.
 Refusals come back as JSON `{"error":"<reason>"}`:
 
 | status | reason | meaning |
 | --- | --- | --- |
 | 404 | `session_not_found` | no such session, or it is not yours |
 | 409 | `session_not_running` | session has exited |
-| 409 | `no_server_port` | started without `--port` |
+| 409 | `no_server_port` | no port declared — use `shell set-port` |
 | 403 | `cross_owner` | belongs to another user |
 | 503 | `unavailable` | Bridge cannot reach the Hub |
 

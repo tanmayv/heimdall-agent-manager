@@ -259,6 +259,45 @@ shell_session_restart_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
 }
 
+// POST /api/v1/shells/{session_id}/port — declare or clear the server port of a
+// session that is already running (XM-9).
+//
+// A POST sub-route rather than a PATCH on the session resource: every mutating
+// shell endpoint here is either a POST sub-route (/signal, /restart) or a
+// DELETE, and there is no partial-update convention in this transport to join.
+// Returns the updated session, the same shape /restart returns.
+//
+// server_port 0 clears the port. It is the sentinel the record already uses for
+// "no port declared" everywhere else, so a separate clear verb would add a
+// second spelling of a state that already has one.
+shell_session_set_port_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Shell_Session_Rest_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+
+	session_id := path_part(req.path, 4)
+	if session_id == "" {
+		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
+	}
+
+	// -1 as the sentinel for "absent", so an explicit 0 (clear) is distinguishable
+	// from a body that never mentioned the field.
+	server_port := json_int(req.body, "server_port", -1)
+	if server_port < 0 {
+		return respond_error(domain.domain_error(.Validation_Failed, "server_port is required (1-65535, or 0 to clear)"), req.request_id)
+	}
+
+	session, ok2, err := shell_session_svc.shell_session_set_port(h.shell_sessions, auth_ctx, session_id, server_port)
+	if !ok2 do return respond_error(err, req.request_id)
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"ok\":true,\"session\":")
+	write_shell_session_json(&b, session)
+	strings.write_string(&b, "}")
+	body := strings.to_string(b)
+	return respond_success(body, req.request_id, auth_ctx_server_time(req))
+}
+
 // GET /api/v1/shells/{session_id}/log
 shell_session_log_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)

@@ -297,6 +297,99 @@ shell_session_restart :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 	return session, true, domain.Domain_Error{}
 }
 
+// Shell_Session_Max_Port is the highest TCP port a session may declare.
+Shell_Session_Max_Port :: 65535
+
+// Shell_Session_Set_Port_Timeout_Ms bounds the bridge round trip shell_session_set_port
+// blocks an HTTP handler on. See the call site for why it is shorter than the 30s the
+// spawn paths use.
+Shell_Session_Set_Port_Timeout_Ms :: 10_000
+
+// shell_session_set_port declares (or, with port 0, clears) the server port of a
+// session that is ALREADY RUNNING — the XM-9 case where you open a terminal and
+// only then decide to run a server in it.
+//
+// It updates the bridge BEFORE the hub row, and persists only on a successful
+// bridge reply. That ordering is the point of the whole change: the bridge
+// re-validates server_port against its own copy of the session when a tunnel is
+// opened (bridge_hub_handle_tunnel_open), so a hub row updated on its own would
+// advertise a port the bridge then refused. Going bridge-first also means a
+// success returned here is "reachable now", not "reachable once something
+// catches up" — which is what makes changing an already-set port take effect
+// immediately rather than racing a stale copy.
+//
+// The port is still never read from a dial-time request; this changes only how
+// the session RECORD gets its value.
+shell_session_set_port :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Context, session_id: string, server_port: int) -> (domain.Shell_Session, bool, domain.Domain_Error) {
+	if svc == nil || svc.repo == nil do return {}, false, domain.domain_error(.Internal_Error, "shell session service is not configured")
+	owner, ok, err := ownership.owner_from_auth(auth)
+	if !ok do return {}, false, err
+	if server_port < 0 || server_port > Shell_Session_Max_Port {
+		return {}, false, domain.domain_error(.Validation_Failed, "server_port must be between 1 and 65535, or 0 to clear it")
+	}
+
+	// Owner-scoped lookup: a session belonging to someone else is Not_Found
+	// rather than Forbidden, so this does not disclose that it exists.
+	session, found, repo_err := iface.shell_session_get(svc.repo, string(owner), session_id)
+	if repo_err.code != .None do return {}, false, repo_err
+	if !found do return {}, false, domain.domain_error(.Not_Found, "session not found")
+	if domain.shell_session_is_terminal(session) {
+		return session, false, domain.domain_error(.Conflict, "session has already terminated")
+	}
+
+	cmd_id := platform.generate_id(svc.ids, "cmd_sh_set_port_")
+	cmd_json := _shell_set_port_command_json(cmd_id, session_id, server_port)
+	defer delete(cmd_json)
+
+	// 10s, not the 30s the spawn/restart paths use. A bridge is offline as an
+	// ordinary matter, and this call blocks an HTTP handler, so the wait has to be
+	// bounded tightly: setting a field on a live in-memory record is a round trip,
+	// not a process spawn, so anything near 10s already means the bridge is gone.
+	// The wait is bounded by the sink itself and an unreachable bridge fails
+	// IMMEDIATELY (Bridge_Offline, before the wait starts) rather than burning the
+	// full timeout — see send_runtime_command_wait.
+	reply, reply_ok, reply_err := project_service.bridge_command_send_runtime_wait(
+		svc.bridge_command_sink,
+		project_service.Runtime_Command{bridge_id = session.bridge_id, command_id = cmd_id, body_json = cmd_json},
+		Shell_Session_Set_Port_Timeout_Ms,
+	)
+	delete(cmd_id)
+
+	if !reply_ok {
+		// Offline and timed-out both arrive as Bridge_Offline; keep that code — it is
+		// the vocabulary the rest of the shell surface already uses — but say plainly
+		// that NOTHING changed, which is the fact the caller needs in order to act.
+		// Nothing has been written at this point: the hub row still holds whatever it
+		// held, so a retry is safe and the session's reachability is unaltered.
+		return session, false, domain.domain_error(reply_err.code, _set_port_unreachable_message(reply_err))
+	}
+	defer delete(reply)
+
+	if !_json_bool(reply, "ok") {
+		// The bridge answers with the shared refusal vocabulary
+		// (session_not_found / session_not_running); surface it rather than a
+		// generic failure, so the reason is the same word end to end.
+		reason := _json_str(reply, "error")
+		defer delete(reason)
+		if reason == "session_not_running" {
+			return session, false, domain.domain_error(.Conflict, "session has already terminated")
+		}
+		if reason == "session_not_found" {
+			return session, false, domain.domain_error(.Not_Found, "session not found")
+		}
+		return session, false, domain.domain_error(.Internal_Error, "bridge failed to set the shell session port")
+	}
+
+	// Not an upsert: it keeps the existing port when the new one is 0, so
+	// clearing would silently do nothing. See Shell_Session_Set_Server_Port_Proc.
+	written, write_err := iface.shell_session_set_server_port(svc.repo, string(owner), session_id, server_port)
+	if write_err.code != .None do return session, false, write_err
+	if !written do return session, false, domain.domain_error(.Not_Found, "session not found")
+
+	session.server_port = server_port
+	return session, true, domain.Domain_Error{}
+}
+
 // shell_session_get returns a session owned by the authenticated user.
 shell_session_get :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Context, session_id: string) -> (domain.Shell_Session, bool, domain.Domain_Error) {
 	if svc == nil || svc.repo == nil do return {}, false, domain.domain_error(.Internal_Error, "shell session service is not configured")
@@ -729,6 +822,28 @@ _shell_restart_command_json :: proc(cmd_id, session_id: string) -> string {
 	strings.write_string(&b, "\",\"session_id\":\"")
 	contracts.write_json_string(&b, session_id)
 	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+// _set_port_unreachable_message turns the sink's own wording into one sentence the
+// caller can act on, keeping the original cause visible. Deliberately not a new error
+// code: Bridge_Offline already means "the bridge could not be reached", and inventing
+// a second code for the same condition is how two vocabularies start.
+_set_port_unreachable_message :: proc(err: domain.Domain_Error) -> string {
+	cause := err.message
+	if cause == "" do cause = "bridge unreachable"
+	return fmt.tprintf("the bridge did not apply the port, so nothing changed (%s)", cause)
+}
+
+_shell_set_port_command_json :: proc(cmd_id, session_id: string, server_port: int) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"shell_set_port\",\"command_id\":\"")
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, "\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"server_port\":")
+	strings.write_int(&b, server_port)
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 

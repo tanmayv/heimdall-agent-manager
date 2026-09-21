@@ -7,6 +7,7 @@ import { TOUCH_TARGET_CLASS } from '../shell/responsive';
 import { NewShellDialog } from './NewShellDialog';
 import { ShellTerminalPane } from './ShellTerminalPane';
 import { ShellLogViewer } from './ShellLogViewer';
+import { SetShellPortDialog } from './SetShellPortDialog';
 import { openTab } from '../../store/previewTabsSlice';
 
 interface ShellsPanelProps {
@@ -35,12 +36,23 @@ export function canPreview(session: ShellSession): boolean {
 // XM-8: whether the access affordance APPLIES to this session at all, as opposed to
 // whether it can be used right now (canPreview). The two are deliberately different:
 // a session with a port that is starting or exited is TRANSIENTLY unavailable, so it
-// shows a disabled PreviewButton whose title says why; a session that declared no port
-// can never become previewable — a port cannot be declared after start — so a button
-// there would be permanently disabled with no action that could ever enable it. Those
-// rows render nothing instead.
+// shows a disabled PreviewButton whose title says why; a portless session shows
+// nothing, because a disabled button with no action that could enable it would lie
+// about being actionable.
+//
+// XM-9 revisits the second half, as XM-8 flagged it would, and the premise it rested
+// on is now false: a port CAN be declared after start. A running portless session is
+// therefore TRANSIENTLY unavailable, not permanently — the same category as a session
+// whose port is declared but which has not finished starting — so it gets the same
+// rendering that category already has: a disabled button saying why, with the action
+// that fixes it (Set server port) in the menu on the same row.
+//
+// What stays unrendered is the case that is still permanent: a portless session that
+// has TERMINATED. A port cannot be declared on it — the hub refuses with 409 and the
+// bridge has no live record to update — so nothing about it can ever become
+// reachable, and a permanently disabled control there would lie about being actionable.
 export function hasAccessAffordance(session: ShellSession): boolean {
-  return session.server_port > 0;
+  return session.server_port > 0 || !isTerminalStatus(session);
 }
 
 const KIND_BADGE_COLORS: Record<ShellSessionKind, string> = {
@@ -73,10 +85,12 @@ function relativeTime(iso: string): string {
   return `${Math.floor(diff / 3600)}h`;
 }
 
-function previewTitle(session: ShellSession): string {
+// Exported alongside the predicates so the row's user-visible REASONS can be checked
+// as code over the status x port matrix, not read and believed.
+export function previewTitle(session: ShellSession): string {
   return canPreview(session)
     ? 'Open in the preview sidebar'
-    : `Preview needs a running session with a declared port (${session.status}${session.server_port > 0 ? '' : ' · no port'})`;
+    : `Preview needs a running session with a declared port (${session.status}${session.server_port > 0 ? '' : ' · no port — set one from the row menu'})`;
 }
 
 // XM-7: a session past these statuses has no process left to signal, so Kill is a no-op
@@ -110,6 +124,16 @@ function copyUrlTitle(session: ShellSession): string {
   return canPreview(session)
     ? 'Copy the browser URL for this server'
     : `No access URL yet · ${previewTitle(session)}`;
+}
+
+// XM-9: the port is a property of a LIVE session — the bridge only holds a record to
+// update while the process is running — so the item is offered on running and starting
+// sessions and disabled once one is terminal, matching the hub's own 409.
+export function setPortTitle(session: ShellSession): string {
+  if (isTerminalStatus(session)) return `Already ${session.status} — a port cannot be declared on it`;
+  return session.server_port > 0
+    ? `Change or clear the declared port (currently ${session.server_port})`
+    : 'Declare the port a server inside this session is listening on';
 }
 
 function killTitle(session: ShellSession): string {
@@ -146,6 +170,7 @@ function ShellRowMenu({
   const [killShell] = useKillShellMutation();
   const [copied, setCopied] = useState<CopyOutcome>(null);
   const [killError, setKillError] = useState('');
+  const [portDialogOpen, setPortDialogOpen] = useState(false);
 
   const canCopy = canPreview(session);
   const terminal = isTerminalStatus(session);
@@ -216,6 +241,14 @@ function ShellRowMenu({
           Copy access URL
         </Menu.Item>
         <Menu.Item
+          data-debug-id={`shells-panel-row-menu-set-port-${session.session_id}`}
+          disabled={terminal}
+          title={setPortTitle(session)}
+          onClick={(e) => { e.stopPropagation(); setPortDialogOpen(true); }}
+        >
+          {session.server_port > 0 ? 'Change server port…' : 'Set server port…'}
+        </Menu.Item>
+        <Menu.Item
           data-debug-id={`shells-panel-row-menu-view-stdout-${session.session_id}`}
           title="Open the stdout log for this session"
           onClick={(e) => { e.stopPropagation(); onViewStdout(); }}
@@ -249,6 +282,9 @@ function ShellRowMenu({
             </>
           )}
         </div>
+      ) : null}
+      {portDialogOpen ? (
+        <SetShellPortDialog session={session} onClose={() => setPortDialogOpen(false)} />
       ) : null}
       {killError ? (
         <div

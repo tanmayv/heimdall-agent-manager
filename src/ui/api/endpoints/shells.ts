@@ -201,6 +201,29 @@ export const shellsApi = heimdallApi.injectEndpoints({
       ],
     }),
 
+    // XM-9: declare (or clear, with server_port 0) the port of a session that is
+    // already running. Invalidates the same tags restartShell does, because the
+    // reachability of the row changes with it and both views read server_port.
+    setShellPort: build.mutation<ShellSession, { sessionId: string; server_port: number }>({
+      queryFn: async ({ sessionId, server_port }) => {
+        try {
+          const data = await cookieMutation(
+            `/shells/${encodeURIComponent(sessionId)}/port`,
+            'POST',
+            { server_port },
+          );
+          const session: ShellSession = data?.session ?? data;
+          return { data: session };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _err, { sessionId }) => [
+        { type: 'ShellSession' as const, id: sessionId },
+        { type: 'ShellSessions' as const, id: 'LIST' },
+      ],
+    }),
+
     signalShell: build.mutation<void, ShellSignalArgs>({
       queryFn: async ({ sessionId, signal }) => {
         try {
@@ -313,6 +336,7 @@ export const {
   useCreateShellMutation,
   useKillShellMutation,
   useRestartShellMutation,
+  useSetShellPortMutation,
   useSignalShellMutation,
   useGetShellLogQuery,
   useGetShellPaneQuery,
