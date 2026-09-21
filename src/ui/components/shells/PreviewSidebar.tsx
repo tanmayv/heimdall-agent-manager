@@ -373,8 +373,8 @@ export function PreviewSidebar() {
           aria-label={`Show preview (${tabs.length})`}
           data-debug-id="preview-sidebar-expand-btn"
           onClick={() => setCollapsed(false)}
-          // Sits clear of the mobile tab bar, which owns the bottom strip.
-          className={`ui-safe-bottom fixed bottom-24 right-3 z-40 inline-flex items-center gap-1.5 rounded-full border border-subtle bg-surface px-3 shadow-panel text-accent md:hidden ${TOUCH_TARGET_CLASS}`}
+          // Positioned below the sidebar toggle icon on mobile.
+          className={`fixed top-16 right-3 z-40 inline-flex items-center gap-1.5 rounded-full border border-subtle bg-surface px-3 shadow-panel text-accent md:hidden ${TOUCH_TARGET_CLASS}`}
         >
           <Icon name="panel-right" size={16} />
           <span className="text-xs font-bold">{tabs.length}</span>
@@ -388,8 +388,10 @@ export function PreviewSidebar() {
         onOpenChange={(next) => { if (!next) setCollapsed(true); }}
         title="Preview"
         side="bottom"
+        hideHeader
+        fullHeight
         data-debug-id="preview-sidebar-sheet"
-        className="ui-safe-bottom h-[85vh] md:hidden"
+        className="ui-safe-top ui-safe-bottom h-full max-h-full md:hidden"
       >
         <div className="flex h-full min-h-0 flex-col">
           {watchers}
