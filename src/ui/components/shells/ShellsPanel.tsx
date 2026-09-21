@@ -25,8 +25,22 @@ interface ShellsPanelProps {
 }
 
 // T11-UI-5: a session is previewable exactly when the hub has a live port to proxy.
+// XM-8: kind is not part of the test. Any running session that declared a port at start
+// is reachable — an interactive shell started with --port 3000 included — which matches
+// the backend gate in shell_session_handlers.odin and bridge_proxy_relay.odin.
 export function canPreview(session: ShellSession): boolean {
-  return session.kind === 'server' && session.status === 'running' && session.server_port > 0;
+  return session.status === 'running' && session.server_port > 0;
+}
+
+// XM-8: whether the access affordance APPLIES to this session at all, as opposed to
+// whether it can be used right now (canPreview). The two are deliberately different:
+// a session with a port that is starting or exited is TRANSIENTLY unavailable, so it
+// shows a disabled PreviewButton whose title says why; a session that declared no port
+// can never become previewable — a port cannot be declared after start — so a button
+// there would be permanently disabled with no action that could ever enable it. Those
+// rows render nothing instead.
+export function hasAccessAffordance(session: ShellSession): boolean {
+  return session.server_port > 0;
 }
 
 const KIND_BADGE_COLORS: Record<ShellSessionKind, string> = {
@@ -62,7 +76,7 @@ function relativeTime(iso: string): string {
 function previewTitle(session: ShellSession): string {
   return canPreview(session)
     ? 'Open in the preview sidebar'
-    : `Preview needs a running server with a port (${session.status}${session.server_port > 0 ? '' : ' · no port'})`;
+    : `Preview needs a running session with a declared port (${session.status}${session.server_port > 0 ? '' : ' · no port'})`;
 }
 
 // XM-7: a session past these statuses has no process left to signal, so Kill is a no-op
@@ -444,7 +458,7 @@ export function ShellsPanel({ chainId, bridgeId, standalone = false, isMobile = 
                       <span>{session.server_port > 0 ? `:${session.server_port}` : '—'}</span>
                     </div>
                     <div className="flex items-center gap-1">
-                      {session.kind === 'server' ? (
+                      {hasAccessAffordance(session) ? (
                         <PreviewButton session={session} onOpen={() => dispatch(openTab(session))} touch />
                       ) : null}
                       <ShellRowMenu
@@ -492,7 +506,7 @@ export function ShellsPanel({ chainId, bridgeId, standalone = false, isMobile = 
                       {session.server_port > 0 ? `:${session.server_port}` : '—'}
                     </td>
                     <td className="py-2">
-                      {session.kind === 'server' ? (
+                      {hasAccessAffordance(session) ? (
                         <PreviewButton session={session} onOpen={() => dispatch(openTab(session))} />
                       ) : (
                         <span className="text-faint">—</span>

@@ -149,13 +149,13 @@ curl --unix-socket "${HEIMDALL_BRIDGE_ENDPOINT#unix:}" \
   http://localhost/proxy/sh_123/index.html
 ```
 
-The target must be `kind=server`, `status=running`, have a bound port, and be owned by
-you. Refusals come back as JSON `{"error":"<reason>"}`:
+The target must be `status=running`, have a declared port, and be owned by you. Any
+session kind qualifies — an interactive shell started with `--port` is reachable too.
+Refusals come back as JSON `{"error":"<reason>"}`:
 
 | status | reason | meaning |
 | --- | --- | --- |
 | 404 | `session_not_found` | no such session, or it is not yours |
-| 409 | `not_a_server_session` | target is interactive/command |
 | 409 | `session_not_running` | session has exited |
 | 409 | `no_server_port` | started without `--port` |
 | 403 | `cross_owner` | belongs to another user |

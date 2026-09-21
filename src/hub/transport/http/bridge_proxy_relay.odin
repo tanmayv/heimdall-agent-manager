@@ -107,7 +107,9 @@ bridge_proxy_authorise_target :: proc(h: ^Bridge_Handlers, origin_bridge_id, tar
 	if session.owner_user_id != owner do return empty, "cross_owner", false
 
 	// Same target preconditions the preview path enforces.
-	if session.kind != "server" do return empty, "not_a_server_session", false
+	// XM-8: kind is NOT one of them.  Reachability is "declared a port and is running",
+	// whatever the session kind; the port is read from the session record, never from the
+	// request, so relaxing this does not let a caller choose what gets dialled.
 	if session.status != "running" do return empty, "session_not_running", false
 	if session.server_port <= 0 do return empty, "no_server_port", false
 
@@ -438,7 +440,7 @@ bridge_proxy_send_refusal :: proc(h: ^Bridge_Handlers, origin_bridge_id, proxy_i
 	status := 403
 	switch reason {
 	case "session_not_found":     status = 404
-	case "not_a_server_session", "session_not_running", "no_server_port": status = 409
+	case "session_not_running", "no_server_port": status = 409
 	case "unavailable":           status = 503
 	}
 	b := strings.builder_make()

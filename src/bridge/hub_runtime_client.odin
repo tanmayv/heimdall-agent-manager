@@ -2718,10 +2718,25 @@ bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	// Security: validate session is kind=Server, Running, has a declared server_port.
+	// Security: validate the session is Running and has a declared server_port.
+	// XM-8: kind is deliberately not checked.  A session that declared a port at start is
+	// reachable whatever its kind, so an interactive shell started with --port 3000 works.
+	// The two properties that actually fence this path are unchanged: the port comes from
+	// the session record (never the request) and the dial below is loopback-only.
 	session, found := bridge_shell_session_get(&bridge_shell_session_map, session_id)
-	if !found || session.status != .Running || session.kind != .Server || session.server_port <= 0 {
-		_send_tunnel_close(conn, stream_id, "forbidden")
+	if !found || session.status != .Running || session.server_port <= 0 {
+		// XM-8: these are PRECONDITIONS, not an authorisation decision — ownership is
+		// settled in the hub before tunnel_open is ever sent, and kind is no longer part
+		// of the test.  "forbidden" would now name the wrong thing, so each cause reports
+		// itself using the hub's existing vocabulary (bridge_proxy_authorise_target), so
+		// that one set of reason strings describes a refusal end to end.
+		reason := "session_not_found"
+		if found && session.status != .Running {
+			reason = "session_not_running"
+		} else if found {
+			reason = "no_server_port"
+		}
+		_send_tunnel_close(conn, stream_id, reason)
 		delete(stream_id)
 		delete(session_id)
 		return

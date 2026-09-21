@@ -57,7 +57,7 @@ Bridge_Shell_Session :: struct {
 	agent_instance_id: string,
 	owner_user_id:     string,
 	pid:               int,
-	server_port:       int, // 0 unless kind=Server
+	server_port:       int, // 0 unless a port was declared at start (any kind — XM-8)
 	status:            Bridge_Shell_Session_Status,
 	exit_code:         int,
 	exit_code_set:     bool,

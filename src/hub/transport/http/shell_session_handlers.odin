@@ -219,10 +219,6 @@ shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request, client: n
 		write_upgrade_error(client, Response{status = 403, content_type = "application/json", body = "{\"error\":\"session is owned by another user\"}"})
 		return
 	}
-	if session.kind != "server" {
-		write_upgrade_error(client, Response{status = 409, content_type = "application/json", body = "{\"error\":\"session is not a server session\"}"})
-		return
-	}
 	if session.status != "running" {
 		write_upgrade_error(client, Response{status = 409, content_type = "application/json", body = "{\"error\":\"session is not running\"}"})
 		return

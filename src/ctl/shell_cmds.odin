@@ -224,7 +224,6 @@ print_help_shell :: proc() {
 	fmt.println("")
 	fmt.println("  REFUSALS (JSON body, {error: <reason>})")
 	fmt.println("      404 session_not_found     no such session, or not yours")
-	fmt.println("      409 not_a_server_session  target is interactive/command, not server")
 	fmt.println("      409 session_not_running   session exited")
 	fmt.println("      409 no_server_port        started without --port")
 	fmt.println("      403 cross_owner           target belongs to another user")
