@@ -540,8 +540,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/shells/*/stream", rawptr(&graph.shell_session_stream_handlers), http.shell_session_stream_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/input", rawptr(&graph.shell_session_stream_handlers), http.shell_session_input_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/resize", rawptr(&graph.shell_session_stream_handlers), http.shell_session_resize_handler)
-	// Preview tunnel proxy (T8).
-	http.router_add(&graph.router, "ANY", "/api/v1/preview/**", rawptr(&graph.shell_session_stream_handlers), http.shell_session_preview_proxy_handler)
+	// Preview tunnel proxy (T8) — raw-socket route: handler owns the socket for all
+	// request methods (plain HTTP and future WebSocket upgrade via XM-2).
+	http.router_add_raw_upgrade(&graph.router, "ANY", "/api/v1/preview/**", rawptr(&graph.shell_session_stream_handlers), http.shell_session_preview_proxy_handler)
 	// Shell session REST API (T5).
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_create_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_list_by_bridge_handler)
@@ -551,6 +552,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "DELETE", "/api/v1/shells/*", rawptr(&graph.shell_session_rest_handlers), http.shell_session_kill_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/signal", rawptr(&graph.shell_session_rest_handlers), http.shell_session_signal_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/restart", rawptr(&graph.shell_session_rest_handlers), http.shell_session_restart_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/shells/*/port", rawptr(&graph.shell_session_rest_handlers), http.shell_session_set_port_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*/log", rawptr(&graph.shell_session_rest_handlers), http.shell_session_log_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*/capture", rawptr(&graph.shell_session_rest_handlers), http.shell_session_capture_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*/pane", rawptr(&graph.shell_session_rest_handlers), http.shell_session_pane_handler)

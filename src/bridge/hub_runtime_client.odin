@@ -111,7 +111,11 @@ Bridge_Tunnel_Stream :: struct {
 	closed:     bool,
 }
 Bridge_Tunnel_Data_Outgoing :: struct {
-	json: string, // pre-built tunnel_data or tunnel_close WS frame JSON
+	// Pre-built bridge→hub frame JSON. Carries tunnel_data/tunnel_close (preview
+	// responses) and, since REQ-XM-4, proxy_open/proxy_data/proxy_close for streams
+	// this bridge originated. The queue is frame-agnostic — it just hands JSON to the
+	// runtime loop that owns the WS connection.
+	json: string,
 }
 bridge_tunnel_streams:      map[string]^Bridge_Tunnel_Stream
 bridge_tunnel_mu:           sync.Mutex
@@ -139,6 +143,7 @@ bridge_hub_runtime_init :: proc() {
 	bridge_runtime_status_outgoing = make([dynamic]string)
 	bridge_tunnel_streams = make(map[string]^Bridge_Tunnel_Stream, runtime.heap_allocator())
 	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing)
+	bridge_proxy_init()
 }
 
 // Reset / clear runtime instance and launch registries under lock (for tests).
@@ -533,6 +538,10 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		bridge_hub_handle_shell_restart(conn, text)
 		return
 	}
+	if type == "shell_set_port" {
+		bridge_hub_handle_shell_set_port(conn, text)
+		return
+	}
 	if type == "shell_list" {
 		bridge_hub_handle_shell_list(conn, text)
 		return
@@ -559,6 +568,16 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	}
 	if type == "tunnel_close" {
 		bridge_hub_handle_tunnel_close(text)
+		return
+	}
+	// REQ-XM-4: hub→bridge frames for streams this bridge ORIGINATED (local_proxy.odin).
+	// Distinct from tunnel_* above, which are streams the hub originated toward us.
+	if type == "proxy_data" {
+		bridge_hub_handle_proxy_data(text)
+		return
+	}
+	if type == "proxy_close" {
+		bridge_hub_handle_proxy_close(text)
 		return
 	}
 	if bridge_fs_handle_command(conn, type, text) do return
@@ -2054,11 +2073,13 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// user's login shell. Default to $SHELL (falling back to /bin/sh) instead of
 	// rejecting the request. Every other kind still requires an explicit cmd.
 	cmd_owned := false
+	cmd_defaulted := false
 	defer if cmd_owned do delete(cmd)
 	if kind == .Interactive && cmd == "" {
 		shell_env := os.get_env("SHELL", context.temp_allocator)
 		cmd = len(shell_env) > 0 ? strings.clone(shell_env) : strings.clone("/bin/sh")
 		cmd_owned = true
+		cmd_defaulted = true
 	}
 	if cmd == "" {
 		send_error(conn, session_id, command_id, "missing cmd")
@@ -2086,6 +2107,52 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	defer if spawn_cmd_owned do delete(spawn_cmd)
 	if kind == .Server {
 		spawn_cmd = strings.concatenate({"exec ", cmd})
+		spawn_cmd_owned = true
+	} else if cmd_defaulted {
+		// T11-BUG-11 (REQ-SHELL-ENV-1): an interactive session with no cmd means
+		// "give me my shell", so start it as a *login* shell. Without -l only
+		// ~/.zshrc runs; ~/.zprofile, ~/.zlogin and /etc/profile never do, so the
+		// session misses everything the user sets up in their profile.
+		//
+		// -l on its own is NOT enough, and this was measured rather than assumed.
+		// The pty-host daemon outlives bridge restarts (bridge_pty_host_ensure_daemon
+		// adopts a daemon already on the socket), so a shell inherits whatever env
+		// that daemon froze. On NixOS the system env setup is guarded by "already
+		// done" flags that are part of that inherited env, so the login shell
+		// faithfully re-runs the profile files and they all short-circuit:
+		//   /etc/profile, /etc/zshenv   -> source <store>-set-environment (the file
+		//                                  that defines the real PATH, including
+		//                                  /etc/profiles/per-user/$USER/bin) ONLY if
+		//                                  __NIXOS_SET_ENVIRONMENT_DONE is unset.
+		//   /etc/zprofile               -> never sources set-environment at all.
+		// Result: a login shell under a stale daemon keeps the stale PATH verbatim.
+		// Clearing the guards first is what actually rebuilds the environment from
+		// the system's own definition, which is also what makes this self-healing
+		// regardless of how old the daemon is.
+		//
+		// CAUTION — this guard list is EMPIRICAL, not a documented API. It was read
+		// off the generated files on a NixOS + home-manager host; nothing validates
+		// it, and if NixOS or home-manager introduces another guard this silently
+		// degrades back to the inherited-env behaviour with no build or test
+		// failure. The three families, so the next person knows what to look for:
+		//   __NIXOS_SET_ENVIRONMENT_DONE  - NixOS set-environment (the PATH source)
+		//   __ETC_*_SOURCED / _DONE       - the generated /etc profile + zsh + bash
+		//                                   chain's once-per-shell guards
+		//   __HM_*_SESS_VARS_SOURCED      - home-manager's session-variables guards
+		// Note this REBUILDS PATH rather than extending it, so store paths the
+		// bridge's own environment contributed (ham-ctl, tmux, ...) are not carried
+		// into the session. That is intended: the session gets the user's own
+		// environment, and per REQ-SHELL-ENV-1 no HEIMDALL_* is injected either.
+		//
+		// `exec` keeps the uniform ["sh","-c",...] wrapper from leaving an extra
+		// sh in the process tree. Only the defaulted case is rewritten: a
+		// caller-supplied cmd is always passed through exactly as given, for every
+		// kind — asking for a command means asking for that command.
+		b := strings.builder_make()
+		strings.write_string(&b, "unset __NIXOS_SET_ENVIRONMENT_DONE __ETC_PROFILE_SOURCED __ETC_PROFILE_DONE __ETC_ZSHENV_SOURCED __ETC_ZPROFILE_SOURCED __ETC_ZSHRC_SOURCED __ETC_BASHRC_SOURCED __HM_SESS_VARS_SOURCED __HM_ZSH_SESS_VARS_SOURCED; exec ")
+		bridge_bootstrap_shell_quote(&b, cmd)
+		strings.write_string(&b, " -l")
+		spawn_cmd = strings.to_string(b)
 		spawn_cmd_owned = true
 	}
 
@@ -2254,6 +2321,74 @@ bridge_hub_handle_shell_signal :: proc(text: string) {
 	socket, daemon_ok := bridge_pty_host_ensure_daemon()
 	if !daemon_ok do return
 	_ = bridge_pty_host_signal(&Pty_Host_Client{socket = socket}, shell_id, u8(signal))
+}
+
+// bridge_hub_handle_shell_set_port handles the "shell_set_port" command (XM-9).
+// REQUEST/REPLY: declares (or clears, with server_port 0) the port of a session
+// that is already running.
+//
+// This exists because the bridge keeps its OWN copy of the session and
+// bridge_hub_handle_tunnel_open re-validates server_port against that copy, not
+// against the hub's row. Updating the hub alone would make the hub authorise a
+// dial the bridge then refused with no_server_port. The spec file is re-saved so
+// the port also survives a bridge restart, exactly as a start-time port does.
+//
+// Ownership is NOT re-checked here: the hub settles it before sending, the same
+// division of labour tunnel_open uses.
+bridge_hub_handle_shell_set_port :: proc(conn: ^ws.Connection, text: string) {
+	session_id := extract_json_string(text, "session_id", "")
+	command_id := extract_json_string(text, "command_id", "")
+	port       := extract_json_int(text, "server_port", 0)
+	defer delete(session_id)
+	defer delete(command_id)
+
+	send_result :: proc(conn: ^ws.Connection, session_id, command_id: string, ok: bool, reason: string) {
+		b := strings.builder_make()
+		strings.write_string(&b, "{\"type\":\"shell_set_port_result\",\"session_id\":\"")
+		bridge_runtime_write_json_string(&b, session_id)
+		strings.write_string(&b, "\",\"command_id\":\"")
+		bridge_runtime_write_json_string(&b, command_id)
+		strings.write_string(&b, "\",\"ok\":")
+		strings.write_string(&b, "true" if ok else "false")
+		if !ok {
+			strings.write_string(&b, ",\"error\":\"")
+			bridge_runtime_write_json_string(&b, reason)
+			strings.write_byte(&b, '"')
+		}
+		strings.write_byte(&b, '}')
+		result := strings.to_string(b)
+		if conn != nil do _ = bridge_hub_send(conn, result)
+		delete(result)
+	}
+
+	if session_id == "" {
+		send_result(conn, session_id, command_id, false, "session_not_found")
+		return
+	}
+
+	// Same refusal vocabulary the hub and tunnel_open use, so one set of reason
+	// strings describes a refusal wherever it is decided.
+	sess, found := bridge_shell_session_get(&bridge_shell_session_map, session_id)
+	if !found {
+		send_result(conn, session_id, command_id, false, "session_not_found")
+		return
+	}
+	if sess.status != .Running {
+		send_result(conn, session_id, command_id, false, "session_not_running")
+		return
+	}
+
+	updated, ok := bridge_shell_session_set_server_port(&bridge_shell_session_map, session_id, port)
+	if !ok {
+		send_result(conn, session_id, command_id, false, "session_not_found")
+		return
+	}
+
+	data_dir := bridge_expand_home(bridge_config.data_dir)
+	if strings.trim_space(data_dir) == "" do data_dir = bridge_expand_home("~/.local/share/heimdall")
+	bridge_shell_session_save_spec(data_dir, updated)
+
+	send_result(conn, session_id, command_id, true, "")
 }
 
 // bridge_hub_handle_shell_restart handles the "shell_restart" command.
@@ -2664,10 +2799,25 @@ bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	// Security: validate session is kind=Server, Running, has a declared server_port.
+	// Security: validate the session is Running and has a declared server_port.
+	// XM-8: kind is deliberately not checked.  A session that declared a port at start is
+	// reachable whatever its kind, so an interactive shell started with --port 3000 works.
+	// The two properties that actually fence this path are unchanged: the port comes from
+	// the session record (never the request) and the dial below is loopback-only.
 	session, found := bridge_shell_session_get(&bridge_shell_session_map, session_id)
-	if !found || session.status != .Running || session.kind != .Server || session.server_port <= 0 {
-		_send_tunnel_close(conn, stream_id, "forbidden")
+	if !found || session.status != .Running || session.server_port <= 0 {
+		// XM-8: these are PRECONDITIONS, not an authorisation decision — ownership is
+		// settled in the hub before tunnel_open is ever sent, and kind is no longer part
+		// of the test.  "forbidden" would now name the wrong thing, so each cause reports
+		// itself using the hub's existing vocabulary (bridge_proxy_authorise_target), so
+		// that one set of reason strings describes a refusal end to end.
+		reason := "session_not_found"
+		if found && session.status != .Running {
+			reason = "session_not_running"
+		} else if found {
+			reason = "no_server_port"
+		}
+		_send_tunnel_close(conn, stream_id, reason)
 		delete(stream_id)
 		delete(session_id)
 		return
@@ -2682,6 +2832,19 @@ bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
 		delete(session_id)
 		return
 	}
+
+	// FD OWNERSHIP (see AGENTS.md, "Socket lifetime across threads"): the worker spawned
+	// below is the SOLE closer of tcp_conn.  The receive timeout is its backstop wake — if a
+	// teardown path ever forgets the shutdown, the worker still wakes within one period,
+	// sees its stream unregistered and exits, instead of leaking a thread that pins an
+	// orphaned socket forever.
+	//
+	// Set here, BEFORE the stream is registered, deliberately.  Registering publishes the
+	// struct to bridge_hub_handle_tunnel_close, which may free it; anything done between
+	// that publish and the worker taking its stack copies widens an existing window in
+	// which the worker can dereference freed memory.  This needs only the local handle, so
+	// it belongs on this side of the publish.
+	_ = net.set_option(tcp_conn, .Receive_Timeout, BRIDGE_TUNNEL_RECV_TIMEOUT)
 
 	// Register stream.
 	heap := runtime.heap_allocator()
@@ -2699,13 +2862,52 @@ bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
 	thread.run_with_data(rawptr(stream), bridge_tunnel_tcp_to_ws_worker)
 }
 
+// BRIDGE_TUNNEL_RECV_TIMEOUT is the tunnel reader's periodic wake.  It is a backstop, not
+// the mechanism: shutdown(.Receive) wakes a parked recv in tens of microseconds (measured),
+// so this only matters on a path that forgot to shut down, or a platform where SHUT_RD does
+// not wake a blocked reader.  Long enough to be free on an idle tunnel, short enough that a
+// missed shutdown costs seconds rather than the process lifetime.
+BRIDGE_TUNNEL_RECV_TIMEOUT :: 5 * time.Second
+
+// bridge_tunnel_stream_registered reports whether a stream_id is still in the table.
+//
+// The tunnel reader uses this on a timeout wake to ask "has teardown already happened?"
+// WITHOUT dereferencing its ^Bridge_Tunnel_Stream, which a concurrent teardown may already
+// have freed.  Compares by value against the independent map keys for exactly the reason
+// the probe pattern exists: the key is owned by the table, the struct is not.
+bridge_tunnel_stream_registered :: proc(stream_id: string) -> bool {
+	sync.mutex_lock(&bridge_tunnel_mu)
+	defer sync.mutex_unlock(&bridge_tunnel_mu)
+	for k in bridge_tunnel_streams {
+		if k == stream_id do return true
+	}
+	return false
+}
+
 // bridge_tunnel_tcp_to_ws_worker reads from the TCP socket and enqueues tunnel_data frames.
 // When the TCP connection closes, it enqueues a tunnel_close frame and removes the stream.
 //
-// Lifetime safety: capture tcp_conn and stream_id as stack-locals at entry so the recv loop
-// and teardown never dereference 'stream' after bridge_hub_handle_tunnel_close may have freed
-// it.  Whoever removes the map key is the sole freer; the loser finds the key absent and
-// returns without touching the struct pointer at all (independent-key probe pattern).
+// TWO RESOURCES, TWO DIFFERENT OWNERS.  Getting these confused is the bug this file has
+// produced repeatedly; see AGENTS.md, "Socket lifetime across threads" for the full rule.
+//
+// MEMORY — the independent-key probe.  Capture tcp_conn and stream_id as stack-locals at
+// entry so the recv loop and teardown never dereference 'stream' after
+// bridge_hub_handle_tunnel_close may have freed it.  Whoever removes the map key is the sole
+// freer; the loser finds the key absent and returns without touching the struct pointer.
+//
+// THE FD — NOT covered by that probe, and it must not be.  THIS THREAD is the sole closer
+// of the socket, on every exit path, whether or not it won the key race.  Teardown on the
+// WS-reader thread only shutdown(.Receive)s to wake us; it must never net.close.  Two
+// reasons, both measured:
+//   - close() cannot unblock a recv that is already parked: the parked recv holds the
+//     struct file, so the socket is merely orphaned and this thread would sleep forever.
+//     That leaked one thread per teardown, unbounded, and pinned each orphaned socket.
+//   - if this thread is instead BETWEEN recv calls (in the base64/JSON section below) when
+//     the close lands, its next recv_tcp re-resolves the fd NUMBER, which a new connection
+//     may already own — and we would forward a stranger's bytes as tunnel_data under this
+//     dead stream_id.
+// Deciding the close by 'did I win the key race' is what made the fd leak possible, so the
+// close below is deliberately unconditional and sits outside that branch.
 bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	stream := (^Bridge_Tunnel_Stream)(data)
 	heap := runtime.heap_allocator()
@@ -2716,6 +2918,15 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	buf: [4096]byte
 	for {
 		n, recv_err := net.recv_tcp(local_tcp_conn, buf[:])
+		// A receive timeout is a periodic wake, NOT end-of-stream.  core:net reports a
+		// graceful close as (0, nil), so the plain `n <= 0` test below cannot tell the two
+		// apart and would tear down a live idle tunnel once per period.  On a timeout,
+		// exit only if teardown has already unregistered us — checked via the stream_id,
+		// never by dereferencing 'stream'.
+		if recv_err == .Timeout || recv_err == .Would_Block {
+			if !bridge_tunnel_stream_registered(local_stream_id) do break
+			continue
+		}
 		if recv_err != nil || n <= 0 do break
 		encoded := base64.encode(buf[:n])
 		b := strings.builder_make(heap)
@@ -2756,13 +2967,19 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	}
 	sync.mutex_unlock(&bridge_tunnel_mu)
 
-	delete(local_stream_id, heap)
+	// THE FD: unconditional, and deliberately before the memory branch.  This thread is the
+	// only closer; no other thread can be blocked reading this socket, because no other
+	// thread ever reads it.  Doing this inside `if found` would leak the fd on exactly the
+	// path where teardown won the key race.
+	net.close(local_tcp_conn)
+
+	// MEMORY: only the key-race winner frees the struct.
 	if found {
-		net.close(local_tcp_conn)
 		delete(stream.stream_id, heap)
 		delete(stream.session_id, heap)
 		free(stream, heap)
 	}
+	delete(local_stream_id, heap)
 }
 
 // bridge_hub_handle_tunnel_data writes hub→bridge request bytes to the TCP socket.
@@ -2789,7 +3006,14 @@ bridge_hub_handle_tunnel_data :: proc(text: string) {
 	sync.mutex_unlock(&bridge_tunnel_mu)
 }
 
-// bridge_hub_handle_tunnel_close closes the TCP connection for a tunnel stream.
+// bridge_hub_handle_tunnel_close retires a tunnel stream on the WS-reader thread.
+//
+// It does NOT close the socket.  bridge_tunnel_tcp_to_ws_worker owns that fd for its whole
+// life (see the rule in its doc comment, and AGENTS.md "Socket lifetime across threads");
+// all this does is shutdown(.Receive) to wake the worker out of recv so it can run its own
+// exit path and close.  Waking is enough and does not block: the worker is not joined here
+// on purpose, because this runs on the WS reader and must not stall the whole hub
+// connection waiting on one local socket.
 bridge_hub_handle_tunnel_close :: proc(text: string) {
 	stream_id := extract_json_string(text, "stream_id", "")
 	defer delete(stream_id)
@@ -2812,7 +3036,14 @@ bridge_hub_handle_tunnel_close :: proc(text: string) {
 
 	// Only free if we removed the key. If !ok the worker already removed+freed the struct.
 	if !ok do return
-	net.close(stream.tcp_conn)
+
+	// THE FD: wake the reader, do not close.  shutdown(.Receive) on a still-open fd makes a
+	// parked recv return (0, nil) immediately; the worker then closes.  Ordered before the
+	// free only for clarity — the worker reads its own stack copy of the handle, never this
+	// struct, so it is already safe against the free below.
+	net.shutdown(stream.tcp_conn, .Receive)
+
+	// MEMORY: we removed the key, so the struct is ours to free.
 	delete(stream.stream_id, heap)
 	delete(stream.session_id, heap)
 	free(stream, heap)

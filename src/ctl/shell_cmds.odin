@@ -20,6 +20,8 @@ ctl_agentmode_shell :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_shell_signal(endpoint, token, tokens, args)
 	case "restart":
 		ctl_shell_restart(endpoint, token, tokens, args)
+	case "set-port":
+		ctl_shell_set_port(endpoint, token, tokens, args)
 	case "list":
 		ctl_shell_list(endpoint, token, tokens, args)
 	case "log":
@@ -103,6 +105,53 @@ ctl_shell_restart :: proc(endpoint, token: string, tokens, args: []string) {
 		fmt.tprintf("/api/v1/shells/%s/restart", safe_path_part(sid)), "{}")
 }
 
+// set-port — POST /api/v1/shells/{session_id}/port
+// Flags: --port <n> | --clear
+// Declares the port of a session that is ALREADY running, for the common case of
+// opening a terminal and only then starting a server in it. Prints the updated
+// session.
+//
+// --clear and --port 0 are the same request. 0 is the value the session record
+// already uses for "no port", so it has to work; --clear is the spelling a
+// reader finds without knowing that.
+ctl_shell_set_port :: proc(endpoint, token: string, tokens, args: []string) {
+	sid := pos(tokens, 1)
+	if sid == "" {
+		fmt.println(`{"ok":false,"message":"shell set-port requires <session_id> --port <n> (or --clear)"}`)
+		return
+	}
+
+	// option_value rather than ctl_shell_uint_flag: that helper folds an invalid
+	// value into its fallback, which would make a typo indistinguishable from an
+	// omitted flag — and here the difference decides whether we clear the port.
+	raw := strings.trim_space(option_value(args, "--port", ""))
+	clearing := has_flag(args, "--clear")
+
+	if clearing && raw != "" && raw != "0" {
+		fmt.println(`{"ok":false,"message":"shell set-port: --clear and --port <n> conflict; pass one"}`)
+		return
+	}
+	if !clearing && raw == "" {
+		fmt.println(`{"ok":false,"message":"shell set-port requires --port <n> (1-65535) or --clear"}`)
+		return
+	}
+
+	port := "0"
+	if !clearing {
+		for ch in raw {
+			if ch < '0' || ch > '9' {
+				fmt.println(`{"ok":false,"message":"shell set-port: --port must be a number between 1 and 65535, or use --clear"}`)
+				return
+			}
+		}
+		port = raw
+	}
+
+	ctl_shell_rest(endpoint, token, "POST",
+		fmt.tprintf("/api/v1/shells/%s/port", safe_path_part(sid)),
+		json_object(json_kv_raw("server_port", port)))
+}
+
 // list — GET /api/v1/bridges/{bridge_id}/shells or /api/v1/shells with filters
 // Flags: --bridge, --project, --chain, --status
 // Prints table: session_id, kind, label, status, pid, server_port, uptime
@@ -176,12 +225,24 @@ print_help_shell :: proc() {
 	fmt.println("  start --bridge <id> [--kind interactive|server|command]   Launch a new session.")
 	fmt.println("        [--cmd <cmd>] [--cwd <dir>] [--label <lbl>]")
 	fmt.println("        [--port <n>] [--project <id>] [--chain <id>]")
+	fmt.println("        --port declares the port the process binds; it is what makes the")
+	fmt.println("        session reachable over HTTP, whatever its kind (see REACHING A")
+	fmt.println("        SERVER below). It can also be declared later with set-port.")
 	fmt.println("        Prints: {session_id, status, pid}")
 	fmt.println("  kill    <session_id>                 Terminate a session (DELETE).")
 	fmt.println("  signal  <session_id> --signal <int>  Send a POSIX signal to the session process.")
 	fmt.println("  restart <session_id>                 Stop then restart a session.")
 	fmt.println("        Prints: {session_id, pid, status}")
-	fmt.println("  list  [--bridge <id>] [--project <id>] [--chain <id>] [--status <s>]")
+	fmt.println("  set-port <session_id> --port <n> | --clear")
+	fmt.println("        Declare (or clear) the port of a session that is ALREADY running —")
+	fmt.println("        for when you open a terminal and only then start a server in it.")
+	fmt.println("        Takes effect immediately, on both access paths, with no restart.")
+	fmt.println("        --port 0 and --clear are the same request. Refused on a session")
+	fmt.println("        that has exited, and on a session you do not own.")
+	fmt.println("        Prints the updated session.")
+	fmt.println("  list  --bridge <id> | --chain <id>   One of these two is REQUIRED.")
+	fmt.println("        [--project <id>] [--status <s>]  Narrow further; --project alone is")
+	fmt.println("        NOT sufficient and fails with 'chain_id query parameter is required'.")
 	fmt.println("        Prints table: session_id, kind, label, status, pid, server_port, uptime")
 	fmt.println("  log     <session_id> [--offset N] [--limit N] [--grep <pattern>]")
 	fmt.println("        Stream log lines; response: {lines, truncated, total_lines}")
@@ -192,6 +253,45 @@ print_help_shell :: proc() {
 	fmt.println("  exactly like ham-ctl shell-cmd. No user token is needed: the call goes to")
 	fmt.println("  the local Bridge endpoint, which relays it to the Hub on your behalf.")
 	fmt.println("")
+	fmt.println("REACHING A SERVER SESSION OVER HTTP")
+	fmt.println("  A session started with --kind server --port N is reachable from this host")
+	fmt.println("  through the Bridge's local endpoint. No inbound port is opened on either")
+	fmt.println("  machine and no user token or browser session is involved:")
+	fmt.println("")
+	fmt.println("      http://127.0.0.1:<local_endpoint_port>/proxy/<session_id>/<path>")
+	fmt.println("")
+	fmt.println("  The Bridge relays over the WebSocket it already holds to the Hub, the Hub")
+	fmt.println("  splices it to the Bridge owning <session_id>, and that Bridge dials")
+	fmt.println("  127.0.0.1:<declared port>. Method, path, query and body are forwarded.")
+	fmt.println("")
+	fmt.println("  The local endpoint is the same one ham-ctl itself uses — a unix socket in")
+	fmt.println("  HEIMDALL_BRIDGE_ENDPOINT, with a TCP fallback (default port 49324). Find it:")
+	fmt.println("      ham-ctl bridge list --scope configured    -> {local_endpoint_port: 49324}")
+	fmt.println("")
+	fmt.println("  The target session must be status=running with a declared port, and be")
+	fmt.println("  owned by you; cross-owner targets are refused. Its kind does not matter —")
+	fmt.println("  an interactive shell you started a server inside is reachable too, and")
+	fmt.println("  set-port is how you declare that port after the fact.")
+	fmt.println("")
+	fmt.println("  EXAMPLE (both transports; each line below has been run end to end)")
+	fmt.println("      ham-ctl shell start --bridge brg_abc --kind server --port 8000 \\")
+	fmt.println("        --cwd /srv/site --cmd 'python3 -m http.server 8000 --bind 127.0.0.1'")
+	fmt.println("      # -> {session_id: sh_123, status: running, pid: ...}")
+	fmt.println("      curl http://127.0.0.1:49324/proxy/sh_123/index.html")
+	fmt.println("      curl --unix-socket \"${HEIMDALL_BRIDGE_ENDPOINT#unix:}\" \\")
+	fmt.println("        http://localhost/proxy/sh_123/index.html")
+	fmt.println("")
+	fmt.println("  REFUSALS (JSON body, {error: <reason>})")
+	fmt.println("      404 session_not_found     no such session, or not yours")
+	fmt.println("      409 session_not_running   session exited")
+	fmt.println("      409 no_server_port        no port declared (see set-port)")
+	fmt.println("      403 cross_owner           target belongs to another user")
+	fmt.println("      503 unavailable           bridge cannot reach the hub right now")
+	fmt.println("")
+	fmt.println("  Any process on this host that can reach the local endpoint can use this and")
+	fmt.println("  acts with the Bridge owner's authority. Disable with --no-local-proxy or")
+	fmt.println("  [bridge] local_proxy_enabled=false.")
+	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl shell start --bridge brg_abc --kind interactive --cmd bash --label 'my shell'")
 	fmt.println("  ham-ctl shell list --bridge brg_abc --status running")
@@ -199,5 +299,7 @@ print_help_shell :: proc() {
 	fmt.println("  ham-ctl shell capture sess_123")
 	fmt.println("  ham-ctl shell signal sess_123 --signal 2")
 	fmt.println("  ham-ctl shell restart sess_123")
+	fmt.println("  ham-ctl shell set-port sess_123 --port 3000")
+	fmt.println("  ham-ctl shell set-port sess_123 --clear")
 	fmt.println("  ham-ctl shell kill sess_123")
 }

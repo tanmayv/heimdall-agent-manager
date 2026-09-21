@@ -57,7 +57,7 @@ Bridge_Shell_Session :: struct {
 	agent_instance_id: string,
 	owner_user_id:     string,
 	pid:               int,
-	server_port:       int, // 0 unless kind=Server
+	server_port:       int, // 0 unless a port was declared at start (any kind — XM-8)
 	status:            Bridge_Shell_Session_Status,
 	exit_code:         int,
 	exit_code_set:     bool,
@@ -177,6 +177,21 @@ bridge_shell_session_update_status :: proc(m: ^Bridge_Shell_Session_Map, session
 		s.exit_code = exit_code
 		s.exit_code_set = exit_code_set
 	}
+}
+
+// bridge_shell_session_set_server_port sets server_port on an existing session
+// under the map lock (XM-9) and returns the updated record so the caller can
+// re-save its spec. This is the bridge's OWN copy of the port — the one
+// bridge_hub_handle_tunnel_open re-validates against — so a port declared after
+// start has no effect until it lands here, however up to date the hub's row is.
+bridge_shell_session_set_server_port :: proc(m: ^Bridge_Shell_Session_Map, session_id: string, port: int) -> (Bridge_Shell_Session, bool) {
+	sync.mutex_lock(&m.mu)
+	defer sync.mutex_unlock(&m.mu)
+	if s, ok := &m.sessions[session_id]; ok {
+		s.server_port = port
+		return s^, true
+	}
+	return {}, false
 }
 
 // bridge_shell_session_finish is the async-worker variant: updates status,

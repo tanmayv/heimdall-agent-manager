@@ -6,528 +6,79 @@ import "core:os"
 import "core:strings"
 import domain "odin_test:hub/domain"
 
-MIGRATION_001_FOUNDATION :: `CREATE TABLE IF NOT EXISTS schema_migrations (
-  version TEXT PRIMARY KEY,
-  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS users (
-  user_id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  display_name TEXT NOT NULL,
-  email TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-`
-MIGRATION_002_OWNER_SCOPED_CORE :: `CREATE TABLE IF NOT EXISTS bridges (
-  bridge_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  label TEXT NOT NULL DEFAULT '',
-  label_is_user_customized INTEGER NOT NULL DEFAULT 0,
-  machine_hostname TEXT NOT NULL DEFAULT '',
-  machine_os TEXT NOT NULL DEFAULT '',
-  machine_arch TEXT NOT NULL DEFAULT '',
-  capabilities_json TEXT NOT NULL DEFAULT '',
-  hub_url TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'offline',
-  bridge_token_hash TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_seen_at TEXT NOT NULL DEFAULT '',
-  revoked_at TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS bridge_enrollments (
-  enrollment_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  label TEXT NOT NULL DEFAULT '',
-  token_hash TEXT NOT NULL UNIQUE,
-  status TEXT NOT NULL DEFAULT 'pending',
-  expires_at TEXT NOT NULL DEFAULT '',
-  consumed_at TEXT NOT NULL DEFAULT '',
-  consumed_by_bridge_id TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS agents (
-  agent_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  slug TEXT NOT NULL,
-  template_id TEXT NOT NULL DEFAULT '',
-  default_provider TEXT NOT NULL DEFAULT '',
-  default_tier TEXT NOT NULL DEFAULT '',
-  instructions TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'active',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(owner_user_id, slug)
-);
-
-CREATE TABLE IF NOT EXISTS agent_bridge_support (
-  agent_id TEXT NOT NULL,
-  bridge_id TEXT NOT NULL,
-  owner_user_id TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  provider TEXT NOT NULL DEFAULT '',
-  tier TEXT NOT NULL DEFAULT '',
-  priority INTEGER NOT NULL DEFAULT 0,
-  max_instances INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (agent_id, bridge_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_instances (
-  instance_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  agent_id TEXT NOT NULL,
-  bridge_id TEXT NOT NULL,
-  runtime_status TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS projects (
-  project_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  slug TEXT NOT NULL DEFAULT '',
-  description TEXT NOT NULL DEFAULT '',
-  repo_url TEXT NOT NULL DEFAULT '',
-  vcs_kind TEXT NOT NULL DEFAULT '',
-  default_path TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(owner_user_id, slug)
-);
-
-CREATE TABLE IF NOT EXISTS project_bridge_paths (
-  project_id TEXT NOT NULL,
-  bridge_id TEXT NOT NULL,
-  owner_user_id TEXT NOT NULL,
-  path TEXT NOT NULL,
-  is_validated INTEGER NOT NULL DEFAULT 0,
-  last_validated_at TEXT NOT NULL DEFAULT '',
-  validation_error TEXT NOT NULL DEFAULT '',
-  validation_details_json TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (project_id, bridge_id)
-);
-
-CREATE TABLE IF NOT EXISTS task_chains (
-  chain_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  publish_state TEXT NOT NULL DEFAULT 'draft',
-  status TEXT NOT NULL DEFAULT 'active',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  published_at TEXT NOT NULL DEFAULT '',
-  completed_at TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS tasks (
-  task_id TEXT PRIMARY KEY,
-  chain_id TEXT NOT NULL,
-  owner_user_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  publish_state TEXT NOT NULL DEFAULT 'draft',
-  status TEXT NOT NULL DEFAULT 'assigned',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  published_at TEXT NOT NULL DEFAULT '',
-  started_at TEXT NOT NULL DEFAULT '',
-  completed_at TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS task_comments (
-  comment_id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL,
-  chain_id TEXT NOT NULL,
-  owner_user_id TEXT NOT NULL,
-  author_agent_instance_id TEXT NOT NULL DEFAULT '',
-  body TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS memories (
-  memory_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  agent_id TEXT NOT NULL DEFAULT '',
-  type TEXT NOT NULL DEFAULT 'fact',
-  status TEXT NOT NULL,
-  title TEXT NOT NULL DEFAULT '',
-  body TEXT NOT NULL,
-  evidence TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS chat_conversations (
-  conversation_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  agent_id TEXT NOT NULL DEFAULT '',
-  agent_instance_id TEXT NOT NULL DEFAULT '',
-  project_id TEXT NOT NULL DEFAULT '',
-  chain_id TEXT NOT NULL DEFAULT '',
-  title TEXT NOT NULL DEFAULT '',
-  unread_count INTEGER NOT NULL DEFAULT 0,
-  last_message_preview TEXT NOT NULL DEFAULT '',
-  last_message_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS chat_messages (
-  message_id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL,
-  owner_user_id TEXT NOT NULL,
-  direction TEXT NOT NULL DEFAULT 'user_to_agent',
-  sender_agent_id TEXT NOT NULL DEFAULT '',
-  sender_agent_instance_id TEXT NOT NULL DEFAULT '',
-  body TEXT NOT NULL,
-  artifact_ids_json TEXT NOT NULL DEFAULT '[]',
-  message_type TEXT NOT NULL DEFAULT 'text',
-  message_status TEXT NOT NULL DEFAULT 'complete',
-  metadata_json TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL,
-  delivered_at TEXT NOT NULL DEFAULT '',
-  read_at TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS artifacts (
-  artifact_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  blob_ref TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS templates (
-  template_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  body TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS user_api_tokens (
-  token_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  label TEXT NOT NULL DEFAULT '',
-  token_hash TEXT NOT NULL UNIQUE,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_used_at TEXT NOT NULL DEFAULT '',
-  expires_at TEXT NOT NULL DEFAULT '',
-  revoked_at TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TRIGGER IF NOT EXISTS bridges_owner_immutable BEFORE UPDATE OF owner_user_id ON bridges BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS bridge_enrollments_owner_immutable BEFORE UPDATE OF owner_user_id ON bridge_enrollments BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS agents_owner_immutable BEFORE UPDATE OF owner_user_id ON agents BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS agent_bridge_support_owner_immutable BEFORE UPDATE OF owner_user_id ON agent_bridge_support BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS agent_instances_owner_immutable BEFORE UPDATE OF owner_user_id ON agent_instances BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS projects_owner_immutable BEFORE UPDATE OF owner_user_id ON projects BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS project_bridge_paths_owner_immutable BEFORE UPDATE OF owner_user_id ON project_bridge_paths BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS task_chains_owner_immutable BEFORE UPDATE OF owner_user_id ON task_chains BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS tasks_owner_immutable BEFORE UPDATE OF owner_user_id ON tasks BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS task_comments_owner_immutable BEFORE UPDATE OF owner_user_id ON task_comments BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS memories_owner_immutable BEFORE UPDATE OF owner_user_id ON memories BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS chat_conversations_owner_immutable BEFORE UPDATE OF owner_user_id ON chat_conversations BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS chat_messages_owner_immutable BEFORE UPDATE OF owner_user_id ON chat_messages BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS artifacts_owner_immutable BEFORE UPDATE OF owner_user_id ON artifacts BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS templates_owner_immutable BEFORE UPDATE OF owner_user_id ON templates BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS user_api_tokens_owner_immutable BEFORE UPDATE OF owner_user_id ON user_api_tokens BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_user_api_tokens_token_hash ON user_api_tokens(token_hash);
-`
+// Every migration is embedded straight from its .sql file with #load, so the
+// embedded copy and the on-disk copy in migrations/ are the same bytes by
+// construction. Keep it that way: never transcribe a migration's SQL into a
+// string literal here. run_migrations falls back to these constants whenever
+// migrations_dir does not resolve -- which is what a packaged binary run
+// outside the repo does -- and a hand-copied literal that drifts from its file
+// silently bootstraps a fresh database onto a stale schema (BUG-14).
+MIGRATION_001_FOUNDATION :: #load("migrations/001_foundation.sql", string)
+MIGRATION_002_OWNER_SCOPED_CORE :: #load("migrations/002_owner_scoped_core.sql", string)
 
 // MIGRATION_003_DEVICE_TOKENS is the embedded fallback for the token-provenance
 // migration (ELDA-4). The canonical source is
 // src/hub/repository/sqlite/migrations/003_device_tokens.sql.
-MIGRATION_003_DEVICE_TOKENS :: `ALTER TABLE user_api_tokens ADD COLUMN created_from TEXT NOT NULL DEFAULT 'operator';
-ALTER TABLE user_api_tokens ADD COLUMN device_label TEXT NOT NULL DEFAULT '';
-`
+MIGRATION_003_DEVICE_TOKENS :: #load("migrations/003_device_tokens.sql", string)
 
-MIGRATION_004_DEFAULT_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
+MIGRATION_004_DEFAULT_SKILL_MEMORY :: #load("migrations/004_default_skill_memory.sql", string)
 
-MIGRATION_005_AGENT_TO_AGENT_CROSS_CHAIN_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
+MIGRATION_005_AGENT_TO_AGENT_CROSS_CHAIN_MEMORY :: #load("migrations/005_agent_to_agent_cross_chain_memory.sql", string)
 
-MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
+MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY :: #load("migrations/006_live_agents_skill_memory.sql", string)
 
+MIGRATION_007_HIDE_AGENT_TO_AGENT_FROM_USER_CHAT :: #load("migrations/007_hide_agent_to_agent_from_user_chat.sql", string)
 
-MIGRATION_007_HIDE_AGENT_TO_AGENT_FROM_USER_CHAT :: `-- Agent-to-agent messages are delivered to the target instance inbox, but they
--- must not drive the human-facing conversation transcript/preview.
-UPDATE chat_conversations
-SET
-  last_message_preview = COALESCE((
-    SELECT m.body
-    FROM chat_messages m
-    WHERE m.conversation_id = chat_conversations.conversation_id
-      AND m.owner_user_id = chat_conversations.owner_user_id
-      AND m.direction != 'agent_to_agent'
-    ORDER BY m.created_at DESC
-    LIMIT 1
-  ), ''),
-  last_message_at = COALESCE((
-    SELECT m.created_at
-    FROM chat_messages m
-    WHERE m.conversation_id = chat_conversations.conversation_id
-      AND m.owner_user_id = chat_conversations.owner_user_id
-      AND m.direction != 'agent_to_agent'
-    ORDER BY m.created_at DESC
-    LIMIT 1
-  ), ''),
-  updated_at = COALESCE((
-    SELECT m.created_at
-    FROM chat_messages m
-    WHERE m.conversation_id = chat_conversations.conversation_id
-      AND m.owner_user_id = chat_conversations.owner_user_id
-      AND m.direction != 'agent_to_agent'
-    ORDER BY m.created_at DESC
-    LIMIT 1
-  ), chat_conversations.updated_at)
-WHERE EXISTS (
-  SELECT 1 FROM chat_messages a
-  WHERE a.conversation_id = chat_conversations.conversation_id
-    AND a.owner_user_id = chat_conversations.owner_user_id
-    AND a.direction = 'agent_to_agent'
-)
-AND NOT EXISTS (
-  SELECT 1 FROM chat_messages newer_visible
-  WHERE newer_visible.conversation_id = chat_conversations.conversation_id
-    AND newer_visible.owner_user_id = chat_conversations.owner_user_id
-    AND newer_visible.direction != 'agent_to_agent'
-    AND newer_visible.created_at > (
-      SELECT MAX(a2a.created_at)
-      FROM chat_messages a2a
-      WHERE a2a.conversation_id = chat_conversations.conversation_id
-        AND a2a.owner_user_id = chat_conversations.owner_user_id
-        AND a2a.direction = 'agent_to_agent'
-    )
-);
-`
+MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY :: #load("migrations/008_read_inbound_messages_skill_memory.sql", string)
 
+MIGRATION_009_ARTIFACT_METADATA :: #load("migrations/009_artifact_metadata.sql", string)
 
-MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
+MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY :: #load("migrations/010_artifact_usage_skill_memory.sql", string)
 
-MIGRATION_009_ARTIFACT_METADATA :: `ALTER TABLE artifacts ADD COLUMN mime TEXT NOT NULL DEFAULT '';
-ALTER TABLE artifacts ADD COLUMN ext TEXT NOT NULL DEFAULT '';
-ALTER TABLE artifacts ADD COLUMN sha256 TEXT NOT NULL DEFAULT '';
-ALTER TABLE artifacts ADD COLUMN origin_kind TEXT NOT NULL DEFAULT '';
-ALTER TABLE artifacts ADD COLUMN origin_ref TEXT NOT NULL DEFAULT '';
-ALTER TABLE artifacts ADD COLUMN deleted_at TEXT;
-`
+MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY :: #load("migrations/011_artifact_download_skill_memory.sql", string)
 
-MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
+MIGRATION_012_TASK_CHAINS_V2 :: #load("migrations/012_task_chains_v2.sql", string)
 
-MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
+MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY :: #load("migrations/013_task_workflow_skill_memory.sql", string)
 
-MIGRATION_012_TASK_CHAINS_V2 :: `ALTER TABLE task_chains ADD COLUMN description TEXT NOT NULL DEFAULT '';
-ALTER TABLE tasks ADD COLUMN description TEXT NOT NULL DEFAULT '';
+MIGRATION_014_TASK_WORKFLOW_SKILL_COMMENTS :: #load("migrations/014_task_workflow_skill_comments.sql", string)
 
-CREATE TABLE IF NOT EXISTS task_chain_members (
-  chain_id TEXT NOT NULL,
-  agent_instance_id TEXT NOT NULL,
-  agent_id TEXT NOT NULL DEFAULT '',
-  owner_user_id TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'worker',
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (chain_id, agent_instance_id)
-);
+MIGRATION_015_MEMORY_TARGET_SCOPE :: #load("migrations/015_memory_target_scope.sql", string)
 
-CREATE TABLE IF NOT EXISTS task_dependencies (
-  task_id TEXT NOT NULL,
-  depends_on_task_id TEXT NOT NULL,
-  chain_id TEXT NOT NULL,
-  owner_user_id TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (task_id, depends_on_task_id)
-);
+MIGRATION_018_COORDINATOR_MEMBER_BACKFILL :: #load("migrations/018_coordinator_member_backfill.sql", string)
 
-CREATE TABLE IF NOT EXISTS task_votes (
-  task_id TEXT NOT NULL,
-  reviewer_agent_instance_id TEXT NOT NULL,
-  chain_id TEXT NOT NULL,
-  owner_user_id TEXT NOT NULL,
-  vote TEXT NOT NULL,
-  comment TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (task_id, reviewer_agent_instance_id)
-);
+MIGRATION_017_CHAT_MESSAGE_TYPES :: #load("migrations/017_chat_message_types.sql", string)
 
-CREATE TRIGGER IF NOT EXISTS task_chain_members_owner_immutable BEFORE UPDATE OF owner_user_id ON task_chain_members BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS task_dependencies_owner_immutable BEFORE UPDATE OF owner_user_id ON task_dependencies BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS task_votes_owner_immutable BEFORE UPDATE OF owner_user_id ON task_votes BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-`
+MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: #load("migrations/016_memory_workflow_skill_memory.sql", string)
 
-MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
-
-MIGRATION_014_TASK_WORKFLOW_SKILL_COMMENTS :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
-
-MIGRATION_015_MEMORY_TARGET_SCOPE :: `ALTER TABLE memories ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE memories ADD COLUMN template_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE memories ADD COLUMN bridge_id TEXT NOT NULL DEFAULT '';
-`
-
-MIGRATION_018_COORDINATOR_MEMBER_BACKFILL :: `INSERT OR IGNORE INTO task_chain_members (chain_id, agent_instance_id, agent_id, owner_user_id, role, created_at)
-SELECT c.chain_id, c.coordinator_agent_instance_id, '', c.owner_user_id, 'coordinator', c.created_at
-FROM task_chains c
-WHERE c.coordinator_agent_instance_id IS NOT NULL AND c.coordinator_agent_instance_id <> ''
-  AND NOT EXISTS (SELECT 1 FROM task_chain_members m WHERE m.chain_id = c.chain_id AND m.role = 'coordinator');`
-
-MIGRATION_017_CHAT_MESSAGE_TYPES :: `ALTER TABLE chat_messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text';
-ALTER TABLE chat_messages ADD COLUMN message_status TEXT NOT NULL DEFAULT 'complete';
-ALTER TABLE chat_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
-`
-
-MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: `SELECT 1; -- seeded memory removed in favor of static /src/prompts/skills/
-`
-
-MIGRATION_019_CURRENT_TASK_AND_PRIORITY :: `ALTER TABLE agent_instances ADD COLUMN current_task_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE agent_instances ADD COLUMN current_task_role TEXT NOT NULL DEFAULT 'none';
-ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'p2';
-`
+MIGRATION_019_CURRENT_TASK_AND_PRIORITY :: #load("migrations/019_current_task_and_priority.sql", string)
 
 // MIGRATION_020_TITLE_TRACKING adds per-run auto-title tracking fields to
 // conversations and task chains, plus a per-agent monotonic counter table used
 // to mint default titles of the form "<agent-name> #<n>". The embedded fallback
 // mirrors src/hub/repository/sqlite/migrations/020_title_tracking.sql.
-MIGRATION_020_TITLE_TRACKING :: `ALTER TABLE chat_conversations ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';
-ALTER TABLE chat_conversations ADD COLUMN last_title_nudge_at TEXT NOT NULL DEFAULT '';
-ALTER TABLE chat_conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'default';
-ALTER TABLE task_chains ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';
-ALTER TABLE task_chains ADD COLUMN last_title_nudge_at TEXT NOT NULL DEFAULT '';
-ALTER TABLE task_chains ADD COLUMN title_source TEXT NOT NULL DEFAULT 'default';
-CREATE TABLE IF NOT EXISTS agent_title_counters (
-  agent_id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  counter INTEGER NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL DEFAULT ''
-);
-`
+MIGRATION_020_TITLE_TRACKING :: #load("migrations/020_title_tracking.sql", string)
 
 // MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME adds human-readable display_name
 // support to agent_instances, defaulting to "<agent-name> #<n>".
-MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME :: `ALTER TABLE agent_instances ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
-`
+MIGRATION_021_AGENT_INSTANCE_DISPLAY_NAME :: #load("migrations/021_agent_instance_display_name.sql", string)
 
 // MIGRATION_022_SCHEDULED_PROMPTS adds the scheduled_prompts table for
 // delayed and recurring prompt injection into agent instances.
-MIGRATION_022_SCHEDULED_PROMPTS :: `CREATE TABLE IF NOT EXISTS scheduled_prompts (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  target_instance_id TEXT NOT NULL,
-  prompt_text TEXT NOT NULL,
-  target_run_at TEXT NOT NULL,
-  interval TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'active',
-  in_flight INTEGER NOT NULL DEFAULT 0,
-  leased_at TEXT NOT NULL DEFAULT '',
-  deleted_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_scheduled_prompts_target ON scheduled_prompts(target_instance_id);
-`
+MIGRATION_022_SCHEDULED_PROMPTS :: #load("migrations/022_scheduled_prompts.sql", string)
 
 // MIGRATION_023_ACTIONS creates the actions table with recurring-schedule fields,
 // replacing scheduled_prompts and migrating existing rows.
-MIGRATION_023_ACTIONS :: `CREATE TABLE IF NOT EXISTS actions (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  target_instance_id TEXT NOT NULL,
-  prompt_text TEXT NOT NULL,
-  cron_expr TEXT NOT NULL DEFAULT '',
-  timezone TEXT NOT NULL DEFAULT 'UTC',
-  blackout_dates TEXT NOT NULL DEFAULT '[]',
-  active_from TEXT NOT NULL DEFAULT '',
-  active_until TEXT NOT NULL DEFAULT '',
-  target_run_at TEXT NOT NULL DEFAULT '',
-  interval TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'active',
-  in_flight INTEGER NOT NULL DEFAULT 0,
-  leased_at TEXT NOT NULL DEFAULT '',
-  deleted_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_actions_target ON actions(target_instance_id);
-CREATE INDEX IF NOT EXISTS idx_actions_owner_run ON actions(owner_user_id, target_run_at);
-CREATE INDEX IF NOT EXISTS idx_actions_due ON actions(target_run_at) WHERE state = 'active' AND in_flight = 0 AND deleted_at = '';
-CREATE TRIGGER IF NOT EXISTS actions_owner_immutable BEFORE UPDATE OF owner_user_id ON actions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-
-CREATE TABLE IF NOT EXISTS scheduled_prompts (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL DEFAULT '',
-  target_instance_id TEXT NOT NULL DEFAULT '',
-  prompt_text TEXT NOT NULL DEFAULT '',
-  target_run_at TEXT NOT NULL DEFAULT '',
-  interval TEXT NOT NULL DEFAULT '',
-  state TEXT NOT NULL DEFAULT 'active',
-  in_flight INTEGER NOT NULL DEFAULT 0,
-  leased_at TEXT NOT NULL DEFAULT '',
-  deleted_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT '',
-  updated_at TEXT NOT NULL DEFAULT ''
-);
-
-INSERT OR IGNORE INTO actions (
-  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
-  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
-)
-SELECT
-  id, owner_user_id, target_instance_id, prompt_text, target_run_at,
-  interval, state, in_flight, leased_at, deleted_at, created_at, updated_at
-FROM scheduled_prompts;
-`
+MIGRATION_023_ACTIONS :: #load("migrations/023_actions.sql", string)
 
 // MIGRATION_024_PUSH_SUBSCRIPTIONS creates the push_subscriptions table storing
 // per-user browser Web Push subscriptions (WP-STORE-1). endpoint is unique so a
 // re-subscribe upserts the keys; owner_user_id is immutable via a trigger.
-MIGRATION_024_PUSH_SUBSCRIPTIONS :: `CREATE TABLE IF NOT EXISTS push_subscriptions (
-  id TEXT PRIMARY KEY,
-  owner_user_id TEXT NOT NULL,
-  endpoint TEXT NOT NULL,
-  p256dh TEXT NOT NULL,
-  auth TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions(endpoint);
-CREATE INDEX IF NOT EXISTS idx_push_subscriptions_owner ON push_subscriptions(owner_user_id);
-CREATE TRIGGER IF NOT EXISTS push_subscriptions_owner_immutable BEFORE UPDATE OF owner_user_id ON push_subscriptions BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
-`
+MIGRATION_024_PUSH_SUBSCRIPTIONS :: #load("migrations/024_push_subscriptions.sql", string)
 
 // Mirrors src/hub/repository/sqlite/migrations/025_lookup_indexes.sql — see that
 // file for why each index exists.
-MIGRATION_025_LOOKUP_INDEXES :: `CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_recent
-  ON chat_messages(conversation_id, owner_user_id, created_at DESC, message_id DESC);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_chain_owner ON tasks(chain_id, owner_user_id);
-
-CREATE INDEX IF NOT EXISTS idx_task_comments_task_owner
-  ON task_comments(task_id, owner_user_id, created_at DESC, comment_id DESC);
-`
+MIGRATION_025_LOOKUP_INDEXES :: #load("migrations/025_lookup_indexes.sql", string)
 
 // MIGRATION_026_MEMORY_SCOPE_LISTS converts memory targeting from single scalar
 // scope columns (agent_id/project_id/template_id/bridge_id) to JSON-array list
@@ -540,53 +91,18 @@ CREATE INDEX IF NOT EXISTS idx_task_comments_task_owner
 // point, so the append-only ledger requires the backfill here rather than
 // rewriting those historical seeds. Scope ids are safe identifier tokens
 // (agt_/proj_/tmpl_/brg_), so simple JSON string quoting is sufficient.
-MIGRATION_026_MEMORY_SCOPE_LISTS :: `ALTER TABLE memories ADD COLUMN agent_ids TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE memories ADD COLUMN project_ids TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE memories ADD COLUMN template_ids TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE memories ADD COLUMN bridge_ids TEXT NOT NULL DEFAULT '[]';
-UPDATE memories SET
-  agent_ids = CASE WHEN agent_id = '' THEN '[]' ELSE '["' || agent_id || '"]' END,
-  project_ids = CASE WHEN project_id = '' THEN '[]' ELSE '["' || project_id || '"]' END,
-  template_ids = CASE WHEN template_id = '' THEN '[]' ELSE '["' || template_id || '"]' END,
-  bridge_ids = CASE WHEN bridge_id = '' THEN '[]' ELSE '["' || bridge_id || '"]' END;
-ALTER TABLE memories DROP COLUMN agent_id;
-ALTER TABLE memories DROP COLUMN project_id;
-ALTER TABLE memories DROP COLUMN template_id;
-ALTER TABLE memories DROP COLUMN bridge_id;
-`
+MIGRATION_026_MEMORY_SCOPE_LISTS :: #load("migrations/026_memory_scope_lists.sql", string)
 
 // MIGRATION_027_DEFAULT_COORDINATOR_AGENT seeds a durable 'coordinator' agent for
 // every existing user that lacks one and remaps agents off the removed built-in
 // 'System Reviewer' template onto the default 'tmpl_empty'. Idempotent via the
 // NOT EXISTS guard + deterministic agent_id and the template WHERE clause. Kept
 // byte-identical to 027_default_coordinator_agent.sql.
-MIGRATION_027_DEFAULT_COORDINATOR_AGENT :: `INSERT INTO agents (agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at)
-SELECT 'agt_coordinator_' || u.user_id,
-       u.user_id,
-       'coordinator',
-       'coordinator',
-       'tmpl_empty',
-       '',
-       '',
-       '',
-       'active',
-       u.created_at,
-       u.updated_at
-FROM users u
-WHERE NOT EXISTS (
-        SELECT 1 FROM agents a
-        WHERE a.owner_user_id = u.user_id
-          AND a.slug = 'coordinator'
-);
-
-UPDATE agents SET template_id = 'tmpl_empty' WHERE template_id = 'tmpl_system_reviewer';
-`
+MIGRATION_027_DEFAULT_COORDINATOR_AGENT :: #load("migrations/027_default_coordinator_agent.sql", string)
 
 // MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP adds first-class description to
 // memories and deletes legacy seeded system memories in favor of static skills.
-MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP :: `ALTER TABLE memories ADD COLUMN description TEXT NOT NULL DEFAULT '';
-DELETE FROM memories WHERE owner_user_id = 'system' AND (type = 'skill' OR memory_id LIKE 'mem_system_%');
-`
+MIGRATION_028_MEMORY_DESCRIPTION_AND_CLEANUP :: #load("migrations/028_memory_description_and_cleanup.sql", string)
 
 // MIGRATION_029_SEARCH_FTS_COMMENTS adds an external-content FTS5 index over
 // task_comments.body so comment search is tokenized + multi-word + relevance-
@@ -657,11 +173,9 @@ MIGRATION_041_SHELL_SESSIONS :: #load("migrations/041_shell_sessions.sql", strin
 // MIGRATION_042_PINNED_TASK_CHAINS adds is_pinned and pinned_at to task_chains.
 MIGRATION_042_PINNED_TASK_CHAINS :: #load("migrations/042_pinned_task_chains.sql", string)
 
-MIGRATION_043_FIG_PROJECTS :: `ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'local';
-ALTER TABLE projects ADD COLUMN workspace_name TEXT NOT NULL DEFAULT '';
-ALTER TABLE projects ADD COLUMN relative_path TEXT NOT NULL DEFAULT '';
-CREATE INDEX IF NOT EXISTS idx_projects_owner_type ON projects(owner_user_id, project_type);
-`
+// MIGRATION_043_FIG_PROJECTS adds Fig workspace metadata columns to projects (Cloudtop).
+MIGRATION_043_FIG_PROJECTS :: #load("migrations/043_fig_projects.sql", string)
+
 
 migration_order :: [43]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_fig_projects.sql"}
 

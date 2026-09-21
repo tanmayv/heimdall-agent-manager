@@ -26,10 +26,14 @@ Route :: struct {
 }
 
 Upgrade_Route :: struct {
-	method: string,
-	path: string,
-	ctx: rawptr,
+	method:  string,
+	path:    string,
+	ctx:     rawptr,
 	handler: Upgrade_Handler_Proc,
+	// raw=false (default): dispatched only for Upgrade: websocket requests (WS-gated).
+	// raw=true: dispatched for ALL request methods — use for raw-socket handlers that
+	// must also handle plain HTTP (e.g. the preview tunnel proxy).
+	raw:     bool,
 }
 
 Router :: struct {
@@ -56,7 +60,14 @@ router_add :: proc(router: ^Router, method, path: string, ctx: rawptr, handler: 
 }
 
 router_add_upgrade :: proc(router: ^Router, method, path: string, ctx: rawptr, handler: Upgrade_Handler_Proc) {
-	append(&router.upgrade_routes, Upgrade_Route{method = strings.clone(method), path = strings.clone(path), ctx = ctx, handler = handler})
+	append(&router.upgrade_routes, Upgrade_Route{method = strings.clone(method), path = strings.clone(path), ctx = ctx, handler = handler, raw = false})
+}
+
+// router_add_raw_upgrade registers a raw-socket route that is dispatched for ALL request
+// methods, not just WebSocket upgrades.  Use this when the handler must serve plain HTTP
+// requests as well as (future) WS upgrades on the same path.
+router_add_raw_upgrade :: proc(router: ^Router, method, path: string, ctx: rawptr, handler: Upgrade_Handler_Proc) {
+	append(&router.upgrade_routes, Upgrade_Route{method = strings.clone(method), path = strings.clone(path), ctx = ctx, handler = handler, raw = true})
 }
 
 route_matches :: proc(pattern, path: string) -> bool {
@@ -78,10 +89,22 @@ route_matches :: proc(pattern, path: string) -> bool {
 	return true
 }
 
+// router_dispatch_upgrade handles WebSocket-gated upgrade routes (raw=false).
+// Called only when the request carries Upgrade: websocket.
 router_dispatch_upgrade :: proc(router: ^Router, req: Request, client: net.TCP_Socket) -> bool {
 	if router == nil || !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) do return false
 	for route in router.upgrade_routes {
-		if (route.method == req.method || route.method == "ANY") && route.handler != nil && route_matches(route.path, req.path) { route.handler(route.ctx, req, client); return true }
+		if !route.raw && (route.method == req.method || route.method == "ANY") && route.handler != nil && route_matches(route.path, req.path) { route.handler(route.ctx, req, client); return true }
+	}
+	return false
+}
+
+// router_dispatch_raw_upgrade handles raw-socket routes (raw=true) for ALL request methods.
+// Called unconditionally; the heap allocator must be set by the caller before this call.
+router_dispatch_raw_upgrade :: proc(router: ^Router, req: Request, client: net.TCP_Socket) -> bool {
+	if router == nil || !strings.has_prefix(req.path, contracts.API_V1_BASE_PATH) do return false
+	for route in router.upgrade_routes {
+		if route.raw && (route.method == req.method || route.method == "ANY") && route.handler != nil && route_matches(route.path, req.path) { route.handler(route.ctx, req, client); return true }
 	}
 	return false
 }

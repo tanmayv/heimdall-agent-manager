@@ -94,6 +94,14 @@ handle_client :: proc(client: net.TCP_Socket, source: net.Endpoint, router: ^Rou
 		context.allocator = heap
 		if router_dispatch_upgrade(router, req_obj, client) do return
 	}
+	// Raw-socket routes (raw=true in the router) handle ALL request methods — they must
+	// also serve plain HTTP GET/POST, not just WebSocket upgrades.  Set context.allocator
+	// to the persistent heap before dispatching: these handlers are long-lived and make
+	// per-chunk allocations that must outlive the per-request arena.  Explicitly restore
+	// req_allocator afterwards so normal router_dispatch runs on the arena as designed.
+	context.allocator = heap
+	if router_dispatch_raw_upgrade(router, req_obj, client) do return
+	context.allocator = req_allocator
 	resp := router_dispatch(router, req_obj)
 	write_http_response(client, resp)
 }

@@ -1,6 +1,6 @@
 ---
 name: ham-ctl-reference
-description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, chat, memory, artifact, context, start-success) with exact verbs, flags, and valid values. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
+description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, chat, memory, artifact, shell, shell-cmd, context, start-success) with exact verbs, flags, and valid values. Also covers shell sessions as a way to put a running process in front of the user — they can watch its stdout live and, if it serves HTTP on a declared port, open its UI as a preview in Heimdall — no inbound port on either machine, and it works when the Hub is on a different host. Includes how two services in separate sessions call each other through the Hub. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
 ---
 
 # ham-ctl command reference
@@ -20,7 +20,7 @@ Conventions used below:
   `./.heimdall/bin/ham-ctl --help` lists all groups.
 
 Groups: `bridge`, `agents`, `task-chain`, `task`, `chat`, `memory`, `artifact`,
-`shell-cmd`, `context`, `start-success`.
+`shell`, `shell-cmd`, `context`, `start-success`.
 
 ---
 
@@ -96,6 +96,149 @@ the reviewer's job is `--result lgtm|ngtm`; completion happens on its own.
   agent-to-agent.
 - `chat set-title <title>` — rename THIS conversation (the chat thread shown in the UI).
   Distinct from `task-chain set-title`, which renames the chain board.
+
+## shell — long-lived PTY/shell sessions on the Bridge host
+Distinct from `shell-cmd`: `shell-cmd` runs one command and returns its output; `shell`
+creates a NAMED, durable session (a process that keeps running) you can later signal,
+log, or reach over HTTP. Authenticates with your agent token, same as `shell-cmd`.
+- `shell start --bridge <id> [--kind interactive|server|command] [--cmd <cmd>]
+  [--cwd <dir>] [--label <lbl>] [--port <n>] [--project <id>] [--chain <id>]` — launch a
+  session. Returns `{session_id, status, pid}`.
+  - `--port <n>` declares the port the process binds. A declared port is what makes the
+    session reachable over HTTP (see below), whatever its `--kind`. It does not have to
+    be declared at start — see `shell set-port`.
+- `shell list --bridge <id> | --chain <id> [--project <id>] [--status <s>]` — one of
+  `--bridge` or `--chain` is REQUIRED. `--project` alone fails with
+  `chain_id query parameter is required`. Columns: session_id, kind, label, status, pid,
+  server_port, uptime.
+- `shell log <session_id> [--offset N] [--limit N] [--grep <pattern>]` — returns
+  `{lines, truncated, total_lines}`. Same paging shape as `shell-cmd read`.
+- `shell capture <session_id>` — snapshot of the current terminal screen.
+- `shell signal <session_id> --signal <int>` — send a POSIX signal (e.g. 2 = SIGINT).
+- `shell restart <session_id>` — stop then start; returns `{session_id, pid, status}`.
+- `shell set-port <session_id> --port <n> | --clear` — declare (or clear) the port of a
+  session that is ALREADY running, for the usual case: you open an interactive terminal,
+  then decide to run a server in it, so there was nothing to declare at start. Takes
+  effect immediately on both access paths, with no restart. `--port 0` and `--clear` are
+  the same request. Refused with 409 on a session that has exited, and 404 on one you do
+  not own. Returns the updated session.
+- `shell kill <session_id>` — terminate the session.
+
+### Sending an HTTP request to a server session, via the Bridge
+A `--kind server --port N` session is reachable from this host through the Bridge's
+local endpoint — the same endpoint `ham-ctl` itself talks to. No inbound port is opened
+and no user token or browser session is involved:
+
+```
+http://127.0.0.1:<local_endpoint_port>/proxy/<session_id>/<path>
+```
+
+The Bridge relays over the WebSocket it already holds to the Hub; the Hub splices it to
+the Bridge that owns `<session_id>`, and that Bridge dials `127.0.0.1:<declared port>`.
+Method, path, query string and body are all forwarded.
+
+Find the local endpoint port (TCP fallback; default `49324`) with
+`bridge list --scope configured` -> `{"local_endpoint_port": 49324}`. The unix socket
+path is in `$HEIMDALL_BRIDGE_ENDPOINT` (`unix:/path/to/bridge.sock`).
+
+```bash
+# start a server session
+ham-ctl shell start --bridge brg_abc --kind server --port 8000 \
+  --cwd /srv/site --cmd 'python3 -m http.server 8000 --bind 127.0.0.1'
+# -> {"session_id":"sh_123","status":"running","pid":...}
+
+# reach it over TCP
+curl http://127.0.0.1:49324/proxy/sh_123/index.html
+
+# or: an interactive session you started a server inside afterwards
+ham-ctl shell set-port sh_456 --port 3000
+curl http://127.0.0.1:49324/proxy/sh_456/
+
+# or over the unix socket ham-ctl already uses
+curl --unix-socket "${HEIMDALL_BRIDGE_ENDPOINT#unix:}" \
+  http://localhost/proxy/sh_123/index.html
+```
+
+The target must be `status=running`, have a declared port, and be owned by you. Any
+session kind qualifies — an interactive shell you started a server inside is reachable
+too, whether the port was declared with `start --port` or later with `set-port`.
+Refusals come back as JSON `{"error":"<reason>"}`:
+
+| status | reason | meaning |
+| --- | --- | --- |
+| 404 | `session_not_found` | no such session, or it is not yours |
+| 409 | `session_not_running` | session has exited |
+| 409 | `no_server_port` | no port declared — use `shell set-port` |
+| 403 | `cross_owner` | belongs to another user |
+| 503 | `unavailable` | Bridge cannot reach the Hub |
+
+Any process on this host that can reach the local endpoint can use this path and acts
+with the Bridge owner's authority; it is disabled by `--no-local-proxy` or
+`[bridge] local_proxy_enabled=false`.
+
+### Showing a running process to the user
+A session serves two user-facing surfaces at once, and both are live:
+
+- **stdout** — any session, no port needed. The user sees it in the session pane; you
+  read the same stream with `shell log <session_id>`.
+- **a preview** — any session with a declared port. The Hub serves it to the user's
+  browser at `<hub-origin>/api/v1/preview/<session_id>/`, tunnelled to the Bridge that
+  owns the session. Nothing is exposed: no inbound port is opened on the Bridge host or
+  the Hub, and it works with the Hub on a different machine.
+
+So `shell start --port N` is the way to hand someone a dev server, a report, a
+dashboard, or any HTTP UI running on a Bridge host they cannot reach directly.
+
+### Two sessions calling each other through the Hub
+Every preview lives under the same parent path, so a page in one session reaches a
+service in another with a **relative** URL — no host, no port, no Hub name in the page:
+
+```js
+// page served at <hub>/api/v1/preview/<FE_SESSION>/
+const api = (p) => new URL(`../${BACKEND_SESSION}/${p}`, location.href).toString();
+//   -> <hub>/api/v1/preview/<BACKEND_SESSION>/<p>
+```
+
+Both sessions are then same-origin with the Hub and with each other, so this needs no
+CORS headers and triggers no preflight. The same relative form also resolves correctly
+under the Bridge-local `/proxy/<session_id>/` path above, because that path has the same
+`<prefix>/<session_id>/` shape — which means you can verify a browser flow server-side
+with `curl` before anyone opens it.
+
+Verified end to end: `POST` crosses the tunnel with method and body intact, responses
+carry real server state across calls, and non-2xx statuses propagate unchanged (a 404
+from the target arrives as a 404, not as a tunnel error).
+
+**Limitation — no service discovery.** A session id does not exist until
+`shell start` returns, and it is *not* injected into the process environment. There is no
+name resolution between sessions. Start the callee first and pass its id to the caller
+(env var, config file, or generated markup); or start the caller, then bind the port
+later with `set-port`. Two services that must reference each other need one of them to
+learn the other's id after the fact.
+
+### Limitations when a session is previewed in a browser
+The Hub strips `/api/v1/preview/<session_id>` before forwarding and does **not** rewrite
+HTML. Your process therefore sees ordinary root-relative paths, while the browser sees
+the prefix. That asymmetry is behind every problem below.
+
+- **Absolute URLs break.** A page emitting `/assets/app.js` makes the browser resolve it
+  against the Hub root, not your session — the preview renders blank. Emit
+  **relative** URLs (`./assets/app.js`) and it works at any prefix, unchanged.
+- **Emitting the prefix instead is not enough on its own.** Telling a dev server its
+  public base is `/api/v1/preview/<id>/` fixes the HTML, but that server will then `404`
+  the stripped paths the Hub forwards. Satisfying both ends needs a small reverse proxy
+  on the declared port that re-adds the prefix before the dev server sees it (and relays
+  `Upgrade`, or HMR dies).
+- **Path-routed SPAs match no route.** The app reads `location.pathname` and gets
+  `/api/v1/preview/<id>/`. Hash routing avoids this — but check the no-hash fallback:
+  Heimdall's own UI falls back to the real pathname when the hash is empty
+  (`src/ui/utils/appLocation.ts`), and the preview URL carries no hash, so it must be
+  seeded (`location.replace(location.pathname + '#/')`) before app code runs.
+- **A previewed page is same-origin with the Hub.** Its own absolute `/api/v1/...`
+  requests go to the **Hub**, authenticated as the viewing user — not to your session,
+  and not through any proxy your dev server configures, because those requests never
+  reach your dev server at all. Use the relative `../<session_id>/` form above to address
+  a session deliberately.
 
 ## shell-cmd — run a shell command on your local Bridge host
 - `shell-cmd exec --cmd <command> [--cwd <dir>]` — run a shell command locally on the

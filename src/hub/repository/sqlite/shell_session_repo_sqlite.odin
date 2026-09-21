@@ -21,6 +21,7 @@ new_shell_session_repository :: proc(impl: ^Shell_Session_Repo_SQLite, conn: ^Co
 		list_by_project = shell_session_list_by_project_sqlite,
 		list_by_chain   = shell_session_list_by_chain_sqlite,
 		delete          = shell_session_delete_sqlite,
+		set_server_port = shell_session_set_server_port_sqlite,
 	}
 }
 
@@ -210,6 +211,30 @@ shell_session_list_generic :: proc(ctx: rawptr, scope_col, owner_user_id, scope_
 		next_cursor = items[len(items)-1].session_id
 	}
 	return items, next_cursor, domain.Domain_Error{}
+}
+
+// shell_session_set_server_port_sqlite writes server_port alone. A direct
+// UPDATE rather than a re-upsert: shell_session_upsert_sqlite keeps the existing
+// port when the incoming one is 0, so clearing a port through the upsert writes
+// nothing. Returns false when no row matched the owner/session pair.
+shell_session_set_server_port_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: string, server_port: int) -> (bool, domain.Domain_Error) {
+	impl := (^Shell_Session_Repo_SQLite)(ctx)
+	if impl == nil || impl.conn == nil || impl.conn.db == nil {
+		return false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
+	}
+	stmt: sqlite3_stmt = nil
+	query := "UPDATE shell_sessions SET server_port = ? WHERE owner_user_id = ? AND session_id = ?;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
+		return false, domain.domain_error(.Internal_Error, "failed to prepare shell session set server_port")
+	}
+	defer sqlite3_finalize(stmt)
+	sqlite3_bind_int(stmt, 1, c.int(server_port))
+	bind_text(stmt, 2, owner_user_id)
+	bind_text(stmt, 3, session_id)
+	if sqlite3_step(stmt) != SQLITE_DONE {
+		return false, domain.domain_error(.Internal_Error, "failed to set shell session server_port")
+	}
+	return sqlite3_changes(impl.conn.db) > 0, domain.Domain_Error{}
 }
 
 shell_session_delete_sqlite :: proc(ctx: rawptr, owner_user_id, session_id: string) -> (bool, domain.Domain_Error) {

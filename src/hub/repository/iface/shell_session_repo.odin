@@ -14,6 +14,11 @@ Shell_Session_List_By_Bridge_Proc :: proc(ctx: rawptr, owner_user_id, bridge_id,
 Shell_Session_List_By_Project_Proc :: proc(ctx: rawptr, owner_user_id, project_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
 Shell_Session_List_By_Chain_Proc  :: proc(ctx: rawptr, owner_user_id, chain_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
 Shell_Session_Delete_Proc         :: proc(ctx: rawptr, owner_user_id, session_id: string) -> (bool, domain.Domain_Error)
+// Shell_Session_Set_Server_Port_Proc writes server_port alone (XM-9). It is a
+// separate op rather than a field on the upsert because the upsert treats a 0
+// server_port as "leave it alone" — the guard that lets bridge-event upserts
+// omit the field — so clearing a port through it is a silent no-op. Owner-scoped.
+Shell_Session_Set_Server_Port_Proc :: proc(ctx: rawptr, owner_user_id, session_id: string, server_port: int) -> (bool, domain.Domain_Error)
 
 Shell_Session_Repository :: struct {
 	ctx:             rawptr,
@@ -24,6 +29,7 @@ Shell_Session_Repository :: struct {
 	list_by_project: Shell_Session_List_By_Project_Proc,
 	list_by_chain:   Shell_Session_List_By_Chain_Proc,
 	delete:          Shell_Session_Delete_Proc,
+	set_server_port: Shell_Session_Set_Server_Port_Proc,
 }
 
 shell_session_upsert :: proc(repo: ^Shell_Session_Repository, session: domain.Shell_Session) -> (bool, domain.Domain_Error) {
@@ -61,4 +67,11 @@ shell_session_list_by_chain :: proc(repo: ^Shell_Session_Repository, owner_user_
 shell_session_delete :: proc(repo: ^Shell_Session_Repository, owner_user_id, session_id: string) -> (bool, domain.Domain_Error) {
 	if repo == nil || repo.delete == nil do return false, domain.domain_error(.Internal_Error, "shell session repository is not configured")
 	return repo.delete(repo.ctx, owner_user_id, session_id)
+}
+
+// shell_session_set_server_port updates only the server_port column, scoped to
+// the owner. See Shell_Session_Set_Server_Port_Proc for why it is not an upsert.
+shell_session_set_server_port :: proc(repo: ^Shell_Session_Repository, owner_user_id, session_id: string, server_port: int) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.set_server_port == nil do return false, domain.domain_error(.Internal_Error, "shell session repository is not configured")
+	return repo.set_server_port(repo.ctx, owner_user_id, session_id, server_port)
 }

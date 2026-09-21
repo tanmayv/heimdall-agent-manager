@@ -35,7 +35,17 @@ export type ShellLogResponse = {
   session_id: string;
   lines: string[];
   offset: number;
+  // Total number of lines in the session's log file. The hub sends this as
+  // `total_lines` (src/hub/transport/http/shell_session_rest_handlers.odin), which is
+  // why the mapping below reads that key first. Note it counts the WHOLE file and is
+  // not affected by `grep`, while `offset` indexes post-grep lines — so callers must
+  // not derive an offset from `total` while a grep filter is active.
   total: number;
+  truncated: boolean;
+  // Echo of the `limit` this response was requested with, so a caller can tell which
+  // window a cached response describes (the viewer uses it to discard its cheap
+  // one-line probe instead of painting it).
+  limit: number;
 };
 
 type ListShellsArgs = {
@@ -78,6 +88,18 @@ export interface ShellPaneResult {
 
 type ShellSignalArgs = { sessionId: string; signal: number };
 type ShellLogArgs = { sessionId: string; offset?: number; limit?: number; grep?: string };
+
+// The bridge terminates every emitted line with a newline and the hub then splits that
+// buffer on '\n' (src/bridge/hub_runtime_client.odin, shell_logs_result), so the array
+// always ends in one empty string that is a line *terminator*, not a line — and an empty
+// log arrives as [""] rather than []. Left in place it shifts every window by one: a tail
+// view would push the newest line out of the page, and "No log output yet." would never
+// show. Only the single trailing element is dropped, so blank lines inside the log
+// survive.
+function normalizeLogLines(lines: string[]): string[] {
+  if (lines.length > 0 && lines[lines.length - 1] === '') return lines.slice(0, -1);
+  return lines;
+}
 
 export const shellsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
@@ -166,6 +188,29 @@ export const shellsApi = heimdallApi.injectEndpoints({
             `/shells/${encodeURIComponent(sessionId)}/restart`,
             'POST',
             undefined,
+          );
+          const session: ShellSession = data?.session ?? data;
+          return { data: session };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _err, { sessionId }) => [
+        { type: 'ShellSession' as const, id: sessionId },
+        { type: 'ShellSessions' as const, id: 'LIST' },
+      ],
+    }),
+
+    // XM-9: declare (or clear, with server_port 0) the port of a session that is
+    // already running. Invalidates the same tags restartShell does, because the
+    // reachability of the row changes with it and both views read server_port.
+    setShellPort: build.mutation<ShellSession, { sessionId: string; server_port: number }>({
+      queryFn: async ({ sessionId, server_port }) => {
+        try {
+          const data = await cookieMutation(
+            `/shells/${encodeURIComponent(sessionId)}/port`,
+            'POST',
+            { server_port },
           );
           const session: ShellSession = data?.session ?? data;
           return { data: session };
@@ -270,9 +315,11 @@ export const shellsApi = heimdallApi.injectEndpoints({
           return {
             data: {
               session_id: sessionId,
-              lines: data?.lines ?? (Array.isArray(data) ? data : []),
+              lines: normalizeLogLines(data?.lines ?? (Array.isArray(data) ? data : [])),
               offset: data?.offset ?? offset,
-              total: data?.total ?? 0,
+              total: data?.total_lines ?? data?.total ?? 0,
+              truncated: Boolean(data?.truncated),
+              limit,
             },
           };
         } catch (error: any) {
@@ -289,6 +336,7 @@ export const {
   useCreateShellMutation,
   useKillShellMutation,
   useRestartShellMutation,
+  useSetShellPortMutation,
   useSignalShellMutation,
   useGetShellLogQuery,
   useGetShellPaneQuery,
