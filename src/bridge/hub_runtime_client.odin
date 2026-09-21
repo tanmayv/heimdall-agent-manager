@@ -2045,11 +2045,13 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	// user's login shell. Default to $SHELL (falling back to /bin/sh) instead of
 	// rejecting the request. Every other kind still requires an explicit cmd.
 	cmd_owned := false
+	cmd_defaulted := false
 	defer if cmd_owned do delete(cmd)
 	if kind == .Interactive && cmd == "" {
 		shell_env := os.get_env("SHELL", context.temp_allocator)
 		cmd = len(shell_env) > 0 ? strings.clone(shell_env) : strings.clone("/bin/sh")
 		cmd_owned = true
+		cmd_defaulted = true
 	}
 	if cmd == "" {
 		send_error(conn, session_id, command_id, "missing cmd")
@@ -2077,6 +2079,52 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 	defer if spawn_cmd_owned do delete(spawn_cmd)
 	if kind == .Server {
 		spawn_cmd = strings.concatenate({"exec ", cmd})
+		spawn_cmd_owned = true
+	} else if cmd_defaulted {
+		// T11-BUG-11 (REQ-SHELL-ENV-1): an interactive session with no cmd means
+		// "give me my shell", so start it as a *login* shell. Without -l only
+		// ~/.zshrc runs; ~/.zprofile, ~/.zlogin and /etc/profile never do, so the
+		// session misses everything the user sets up in their profile.
+		//
+		// -l on its own is NOT enough, and this was measured rather than assumed.
+		// The pty-host daemon outlives bridge restarts (bridge_pty_host_ensure_daemon
+		// adopts a daemon already on the socket), so a shell inherits whatever env
+		// that daemon froze. On NixOS the system env setup is guarded by "already
+		// done" flags that are part of that inherited env, so the login shell
+		// faithfully re-runs the profile files and they all short-circuit:
+		//   /etc/profile, /etc/zshenv   -> source <store>-set-environment (the file
+		//                                  that defines the real PATH, including
+		//                                  /etc/profiles/per-user/$USER/bin) ONLY if
+		//                                  __NIXOS_SET_ENVIRONMENT_DONE is unset.
+		//   /etc/zprofile               -> never sources set-environment at all.
+		// Result: a login shell under a stale daemon keeps the stale PATH verbatim.
+		// Clearing the guards first is what actually rebuilds the environment from
+		// the system's own definition, which is also what makes this self-healing
+		// regardless of how old the daemon is.
+		//
+		// CAUTION — this guard list is EMPIRICAL, not a documented API. It was read
+		// off the generated files on a NixOS + home-manager host; nothing validates
+		// it, and if NixOS or home-manager introduces another guard this silently
+		// degrades back to the inherited-env behaviour with no build or test
+		// failure. The three families, so the next person knows what to look for:
+		//   __NIXOS_SET_ENVIRONMENT_DONE  - NixOS set-environment (the PATH source)
+		//   __ETC_*_SOURCED / _DONE       - the generated /etc profile + zsh + bash
+		//                                   chain's once-per-shell guards
+		//   __HM_*_SESS_VARS_SOURCED      - home-manager's session-variables guards
+		// Note this REBUILDS PATH rather than extending it, so store paths the
+		// bridge's own environment contributed (ham-ctl, tmux, ...) are not carried
+		// into the session. That is intended: the session gets the user's own
+		// environment, and per REQ-SHELL-ENV-1 no HEIMDALL_* is injected either.
+		//
+		// `exec` keeps the uniform ["sh","-c",...] wrapper from leaving an extra
+		// sh in the process tree. Only the defaulted case is rewritten: a
+		// caller-supplied cmd is always passed through exactly as given, for every
+		// kind — asking for a command means asking for that command.
+		b := strings.builder_make()
+		strings.write_string(&b, "unset __NIXOS_SET_ENVIRONMENT_DONE __ETC_PROFILE_SOURCED __ETC_PROFILE_DONE __ETC_ZSHENV_SOURCED __ETC_ZPROFILE_SOURCED __ETC_ZSHRC_SOURCED __ETC_BASHRC_SOURCED __HM_SESS_VARS_SOURCED __HM_ZSH_SESS_VARS_SOURCED; exec ")
+		bridge_bootstrap_shell_quote(&b, cmd)
+		strings.write_string(&b, " -l")
+		spawn_cmd = strings.to_string(b)
 		spawn_cmd_owned = true
 	}
 
