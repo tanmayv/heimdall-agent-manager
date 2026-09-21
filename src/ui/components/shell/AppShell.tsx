@@ -27,6 +27,7 @@ import { setTheme } from '../../store/themeSlice';
 import ProjectsSurface from '../projects/ProjectsSurface';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import ActionsPanel from '../actions/ActionsPanel';
+import PreviewSidebar from '../shells/PreviewSidebar';
 import CardsPanel from '../cards/CardsPanel';
 import ErrorBoundary from './ErrorBoundary';
 import ActionEditorPage from '../actions/ActionEditorPage';
@@ -1396,6 +1397,11 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       <div className="flex min-w-0 flex-1 flex-col h-full min-h-0 overflow-hidden">
         <RouteOutlet path={path} focusMessageId={focusMessageId} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
       </div>
+
+      {/* T11-UI-5: shell previews live in their own right-hand column, outside the
+          route outlet, so open previews survive navigating between routes. It
+          renders nothing at all until a preview tab is opened. */}
+      <PreviewSidebar />
 
       {/* UI-12/UI-13: mobile bottom tab bar with a command-palette center button.
           The center button owns the canonical `shell-mobile-palette-button` debug-id

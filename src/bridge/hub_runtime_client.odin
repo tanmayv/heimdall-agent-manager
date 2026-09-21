@@ -2027,12 +2027,23 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		send_error(conn, session_id, command_id, "missing session_id")
 		return
 	}
+
+	kind := bridge_shell_session_kind_from_str(kind_str)
+
+	// T11-BUG-3: an interactive shell has no command of its own — it *is* the
+	// user's login shell. Default to $SHELL (falling back to /bin/sh) instead of
+	// rejecting the request. Every other kind still requires an explicit cmd.
+	cmd_owned := false
+	defer if cmd_owned do delete(cmd)
+	if kind == .Interactive && cmd == "" {
+		shell_env := os.get_env("SHELL", context.temp_allocator)
+		cmd = len(shell_env) > 0 ? strings.clone(shell_env) : strings.clone("/bin/sh")
+		cmd_owned = true
+	}
 	if cmd == "" {
 		send_error(conn, session_id, command_id, "missing cmd")
 		return
 	}
-
-	kind := bridge_shell_session_kind_from_str(kind_str)
 
 	// For kind=Agent: spawn instance under the agent_instance_id as daemon key.
 	// For all other kinds: spawn under session_id as daemon key.
@@ -2045,17 +2056,41 @@ bridge_hub_handle_shell_start :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
-	// Build argv: wrap cmd in sh -c. On non-Darwin use setsid for process-group isolation.
+	// T11-BUG-2: for server sessions, `exec` into the command so the shell replaces
+	// itself with the server process. Without it `sh` forks, exits as soon as the
+	// command is backgrounded/daemonised, and pty-host reports the session as exited
+	// while the real server is still running. The session still records the original
+	// cmd (below) so the UI shows what the user asked for, not the exec wrapper.
+	spawn_cmd := cmd
+	spawn_cmd_owned := false
+	defer if spawn_cmd_owned do delete(spawn_cmd)
+	if kind == .Server {
+		spawn_cmd = strings.concatenate({"exec ", cmd})
+		spawn_cmd_owned = true
+	}
+
+	// Build argv: wrap cmd in sh -c. Server sessions skip setsid so the pty-host
+	// tracks the correct PID: setsid forks when already a session leader (PTY spawn
+	// calls setsid() internally), making the direct child exit immediately while the
+	// actual server runs under a grandchild PID. For server kind, exec already ensures
+	// sh is replaced by the server process, so no setsid is needed.
 	argv: []string
 	when ODIN_OS == .Darwin {
-		argv = []string{"sh", "-c", cmd}
+		argv = []string{"sh", "-c", spawn_cmd}
 	} else {
-		argv = []string{"setsid", "sh", "-c", cmd}
+		if kind == .Server {
+			argv = []string{"sh", "-c", spawn_cmd}
+		} else {
+			argv = []string{"setsid", "sh", "-c", spawn_cmd}
+		}
 	}
 	cloned_argv := make([]string, len(argv))
 	for a, i in argv { cloned_argv[i] = strings.clone(a) }
 
 	tee_path := bridge_shell_output_path(session_id)
+	// T11-BUG-1: pty-host cannot tee into a directory that does not exist yet.
+	// Mirrors the legacy shell_cmd path (src/bridge/shell_cmd.odin).
+	if slash := strings.last_index_byte(tee_path, '/'); slash > 0 do _ = os.make_directory_all(tee_path[:slash])
 
 	req := Pty_Host_Spawn_Request{
 		instance         = strings.clone(spawn_instance),

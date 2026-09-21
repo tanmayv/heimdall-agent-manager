@@ -191,41 +191,13 @@ shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request) -> Respon
 		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
 	}
 
-	// Preview token: ?pt=pvt_... or ham_preview_{session_id} cookie.
-	pt_token := query_value(req.query, "pt")
-	if pt_token == "" {
-		cookie_hdr := header_value(req.headers, "Cookie")
-		if cookie_hdr != "" {
-			cookie_prefix := strings.concatenate({"ham_preview_", session_id, "="})
-			defer delete(cookie_prefix)
-			parts := strings.split(cookie_hdr, ";")
-			defer delete(parts)
-			for part in parts {
-				trimmed := strings.trim_space(part)
-				if strings.has_prefix(trimmed, cookie_prefix) {
-					pt_token = trimmed[len(cookie_prefix):]
-					break
-				}
-			}
-		}
-	}
-	if pt_token == "" {
-		return Response{status = 401, content_type = "application/json", body = "{\"error\":\"preview token required\"}"}
-	}
-
-	// Validate pvt_ token.
-	tok_session_id, tok_owner, tok_ok := shell_session_svc.shell_session_validate_preview_token(h.shell_sessions, pt_token)
-	if !tok_ok || tok_session_id != session_id {
-		return Response{status = 401, content_type = "application/json", body = "{\"error\":\"invalid or expired preview token\"}"}
-	}
-	if tok_owner != string(auth_ctx.user_id) {
-		return Response{status = 403, content_type = "application/json", body = "{\"error\":\"preview token owner mismatch\"}"}
-	}
-
 	// Resolve session: must be kind=server, running, server_port>0.
 	session, found, _ := iface.shell_session_get(h.shell_repo, string(auth_ctx.user_id), session_id)
 	if !found {
 		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
+	}
+	if session.owner_user_id != string(auth_ctx.user_id) {
+		return Response{status = 403, content_type = "application/json", body = "{\"error\":\"session is owned by another user\"}"}
 	}
 	if session.kind != "server" {
 		return Response{status = 409, content_type = "application/json", body = "{\"error\":\"session is not a server session\"}"}

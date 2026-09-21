@@ -18,11 +18,6 @@ import ownership "odin_test:hub/service/ownership"
 import platform "odin_test:hub/platform"
 import project_service "odin_test:hub/service/project"
 
-Preview_Token_Info :: struct {
-	session_id:    string,
-	owner_user_id: string,
-}
-
 // Preview_Tunnel_Stream is a in-flight hub-side tunnel stream. The proxy handler
 // polls it until closed; the bridge WS handler appends chunks via deliver.
 Preview_Tunnel_Stream :: struct {
@@ -41,9 +36,7 @@ Shell_Session_Service :: struct {
 	events:              ^events.User_Event_Bus,
 	ids:                 ^platform.ID_Generator,
 	clock:               ^platform.Clock,
-	session_owners:      map[string]string,           // session_id → owner_user_id (heap strings)
-	preview_tokens:      map[string]Preview_Token_Info, // pvt_ token → info (heap strings)
-	preview_mu:          sync.Mutex,
+	session_owners:      map[string]string, // session_id → owner_user_id (heap strings)
 	// Tunnel stream registry (T8) — protected by tunnel_mu.
 	tunnel_streams: map[string]^Preview_Tunnel_Stream, // stream_id → live stream
 	tunnel_mu:      sync.Mutex,
@@ -65,7 +58,6 @@ new_shell_session_service :: proc(
 		ids             = ids,
 		clock           = clock,
 		session_owners  = make(map[string]string, heap),
-		preview_tokens  = make(map[string]Preview_Token_Info, heap),
 		tunnel_streams  = make(map[string]^Preview_Tunnel_Stream, heap),
 	}
 }
@@ -78,12 +70,6 @@ shell_session_service_free :: proc(svc: ^Shell_Session_Service) {
 	delete(svc.viewers)
 	for k, v in svc.session_owners { delete(k); delete(v) }
 	delete(svc.session_owners)
-	sync.mutex_lock(&svc.preview_mu)
-	defer sync.mutex_unlock(&svc.preview_mu)
-	for k, v in svc.preview_tokens {
-		delete(k); delete(v.session_id); delete(v.owner_user_id)
-	}
-	delete(svc.preview_tokens)
 	sync.mutex_lock(&svc.tunnel_mu)
 	defer sync.mutex_unlock(&svc.tunnel_mu)
 	for k, stream in svc.tunnel_streams {
@@ -166,10 +152,11 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return {}, false, err
 	if input.bridge_id == "" do return {}, false, domain.domain_error(.Validation_Failed, "bridge_id is required")
-	if input.cmd == "" do return {}, false, domain.domain_error(.Validation_Failed, "cmd is required")
 
 	kind := input.kind
 	if kind == "" do kind = "command"
+	// Interactive sessions may omit cmd; the bridge falls back to $SHELL.
+	if input.cmd == "" && kind != "interactive" do return {}, false, domain.domain_error(.Validation_Failed, "cmd is required")
 
 	now := platform.clock_now(svc.clock)
 	session_id := platform.generate_id(svc.ids, "sh_")
@@ -461,75 +448,9 @@ shell_session_handle_exited :: proc(svc: ^Shell_Session_Service, session_id, sta
 
 	_, _ = iface.shell_session_upsert(svc.repo, session)
 
-	shell_session_revoke_preview_tokens_for_session(svc, session_id)
-
 	if svc.events != nil {
 		evt := _shell_exited_event_json(session_id, effective_status, exit_code, exit_code_set)
 		events.publish_owned(svc.events, owner, evt)
-	}
-}
-
-// shell_session_issue_preview_token mints a pvt_ token and enables preview on the row.
-// Only valid for kind=="server" sessions with a server_port configured.
-shell_session_issue_preview_token :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Context, session_id: string) -> (string, bool, domain.Domain_Error) {
-	if svc == nil || svc.repo == nil do return "", false, domain.domain_error(.Internal_Error, "shell session service is not configured")
-	session, found, err := shell_session_get(svc, auth, session_id)
-	if err.code != .None do return "", false, err
-	if !found do return "", false, domain.domain_error(.Not_Found, "session not found")
-	if session.kind != "server" || session.server_port <= 0 {
-		return "", false, domain.domain_error(.Validation_Failed, "preview tokens are only valid for server sessions with a configured server_port")
-	}
-
-	token := platform.generate_id(svc.ids, "pvt_")
-
-	session.preview_enabled = true
-	_, upsert_err := iface.shell_session_upsert(svc.repo, session)
-	if upsert_err.code != .None {
-		delete(token)
-		return "", false, upsert_err
-	}
-
-	heap := runtime.heap_allocator()
-	sync.mutex_lock(&svc.preview_mu)
-	svc.preview_tokens[strings.clone(token, heap)] = Preview_Token_Info{
-		session_id    = strings.clone(session_id, heap),
-		owner_user_id = strings.clone(session.owner_user_id, heap),
-	}
-	sync.mutex_unlock(&svc.preview_mu)
-
-	return token, true, domain.Domain_Error{}
-}
-
-// shell_session_validate_preview_token looks up a pvt_ token and returns the associated
-// session_id and owner_user_id. Used by the tunnel route (T8) without hitting the repo.
-shell_session_validate_preview_token :: proc(svc: ^Shell_Session_Service, token: string) -> (session_id: string, owner_user_id: string, ok: bool) {
-	if svc == nil || token == "" do return "", "", false
-	sync.mutex_lock(&svc.preview_mu)
-	defer sync.mutex_unlock(&svc.preview_mu)
-	info, found := svc.preview_tokens[token]
-	if !found do return "", "", false
-	return info.session_id, info.owner_user_id, true
-}
-
-// shell_session_revoke_preview_tokens_for_session removes all pvt_ tokens whose
-// session_id matches the given session. Frees heap key and info strings.
-shell_session_revoke_preview_tokens_for_session :: proc(svc: ^Shell_Session_Service, session_id: string) {
-	if svc == nil || session_id == "" do return
-	sync.mutex_lock(&svc.preview_mu)
-	defer sync.mutex_unlock(&svc.preview_mu)
-	keys_to_delete: [dynamic]string
-	defer delete(keys_to_delete)
-	for k, v in svc.preview_tokens {
-		if v.session_id == session_id {
-			append(&keys_to_delete, k)
-		}
-	}
-	for k in keys_to_delete {
-		v := svc.preview_tokens[k]
-		delete_key(&svc.preview_tokens, k)
-		delete(k)
-		delete(v.session_id)
-		delete(v.owner_user_id)
 	}
 }
 

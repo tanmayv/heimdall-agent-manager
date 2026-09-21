@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:strings"
 
 // ── shell verb group (REQ-SH-CONTRACT §5) ────────────────────────────────────
-// Provides 8 subcommands that manage PTY/shell sessions via the hub REST API.
+// Provides 7 subcommands that manage PTY/shell sessions via the hub REST API.
 // All calls route through the local Bridge via agent.rest.request (same auth
 // token as task/chat commands). shell-cmd exec/read remain as-is in
 // agent_mode.odin for backward compatibility.
@@ -26,8 +26,6 @@ ctl_agentmode_shell :: proc(endpoint, token: string, tokens, args: []string) {
 		ctl_shell_log(endpoint, token, tokens, args)
 	case "capture":
 		ctl_shell_capture(endpoint, token, tokens, args)
-	case "preview":
-		ctl_shell_preview(endpoint, token, tokens, args)
 	case "", "--help", "-h", "help":
 		print_help_shell()
 	case:
@@ -171,18 +169,6 @@ ctl_shell_capture :: proc(endpoint, token: string, tokens, args: []string) {
 		fmt.tprintf("/api/v1/shells/%s/capture", safe_path_part(sid)), "")
 }
 
-// preview — POST /api/v1/shells/{session_id}/preview-token
-// Prints: {preview_url, token}
-ctl_shell_preview :: proc(endpoint, token: string, tokens, args: []string) {
-	sid := pos(tokens, 1)
-	if sid == "" {
-		fmt.println(`{"ok":false,"message":"shell preview requires <session_id>"}`)
-		return
-	}
-	ctl_shell_rest(endpoint, token, "POST",
-		fmt.tprintf("/api/v1/shells/%s/preview-token", safe_path_part(sid)), "{}")
-}
-
 print_help_shell :: proc() {
 	fmt.println("ham-ctl shell — manage PTY/shell sessions on the Bridge host")
 	fmt.println("")
@@ -200,15 +186,17 @@ print_help_shell :: proc() {
 	fmt.println("  log     <session_id> [--offset N] [--limit N] [--grep <pattern>]")
 	fmt.println("        Stream log lines; response: {lines, truncated, total_lines}")
 	fmt.println("  capture <session_id>                 Snapshot current terminal screen content.")
-	fmt.println("  preview <session_id>                 Get a one-time preview URL and token.")
-	fmt.println("        Prints: {preview_url, token}")
+	fmt.println("")
+	fmt.println("AUTH")
+	fmt.println("  ham-ctl shell authenticates with HEIMDALL_AGENT_TOKEN (or --agent-token),")
+	fmt.println("  exactly like ham-ctl shell-cmd. No user token is needed: the call goes to")
+	fmt.println("  the local Bridge endpoint, which relays it to the Hub on your behalf.")
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl shell start --bridge brg_abc --kind interactive --cmd bash --label 'my shell'")
 	fmt.println("  ham-ctl shell list --bridge brg_abc --status running")
 	fmt.println("  ham-ctl shell log  sess_123 --limit 50 --grep error")
 	fmt.println("  ham-ctl shell capture sess_123")
-	fmt.println("  ham-ctl shell preview sess_123")
 	fmt.println("  ham-ctl shell signal sess_123 --signal 2")
 	fmt.println("  ham-ctl shell restart sess_123")
 	fmt.println("  ham-ctl shell kill sess_123")

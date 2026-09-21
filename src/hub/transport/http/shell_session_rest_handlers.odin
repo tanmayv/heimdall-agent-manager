@@ -66,7 +66,7 @@ write_shell_session_json :: proc(b: ^strings.Builder, s: domain.Shell_Session) {
 // POST /api/v1/bridges/{bridge_id}/shells
 shell_session_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	if auth_ctx.kind == .Bridge_Token {
 		return respond_error(domain.domain_error(.Forbidden, "bridge token cannot create shell sessions"), req.request_id)
@@ -112,7 +112,7 @@ shell_session_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // GET /api/v1/bridges/{bridge_id}/shells
 shell_session_list_by_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	bridge_id := path_part(req.path, 4)
@@ -136,7 +136,7 @@ shell_session_list_by_bridge_handler :: proc(ctx: rawptr, req: Request) -> Respo
 // GET /api/v1/projects/{project_id}/shells
 shell_session_list_by_project_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	project_id    := path_part(req.path, 4)
@@ -156,7 +156,7 @@ shell_session_list_by_project_handler :: proc(ctx: rawptr, req: Request) -> Resp
 // GET /api/v1/shells?chain_id=<id>
 shell_session_list_by_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	chain_id      := query_value(req.query, "chain_id")
@@ -180,7 +180,7 @@ shell_session_list_by_chain_handler :: proc(ctx: rawptr, req: Request) -> Respon
 // GET /api/v1/shells/{session_id}
 shell_session_get_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	session_id := path_part(req.path, 4)
@@ -203,7 +203,7 @@ shell_session_get_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // DELETE /api/v1/shells/{session_id} — sends kill to bridge.
 shell_session_kill_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	session_id := path_part(req.path, 4)
@@ -219,7 +219,7 @@ shell_session_kill_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // POST /api/v1/shells/{session_id}/signal
 shell_session_signal_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	session_id := path_part(req.path, 4)
@@ -240,7 +240,7 @@ shell_session_signal_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // POST /api/v1/shells/{session_id}/restart
 shell_session_restart_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	session_id := path_part(req.path, 4)
@@ -262,7 +262,7 @@ shell_session_restart_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // GET /api/v1/shells/{session_id}/log
 shell_session_log_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	session_id := path_part(req.path, 4)
@@ -295,7 +295,7 @@ shell_session_log_handler :: proc(ctx: rawptr, req: Request) -> Response {
 // GET /api/v1/shells/{session_id}/capture
 shell_session_capture_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
 	session_id := path_part(req.path, 4)
@@ -312,29 +312,6 @@ shell_session_capture_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	write_handler_json_string(&b, result.content)
 	strings.write_string(&b, fmt.tprintf("\",\"rows\":%d,\"cols\":%d}", result.rows, result.cols))
 	body := strings.to_string(b)
-	return respond_success(body, req.request_id, auth_ctx_server_time(req))
-}
-
-// POST /api/v1/shells/{session_id}/preview-token
-shell_session_issue_preview_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Shell_Session_Rest_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
-	if !ok do return auth_resp
-
-	session_id := path_part(req.path, 4)
-	if session_id == "" {
-		return respond_error(domain.domain_error(.Not_Found, "session not found"), req.request_id)
-	}
-
-	token, issued, err := shell_session_svc.shell_session_issue_preview_token(h.shell_sessions, auth_ctx, session_id)
-	if !issued do return respond_error(err, req.request_id)
-
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"ok\":true,\"token\":\"")
-	write_handler_json_string(&b, token)
-	strings.write_string(&b, "\"}")
-	body := strings.to_string(b)
-	delete(token)
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
 }
 

@@ -38,11 +38,6 @@ export type ShellLogResponse = {
   total: number;
 };
 
-export type ShellPreviewTokenResponse = {
-  token: string;
-  preview_url: string;
-};
-
 type ListShellsArgs = {
   chainId?: string;
   bridgeId?: string;
@@ -202,21 +197,6 @@ export const shellsApi = heimdallApi.injectEndpoints({
         }
       },
     }),
-
-    getShellPreviewToken: build.mutation<ShellPreviewTokenResponse, { sessionId: string }>({
-      queryFn: async ({ sessionId }) => {
-        try {
-          const data = await cookieMutation(
-            `/shells/${encodeURIComponent(sessionId)}/preview-token`,
-            'POST',
-            undefined,
-          );
-          return { data: { token: data?.token ?? '', preview_url: data?.preview_url ?? '' } };
-        } catch (error: any) {
-          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
-        }
-      },
-    }),
   }),
 });
 
@@ -228,5 +208,4 @@ export const {
   useRestartShellMutation,
   useSignalShellMutation,
   useGetShellLogQuery,
-  useGetShellPreviewTokenMutation,
 } = shellsApi;
