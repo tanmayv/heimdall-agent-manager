@@ -2824,6 +2824,19 @@ bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
 		return
 	}
 
+	// FD OWNERSHIP (see AGENTS.md, "Socket lifetime across threads"): the worker spawned
+	// below is the SOLE closer of tcp_conn.  The receive timeout is its backstop wake — if a
+	// teardown path ever forgets the shutdown, the worker still wakes within one period,
+	// sees its stream unregistered and exits, instead of leaking a thread that pins an
+	// orphaned socket forever.
+	//
+	// Set here, BEFORE the stream is registered, deliberately.  Registering publishes the
+	// struct to bridge_hub_handle_tunnel_close, which may free it; anything done between
+	// that publish and the worker taking its stack copies widens an existing window in
+	// which the worker can dereference freed memory.  This needs only the local handle, so
+	// it belongs on this side of the publish.
+	_ = net.set_option(tcp_conn, .Receive_Timeout, BRIDGE_TUNNEL_RECV_TIMEOUT)
+
 	// Register stream.
 	heap := runtime.heap_allocator()
 	stream := new(Bridge_Tunnel_Stream, heap)
@@ -2840,13 +2853,52 @@ bridge_hub_handle_tunnel_open :: proc(conn: ^ws.Connection, text: string) {
 	thread.run_with_data(rawptr(stream), bridge_tunnel_tcp_to_ws_worker)
 }
 
+// BRIDGE_TUNNEL_RECV_TIMEOUT is the tunnel reader's periodic wake.  It is a backstop, not
+// the mechanism: shutdown(.Receive) wakes a parked recv in tens of microseconds (measured),
+// so this only matters on a path that forgot to shut down, or a platform where SHUT_RD does
+// not wake a blocked reader.  Long enough to be free on an idle tunnel, short enough that a
+// missed shutdown costs seconds rather than the process lifetime.
+BRIDGE_TUNNEL_RECV_TIMEOUT :: 5 * time.Second
+
+// bridge_tunnel_stream_registered reports whether a stream_id is still in the table.
+//
+// The tunnel reader uses this on a timeout wake to ask "has teardown already happened?"
+// WITHOUT dereferencing its ^Bridge_Tunnel_Stream, which a concurrent teardown may already
+// have freed.  Compares by value against the independent map keys for exactly the reason
+// the probe pattern exists: the key is owned by the table, the struct is not.
+bridge_tunnel_stream_registered :: proc(stream_id: string) -> bool {
+	sync.mutex_lock(&bridge_tunnel_mu)
+	defer sync.mutex_unlock(&bridge_tunnel_mu)
+	for k in bridge_tunnel_streams {
+		if k == stream_id do return true
+	}
+	return false
+}
+
 // bridge_tunnel_tcp_to_ws_worker reads from the TCP socket and enqueues tunnel_data frames.
 // When the TCP connection closes, it enqueues a tunnel_close frame and removes the stream.
 //
-// Lifetime safety: capture tcp_conn and stream_id as stack-locals at entry so the recv loop
-// and teardown never dereference 'stream' after bridge_hub_handle_tunnel_close may have freed
-// it.  Whoever removes the map key is the sole freer; the loser finds the key absent and
-// returns without touching the struct pointer at all (independent-key probe pattern).
+// TWO RESOURCES, TWO DIFFERENT OWNERS.  Getting these confused is the bug this file has
+// produced repeatedly; see AGENTS.md, "Socket lifetime across threads" for the full rule.
+//
+// MEMORY — the independent-key probe.  Capture tcp_conn and stream_id as stack-locals at
+// entry so the recv loop and teardown never dereference 'stream' after
+// bridge_hub_handle_tunnel_close may have freed it.  Whoever removes the map key is the sole
+// freer; the loser finds the key absent and returns without touching the struct pointer.
+//
+// THE FD — NOT covered by that probe, and it must not be.  THIS THREAD is the sole closer
+// of the socket, on every exit path, whether or not it won the key race.  Teardown on the
+// WS-reader thread only shutdown(.Receive)s to wake us; it must never net.close.  Two
+// reasons, both measured:
+//   - close() cannot unblock a recv that is already parked: the parked recv holds the
+//     struct file, so the socket is merely orphaned and this thread would sleep forever.
+//     That leaked one thread per teardown, unbounded, and pinned each orphaned socket.
+//   - if this thread is instead BETWEEN recv calls (in the base64/JSON section below) when
+//     the close lands, its next recv_tcp re-resolves the fd NUMBER, which a new connection
+//     may already own — and we would forward a stranger's bytes as tunnel_data under this
+//     dead stream_id.
+// Deciding the close by 'did I win the key race' is what made the fd leak possible, so the
+// close below is deliberately unconditional and sits outside that branch.
 bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	stream := (^Bridge_Tunnel_Stream)(data)
 	heap := runtime.heap_allocator()
@@ -2857,6 +2909,15 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	buf: [4096]byte
 	for {
 		n, recv_err := net.recv_tcp(local_tcp_conn, buf[:])
+		// A receive timeout is a periodic wake, NOT end-of-stream.  core:net reports a
+		// graceful close as (0, nil), so the plain `n <= 0` test below cannot tell the two
+		// apart and would tear down a live idle tunnel once per period.  On a timeout,
+		// exit only if teardown has already unregistered us — checked via the stream_id,
+		// never by dereferencing 'stream'.
+		if recv_err == .Timeout || recv_err == .Would_Block {
+			if !bridge_tunnel_stream_registered(local_stream_id) do break
+			continue
+		}
 		if recv_err != nil || n <= 0 do break
 		encoded := base64.encode(buf[:n])
 		b := strings.builder_make(heap)
@@ -2897,13 +2958,19 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	}
 	sync.mutex_unlock(&bridge_tunnel_mu)
 
-	delete(local_stream_id, heap)
+	// THE FD: unconditional, and deliberately before the memory branch.  This thread is the
+	// only closer; no other thread can be blocked reading this socket, because no other
+	// thread ever reads it.  Doing this inside `if found` would leak the fd on exactly the
+	// path where teardown won the key race.
+	net.close(local_tcp_conn)
+
+	// MEMORY: only the key-race winner frees the struct.
 	if found {
-		net.close(local_tcp_conn)
 		delete(stream.stream_id, heap)
 		delete(stream.session_id, heap)
 		free(stream, heap)
 	}
+	delete(local_stream_id, heap)
 }
 
 // bridge_hub_handle_tunnel_data writes hub→bridge request bytes to the TCP socket.
@@ -2930,7 +2997,14 @@ bridge_hub_handle_tunnel_data :: proc(text: string) {
 	sync.mutex_unlock(&bridge_tunnel_mu)
 }
 
-// bridge_hub_handle_tunnel_close closes the TCP connection for a tunnel stream.
+// bridge_hub_handle_tunnel_close retires a tunnel stream on the WS-reader thread.
+//
+// It does NOT close the socket.  bridge_tunnel_tcp_to_ws_worker owns that fd for its whole
+// life (see the rule in its doc comment, and AGENTS.md "Socket lifetime across threads");
+// all this does is shutdown(.Receive) to wake the worker out of recv so it can run its own
+// exit path and close.  Waking is enough and does not block: the worker is not joined here
+// on purpose, because this runs on the WS reader and must not stall the whole hub
+// connection waiting on one local socket.
 bridge_hub_handle_tunnel_close :: proc(text: string) {
 	stream_id := extract_json_string(text, "stream_id", "")
 	defer delete(stream_id)
@@ -2953,7 +3027,14 @@ bridge_hub_handle_tunnel_close :: proc(text: string) {
 
 	// Only free if we removed the key. If !ok the worker already removed+freed the struct.
 	if !ok do return
-	net.close(stream.tcp_conn)
+
+	// THE FD: wake the reader, do not close.  shutdown(.Receive) on a still-open fd makes a
+	// parked recv return (0, nil) immediately; the worker then closes.  Ordered before the
+	// free only for clarity — the worker reads its own stack copy of the handle, never this
+	// struct, so it is already safe against the free below.
+	net.shutdown(stream.tcp_conn, .Receive)
+
+	// MEMORY: we removed the key, so the struct is ours to free.
 	delete(stream.stream_id, heap)
 	delete(stream.session_id, heap)
 	free(stream, heap)

@@ -235,12 +235,23 @@ bridge_proxy_send_to_client :: proc(stream: ^Bridge_Proxy_Stream, payload: []byt
 	}
 }
 
-bridge_proxy_close_client :: proc(stream: ^Bridge_Proxy_Stream) {
+// bridge_proxy_wake_client wakes the local client's reader out of its blocking recv.
+// It deliberately does NOT close the socket.
+//
+// The fd belongs to whichever bridge_local_proxy_serve_* invocation accepted it — that
+// proc is the reader and the sole closer, on every exit path.  This proc can be called
+// from the WS-reader thread (bridge_hub_handle_proxy_close), where closing would pull the
+// fd out from under a thread parked in recv on it; shutting down the receive side instead
+// makes that recv return (0/-1) at once so the owner can run its own teardown and close.
+// See AGENTS.md, "Socket lifetime across threads".
+//
+// Only the RECEIVE side is shut down: response bytes still in flight must remain writable.
+bridge_proxy_wake_client :: proc(stream: ^Bridge_Proxy_Stream) {
 	switch stream.kind {
 	case .TCP:
-		net.close(stream.tcp)
+		_ = net.shutdown(stream.tcp, .Receive)
 	case .Unix:
-		posix.close(stream.unix)
+		_ = posix.shutdown(stream.unix, .RD)
 	}
 }
 
@@ -272,6 +283,27 @@ bridge_proxy_take :: proc(proxy_id: string) -> (^Bridge_Proxy_Stream, bool) {
 		}
 	}
 	return stream, true
+}
+
+// BRIDGE_PROXY_RECV_TIMEOUT is the local reader's periodic wake — a backstop only, since
+// shutting the receive side down wakes a parked recv immediately.  Both transports use the
+// same period; the unix one needs it in seconds because it sets SO_RCVTIMEO itself.
+BRIDGE_PROXY_RECV_TIMEOUT_SECS :: 5
+BRIDGE_PROXY_RECV_TIMEOUT      :: BRIDGE_PROXY_RECV_TIMEOUT_SECS * time.Second
+
+// bridge_proxy_stream_registered reports whether a proxy_id is still in the table.
+//
+// A local reader calls this on a timeout wake to ask "has teardown already happened?"
+// without dereferencing its ^Bridge_Proxy_Stream, which the hub's proxy_close may already
+// have freed.  Same reason the probe in bridge_proxy_take compares keys: the key belongs to
+// the table, the struct does not.
+bridge_proxy_stream_registered :: proc(proxy_id: string) -> bool {
+	sync.mutex_lock(&bridge_proxy_mu)
+	defer sync.mutex_unlock(&bridge_proxy_mu)
+	for k in bridge_proxy_streams {
+		if k == proxy_id do return true
+	}
+	return false
 }
 
 bridge_proxy_free :: proc(stream: ^Bridge_Proxy_Stream) {
@@ -318,7 +350,8 @@ bridge_hub_handle_proxy_close :: proc(text: string) {
 	stream, removed := bridge_proxy_take(proxy_id)
 	// If !removed the local reader already finished and freed it.
 	if !removed do return
-	bridge_proxy_close_client(stream)
+	// Wake the local reader so it can close its own fd; free only the struct here.
+	bridge_proxy_wake_client(stream)
 	bridge_proxy_free(stream)
 }
 
@@ -509,10 +542,24 @@ bridge_local_proxy_serve_tcp :: proc(client: net.TCP_Socket, head_in: string) {
 	}
 	defer delete(proxy_id, heap)
 
+	// THE FD: this proc owns `client` and is its only closer, on every path.  Registered
+	// above, so bridge_hub_handle_proxy_close may now wake us at any moment — it shuts the
+	// receive side down and never closes, so the recv below cannot be reading a freed fd.
+	defer net.close(client)
+
+	// Backstop wake, for a teardown path that ever forgets the shutdown.
+	_ = net.set_option(client, .Receive_Timeout, BRIDGE_PROXY_RECV_TIMEOUT)
+
 	// Client→hub watch: block until the local caller disconnects.
 	buf: [4096]byte
 	for {
 		n, err := net.recv_tcp(client, buf[:])
+		// A timeout is a periodic wake, not a disconnect: core:net reports a graceful
+		// close as (0, nil), so `n <= 0` alone cannot tell them apart.
+		if err == .Timeout || err == .Would_Block {
+			if !bridge_proxy_stream_registered(proxy_id) do break
+			continue
+		}
 		if err != nil || n <= 0 do break
 	}
 	bridge_proxy_finish_local(proxy_id)
@@ -535,10 +582,27 @@ bridge_local_proxy_serve_unix :: proc(client: posix.FD, head_in: string) {
 	}
 	defer delete(proxy_id, heap)
 
+	// THE FD: same rule as the TCP transport above — this proc is the only closer.
+	defer posix.close(client)
+
+	// Backstop wake.  posix.recv has no Odin-side timeout wrapper, so SO_RCVTIMEO goes on
+	// directly; a timeout surfaces as -1/EAGAIN, which the loop must not read as a close.
+	tv := posix.timeval{tv_sec = posix.time_t(BRIDGE_PROXY_RECV_TIMEOUT_SECS), tv_usec = 0}
+	_ = posix.setsockopt(client, posix.SOL_SOCKET, .RCVTIMEO, &tv, posix.socklen_t(size_of(tv)))
+
 	buf: [4096]byte
 	for {
 		n := posix.recv(client, raw_data(buf[:]), c2.size_t(len(buf)), {})
-		if n <= 0 do break
+		if n < 0 {
+			e := posix.errno()
+			if e == .EAGAIN || e == .EWOULDBLOCK {
+				if !bridge_proxy_stream_registered(proxy_id) do break
+				continue
+			}
+			if e == .EINTR do continue
+			break
+		}
+		if n == 0 do break
 	}
 	bridge_proxy_finish_local(proxy_id)
 }
@@ -547,10 +611,14 @@ bridge_local_proxy_serve_unix :: proc(client: posix.FD, head_in: string) {
 // the one that removed the stream it tells the hub to tear the far end down; if the
 // hub's proxy_close got there first the stream is already gone and there is nothing
 // to announce.
+//
+// It does NOT touch the fd, in either branch.  The caller owns the client socket and
+// closes it unconditionally after this returns — precisely because this proc returns
+// early when it loses the key race, and an fd closed only on the winning branch is an
+// fd leaked on the losing one.
 bridge_proxy_finish_local :: proc(proxy_id: string) {
 	stream, removed := bridge_proxy_take(proxy_id)
 	if !removed do return
 	bridge_proxy_enqueue(bridge_proxy_close_frame(proxy_id, "client_disconnect"))
-	bridge_proxy_close_client(stream)
 	bridge_proxy_free(stream)
 }

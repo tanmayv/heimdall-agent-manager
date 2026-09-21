@@ -237,7 +237,13 @@ shell_session_preview_proxy_handler :: proc(ctx: rawptr, req: Request, client: n
 	ws_ctrl: ^Preview_Ws_Ctrl
 	defer if ws_ctrl != nil do _preview_ws_ctrl_release(ws_ctrl)
 	// XM-2: pump thread handle for join-based fd-safety (LIFO: fires before ws_ctrl
-	// release above).  Joining before handler return means handle_client's deferred
+	// release above).  This is the JOIN variant of the rule in AGENTS.md, "Socket lifetime
+	// across threads" — valid here because this handler thread can afford to block on the
+	// join.  Copying it to a teardown that runs on a WebSocket reader thread is wrong; the
+	// bridge uses the reader-owns-close variant for exactly that reason.  Either way the fd
+	// must never be closed by a thread other than the one that reads it.
+	//
+	// Joining before handler return means handle_client's deferred
 	// net.close(client) cannot fire while the pump is inside recv_tcp — preventing the
 	// fd from being reused by an incoming connection whose bytes would then flow into
 	// this session's tunnel.  SO_RCVTIMEO (5 s) makes the pump's recv_tcp periodic so
