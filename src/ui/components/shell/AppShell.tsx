@@ -47,6 +47,9 @@ import MemoryViewPage from '../memory/MemoryViewPage';
 import MemoryFormPage from '../memory/MemoryFormPage';
 import SkillViewerPage from '../skills/SkillViewerPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
+import ExperimentalPanel from '../settings/ExperimentalPanel';
+import LspPanel from '../settings/LspPanel';
+import { useFetchExperimentsQuery } from '../../api/endpoints/settings';
 import LibraryPage from '../LibraryPage';
 import AgentMonitorPage from '../monitor/AgentMonitorPage';
 import ArtifactViewer from '../ArtifactViewer';
@@ -255,6 +258,7 @@ const SETTINGS_NAV = [
   { path: '/settings/templates', label: 'Templates' },
   { path: '/settings/notifications', label: 'Notifications' },
   { path: '/settings/defaults', label: 'Defaults' },
+  { path: '/settings/experimental', label: 'Experimental' },
 ];
 
 function decodeSegment(value: string): string {
@@ -301,7 +305,12 @@ function Breadcrumbs({ crumbs }: { crumbs: BreadcrumbCrumb[] }) {
 }
 
 function SettingsSubNav({ path }: { path: string }) {
-  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex w-full max-w-full flex-nowrap gap-2 overflow-x-auto overscroll-x-contain rounded-2xl border border-subtle bg-surface p-2 [-webkit-overflow-scrolling:touch] sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => {
+  const experimentsQuery = useFetchExperimentsQuery();
+  const lspEnabled = Boolean(experimentsQuery.data?.flags?.find((f) => f.key === 'lsp')?.enabled);
+  const nav = lspEnabled
+    ? [...SETTINGS_NAV, { path: '/settings/lsp', label: 'Language Servers' }]
+    : SETTINGS_NAV;
+  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex w-full max-w-full flex-nowrap gap-2 overflow-x-auto overscroll-x-contain rounded-2xl border border-subtle bg-surface p-2 [-webkit-overflow-scrolling:touch] sm:mx-0 sm:flex-wrap">{nav.map((item) => {
     const active = path === item.path || path.startsWith(`${item.path}/`) || (path === '/settings' && item.path === '/settings/bridges');
     const debugKey = item.label.toLowerCase().replace(/\s+/g, '-');
     return <a key={item.path} data-debug-id={`settings-sub-nav-${debugKey}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${active ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-raised hover:text-primary'}`}>{item.label}</a>;
@@ -992,7 +1001,17 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const isConversationThreadRoute =
     (path.startsWith('/conversations/') && path !== '/conversations/new') ||
     path.startsWith('/c/');
-  const isKnownRoute = useMemo(() => {
+  // REQ-LSP-CFG-2: the LSP route is gated on the 'lsp' experiment flag HERE, not only in
+  // SettingsSubNav — hiding the nav entry does nothing for a direct visit or a bookmark.
+  // Nav and route read the same flag so they can never disagree.
+  const experimentsQuery = useFetchExperimentsQuery();
+  const lspEnabled = Boolean(experimentsQuery.data?.flags?.find((f) => f.key === 'lsp')?.enabled);
+  const isLspRoute = path === '/settings/lsp' || path.startsWith('/settings/lsp/');
+  // Until the flags have actually arrived we know nothing, so we must not answer either
+  // way: rendering the panel would leak it to a flag-off user, and rendering not-found
+  // would flash a wrong answer at a flag-on user deep-linking in. Hold instead.
+  const lspFlagPending = isLspRoute && experimentsQuery.data === undefined && !experimentsQuery.isError;
+  const isMappedRoute = useMemo(() => {
     return [
       '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/agent-monitor',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
@@ -1008,6 +1027,12 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
       path.startsWith('/settings/defaults') ||
       path === '/agents/new';
   }, [path]);
+  // A flag-off /settings/lsp is not a known route at all: the '/settings' entry above
+  // matches every /settings/* path, so without this it would render as a known-route
+  // placeholder (breadcrumbs and a description for a page the user cannot have) rather
+  // than as the plain not-found it is. No redirect — a bounce would imply the route
+  // moved, when the truth is that it is not enabled here.
+  const isKnownRoute = isMappedRoute && !(isLspRoute && !lspEnabled);
 
   if (isConversationThreadRoute) {
     const agentInstanceId = path.startsWith('/c/')
@@ -1043,7 +1068,9 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
       <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         <ErrorBoundary resetKey={path} label={routeTitle(path)}>
-        {path === '/cards' || path.startsWith('/cards') ? (
+        {lspFlagPending ? (
+          <p data-debug-id="settings-lsp-gate-pending" className="text-sm text-muted">Loading…</p>
+        ) : path === '/cards' || path.startsWith('/cards') ? (
           <CardsPanel />
         ) : path === '/conversations' ? (
           <ConversationsHomePage />
@@ -1089,6 +1116,10 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
           <NotificationsPanel />
         ) : path === '/settings/defaults' ? (
           <DefaultsSettingsPanel />
+        ) : path === '/settings/experimental' ? (
+          <ExperimentalPanel />
+        ) : isLspRoute && lspEnabled ? (
+          <LspPanel />
         ) : path === '/chains' ? (
           <TaskChainsPage isMobile={isMobile} />
         ) : path.startsWith('/chains/') ? (

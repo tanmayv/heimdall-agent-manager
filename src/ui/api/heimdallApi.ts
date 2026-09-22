@@ -48,6 +48,8 @@ export const HEIMDALL_TAG_TYPES = [
   'Card',
   'ShellSessions',
   'ShellSession',
+  'Experiments',
+  'LspServerConfigs',
 ] as const;
 
 export type HeimdallTagType = (typeof HEIMDALL_TAG_TYPES)[number];

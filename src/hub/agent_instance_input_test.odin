@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -12,7 +13,7 @@ import api_http "odin_test:hub/transport/http"
 
 @(test)
 test_agent_instance_input_route_registered_and_dispatches :: proc(t: ^testing.T) {
-	db_path := "/tmp/heimdall-hub-test-input-unit.db"
+	db_path := fmt.tprintf("/tmp/heimdall-hub-test-input-unit-%d.db", os.get_pid())
 	_ = os.remove(db_path)
 	defer _ = os.remove(db_path)
 

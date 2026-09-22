@@ -380,3 +380,138 @@ send_shell_resize :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context
 	if !sent do return false, send_err
 	return true, domain.Domain_Error{}
 }
+
+// --- LSP session commands (REQ-LSP-RLY-1) ------------------------------------
+//
+// These mirror send_shell_input/send_shell_resize above: same bridge lookup, same
+// revoked/offline gating, same command sink. The frame types are the ones the
+// bridge's bridge_lsp_handle_command dispatches (src/bridge/lsp_session.odin).
+//
+// session_id here is the HUB WIRE ID, not the client-supplied session id. The
+// bridge keys its own session map by this string alone, so two users choosing the
+// same client session id must not collide on it; the relay allocates an opaque
+// wire id per session and that is what crosses this boundary.
+
+lsp_start_command_json :: proc(cmd_id, session_id, language, cmd, args, cwd, owner_user_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"lsp_start\",\"command_id\":\"")
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, "\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"language\":\"")
+	contracts.write_json_string(&b, language)
+	strings.write_string(&b, "\",\"cmd\":\"")
+	contracts.write_json_string(&b, cmd)
+	strings.write_string(&b, "\",\"args\":\"")
+	contracts.write_json_string(&b, args)
+	strings.write_string(&b, "\",\"cwd\":\"")
+	contracts.write_json_string(&b, cwd)
+	strings.write_string(&b, "\",\"owner_user_id\":\"")
+	contracts.write_json_string(&b, owner_user_id)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+lsp_send_command_json :: proc(session_id, message: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"lsp_send\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\",\"message\":\"")
+	contracts.write_json_string(&b, message)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+lsp_stop_command_json :: proc(cmd_id, session_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"lsp_stop\",\"command_id\":\"")
+	contracts.write_json_string(&b, cmd_id)
+	strings.write_string(&b, "\",\"session_id\":\"")
+	contracts.write_json_string(&b, session_id)
+	strings.write_string(&b, "\"}")
+	return strings.to_string(b)
+}
+
+// lsp_bridge_ready resolves the bridge and rejects revoked/offline ones. Shared by
+// the three senders below so the gating cannot drift between them.
+lsp_bridge_ready :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, session_id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+	if strings.trim_space(session_id) == "" {
+		return domain.Bridge{}, false, domain.domain_error(.Validation_Failed, "session_id is required")
+	}
+	bridge, ok, err := get_bridge(service, auth, bridge_id)
+	if !ok do return domain.Bridge{}, false, err
+	if bridge.status == .Revoked {
+		return domain.Bridge{}, false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	}
+	if bridge.status != .Online {
+		return domain.Bridge{}, false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	}
+	return bridge, true, domain.Domain_Error{}
+}
+
+lsp_sink_for :: proc(service: ^Bridge_Service, sink_override: project_service.Bridge_Command_Sink) -> project_service.Bridge_Command_Sink {
+	sink := service.bridge_command_sink
+	if sink.send_runtime_command == nil && sink_override.send_runtime_command != nil {
+		sink = sink_override
+	}
+	return sink
+}
+
+send_lsp_start :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, session_id, language, cmd, args, cwd, owner_user_id: string, sink_override: project_service.Bridge_Command_Sink = {}) -> (bool, domain.Domain_Error) {
+	if strings.trim_space(cmd) == "" {
+		return false, domain.domain_error(.Validation_Failed, "cmd is required")
+	}
+	bridge, ok, err := lsp_bridge_ready(service, auth, bridge_id, session_id)
+	if !ok do return false, err
+
+	cmd_id := ""
+	if service.ids != nil do cmd_id = platform.generate_id(service.ids, "cmd_lsp_start_")
+
+	cmd_json := lsp_start_command_json(cmd_id, session_id, language, cmd, args, cwd, owner_user_id)
+	defer delete(cmd_json)
+
+	sent, send_err := project_service.bridge_command_send_runtime(
+		lsp_sink_for(service, sink_override),
+		project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = cmd_id, body_json = cmd_json},
+	)
+	if !sent do return false, send_err
+	return true, domain.Domain_Error{}
+}
+
+send_lsp_message :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, session_id, message: string, sink_override: project_service.Bridge_Command_Sink = {}) -> (bool, domain.Domain_Error) {
+	if strings.trim_space(message) == "" {
+		return false, domain.domain_error(.Validation_Failed, "message is required")
+	}
+	bridge, ok, err := lsp_bridge_ready(service, auth, bridge_id, session_id)
+	if !ok do return false, err
+
+	// lsp_send carries no command_id: it is a stream of JSON-RPC traffic, not a
+	// request/result pair, and the bridge's handler does not read one.
+	cmd_json := lsp_send_command_json(session_id, message)
+	defer delete(cmd_json)
+
+	sent, send_err := project_service.bridge_command_send_runtime(
+		lsp_sink_for(service, sink_override),
+		project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = "", body_json = cmd_json},
+	)
+	if !sent do return false, send_err
+	return true, domain.Domain_Error{}
+}
+
+send_lsp_stop :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, session_id: string, sink_override: project_service.Bridge_Command_Sink = {}) -> (bool, domain.Domain_Error) {
+	bridge, ok, err := lsp_bridge_ready(service, auth, bridge_id, session_id)
+	if !ok do return false, err
+
+	cmd_id := ""
+	if service.ids != nil do cmd_id = platform.generate_id(service.ids, "cmd_lsp_stop_")
+
+	cmd_json := lsp_stop_command_json(cmd_id, session_id)
+	defer delete(cmd_json)
+
+	sent, send_err := project_service.bridge_command_send_runtime(
+		lsp_sink_for(service, sink_override),
+		project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = cmd_id, body_json = cmd_json},
+	)
+	if !sent do return false, send_err
+	return true, domain.Domain_Error{}
+}
