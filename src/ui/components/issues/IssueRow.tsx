@@ -76,7 +76,7 @@ export function IssueRow({
       onClick={handleRowClick}
     >
       <div className="min-w-0 flex-1">
-        {/* Row 1: Title, vote toggle pill, and actions menu */}
+        {/* Row 1: Title and actions menu only */}
         <div className="flex items-start gap-2">
           <a
             href={href}
@@ -89,28 +89,6 @@ export function IssueRow({
           >
             {title}
           </a>
-
-          {/* Interactive vote button with tally */}
-          <button
-            type="button"
-            data-row-control
-            disabled={busy}
-            onClick={(e) => {
-              e.stopPropagation();
-              onVoteToggle?.(issue);
-            }}
-            title={hasVoted ? 'Remove your vote' : 'Upvote this issue'}
-            aria-label={`Vote for ${title}. Current votes: ${voteCount}`}
-            className={[
-              'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold border transition-colors',
-              hasVoted
-                ? 'bg-accent/15 text-accent border-accent/40 hover:bg-accent/25'
-                : 'bg-surface-raised text-muted border-subtle hover:bg-surface hover:text-primary',
-            ].join(' ')}
-          >
-            <Icon name="arrow-up" size={13} className={hasVoted ? 'text-accent' : 'text-muted'} />
-            <span data-debug-id={`issue-vote-count-${issueId}`}>{voteCount}</span>
-          </button>
 
           {/* More options menu */}
           {(onEdit || onDelete) ? (
@@ -156,10 +134,10 @@ export function IssueRow({
           style={{ minHeight: BODY_TWO_LINES }}
           data-debug-id={`issue-row-body-${issueId}`}
         >
-          {snippet ? snippet : <span className="italic text-faint select-none">&lt;no description&gt;</span>}
+          {snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;no description&gt;</span>}
         </p>
 
-        {/* Row 4: Status pill, scope badge, chain link, author, and relative time */}
+        {/* Row 4: Status pill, scope badge, chain link, vote button, author, and relative time */}
         <div className="mt-1.5 flex items-end justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <StatusPill tone={statusTone(status)}>{statusLabel(status)}</StatusPill>
@@ -178,6 +156,27 @@ export function IssueRow({
                 <span>Chain</span>
               </a>
             ) : null}
+            {/* Interactive vote button with tally */}
+            <button
+              type="button"
+              data-row-control
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                onVoteToggle?.(issue);
+              }}
+              title={hasVoted ? 'Remove your vote' : 'Upvote this issue'}
+              aria-label={`Vote for ${title}. Current votes: ${voteCount}`}
+              className={[
+                'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold border transition-colors',
+                hasVoted
+                  ? 'bg-accent/15 text-accent border-accent/40 hover:bg-accent/25'
+                  : 'bg-surface-raised text-muted border-subtle hover:bg-surface hover:text-primary',
+              ].join(' ')}
+            >
+              <Icon name="arrow-up" size={13} className={hasVoted ? 'text-accent' : 'text-muted'} />
+              <span data-debug-id={`issue-vote-count-${issueId}`}>{voteCount}</span>
+            </button>
             {createdBy ? (
               <Text as="span" role="caption" tone="muted" className="truncate max-w-[150px]">
                 by {createdBy}

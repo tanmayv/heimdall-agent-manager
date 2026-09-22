@@ -53,17 +53,17 @@ def main() -> None:
     for marker in ["onPublishComments", "publishComments", "-comments-bar", "FileView", "MarkdownBody"]:
         require(marker in panel, f"panel must KEEP the view+comment flow marker: {marker}")
 
-    # --- Third tab wired with folder + name labels + truncation -------------
-    require('data-debug-id="conversation-right-panel-tab-rundir"' in thread, "missing Run dir tab")
-    require("InstanceRunDirPanel" in thread, "thread must render InstanceRunDirPanel")
-    require("'closed' | 'tasks' | 'files' | 'rundir'" in thread, "rightPanel union must include 'rundir'")
-    require("instanceDisplayName" in thread, "run-dir tab must use the instance display name label")
+    # --- Consolidated run-dir into ProjectFilesPanel; separate tab removed (REQ-UI-CONSOLIDATE-RUN-DIR) ---
+    require('data-debug-id="conversation-right-panel-tab-rundir"' not in thread, "Run dir tab must be removed from ConversationThreadPage")
+    require("InstanceRunDirPanel" not in thread, "thread must NOT import or render InstanceRunDirPanel")
     require("const filesLabel = projectName" in thread, "files tab must use the project name label")
-    # both explorer tab labels are exposed via title/aria-label (icon-only tabs per REQ-UI-SIDEBAR-BLUR-ICON-TABS)
     require('title={filesLabel}' in thread or 'aria-label={filesLabel}' in thread,
             "files tab must expose label via title or aria-label attribute")
-    require('title={`Run dir' in thread or 'aria-label={`Run dir' in thread,
-            "run-dir tab must expose label via title or aria-label attribute")
+
+    # Verify ProjectFilesPanel consolidates agent run directories with read-only enforcement
+    files_panel = (ROOT / "src" / "ui" / "components" / "chat" / "ProjectFilesPanel.tsx").read_text(encoding="utf-8")
+    require("agent_run_dir" in files_panel, "ProjectFilesPanel must support agent_run_dir")
+    require("isReadOnly" in files_panel, "ProjectFilesPanel must support read-only mode")
 
     print("PASS: run-dir explorer UI static checks")
 
