@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { artifactsApi } from '../api/endpoints/artifacts';
+import { highlightCode, getActiveShikiTheme } from '../utils/codeHighlight';
 
 type MermaidRenderer = {
   initialize: (config: Record<string, any>) => void;
@@ -71,7 +72,9 @@ function createArtifactButtonHtml(artifactId: string, initialLabelHtml = ''): st
 
 function renderInline(text: string): string {
   let escaped = escapeHtml(text);
-  escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code class="rounded bg-neutral-soft px-1 py-0.5 font-mono text-[0.85em] text-primary">${code}</code>`);
+  escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code class="rounded bg-accent/10 border border-accent/25 px-1.5 py-0.5 font-mono text-[0.85em] font-medium text-accent">${code}</code>`);
+  escaped = escaped.replace(/(?:‘|’)([^‘’\n]+?)(?:’|‘)/g, '‘<span class="text-accent font-medium">$1</span>’');
+  escaped = escaped.replace(/(^|[\s(\[{<])(?:&#39;|')(?![\s])([^'‘’\n]+?)(?<![\s])(?:&#39;|')(?=[\]}>)\s.,;:!?]|$)/g, '$1‘<span class="text-accent font-medium">$2</span>’');
   escaped = escaped.replace(/\*\*\*([^*\n]+)\*\*\*/g, '<strong><em>$1</em></strong>');
   escaped = escaped.replace(/(^|[^A-Za-z0-9_])___([^_\n]+)___(?![A-Za-z0-9_])/g, '$1<strong><em>$2</em></strong>');
   escaped = escaped.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
@@ -175,7 +178,7 @@ function renderBlocks(source: string): string {
         out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-subtle bg-surface mermaid-block" data-mermaid-code="${escapedCode}"><div class="flex items-center justify-between border-b border-subtle px-3 py-1.5 text-caption text-muted"><span class="font-mono">mermaid</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-neutral-soft px-2 py-1 text-xs text-primary opacity-80 hover:bg-surface-raised hover:opacity-100">Copy</button></div><div class="mermaid-diagram-container p-3 overflow-x-auto flex flex-col items-center justify-center bg-surface-raised" data-mermaid-rendered="false"><pre class="font-mono text-[12px] leading-relaxed text-primary text-left w-full" data-lang="mermaid"><code>${escapedCode}</code></pre></div></div>`);
         continue;
       }
-      out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-subtle bg-surface"><div class="flex items-center justify-between border-b border-subtle px-3 py-1.5 text-caption text-muted"><span class="font-mono">${langLabel}</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-neutral-soft px-2 py-1 text-xs text-primary opacity-80 hover:bg-surface-raised hover:opacity-100">Copy</button></div><pre class="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-primary" data-lang="${escapeHtml(lang)}"><code>${escapedCode}</code></pre></div>`);
+      out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-subtle bg-surface" data-code-block="true"><div class="flex items-center justify-between border-b border-subtle px-3 py-1.5 text-caption text-muted"><span class="font-mono">${langLabel}</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-neutral-soft px-2 py-1 text-xs text-primary opacity-80 hover:bg-surface-raised hover:opacity-100">Copy</button></div><div class="code-container" data-shiki-rendered="false" data-code-raw="${escapedCode}" data-code-lang="${escapeHtml(lang)}"><pre class="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-primary" data-lang="${escapeHtml(lang)}"><code>${escapedCode}</code></pre></div></div>`);
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
@@ -231,7 +234,7 @@ function renderBlocks(source: string): string {
       paragraph.push(lines[i]);
       i += 1;
     }
-    out.push(`<p class="my-1 leading-relaxed">${paragraph.map((chunk) => renderInline(chunk)).join('<br />')}</p>`);
+    out.push(`<p class="my-3 leading-relaxed">${paragraph.map((chunk) => renderInline(chunk)).join('<br />')}</p>`);
   }
   return out.join('');
 }
@@ -274,7 +277,7 @@ function readMarkdownSelection(root: HTMLElement): MarkdownTextSelection | null 
 export default function MarkdownBody({ source, className, compact, copyAll = true, 'data-debug-id': dataDebugId, onArtifactClick, onTextSelectionChange }: MarkdownBodyProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const html = useMemo(() => renderMarkdown(source || '', copyAll), [source, copyAll]);
-  const spacing = compact ? 'space-y-1' : 'space-y-2';
+  const spacing = compact ? 'space-y-1' : 'space-y-3';
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const clientToken = session?.clientToken || '';
@@ -362,6 +365,43 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return undefined;
+    const containers = Array.from(root.querySelectorAll('[data-shiki-rendered="false"]')) as HTMLElement[];
+    if (containers.length === 0) return undefined;
+
+    let cancelled = false;
+    const activeTheme = getActiveShikiTheme();
+
+    containers.forEach(async (container) => {
+      const code = container.getAttribute('data-code-raw') ?? container.querySelector('pre code')?.textContent ?? container.textContent ?? '';
+      const lang = container.getAttribute('data-code-lang') || '';
+      if (!code.trim() || !lang.trim()) {
+        container.setAttribute('data-shiki-rendered', 'fallback');
+        return;
+      }
+
+      try {
+        const highlighted = await highlightCode(code, lang, activeTheme);
+        if (cancelled) return;
+        if (highlighted) {
+          container.innerHTML = highlighted;
+          container.setAttribute('data-shiki-rendered', 'true');
+        } else {
+          container.setAttribute('data-shiki-rendered', 'fallback');
+        }
+      } catch {
+        if (cancelled) return;
+        container.setAttribute('data-shiki-rendered', 'fallback');
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [html]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
     const onClick = async (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
       const artifactButton = target?.closest?.('[data-artifact-id]') as HTMLButtonElement | null;
@@ -378,7 +418,12 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
         text = button.getAttribute('data-markdown-source') || normalizeMarkdownSource(source || '');
       } else if (button.matches('[data-markdown-copy-code="true"]')) {
         const wrapper = button.closest('.group');
-        text = wrapper?.getAttribute('data-mermaid-code') || wrapper?.querySelector('pre code')?.textContent || '';
+        text = wrapper?.getAttribute('data-mermaid-code')
+          || wrapper?.querySelector('[data-code-raw]')?.getAttribute('data-code-raw')
+          || wrapper?.getAttribute('data-code-raw')
+          || wrapper?.querySelector('pre code')?.textContent
+          || wrapper?.querySelector('pre')?.textContent
+          || '';
       } else {
         const wrapper = button.closest('.markdown-table');
         const table = wrapper?.querySelector('table') as HTMLTableElement | null;
