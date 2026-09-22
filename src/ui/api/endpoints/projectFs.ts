@@ -129,10 +129,10 @@ export type FsErrorCode = (typeof FS_ERROR_CODES)[number] | '';
 
 // ---- Cache key helpers ------------------------------------------------------
 
-// Tag id for a directory listing. Keyed by (projectId | chainId+dirId, bridgeId, path) so a
+// Tag id for a directory listing. Keyed by (projectId | chainId+dirId | instance::instanceId, bridgeId, path) so a
 // mutation in one directory only invalidates that directory's listing.
 function fsListTagId(
-  target: { projectId?: string; chainId?: string; directoryId?: string } | string,
+  target: { projectId?: string; chainId?: string; directoryId?: string; agentInstanceId?: string } | string,
   bridgeId: string,
   path: string,
 ): string {
@@ -140,7 +140,9 @@ function fsListTagId(
     return `${target}::${bridgeId}::${path || ''}`;
   }
   const scope =
-    target?.chainId && target?.directoryId && target?.directoryId !== 'primary'
+    target?.agentInstanceId
+      ? `instance::${target.agentInstanceId}`
+      : target?.chainId && target?.directoryId && target?.directoryId !== 'primary'
       ? `${target.chainId}::${target.directoryId}`
       : target?.projectId || '';
   return `${scope}::${bridgeId}::${path || ''}`;
@@ -152,6 +154,7 @@ export type FsScopeArgs = {
   projectId?: string;
   chainId?: string;
   directoryId?: string;
+  agentInstanceId?: string;
   bridgeId?: string;
 };
 
@@ -169,9 +172,12 @@ type MoveArgs = FsScopeArgs & { from: string; to: string };
 type DeleteArgs = FsScopeArgs & { path: string; recursive?: boolean };
 type QuickOpenArgs = FsScopeArgs & { query?: string; limit?: number };
 
-function base(target: { projectId?: string; chainId?: string; directoryId?: string } | string): string {
+function base(target: { projectId?: string; chainId?: string; directoryId?: string; agentInstanceId?: string } | string): string {
   if (typeof target === 'string') {
     return `/projects/${encodeURIComponent(target)}/fs`;
+  }
+  if (target?.agentInstanceId) {
+    return `/agent-instances/${encodeURIComponent(target.agentInstanceId)}/fs`;
   }
   if (target?.chainId && target?.directoryId && target?.directoryId !== 'primary') {
     return `/task-chains/${encodeURIComponent(target.chainId)}/directories/${encodeURIComponent(target.directoryId)}/fs`;
@@ -191,7 +197,7 @@ export const projectFsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     // List a single directory (project-root-relative `path`, '' => project root).
     listProjectDir: build.query<FsListResult, ListArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', path = '', includeHidden = false, cursor = null, limit }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path = '', includeHidden = false, cursor = null, limit }) => {
         try {
           const qs = new URLSearchParams();
           // Disambiguate which bridge's project path to use: a project may be
@@ -199,20 +205,24 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           // one the conversation's agent runs on). Passing the conversation's
           // bridge_id makes the hub resolve THIS bridge's path instead of falling
           // back to "the single configured path" (which can be an offline bridge).
-          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (bridgeId && !agentInstanceId) qs.set('bridge_id', bridgeId);
           if (path) qs.set('path', path);
-          if (includeHidden) qs.set('include_hidden', 'true');
+          if (agentInstanceId) {
+            qs.set('include_hidden', includeHidden ? 'true' : 'false');
+          } else {
+            if (includeHidden) qs.set('include_hidden', 'true');
+          }
           if (cursor) qs.set('cursor', cursor);
           if (limit != null) qs.set('limit', String(limit));
           const suffix = qs.toString() ? `?${qs.toString()}` : '';
-          const data = await cookieJsonFetch(`${base({ projectId, chainId, directoryId })}${suffix}`);
+          const data = await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}${suffix}`);
           return { data: data as FsListResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      providesTags: (_result, _error, { projectId, chainId, directoryId, bridgeId = '', path = '' }) => [
-        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId }, bridgeId, path) },
+      providesTags: (_result, _error, { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path = '' }) => [
+        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, path) },
       ],
     }),
 
@@ -220,13 +230,13 @@ export const projectFsApi = heimdallApi.injectEndpoints({
     // offset/limit to stream a large text file in chunks (avoids the one-huge-
     // frame WS relay timeout). We assume the file doesn't change between pages.
     readProjectFile: build.query<FsReadFileResult, ReadFileArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', path, offset, limit }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path, offset, limit }) => {
         try {
           const qs = new URLSearchParams({ path });
-          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (bridgeId && !agentInstanceId) qs.set('bridge_id', bridgeId);
           if (offset != null && offset > 0) qs.set('offset', String(offset));
           if (limit != null && limit > 0) qs.set('limit', String(limit));
-          const data = await cookieJsonFetch(`${base({ projectId, chainId, directoryId })}/file?${qs.toString()}`);
+          const data = await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}/file?${qs.toString()}`);
           return { data: data as FsReadFileResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -235,85 +245,85 @@ export const projectFsApi = heimdallApi.injectEndpoints({
       // File views are point reads; keep them per (project, bridge, path). Chunks
       // are fetched lazily (useLazy…) and stitched in the component, so we don't
       // key the cache by offset.
-      providesTags: (_result, _error, { projectId, chainId, directoryId, bridgeId = '', path }) => [
-        { type: 'ProjectFs' as const, id: `file::${fsListTagId({ projectId, chainId, directoryId }, bridgeId, path)}` },
+      providesTags: (_result, _error, { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path }) => [
+        { type: 'ProjectFs' as const, id: `file::${fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, path)}` },
       ],
     }),
 
     // Create an empty file at `path`.
     createProjectFile: build.mutation<FsMutationResult, CreateArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', path }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path }) => {
         try {
           const bp = bridgeParam(bridgeId);
-          const data = await cookieMutation(`${base({ projectId, chainId, directoryId })}/file${bp ? `?${bp}` : ''}`, 'POST', { path });
+          const data = await cookieMutation(`${base({ projectId, chainId, directoryId, agentInstanceId })}/file${bp ? `?${bp}` : ''}`, 'POST', { path });
           return { data: data as FsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, bridgeId = '', path }) => [
-        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId }, bridgeId, parentOf(path)) },
+      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path }) => [
+        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, parentOf(path)) },
       ],
     }),
 
     // Create a directory at `path` (reuses the existing fs_make_dir command).
     createProjectDir: build.mutation<FsMutationResult, CreateArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', path }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path }) => {
         try {
           const bp = bridgeParam(bridgeId);
-          const data = await cookieMutation(`${base({ projectId, chainId, directoryId })}/dir${bp ? `?${bp}` : ''}`, 'POST', { path });
+          const data = await cookieMutation(`${base({ projectId, chainId, directoryId, agentInstanceId })}/dir${bp ? `?${bp}` : ''}`, 'POST', { path });
           return { data: data as FsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, bridgeId = '', path }) => [
-        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId }, bridgeId, parentOf(path)) },
+      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path }) => [
+        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, parentOf(path)) },
       ],
     }),
 
     // Rename/move `from` -> `to`. Invalidates both source and dest parents.
     moveProjectPath: build.mutation<FsMutationResult, MoveArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', from, to }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', from, to }) => {
         try {
           const bp = bridgeParam(bridgeId);
-          const data = await cookieMutation(`${base({ projectId, chainId, directoryId })}/move${bp ? `?${bp}` : ''}`, 'POST', { from, to });
+          const data = await cookieMutation(`${base({ projectId, chainId, directoryId, agentInstanceId })}/move${bp ? `?${bp}` : ''}`, 'POST', { from, to });
           return { data: data as FsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, bridgeId = '', from, to }) => [
-        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId }, bridgeId, parentOf(from)) },
-        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId }, bridgeId, parentOf(to)) },
+      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', from, to }) => [
+        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, parentOf(from)) },
+        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, parentOf(to)) },
       ],
     }),
 
     // Delete `path` (optionally recursive for non-empty dirs).
     deleteProjectPath: build.mutation<FsMutationResult, DeleteArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', path, recursive = false }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path, recursive = false }) => {
         try {
           const qs = new URLSearchParams({ path });
           if (recursive) qs.set('recursive', 'true');
-          if (bridgeId) qs.set('bridge_id', bridgeId);
-          const data = await cookieMutation(`${base({ projectId, chainId, directoryId })}?${qs.toString()}`, 'DELETE');
+          if (bridgeId && !agentInstanceId) qs.set('bridge_id', bridgeId);
+          const data = await cookieMutation(`${base({ projectId, chainId, directoryId, agentInstanceId })}?${qs.toString()}`, 'DELETE');
           return { data: data as FsMutationResult };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, bridgeId = '', path }) => [
-        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId }, bridgeId, parentOf(path)) },
+      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path }) => [
+        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, parentOf(path)) },
       ],
     }),
 
     // Write / overwrite file content at `path` (PUT /projects/{projectId}/fs/file).
     writeProjectFile: build.mutation<FsWriteResult, WriteFileArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', path, content, encoding }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path, content, encoding }) => {
         try {
           const bp = bridgeParam(bridgeId);
           const data = await cookieMutation(
-            `${base({ projectId, chainId, directoryId })}/file${bp ? `?${bp}` : ''}`,
+            `${base({ projectId, chainId, directoryId, agentInstanceId })}/file${bp ? `?${bp}` : ''}`,
             'PUT',
             { path, content, encoding },
           );
@@ -322,19 +332,19 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, bridgeId = '', path }) => [
-        { type: 'ProjectFs' as const, id: `file::${fsListTagId({ projectId, chainId, directoryId }, bridgeId, path)}` },
-        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId }, bridgeId, parentOf(path)) },
+      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', path }) => [
+        { type: 'ProjectFs' as const, id: `file::${fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, path)}` },
+        { type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, parentOf(path)) },
       ],
     }),
 
     // Batch write multiple files (PUT /projects/{projectId}/fs/files).
     batchWriteProjectFiles: build.mutation<FsBatchWriteResult, BatchWriteFilesArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', files }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', files }) => {
         try {
           const bp = bridgeParam(bridgeId);
           const data = await cookieMutation(
-            `${base({ projectId, chainId, directoryId })}/files${bp ? `?${bp}` : ''}`,
+            `${base({ projectId, chainId, directoryId, agentInstanceId })}/files${bp ? `?${bp}` : ''}`,
             'PUT',
             { files },
           );
@@ -343,15 +353,15 @@ export const projectFsApi = heimdallApi.injectEndpoints({
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, bridgeId = '', files }) => {
+      invalidatesTags: (_result, _error, { projectId, chainId, directoryId, agentInstanceId, bridgeId = '', files }) => {
         const tags: Array<{ type: 'ProjectFs'; id: string }> = [];
         const parents = new Set<string>();
         for (const file of files || []) {
-          tags.push({ type: 'ProjectFs' as const, id: `file::${fsListTagId({ projectId, chainId, directoryId }, bridgeId, file.path)}` });
+          tags.push({ type: 'ProjectFs' as const, id: `file::${fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, file.path)}` });
           parents.add(parentOf(file.path));
         }
         for (const parent of parents) {
-          tags.push({ type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId }, bridgeId, parent) });
+          tags.push({ type: 'ProjectFs' as const, id: fsListTagId({ projectId, chainId, directoryId, agentInstanceId }, bridgeId, parent) });
         }
         return tags;
       },
@@ -359,14 +369,14 @@ export const projectFsApi = heimdallApi.injectEndpoints({
 
     // Project-scoped fuzzy file path search for Quick Open (GET /projects/{projectId}/fs/quick-open).
     quickOpenProjectFiles: build.query<FsQuickOpenResult, QuickOpenArgs>({
-      queryFn: async ({ projectId, chainId, directoryId, bridgeId = '', query = '', limit }) => {
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', query = '', limit }) => {
         try {
           const qs = new URLSearchParams();
-          if (bridgeId) qs.set('bridge_id', bridgeId);
+          if (bridgeId && !agentInstanceId) qs.set('bridge_id', bridgeId);
           if (query) qs.set('query', query);
           if (limit != null) qs.set('limit', String(limit));
           const suffix = qs.toString() ? `?${qs.toString()}` : '';
-          const data = (await cookieJsonFetch(`${base({ projectId, chainId, directoryId })}/quick-open${suffix}`)) as any;
+          const data = (await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}/quick-open${suffix}`)) as any;
           const files = Array.isArray(data?.files) ? data.files : Array.isArray(data?.matches) ? data.matches : [];
           return { data: { ...data, files } as FsQuickOpenResult };
         } catch (error: any) {

@@ -49,12 +49,15 @@ import { useFetchTaskChainDetailQuery, useAddChainDirectoryMutation, type TaskCh
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
 
 export type DirectoryItem = {
-  id: string; // 'primary' | dir.directoryId
+  id: string; // 'primary' | dir.directoryId | `agent-rundir:${agentInstanceId}`
   label: string;
   path: string;
   bridgeId: string;
   vcsKind?: string;
   isPrimary: boolean;
+  kind?: 'primary' | 'chain_directory' | 'agent_run_dir';
+  agentInstanceId?: string;
+  isReadOnly?: boolean;
 };
 
 export function getBridgeDisplay(bridgeId?: string, bridges: any[] = []): { name: string; id: string; isOnline: boolean } {
@@ -199,6 +202,8 @@ export function TaskChainDirectorySelector({
                         <span className="truncate font-medium text-primary">{dir.label}</span>
                         {dir.isPrimary ? (
                           <span className="rounded bg-accent/15 px-1 py-0.2 text-[9px] font-medium text-accent">primary</span>
+                        ) : dir.kind === 'agent_run_dir' ? (
+                          <span className="rounded bg-neutral-soft px-1 py-0.2 text-[9px] font-medium text-muted">run dir</span>
                         ) : null}
                       </div>
                       {dir.path ? (
@@ -406,6 +411,7 @@ export type ProjectFilesPanelProps = {
   bridgeId?: string;
   chainId?: string;
   directories?: TaskChainDirectory[];
+  members?: any[];
   projectName?: string;
   agentInstanceId?: string;
   // Scope key for the in-memory comment store: comments reset when this changes
@@ -427,6 +433,7 @@ export default function ProjectFilesPanel({
   bridgeId = '',
   chainId,
   directories: propDirectories,
+  members: propMembers,
   projectName,
   agentInstanceId,
   conversationKey = '',
@@ -776,7 +783,7 @@ export default function ProjectFilesPanel({
 
   const [rootAbs, setRootAbs] = useState('');
 
-  // Available directories (primary project root + extra task chain directories)
+  // Available directories (primary project root + extra task chain directories + member agent run dirs)
   const availableDirectories = useMemo<DirectoryItem[]>(() => {
     const primary: DirectoryItem = {
       id: 'primary',
@@ -784,6 +791,8 @@ export default function ProjectFilesPanel({
       path: rootAbs || '',
       bridgeId: bridgeId || '',
       isPrimary: true,
+      kind: 'primary',
+      isReadOnly: false,
     };
     const extras: DirectoryItem[] = (taskChainDirectories || []).map((d) => ({
       id: d.directoryId,
@@ -792,15 +801,58 @@ export default function ProjectFilesPanel({
       bridgeId: d.bridgeId,
       vcsKind: d.vcsKind,
       isPrimary: false,
+      kind: 'chain_directory',
+      isReadOnly: false,
     }));
-    return [primary, ...extras];
-  }, [projectName, rootAbs, bridgeId, taskChainDirectories]);
+
+    const memberRoster = propMembers || chainDetailQuery.data?.chain?.members || [];
+    const agentRunDirs: DirectoryItem[] = [];
+    const seenInstances = new Set<string>();
+
+    for (const m of memberRoster) {
+      const instId = m.agentInstanceId || m.agent_instance_id || m.id;
+      if (!instId || seenInstances.has(instId)) continue;
+      seenInstances.add(instId);
+      const dispName = m.displayName || m.display_name || m.name || instId;
+      agentRunDirs.push({
+        id: `agent-rundir:${instId}`,
+        label: `Run dir — ${dispName}`,
+        path: '',
+        bridgeId: m.bridgeId || m.bridge_id || bridgeId || '',
+        isPrimary: false,
+        kind: 'agent_run_dir',
+        agentInstanceId: instId,
+        isReadOnly: true,
+      });
+    }
+
+    if (agentInstanceId && !seenInstances.has(agentInstanceId)) {
+      agentRunDirs.push({
+        id: `agent-rundir:${agentInstanceId}`,
+        label: `Run dir — ${agentInstanceId}`,
+        path: '',
+        bridgeId: bridgeId || '',
+        isPrimary: false,
+        kind: 'agent_run_dir',
+        agentInstanceId: agentInstanceId,
+        isReadOnly: true,
+      });
+    }
+
+    return [primary, ...extras, ...agentRunDirs];
+  }, [projectName, rootAbs, bridgeId, taskChainDirectories, propMembers, chainDetailQuery.data?.chain?.members, agentInstanceId]);
 
   const activeDirectory = useMemo(() => {
     return availableDirectories.find((d) => d.id === activeDirectoryId) || availableDirectories[0];
   }, [availableDirectories, activeDirectoryId]);
 
   const activeFsTarget = useMemo<FsScopeArgs>(() => {
+    if (activeDirectory?.agentInstanceId) {
+      return {
+        agentInstanceId: activeDirectory.agentInstanceId,
+        bridgeId: activeDirectory.bridgeId || bridgeId || '',
+      };
+    }
     if (!activeDirectory || activeDirectory.id === 'primary') {
       return {
         projectId,
@@ -816,6 +868,8 @@ export default function ProjectFilesPanel({
       bridgeId: activeDirectory.bridgeId || bridgeId || '',
     };
   }, [activeDirectory, projectId, chainId, bridgeId]);
+
+  const isReadOnlyDirectory = Boolean(activeDirectory?.isReadOnly || activeDirectory?.kind === 'agent_run_dir');
 
   const activeBridgeDisplay = useMemo(
     () => getBridgeDisplay(activeDirectory?.bridgeId || bridgeId, bridges),
@@ -853,7 +907,9 @@ export default function ProjectFilesPanel({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
-  const [includeHidden, setIncludeHidden] = useState(false);
+  const [includeHidden, setIncludeHidden] = useState(() => {
+    return activeDirectory?.kind === 'agent_run_dir' || Boolean(activeDirectory?.agentInstanceId);
+  });
   // Timestamp of the last successful listing fetch, shown as "refreshed HH:MM".
   const [lastRefreshed, setLastRefreshed] = useState<number | null>(null);
 
@@ -918,9 +974,13 @@ export default function ProjectFilesPanel({
 
   // Load a directory listing (optionally appending a paginated page).
   const load = useCallback(
-    async (path: string, opts?: { cursor?: string | null; append?: boolean }, scopeOverride?: FsScopeArgs) => {
+    async (
+      path: string,
+      opts?: { cursor?: string | null; append?: boolean; includeHidden?: boolean },
+      scopeOverride?: FsScopeArgs
+    ) => {
       const scope = scopeOverride || activeFsTarget;
-      if (!scope.projectId && (!scope.chainId || !scope.directoryId)) return;
+      if (!scope.projectId && (!scope.chainId || !scope.directoryId) && !scope.agentInstanceId) return;
       const append = Boolean(opts?.append);
       setError('');
       if (append) setLoadingMore(true);
@@ -930,9 +990,10 @@ export default function ProjectFilesPanel({
           projectId: scope.projectId,
           chainId: scope.chainId,
           directoryId: scope.directoryId,
+          agentInstanceId: scope.agentInstanceId,
           bridgeId: scope.bridgeId,
           path,
-          includeHidden,
+          includeHidden: opts?.includeHidden !== undefined ? opts.includeHidden : includeHidden,
           cursor: opts?.cursor ?? null,
           limit: LIST_LIMIT,
         }).unwrap();
@@ -1035,11 +1096,18 @@ export default function ProjectFilesPanel({
       setConfirmClosePath(null);
 
       const nextTargetDir = availableDirectories.find((d) => d.id === newDirId);
-      const nextScope: FsScopeArgs = !nextTargetDir || nextTargetDir.id === 'primary'
+      const isAgentRunDir = nextTargetDir?.kind === 'agent_run_dir' || Boolean(nextTargetDir?.agentInstanceId);
+      if (isAgentRunDir) {
+        setIncludeHidden(true);
+      }
+
+      const nextScope: FsScopeArgs = isAgentRunDir
+        ? { agentInstanceId: nextTargetDir?.agentInstanceId, bridgeId: nextTargetDir?.bridgeId || bridgeId || '' }
+        : !nextTargetDir || nextTargetDir.id === 'primary'
         ? { projectId, bridgeId: bridgeId || '' }
         : { chainId, directoryId: nextTargetDir.id, bridgeId: nextTargetDir.bridgeId || bridgeId || '' };
 
-      void load(nextCwd, undefined, nextScope);
+      void load(nextCwd, isAgentRunDir ? { includeHidden: true } : undefined, nextScope);
     },
     [
       activeDirectoryId,
@@ -1364,6 +1432,7 @@ export default function ProjectFilesPanel({
 
   const handleEditorNewFile = useCallback(
     async (inputPath: string) => {
+      if (isReadOnlyDirectory) return;
       setError('');
       const raw = inputPath.trim().replace(/^\/+/, '');
       if (!raw) return;
@@ -1417,12 +1486,12 @@ export default function ProjectFilesPanel({
         setOpeningInEditor('');
       }
     },
-    [cwd, openTabs, fetchAllFileContent, isMobile, isSinglePane, revealInExplorer]
+    [isReadOnlyDirectory, cwd, openTabs, fetchAllFileContent, isMobile, isSinglePane, revealInExplorer]
   );
 
   // When no tabs are open, pressing '+' creates a new file (REQ-IDE-SPLIT-PANE)
   useEffect(() => {
-    if (openTabs.length > 0) return;
+    if (openTabs.length > 0 || isReadOnlyDirectory) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
@@ -1433,10 +1502,10 @@ export default function ProjectFilesPanel({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [openTabs.length, handleEditorNewFile]);
+  }, [openTabs.length, isReadOnlyDirectory, handleEditorNewFile]);
 
   const saveActiveFile = useCallback(async () => {
-    if (!activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable || writeState.isLoading) return;
+    if (isReadOnlyDirectory || !activeEditorTab || activeEditorTab.isImage || activeEditorTab.isUnviewable || writeState.isLoading) return;
     setSaveFeedback(null);
     try {
       const res = await writeProjectFile({
@@ -1471,9 +1540,10 @@ export default function ProjectFilesPanel({
         message: str(err?.message || err?.error) || 'Failed to save file',
       });
     }
-  }, [activeEditorTab, writeState.isLoading, writeProjectFile, activeFsTarget, cwd, load]);
+  }, [isReadOnlyDirectory, activeEditorTab, writeState.isLoading, writeProjectFile, activeFsTarget, cwd, load]);
 
   const saveAllFiles = useCallback(async () => {
+    if (isReadOnlyDirectory) return;
     const dirtyTabs = openTabs.filter((t) => t.isDirty && !t.isImage && !t.isUnviewable);
     if (dirtyTabs.length === 0 || batchWriteState.isLoading) return;
     setSaveFeedback(null);
@@ -1517,7 +1587,7 @@ export default function ProjectFilesPanel({
         message: str(err?.message || err?.error) || 'Failed to save files',
       });
     }
-  }, [openTabs, batchWriteState.isLoading, batchWriteProjectFiles, activeFsTarget, cwd, load]);
+  }, [isReadOnlyDirectory, openTabs, batchWriteState.isLoading, batchWriteProjectFiles, activeFsTarget, cwd, load]);
 
   const handleContentChange = useCallback(
     (path: string, newContent: string) => {
@@ -1586,7 +1656,7 @@ export default function ProjectFilesPanel({
 
   // Global keyboard shortcuts for Cmd+S / Ctrl+S and Cmd+Shift+S / Ctrl+Shift+S
   useEffect(() => {
-    if (!isEditMode) return;
+    if (!isEditMode || isReadOnlyDirectory) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
@@ -1600,11 +1670,12 @@ export default function ProjectFilesPanel({
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isEditMode, saveActiveFile, saveAllFiles]);
+  }, [isEditMode, isReadOnlyDirectory, saveActiveFile, saveAllFiles]);
 
   // ---- Mutations ------------------------------------------------------------
 
   async function submitPending() {
+    if (isReadOnlyDirectory) return;
     const name = nameDraft.trim();
     if (!pending) return;
     setError('');
@@ -1642,6 +1713,7 @@ export default function ProjectFilesPanel({
   }
 
   async function removeEntry(entry: FsEntry) {
+    if (isReadOnlyDirectory) return;
     setError('');
     const target = joinPath(cwd, entry.name);
     const label = entry.is_dir ? 'folder' : 'file';
@@ -1662,6 +1734,7 @@ export default function ProjectFilesPanel({
   }
 
   function beginAction(action: PendingAction) {
+    if (isReadOnlyDirectory && action?.kind !== null) return;
     setPending(action);
     setNameDraft(action?.kind === 'rename' ? action.entry.name : '');
   }
@@ -1720,64 +1793,6 @@ export default function ProjectFilesPanel({
                 4) Active file path breadcrumb (with ellipsis on narrow widths)
             */}
             <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-              {/* Mobile single-pane: '← Files' back button when in Editor mode */}
-              {isSinglePane && activePane === 'editor' ? (
-                <button
-                  data-debug-id={`${debugPrefix}-mobile-back-files-btn`}
-                  type="button"
-                  onClick={() => {
-                    setActivePane('files');
-                    setIsExplorerCollapsed(false);
-                  }}
-                  className="inline-flex items-center gap-1 rounded bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-neutral-soft border border-subtle shrink-0"
-                  title="Back to file explorer"
-                  aria-label="Back to file explorer"
-                >
-                  <Icon name="arrow-left" size={12} />
-                  <span>← Files</span>
-                </button>
-              ) : null}
-
-              {/* Mobile single-pane: Segmented switcher [ Files | Editor ] */}
-              {isSinglePane ? (
-                <div
-                  data-debug-id={`${debugPrefix}-mobile-segmented-switcher`}
-                  className="inline-flex items-center rounded bg-neutral-soft p-0.5 text-[11px] font-medium shrink-0"
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActivePane('files');
-                      setIsExplorerCollapsed(false);
-                    }}
-                    className={`rounded px-1.5 py-0.5 transition-colors ${
-                      activePane === 'files'
-                        ? 'bg-surface text-primary shadow-xs font-semibold'
-                        : 'text-muted hover:text-primary'
-                    }`}
-                  >
-                    Files
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (openTabs.length > 0) {
-                        setActivePane('editor');
-                        setIsExplorerCollapsed(true);
-                      }
-                    }}
-                    disabled={openTabs.length === 0}
-                    className={`rounded px-1.5 py-0.5 transition-colors disabled:opacity-40 ${
-                      activePane === 'editor'
-                        ? 'bg-surface text-primary shadow-xs font-semibold'
-                        : 'text-muted hover:text-primary'
-                    }`}
-                  >
-                    Editor{openTabs.length > 0 ? ` (${openTabs.length})` : ''}
-                  </button>
-                </div>
-              ) : null}
-
               {/* 1) Explorer / Back to Files toggle button */}
               <button
                 data-debug-id={`${debugPrefix}-explorer-toggle-btn`}
@@ -1825,26 +1840,28 @@ export default function ProjectFilesPanel({
               </button>
 
               {/* 3) Save active file (save icon, highlighted when dirty) */}
-              <button
-                data-debug-id="editor-save-btn"
-                type="button"
-                disabled={!activeEditorTab || writeState.isLoading || !activeEditorTab.isDirty || activeEditorTab.isImage || activeEditorTab.isUnviewable}
-                onClick={saveActiveFile}
-                className={`inline-flex items-center justify-center gap-1 h-6 px-2 rounded text-[11px] font-semibold transition-colors disabled:opacity-40 shrink-0 ${
-                  activeEditorTab?.isDirty
-                    ? 'bg-accent text-accent-fg hover:opacity-90 shadow-xs'
-                    : 'hover:bg-neutral-soft text-muted hover:text-primary'
-                }`}
-                title="Save active file (Cmd+S / Ctrl+S)"
-                aria-label="Save active file"
-              >
-                {writeState.isLoading ? (
-                  <Icon name="refresh" size={12} className="animate-spin" />
-                ) : (
-                  <Icon name="save" size={13} />
-                )}
-                <span className="hidden sm:inline">Save</span>
-              </button>
+              {!isReadOnlyDirectory ? (
+                <button
+                  data-debug-id="editor-save-btn"
+                  type="button"
+                  disabled={!activeEditorTab || writeState.isLoading || !activeEditorTab.isDirty || activeEditorTab.isImage || activeEditorTab.isUnviewable}
+                  onClick={saveActiveFile}
+                  className={`inline-flex items-center justify-center gap-1 h-6 px-2 rounded text-[11px] font-semibold transition-colors disabled:opacity-40 shrink-0 ${
+                    activeEditorTab?.isDirty
+                      ? 'bg-accent text-accent-fg hover:opacity-90 shadow-xs'
+                      : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                  }`}
+                  title="Save active file (Cmd+S / Ctrl+S)"
+                  aria-label="Save active file"
+                >
+                  {writeState.isLoading ? (
+                    <Icon name="refresh" size={12} className="animate-spin" />
+                  ) : (
+                    <Icon name="save" size={13} />
+                  )}
+                  <span className="hidden sm:inline">Save</span>
+                </button>
+              ) : null}
 
               {/* 4) Directory selector, bridge badge & active file path breadcrumb */}
               <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1.5 pl-1 text-[11.5px] text-muted">
@@ -1900,6 +1917,14 @@ export default function ProjectFilesPanel({
                     <span className="truncate font-mono text-[11.5px] text-primary/80" title={activeEditorTab.path}>
                       {activeEditorTab.path}
                     </span>
+                    {isReadOnlyDirectory ? (
+                      <span
+                        data-debug-id={`${debugPrefix}-read-only-badge`}
+                        className="rounded bg-neutral-soft px-1.5 py-0.5 text-[9.5px] font-medium text-muted shrink-0"
+                      >
+                        Read-only
+                      </span>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="flex min-w-0 items-center gap-0.5 overflow-hidden truncate">
@@ -1991,36 +2016,40 @@ export default function ProjectFilesPanel({
                     className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-subtle bg-surface-raised p-1 shadow-lg z-50 text-[12px] flex flex-col gap-0.5"
                   >
                     {/* 1. New File */}
-                    <button
-                      data-debug-id={`${debugPrefix}-new-file-btn`}
-                      type="button"
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        if (isExplorerCollapsed) updateExplorerCollapsed(false);
-                        if (isSinglePane) setActivePane('files');
-                        beginAction({ kind: 'new-file' });
-                      }}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-                    >
-                      <Icon name="plus" size={14} />
-                      <span>New File</span>
-                    </button>
+                    {!isReadOnlyDirectory ? (
+                      <button
+                        data-debug-id={`${debugPrefix}-new-file-btn`}
+                        type="button"
+                        onClick={() => {
+                          setIsOverflowOpen(false);
+                          if (isExplorerCollapsed) updateExplorerCollapsed(false);
+                          if (isSinglePane) setActivePane('files');
+                          beginAction({ kind: 'new-file' });
+                        }}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                      >
+                        <Icon name="plus" size={14} />
+                        <span>New File</span>
+                      </button>
+                    ) : null}
 
                     {/* 2. New Folder */}
-                    <button
-                      data-debug-id={`${debugPrefix}-new-dir-btn`}
-                      type="button"
-                      onClick={() => {
-                        setIsOverflowOpen(false);
-                        if (isExplorerCollapsed) updateExplorerCollapsed(false);
-                        if (isSinglePane) setActivePane('files');
-                        beginAction({ kind: 'new-dir' });
-                      }}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
-                    >
-                      <Icon name="folder" size={14} />
-                      <span>New Folder</span>
-                    </button>
+                    {!isReadOnlyDirectory ? (
+                      <button
+                        data-debug-id={`${debugPrefix}-new-dir-btn`}
+                        type="button"
+                        onClick={() => {
+                          setIsOverflowOpen(false);
+                          if (isExplorerCollapsed) updateExplorerCollapsed(false);
+                          if (isSinglePane) setActivePane('files');
+                          beginAction({ kind: 'new-dir' });
+                        }}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+                      >
+                        <Icon name="folder" size={14} />
+                        <span>New Folder</span>
+                      </button>
+                    ) : null}
 
                     {/* 3. Toggle Hidden Files */}
                     <button
@@ -2275,25 +2304,29 @@ export default function ProjectFilesPanel({
                                 data-debug-id={`${debugPrefix}-edit-${e.name}`}
                                 type="button"
                                 onClick={() => void openFileInEditor(joinPath(cwd, e.name))}
-                                title={`Edit ${e.name}`}
-                                aria-label={`Edit ${e.name}`}
+                                title={isReadOnlyDirectory ? `View ${e.name}` : `Edit ${e.name}`}
+                                aria-label={isReadOnlyDirectory ? `View ${e.name}` : `Edit ${e.name}`}
                                 className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"
                               >
-                                <Icon name="pencil" size={12} />
+                                <Icon name={isReadOnlyDirectory ? 'eye' : 'pencil'} size={12} />
                               </button>
                             ) : null}
-                            <IconButton icon="pencil" label={`Rename ${e.name}`} size="sm" data-debug-id={`${debugPrefix}-rename-${e.name}`} onClick={() => beginAction({ kind: 'rename', entry: e })} />
-                            <button
-                              data-debug-id={`${debugPrefix}-delete-${e.name}`}
-                              type="button"
-                              disabled={mutating}
-                              onClick={() => void removeEntry(e)}
-                              title={`Delete ${e.name}`}
-                              aria-label={`Delete ${e.name}`}
-                              className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-40"
-                            >
-                              <Icon name="trash" size={12} />
-                            </button>
+                            {!isReadOnlyDirectory ? (
+                              <>
+                                <IconButton icon="pencil" label={`Rename ${e.name}`} size="sm" data-debug-id={`${debugPrefix}-rename-${e.name}`} onClick={() => beginAction({ kind: 'rename', entry: e })} />
+                                <button
+                                  data-debug-id={`${debugPrefix}-delete-${e.name}`}
+                                  type="button"
+                                  disabled={mutating}
+                                  onClick={() => void removeEntry(e)}
+                                  title={`Delete ${e.name}`}
+                                  aria-label={`Delete ${e.name}`}
+                                  className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-40"
+                                >
+                                  <Icon name="trash" size={12} />
+                                </button>
+                              </>
+                            ) : null}
                           </div>
                         </li>
                       );
@@ -2386,6 +2419,7 @@ export default function ProjectFilesPanel({
                         themeAppearance={theme?.appearance}
                         isVimMode={isVimMode}
                         isWordWrap={isWordWrap}
+                        isReadOnly={isReadOnlyDirectory}
                         comments={commentsForPath(dirActiveTab.path)}
                         onAddComment={(line, lineText, body) => addComment(dirActiveTab.path, line, lineText, body)}
                         onEditComment={editComment}
@@ -2414,17 +2448,21 @@ export default function ProjectFilesPanel({
                             data-debug-id={`${debugPrefix}-empty-prompt`}
                             className="max-w-md text-caption text-muted mb-4"
                           >
-                            Select a file from the explorer to view or edit, or press + to create a new file
+                            {isReadOnlyDirectory
+                              ? 'Select a file from the explorer to view'
+                              : 'Select a file from the explorer to view or edit, or press + to create a new file'}
                           </p>
-                          <button
-                            data-debug-id={`${debugPrefix}-empty-new-file-btn`}
-                            type="button"
-                            onClick={() => void handleEditorNewFile('untitled.txt')}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-semibold text-accent-fg hover:opacity-90"
-                            title="Create new file (+)"
-                          >
-                            <Icon name="plus" size={14} /> + New File
-                          </button>
+                          {!isReadOnlyDirectory ? (
+                            <button
+                              data-debug-id={`${debugPrefix}-empty-new-file-btn`}
+                              type="button"
+                              onClick={() => void handleEditorNewFile('untitled.txt')}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-semibold text-accent-fg hover:opacity-90"
+                              title="Create new file (+)"
+                            >
+                              <Icon name="plus" size={14} /> + New File
+                            </button>
+                          ) : null}
                         </div>
                       </div>
                     )}
@@ -3050,6 +3088,7 @@ function MonacoMultiFileEditor({
   onToggleDiff: _onToggleDiff,
   isVimMode = false,
   isWordWrap = true,
+  isReadOnly = false,
 }: {
   tabs: EditorTab[];
   activeTab: EditorTab;
@@ -3077,6 +3116,7 @@ function MonacoMultiFileEditor({
   onToggleDiff?: () => void;
   isVimMode?: boolean;
   isWordWrap?: boolean;
+  isReadOnly?: boolean;
 }) {
   const monaco = useMonaco();
   const monacoTheme = themeAppearance === 'light' ? 'light' : 'vs-dark';
@@ -3242,6 +3282,7 @@ function MonacoMultiFileEditor({
     tabSize: 2,
     renderWhitespace: 'selection',
     smoothScrolling: true,
+    readOnly: Boolean(isReadOnly),
   };
 
   return (
@@ -3297,8 +3338,15 @@ function MonacoMultiFileEditor({
           );
         })}
 
-        {/* Tab strip new file prompt / plus button */}
-        {isPromptingNewFile ? (
+        {/* Tab strip new file prompt / plus button or read-only indicator */}
+        {isReadOnly ? (
+          <span
+            data-debug-id={`${debugPrefix}-read-only-badge`}
+            className="ml-auto mr-2 rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] font-medium text-muted uppercase tracking-wider"
+          >
+            Read-only
+          </span>
+        ) : isPromptingNewFile ? (
           <div
             data-debug-id={`${debugPrefix}-new-file-inline-prompt`}
             className="flex items-center gap-1 rounded bg-surface border border-accent/40 px-1.5 py-0.5 shadow-sm"
@@ -3427,7 +3475,7 @@ function MonacoMultiFileEditor({
                 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
               renderWhitespace: 'selection',
               smoothScrolling: true,
-              readOnly: false,
+              readOnly: Boolean(isReadOnly),
               originalEditable: false,
             }}
             onMount={handleDiffMount}

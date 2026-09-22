@@ -1,7 +1,6 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
 import ChainOverviewPanel from './ChainOverviewPanel';
 import ProjectFilesPanel, { ProjectQuickOpenModal } from './ProjectFilesPanel';
-import InstanceRunDirPanel from './InstanceRunDirPanel';
 import { ShellsPanel } from '../shells/ShellsPanel';
 import { ShellsTabBadge } from '../shells/ShellsTabBadge';
 import ProjectVcsPanel from './ProjectVcsPanel';
@@ -604,6 +603,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const param = params.get('panel') || params.get('sidebar');
     if (param) {
       const norm = param.trim().toLowerCase();
+      if (norm === 'rundir') return 'files';
       if (isRightSidebarTab(norm)) return norm;
       if (norm === 'closed' || norm === 'false' || norm === '0') return 'closed';
       if (norm === 'open' || norm === 'true' || norm === '1') {
@@ -647,6 +647,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     const param = params.get('panel') || params.get('sidebar');
     if (param) {
       const norm = param.trim().toLowerCase();
+      if (norm === 'rundir') {
+        setRightPanel('files');
+        return;
+      }
       if (isRightSidebarTab(norm)) {
         setRightPanel(norm);
         return;
@@ -691,10 +695,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       const param = params.get('panel') || params.get('sidebar');
       if (param) {
         const norm = param.trim().toLowerCase();
-        if (isRightSidebarTab(norm)) {
-          setRightPanel(norm);
+        const tab = norm === 'rundir' ? 'files' : norm;
+        if (isRightSidebarTab(tab)) {
+          setRightPanel(tab);
           writeRightSidebarOpen(true, agentInstanceId);
-          writeRightSidebarTab(norm, agentInstanceId);
+          writeRightSidebarTab(tab, agentInstanceId);
         } else if (norm === 'closed' || norm === 'false' || norm === '0') {
           setRightPanel('closed');
           writeRightSidebarOpen(false, agentInstanceId);
@@ -1048,11 +1053,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }
 
   // Default the panel's active tab based on what this conversation has: prefer
-  // Tasks when linked to a chain, else Files when it has a project.
+  // Tasks when linked to a chain, else Files when it has a project or agent instance.
   function defaultPanelTab(): RightSidebarTab {
     if (chainId) return 'tasks';
-    if (projectId) return 'files';
-    if (agentInstanceId) return 'rundir';
+    if (projectId || agentInstanceId) return 'files';
     return 'tasks';
   }
 
@@ -1101,11 +1105,12 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   // Open the panel focused on a specific tab (e.g. the composer project chip
   // opens Files; a current-task link opens Tasks).
   function openRightPanel(tab: RightSidebarTab) {
+    const targetTab = tab === 'rundir' ? 'files' : tab;
     setHeaderActionsOpen(false);
     writeRightSidebarOpen(true, agentInstanceId);
-    writeRightSidebarTab(tab, agentInstanceId);
-    syncUrlPanel(tab);
-    setRightPanel(tab);
+    writeRightSidebarTab(targetTab, agentInstanceId);
+    syncUrlPanel(targetTab);
+    setRightPanel(targetTab);
   }
 
   function closeRightPanel() {
@@ -1130,10 +1135,11 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   }, [agentInstanceId]);
 
   function selectRightPanelTab(tab: RightSidebarTab) {
+    const targetTab = tab === 'rundir' ? 'files' : tab;
     writeRightSidebarOpen(true, agentInstanceId);
-    writeRightSidebarTab(tab, agentInstanceId);
-    syncUrlPanel(tab);
-    setRightPanel(tab);
+    writeRightSidebarTab(targetTab, agentInstanceId);
+    syncUrlPanel(targetTab);
+    setRightPanel(targetTab);
   }
 
   const handleResizerPointerDown = (e: React.PointerEvent) => {
@@ -1398,27 +1404,22 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   function renderRightPanel(isMobilePanel: boolean) {
     const hasChain = Boolean(chainId);
     const hasTasks = Boolean(chainId);
-    const hasFiles = Boolean(projectId);
+    const hasFiles = Boolean(projectId || chainId || agentInstanceId);
     const hasVcs = Boolean(projectId);
-    const hasRunDir = Boolean(agentInstanceId);
     // T11-UI-1: Shells needs the same context —
     // a bridge to start sessions on comes from the instance behind this conversation.
     const hasShells = Boolean(agentInstanceId);
-    // The two file-explorer tabs are labeled with a folder icon + the resource
-    // name (project name for Files, instance display name for Run dir) and
-    // truncate when long. Tasks keeps its fixed label.
-    const instanceDisplayName = String(instance?.display_name || (instance as any)?.displayName || title || agentId || agentInstanceId || 'instance').trim();
+    // The file-explorer tab is labeled with a folder icon + the resource name.
     const filesLabel = projectName || 'Files';
     const active: RightSidebarTab =
       rightPanel === 'chain' && hasChain ? 'chain'
       : rightPanel === 'files' && hasFiles ? 'files'
       : rightPanel === 'vcs' && hasVcs ? 'vcs'
-      : rightPanel === 'rundir' && hasRunDir ? 'rundir'
       : rightPanel === 'shells' && hasShells ? 'shells'
       : rightPanel === 'tasks' && (hasTasks || convQuery.isLoading) ? 'tasks'
       : hasTasks ? 'tasks'
       : hasFiles ? 'files'
-      : 'rundir';
+      : 'tasks';
     const tabBase = 'relative inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-xl px-3';
     return (
       <div data-debug-id="conversation-right-panel" className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-surface">
@@ -1451,11 +1452,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
             {hasVcs ? (
               <button type="button" title="VCS" aria-label="VCS" data-debug-id="conversation-right-panel-tab-vcs" onClick={() => selectRightPanelTab('vcs')} aria-pressed={active === 'vcs' ? 'true' : 'false'} className={`${tabBase} ${active === 'vcs' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
                 <Icon name="git-branch" size={20} />
-              </button>
-            ) : null}
-            {hasRunDir ? (
-              <button type="button" title={`Run dir — ${instanceDisplayName}`} aria-label={`Run dir — ${instanceDisplayName}`} data-debug-id="conversation-right-panel-tab-rundir" onClick={() => selectRightPanelTab('rundir')} aria-pressed={active === 'rundir' ? 'true' : 'false'} className={`${tabBase} ${active === 'rundir' ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-neutral-soft hover:text-primary'}`}>
-                <Icon name="folder" size={20} />
               </button>
             ) : null}
             {hasShells ? (
@@ -1518,6 +1514,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               projectId={projectId}
               chainId={chainId}
               directories={chainDetailQuery.data?.chain?.directories}
+              members={chainDetailQuery.data?.chain?.members}
               bridgeId={instanceBridgeId}
               projectName={projectName}
               conversationKey={conversationId}
@@ -1536,15 +1533,6 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               onClose={closeRightPanel}
               isMobile={isMobilePanel}
               onOpenDirectory={() => selectRightPanelTab('files')}
-            />
-          ) : active === 'rundir' && hasRunDir ? (
-            <InstanceRunDirPanel
-              agentInstanceId={agentInstanceId}
-              rootLabel={instanceDisplayName}
-              conversationKey={conversationId}
-              onPublishComments={publishFileComments}
-              onClose={closeRightPanel}
-              isMobile={isMobilePanel}
             />
           ) : active === 'shells' && hasShells ? (
             <ShellsPanel

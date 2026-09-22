@@ -130,9 +130,11 @@ export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null
   try {
     if (instanceId) {
       const instanceRaw = window.localStorage.getItem(`heimdall:sidebar:tab:${instanceId}`);
+      if (instanceRaw === 'rundir') return 'files';
       if (isRightSidebarTab(instanceRaw)) return instanceRaw;
     }
     const raw = window.localStorage.getItem(RIGHT_SIDEBAR_TAB_KEY);
+    if (raw === 'rundir') return 'files';
     if (isRightSidebarTab(raw)) return raw;
     return null;
   } catch {
@@ -143,10 +145,11 @@ export function readRightSidebarTab(instanceId?: string): RightSidebarTab | null
 export function writeRightSidebarTab(tab: RightSidebarTab, instanceId?: string): void {
   if (typeof window === 'undefined') return;
   try {
-    if (isRightSidebarTab(tab)) {
-      window.localStorage.setItem(RIGHT_SIDEBAR_TAB_KEY, tab);
+    const targetTab = tab === 'rundir' ? 'files' : tab;
+    if (isRightSidebarTab(targetTab)) {
+      window.localStorage.setItem(RIGHT_SIDEBAR_TAB_KEY, targetTab);
       if (instanceId) {
-        window.localStorage.setItem(`heimdall:sidebar:tab:${instanceId}`, tab);
+        window.localStorage.setItem(`heimdall:sidebar:tab:${instanceId}`, targetTab);
       }
     }
   } catch {

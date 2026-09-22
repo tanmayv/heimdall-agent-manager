@@ -205,8 +205,8 @@ def main() -> None:
 
     # REQ-UI-MOBILE-SINGLE-PANE: Single-pane mobile layout (<640px viewport or <480px sidebar)
     require("viewportWidth < 640" in panel_src and "containerWidth < 480" in panel_src, "Must detect viewport <640px or sidebar/container <480px")
-    require("mobile-back-files-btn" in panel_src, "Must render mobile ← Files navigation back button")
-    require("← Files" in panel_src, "Must display '← Files' label on back button")
+    require("mobile-back-files-btn" not in panel_src, "Must remove bulky mobile-back-files-btn from toolbar")
+    require("mobile-segmented-switcher" not in panel_src, "Must remove mobile-segmented-switcher from toolbar")
     require("explorer-toggle-btn" in panel_src, "Must render explorer toggle button")
     require("activePane" in panel_src, "Must manage activePane state for full-width pane switching")
 

@@ -159,6 +159,17 @@ def test_issue_row() -> None:
     require("issue-vote-count" in src, "IssueRow must render vote count debug id")
     require("chain" in src.lower(), "IssueRow must render chain link when chain_id is present")
 
+    # Vote count button in Row 4 alongside metadata chips, not in Row 1
+    row1_match = re.search(r"Row 1:.*?(?:Row 2|Rows 2-3)", src, re.DOTALL)
+    require(bool(row1_match), "IssueRow must define Row 1 section")
+    require("issue-vote-count" not in row1_match.group(0), "Row 1 must not contain vote count button")
+
+    row4_match = re.search(r"Row 4:.*", src, re.DOTALL)
+    require(bool(row4_match), "IssueRow must define Row 4 section")
+    require("issue-vote-count" in row4_match.group(0), "Row 4 must contain vote count button")
+    require("bg-accent/15" in src and "border-accent/40" in src, "Vote button must have active voted styles")
+    require("bg-surface-raised" in src and "border-subtle" in src, "Vote button must have unvoted styles")
+
     print("  -> IssueRow component verified.")
 
 
@@ -189,6 +200,8 @@ def test_issue_detail() -> None:
     require("embeddedComments" in src or "issue?.comments" in src, "IssueDetail must support embedded comments")
     require("handleAddComment" in src, "IssueDetail must implement handleAddComment composer")
     require("Textarea" in src, "IssueDetail must use Textarea for comment composer")
+    require('width="full"' in src, "Comment Textarea must pass width='full'")
+    require('className="w-full"' in src, "Comment Textarea must pass className='w-full'")
 
     print("  -> IssueDetail component verified.")
 
@@ -204,12 +217,22 @@ def test_issue_list_page() -> None:
     require("issues-list-column" in src, "IssueListPage must have list column debug id")
     require("issues-detail-pane" in src, "IssueListPage must have detail pane debug id")
 
-    # Filters and search
+    # Unboxed list and vertical divider parity with Memory UI
+    require("border-l border-subtle pl-4" in src, "IssueListPage must use border-l border-subtle pl-4 vertical divider for detail pane")
+    require("bg-surface rounded-xl border border-subtle" not in src, "IssueListPage must remove card boxes from listColumn and detail pane")
+    require("Select an issue to see it here." in src, "IssueListPage must render placeholder text 'Select an issue to see it here.'")
+
+    # Filters, tabs, and search
     require("STATUS_FILTERS" in src, "IssueListPage must have STATUS_FILTERS")
     require("issues-filter-status-" in src, "IssueListPage must render status filter buttons")
+    require("<Tabs" in src and "<TabsList" in src and "<Tab" in src, "IssueListPage must use Tabs, TabsList, and Tab for status filter")
     require("issues-scope-filter" in src, "IssueListPage must have scope filter Select")
     require("issues-search-input" in src, "IssueListPage must have search input")
-    require("issues-new-btn" in src, "IssueListPage must have New Issue button")
+    require('leading={<Icon name="search"' in src, "Search input must have leading search icon")
+    require("Search issues…" in src or "Search issues..." in src, "Search input must have issues search placeholder")
+    require('width="full"' in src, "Search input must have width='full'")
+    require("issues-header-new-btn" in src, "IssueListPage must have header New Issue button")
+    require("issues-new-btn" not in src, "IssueListPage must remove duplicate toolbar New Issue button")
 
     # Uses IssueRow and IssueDetail
     require("IssueRow" in src, "IssueListPage must use IssueRow")

@@ -426,6 +426,8 @@ export function IssueDetail({ issueId, onBack, onEdit, onDelete }: IssueDetailPr
                 onChange={setCommentText}
                 placeholder="Leave a comment (supports markdown)..."
                 rows={3}
+                width="full"
+                className="w-full"
                 onKeyDown={(e) => {
                   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                     e.preventDefault();
