@@ -20,3 +20,5 @@ Action_ID :: distinct string
 Scheduled_Prompt_ID :: Action_ID
 Push_Subscription_ID :: distinct string
 Card_ID :: distinct string
+Issue_ID :: distinct string
+Issue_Comment_ID :: distinct string

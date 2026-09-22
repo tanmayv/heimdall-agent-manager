@@ -45,6 +45,8 @@ import UserTokensPanel from '../settings/UserTokensPanel';
 import MemoryListPage from '../memory/MemoryListPage';
 import MemoryViewPage from '../memory/MemoryViewPage';
 import MemoryFormPage from '../memory/MemoryFormPage';
+import IssueListPage from '../issues/IssueListPage';
+import IssueFormPage from '../issues/IssueFormPage';
 import SkillViewerPage from '../skills/SkillViewerPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
 import LibraryPage from '../LibraryPage';
@@ -137,6 +139,7 @@ const NAV_ROUTES: ShellRoute[] = [
   { path: '/shells', label: 'Shells', icon: 'terminal', description: 'Every shell session your bridges are running', group: 'primary' },
   { path: '/chains', label: 'Task Chains', icon: 'tasks', description: 'Multi-agent task chains grouped by project', group: 'primary' },
   { path: '/library', label: 'Library', icon: 'device', description: 'Artifacts and files', group: 'primary' },
+  { path: '/issues', label: 'Issues', icon: 'alert', description: 'Reported issues across projects, agents, and bridges', group: 'primary' },
   { path: '/settings/bridges', label: 'Settings', icon: 'gear', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
 ];
 
@@ -201,6 +204,10 @@ function routeTitle(path: string): string {
   if (path.startsWith('/agents/')) return 'Agent detail';
   if (path.startsWith('/library/artifacts/')) return 'Artifact viewer';
   if (path.startsWith('/library')) return 'Library';
+  if (path === '/issues/new') return 'New issue';
+  if (path.startsWith('/issues/') && path.endsWith('/edit')) return 'Edit issue';
+  if (path.startsWith('/issues/')) return 'Issue detail';
+  if (path.startsWith('/issues')) return 'Issues';
   if (path === '/projects/new') return 'New project';
   if (path.startsWith('/projects/') && path.endsWith('/edit')) return 'Edit project';
   if (path.startsWith('/projects/')) return 'Project detail';
@@ -237,6 +244,7 @@ function routeDescription(path: string): string {
   if (path.startsWith('/agents/')) return 'Agent overview, sessions, Bridges, and memory tabs will attach to this route.';
   if (path.startsWith('/library/artifacts/')) return 'Fullscreen artifact viewer route owned by the Library surface.';
   if (path.startsWith('/library')) return 'Filterable artifact list/grid route.';
+  if (path.startsWith('/issues')) return 'Reported issues across projects, agents, and bridges.';
   if (path.startsWith('/projects/')) return 'One project: its description, per-bridge paths, and the chains, agents and memory attached to it.';
   if (path.startsWith('/memory/')) return 'Full memory record with body, scope, and its status actions.';
   if (path.startsWith('/memory')) return 'Durable facts, habits and skills targeted to agents, projects, bridges, and templates. Empty scope applies to all.';
@@ -287,6 +295,7 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return [{ label: 'Actions', href: '/actions' }, { label: 'Edit Action' }];
   if (path.startsWith('/actions')) return [{ label: 'Actions' }];
   if (path.startsWith('/library')) return [{ label: 'Library' }];
+  if (path.startsWith('/issues')) return [{ label: 'Issues' }];
   if (path.startsWith('/agents')) return [{ label: 'Agents' }];
   return [{ label: 'Conversations' }];
 }
@@ -994,7 +1003,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
     path.startsWith('/c/');
   const isKnownRoute = useMemo(() => {
     return [
-      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/agent-monitor',
+      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/agent-monitor', '/issues',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/c/') ||
       path.startsWith('/settings/bridges') ||
@@ -1135,6 +1144,14 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
           <LibraryPage session={{ clientToken: 'v1', daemonUrl: '' }} />
         ) : path.startsWith('/library/artifacts/') ? (
           <ArtifactViewer artifactId={decodeURIComponent(path.slice('/library/artifacts/'.length))} daemonUrl="" clientToken="v1" onClose={() => window.history.back()} />
+        ) : path === '/issues' ? (
+          <IssueListPage />
+        ) : path === '/issues/new' ? (
+          <IssueFormPage />
+        ) : path.startsWith('/issues/') && path.endsWith('/edit') ? (
+          <IssueFormPage issueId={decodeURIComponent(path.slice('/issues/'.length, -'/edit'.length))} />
+        ) : path.startsWith('/issues/') ? (
+          <IssueListPage selectedIssueId={decodeURIComponent(path.slice('/issues/'.length))} />
         ) : (
           <div className="w-full max-w-2xl rounded-2xl border border-subtle bg-surface p-5 text-left">
             <div data-debug-id="shell-page-placeholder-icon" className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted"><Icon name="search" size={22} /></div>

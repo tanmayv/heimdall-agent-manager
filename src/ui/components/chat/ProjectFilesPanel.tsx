@@ -19,6 +19,7 @@
 // compatible virtualizer or a React bump. Tracked as a Phase-4 follow-up.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Editor, { DiffEditor, useMonaco, type OnMount, type DiffOnMount, type EditorProps, type DiffEditorProps } from '@monaco-editor/react';
 import { initVimMode, VimMode } from 'monaco-vim';
 
@@ -82,34 +83,68 @@ export function TaskChainDirectorySelector({
   debugPrefix?: string;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [coords, setCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+
+  const updateCoords = useCallback(() => {
+    if (!buttonRef.current || typeof window === 'undefined') return;
+    const rect = buttonRef.current.getBoundingClientRect();
+    setCoords({
+      top: rect.bottom + 4,
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 300)),
+    });
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
+    updateCoords();
+
     const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const inContainer = containerRef.current ? containerRef.current.contains(target) : false;
+      const inDropdown = dropdownRef.current ? dropdownRef.current.contains(target) : false;
+      if (!inContainer && !inDropdown) {
         setIsOpen(false);
       }
     };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsOpen(false);
       }
     };
+
+    const handleScrollOrResize = () => {
+      updateCoords();
+    };
+
     document.addEventListener('mousedown', handleClickOutside);
     document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleScrollOrResize);
+    window.addEventListener('scroll', handleScrollOrResize, true);
+
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleScrollOrResize);
+      window.removeEventListener('scroll', handleScrollOrResize, true);
     };
-  }, [isOpen]);
+  }, [isOpen, updateCoords]);
+
+  const handleToggle = () => {
+    updateCoords();
+    setIsOpen((prev) => !prev);
+  };
 
   return (
     <div ref={containerRef} className="relative shrink-0">
       <button
+        ref={buttonRef}
         data-debug-id="task-chain-directory-selector-btn"
         type="button"
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={handleToggle}
         aria-haspopup="true"
         aria-expanded={isOpen ? 'true' : 'false'}
         title={`Select Directory: ${activeDirectory.label} (${activeDirectory.path || 'root'})`}
@@ -124,57 +159,67 @@ export function TaskChainDirectorySelector({
         <Icon name="chevron-down" size={10} className="text-muted shrink-0 ml-0.5" />
       </button>
 
-      {isOpen ? (
-        <div
-          data-debug-id="task-chain-directory-dropdown"
-          className="absolute left-0 top-full mt-1 w-72 rounded-lg border border-subtle bg-surface-overlay p-1 shadow-overlay z-50 text-[12px] flex flex-col gap-0.5 backdrop-blur-sm"
-        >
-          <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-subtle/50 mb-0.5">
-            Directories ({directories.length})
-          </div>
-          {directories.map((dir) => {
-            const isSelected = dir.id === activeDirectory.id;
-            const bridgeInfo = getBridgeDisplay(dir.bridgeId, bridges);
-            return (
-              <button
-                key={dir.id}
-                data-debug-id={dir.isPrimary ? 'directory-option-primary' : `directory-option-${dir.id}`}
-                type="button"
-                onClick={() => {
-                  onSelectDirectory(dir.id);
-                  setIsOpen(false);
-                }}
-                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors ${
-                  isSelected
-                    ? 'bg-neutral-soft text-primary font-semibold'
-                    : 'text-muted hover:bg-neutral-soft hover:text-primary'
-                }`}
-              >
-                <Icon name="folder" size={14} className={isSelected ? 'text-accent shrink-0' : 'text-muted shrink-0'} />
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate font-medium text-primary">{dir.label}</span>
-                    {dir.isPrimary ? (
-                      <span className="rounded bg-accent/15 px-1 py-0.2 text-[9px] font-medium text-accent">primary</span>
-                    ) : null}
-                  </div>
-                  {dir.path ? (
-                    <span className="truncate font-mono text-[10px] text-faint">{dir.path}</span>
-                  ) : null}
-                </div>
-                <span
-                  data-debug-id={`directory-option-bridge-${dir.id}`}
-                  className="rounded bg-neutral-soft px-1.5 py-0.5 text-[9.5px] font-mono text-muted shrink-0"
-                  title={`Bridge: ${bridgeInfo.name}`}
-                >
-                  {bridgeInfo.name}
-                </span>
-                {isSelected ? <Icon name="check" size={13} className="text-accent shrink-0 ml-1" /> : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+      {isOpen && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              ref={dropdownRef}
+              data-debug-id="task-chain-directory-dropdown"
+              style={{
+                position: 'fixed',
+                top: coords.top,
+                left: coords.left,
+                zIndex: 9999,
+              }}
+              className="w-72 rounded-lg border border-subtle bg-surface-overlay p-1 shadow-overlay text-[12px] flex flex-col gap-0.5 backdrop-blur-sm"
+            >
+              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-subtle/50 mb-0.5">
+                Directories ({directories.length})
+              </div>
+              {directories.map((dir) => {
+                const isSelected = dir.id === activeDirectory.id;
+                const bridgeInfo = getBridgeDisplay(dir.bridgeId, bridges);
+                return (
+                  <button
+                    key={dir.id}
+                    data-debug-id={dir.isPrimary ? 'directory-option-primary' : `directory-option-${dir.id}`}
+                    type="button"
+                    onClick={() => {
+                      onSelectDirectory(dir.id);
+                      setIsOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors ${
+                      isSelected
+                        ? 'bg-neutral-soft text-primary font-semibold'
+                        : 'text-muted hover:bg-neutral-soft hover:text-primary'
+                    }`}
+                  >
+                    <Icon name="folder" size={14} className={isSelected ? 'text-accent shrink-0' : 'text-muted shrink-0'} />
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate font-medium text-primary">{dir.label}</span>
+                        {dir.isPrimary ? (
+                          <span className="rounded bg-accent/15 px-1 py-0.2 text-[9px] font-medium text-accent">primary</span>
+                        ) : null}
+                      </div>
+                      {dir.path ? (
+                        <span className="truncate font-mono text-[10px] text-faint">{dir.path}</span>
+                      ) : null}
+                    </div>
+                    <span
+                      data-debug-id={`directory-option-bridge-${dir.id}`}
+                      className="rounded bg-neutral-soft px-1.5 py-0.5 text-[9.5px] font-mono text-muted shrink-0"
+                      title={`Bridge: ${bridgeInfo.name}`}
+                    >
+                      {bridgeInfo.name}
+                    </span>
+                    {isSelected ? <Icon name="check" size={13} className="text-accent shrink-0 ml-1" /> : null}
+                  </button>
+                );
+              })}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
@@ -1802,7 +1847,7 @@ export default function ProjectFilesPanel({
               </button>
 
               {/* 4) Directory selector, bridge badge & active file path breadcrumb */}
-              <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden pl-1 text-[11.5px] text-muted">
+              <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1.5 pl-1 text-[11.5px] text-muted">
                 {/* Task Chain Directory Selector Dropdown */}
                 <TaskChainDirectorySelector
                   activeDirectory={activeDirectory}
