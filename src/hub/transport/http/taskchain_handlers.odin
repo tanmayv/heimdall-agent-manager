@@ -561,6 +561,7 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	tasks, _ := taskchain_service.list_tasks(h.taskchains, auth_ctx, chain.chain_id)
 	members, _ := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain.chain_id)
 	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth_ctx, chain.chain_id)
+	dirs, _ := taskchain_service.list_chain_directories(h.taskchains, auth_ctx, chain.chain_id)
 
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"chain_id\":\""); write_handler_json_string(&b, string(chain.chain_id))
@@ -584,6 +585,11 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	for task, i in tasks {
 		if i > 0 do strings.write_byte(&b, ',')
 		write_task_detail_json(&b, h, auth_ctx, task, deps, false)
+	}
+	strings.write_string(&b, "],\"directories\":[")
+	for dir, i in dirs {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_directory_json(&b, dir)
 	}
 	strings.write_string(&b, "]}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
@@ -967,6 +973,136 @@ remove_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !removed do return respond_error(err, req.request_id)
 	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
 	return respond_success("{\"removed\":true}", req.request_id, auth_ctx_server_time(req))
+}
+
+write_directory_json :: proc(b: ^strings.Builder, dir: domain.Task_Chain_Directory) {
+	strings.write_string(b, "{\"directory_id\":\""); write_handler_json_string(b, dir.directory_id)
+	strings.write_string(b, "\",\"path\":\""); write_handler_json_string(b, dir.path)
+	strings.write_string(b, "\",\"bridge_id\":\""); write_handler_json_string(b, dir.bridge_id)
+	strings.write_string(b, "\",\"vcs_kind\":\""); write_handler_json_string(b, dir.vcs_kind)
+	vcs_json := dir.vcs_info_json
+	if vcs_json == "" || !strings.starts_with(vcs_json, "{") {
+		vcs_json = "{}"
+	}
+	strings.write_string(b, "\",\"vcs\":")
+	strings.write_string(b, vcs_json)
+	strings.write_string(b, "}")
+}
+
+list_chain_directories_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	dirs, err := taskchain_service.list_chain_directories(h.taskchains, auth_ctx, chain_id)
+	if err.code != .None do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	strings.write_byte(&b, '[')
+	for d, i in dirs {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_directory_json(&b, d)
+	}
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+}
+
+add_chain_directory_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	path := json_string(req.body, "path")
+	bridge_id := json_string(req.body, "bridge_id")
+	vcs_kind := json_string(req.body, "vcs_kind")
+	vcs_info_json := "{}"
+	if obj, has_obj := json_object_raw_balanced(req.body, "vcs"); has_obj {
+		vcs_info_json = obj
+	} else if obj2, has_obj2 := json_object_raw_balanced(req.body, "vcs_info"); has_obj2 {
+		vcs_info_json = obj2
+	} else if s := json_string(req.body, "vcs_info_json"); s != "" {
+		vcs_info_json = s
+	}
+	if vcs_kind == "" {
+		if obj_vk := json_string(vcs_info_json, "vcs_kind"); obj_vk != "" {
+			vcs_kind = obj_vk
+		} else if obj_k := json_string(vcs_info_json, "kind"); obj_k != "" {
+			vcs_kind = obj_k
+		}
+	}
+	dir, added, err := taskchain_service.add_chain_directory(h.taskchains, auth_ctx, taskchain_service.Add_Directory_Input{
+		chain_id      = chain_id,
+		path          = path,
+		bridge_id     = bridge_id,
+		vcs_kind      = vcs_kind,
+		vcs_info_json = vcs_info_json,
+	})
+	if !added do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(dir.owner_user_id), string(dir.chain_id), "updated")
+	b := strings.builder_make()
+	write_directory_json(&b, dir)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+patch_chain_directory_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	dir_id := path_part(req.path, 6)
+	has_path := strings.contains(req.body, "\"path\"")
+	has_bridge_id := strings.contains(req.body, "\"bridge_id\"")
+	has_vcs_kind := strings.contains(req.body, "\"vcs_kind\"")
+	has_vcs_info := strings.contains(req.body, "\"vcs\"") || strings.contains(req.body, "\"vcs_info\"") || strings.contains(req.body, "\"vcs_info_json\"")
+	vcs_info_json := "{}"
+	if obj, has_obj := json_object_raw_balanced(req.body, "vcs"); has_obj {
+		vcs_info_json = obj
+	} else if obj2, has_obj2 := json_object_raw_balanced(req.body, "vcs_info"); has_obj2 {
+		vcs_info_json = obj2
+	} else if s := json_string(req.body, "vcs_info_json"); s != "" {
+		vcs_info_json = s
+	}
+	dir, updated, err := taskchain_service.update_chain_directory(h.taskchains, auth_ctx, taskchain_service.Update_Directory_Input{
+		directory_id  = dir_id,
+		chain_id      = chain_id,
+		path          = json_string(req.body, "path"),
+		bridge_id     = json_string(req.body, "bridge_id"),
+		vcs_kind      = json_string(req.body, "vcs_kind"),
+		vcs_info_json = vcs_info_json,
+		has_path      = has_path,
+		has_bridge_id = has_bridge_id,
+		has_vcs_kind  = has_vcs_kind,
+		has_vcs_info  = has_vcs_info,
+	})
+	if !updated do return respond_error(err, req.request_id)
+	publish_chain_changed(h, string(dir.owner_user_id), string(dir.chain_id), "updated")
+	b := strings.builder_make()
+	write_directory_json(&b, dir)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+remove_chain_directory_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	dir_id := path_part(req.path, 6)
+	removed, err := taskchain_service.remove_chain_directory(h.taskchains, auth_ctx, chain_id, dir_id)
+	if !removed do return respond_error(err, req.request_id)
+	publish_chain_changed(h, auth_ctx.user_id, string(chain_id), "updated")
+	return respond_success("{\"removed\":true}", req.request_id, auth_ctx_server_time(req))
+}
+
+get_chain_directory_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	dir_id := path_part(req.path, 6)
+	dir, found, err := taskchain_service.get_chain_directory(h.taskchains, auth_ctx, chain_id, dir_id)
+	if !found do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	write_directory_json(&b, dir)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
 write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {

@@ -36,6 +36,10 @@ new_taskchain_repository :: proc(impl: ^Taskchain_Repo_SQLite, conn: ^Conn) -> i
 		save_vote = taskchain_save_vote_sqlite,
 		list_votes_by_task = taskchain_list_votes_by_task_sqlite,
 		delete_votes_by_task = taskchain_delete_votes_by_task_sqlite,
+		save_directory = taskchain_save_directory_sqlite,
+		get_directory = taskchain_get_directory_sqlite,
+		list_directories_by_chain = taskchain_list_directories_by_chain_sqlite,
+		remove_directory = taskchain_remove_directory_sqlite,
 	}
 }
 
@@ -341,6 +345,79 @@ taskchain_delete_votes_by_task_sqlite :: proc(ctx: rawptr, task_id: domain.Task_
 	if sqlite3_step(stmt) != SQLITE_DONE do return 0, domain.domain_error(.Internal_Error, "failed to delete task votes")
 	changes := int(sqlite3_changes(impl.conn.db))
 	return changes, domain.Domain_Error{}
+}
+
+taskchain_save_directory_sqlite :: proc(ctx: rawptr, dir: domain.Task_Chain_Directory) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "INSERT INTO task_chain_directories (directory_id, chain_id, owner_user_id, path, bridge_id, vcs_kind, vcs_info_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(directory_id) DO UPDATE SET path=excluded.path, bridge_id=excluded.bridge_id, vcs_kind=excluded.vcs_kind, vcs_info_json=excluded.vcs_info_json, updated_at=excluded.updated_at;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Internal_Error, "failed to prepare directory save")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, dir.directory_id)
+	bind_text(stmt, 2, string(dir.chain_id))
+	bind_text(stmt, 3, string(dir.owner_user_id))
+	bind_text(stmt, 4, dir.path)
+	bind_text(stmt, 5, dir.bridge_id)
+	bind_text(stmt, 6, dir.vcs_kind)
+	bind_text(stmt, 7, json_or_empty_object(dir.vcs_info_json))
+	bind_text(stmt, 8, dir.created_at)
+	bind_text(stmt, 9, dir.updated_at)
+	if sqlite3_step(stmt) != SQLITE_DONE do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Conflict, "directory could not be saved")
+	return dir, true, domain.Domain_Error{}
+}
+
+taskchain_get_directory_sqlite :: proc(ctx: rawptr, directory_id: string, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "SELECT directory_id, chain_id, owner_user_id, path, bridge_id, vcs_kind, vcs_info_json, created_at, updated_at FROM task_chain_directories WHERE directory_id = ? AND chain_id = ? AND owner_user_id = ?;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Internal_Error, "failed to prepare directory lookup")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, directory_id)
+	bind_text(stmt, 2, string(chain_id))
+	bind_text(stmt, 3, string(owner_user_id))
+	if sqlite3_step(stmt) != SQLITE_ROW do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Not_Found, "directory not found")
+	return directory_from_stmt(stmt), true, domain.Domain_Error{}
+}
+
+taskchain_list_directories_by_chain_sqlite :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Directory, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "SELECT directory_id, chain_id, owner_user_id, path, bridge_id, vcs_kind, vcs_info_json, created_at, updated_at FROM task_chain_directories WHERE chain_id = ? AND owner_user_id = ? ORDER BY created_at ASC, directory_id ASC;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare directory list")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, string(chain_id))
+	bind_text(stmt, 2, string(owner_user_id))
+	out := make([dynamic]domain.Task_Chain_Directory)
+	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, directory_from_stmt(stmt))
+	return out[:], domain.Domain_Error{}
+}
+
+taskchain_remove_directory_sqlite :: proc(ctx: rawptr, directory_id: string, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	impl := (^Taskchain_Repo_SQLite)(ctx)
+	stmt: sqlite3_stmt = nil
+	query := "DELETE FROM task_chain_directories WHERE directory_id = ? AND chain_id = ? AND owner_user_id = ?;"
+	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return false, domain.domain_error(.Internal_Error, "failed to prepare directory deletion")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt, 1, directory_id)
+	bind_text(stmt, 2, string(chain_id))
+	bind_text(stmt, 3, string(owner_user_id))
+	if sqlite3_step(stmt) != SQLITE_DONE do return false, domain.domain_error(.Internal_Error, "failed to delete directory")
+	changes := int(sqlite3_changes(impl.conn.db))
+	return changes > 0, domain.Domain_Error{}
+}
+
+directory_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Task_Chain_Directory {
+	return domain.Task_Chain_Directory{
+		directory_id = column_text(stmt, 0),
+		chain_id = domain.Task_Chain_ID(column_text(stmt, 1)),
+		owner_user_id = domain.User_ID(column_text(stmt, 2)),
+		path = column_text(stmt, 3),
+		bridge_id = column_text(stmt, 4),
+		vcs_kind = column_text(stmt, 5),
+		vcs_info_json = column_text(stmt, 6),
+		created_at = column_text(stmt, 7),
+		updated_at = column_text(stmt, 8),
+	}
 }
 
 bind_task :: proc(stmt: sqlite3_stmt, task: domain.Task) {

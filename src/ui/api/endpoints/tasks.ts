@@ -203,6 +203,24 @@ function preciseTaskTags(taskId?: string, chainId?: string, includeComments = tr
 }
 
 
+export type TaskChainDirectory = {
+  directoryId: string;
+  path: string;
+  bridgeId: string;
+  vcsKind: string;
+  vcs?: Record<string, any>;
+};
+
+export function normalizeTaskChainDirectory(d: any): TaskChainDirectory {
+  return {
+    directoryId: String(d?.directory_id || d?.directoryId || ''),
+    path: String(d?.path || ''),
+    bridgeId: String(d?.bridge_id || d?.bridgeId || ''),
+    vcsKind: String(d?.vcs_kind || d?.vcsKind || ''),
+    vcs: typeof d?.vcs === 'object' && d?.vcs !== null ? d.vcs : {},
+  };
+}
+
 // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
 function normalizeTaskChainDetail(data: any) {
   if (!data) return null;
@@ -281,6 +299,7 @@ function normalizeTaskChainDetail(data: any) {
       createdAt: m.created_at,
     })),
     tasks,
+    directories: (data.directories || []).map(normalizeTaskChainDirectory),
     createdAt: data.created_at || '',
     updatedAt: data.updated_at || '',
   };
@@ -654,6 +673,21 @@ export const tasksApi = heimdallApi.injectEndpoints({
       queryFn: async ({ chainId, agentInstanceId }) => {
         try {
           const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/members/${encodeURIComponent(agentInstanceId)}`, 'DELETE');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }],
+    }),
+    addChainDirectory: build.mutation<any, { chainId: string; path: string; bridgeId?: string; vcsKind?: string }>({
+      queryFn: async ({ chainId, path, bridgeId, vcsKind }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/directories`, 'POST', {
+            path,
+            bridge_id: bridgeId ?? '',
+            vcs_kind: vcsKind ?? '',
+          });
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -1073,6 +1107,7 @@ export const {
   useSetInstanceCurrentTaskMutation,
   useAddChainMemberMutation,
   useRemoveChainMemberMutation,
+  useAddChainDirectoryMutation,
 
   useCreateTaskMutation,
   useDeleteTaskMutation,

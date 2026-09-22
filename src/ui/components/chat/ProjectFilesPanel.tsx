@@ -41,7 +41,143 @@ import {
   type FsListResult,
   type FsReadFileResult,
   type FsQuickOpenResult,
+  type FsScopeArgs,
 } from '../../api/endpoints/projectFs';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
+import { useFetchTaskChainDetailQuery, useAddChainDirectoryMutation, type TaskChainDirectory } from '../../api/endpoints/tasks';
+import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
+
+export type DirectoryItem = {
+  id: string; // 'primary' | dir.directoryId
+  label: string;
+  path: string;
+  bridgeId: string;
+  vcsKind?: string;
+  isPrimary: boolean;
+};
+
+export function getBridgeDisplay(bridgeId?: string, bridges: any[] = []): { name: string; id: string; isOnline: boolean } {
+  const bId = String(bridgeId || '').trim();
+  if (!bId) return { name: 'local', id: 'local', isOnline: true };
+  const found = (bridges || []).find((b: any) => (b.bridge_id || b.bridgeId) === bId);
+  if (found) {
+    const name = found.name || found.label || (bId.startsWith('brg_') ? bId.slice(4, 12) : bId);
+    return { name, id: bId, isOnline: found.status === 'online' };
+  }
+  const name = bId.startsWith('brg_') ? bId.slice(4, 12) : bId;
+  return { name, id: bId, isOnline: false };
+}
+
+export function TaskChainDirectorySelector({
+  activeDirectory,
+  directories,
+  bridges,
+  onSelectDirectory,
+  debugPrefix = 'project-files',
+}: {
+  activeDirectory: DirectoryItem;
+  directories: DirectoryItem[];
+  bridges: any[];
+  onSelectDirectory: (dirId: string) => void;
+  debugPrefix?: string;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen]);
+
+  return (
+    <div ref={containerRef} className="relative shrink-0">
+      <button
+        data-debug-id="task-chain-directory-selector-btn"
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        aria-haspopup="true"
+        aria-expanded={isOpen ? 'true' : 'false'}
+        title={`Select Directory: ${activeDirectory.label} (${activeDirectory.path || 'root'})`}
+        className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-[11.5px] font-medium transition-colors max-w-[160px] sm:max-w-[220px] ${
+          isOpen
+            ? 'bg-neutral-soft text-primary shadow-xs'
+            : 'text-primary hover:bg-neutral-soft'
+        }`}
+      >
+        <Icon name="folder" size={13} className="text-accent shrink-0" />
+        <span className="truncate font-semibold">{activeDirectory.label}</span>
+        <Icon name="chevron-down" size={10} className="text-muted shrink-0 ml-0.5" />
+      </button>
+
+      {isOpen ? (
+        <div
+          data-debug-id="task-chain-directory-dropdown"
+          className="absolute left-0 top-full mt-1 w-72 rounded-lg border border-subtle bg-surface-overlay p-1 shadow-overlay z-50 text-[12px] flex flex-col gap-0.5 backdrop-blur-sm"
+        >
+          <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-subtle/50 mb-0.5">
+            Directories ({directories.length})
+          </div>
+          {directories.map((dir) => {
+            const isSelected = dir.id === activeDirectory.id;
+            const bridgeInfo = getBridgeDisplay(dir.bridgeId, bridges);
+            return (
+              <button
+                key={dir.id}
+                data-debug-id={dir.isPrimary ? 'directory-option-primary' : `directory-option-${dir.id}`}
+                type="button"
+                onClick={() => {
+                  onSelectDirectory(dir.id);
+                  setIsOpen(false);
+                }}
+                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors ${
+                  isSelected
+                    ? 'bg-neutral-soft text-primary font-semibold'
+                    : 'text-muted hover:bg-neutral-soft hover:text-primary'
+                }`}
+              >
+                <Icon name="folder" size={14} className={isSelected ? 'text-accent shrink-0' : 'text-muted shrink-0'} />
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate font-medium text-primary">{dir.label}</span>
+                    {dir.isPrimary ? (
+                      <span className="rounded bg-accent/15 px-1 py-0.2 text-[9px] font-medium text-accent">primary</span>
+                    ) : null}
+                  </div>
+                  {dir.path ? (
+                    <span className="truncate font-mono text-[10px] text-faint">{dir.path}</span>
+                  ) : null}
+                </div>
+                <span
+                  data-debug-id={`directory-option-bridge-${dir.id}`}
+                  className="rounded bg-neutral-soft px-1.5 py-0.5 text-[9.5px] font-mono text-muted shrink-0"
+                  title={`Bridge: ${bridgeInfo.name}`}
+                >
+                  {bridgeInfo.name}
+                </span>
+                {isSelected ? <Icon name="check" size={13} className="text-accent shrink-0 ml-1" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export type EditorTab = {
   path: string;
@@ -223,6 +359,8 @@ export type FileLineComment = {
 export type ProjectFilesPanelProps = {
   projectId: string;
   bridgeId?: string;
+  chainId?: string;
+  directories?: TaskChainDirectory[];
   projectName?: string;
   agentInstanceId?: string;
   // Scope key for the in-memory comment store: comments reset when this changes
@@ -242,6 +380,8 @@ export type ProjectFilesPanelProps = {
 export default function ProjectFilesPanel({
   projectId,
   bridgeId = '',
+  chainId,
+  directories: propDirectories,
   projectName,
   agentInstanceId,
   conversationKey = '',
@@ -265,14 +405,76 @@ export default function ProjectFilesPanel({
   const [batchWriteProjectFiles, batchWriteState] = useBatchWriteProjectFilesMutation();
   const { theme } = useTheme();
 
+  // Task Chain Directories & Bridge Resolution (REQ-UI-TASK-CHAIN-DIRECTORY-SELECTOR, REQ-UI-DIRECTORY-BRIDGE-DISPLAY)
+  const chainDetailQuery = useFetchTaskChainDetailQuery(
+    { chainId: chainId || '' },
+    { skip: !chainId, pollingInterval: 120000 }
+  );
+  const taskChainDirectories: TaskChainDirectory[] = useMemo(() => {
+    if (propDirectories && propDirectories.length > 0) return propDirectories;
+    return chainDetailQuery.data?.chain?.directories || [];
+  }, [propDirectories, chainDetailQuery.data?.chain?.directories]);
+
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 120000 });
+  const bridges = useMemo(() => bridgesQuery.data?.bridges || [], [bridgesQuery.data?.bridges]);
+
+  const [activeDirectoryId, setActiveDirectoryId] = useState<string>('primary');
+  const [mountedDirIds, setMountedDirIds] = useState<Set<string>>(() => new Set(['primary']));
+
   // Quick Open Modal state (Cmd+P / Ctrl+P) (REQ-UI-GLOBAL-QUICK-OPEN)
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
 
-  // Multi-file editor state (REQ-UI-INSTANCE-MONACO-PERSISTENCE)
+  // Add Directory Modal state (REQ-UI-ADD-DIRECTORY-MODAL)
+  const [isAddDirectoryOpen, setIsAddDirectoryOpen] = useState(false);
+
+  type DirectorySessionState = {
+    openTabs: EditorTab[];
+    activeTabPath: string;
+    cwd: string;
+    isDiffMode: boolean;
+  };
+
+  const [directorySessions, setDirectorySessions] = useState<Record<string, DirectorySessionState>>(() => {
+    const initial: Record<string, DirectorySessionState> = {};
+    const scopeKey = chainId || agentInstanceId || projectId;
+    if (typeof window !== 'undefined' && scopeKey) {
+      try {
+        let primTabs: EditorTab[] = [];
+        let primActive = '';
+        const primRaw =
+          localStorage.getItem(`heimdall:editor:tabs:${scopeKey}:primary`) ||
+          (agentInstanceId ? localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`) : null);
+        if (primRaw) {
+          const parsed = JSON.parse(primRaw);
+          if (Array.isArray(parsed?.openTabs)) primTabs = parsed.openTabs;
+          else if (Array.isArray(parsed)) primTabs = parsed;
+          primActive = typeof parsed?.activeTabPath === 'string' ? parsed.activeTabPath : (primTabs[0]?.path || '');
+        }
+        let primCwd = '';
+        const primTree = agentInstanceId ? localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`) : null;
+        if (primTree) {
+          const parsed = JSON.parse(primTree);
+          if (typeof parsed?.cwd === 'string') primCwd = parsed.cwd;
+        }
+        initial['primary'] = {
+          openTabs: primTabs,
+          activeTabPath: primActive,
+          cwd: primCwd,
+          isDiffMode: false,
+        };
+      } catch {}
+    }
+    return initial;
+  });
+
+  // Multi-file editor state (REQ-UI-INSTANCE-MONACO-PERSISTENCE, REQ-UI-PER-DIRECTORY-MONACO-INSTANCES)
   const [openTabs, setOpenTabs] = useState<EditorTab[]>(() => {
     if (!agentInstanceId || typeof window === 'undefined') return [];
     try {
-      const raw = localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
+      const scopeKey = chainId || agentInstanceId || projectId;
+      const raw =
+        (scopeKey ? localStorage.getItem(`heimdall:editor:tabs:${scopeKey}:primary`) : null) ||
+        localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed?.openTabs)) return parsed.openTabs;
@@ -284,7 +486,10 @@ export default function ProjectFilesPanel({
   const [activeTabPath, setActiveTabPath] = useState<string>(() => {
     if (!agentInstanceId || typeof window === 'undefined') return '';
     try {
-      const raw = localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
+      const scopeKey = chainId || agentInstanceId || projectId;
+      const raw =
+        (scopeKey ? localStorage.getItem(`heimdall:editor:tabs:${scopeKey}:primary`) : null) ||
+        localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (typeof parsed?.activeTabPath === 'string') return parsed.activeTabPath;
@@ -297,7 +502,10 @@ export default function ProjectFilesPanel({
   const [isEditMode, setIsEditMode] = useState<boolean>(() => {
     if (!agentInstanceId || typeof window === 'undefined') return false;
     try {
-      const raw = localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
+      const scopeKey = chainId || agentInstanceId || projectId;
+      const raw =
+        (scopeKey ? localStorage.getItem(`heimdall:editor:tabs:${scopeKey}:primary`) : null) ||
+        localStorage.getItem(`heimdall:editor:tabs:${agentInstanceId}`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed?.openTabs)) return parsed.openTabs.length > 0;
@@ -316,15 +524,27 @@ export default function ProjectFilesPanel({
   // Track active agentInstanceId for tab state to guard against cross-saving during instance transitions
   const activeInstanceRef = useRef(agentInstanceId);
 
-  // Persist openTabs and activeTabPath per agentInstanceId (REQ-UI-INSTANCE-MONACO-PERSISTENCE)
+  // Persist openTabs and activeTabPath per directory and per agentInstanceId (REQ-UI-INSTANCE-MONACO-PERSISTENCE, REQ-UI-PER-DIRECTORY-MONACO-INSTANCES)
   useEffect(() => {
-    if (!agentInstanceId || typeof window === 'undefined') return;
-    if (activeInstanceRef.current !== agentInstanceId) return;
+    if (typeof window === 'undefined') return;
+    const scopeKey = chainId || agentInstanceId || projectId;
+    if (!scopeKey) return;
     try {
       const payload = JSON.stringify({ openTabs, activeTabPath });
-      localStorage.setItem(`heimdall:editor:tabs:${agentInstanceId}`, payload);
+      localStorage.setItem(`heimdall:editor:tabs:${scopeKey}:${activeDirectoryId}`, payload);
+      if (activeDirectoryId === 'primary' && agentInstanceId) {
+        localStorage.setItem(`heimdall:editor:tabs:${agentInstanceId}`, payload);
+      }
+      setDirectorySessions((prev) => ({
+        ...prev,
+        [activeDirectoryId]: {
+          ...(prev[activeDirectoryId] || { cwd: '', isDiffMode: false }),
+          openTabs,
+          activeTabPath,
+        },
+      }));
     } catch {}
-  }, [agentInstanceId, openTabs, activeTabPath]);
+  }, [chainId, agentInstanceId, projectId, activeDirectoryId, openTabs, activeTabPath]);
 
   // Split-pane & explorer collapse/resizing state (REQ-IDE-SPLIT-PANE, REQ-IDE-FILE-TREE, REQ-UI-SIDEBAR-PERSISTENCE, REQ-UI-INSTANCE-TREE-PERSISTENCE)
   const [isExplorerCollapsed, setIsExplorerCollapsed] = useState<boolean>(() => {
@@ -493,8 +713,11 @@ export default function ProjectFilesPanel({
 
   const [cwd, setCwd] = useState<string>(() => {
     try {
-      if (agentInstanceId) {
-        const treeRaw = localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`);
+      const scopeKey = chainId || agentInstanceId || projectId;
+      if (scopeKey) {
+        const treeRaw =
+          localStorage.getItem(`heimdall:editor:tree:${scopeKey}:primary`) ||
+          (agentInstanceId ? localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`) : null);
         if (treeRaw) {
           const parsed = JSON.parse(treeRaw);
           if (typeof parsed?.cwd === 'string') {
@@ -506,19 +729,78 @@ export default function ProjectFilesPanel({
     return '';
   }); // project-root-relative path ('' = root)
 
-  // Persist cwd and isExplorerCollapsed per agentInstanceId (REQ-UI-INSTANCE-TREE-PERSISTENCE)
+  const [rootAbs, setRootAbs] = useState('');
+
+  // Available directories (primary project root + extra task chain directories)
+  const availableDirectories = useMemo<DirectoryItem[]>(() => {
+    const primary: DirectoryItem = {
+      id: 'primary',
+      label: projectName || (rootAbs ? baseName(rootAbs) : 'Primary Project'),
+      path: rootAbs || '',
+      bridgeId: bridgeId || '',
+      isPrimary: true,
+    };
+    const extras: DirectoryItem[] = (taskChainDirectories || []).map((d) => ({
+      id: d.directoryId,
+      label: baseName(d.path) || d.path || d.directoryId,
+      path: d.path,
+      bridgeId: d.bridgeId,
+      vcsKind: d.vcsKind,
+      isPrimary: false,
+    }));
+    return [primary, ...extras];
+  }, [projectName, rootAbs, bridgeId, taskChainDirectories]);
+
+  const activeDirectory = useMemo(() => {
+    return availableDirectories.find((d) => d.id === activeDirectoryId) || availableDirectories[0];
+  }, [availableDirectories, activeDirectoryId]);
+
+  const activeFsTarget = useMemo<FsScopeArgs>(() => {
+    if (!activeDirectory || activeDirectory.id === 'primary') {
+      return {
+        projectId,
+        chainId: undefined,
+        directoryId: undefined,
+        bridgeId: bridgeId || '',
+      };
+    }
+    return {
+      projectId: undefined,
+      chainId,
+      directoryId: activeDirectory.id,
+      bridgeId: activeDirectory.bridgeId || bridgeId || '',
+    };
+  }, [activeDirectory, projectId, chainId, bridgeId]);
+
+  const activeBridgeDisplay = useMemo(
+    () => getBridgeDisplay(activeDirectory?.bridgeId || bridgeId, bridges),
+    [activeDirectory?.bridgeId, bridgeId, bridges]
+  );
+
+
+  // Persist cwd and isExplorerCollapsed per directory and per agentInstanceId (REQ-UI-INSTANCE-TREE-PERSISTENCE)
   useEffect(() => {
-    if (!agentInstanceId || typeof window === 'undefined') return;
-    if (activeInstanceRef.current !== agentInstanceId) return;
+    if (typeof window === 'undefined') return;
+    const scopeKey = chainId || agentInstanceId || projectId;
+    if (!scopeKey) return;
     try {
-      const treeRaw = localStorage.getItem(`heimdall:editor:tree:${agentInstanceId}`);
+      const treeRaw = localStorage.getItem(`heimdall:editor:tree:${scopeKey}:${activeDirectoryId}`);
       const parsed = treeRaw ? JSON.parse(treeRaw) : {};
       parsed.cwd = cwd;
       parsed.isExplorerCollapsed = isExplorerCollapsed;
-      localStorage.setItem(`heimdall:editor:tree:${agentInstanceId}`, JSON.stringify(parsed));
+      localStorage.setItem(`heimdall:editor:tree:${scopeKey}:${activeDirectoryId}`, JSON.stringify(parsed));
+      if (activeDirectoryId === 'primary' && agentInstanceId) {
+        localStorage.setItem(`heimdall:editor:tree:${agentInstanceId}`, JSON.stringify(parsed));
+      }
+      setDirectorySessions((prev) => ({
+        ...prev,
+        [activeDirectoryId]: {
+          ...(prev[activeDirectoryId] || { openTabs: [], activeTabPath: '', isDiffMode: false }),
+          cwd,
+        },
+      }));
     } catch {}
-  }, [agentInstanceId, cwd, isExplorerCollapsed]);
-  const [rootAbs, setRootAbs] = useState('');
+  }, [chainId, agentInstanceId, projectId, activeDirectoryId, cwd, isExplorerCollapsed]);
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -591,16 +873,19 @@ export default function ProjectFilesPanel({
 
   // Load a directory listing (optionally appending a paginated page).
   const load = useCallback(
-    async (path: string, opts?: { cursor?: string | null; append?: boolean }) => {
-      if (!projectId) return;
+    async (path: string, opts?: { cursor?: string | null; append?: boolean }, scopeOverride?: FsScopeArgs) => {
+      const scope = scopeOverride || activeFsTarget;
+      if (!scope.projectId && (!scope.chainId || !scope.directoryId)) return;
       const append = Boolean(opts?.append);
       setError('');
       if (append) setLoadingMore(true);
       else setLoading(true);
       try {
         const res: FsListResult = await listDir({
-          projectId,
-          bridgeId,
+          projectId: scope.projectId,
+          chainId: scope.chainId,
+          directoryId: scope.directoryId,
+          bridgeId: scope.bridgeId,
           path,
           includeHidden,
           cursor: opts?.cursor ?? null,
@@ -626,7 +911,106 @@ export default function ProjectFilesPanel({
         else setLoading(false);
       }
     },
-    [projectId, bridgeId, includeHidden, listDir],
+    [activeFsTarget, includeHidden, listDir],
+  );
+
+  // Switch active directory while preserving Monaco state, undo buffers, tabs, and cwd per directory
+  const switchDirectory = useCallback(
+    (newDirId: string) => {
+      if (newDirId === activeDirectoryId) return;
+
+      const prevDirId = activeDirectoryId;
+      const currentSnapshot: DirectorySessionState = {
+        openTabs,
+        activeTabPath,
+        cwd,
+        isDiffMode,
+      };
+      setDirectorySessions((prev) => ({
+        ...prev,
+        [prevDirId]: currentSnapshot,
+      }));
+
+      const scopeKey = chainId || agentInstanceId || projectId;
+      if (scopeKey && typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(
+            `heimdall:editor:tabs:${scopeKey}:${prevDirId}`,
+            JSON.stringify({ openTabs, activeTabPath })
+          );
+          localStorage.setItem(
+            `heimdall:editor:tree:${scopeKey}:${prevDirId}`,
+            JSON.stringify({ cwd, isExplorerCollapsed })
+          );
+        } catch {}
+      }
+
+      setMountedDirIds((prev) => new Set(prev).add(newDirId));
+
+      let nextSession = directorySessions[newDirId];
+      if (!nextSession && scopeKey && typeof window !== 'undefined') {
+        try {
+          const rawTabs = localStorage.getItem(`heimdall:editor:tabs:${scopeKey}:${newDirId}`);
+          const rawTree = localStorage.getItem(`heimdall:editor:tree:${scopeKey}:${newDirId}`);
+          let restoredTabs: EditorTab[] = [];
+          let restoredActive = '';
+          let restoredCwd = '';
+          if (rawTabs) {
+            const parsed = JSON.parse(rawTabs);
+            if (Array.isArray(parsed?.openTabs)) restoredTabs = parsed.openTabs;
+            else if (Array.isArray(parsed)) restoredTabs = parsed;
+            restoredActive = typeof parsed?.activeTabPath === 'string' ? parsed.activeTabPath : (restoredTabs[0]?.path || '');
+          }
+          if (rawTree) {
+            const parsed = JSON.parse(rawTree);
+            if (typeof parsed?.cwd === 'string') restoredCwd = parsed.cwd;
+          }
+          nextSession = {
+            openTabs: restoredTabs,
+            activeTabPath: restoredActive,
+            cwd: restoredCwd,
+            isDiffMode: false,
+          };
+        } catch {}
+      }
+
+      const nextTabs = nextSession?.openTabs || [];
+      const nextActive = nextSession?.activeTabPath || (nextTabs[0]?.path || '');
+      const nextCwd = nextSession?.cwd || '';
+      const nextDiffMode = Boolean(nextSession?.isDiffMode);
+
+      setActiveDirectoryId(newDirId);
+      setOpenTabs(nextTabs);
+      setActiveTabPath(nextActive);
+      setIsEditMode(nextTabs.length > 0);
+      setCwd(nextCwd);
+      setIsDiffMode(nextDiffMode);
+      setPending(null);
+      setSaveFeedback(null);
+      setConfirmClosePath(null);
+
+      const nextTargetDir = availableDirectories.find((d) => d.id === newDirId);
+      const nextScope: FsScopeArgs = !nextTargetDir || nextTargetDir.id === 'primary'
+        ? { projectId, bridgeId: bridgeId || '' }
+        : { chainId, directoryId: nextTargetDir.id, bridgeId: nextTargetDir.bridgeId || bridgeId || '' };
+
+      void load(nextCwd, undefined, nextScope);
+    },
+    [
+      activeDirectoryId,
+      openTabs,
+      activeTabPath,
+      cwd,
+      isDiffMode,
+      directorySessions,
+      chainId,
+      agentInstanceId,
+      projectId,
+      isExplorerCollapsed,
+      availableDirectories,
+      bridgeId,
+      load,
+    ]
   );
 
   const cwdRef = useRef(cwd);
@@ -824,8 +1208,7 @@ export default function ProjectFilesPanel({
       while (!eof && iterations < 100) {
         iterations++;
         const res: FsReadFileResult = await readFile({
-          projectId,
-          bridgeId,
+          ...activeFsTarget,
           path: filePath,
           offset,
         }).unwrap();
@@ -880,7 +1263,7 @@ export default function ProjectFilesPanel({
       }
       return { content: acc, isImage, mime };
     },
-    [readFile, projectId, bridgeId]
+    [readFile, activeFsTarget]
   );
 
   const openFileInEditor = useCallback(
@@ -1012,8 +1395,7 @@ export default function ProjectFilesPanel({
     setSaveFeedback(null);
     try {
       const res = await writeProjectFile({
-        projectId,
-        bridgeId,
+        ...activeFsTarget,
         path: activeEditorTab.path,
         content: activeEditorTab.content,
         encoding: 'utf8',
@@ -1044,7 +1426,7 @@ export default function ProjectFilesPanel({
         message: str(err?.message || err?.error) || 'Failed to save file',
       });
     }
-  }, [activeEditorTab, writeState.isLoading, writeProjectFile, projectId, bridgeId, cwd, load]);
+  }, [activeEditorTab, writeState.isLoading, writeProjectFile, activeFsTarget, cwd, load]);
 
   const saveAllFiles = useCallback(async () => {
     const dirtyTabs = openTabs.filter((t) => t.isDirty && !t.isImage && !t.isUnviewable);
@@ -1052,8 +1434,7 @@ export default function ProjectFilesPanel({
     setSaveFeedback(null);
     try {
       const res = await batchWriteProjectFiles({
-        projectId,
-        bridgeId,
+        ...activeFsTarget,
         files: dirtyTabs.map((t) => ({ path: t.path, content: t.content })),
       }).unwrap();
 
@@ -1091,7 +1472,7 @@ export default function ProjectFilesPanel({
         message: str(err?.message || err?.error) || 'Failed to save files',
       });
     }
-  }, [openTabs, batchWriteState.isLoading, batchWriteProjectFiles, projectId, bridgeId, cwd, load]);
+  }, [openTabs, batchWriteState.isLoading, batchWriteProjectFiles, activeFsTarget, cwd, load]);
 
   const handleContentChange = useCallback(
     (path: string, newContent: string) => {
@@ -1186,7 +1567,7 @@ export default function ProjectFilesPanel({
       if (pending.kind === 'new-file') {
         if (!name) return;
         const targetPath = joinPath(cwd, name);
-        const res = await createFile({ projectId, bridgeId, path: targetPath }).unwrap();
+        const res = await createFile({ ...activeFsTarget, path: targetPath }).unwrap();
         if (!res.ok) return setError(mutationError(res.error?.code, res.error?.message) || 'Could not create file');
         setPending(null);
         setNameDraft('');
@@ -1195,7 +1576,7 @@ export default function ProjectFilesPanel({
         return;
       } else if (pending.kind === 'new-dir') {
         if (!name) return;
-        const res = await createDir({ projectId, bridgeId, path: joinPath(cwd, name) }).unwrap();
+        const res = await createDir({ ...activeFsTarget, path: joinPath(cwd, name) }).unwrap();
         if (!res.ok) return setError(mutationError(res.error?.code, res.error?.message) || 'Could not create folder');
       } else if (pending.kind === 'rename') {
         if (!name || name === pending.entry.name) {
@@ -1204,7 +1585,7 @@ export default function ProjectFilesPanel({
         }
         const from = joinPath(cwd, pending.entry.name);
         const to = joinPath(cwd, name);
-        const res = await movePath({ projectId, bridgeId, from, to }).unwrap();
+        const res = await movePath({ ...activeFsTarget, from, to }).unwrap();
         if (!res.ok) return setError(mutationError(res.error?.code, res.error?.message) || 'Could not rename');
       }
       setPending(null);
@@ -1224,7 +1605,7 @@ export default function ProjectFilesPanel({
       return;
     }
     try {
-      const res = await deletePath({ projectId, bridgeId, path: target, recursive: entry.is_dir }).unwrap();
+      const res = await deletePath({ ...activeFsTarget, path: target, recursive: entry.is_dir }).unwrap();
       if (!res.ok) {
         setError(mutationError(res.error?.code, res.error?.message) || 'Could not delete');
         return;
@@ -1420,10 +1801,42 @@ export default function ProjectFilesPanel({
                 <span className="hidden sm:inline">Save</span>
               </button>
 
-              {/* 4) Active file path breadcrumb (with ellipsis on narrow widths) */}
-              <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden truncate pl-1 text-[11.5px] text-muted">
+              {/* 4) Directory selector, bridge badge & active file path breadcrumb */}
+              <div data-debug-id={`${debugPrefix}-breadcrumb`} className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden pl-1 text-[11.5px] text-muted">
+                {/* Task Chain Directory Selector Dropdown */}
+                <TaskChainDirectorySelector
+                  activeDirectory={activeDirectory}
+                  directories={availableDirectories}
+                  bridges={bridges}
+                  onSelectDirectory={switchDirectory}
+                  debugPrefix={debugPrefix}
+                />
+
+                {/* '+' icon button to open Add Chain Directory modal (REQ-UI-ADD-DIRECTORY-MODAL) */}
+                <button
+                  data-debug-id="add-task-chain-directory-btn"
+                  type="button"
+                  onClick={() => setIsAddDirectoryOpen(true)}
+                  title="Add Directory to Task Chain"
+                  aria-label="Add Directory to Task Chain"
+                  className="grid h-5 w-5 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
+                >
+                  <Icon name="plus" size={12} />
+                </button>
+
+                {/* Dedicated Bridge Name Badge for Active Directory */}
+                <span
+                  data-debug-id="active-directory-bridge-badge"
+                  className="rounded bg-neutral-soft px-1.5 py-0.5 text-[10px] font-medium text-muted shrink-0"
+                  title={`Bridge: ${activeBridgeDisplay.name} (${activeBridgeDisplay.id})`}
+                >
+                  {activeBridgeDisplay.name}
+                </span>
+
+                <span className="text-faint shrink-0">/</span>
+
                 {activeEditorTab ? (
-                  <div className="flex min-w-0 items-center gap-1">
+                  <div className="flex min-w-0 items-center gap-1 overflow-hidden">
                     {/* Locate button: reveal active file in explorer and expand if collapsed (REQ-UI-EXPLORER-ACTIVE-FILE-FOCUS) */}
                     <button
                       data-debug-id="project-files-locate-file-btn"
@@ -1444,20 +1857,22 @@ export default function ProjectFilesPanel({
                     </span>
                   </div>
                 ) : (
-                  crumbs.map((c, i) => (
-                    <span key={c.path || 'root'} className="flex shrink-0 items-center gap-0.5">
-                      {i > 0 ? <Icon name="chevron-right" size={10} className="text-faint" /> : null}
-                      <button
-                        data-debug-id={`${debugPrefix}-crumb-${i}`}
-                        type="button"
-                        onClick={() => openDir(c.path)}
-                        disabled={i === crumbs.length - 1}
-                        className="max-w-[120px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
-                      >
-                        {c.label}
-                      </button>
-                    </span>
-                  ))
+                  <div className="flex min-w-0 items-center gap-0.5 overflow-hidden truncate">
+                    {crumbs.map((c, i) => (
+                      <span key={c.path || 'root'} className="flex shrink-0 items-center gap-0.5">
+                        {i > 0 ? <Icon name="chevron-right" size={10} className="text-faint" /> : null}
+                        <button
+                          data-debug-id={`${debugPrefix}-crumb-${i}`}
+                          type="button"
+                          onClick={() => openDir(c.path)}
+                          disabled={i === crumbs.length - 1}
+                          className="max-w-[120px] truncate rounded px-1 py-0.5 hover:bg-neutral-soft hover:text-primary disabled:cursor-default disabled:text-primary disabled:hover:bg-transparent"
+                        >
+                          {i === 0 ? activeDirectory.label : c.label}
+                        </button>
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
 
@@ -1884,75 +2299,93 @@ export default function ProjectFilesPanel({
                   : 'flex flex-1'
               } min-h-0 flex-col overflow-hidden bg-surface`}
             >
-              {openTabs.length > 0 && activeEditorTab ? (
-                <MonacoMultiFileEditor
-                  tabs={openTabs}
-                  activeTab={activeEditorTab}
-                  onSelectTab={selectTab}
-                  onCloseTab={closeTab}
-                  onContentChange={handleContentChange}
-                  onSaveActive={saveActiveFile}
-                  onSaveAll={saveAllFiles}
-                  isSaving={writeState.isLoading}
-                  isBatchSaving={batchWriteState.isLoading}
-                  saveFeedback={saveFeedback}
-                  onBackToFiles={() => {
-                    if (isSinglePane) setActivePane('files');
-                    else updateExplorerCollapsed((prev) => !prev);
-                  }}
-                  onToggleExplorer={() => {
-                    if (isSinglePane) setActivePane('files');
-                    else updateExplorerCollapsed((prev) => !prev);
-                  }}
-                  isExplorerCollapsed={isExplorerCollapsed}
-                  onNewFile={handleEditorNewFile}
-                  cwd={cwd}
-                  debugPrefix={debugPrefix}
-                  themeAppearance={theme?.appearance}
-                  isVimMode={isVimMode}
-                  isWordWrap={isWordWrap}
-                  comments={commentsForPath(activeEditorTab.path)}
-                  onAddComment={(line, lineText, body) => addComment(activeEditorTab.path, line, lineText, body)}
-                  onEditComment={editComment}
-                  onDeleteComment={deleteComment}
-                  onCommentFile={() => {
-                    setPathCommentDraft('');
-                    setPathCommentFor({
-                      path: activeEditorTab.path,
-                      label: `file: ${baseName(activeEditorTab.path)}`,
-                    });
-                  }}
-                  isDiffMode={isDiffMode}
-                  onToggleDiff={() => setIsDiffMode((prev) => !prev)}
-                />
-              ) : (
-                <div
-                  data-debug-id={`${debugPrefix}-editor-empty-state`}
-                  className="flex min-h-0 flex-1 flex-col bg-surface"
-                >
-                  <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center">
-                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-neutral-soft text-muted mb-3">
-                      <Icon name="file" size={28} />
-                    </div>
-                    <h3 className="text-body font-semibold text-primary mb-1">No Files Open</h3>
-                    <p
-                      data-debug-id={`${debugPrefix}-empty-prompt`}
-                      className="max-w-md text-caption text-muted mb-4"
-                    >
-                      Select a file from the explorer to view or edit, or press + to create a new file
-                    </p>
-                    <button
-                      data-debug-id={`${debugPrefix}-empty-new-file-btn`}
-                      type="button"
-                      onClick={() => void handleEditorNewFile('untitled.txt')}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-semibold text-accent-fg hover:opacity-90"
-                      title="Create new file (+)"
-                    >
-                      <Icon name="plus" size={14} /> + New File
-                    </button>
+              {Array.from(mountedDirIds).map((dirId) => {
+                const isCurrent = dirId === activeDirectoryId;
+                const dirTabs = isCurrent ? openTabs : (directorySessions[dirId]?.openTabs || []);
+                const dirActivePath = isCurrent ? activeTabPath : (directorySessions[dirId]?.activeTabPath || '');
+                const dirActiveTab = dirTabs.find((t) => t.path === dirActivePath);
+                const dirCwd = isCurrent ? cwd : (directorySessions[dirId]?.cwd || '');
+                const dirDiffMode = isCurrent ? isDiffMode : Boolean(directorySessions[dirId]?.isDiffMode);
+
+                return (
+                  <div
+                    key={dirId}
+                    data-debug-id={`directory-editor-container-${dirId}`}
+                    style={{ display: isCurrent ? 'flex' : 'none' }}
+                    className="min-h-0 flex-1 flex-col w-full h-full"
+                  >
+                    {dirTabs.length > 0 && dirActiveTab ? (
+                      <MonacoMultiFileEditor
+                        tabs={dirTabs}
+                        activeTab={dirActiveTab}
+                        onSelectTab={selectTab}
+                        onCloseTab={closeTab}
+                        onContentChange={handleContentChange}
+                        onSaveActive={saveActiveFile}
+                        onSaveAll={saveAllFiles}
+                        isSaving={writeState.isLoading}
+                        isBatchSaving={batchWriteState.isLoading}
+                        saveFeedback={saveFeedback}
+                        onBackToFiles={() => {
+                          if (isSinglePane) setActivePane('files');
+                          else updateExplorerCollapsed((prev) => !prev);
+                        }}
+                        onToggleExplorer={() => {
+                          if (isSinglePane) setActivePane('files');
+                          else updateExplorerCollapsed((prev) => !prev);
+                        }}
+                        isExplorerCollapsed={isExplorerCollapsed}
+                        onNewFile={handleEditorNewFile}
+                        cwd={dirCwd}
+                        debugPrefix={debugPrefix}
+                        themeAppearance={theme?.appearance}
+                        isVimMode={isVimMode}
+                        isWordWrap={isWordWrap}
+                        comments={commentsForPath(dirActiveTab.path)}
+                        onAddComment={(line, lineText, body) => addComment(dirActiveTab.path, line, lineText, body)}
+                        onEditComment={editComment}
+                        onDeleteComment={deleteComment}
+                        onCommentFile={() => {
+                          setPathCommentDraft('');
+                          setPathCommentFor({
+                            path: dirActiveTab.path,
+                            label: `file: ${baseName(dirActiveTab.path)}`,
+                          });
+                        }}
+                        isDiffMode={dirDiffMode}
+                        onToggleDiff={() => setIsDiffMode((prev) => !prev)}
+                      />
+                    ) : (
+                      <div
+                        data-debug-id={`${debugPrefix}-editor-empty-state`}
+                        className="flex min-h-0 flex-1 flex-col bg-surface"
+                      >
+                        <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-8 text-center">
+                          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-neutral-soft text-muted mb-3">
+                            <Icon name="file" size={28} />
+                          </div>
+                          <h3 className="text-body font-semibold text-primary mb-1">No Files Open</h3>
+                          <p
+                            data-debug-id={`${debugPrefix}-empty-prompt`}
+                            className="max-w-md text-caption text-muted mb-4"
+                          >
+                            Select a file from the explorer to view or edit, or press + to create a new file
+                          </p>
+                          <button
+                            data-debug-id={`${debugPrefix}-empty-new-file-btn`}
+                            type="button"
+                            onClick={() => void handleEditorNewFile('untitled.txt')}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-caption font-semibold text-accent-fg hover:opacity-90"
+                            title="Create new file (+)"
+                          >
+                            <Icon name="plus" size={14} /> + New File
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                );
+              })}
             </div>
           </div>
         </>
@@ -2045,13 +2478,29 @@ export default function ProjectFilesPanel({
         </div>
       ) : null}
 
-      {/* Quick Open Modal (Cmd+P / Ctrl+P) (REQ-UI-GLOBAL-QUICK-OPEN) */}
+      {/* Quick Open Modal (Cmd+P / Ctrl+P) (REQ-UI-GLOBAL-QUICK-OPEN, REQ-UI-DIRECTORY-SCOPED-QUICK-OPEN) */}
       <ProjectQuickOpenModal
-        projectId={projectId}
-        bridgeId={bridgeId}
+        projectId={activeFsTarget.projectId || projectId}
+        chainId={activeFsTarget.chainId}
+        directoryId={activeFsTarget.directoryId}
+        directories={taskChainDirectories}
+        activeDirectoryId={activeDirectoryId}
+        bridgeId={activeFsTarget.bridgeId || bridgeId}
         isOpen={isQuickOpenOpen}
         onClose={() => setIsQuickOpenOpen(false)}
         onSelectFile={(file) => void openFileInEditor(file)}
+      />
+
+      {/* Add Directory Modal (REQ-UI-ADD-DIRECTORY-MODAL) */}
+      <AddChainDirectoryModal
+        isOpen={isAddDirectoryOpen}
+        onClose={() => setIsAddDirectoryOpen(false)}
+        chainId={chainId}
+        bridges={bridges}
+        initialBridgeId={bridgeId || activeDirectory.bridgeId}
+        onDirectoryAdded={(newDirId) => {
+          switchDirectory(newDirId);
+        }}
       />
     </div>
   );
@@ -2059,12 +2508,20 @@ export default function ProjectFilesPanel({
 
 export function ProjectQuickOpenModal({
   projectId,
+  chainId,
+  directoryId,
+  directories = [],
+  activeDirectoryId: propActiveDirId,
   bridgeId = '',
   isOpen,
   onClose,
   onSelectFile,
 }: {
-  projectId: string;
+  projectId?: string;
+  chainId?: string;
+  directoryId?: string;
+  directories?: TaskChainDirectory[];
+  activeDirectoryId?: string;
   bridgeId?: string;
   isOpen: boolean;
   onClose: () => void;
@@ -2080,12 +2537,35 @@ export function ProjectQuickOpenModal({
 
   useDialogA11y(isOpen, onClose, panelRef);
 
+  const activeDirId = propActiveDirId || directoryId || 'primary';
+  const targetDir = (directories || []).find((d) => d.directoryId === activeDirId);
+  const isPrimary = activeDirId === 'primary' || !targetDir;
+
+  const scopeArgs: FsScopeArgs = useMemo(() => {
+    if (isPrimary) {
+      return {
+        projectId,
+        bridgeId,
+      };
+    }
+    return {
+      chainId,
+      directoryId: targetDir?.directoryId,
+      bridgeId: targetDir?.bridgeId || bridgeId,
+    };
+  }, [isPrimary, projectId, bridgeId, chainId, targetDir]);
+
+  const scopeLabel = useMemo(() => {
+    if (isPrimary) return 'Primary Project';
+    return baseName(targetDir?.path || '') || targetDir?.directoryId || 'Directory';
+  }, [isPrimary, targetDir]);
+
   useEffect(() => {
-    if (isOpen && projectId) {
+    if (isOpen && (scopeArgs.projectId || (scopeArgs.chainId && scopeArgs.directoryId))) {
       setQuickOpenQuery('');
       setQuickOpenSelectedIndex(0);
       window.setTimeout(() => inputRef.current?.focus(), 0);
-      void fetchQuickOpen({ projectId, bridgeId, query: '', limit: 1000 })
+      void fetchQuickOpen({ ...scopeArgs, query: '', limit: 1000 })
         .unwrap()
         .then((res) => {
           if (res?.ok && Array.isArray(res.files)) {
@@ -2094,14 +2574,14 @@ export function ProjectQuickOpenModal({
         })
         .catch(() => {});
     }
-  }, [isOpen, projectId, bridgeId, fetchQuickOpen]);
+  }, [isOpen, scopeArgs, fetchQuickOpen]);
 
   useEffect(() => {
-    if (!isOpen || !projectId) return;
+    if (!isOpen || (!scopeArgs.projectId && (!scopeArgs.chainId || !scopeArgs.directoryId))) return;
     const q = quickOpenQuery.trim();
     if (!q) return;
     const timer = setTimeout(() => {
-      void fetchQuickOpen({ projectId, bridgeId, query: q, limit: 500 })
+      void fetchQuickOpen({ ...scopeArgs, query: q, limit: 500 })
         .unwrap()
         .then((res) => {
           if (res?.ok && Array.isArray(res.files)) {
@@ -2114,7 +2594,7 @@ export function ProjectQuickOpenModal({
         .catch(() => {});
     }, 150);
     return () => clearTimeout(timer);
-  }, [quickOpenQuery, isOpen, projectId, bridgeId, fetchQuickOpen]);
+  }, [quickOpenQuery, isOpen, scopeArgs, fetchQuickOpen]);
 
   useEffect(() => {
     if (!listRef.current) return;
@@ -2151,6 +2631,13 @@ export function ProjectQuickOpenModal({
       >
         <div className="flex items-center gap-3 border-b border-subtle px-4 py-3">
           <span aria-hidden="true" className="text-muted"><Icon name="search" size={16} /></span>
+          <span
+            data-debug-id="quick-open-scope-badge"
+            className="rounded bg-neutral-soft px-2 py-0.5 text-[11px] font-medium text-muted shrink-0"
+            title={`Scope: ${scopeLabel}`}
+          >
+            {scopeLabel}
+          </span>
           <input
             ref={inputRef}
             data-debug-id="project-quick-open-input"
@@ -2240,6 +2727,229 @@ export function ProjectQuickOpenModal({
             <span><kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5">↑↓</kbd> navigate</span>
             <span><kbd className="rounded border border-subtle bg-neutral-soft px-1.5 py-0.5">↵</kbd> select</span>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function AddChainDirectoryModal({
+  isOpen,
+  onClose,
+  chainId,
+  bridges = [],
+  initialBridgeId = '',
+  onDirectoryAdded,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  chainId?: string;
+  bridges?: any[];
+  initialBridgeId?: string;
+  onDirectoryAdded: (newDirId: string) => void;
+}) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  useDialogA11y(isOpen, onClose, panelRef);
+
+  const [addChainDirectory] = useAddChainDirectoryMutation();
+  const [error, setError] = useState<string>('');
+
+  const normalizedBridges = useMemo(() => {
+    const list = Array.isArray(bridges) ? bridges : [];
+    if (list.length > 0) return list;
+    return [{ bridge_id: 'local', name: 'local', status: 'online' }];
+  }, [bridges]);
+
+  const [selectedBridgeId, setSelectedBridgeId] = useState<string>(() => {
+    if (initialBridgeId) return initialBridgeId;
+    const online = normalizedBridges.find(
+      (b: any) => b.status === 'online' || b.runtime_status === 'online'
+    );
+    return String(
+      online?.bridge_id ||
+        online?.bridgeId ||
+        online?.id ||
+        normalizedBridges[0]?.bridge_id ||
+        normalizedBridges[0]?.bridgeId ||
+        normalizedBridges[0]?.id ||
+        'local'
+    );
+  });
+
+  useEffect(() => {
+    if (isOpen) {
+      setError('');
+      if (initialBridgeId) {
+        setSelectedBridgeId(initialBridgeId);
+      } else if (!selectedBridgeId && normalizedBridges.length > 0) {
+        const online = normalizedBridges.find(
+          (b: any) => b.status === 'online' || b.runtime_status === 'online'
+        );
+        setSelectedBridgeId(
+          String(
+            online?.bridge_id ||
+              online?.bridgeId ||
+              online?.id ||
+              normalizedBridges[0]?.bridge_id ||
+              normalizedBridges[0]?.bridgeId ||
+              normalizedBridges[0]?.id ||
+              'local'
+          )
+        );
+      }
+    }
+  }, [isOpen, initialBridgeId, normalizedBridges]);
+
+  const activeBridgeInfo = useMemo(() => {
+    return getBridgeDisplay(selectedBridgeId, normalizedBridges);
+  }, [selectedBridgeId, normalizedBridges]);
+
+  const handlePick = async (chosenPath: string) => {
+    if (!chainId) {
+      setError('Task chain ID is required to link directory');
+      return;
+    }
+    if (!chosenPath) {
+      setError('Please choose a valid directory path');
+      return;
+    }
+    setError('');
+    try {
+      const res = await addChainDirectory({
+        chainId,
+        path: chosenPath,
+        bridgeId: selectedBridgeId,
+      }).unwrap();
+
+      const newDirId =
+        res?.directory_id ||
+        res?.directoryId ||
+        res?.data?.directory_id ||
+        res?.data?.directoryId;
+
+      onClose();
+      if (newDirId) {
+        onDirectoryAdded(String(newDirId));
+      }
+    } catch (err: any) {
+      setError(
+        String(err?.data?.error || err?.error || err?.message || 'Failed to add directory')
+      );
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      data-debug-id="add-chain-directory-modal-backdrop"
+      role="presentation"
+      className="fixed inset-0 z-modal flex items-center justify-center bg-surface-overlay/80 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add Directory to Task Chain"
+        data-debug-id="add-chain-directory-modal"
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-subtle bg-surface shadow-overlay outline-none"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-subtle px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="grid h-7 w-7 place-items-center rounded-md bg-accent/15 text-accent">
+              <Icon name="folder" size={16} />
+            </span>
+            <div>
+              <h2 className="text-sm font-semibold text-primary">Add Directory to Task Chain</h2>
+              <p className="text-[11px] text-muted">Select a bridge host and browse to link a workspace directory</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close dialog"
+            className="grid h-7 w-7 place-items-center rounded-md text-muted hover:bg-neutral-soft hover:text-primary transition-colors"
+          >
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+
+        {/* Bridge Selector (strictly NO native select tags) */}
+        <div className="flex flex-col gap-2 border-b border-subtle bg-surface-overlay/40 px-4 py-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted">Select Bridge Host:</span>
+            <span className="text-[11px] text-faint">
+              Active: <span className="font-semibold text-primary">{activeBridgeInfo.name}</span>
+            </span>
+          </div>
+          <div data-debug-id="add-chain-dir-bridge-selector" className="flex flex-wrap items-center gap-2">
+            {normalizedBridges.map((b: any) => {
+              const bId = String(b.bridge_id || b.bridgeId || b.id || '');
+              const bInfo = getBridgeDisplay(bId, normalizedBridges);
+              const isSelected = selectedBridgeId === bInfo.id;
+              return (
+                <button
+                  key={bInfo.id}
+                  type="button"
+                  data-debug-id={`add-chain-dir-bridge-option-${bInfo.id}`}
+                  onClick={() => setSelectedBridgeId(bInfo.id)}
+                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+                    isSelected
+                      ? 'border-accent bg-accent/10 text-primary font-semibold shadow-xs'
+                      : 'border-subtle bg-surface text-muted hover:border-subtle-hover hover:text-primary'
+                  }`}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full shrink-0 ${
+                      bInfo.isOnline ? 'bg-success shadow-xs' : 'bg-muted/40'
+                    }`}
+                  />
+                  <span className="truncate">{bInfo.name}</span>
+                  <span className="font-mono text-[10.5px] text-faint">({bInfo.id})</span>
+                  <span
+                    data-debug-id={`bridge-online-badge-${bInfo.id}`}
+                    className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
+                      bInfo.isOnline
+                        ? 'bg-success/15 text-success'
+                        : 'bg-muted/15 text-muted'
+                    }`}
+                  >
+                    {bInfo.isOnline ? 'online' : 'offline'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {error ? (
+          <div
+            data-debug-id="add-chain-dir-error"
+            className="flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-4 py-2 text-xs text-danger"
+          >
+            <Icon name="alert" size={14} className="shrink-0" />
+            <span className="flex-1">{error}</span>
+            <button
+              type="button"
+              onClick={() => setError('')}
+              className="text-danger hover:opacity-80"
+            >
+              <Icon name="close" size={12} />
+            </button>
+          </div>
+        ) : null}
+
+        <div className="flex-1 overflow-y-auto p-4">
+          <BridgeDirectoryPicker
+            debugId="add-chain-dir-picker"
+            bridgeId={selectedBridgeId}
+            bridgeLabel={activeBridgeInfo.name}
+            onPick={handlePick}
+            onClose={onClose}
+          />
         </div>
       </div>
     </div>

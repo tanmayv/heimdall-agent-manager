@@ -37,6 +37,11 @@ Task_Vote_Save_Proc :: proc(ctx: rawptr, vote: domain.Task_Vote) -> (domain.Task
 Task_Vote_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Vote, domain.Domain_Error)
 Task_Vote_Delete_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> (int, domain.Domain_Error)
 
+Task_Chain_Directory_Save_Proc :: proc(ctx: rawptr, dir: domain.Task_Chain_Directory) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error)
+Task_Chain_Directory_Get_Proc :: proc(ctx: rawptr, directory_id: string, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error)
+Task_Chain_Directory_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Directory, domain.Domain_Error)
+Task_Chain_Directory_Remove_Proc :: proc(ctx: rawptr, directory_id: string, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
+
 Taskchain_Repository :: struct {
 	ctx: rawptr,
 	get_chain: Task_Chain_Get_Proc,
@@ -62,6 +67,10 @@ Taskchain_Repository :: struct {
 	save_vote: Task_Vote_Save_Proc,
 	list_votes_by_task: Task_Vote_List_By_Task_Proc,
 	delete_votes_by_task: Task_Vote_Delete_By_Task_Proc,
+	save_directory: Task_Chain_Directory_Save_Proc,
+	get_directory: Task_Chain_Directory_Get_Proc,
+	list_directories_by_chain: Task_Chain_Directory_List_By_Chain_Proc,
+	remove_directory: Task_Chain_Directory_Remove_Proc,
 }
 
 taskchain_get_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
@@ -180,3 +189,24 @@ taskchain_delete_votes_by_task :: proc(repo: ^Taskchain_Repository, task_id: dom
 	if repo == nil || repo.delete_votes_by_task == nil do return 0, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	return repo.delete_votes_by_task(repo.ctx, task_id, owner_user_id)
 }
+
+taskchain_save_directory :: proc(repo: ^Taskchain_Repository, dir: domain.Task_Chain_Directory) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
+	if repo == nil || repo.save_directory == nil do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.save_directory(repo.ctx, dir)
+}
+
+taskchain_get_directory :: proc(repo: ^Taskchain_Repository, directory_id: string, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
+	if repo == nil || repo.get_directory == nil do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.get_directory(repo.ctx, directory_id, chain_id, owner_user_id)
+}
+
+taskchain_list_directories_by_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Chain_Directory, domain.Domain_Error) {
+	if repo == nil || repo.list_directories_by_chain == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.list_directories_by_chain(repo.ctx, chain_id, owner_user_id)
+}
+
+taskchain_remove_directory :: proc(repo: ^Taskchain_Repository, directory_id: string, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error) {
+	if repo == nil || repo.remove_directory == nil do return false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.remove_directory(repo.ctx, directory_id, chain_id, owner_user_id)
+}
+

@@ -1516,6 +1516,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               key={agentInstanceId || projectId}
               agentInstanceId={agentInstanceId}
               projectId={projectId}
+              chainId={chainId}
+              directories={chainDetailQuery.data?.chain?.directories}
               bridgeId={instanceBridgeId}
               projectName={projectName}
               conversationKey={conversationId}
@@ -2166,6 +2168,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       {projectId ? (
         <ProjectQuickOpenModal
           projectId={projectId}
+          chainId={chainId}
+          directories={chainDetailQuery.data?.chain?.directories}
           bridgeId={instanceBridgeId}
           isOpen={isQuickOpenOpen}
           onClose={() => setIsQuickOpenOpen(false)}

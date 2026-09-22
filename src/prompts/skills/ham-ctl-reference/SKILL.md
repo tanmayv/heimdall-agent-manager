@@ -42,7 +42,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `chat`, `memory`, `artifact`,
 
 ## task-chain — your task chains
 - `task-chain list [--mine] [--project <id>]` — chains (`--mine` = ones you coordinate).
-- `task-chain show [<chain-id>]` — show a chain (defaults to your current chain).
+- `task-chain show [<chain-id>]` — show a chain (defaults to your current chain), including embedded `tasks` and `directories`.
 - `task-chain set-title <title> [--chain <id>]` — rename a chain (coordinator only).
 - `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
   description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
@@ -53,6 +53,58 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `chat`, `memory`, `artifact`,
   tasks, set each agent's current task, and nudge idle agents. **The chain id is REQUIRED**
   (positional, or `--chain <id>`; with neither it just prints help). Coordinator/owner only,
   idempotent. See the `coordinator-task-management` skill for when to run it.
+
+### Relevant directories (`task-chain directory`)
+Associate one or more working directories (local checkouts, CitC workspaces, repos) with a task chain so participating agents and the UI know which workspaces/directories are in scope. Directories are also embedded directly in `task-chain show [<chain-id>]` and `GET /api/v1/task-chains/:id` output under the `"directories"` array.
+
+- `task-chain directory list [--chain <id>]` — list relevant directories for a task chain (`--chain` defaults to your current chain).
+- `task-chain directory add --path <path> [--bridge <bridge_id>] [--vcs-kind <kind>] [--chain <id>]` — associate a directory with the chain.
+- `task-chain directory update <directory-id> [--path <path>] [--bridge <bridge_id>] [--vcs-kind <kind>] [--chain <id>]` — update an existing directory entry.
+- `task-chain directory remove <directory-id> [--chain <id>]` — disassociate a directory from the chain.
+
+#### Directory JSON shape (lean payload)
+Directory objects use a lean payload shape containing only operational fields. To keep coordination lightweight, metadata like timestamps (`created_at`, `updated_at`) and authorship/owner fields are intentionally omitted:
+
+```json
+{
+  "directory_id": "dir_18d7a123bc45de67",
+  "path": "/usr/local/google/home/tanmayvijay/heimdall-cloudtop",
+  "bridge_id": "brg_18d03379a7d6d47b",
+  "vcs_kind": "git",
+  "vcs": {}
+}
+```
+
+Fields:
+- `directory_id`: Unique identifier for the directory record (`dir_...`).
+- `path`: Target directory path on the bridge host.
+- `bridge_id`: Identifier of the bridge where the directory resides.
+- `vcs_kind`: Version control system kind (`git`, `citc`, `jj`, or empty).
+- `vcs`: Object containing VCS-specific details (branch, commit, status, etc.).
+
+#### Command examples
+```bash
+# List directories for the current chain
+ham-ctl task-chain directory list
+
+# List directories for a specific chain
+ham-ctl task-chain directory list --chain chain_18d711c5384a0119
+
+# Add a directory to the chain
+ham-ctl task-chain directory add --path /usr/local/google/home/tanmayvijay/heimdall-cloudtop --bridge brg_18d03379a7d6d47b --vcs-kind git
+
+# Add a directory to a specific chain
+ham-ctl task-chain directory add --chain chain_18d711c5384a0119 --path /google/src/cloud/tanmayvijay/heimdall --vcs-kind citc
+
+# Update an existing directory's path or bridge
+ham-ctl task-chain directory update dir_18d7a123bc45de67 --path /usr/local/google/home/tanmayvijay/heimdall-cloudtop-v2
+
+# Remove a directory from the chain
+ham-ctl task-chain directory remove dir_18d7a123bc45de67
+
+# View chain details with embedded directories
+ham-ctl task-chain show chain_18d711c5384a0119
+```
 
 ## task — tasks within a chain
 A positional `<task-id>` identifies the task and is enough on its own (task ids are
