@@ -294,6 +294,8 @@ ctl_v2_task_chain :: proc(endpoint, token: string, tokens, args: []string) {
 		cid := option_value(args, "--chain", pos(tokens, 1))
 		if cid == "" { print_agent_help([]string{"task-chain"}); return }
 		ctl_agent_call(endpoint, token, "agent.task_chain.pin", json_object(json_kv("chain_id", cid), json_kv_raw("pinned", "false")))
+	case "directory", "directories":
+		ctl_task_chains_command(tokens, args)
 	case:
 		print_agent_help([]string{"task-chain"})
 	}
@@ -1314,6 +1316,7 @@ print_help_task_chain :: proc() {
 	fmt.println("  publish <chain-id>                  Publish a DRAFT chain (coordinator only). Cascades")
 	fmt.println("                                      published to its tasks — until then nothing in the")
 	fmt.println("                                      chain promotes or can be nudged.")
+	fmt.println("  directory <add|update|remove|list>  Manage task chain relevant directories.")
 	fmt.println("  reconcile <chain-id>                Self-heal: kick off / re-plan a chain — promote")
 	fmt.println("                                      actionable tasks, set current-tasks, nudge agents.")
 	fmt.println("                                      Coordinator/owner only. Run after staging tasks/deps.")

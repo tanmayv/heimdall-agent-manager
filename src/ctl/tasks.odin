@@ -139,7 +139,7 @@ resolve_task_id :: proc(transport: Ctl_Transport, args: []string) -> string {
 
 print_task_chains_help :: proc(action: string) {
 	_ = action
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen|pin|unpin>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|directory|add-agent|publish|complete|reopen|pin|unpin>")
 	fmt.println("  coordinated [--agent-id <instance_id>]  list chains an agent coordinates (default: your own instance)")
 }
 
@@ -217,7 +217,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 
 	chain_id := resolve_chain_id(transport, args)
 	if chain_id == "" {
-		fmt.println("usage: ham-ctl task-chains <show|update|members|add-agent|publish|complete|reopen> --chain <id>")
+		fmt.println("usage: ham-ctl task-chains <show|update|members|directory|add-agent|publish|complete|reopen> --chain <id>")
 		return
 	}
 
@@ -259,6 +259,75 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 				return
 			}
 			ctl_tasks_request(transport, "DELETE", fmt.tprintf("/api/v1/task-chains/%s/members/%s", safe_path_part(chain_id), safe_path_part(inst)), "")
+			return
+		}
+	}
+
+	if action == "directory" || action == "directories" {
+		sub := option_value(args, "--action", "")
+		if idx + 1 < len(cmd) do sub = cmd[idx + 1]
+		if sub == "" || sub == "list" {
+			ctl_tasks_request(transport, "GET", fmt.tprintf("/api/v1/task-chains/%s/directories", safe_path_part(chain_id)), "")
+			return
+		}
+		if sub == "add" {
+			path := option_value(args, "--path", option_value(args, "--dir", ""))
+			if path == "" && idx + 2 < len(cmd) && !strings.has_prefix(cmd[idx + 2], "--") {
+				path = cmd[idx + 2]
+			}
+			if path == "" {
+				fmt.println("usage: ham-ctl task-chains directory add --chain <id> --path <path> [--bridge <id>] [--vcs-kind <kind>] [--vcs <json>]")
+				return
+			}
+			fields := make([dynamic]string)
+			defer delete(fields)
+			append(&fields, json_kv("path", path))
+			if b := option_value(args, "--bridge-id", option_value(args, "--bridge", "")); b != "" do append(&fields, json_kv("bridge_id", b))
+			if v := option_value(args, "--vcs-kind", option_value(args, "--vcs", "")); v != "" do append(&fields, json_kv("vcs_kind", v))
+			if vcs := option_value(args, "--vcs-info", ""); vcs != "" {
+				if strings.starts_with(vcs, "{") {
+					append(&fields, fmt.tprintf("\"vcs\":%s", vcs))
+				} else {
+					append(&fields, json_kv("vcs_kind", vcs))
+				}
+			}
+			ctl_tasks_request(transport, "POST", fmt.tprintf("/api/v1/task-chains/%s/directories", safe_path_part(chain_id)), json_object_from_slice(fields[:]))
+			return
+		}
+		if sub == "update" {
+			dir_id := option_value(args, "--directory-id", option_value(args, "--directory", option_value(args, "--dir-id", option_value(args, "--id", ""))))
+			if dir_id == "" && idx + 2 < len(cmd) && !strings.has_prefix(cmd[idx + 2], "--") {
+				dir_id = cmd[idx + 2]
+			}
+			if dir_id == "" {
+				fmt.println("usage: ham-ctl task-chains directory update --chain <id> --directory <id> [--path <path>] [--bridge <id>] [--vcs-kind <kind>] [--vcs <json>]")
+				return
+			}
+			fields := make([dynamic]string)
+			defer delete(fields)
+			if p := option_value(args, "--path", option_value(args, "--dir", "")); p != "" do append(&fields, json_kv("path", p))
+			if b := option_value(args, "--bridge-id", option_value(args, "--bridge", "")); b != "" do append(&fields, json_kv("bridge_id", b))
+			if v := option_value(args, "--vcs-kind", option_value(args, "--vcs", "")); v != "" do append(&fields, json_kv("vcs_kind", v))
+			if vcs := option_value(args, "--vcs-info", ""); vcs != "" {
+				if strings.starts_with(vcs, "{") {
+					append(&fields, fmt.tprintf("\"vcs\":%s", vcs))
+				} else {
+					append(&fields, json_kv("vcs_kind", vcs))
+				}
+			}
+			ctl_tasks_request(transport, "PATCH", fmt.tprintf("/api/v1/task-chains/%s/directories/%s", safe_path_part(chain_id), safe_path_part(dir_id)), json_object_from_slice(fields[:]))
+			return
+		}
+		if sub == "remove" || sub == "delete" {
+			dir_id := option_value(args, "--directory-id", option_value(args, "--directory", option_value(args, "--dir-id", option_value(args, "--id", ""))))
+			if dir_id == "" && idx + 2 < len(cmd) && !strings.has_prefix(cmd[idx + 2], "--") {
+				dir_id = cmd[idx + 2]
+			}
+			if dir_id == "" {
+				fmt.println("usage: ham-ctl task-chains directory remove --chain <id> --directory <id>")
+				return
+			}
+			ctl_tasks_request(transport, "DELETE", fmt.tprintf("/api/v1/task-chains/%s/directories/%s", safe_path_part(chain_id), safe_path_part(dir_id)), "")
 			return
 		}
 	}
@@ -306,7 +375,7 @@ ctl_task_chains_command :: proc(cmd: []string, args: []string) {
 		return
 	}
 
-	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|add-agent|publish|complete|reopen|pin|unpin>")
+	fmt.println("usage: ham-ctl task-chains <list|coordinated|create|show|update|members|directory|add-agent|publish|complete|reopen|pin|unpin>")
 }
 
 ctl_tasks_command :: proc(cmd: []string, args: []string) {

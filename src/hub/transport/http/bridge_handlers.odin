@@ -641,6 +641,188 @@ delete_project_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+// --- Task-chain directory filesystem browser (browse/read/CRUD/search) -----
+// Resolves (chain_id, directory_id -> bridge_id, dir.path) via taskchain service.
+// Guards ownership and chain membership (require_auth_any + get_chain), then
+// relays a WS command carrying dir.path as root so the bridge sandboxes every
+// path to the directory root. Same online + live guards as project_fs_relay.
+
+directory_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Project_Fs_Command) -> (string, bool, domain.Domain_Error) {
+	auth_ctx, auth_ok, _ := require_auth_any(h.auth, req)
+	if !auth_ok do return "", false, domain.domain_error(.Unauthenticated, "authentication required")
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	dir_id := path_part(req.path, 6)
+	if string(chain_id) == "" || dir_id == "" {
+		return "", false, domain.domain_error(.Validation_Failed, "chain_id and directory_id are required")
+	}
+	dir, dir_ok, dir_err := taskchain_service.get_chain_directory(h.taskchains, auth_ctx, chain_id, dir_id)
+	if !dir_ok do return "", false, dir_err
+
+	bridge_id := dir.bridge_id
+	if bridge_id == "" {
+		bridge_id = query_value(req.query, "bridge_id")
+	}
+	if bridge_id == "" {
+		if bridges, list_err := bridge_service.list_bridges(h.bridges, auth_ctx); list_err.code == .None {
+			if len(bridges) == 1 {
+				bridge_id = bridges[0].bridge_id
+			} else {
+				for b in bridges {
+					if b.bridge_id == "brg_local" {
+						bridge_id = "brg_local"
+						break
+					}
+				}
+			}
+		}
+	}
+	if bridge_id == "" {
+		return "", false, domain.domain_error(.Validation_Failed, "bridge_id is required or directory has no bridge configured")
+	}
+
+	bridge, bridge_ok, bridge_err := bridge_service.get_bridge(h.bridges, auth_ctx, bridge_id)
+	if !bridge_ok do return "", false, bridge_err
+	if bridge.status == .Revoked do return "", false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) {
+		return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
+	}
+
+	command_id := fmt.tprintf("cmd_cdfs_%d", time.to_unix_nanoseconds(time.now()))
+	cmd_body := project_fs_command_json(cmd, command_id, dir.path)
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	if !reply_ok do return "", false, reply_err
+	return reply, true, domain.Domain_Error{}
+}
+
+list_chain_directory_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	limit := query_int(req.query, "limit", 0)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_list_dir",
+		path = query_value(req.query, "path"),
+		include_hidden = query_bool(req.query, "include_hidden", false),
+		send_include_hidden = true,
+		cursor = query_value(req.query, "cursor"),
+		limit = limit,
+		send_limit = limit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+read_chain_directory_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	offset := query_int(req.query, "offset", 0)
+	rlimit := query_int(req.query, "limit", 0)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_read_file",
+		path = query_value(req.query, "path"),
+		offset = offset,
+		send_offset = offset > 0,
+		read_limit = rlimit,
+		send_read_limit = rlimit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+create_chain_directory_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{command_type = "fs_create_file", path = json_string(req.body, "path")})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+write_chain_directory_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	path := json_string(req.body, "path")
+	if path == "" do return respond_error(domain.domain_error(.Validation_Failed, "path is required"), req.request_id)
+	content := json_string(req.body, "content")
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_write_file",
+		path = path,
+		content = content,
+		send_content = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+batch_write_chain_directory_files_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	files_json, has_files := json_array_raw_balanced(req.body, "files")
+	if !has_files {
+		trimmed := strings.trim_space(req.body)
+		if strings.has_prefix(trimmed, "[") && strings.has_suffix(trimmed, "]") {
+			files_json = trimmed
+			has_files = true
+		}
+	}
+	if !has_files do return respond_error(domain.domain_error(.Validation_Failed, "files array is required"), req.request_id)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_batch_write",
+		raw_files_json = files_json,
+		send_raw_files = true,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+create_chain_directory_dir_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{command_type = "fs_make_dir", path = json_string(req.body, "path")})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+move_chain_directory_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{command_type = "fs_move", from = json_string(req.body, "from"), to = json_string(req.body, "to"), send_from_to = true})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+delete_chain_directory_path_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{command_type = "fs_delete", path = query_value(req.query, "path"), recursive = query_bool(req.query, "recursive", false), send_recursive = true})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+quick_open_chain_directory_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	query := query_value(req.query, "query")
+	limit := query_int(req.query, "limit", 100)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_find_files",
+		query = query,
+		send_query = true,
+		limit = limit,
+		send_limit = limit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+search_chain_directory_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	query := query_value(req.query, "query")
+	case_sensitive := query_bool(req.query, "case_sensitive", false)
+	limit := query_int(req.query, "limit", 100)
+	result, ok, err := directory_fs_relay(h, req, Project_Fs_Command{
+		command_type = "fs_grep",
+		query = query,
+		send_query = true,
+		case_sensitive = case_sensitive,
+		send_case_sensitive = true,
+		limit = limit,
+		send_limit = limit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+
 // --- Project-scoped VCS relay (read-only) ---------------------------------
 // Resolves (project_id -> bridge_id, root_path) exactly like project_fs_relay,
 // then relays a read-only vcs_* WS command carrying the project root so the
