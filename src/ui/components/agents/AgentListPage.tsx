@@ -492,9 +492,9 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
   );
 
   const listSection = (
-    <div className="flex w-full min-w-0 flex-col gap-4">
+    <div className={`flex w-full min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
       {!searching && list.pendingCount > 0 ? (
-        <div>
+        <div className="shrink-0">
           <Button size="sm" variant="secondary" data-debug-id="agent-pending-pill" onClick={() => list.applyPending()}>
             {list.pendingCount} new or updated — refresh
           </Button>
@@ -502,29 +502,35 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
       ) : null}
 
       {list.restoreNotice ? (
-        <Text role="body-sm" tone="muted" data-debug-id="agent-restore-notice">
-          Couldn&apos;t find where you were — showing the top of the list.
-        </Text>
+        <div className="shrink-0">
+          <Text role="body-sm" tone="muted" data-debug-id="agent-restore-notice">
+            Couldn&apos;t find where you were — showing the top of the list.
+          </Text>
+        </div>
       ) : null}
 
-      {listBody}
+      <div className={twoPane ? 'flex-1 min-h-0 overflow-y-auto' : undefined}>
+        {listBody}
+      </div>
 
       {selectable ? (
-        <BulkActionBar
-          selectedCount={selectedIds.length}
-          loadedCount={visibleRows.length}
-          onCancel={() => setSelectedIds([])}
-        >
-          <ActionButton
-            icon="folder"
-            label="Archive"
-            variant="danger"
-            loading={bulkBusy}
-            disabled={selectedIds.length === 0}
-            data-debug-id="agent-bulk-archive"
-            onClick={() => selectedIds.length && setConfirm({ ids: selectedIds })}
-          />
-        </BulkActionBar>
+        <div className="shrink-0">
+          <BulkActionBar
+            selectedCount={selectedIds.length}
+            loadedCount={visibleRows.length}
+            onCancel={() => setSelectedIds([])}
+          >
+            <ActionButton
+              icon="folder"
+              label="Archive"
+              variant="danger"
+              loading={bulkBusy}
+              disabled={selectedIds.length === 0}
+              data-debug-id="agent-bulk-archive"
+              onClick={() => selectedIds.length && setConfirm({ ids: selectedIds })}
+            />
+          </BulkActionBar>
+        </div>
       ) : null}
     </div>
   );
@@ -561,22 +567,27 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     <Tabs
       value={searching ? '' : tab}
       onChange={(next) => applyUrlState({ ...urlState, tab: next as AgentTab })}
+      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
     >
-      <TabsList label="Agent state">
+      <TabsList label="Agent state" className="shrink-0">
         {AGENT_TABS.map((entry) => (
           <Tab key={entry.value} value={entry.value} disabled={searching} data-debug-id={`agent-tab-${entry.value}`}>
             {entry.label}
           </Tab>
         ))}
       </TabsList>
-      {searching ? null : <TabsPanel value={tab}>{listSection}</TabsPanel>}
+      {searching ? null : (
+        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
+          {listSection}
+        </TabsPanel>
+      )}
     </Tabs>
   );
 
   const listColumn = (
-    <div data-debug-id="agent-list-page" className="flex w-full min-w-0 flex-col gap-3">
-      {toolbar}
-      <div className="flex min-w-0 flex-col gap-4">
+    <div data-debug-id="agent-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
+      <div className="shrink-0">{toolbar}</div>
+      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
         {tabsBlock}
         {searching ? listSection : null}
       </div>
@@ -658,6 +669,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
         title="Agents"
         breadcrumbs={listCrumbs()}
         description={headerDescription}
+        className="h-full min-h-0 overflow-hidden"
         actions={
           <Button
             variant="primary"
@@ -669,9 +681,9 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
           </Button>
         }
       >
-        <div className="flex min-w-0 items-start gap-4">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4" data-debug-id="agent-detail-pane">
+        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
+          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
+          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="agent-detail-pane">
             {selectedId ? (
               <AgentDetailPane agentId={selectedId} onAfterArchive={() => undefined} />
             ) : (
@@ -734,8 +746,8 @@ function AgentDetailPane({ agentId, onAfterArchive }: { agentId: string; onAfter
   const title = agentTitle(record);
 
   return (
-    <div ref={paneRef} className="min-w-0">
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden">
+      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <a
             href={agentViewHref(record.agentId)}
@@ -750,7 +762,9 @@ function AgentDetailPane({ agentId, onAfterArchive }: { agentId: string; onAfter
           <AgentDetailActions record={record} busy={busy} onVerb={(verb) => void runVerb(verb)} />
         </div>
       </div>
-      <AgentDetailBody record={record} actionError={actionError} wide={wide} />
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <AgentDetailBody record={record} actionError={actionError} wide={wide} />
+      </div>
     </div>
   );
 }

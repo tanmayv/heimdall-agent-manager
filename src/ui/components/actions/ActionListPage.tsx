@@ -494,25 +494,29 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
   );
 
   const listSection = (
-    <div className="flex w-full min-w-0 flex-col gap-4">
-      {listBody}
+    <div className={`flex w-full min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
+      <div className={twoPane ? 'flex-1 min-h-0 overflow-y-auto' : undefined}>
+        {listBody}
+      </div>
 
       {selectable ? (
-        <BulkActionBar
-          selectedCount={selectedIds.length}
-          loadedCount={visibleRows.length}
-          onCancel={() => setSelectedIds([])}
-        >
-          <ActionButton
-            icon="trash"
-            label="Delete"
-            variant="danger"
-            loading={bulkBusy}
-            disabled={selectedIds.length === 0}
-            data-debug-id="action-bulk-delete"
-            onClick={() => selectedIds.length && setConfirm({ ids: selectedIds })}
-          />
-        </BulkActionBar>
+        <div className="shrink-0">
+          <BulkActionBar
+            selectedCount={selectedIds.length}
+            loadedCount={visibleRows.length}
+            onCancel={() => setSelectedIds([])}
+          >
+            <ActionButton
+              icon="trash"
+              label="Delete"
+              variant="danger"
+              loading={bulkBusy}
+              disabled={selectedIds.length === 0}
+              data-debug-id="action-bulk-delete"
+              onClick={() => selectedIds.length && setConfirm({ ids: selectedIds })}
+            />
+          </BulkActionBar>
+        </div>
       ) : null}
     </div>
   );
@@ -658,23 +662,28 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
     <Tabs
       value={searching ? '' : tab}
       onChange={(next) => applyUrlState({ ...urlState, tab: next as ActionTab })}
+      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
     >
-      <TabsList label="Action schedule">
+      <TabsList label="Action schedule" className="shrink-0">
         {ACTION_TABS.map((entry) => (
           <Tab key={entry.value} value={entry.value} disabled={searching} data-debug-id={`action-tab-${entry.value}`}>
             {entry.label}
           </Tab>
         ))}
       </TabsList>
-      {searching ? null : <TabsPanel value={tab}>{listSection}</TabsPanel>}
+      {searching ? null : (
+        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
+          {listSection}
+        </TabsPanel>
+      )}
     </Tabs>
   );
 
   const listColumn = (
-    <div data-debug-id="action-list-page" className="flex w-full min-w-0 flex-col gap-3">
-      {toolbar}
-      {filterChipRow}
-      <div className="flex min-w-0 flex-col gap-4">
+    <div data-debug-id="action-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
+      <div className="shrink-0">{toolbar}</div>
+      {filterChipRow ? <div className="shrink-0">{filterChipRow}</div> : null}
+      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
         {tabsBlock}
         {searching ? listSection : null}
       </div>
@@ -758,6 +767,7 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
         title="Actions"
         breadcrumbs={listCrumbs()}
         description={headerDescription}
+        className="h-full min-h-0 overflow-hidden"
         actions={
           <Button
             variant="primary"
@@ -769,9 +779,9 @@ export default function ActionListPage({ selectedId = '' }: { selectedId?: strin
           </Button>
         }
       >
-        <div className="flex min-w-0 items-start gap-4">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4" data-debug-id="action-detail-pane">
+        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
+          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
+          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="action-detail-pane">
             {selectedId ? (
               <ActionDetailPane actionId={selectedId} onAfterDelete={() => navigateTo(actionListHref(urlState))} />
             ) : (
@@ -836,8 +846,8 @@ function ActionDetailPane({ actionId, onAfterDelete }: { actionId: string; onAft
   const title = actionTitle(record);
 
   return (
-    <div ref={paneRef} className="min-w-0">
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden">
+      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <a
             href={actionViewHref(record.id)}
@@ -852,7 +862,9 @@ function ActionDetailPane({ actionId, onAfterDelete }: { actionId: string; onAft
           <ActionDetailActions record={record} busy={busy} onVerb={(verb) => void runVerb(verb)} />
         </div>
       </div>
-      <ActionDetailBody record={record} actionError={actionError} runNotice={runNotice} wide={wide} />
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <ActionDetailBody record={record} actionError={actionError} runNotice={runNotice} wide={wide} />
+      </div>
     </div>
   );
 }

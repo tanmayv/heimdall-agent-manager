@@ -162,7 +162,7 @@ export function ActionRow({
           style={{ minHeight: BODY_TWO_LINES }}
           data-debug-id={`action-row-body-${actionId}`}
         >
-          {snippet}
+          {snippet && snippet.trim() ? snippet : <span className="italic text-faint select-none">&lt;empty&gt;</span>}
         </p>
 
         {/* ---- row 4: pills left, next run hard right ---- */}

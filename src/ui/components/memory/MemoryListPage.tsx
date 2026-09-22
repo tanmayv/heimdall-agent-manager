@@ -751,12 +751,12 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
    * by a tab that is not selected would claim otherwise.
    */
   const listSection = (
-    <div className="flex w-full min-w-0 flex-col gap-4">
+    <div className={`flex w-full min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
       {/* The Archived tab's second level. Both options are terminal — a memory under
           this tab is out of force either way — so neither level can misdescribe its
           contents. The Rejected view issues no request until it is selected. */}
       {tab === 'archived' && !searching ? (
-        <div role="group" aria-label="Archived memories" data-debug-id="memory-archived-view" className="flex items-center gap-2">
+        <div role="group" aria-label="Archived memories" data-debug-id="memory-archived-view" className="flex items-center gap-2 shrink-0">
           {(['archived', 'rejected'] as ArchivedView[]).map((view) => (
             <Button
               key={view}
@@ -782,7 +782,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
       {/* REQ-UI-20: nothing re-sorts under the user. Changes from elsewhere wait
           behind this pill and are applied only on tap. */}
       {!searching && list.pendingCount > 0 ? (
-        <div>
+        <div className="shrink-0">
           <Button size="sm" variant="secondary" data-debug-id="memory-pending-pill" onClick={() => list.applyPending()}>
             {list.pendingCount} new or updated — refresh
           </Button>
@@ -790,34 +790,40 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
       ) : null}
 
       {list.restoreNotice ? (
-        <Text role="body-sm" tone="muted" data-debug-id="memory-restore-notice">
-          Couldn&apos;t find where you were — showing the top of the list.
-        </Text>
+        <div className="shrink-0">
+          <Text role="body-sm" tone="muted" data-debug-id="memory-restore-notice">
+            Couldn&apos;t find where you were — showing the top of the list.
+          </Text>
+        </div>
       ) : null}
 
-      {listBody}
+      <div className={twoPane ? 'flex-1 min-h-0 overflow-y-auto' : undefined}>
+        {listBody}
+      </div>
 
       {/* Bulk verbs are scoped to what the current tab can actually do. Search
           results offer none — the row is a navigation target there. */}
       {!searching ? (
-        <BulkActionBar
-          selectedCount={selectedIds.length}
-          loadedCount={list.loadedCount}
-          onCancel={() => setSelectedIds([])}
-        >
-          {bulkVerbs.map((verb) => (
-            <ActionButton
-              key={verb}
-              icon={BULK_VERB_ICON[verb]}
-              label={VERB_LABEL[verb]}
-              variant={verb === 'reject' || verb === 'archive' ? 'danger' : 'primary'}
-              loading={bulkBusy}
-              disabled={selectedIds.length === 0}
-              data-debug-id={`memory-bulk-${verb}`}
-              onClick={() => requestBulk(verb)}
-            />
-          ))}
-        </BulkActionBar>
+        <div className="shrink-0">
+          <BulkActionBar
+            selectedCount={selectedIds.length}
+            loadedCount={list.loadedCount}
+            onCancel={() => setSelectedIds([])}
+          >
+            {bulkVerbs.map((verb) => (
+              <ActionButton
+                key={verb}
+                icon={BULK_VERB_ICON[verb]}
+                label={VERB_LABEL[verb]}
+                variant={verb === 'reject' || verb === 'archive' ? 'danger' : 'primary'}
+                loading={bulkBusy}
+                disabled={selectedIds.length === 0}
+                data-debug-id={`memory-bulk-${verb}`}
+                onClick={() => requestBulk(verb)}
+              />
+            ))}
+          </BulkActionBar>
+        </div>
       ) : null}
     </div>
   );
@@ -927,11 +933,12 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
     <Tabs
       value={searching ? '' : tab}
       onChange={(next) => applyUrlState({ ...urlState, tab: next as MemoryTab })}
+      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
     >
       {/* Tabs carry NO count badges: the list APIs return no totals (F10), and a
           loaded-row count on a keyset-paged list would be a number that means
           something different from what it looks like. */}
-      <TabsList label="Memory status">
+      <TabsList label="Memory status" className="shrink-0">
         {MEMORY_TABS.map((entry) => (
           <Tab
             key={entry.value}
@@ -943,16 +950,20 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
           </Tab>
         ))}
       </TabsList>
-      {searching ? null : <TabsPanel value={tab}>{listSection}</TabsPanel>}
+      {searching ? null : (
+        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
+          {listSection}
+        </TabsPanel>
+      )}
     </Tabs>
   );
 
   const listColumn = (
-    <div data-debug-id="memory-list-page" className="flex w-full min-w-0 flex-col gap-3">
-      {toolbar}
-      {filterChipRow}
+    <div data-debug-id="memory-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
+      <div className="shrink-0">{toolbar}</div>
+      {filterChipRow ? <div className="shrink-0">{filterChipRow}</div> : null}
       {/* 16px between the tabs and the content they label. */}
-      <div className="flex min-w-0 flex-col gap-4">
+      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
         {tabsBlock}
         {searching ? listSection : null}
       </div>
@@ -1021,6 +1032,7 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
         title="Memory"
         breadcrumbs={listCrumbs()}
         description="Durable facts, habits and skills your agents carry between sessions. An empty scope applies to all."
+        className="h-full min-h-0 overflow-hidden"
         actions={
           <Button
             variant="primary"
@@ -1032,9 +1044,9 @@ export default function MemoryListPage({ selectedId = '' }: { selectedId?: strin
           </Button>
         }
       >
-        <div className="flex min-w-0 items-start gap-4">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4" data-debug-id="memory-detail-pane">
+        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
+          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
+          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="memory-detail-pane">
             {selectedId ? (
               <MemoryDetailPane
                 memoryId={selectedId}
@@ -1109,8 +1121,8 @@ function MemoryDetailPane({ memoryId, onAfterVerb }: { memoryId: string; onAfter
   }
 
   return (
-    <div ref={paneRef} className="flex min-w-0 flex-col gap-3" data-debug-id="memory-pane">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div ref={paneRef} className="flex min-w-0 flex-col gap-3 flex-1 min-h-0 h-full overflow-hidden" data-debug-id="memory-pane">
+      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="truncate text-heading text-primary" data-debug-id="memory-pane-title">{memoryTitle(record)}</h2>
           <div className="mt-1"><MemoryDetailMeta record={record} /></div>
@@ -1119,7 +1131,9 @@ function MemoryDetailPane({ memoryId, onAfterVerb }: { memoryId: string; onAfter
           <MemoryDetailActions record={record} busy={busy} onVerb={(verb) => void runVerb(verb)} />
         </div>
       </div>
-      <MemoryDetailBody record={record} actionError={actionError} wide={wide} />
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <MemoryDetailBody record={record} actionError={actionError} wide={wide} />
+      </div>
     </div>
   );
 }

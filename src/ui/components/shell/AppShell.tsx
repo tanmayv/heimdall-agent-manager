@@ -1,5 +1,5 @@
 import TaskChainsPage from '../taskchain/TaskChainsPage';
-import ProjectChainTree from '../chains/ProjectChainTree';
+import ProjectChainTree, { CollapsedPinnedChains } from '../chains/ProjectChainTree';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
@@ -1027,20 +1027,40 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
     );
   }
 
+  const isDesktopTwoPaneRoute =
+    viewport === 'desktop' &&
+    ['/projects', '/actions', '/agents', '/shells', '/memory'].some(
+      (prefix) => path === prefix || path.startsWith(`${prefix}/`)
+    ) &&
+    !path.endsWith('/new') &&
+    !path.endsWith('/edit');
+
   return (
     <main
       data-debug-id="shell-main-route-outlet"
-      className="min-w-0 flex-1 overflow-auto overflow-x-hidden bg-canvas"
+      className={
+        isDesktopTwoPaneRoute
+          ? 'h-full min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden bg-canvas'
+          : 'min-w-0 flex-1 overflow-auto overflow-x-hidden bg-canvas'
+      }
       // The scroll container clears the bottom chrome by MEASUREMENT rather than by a
       // guessed `pb-20` (spec › GLOBAL FIXES): `--ui-bottom-chrome` is the tab bar's
       // real height, published by the bar itself, and the safe-area inset is added on
       // top so nothing is clipped on a device with a home indicator. A page that docks
       // its own action bar adds its height in its own spacer.
-      style={mobileBottomPadded
-        ? { paddingBottom: 'calc(max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)) + var(--space-2))' }
-        : undefined}
+      style={
+        !isDesktopTwoPaneRoute && mobileBottomPadded
+          ? { paddingBottom: 'calc(max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)) + var(--space-2))' }
+          : undefined
+      }
     >
-      <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
+      <section
+        className={
+          isDesktopTwoPaneRoute
+            ? 'mx-auto flex h-full min-h-0 w-full max-w-6xl min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full [&>*]:h-full [&>*]:min-h-0 [&>*]:flex-1'
+            : 'mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full'
+        }
+      >
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         <ErrorBoundary resetKey={path} label={routeTitle(path)}>
         {path === '/cards' || path.startsWith('/cards') ? (
@@ -1408,6 +1428,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
+          {collapsed && <CollapsedPinnedChains currentPath={path} onNavigate={handlePaletteNavigate} />}
           {!collapsed && <ProjectChainTree projects={liveProjects.map((p) => ({ projectId: p.projectId, projectName: p.name }))} currentPath={path} onNavigate={handlePaletteNavigate} />}
         </div>
 
