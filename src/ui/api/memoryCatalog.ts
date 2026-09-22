@@ -60,44 +60,12 @@ export function normalizeMemory(record: any) {
     metadataJson: record.metadata_json || record.metadataJson || '',
     sourceTaskId: record.source_task_id || record.sourceTaskId || '',
     version: Number(record.version || 0),
-    createdUnixMs: Number(record.created_unix_ms || record.createdUnixMs || 0),
-    updatedUnixMs: Number(record.updated_unix_ms || record.updatedUnixMs || 0),
+    // `updated_at` is an RFC3339 string and is the ONLY timestamp the hub
+    // serialises for a memory (`write_memory_json`, content_handlers.odin:590 —
+    // `created_at` is not emitted). It is also the list's keyset cursor and sort
+    // key (content_repo_sqlite.odin:31), so the list page cannot page without it.
+    updatedAt: String(record.updated_at || record.updatedAt || ''),
   };
-}
-
-export function normalizeHistory(event: any) {
-  const agentIds = memoryScopeList(event, 'agent_ids', 'agentIds');
-  const projectIds = memoryScopeList(event, 'project_ids', 'projectIds');
-  const templateIds = memoryScopeList(event, 'template_ids', 'templateIds');
-  const bridgeIds = memoryScopeList(event, 'bridge_ids', 'bridgeIds');
-  return {
-    eventId: event.event_id || event.eventId || '',
-    memoryId: event.memory_id || event.memoryId || '',
-    proposalId: event.proposal_id || event.proposalId || '',
-    agentIds,
-    projectIds,
-    templateIds,
-    bridgeIds,
-    targetAgentId: agentIds[0] || '',
-    targetProjectId: projectIds[0] || '',
-    targetTemplateId: templateIds[0] || '',
-    targetBridgeId: bridgeIds[0] || '',
-    target: memoryTargetSummary(event),
-    type: event.type || event.memory_type || 'fact',
-    title: event.title || '',
-    description: event.description || '',
-    body: event.body || '',
-    status: event.status || '',
-    reason: event.reason || '',
-    evidence: event.evidence || '',
-    author: event.author || '',
-    sourceTaskId: event.source_task_id || event.sourceTaskId || '',
-    createdUnixMs: Number(event.created_unix_ms || event.createdUnixMs || 0),
-  };
-}
-
-export function sortMemoryRecords(records: any[]) {
-  return [...(records || [])].sort((left, right) => (right.updatedUnixMs || right.createdUnixMs || 0) - (left.updatedUnixMs || left.createdUnixMs || 0));
 }
 
 function includesText(value: any, needle: string) {

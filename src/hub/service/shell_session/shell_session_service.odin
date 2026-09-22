@@ -425,6 +425,17 @@ shell_session_list_by_chain :: proc(svc: ^Shell_Session_Service, auth: contracts
 	return iface.shell_session_list_by_chain(svc.repo, string(owner), chain_id, status_filter, cursor, limit)
 }
 
+// shell_session_list lists sessions the caller owns across ALL bridges, with
+// optional AND-ed narrowing. Passing an all-empty filter is the owner-wide
+// default: every shell the caller has, anywhere. Ownership still comes from the
+// auth context, so this widens the scope, never the tenancy.
+shell_session_list :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_Context, filter: iface.Shell_Session_List_Filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
+	if svc == nil || svc.repo == nil do return nil, "", domain.domain_error(.Internal_Error, "shell session service is not configured")
+	owner, ok, err := ownership.owner_from_auth(auth)
+	if !ok do return nil, "", err
+	return iface.shell_session_list_by_owner(svc.repo, string(owner), filter, cursor, limit)
+}
+
 Shell_Session_Log_Result :: struct {
 	lines_raw:   string, // raw JSON array (caller must delete)
 	truncated:   bool,

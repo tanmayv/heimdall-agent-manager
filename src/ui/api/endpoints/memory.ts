@@ -1,4 +1,4 @@
-import { cookieJsonFetch, cookieMutation } from "../cookieFetch";
+import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from "../cookieFetch";
 import { heimdallApi } from "../heimdallApi";
 import { normalizeMemory } from "../memoryCatalog";
 
@@ -14,12 +14,131 @@ export type MemoryTargeting = {
   templateIds?: string[];
 };
 
-export type ListMemoriesQueryArg = ({
+// List FILTERS are one id per dimension, deliberately — and deliberately NOT
+// `MemoryTargeting`. The hub's `memory_filter_query` (content_handlers.odin:690-698)
+// splits a dimension's value on the first comma and uses ONLY that token, so a
+// multi-value filter is silently truncated: sending three ids filters by one. A
+// single id per dimension is the honest match to the endpoint. (Writes are a
+// different matter — POST/PATCH really do take lists, so `MemoryTargeting` stays
+// on the mutation inputs.)
+export type MemoryListFilter = {
   status?: string;
   type?: string;
+  agentId?: string;
+  projectId?: string;
+  bridgeId?: string;
+  templateId?: string;
+};
+
+export type ListMemoriesQueryArg = (MemoryListFilter & {
   limit?: number;
   cursor?: string;
-} & MemoryTargeting) | void;
+}) | void;
+
+// One page of the list endpoint, in the API's own field names — the shape
+// `useInfiniteList` consumes.
+export type MemoryPage = {
+  items: any[];
+  next_cursor: string;
+  has_more: boolean;
+};
+
+// memoryListPath builds `/memories?…`. A filter matches when the memory's
+// dimension list is EMPTY (global) or contains the value (content_service.odin:
+// 139-144), so filtering by a project also returns the global memories that apply
+// to it. Defaults are expressed by OMITTING the param.
+function memoryListPath(arg: (MemoryListFilter & { limit?: number; cursor?: string }) | void | null): string {
+  const params = new URLSearchParams();
+  if (arg) {
+    if (arg.status) params.set("status", arg.status);
+    if (arg.type) params.set("type", arg.type);
+    if (arg.agentId) params.set("agent_id", arg.agentId);
+    if (arg.projectId) params.set("project_id", arg.projectId);
+    if (arg.bridgeId) params.set("bridge_id", arg.bridgeId);
+    if (arg.templateId) params.set("template_id", arg.templateId);
+    if (arg.limit) params.set("limit", String(arg.limit));
+    if (arg.cursor) params.set("cursor", arg.cursor);
+  }
+  const queryString = params.toString();
+  return `/memories${queryString ? `?${queryString}` : ""}`;
+}
+
+// fetchMemoryPage is the imperative page fetch the infinite list drives. It reads
+// the FULL envelope because `has_more` / `next_cursor` live in the `page` sibling
+// of `data` (respond_list), which the data-unwrapping fetch strips — and it honours
+// an AbortSignal, because changing tab or filters supersedes the page in flight.
+export async function fetchMemoryPage(
+  args: MemoryListFilter & { limit?: number; cursor?: string; signal?: AbortSignal },
+): Promise<MemoryPage> {
+  const { signal, ...arg } = args;
+  const body = await cookieJsonFetchEnvelope(memoryListPath(arg), { signal });
+  const data = body?.data ?? body;
+  const page = body?.page ?? {};
+  const rawItems = Array.isArray(data) ? data : data?.items || [];
+  return {
+    items: rawItems.map(normalizeMemory),
+    next_cursor: String(page?.next_cursor || ""),
+    has_more: Boolean(page?.has_more),
+  };
+}
+
+// A memory search hit. The search API carries no structured record (search_fts.odin:
+// 115-122): `label` is the title (or the type when the title is empty) and
+// `sublabel` is "<type> · <status>", so type and status are PARSED back out of it
+// and the row renders a reduced shape. `route` is deliberately ignored — it points
+// at the legacy `/settings/memory?memory_id=…`.
+export type MemoryHit = {
+  id: string;
+  label: string;
+  type: string;
+  status: string;
+  preview: string;
+  matchedField: string;
+};
+
+export type MemoryHitPage = {
+  items: MemoryHit[];
+  next_cursor: string;
+  has_more: boolean;
+};
+
+function hitFromSearch(raw: any): MemoryHit {
+  const sublabel = String(raw?.sublabel || "");
+  const [typePart, statusPart] = sublabel.split("·").map((part) => part.trim());
+  return {
+    id: String(raw?.id || ""),
+    label: String(raw?.label || ""),
+    type: typePart || "",
+    status: statusPart || "",
+    preview: String(raw?.preview || raw?.snippet || ""),
+    matchedField: String(raw?.matched_field || ""),
+  };
+}
+
+// searchMemoryPage runs the server-scoped memory search (types=memory). Memory's
+// FTS index covers TITLE and BODY only (migrations/030_search_fts_all.sql:155-175),
+// and search accepts no status/type/scope facet — which is why an active query
+// disregards the tabs and filters.
+export async function searchMemoryPage(
+  args: { q: string; limit?: number; cursor?: string; signal?: AbortSignal },
+): Promise<MemoryHitPage> {
+  const query = String(args.q || "").trim();
+  if (!query) return { items: [], next_cursor: "", has_more: false };
+  const params = new URLSearchParams({ q: query, types: "memory", limit: String(args.limit || 50) });
+  if (args.cursor) params.set("cursor", args.cursor);
+  const body = await cookieJsonFetchEnvelope(`/search?${params.toString()}`, { signal: args.signal });
+  const data = body?.data ?? body;
+  const page = body?.page ?? {};
+  const groups = Array.isArray(data?.groups) ? data.groups : [];
+  const hits = groups
+    .filter((group: any) => String(group?.type || "") === "memory")
+    .flatMap((group: any) => (Array.isArray(group?.hits) ? group.hits : []));
+  return {
+    items: hits.map(hitFromSearch).filter((hit: MemoryHit) => Boolean(hit.id)),
+    next_cursor: String(page?.next_cursor || ""),
+    has_more: Boolean(page?.has_more),
+  };
+}
 
 export type CreateMemoryInput = {
   title?: string;
@@ -71,34 +190,12 @@ function buildTargetingBody(input: MemoryTargeting): Record<string, string[]> {
   return out;
 }
 
-// memoryErrorText turns whatever a memory mutation's .unwrap() rejects with into
-// a human-readable string. These endpoints use a custom queryFn that, on failure,
-// rejects with an RTK "CUSTOM_ERROR" object { status: "CUSTOM_ERROR", error:
-// "<message>" } — so the real message lives on err.error, NOT err.data or
-// err.message. Callers that only read err?.data?.error || err?.message fell
-// through to String(err) and rendered the useless "[object Object]". This helper
-// also handles the FetchBaseQueryError shape ({ data: { error | message } }),
-// plain Error ({ message }), and bare strings, with a caller-supplied fallback.
+// memoryErrorText is the shared `apiErrorText` under the name memory's callers
+// already use. The unwrapping is not memory-specific (every queryFn endpoint
+// rejects the same way), so it lives in `cookieFetch` and this is a thin alias
+// rather than a second copy to keep in step.
 export function memoryErrorText(err: unknown, fallback = "Something went wrong"): string {
-  const nonBlank = (v: unknown): string | undefined =>
-    typeof v === "string" && v.trim() ? v : undefined;
-  if (err == null) return fallback;
-  if (typeof err === "string") return nonBlank(err) ?? fallback;
-  const e = err as any;
-  // FetchBaseQueryError server-envelope payload.
-  const data = e.data;
-  if (data) {
-    if (typeof data === "string") { const s = nonBlank(data); if (s) return s; }
-    else {
-      const s = nonBlank(data?.error?.message) ?? nonBlank(data?.error) ?? nonBlank(data?.message);
-      if (s) return s;
-    }
-  }
-  // Custom queryFn CUSTOM_ERROR shape: { status: "CUSTOM_ERROR", error: "<msg>" }.
-  const fromError = nonBlank(e.error) ?? nonBlank(e.error?.message);
-  if (fromError) return fromError;
-  // Plain Error / anything carrying a string message.
-  return nonBlank(e.message) ?? fallback;
+  return apiErrorText(err, fallback);
 }
 
 export type RejectMemoryInput = {
@@ -116,27 +213,7 @@ export const memoryApi = heimdallApi.injectEndpoints({
     listMemories: build.query<any, ListMemoriesQueryArg>({
       queryFn: async (arg) => {
         try {
-          const params = new URLSearchParams();
-          if (arg) {
-            if (arg.status) params.set("status", arg.status);
-            if (arg.type) params.set("type", arg.type);
-            // Targeting filters send the plural list params as CSV; the hub
-            // matches when a memory's list is empty (global) OR contains a value.
-            const csv = (ids?: string[]) => (ids || []).map((id) => String(id || "").trim()).filter(Boolean).join(",");
-            const agentIds = csv(arg.agentIds);
-            if (agentIds) params.set("agent_ids", agentIds);
-            const projectIds = csv(arg.projectIds);
-            if (projectIds) params.set("project_ids", projectIds);
-            const bridgeIds = csv(arg.bridgeIds);
-            if (bridgeIds) params.set("bridge_ids", bridgeIds);
-            const templateIds = csv(arg.templateIds);
-            if (templateIds) params.set("template_ids", templateIds);
-            if (arg.limit) params.set("limit", String(arg.limit));
-            if (arg.cursor) params.set("cursor", arg.cursor);
-          }
-          const queryString = params.toString();
-          const path = `/memories${queryString ? `?${queryString}` : ""}`;
-          const res = await cookieJsonFetch(path);
+          const res = await cookieJsonFetch(memoryListPath(arg));
           const rawItems = res?.items || res?.memories || (Array.isArray(res) ? res : []);
           const items = rawItems.map(normalizeMemory);
           return { data: { items, next_cursor: res?.next_cursor || res?.nextCursor || "" } };
@@ -164,12 +241,6 @@ export const memoryApi = heimdallApi.injectEndpoints({
       providesTags: (_result, _error, arg) => [
         { type: "Memory" as const, id: typeof arg === "string" ? arg : arg?.memoryId },
       ],
-    }),
-    fetchMemoryHistory: build.query<any, { memoryId: string }>({
-      queryFn: async () => {
-        return { data: { events: [] } };
-      },
-      providesTags: (_result, _error, arg) => [{ type: "MemoryHistory" as const, id: arg?.memoryId }],
     }),
     createMemory: build.mutation<any, CreateMemoryInput>({
       queryFn: async (payload) => {
@@ -268,11 +339,3 @@ export const {
   useRejectMemoryMutation,
   useArchiveMemoryMutation,
 } = memoryApi;
-
-export const useListMemoryQuery = useListMemoriesQuery;
-export const useListApplicableMemoryQuery = useListMemoriesQuery;
-export const useFetchMemoryQuery = useGetMemoryQuery;
-export const useLazyFetchMemoryQuery = memoryApi.endpoints.getMemory.useLazyQuery;
-export const useProposeMemoryChangeMutation = useCreateMemoryMutation;
-export const useDecideMemoryProposalMutation = useApproveMemoryMutation;
-export const useFetchMemoryHistoryQuery = memoryApi.endpoints.fetchMemoryHistory.useQuery;

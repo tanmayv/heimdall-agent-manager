@@ -32,12 +32,33 @@ main :: proc() {
 		return
 	}
 
+	// REQ-CLI-3: `search --help` must reach SEARCH help in BOTH modes. This check
+	// used to live inside the user-mode-only block below, so in an agent context it
+	// was unreachable: search fell through to the agent_ctx switch and ctl_agent_mode
+	// answered --help with the ROOT overview, leaving the agent-mode flag surface
+	// (--cursor, the typed id filters, the negations, --exclude) undocumented. It is
+	// hoisted above the mode split and told which mode to render, because the two
+	// modes genuinely accept different flags.
+	// The positional `search help` is honoured in AGENT MODE ONLY, and that is a
+	// deliberate asymmetry rather than an oversight. In agent mode it already
+	// resolved to help (ctl_agent_mode treats a "help" action that way) and merely
+	// printed the WRONG page, so only which page prints changes. In USER mode it
+	// resolved to a genuine search for the word "help" — verified against a binary
+	// built from HEAD — so treating it as help there would silently change search
+	// behavior, which this task explicitly must not do.
+	search_agent_ctx := agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != ""
+	search_help_asked := has_flag(os.args, "--help") || has_flag(os.args, "-h") ||
+		(search_agent_ctx && len(cmd) >= 2 && cmd[1] == "help")
+	if cmd[0] == "search" && search_help_asked {
+		print_search_help(search_agent_ctx)
+		return
+	}
+
 	// User-mode search hits GET /api/v1/search with a user token. In an agent
 	// context (bridge endpoint + agent token present) search instead routes
 	// through agent mode (agent.search RPC) via the agent_ctx switch below, so
 	// this early user-mode return is skipped when running as an agent.
 	if cmd[0] == "search" && !(agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != "") {
-		if has_flag(os.args, "--help") || has_flag(os.args, "-h") { print_search_help(); return }
 		ctl_search_command(cmd[:], os.args)
 		return
 	}

@@ -473,7 +473,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_create_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_list_by_bridge_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/projects/*/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_list_by_project_handler)
-	http.router_add(&graph.router, "GET", "/api/v1/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_list_by_chain_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/shells", rawptr(&graph.shell_session_rest_handlers), http.shell_session_list_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/shells/*", rawptr(&graph.shell_session_rest_handlers), http.shell_session_get_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/shells/*", rawptr(&graph.shell_session_rest_handlers), http.shell_session_kill_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/signal", rawptr(&graph.shell_session_rest_handlers), http.shell_session_signal_handler)

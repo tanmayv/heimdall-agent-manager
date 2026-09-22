@@ -15,7 +15,6 @@ export const HEIMDALL_TAG_TYPES = [
   'AgentTemplate',
   'AgentInstances',
   'Memory',
-  'MemoryHistory',
   'Project',
   'Projects',
   'Workspace',

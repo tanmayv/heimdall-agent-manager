@@ -30,33 +30,81 @@ Search_Row :: struct {
 	matched_field: string,
 }
 
-// print_search_help documents `ham-ctl search`. The --scope line lists all ELEVEN
-// scope names (REQ-CLI-5): an unknown scope is now a validation error, so the help
-// has to state the vocabulary it is validated against — `message` is real and was
-// missing here before.
+// print_search_help documents `ham-ctl search` for whichever mode the caller is
+// actually in. The --scope line lists all ELEVEN scope names (REQ-CLI-5): an
+// unknown scope is a validation error, so the help has to state the vocabulary
+// it is validated against — `message` is real and was missing here before.
 //
-// NOTE this help is currently unreachable in agent mode (main.odin routes to
-// print_agent_help there); making it reachable, and the agent-mode flag surface
-// (--cursor instead of --json), is REQ-CLI-3's job, not this change's.
-print_search_help :: proc() {
-	fmt.println("ham-ctl search <query> [--scope csv] [typed id filters] [--exclude text] [--limit n] [--json]")
-	fmt.println("Purpose: global entity search across the Hub (GET /api/v1/search).")
-	fmt.println("Flags:")
-	fmt.println("  --scope             CSV of scopes (default: all). Eleven names:")
-	fmt.println("                      conversation, message, agent, agent_instance, task-chain,")
-	fmt.println("                      task, comment, project, artifact, memory, skill")
-	fmt.println("  Typed parent-id filters (CSV; keep only rows under the named parent):")
-	fmt.println("    --task-ids, --chain-ids, --project-ids, --conversation-ids")
-	fmt.println("  Negations (CSV; drop rows under the named parent):")
-	fmt.println("    --not-in-task-ids, --not-in-chain-ids, --not-in-project-ids, --not-in-conversation-ids")
-	fmt.println("  --exclude           Drop hits whose text contains this substring")
-	fmt.println("  --limit             Page size (server clamps to its max); human mode pages via the cursor")
-	fmt.println("  --json              Print the raw response envelope (carries next_cursor/has_more)")
-	fmt.println("Auth: needs --hub-url + --user-token (or HAM_HUB_URL / HAM_HUB_USER_TOKEN).")
-	fmt.println("Examples:")
-	fmt.println("  ham-ctl search 'deploy runbook' --hub-url http://127.0.0.1:49322 --user-token hut_...")
-	fmt.println("  ham-ctl search zebra --scope task,comment --chain-ids chain_123 --limit 20")
-	fmt.println("  ham-ctl search zebra --project-ids proj_1 --not-in-chain-ids chain_9")
+// REQ-CLI-3: this help used to be unreachable in agent mode (main.odin gated the
+// --help check behind NOT-agent-mode, so an agent got the ROOT overview and the
+// agent-mode flag surface had no documentation at all). main.odin now honours
+// --help for search in BOTH modes and passes agent_mode through to here.
+print_search_help :: proc(agent_mode := false) {
+	text := search_help_text(agent_mode)
+	defer delete(text)
+	fmt.println(text)
+}
+
+// search_help_text renders the help as a string so the drift test in
+// src/ctl/search_help_text_test.odin can read the very text a user sees, rather
+// than a parallel list that could disagree with it. The two modes accept
+// DIFFERENT flags — agent mode pages with --cursor (--since alias) and rejects
+// --json; user mode is the mirror image (see SEARCH_AGENT_ONLY_VALUE_FLAGS /
+// SEARCH_USER_ONLY_BOOL_FLAGS) — so the difference is rendered explicitly here
+// instead of being maintained as a second copy of the whole page.
+//
+// The test scans `--flag` tokens out of the indented block under "Flags:" and
+// requires each to be accepted by search_validate_flags for that mode. Keep any
+// prose that NAMES a flag the mode rejects (e.g. the --json note) in a
+// column-0 section such as "Output:", which is outside that block.
+search_help_text :: proc(agent_mode: bool) -> string {
+	lines := make([dynamic]string)
+	defer delete(lines)
+
+	if agent_mode {
+		append(&lines, "ham-ctl search <query> [--scope csv] [typed id filters] [--exclude text] [--limit n] [--cursor c]")
+		append(&lines, "Purpose: global entity search across the Hub (agent.search RPC, relayed by your Bridge).")
+	} else {
+		append(&lines, "ham-ctl search <query> [--scope csv] [typed id filters] [--exclude text] [--limit n] [--json]")
+		append(&lines, "Purpose: global entity search across the Hub (GET /api/v1/search).")
+	}
+
+	// Shared flag surface (SEARCH_COMMON_VALUE_FLAGS) — identical in both modes.
+	append(&lines, "Flags:")
+	append(&lines, "  --scope             CSV of scopes (default: all). Eleven names:")
+	append(&lines, "                      conversation, message, agent, agent_instance, task-chain,")
+	append(&lines, "                      task, comment, project, artifact, memory, skill")
+	append(&lines, "  Typed parent-id filters (CSV; keep only rows under the named parent):")
+	append(&lines, "    --task-ids, --chain-ids, --project-ids, --conversation-ids")
+	append(&lines, "  Negations (CSV; drop rows under the named parent):")
+	append(&lines, "    --not-in-task-ids, --not-in-chain-ids, --not-in-project-ids, --not-in-conversation-ids")
+	append(&lines, "  --exclude           Drop hits whose text contains this substring")
+
+	if agent_mode {
+		append(&lines, "  --limit             Page size (server clamps to its max)")
+		append(&lines, "  --cursor            Resume from the previous page's next_cursor (--since is an accepted alias)")
+		append(&lines, "Output: always the raw JSON envelope. next_cursor/has_more sit at data.page,")
+		append(&lines, "        one level ABOVE data.data.groups. --json is a user-mode flag and is")
+		append(&lines, "        rejected here, because the envelope is already raw.")
+		append(&lines, "Auth: your own agent token, which the managed ham-ctl already exports as")
+		append(&lines, "      HEIMDALL_AGENT_TOKEN. No Hub URL and no user token are needed: the")
+		append(&lines, "      Bridge holds the Hub credential and relays on your behalf.")
+		append(&lines, "Examples:")
+		append(&lines, "  ham-ctl search 'deploy runbook'")
+		append(&lines, "  ham-ctl search zebra --scope task,comment --chain-ids chain_123 --limit 20")
+		append(&lines, "  ham-ctl search zebra --project-ids proj_1 --not-in-chain-ids chain_9")
+		append(&lines, "  ham-ctl search zebra --limit 20 --cursor <next_cursor from the previous page>")
+	} else {
+		append(&lines, "  --limit             Page size (server clamps to its max); human mode pages via the cursor")
+		append(&lines, "  --json              Print the raw response envelope (carries next_cursor/has_more)")
+		append(&lines, "Auth: needs --hub-url + --user-token (or HAM_HUB_URL / HAM_HUB_USER_TOKEN).")
+		append(&lines, "Examples:")
+		append(&lines, "  ham-ctl search 'deploy runbook' --hub-url http://127.0.0.1:49322 --user-token hut_...")
+		append(&lines, "  ham-ctl search zebra --scope task,comment --chain-ids chain_123 --limit 20")
+		append(&lines, "  ham-ctl search zebra --project-ids proj_1 --not-in-chain-ids chain_9")
+	}
+
+	return strings.join(lines[:], "\n")
 }
 
 // ---- unknown-flag rejection (REQ-CLI-4) ---------------------------------

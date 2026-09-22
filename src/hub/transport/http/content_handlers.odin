@@ -321,6 +321,56 @@ json_array_present :: proc(body, key: string) -> ([]string, bool) {
 	if len(rest) == 0 || rest[0] != '[' do return nil, false
 	return json_string_array(body, key), true
 }
+// json_unescape_json_string decodes the bytes BETWEEN the quotes of a JSON string
+// literal, matching json_string_unescaped's escape table exactly (\n \r \t \" \\
+// and \uXXXX; any other escaped byte is written through). A value with no
+// backslash is returned as the original slice, so the common case allocates
+// nothing.
+json_unescape_json_string :: proc(raw: string) -> string {
+	if strings.index_byte(raw, '\\') < 0 do return raw
+	b := strings.builder_make()
+	escaped := false
+	for i := 0; i < len(raw); i += 1 {
+		ch := raw[i]
+		if escaped {
+			switch ch {
+			case 'n': strings.write_byte(&b, '\n')
+			case 'r': strings.write_byte(&b, '\r')
+			case 't': strings.write_byte(&b, '\t')
+			case '"': strings.write_byte(&b, '"')
+			case '\\': strings.write_byte(&b, '\\')
+			case 'u':
+				if i + 4 < len(raw) {
+					if val, ok := strconv.parse_int(raw[i + 1:i + 5], 16); ok {
+						if val < 128 { strings.write_byte(&b, byte(val)) } else { strings.write_rune(&b, rune(val)) }
+						i += 4
+					} else {
+						strings.write_byte(&b, 'u')
+					}
+				} else {
+					strings.write_byte(&b, 'u')
+				}
+			case: strings.write_byte(&b, ch)
+			}
+			escaped = false
+			continue
+		}
+		if ch == '\\' { escaped = true; continue }
+		strings.write_byte(&b, ch)
+	}
+	return strings.to_string(b)
+}
+
+// json_property reports whether `key` is present in `body` and returns its value
+// DECODED, so it is interchangeable with json_string except that it can also tell
+// an absent key from one explicitly set to "" (REQ-CLI-8). It must unescape:
+// template_input and memory_update_input feed persona/instructions/body straight
+// into stored domain objects, and those are routinely multi-line. Returning the
+// raw slice here would store a literal backslash-n and re-escape it on every read
+// back out through write_handler_json_string.
+// KNOWN GAP: a non-string value (null, a number, true) reports present-and-empty,
+// which under these semantics CLEARS the field. No current caller sends one; see
+// the REQ-CLI-8 handoff.
 json_property :: proc(body, key: string) -> (value: string, present: bool) {
 	i := 0
 	n := len(body)
@@ -360,7 +410,7 @@ json_property :: proc(body, key: string) -> (value: string, present: bool) {
 								continue
 							}
 							if body[i] == '"' {
-								return body[val_start:i], true
+								return json_unescape_json_string(body[val_start:i]), true
 							}
 							i += 1
 						}

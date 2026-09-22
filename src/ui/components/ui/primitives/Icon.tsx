@@ -53,6 +53,7 @@ export type IconName =
   | 'folder'
   | 'folder-open'
   | 'file'
+  | 'copy'
   | 'download'
   | 'clock'
   | 'calendar'
@@ -160,6 +161,15 @@ const PATHS: Record<IconName, ReactElement> = {
     <g fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
       <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
       <path d="M14 3v5h5" />
+    </g>
+  ),
+  // Copy-to-clipboard. Same line weight and 24-box as the rest of the set — the
+  // redesign puts a copy affordance on several cards, and an ad-hoc glyph at one
+  // call site is how a set stops being a set.
+  copy: (
+    <g fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15V6a2 2 0 0 1 2-2h8" />
     </g>
   ),
   download: (

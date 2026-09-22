@@ -1,5 +1,5 @@
 import { heimdallApi } from '../heimdallApi';
-import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+import { cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 
 export type ShellSessionKind = 'agent' | 'interactive' | 'server' | 'command';
 export type ShellSessionStatus = 'starting' | 'running' | 'exited' | 'killed' | 'failed';
@@ -20,7 +20,12 @@ export type ShellSession = {
   exit_code_set: boolean;
   server_port: number;
   preview_enabled: boolean;
-  tee_path: string;
+  // `finished_at` IS serialised by write_shell_session_json
+  // (shell_session_rest_handlers.odin:55) and was missing here; a terminal row's
+  // "exited 4h ago" reads from it. `tee_path` used to sit where it now is and was
+  // NEVER serialised by that writer — it was a field the API does not send, which
+  // Amendment 6 forbids rendering, so it is gone rather than left to read undefined.
+  finished_at: string;
   started_at: string;
   last_activity_at: string;
 };
@@ -48,12 +53,24 @@ export type ShellLogResponse = {
   limit: number;
 };
 
+/**
+ * `status` accepts an exact Shell_Session_Status OR one of the two composite values
+ * the owner-wide list understands: `live` (starting|running) and `finished`
+ * (exited|killed|failed). The composites exist because the Shells page's tabs are the
+ * `shell_session_is_terminal` split (shell_session.odin:51), and the repo's status
+ * predicate is a single `status = ?` equality — so "Live" is not expressible as an
+ * exact value. Per Amendment 8 this is deliberately NOT a CSV: the hub honours only
+ * the first token of a CSV filter, so a named composite is the honest encoding.
+ */
+export type ShellStatusFilter = ShellSessionStatus | 'live' | 'finished';
+
 type ListShellsArgs = {
   chainId?: string;
   bridgeId?: string;
   projectId?: string;
-  status?: ShellSessionStatus;
+  status?: ShellStatusFilter;
   cursor?: string;
+  limit?: number;
 };
 
 type CreateShellArgs = {
@@ -101,10 +118,63 @@ function normalizeLogLines(lines: string[]): string[] {
   return lines;
 }
 
+/* ------------------------------------------------------------------ *
+ * Keyset paging for the Shells list page
+ * ------------------------------------------------------------------ *
+ * `useInfiniteList` wants a promise that takes a cursor and an AbortSignal, not an
+ * RTK hook — same shape as `fetchAgentPage`. The RTK `listShells` query above stays
+ * for the chain and conversation panels, which fetch one scoped page and never page.
+ *
+ * The cursor COLUMN for this resource is `session_id`, ordered `started_at DESC,
+ * session_id DESC` (`shell_session_repo_sqlite.odin:188-189`) — verified rather than
+ * assumed, because it differs from memories (`updated_at`) and agents/projects
+ * (`created_at`). One happy consequence for REQ-UI-20: `started_at` is IMMUTABLE for
+ * a given session, so a status change repaints a row where it sits and can never move
+ * it under the reader.
+ */
+export interface ShellPage {
+  items: ShellSession[];
+  next_cursor: string;
+  has_more: boolean;
+}
+
+export interface FetchShellPageArgs {
+  limit?: number;
+  cursor?: string;
+  signal?: AbortSignal;
+  /** The tab's composite status (`live` / `finished`) or one exact status. */
+  status?: ShellStatusFilter;
+  bridgeId?: string;
+  projectId?: string;
+  chainId?: string;
+}
+
+export async function fetchShellPage(args: FetchShellPageArgs = {}): Promise<ShellPage> {
+  const params = new URLSearchParams({ limit: String(args.limit || 25) });
+  if (args.cursor) params.set('cursor', args.cursor);
+  if (args.status) params.set('status', args.status);
+  if (args.bridgeId) params.set('bridge_id', args.bridgeId);
+  if (args.projectId) params.set('project_id', args.projectId);
+  if (args.chainId) params.set('chain_id', args.chainId);
+  const body = await cookieJsonFetchEnvelope(`/shells?${params.toString()}`, { signal: args.signal });
+  const data = body?.data ?? body;
+  const items: ShellSession[] = Array.isArray(data)
+    ? data
+    : (Array.isArray(data?.sessions) ? data.sessions : []);
+  const nextCursor = String(data?.next_cursor ?? body?.page?.next_cursor ?? '');
+  return {
+    items,
+    next_cursor: nextCursor,
+    // Derived, not read — the list serializer emits no `has_more` key. See the note
+    // on `listShells` above for why `next_cursor !== ''` is the exact equivalent.
+    has_more: Boolean(data?.has_more ?? body?.page?.has_more ?? nextCursor !== ''),
+  };
+}
+
 export const shellsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listShells: build.query<ShellSessionPage, ListShellsArgs>({
-      queryFn: async ({ chainId, bridgeId, projectId, status, cursor }) => {
+      queryFn: async ({ chainId, bridgeId, projectId, status, cursor, limit }) => {
         try {
           const qs = new URLSearchParams();
           if (chainId) qs.set('chain_id', chainId);
@@ -112,6 +182,7 @@ export const shellsApi = heimdallApi.injectEndpoints({
           if (projectId) qs.set('project_id', projectId);
           if (status) qs.set('status', status);
           if (cursor) qs.set('cursor', cursor);
+          if (limit) qs.set('limit', String(limit));
           const suffix = qs.toString() ? `?${qs.toString()}` : '';
           const data = await cookieJsonFetch(`/shells${suffix}`);
           const sessions: ShellSession[] = Array.isArray(data)
@@ -121,7 +192,15 @@ export const shellsApi = heimdallApi.injectEndpoints({
             data: {
               sessions,
               next_cursor: data?.next_cursor ?? '',
-              has_more: data?.has_more ?? false,
+              // `has_more` is DERIVED, not read: `_shell_session_list_json`
+              // (shell_session_rest_handlers.odin:385-396) emits `sessions` and
+              // `next_cursor` only — it has no `has_more` key at all, so the old
+              // `data?.has_more ?? false` was permanently false and would have
+              // stopped infinite scroll dead after page one. The derivation is exact
+              // because the repo sets `next_cursor` ONLY when a full page came back
+              // (shell_session_repo_sqlite.odin:209-212): a short page leaves it
+              // empty, which is precisely "no more rows".
+              has_more: Boolean(data?.has_more ?? (data?.next_cursor ?? '') !== ''),
             },
           };
         } catch (error: any) {

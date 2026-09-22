@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { Drawer, Icon, Text, type IconName } from '@ui';
+import { TOUCH_TARGET_CLASS } from '@ui/hooks/useViewport';
 // UI-13: responsive/mobile primitives shared across the shell.
 // Breakpoints (approx, per arch doc §6D): <768px mobile, 768–1024px tablet,
 // >1024px desktop. The desktop "two panes side-by-side" collapses to mobile
@@ -9,66 +9,20 @@ import { Drawer, Icon, Text, type IconName } from '@ui';
 // bar with a command-palette center button replaces sidebar chrome; the right
 // inspector becomes a bottom sheet; chain list/detail become a drill-down.
 
-export const MOBILE_MAX = 767;
-export const TABLET_MAX = 1023;
-
-export type Viewport = 'mobile' | 'tablet' | 'desktop';
-
-export function useViewport(): Viewport {
-  const [viewport, setViewport] = useState<Viewport>(() => readViewport());
-  useEffect(() => {
-    const update = () => setViewport(readViewport());
-    update();
-    window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
-  return viewport;
-}
-
-function readViewport(): Viewport {
-  if (typeof window === 'undefined') return 'desktop';
-  const w = window.innerWidth;
-  if (w <= MOBILE_MAX) return 'mobile';
-  if (w <= TABLET_MAX) return 'tablet';
-  return 'desktop';
-}
-
-export function useIsMobile(): boolean {
-  return useViewport() === 'mobile';
-}
-
-// UI-13: keyboard-aware layout. Mobile soft keyboards shrink window.visualViewport
-// without resizing the layout viewport. We expose the gap as an inset so the
-// bottom-pinned composer / inspector sheet can lift above the keyboard. Returns
-// 0 on desktop or when no keyboard is visible.
-export function useKeyboardInset(): number {
-  const [inset, setInset] = useState(0);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const vv: VisualViewport | undefined = window.visualViewport;
-    if (!vv) return;
-    const update = () => {
-      if (window.innerWidth > MOBILE_MAX) { setInset(0); return; }
-      const gap = window.innerHeight - vv.height - vv.offsetTop;
-      // Hysteresis: ignore sub-threshold deltas (browser chrome/bouncing).
-      setInset(gap > 24 ? Math.max(0, gap) : 0);
-    };
-    update();
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
-    window.addEventListener('resize', update);
-    return () => {
-      vv.removeEventListener('resize', update);
-      vv.removeEventListener('scroll', update);
-      window.removeEventListener('resize', update);
-    };
-  }, []);
-  return inset;
-}
-
-// Touch-target floor: >=44px where practical (arch doc §6D). Components compose
-// this with their own min-w/h utilities to guarantee the hit area.
-export const TOUCH_TARGET_CLASS = 'min-h-11 min-w-11';
+// UI-13: the breakpoint primitives now live in `@ui/hooks/useViewport` — `@ui`'s own
+// responsive components (DataList, BulkActionBar) need them, and an `@ui` component
+// importing from this app-level module would invert the layering and close an import
+// cycle. Re-exported here so every existing call site keeps importing them from
+// `shell/responsive` unchanged, with one implementation behind both paths.
+export {
+  MOBILE_MAX,
+  TABLET_MAX,
+  useViewport,
+  useIsMobile,
+  useKeyboardInset,
+  TOUCH_TARGET_CLASS,
+} from '@ui/hooks/useViewport';
+export type { Viewport } from '@ui/hooks/useViewport';
 
 export type MobileTab = {
   id: string;
@@ -105,13 +59,55 @@ const TABS: { id: string; label: string; icon: IconName; route: string }[] = [
   { id: 'settings', label: 'Settings', icon: 'gear', route: '/settings/bridges' },
 ];
 
+/**
+ * `--ui-bottom-chrome` — how much persistent chrome the app keeps pinned to the
+ * bottom edge. Published on the document root from the tab bar's REAL measured
+ * height (padding and safe-area inset included), so anything that docks at the
+ * bottom — `@ui`'s `BulkActionBar`, today — can sit above it instead of under it.
+ *
+ * It lives here rather than in `AppShell` because the bar itself is the thing whose
+ * height it reports, and it is a CSS variable rather than a prop because `@ui`
+ * components must not import the shell and no page should have to remember to pass
+ * a shell measurement down. Cleared on unmount: when the tab bar is gone (desktop,
+ * or a chrome-suppressed route) the variable is absent and consumers fall back to 0.
+ */
+function useBottomChromeVar(ref: { current: HTMLElement | null }) {
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof window === 'undefined') return undefined;
+    const root = document.documentElement;
+    const publish = () => {
+      // offsetHeight, not the transform-aware bounding box: the bar is translated
+      // out of view while scrolling (`scrollChromeSuppressed`) but still occupies
+      // the same space the moment it comes back, and a bar that re-docked under the
+      // tab bar on every scroll would be worse than one that never moved.
+      root.style.setProperty('--ui-bottom-chrome', `${node.offsetHeight}px`);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty('--ui-bottom-chrome');
+    };
+  }, [ref]);
+}
+
 export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge = 0, chainsBadge = 0, paletteDebugId = 'shell-mobile-palette-button', className = '' }: MobileTabBarProps) {
   const isActive = (route: string) => activePath === route || activePath.startsWith(`${route}/`);
+  const navRef = useRef<HTMLElement | null>(null);
+  useBottomChromeVar(navRef);
   return (
     <nav
+      ref={navRef}
       data-debug-id="shell-mobile-tab-bar"
       aria-label="Mobile bottom navigation"
-      className={`ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-subtle bg-surface/95 backdrop-blur transition-transform duration-300 ease-in-out md:hidden ${className}`}
+      // Solid background, not a translucent blur (spec › GLOBAL FIXES): content
+      // scrolling under a blurred bar reads as a rendering fault, and the bar is
+      // what everything else on the bottom edge measures itself against. The safe
+      // area is padding on the bar itself, so the tabs sit above the home indicator
+      // rather than under it.
+      className={`ui-safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 items-stretch border-t border-subtle bg-surface transition-transform duration-300 ease-in-out md:hidden ${className}`}
     >
       {TABS.slice(0, 2).map((tab) => (
         <MobileTabButton key={tab.id} tab={tab} active={isActive(tab.route)} badge={tab.id === 'chains' ? chainsBadge : 0} onClick={() => onNavigate(tab.route)} />

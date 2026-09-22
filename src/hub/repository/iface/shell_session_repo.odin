@@ -13,6 +13,24 @@ Shell_Session_Get_By_Id_Proc      :: proc(ctx: rawptr, session_id: string) -> (d
 Shell_Session_List_By_Bridge_Proc :: proc(ctx: rawptr, owner_user_id, bridge_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
 Shell_Session_List_By_Project_Proc :: proc(ctx: rawptr, owner_user_id, project_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
 Shell_Session_List_By_Chain_Proc  :: proc(ctx: rawptr, owner_user_id, chain_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
+// Shell_Session_List_Filter narrows an owner-wide listing. Every non-empty
+// field adds one AND-ed equality clause; all-empty means "every session this
+// owner has, on every bridge", which is the default the owner-wide list serves.
+// An empty string is the only "absent" spelling because none of these columns
+// can legitimately hold one: a session always carries a bridge_id, and the
+// project/chain/status columns are either set or empty-as-unset already.
+Shell_Session_List_Filter :: struct {
+	bridge_id:  string,
+	project_id: string,
+	chain_id:   string,
+	status:     string,
+}
+
+// Shell_Session_List_By_Owner_Proc lists sessions across ALL of an owner's
+// bridges, narrowed by filter. It is the general form of the three scoped list
+// procs above, which remain because their callers pass a scope that is always
+// present and would otherwise have to build a filter to say so.
+Shell_Session_List_By_Owner_Proc  :: proc(ctx: rawptr, owner_user_id: string, filter: Shell_Session_List_Filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error)
 Shell_Session_Delete_Proc         :: proc(ctx: rawptr, owner_user_id, session_id: string) -> (bool, domain.Domain_Error)
 // Shell_Session_Set_Server_Port_Proc writes server_port alone (XM-9). It is a
 // separate op rather than a field on the upsert because the upsert treats a 0
@@ -28,6 +46,7 @@ Shell_Session_Repository :: struct {
 	list_by_bridge:  Shell_Session_List_By_Bridge_Proc,
 	list_by_project: Shell_Session_List_By_Project_Proc,
 	list_by_chain:   Shell_Session_List_By_Chain_Proc,
+	list_by_owner:   Shell_Session_List_By_Owner_Proc,
 	delete:          Shell_Session_Delete_Proc,
 	set_server_port: Shell_Session_Set_Server_Port_Proc,
 }
@@ -62,6 +81,13 @@ shell_session_list_by_project :: proc(repo: ^Shell_Session_Repository, owner_use
 shell_session_list_by_chain :: proc(repo: ^Shell_Session_Repository, owner_user_id, chain_id, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
 	if repo == nil || repo.list_by_chain == nil do return nil, "", domain.domain_error(.Internal_Error, "shell session repository is not configured")
 	return repo.list_by_chain(repo.ctx, owner_user_id, chain_id, status_filter, cursor, limit)
+}
+
+// shell_session_list_by_owner lists every session the owner has, across all
+// bridges, narrowed by the optional filter fields.
+shell_session_list_by_owner :: proc(repo: ^Shell_Session_Repository, owner_user_id: string, filter: Shell_Session_List_Filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
+	if repo == nil || repo.list_by_owner == nil do return nil, "", domain.domain_error(.Internal_Error, "shell session repository is not configured")
+	return repo.list_by_owner(repo.ctx, owner_user_id, filter, cursor, limit)
 }
 
 shell_session_delete :: proc(repo: ^Shell_Session_Repository, owner_user_id, session_id: string) -> (bool, domain.Domain_Error) {

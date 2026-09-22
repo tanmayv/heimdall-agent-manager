@@ -20,6 +20,7 @@ new_shell_session_repository :: proc(impl: ^Shell_Session_Repo_SQLite, conn: ^Co
 		list_by_bridge  = shell_session_list_by_bridge_sqlite,
 		list_by_project = shell_session_list_by_project_sqlite,
 		list_by_chain   = shell_session_list_by_chain_sqlite,
+		list_by_owner   = shell_session_list_by_owner_sqlite,
 		delete          = shell_session_delete_sqlite,
 		set_server_port = shell_session_set_server_port_sqlite,
 	}
@@ -167,7 +168,93 @@ shell_session_list_by_chain_sqlite :: proc(ctx: rawptr, owner_user_id, chain_id,
 	return shell_session_list_generic(ctx, "chain_id", owner_user_id, chain_id, status_filter, cursor, limit)
 }
 
+// shell_session_list_by_owner_sqlite lists every session the owner has, across
+// all bridges, with each non-empty filter field contributing one AND-ed clause.
+// No filter at all is the owner-wide default listing.
+shell_session_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: string, filter: iface.Shell_Session_List_Filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
+	clauses := make([dynamic]Shell_Session_Where_Clause, context.temp_allocator)
+	if filter.bridge_id  != "" do append(&clauses, shell_session_eq("bridge_id",  filter.bridge_id))
+	if filter.project_id != "" do append(&clauses, shell_session_eq("project_id", filter.project_id))
+	if filter.chain_id   != "" do append(&clauses, shell_session_eq("chain_id",   filter.chain_id))
+	if filter.status     != "" do append(&clauses, shell_session_status_clause(filter.status))
+	return shell_session_list_where(ctx, owner_user_id, clauses[:], cursor, limit)
+}
+
 shell_session_list_generic :: proc(ctx: rawptr, scope_col, owner_user_id, scope_val, status_filter, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
+	// The scope clause is UNCONDITIONAL, including when scope_val is "". These
+	// three lists are scoped by construction, and an empty scope value means
+	// "the sessions whose column is empty" — dropping the clause instead would
+	// silently widen a scoped route to the owner's whole fleet. Only the status
+	// filter is optional here, exactly as before.
+	clauses := make([dynamic]Shell_Session_Where_Clause, context.temp_allocator)
+	append(&clauses, shell_session_eq(scope_col, scope_val))
+	// Through the same translator as the owner-wide list, so `status=live` and
+	// `status=finished` work identically on all four list routes.
+	if status_filter != "" do append(&clauses, shell_session_status_clause(status_filter))
+	return shell_session_list_where(ctx, owner_user_id, clauses[:], cursor, limit)
+}
+
+Shell_Session_Where_Op :: enum {
+	Eq,     // <col> = ?
+	In,     // <col> IN (?, ?, ...)
+	Not_In, // <col> NOT IN (?, ?, ...)
+}
+
+// Shell_Session_Where_Clause is one AND-ed condition. `col` is always a literal
+// chosen in this file, never caller text, so it is safe to inline into the SQL;
+// every value in `vals` is bound as a parameter. Eq carries exactly one value;
+// In/Not_In carry the set.
+Shell_Session_Where_Clause :: struct {
+	col:  string,
+	op:   Shell_Session_Where_Op,
+	vals: []string,
+}
+
+// shell_session_eq is the one-value equality clause, the shape almost every
+// filter wants. The backing slice is temp-allocated, so it lives exactly as long
+// as the request or loop iteration that builds the query — never past the
+// sqlite3_step loop that reads it.
+shell_session_eq :: proc(col, val: string) -> Shell_Session_Where_Clause {
+	vals := make([]string, 1, context.temp_allocator)
+	vals[0] = val
+	return Shell_Session_Where_Clause{col = col, op = .Eq, vals = vals}
+}
+
+// shell_session_status_clause translates ONE status filter value into a clause.
+// The two group names (domain.Shell_Session_Status_Group_Live / _Finished) become
+// set membership over domain.SHELL_SESSION_TERMINAL_STATUSES — the domain's own
+// definition of "over", so this cannot drift from shell_session_is_terminal.
+// Anything else is an exact match, so every concrete status keeps behaving
+// exactly as it did before the groups existed.
+//
+// `live` is NOT IN (terminal) rather than IN (starting, running): a status added
+// later is live until the domain says it is terminal, which is the safer default
+// — a new status shows up in the Live tab instead of vanishing from both.
+shell_session_status_clause :: proc(status: string) -> Shell_Session_Where_Clause {
+	switch status {
+	case domain.Shell_Session_Status_Group_Finished:
+		return Shell_Session_Where_Clause{col = "status", op = .In, vals = shell_session_terminal_vals()}
+	case domain.Shell_Session_Status_Group_Live:
+		return Shell_Session_Where_Clause{col = "status", op = .Not_In, vals = shell_session_terminal_vals()}
+	}
+	return shell_session_eq("status", status)
+}
+
+// shell_session_terminal_vals copies the domain's terminal set into a temp slice
+// for binding. Copied rather than referenced because the domain constant is a
+// fixed-size array, and the clause holds a slice.
+shell_session_terminal_vals :: proc() -> []string {
+	terminal := domain.SHELL_SESSION_TERMINAL_STATUSES
+	vals := make([]string, len(terminal), context.temp_allocator)
+	for st, i in terminal do vals[i] = st
+	return vals
+}
+
+// shell_session_list_where is the one keyset-paginated shell-session query. It
+// always scopes to owner_user_id, ANDs every clause it is given, and keeps the
+// `ORDER BY started_at DESC, session_id DESC` ordering the cursor is defined
+// against.
+shell_session_list_where :: proc(ctx: rawptr, owner_user_id: string, clauses: []Shell_Session_Where_Clause, cursor: string, limit: int) -> ([dynamic]domain.Shell_Session, string, domain.Domain_Error) {
 	impl := (^Shell_Session_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil {
 		return nil, "", domain.domain_error(.Internal_Error, "sqlite repository is not open")
@@ -175,16 +262,27 @@ shell_session_list_generic :: proc(ctx: rawptr, scope_col, owner_user_id, scope_
 	lim := limit
 	if lim <= 0 do lim = 50
 
-	has_status := status_filter != ""
 	has_cursor := cursor != ""
 
 	b := strings.builder_make(context.temp_allocator)
 	strings.write_string(&b, "SELECT ")
 	strings.write_string(&b, shell_session_select_cols)
-	strings.write_string(&b, " FROM shell_sessions WHERE owner_user_id = ? AND ")
-	strings.write_string(&b, scope_col)
-	strings.write_string(&b, " = ?")
-	if has_status do strings.write_string(&b, " AND status = ?")
+	strings.write_string(&b, " FROM shell_sessions WHERE owner_user_id = ?")
+	for c in clauses {
+		strings.write_string(&b, " AND ")
+		strings.write_string(&b, c.col)
+		switch c.op {
+		case .Eq:
+			strings.write_string(&b, " = ?")
+		case .In, .Not_In:
+			strings.write_string(&b, " NOT IN (" if c.op == .Not_In else " IN (")
+			for _, i in c.vals {
+				if i > 0 do strings.write_string(&b, ", ")
+				strings.write_string(&b, "?")
+			}
+			strings.write_string(&b, ")")
+		}
+	}
 	if has_cursor do strings.write_string(&b, " AND session_id < ?")
 	strings.write_string(&b, " ORDER BY started_at DESC, session_id DESC LIMIT ?;")
 	query := strings.to_string(b)
@@ -196,19 +294,25 @@ shell_session_list_generic :: proc(ctx: rawptr, scope_col, owner_user_id, scope_
 	defer sqlite3_finalize(stmt)
 
 	bind_text(stmt, 1, owner_user_id)
-	bind_text(stmt, 2, scope_val)
-	p := 3
-	if has_status { bind_text(stmt, p, status_filter); p += 1 }
-	if has_cursor  { bind_text(stmt, p, cursor);        p += 1 }
+	p := 2
+	for c in clauses {
+		for v in c.vals { bind_text(stmt, p, v); p += 1 }
+	}
+	if has_cursor { bind_text(stmt, p, cursor); p += 1 }
 	bind_text(stmt, p, int_s(lim))
 
 	items := make([dynamic]domain.Shell_Session)
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		append(&items, shell_session_from_stmt(stmt))
 	}
+	// The cursor is CLONED, not aliased. It is derived from the last row's
+	// session_id, and every caller frees the page (domain.shell_sessions_destroy,
+	// which deletes session_id) and the cursor (delete(next_cursor))
+	// independently — aliasing made those two frees land on one allocation. An
+	// owned copy is what the callers already assume they were handed.
 	next_cursor := ""
 	if len(items) >= lim && len(items) > 0 {
-		next_cursor = items[len(items)-1].session_id
+		next_cursor = strings.clone(items[len(items)-1].session_id)
 	}
 	return items, next_cursor, domain.Domain_Error{}
 }

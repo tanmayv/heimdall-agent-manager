@@ -45,6 +45,37 @@
 
 /* data-width='full' intentionally sets no max-width (full-bleed pages). */
 
+/*
+ * Vertical rhythm — ONE scale, applied at the frame.
+ * ------------------------------------------------------------------
+ * The page's bands (header, tabs, filters, list, footer) are separated by a single
+ * `--ps-band-gap`, and the header's own internal parts sit closer together than the
+ * bands are to each other. That difference is what stops a filter row, a note and a
+ * table header reading as one undifferentiated block. Pages should NOT tune gaps
+ * element by element; they inherit this.
+ *
+ * The body also carries the SAME inline padding as the header. Without it the header
+ * was indented and the table was flush to the window edge, which is the single most
+ * visible "spacing is wrong" in the rendered page.
+ */
+.ui-pageshell {
+  --ps-band-gap: var(--space-5);
+  --ps-pad-x: var(--space-4);
+  --ps-pad-y: var(--space-5);
+}
+
+@media (min-width: 640px) {
+  .ui-pageshell {
+    --ps-pad-x: var(--space-6);
+  }
+}
+
+.ui-pageshell-header {
+  display: flex;
+  flex-direction: column;
+  padding: var(--ps-pad-y) var(--ps-pad-x) var(--space-4);
+}
+
 /* The page body flows below the header and grows to fill remaining height so
    footers / empty states position correctly on short pages. */
 .ui-pageshell-body {
@@ -52,6 +83,18 @@
   flex: 1 1 auto;
   min-height: 0;
   flex-direction: column;
+  /* Amendment 4: the page never scrolls sideways — wide content scrolls inside its
+     own container. `min-width: 0` lets a flex child (the table's scroll region)
+     actually shrink below its content width instead of forcing the page wider. */
+  min-width: 0;
+}
+
+/* The banded rhythm is opt-in per page (`rhythm="banded"`) while the rest of the app
+   still carries its own hand-rolled spacing; it is the convention for every page the
+   rebuild touches. */
+.ui-pageshell[data-rhythm='banded'] .ui-pageshell-body {
+  gap: var(--ps-band-gap);
+  padding: 0 var(--ps-pad-x) var(--space-8);
 }
 
 /*

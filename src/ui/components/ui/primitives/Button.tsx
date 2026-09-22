@@ -90,20 +90,26 @@ export interface ButtonProps
   width?: Width;
 }
 
-export function Button({
-  variant = 'secondary',
-  tone,
-  size = 'md',
-  loading = false,
-  width = 'content',
-  leading,
-  trailing,
-  disabled,
-  className,
-  type = 'button',
-  children,
-  ...rest
-}: ButtonProps) {
+// Ref-forwarding: `Menu` clones its trigger and attaches a ref to it (focus
+// restoration on Esc depends on reaching the real element), so any button that can
+// be a menu trigger has to pass one through. `IconButton` already forwards.
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  {
+    variant = 'secondary',
+    tone,
+    size = 'md',
+    loading = false,
+    width = 'content',
+    leading,
+    trailing,
+    disabled,
+    className,
+    type = 'button',
+    children,
+    ...rest
+  },
+  ref,
+) {
   // A spinner replaces the leading slot while loading, so the label stays put
   // and the control keeps its width.
   const lead = loading ? (
@@ -126,6 +132,7 @@ export function Button({
 
   return (
     <button
+      ref={ref}
       type={type}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
@@ -137,6 +144,6 @@ export function Button({
       {trailing}
     </button>
   );
-}
+});
 
 export default Button;

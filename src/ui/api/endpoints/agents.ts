@@ -1,6 +1,6 @@
 import * as daemonApi from '../daemonApi';
 import { applyAgentRuntimeEvent, loadKnownAgents, mapAgent, mergeKnownAndLiveAgents, storeKnownAgents, upsertKnownAgentRecord } from '../agentCatalog';
-import { cookieMutation, cookieJsonFetch } from '../cookieFetch';
+import { apiErrorText, cookieMutation, cookieJsonFetch, cookieJsonFetchEnvelope } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 export interface GetAgentPaneArgs {
@@ -113,12 +113,15 @@ export const agentsApi = heimdallApi.injectEndpoints({
       keepUnusedDataFor: 600,
     }),
     // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
-    updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; templateId?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
-      queryFn: async ({ agentId, name, templateId, defaultProvider, defaultTier, instructions }) => {
+    updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; slug?: string; templateId?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
+      queryFn: async ({ agentId, name, slug, templateId, defaultProvider, defaultTier, instructions }) => {
         try {
           // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
           const payload: any = {};
           if (name !== undefined) payload.name = name;
+          // Slug is mutable (`agent_service.odin:115`: `if input.slug != "" do agent.slug = input.slug`).
+          // Send only when non-empty; an empty slug is treated as "no change" server-side.
+          if (slug) payload.slug = slug;
           // Only send template_id when explicitly provided; the hub applies it only
           // when the key is present (has_template_id), so omitting it leaves the
           // agent's template unchanged.
@@ -684,4 +687,138 @@ export function useStartInstanceMutation() {
     return mutate(typeof arg === 'string' ? { instanceId: arg } : arg);
   };
   return [trigger, result] as const;
+}
+
+/* ------------------------------------------------------------------ *
+ * Rebuilt Agents pages — data layer
+ * ------------------------------------------------------------------ *
+ * `useListAgentIdentitiesQuery` loads EVERY agent unpaginated and is what the
+ * sidebar and launch modal want. The list page needs keyset pages, abortable
+ * fetches, and the `page` envelope, so it uses the imperative helpers below.
+ */
+
+/** An agent identity as the rebuilt pages use it: camelCase, every field present. */
+export type AgentRecord = {
+  agentId: string;
+  name: string;
+  slug: string;
+  templateId: string;
+  defaultProvider: string;
+  defaultTier: string;
+  instructions: string;
+  /** `active` | `archived` */
+  state: string;
+  supportedBridgeCount: number;
+  activeInstanceCount: number;
+  updatedAt: string;
+};
+
+/**
+ * Normalises a wire agent identity.
+ *
+ * Note what is NOT here: `created_at` and `owner_user_id`. `write_agent_json`
+ * (`agent_handlers.odin:338-351`) serialises neither — even though the list's
+ * cursor IS `created_at` — so the pages have exactly one timestamp to show.
+ */
+export function normalizeAgent(raw: any): AgentRecord {
+  const src = raw?.agent || raw || {};
+  return {
+    agentId: String(src.agent_id || src.agentId || ''),
+    name: String(src.name || ''),
+    slug: String(src.slug || ''),
+    templateId: String(src.template_id || src.templateId || ''),
+    defaultProvider: String(src.default_provider || src.defaultProvider || ''),
+    defaultTier: String(src.default_tier || src.defaultTier || ''),
+    instructions: String(src.instructions || ''),
+    state: String(src.state || 'active'),
+    supportedBridgeCount: Number(src.supported_bridge_count ?? src.supportedBridgeCount ?? 0),
+    activeInstanceCount: Number(src.active_instance_count ?? src.activeInstanceCount ?? 0),
+    updatedAt: String(src.updated_at || src.updatedAt || ''),
+  };
+}
+
+export type AgentPage = {
+  items: AgentRecord[];
+  next_cursor: string;
+  has_more: boolean;
+};
+
+/**
+ * One keyset page of agent identities.
+ *
+ * The endpoint takes `limit` and `cursor` and NOTHING else
+ * (`agent_handlers.odin:17-36`) — no `state`, no type filter. Tab filtering
+ * is applied in the browser, exactly as on Projects.
+ */
+export async function fetchAgentPage(
+  args: { limit?: number; cursor?: string; signal?: AbortSignal } = {},
+): Promise<AgentPage> {
+  const params = new URLSearchParams({ limit: String(args.limit || 50) });
+  if (args.cursor) params.set('cursor', args.cursor);
+  const body = await cookieJsonFetchEnvelope(`/agents?${params.toString()}`, { signal: args.signal });
+  const data = body?.data ?? body;
+  const rawItems = Array.isArray(data) ? data : data?.items || data?.agents || [];
+  const page = body?.page ?? {};
+  return {
+    items: rawItems.map(normalizeAgent),
+    next_cursor: String(page?.next_cursor || ''),
+    has_more: Boolean(page?.has_more),
+  };
+}
+
+/**
+ * A search hit: label plus a sublabel derived from the server's response.
+ * No state on a hit, so search results are navigation-only.
+ */
+export type AgentHit = {
+  id: string;
+  label: string;
+  slug: string;
+  preview: string;
+};
+
+export type AgentHitPage = {
+  items: AgentHit[];
+  next_cursor: string;
+  has_more: boolean;
+};
+
+function agentHitFrom(raw: any): AgentHit {
+  return {
+    id: String(raw?.id || ''),
+    label: String(raw?.label || ''),
+    slug: String(raw?.sublabel || raw?.sub || '').split('·')[0]?.trim() || '',
+    preview: String(raw?.preview || raw?.snippet || ''),
+  };
+}
+
+/**
+ * Server-scoped agent search (`types=agent`, G-2).
+ *
+ * Matches name, slug, agent_id — NOT instructions.
+ */
+export async function searchAgentPage(
+  args: { q: string; limit?: number; cursor?: string; signal?: AbortSignal },
+): Promise<AgentHitPage> {
+  const query = String(args.q || '').trim();
+  if (!query) return { items: [], next_cursor: '', has_more: false };
+  const params = new URLSearchParams({ q: query, types: 'agent', limit: String(args.limit || 50) });
+  if (args.cursor) params.set('cursor', args.cursor);
+  const body = await cookieJsonFetchEnvelope(`/search?${params.toString()}`, { signal: args.signal });
+  const data = body?.data ?? body;
+  const page = body?.page ?? {};
+  const groups = Array.isArray(data?.groups) ? data.groups : [];
+  const hits = groups
+    .filter((group: any) => String(group?.type || '') === 'agent')
+    .flatMap((group: any) => (Array.isArray(group?.hits) ? group.hits : []));
+  return {
+    items: hits.map(agentHitFrom).filter((hit: AgentHit) => Boolean(hit.id)),
+    next_cursor: String(page?.next_cursor || ''),
+    has_more: Boolean(page?.has_more),
+  };
+}
+
+/** Human-readable text for anything an agent mutation rejects with. */
+export function agentErrorText(err: unknown, fallback = 'Something went wrong'): string {
+  return apiErrorText(err, fallback);
 }
