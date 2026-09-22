@@ -38,7 +38,8 @@ ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
 	if resource == "memories" || resource == "memory" { ctl_hub_memories(base, user_token, cmd[idx + 1:], args); return }
 	if resource == "cards" || resource == "card" { ctl_hub_cards(base, user_token, cmd[idx + 1:], args); return }
 	if resource == "actions" || resource == "action" || resource == "scheduled-prompts" || resource == "scheduled-prompt" { ctl_hub_actions(base, user_token, cmd[idx + 1:], args); return }
-	fmt.println("usage: ham-ctl hub <me|health|agents|launch|chats|tasks|task-chains|projects|artifacts|memories|cards|actions> ...")
+	if resource == "issues" || resource == "issue" { ctl_issues_command(cmd[idx:], args); return }
+	fmt.println("usage: ham-ctl hub <me|health|agents|launch|chats|tasks|task-chains|projects|artifacts|memories|cards|actions|issues> ...")
 }
 
 ctl_hub_agents :: proc(base, token, action: string, args: []string) {
@@ -724,6 +725,7 @@ print_hub_help :: proc(cmd: []string) {
 		return
 	}
 	if resource == "actions" || resource == "action" || resource == "scheduled-prompts" || resource == "scheduled-prompt" { fmt.println("ham-ctl hub actions <list|show|create|delete|run>\nPurpose: manage scheduled prompt actions.\nExamples:\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... actions list\n  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... actions create --prompt 'Run review' --agent-id curator --bridge brg_123 --cron '0 * * * *'\n  ham-ctl hub ... actions create --prompt 'Nightly' --agent-id curator --bridge brg_123 --cron '0 3 * * *' --instance-strategy fresh_per_run  # new instance each run, reaps the previous\nFlags:\n  --instance-strategy reuse|fresh_per_run  reuse (default) reuses/wakes an existing instance of the agent-id; fresh_per_run mints a NEW instance every run and stops the prior one (durable agent-id targets only)."); return }
+	if resource == "issues" || resource == "issue" { print_issues_help(); return }
 	fmt.println("ham-ctl hub — Hub /api/v1 user mode; uses Authorization: Bearer only")
 	fmt.println("commands:")
 	fmt.println("  me           Show authenticated user")
@@ -738,6 +740,7 @@ print_hub_help :: proc(cmd: []string) {
 	fmt.println("  memories     List/create/show/content/approve/reject/archive memories")
 	fmt.println("  cards        List/show/create/discard/accept/reject/snooze action cards")
 	fmt.println("  actions      List/create/show/delete/run scheduled prompt actions")
+	fmt.println("  issues       List/show/create/update/comment/vote/unvote issues")
 	fmt.println("examples:")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... me")
 	fmt.println("  ham-ctl hub --hub-url http://127.0.0.1:49322 --user-token hut_... cards list")

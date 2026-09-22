@@ -22,6 +22,7 @@ import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
 import card_service "odin_test:hub/service/card"
+import issue_service "odin_test:hub/service/issue"
 import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
@@ -44,6 +45,7 @@ App_Graph :: struct {
 	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_push: sqlite.Push_Repo_SQLite,
 	sqlite_cards: sqlite.Card_Repo_SQLite,
+	sqlite_issues: sqlite.Issue_Repo_SQLite,
 	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
@@ -78,6 +80,8 @@ App_Graph :: struct {
 	shell_session_stream_handlers: http.Shell_Session_Stream_Handlers,
 	shell_session_rest_handlers: http.Shell_Session_Rest_Handlers,
 	card_handlers: http.Card_Handlers,
+	issues: issue_service.Issue_Service,
+	issue_handlers: http.Issue_Handlers,
 	action_mutex: sync.Mutex,
 	action_bridge_versions: map[string]int,
 	router: http.Router,
@@ -180,6 +184,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.repos.cards = sqlite.new_card_repository(&graph.sqlite_cards, &graph.db)
+	graph.repos.issues = sqlite.new_issue_repository(&graph.sqlite_issues, &graph.db)
 	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
@@ -288,7 +293,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		&graph.clock,
 		&graph.ids,
 	)
+	graph.issues = issue_service.new_issue_service(&graph.repos.issues, &graph.clock, &graph.ids)
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
+	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
 	graph.router = http.new_router()
 	register_routes(graph)
@@ -551,6 +558,20 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "PATCH", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.patch_card_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.delete_card_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/cards/*/*", rawptr(&graph.card_handlers), http.card_action_handler)
+
+	// Issues API
+	http.router_add(&graph.router, "GET", "/api/v1/issues", rawptr(&graph.issue_handlers), http.list_issues_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/issues", rawptr(&graph.issue_handlers), http.create_issue_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/issues/*", rawptr(&graph.issue_handlers), http.get_issue_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/issues/*", rawptr(&graph.issue_handlers), http.patch_issue_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/issues/*", rawptr(&graph.issue_handlers), http.delete_issue_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/issues/*/comments", rawptr(&graph.issue_handlers), http.list_issue_comments_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/issues/*/comments", rawptr(&graph.issue_handlers), http.create_issue_comment_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/issues/*/comments/*", rawptr(&graph.issue_handlers), http.delete_issue_comment_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/issues/*/votes", rawptr(&graph.issue_handlers), http.list_issue_votes_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/issues/*/vote", rawptr(&graph.issue_handlers), http.vote_issue_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/issues/*/vote", rawptr(&graph.issue_handlers), http.unvote_issue_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/issues/*/unvote", rawptr(&graph.issue_handlers), http.unvote_issue_handler)
 
 	// Shell session WS stream + HTTP input/resize fallback (T7).
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/shells/*/stream", rawptr(&graph.shell_session_stream_handlers), http.shell_session_stream_handler)

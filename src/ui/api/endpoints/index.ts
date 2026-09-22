@@ -14,3 +14,4 @@ export * from './cards';
 export * from './shellJobs';
 export * from './bridgeFig';
 export * from './shells';
+export * from './issues';

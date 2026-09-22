@@ -49,6 +49,8 @@ export const HEIMDALL_TAG_TYPES = [
   'BridgeFigWorkspaces',
   'ShellSessions',
   'ShellSession',
+  'Issue',
+  'IssueComments',
 ] as const;
 
 export type HeimdallTagType = (typeof HEIMDALL_TAG_TYPES)[number];

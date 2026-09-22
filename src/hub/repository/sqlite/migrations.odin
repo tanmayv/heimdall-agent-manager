@@ -177,10 +177,13 @@ MIGRATION_042_PINNED_TASK_CHAINS :: #load("migrations/042_pinned_task_chains.sql
 // storing extra relevant directories for a task chain (REQ-BE-TASK-CHAIN-RELEVANT-DIRECTORIES).
 MIGRATION_043_TASK_CHAIN_DIRECTORIES :: #load("migrations/043_task_chain_directories.sql", string)
 
-// MIGRATION_044_FIG_PROJECTS adds Fig workspace metadata columns to projects (Cloudtop).
-MIGRATION_044_FIG_PROJECTS :: #load("migrations/044_fig_projects.sql", string)
+// MIGRATION_044_ISSUES creates issues, issue_comments, and issue_votes tables (REQ-ISSUES-BACKEND-SCHEMA-SERVICE).
+MIGRATION_044_ISSUES :: #load("migrations/044_issues.sql", string)
 
-migration_order :: [44]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_task_chain_directories.sql", "044_fig_projects.sql"}
+// MIGRATION_045_FIG_PROJECTS adds Fig workspace metadata columns to projects (Cloudtop).
+MIGRATION_045_FIG_PROJECTS :: #load("migrations/045_fig_projects.sql", string)
+
+migration_order :: [45]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql", "018_coordinator_member_backfill.sql", "019_current_task_and_priority.sql", "020_title_tracking.sql", "021_agent_instance_display_name.sql", "022_scheduled_prompts.sql", "023_actions.sql", "024_push_subscriptions.sql", "025_lookup_indexes.sql", "026_memory_scope_lists.sql", "027_default_coordinator_agent.sql", "028_memory_description_and_cleanup.sql", "029_search_fts_comments.sql", "030_search_fts_all.sql", "031_search_fts_messages.sql", "032_ai_native_templates.sql", "033_default_agents_and_conversation_project.sql", "034_cards.sql", "035_curator_template.sql", "036_action_targets.sql", "037_project_state.sql", "038_action_instance_strategy.sql", "039_shell_jobs.sql", "040_artifact_list_indexes.sql", "041_shell_sessions.sql", "042_pinned_task_chains.sql", "043_task_chain_directories.sql", "044_issues.sql", "045_fig_projects.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -282,7 +285,11 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 			mark_migration_applied(conn, name)
 			continue
 		}
-		if (name == "044_fig_projects.sql" || name == "043_fig_projects.sql" || name == "041_fig_projects.sql" || name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql") && table_column_exists(conn, "projects", "project_type") && table_column_exists(conn, "projects", "workspace_name") && table_column_exists(conn, "projects", "relative_path") {
+		if (name == "045_fig_projects.sql" || name == "044_fig_projects.sql" || name == "043_fig_projects.sql" || name == "041_fig_projects.sql" || name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql") && table_column_exists(conn, "projects", "project_type") && table_column_exists(conn, "projects", "workspace_name") && table_column_exists(conn, "projects", "relative_path") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "044_issues.sql" && sqlite_object_exists(conn, "issues") && sqlite_object_exists(conn, "issue_comments") && sqlite_object_exists(conn, "issue_votes") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -370,7 +377,8 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "041_shell_sessions.sql" do return strings.clone(MIGRATION_041_SHELL_SESSIONS)
 	if name == "042_pinned_task_chains.sql" do return strings.clone(MIGRATION_042_PINNED_TASK_CHAINS)
 	if name == "043_task_chain_directories.sql" do return strings.clone(MIGRATION_043_TASK_CHAIN_DIRECTORIES)
-	if name == "044_fig_projects.sql" || name == "043_fig_projects.sql" || name == "041_fig_projects.sql" || name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql" do return strings.clone(MIGRATION_044_FIG_PROJECTS)
+	if name == "044_issues.sql" do return strings.clone(MIGRATION_044_ISSUES)
+	if name == "045_fig_projects.sql" || name == "044_fig_projects.sql" || name == "043_fig_projects.sql" || name == "041_fig_projects.sql" || name == "040_fig_projects.sql" || name == "034_fig_projects.sql" || name == "032_fig_projects.sql" || name == "031_fig_projects.sql" || name == "029_fig_projects.sql" || name == "028_fig_projects.sql" || name == "027_fig_projects.sql" do return strings.clone(MIGRATION_045_FIG_PROJECTS)
 	return ""
 }
 
@@ -380,6 +388,9 @@ migration_applied :: proc(conn: ^Conn, version: string) -> bool {
 	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	if sqlite3_step(stmt) == SQLITE_ROW do return true
+	if version == "045_fig_projects.sql" {
+		return migration_applied(conn, "044_fig_projects.sql") || migration_applied(conn, "043_fig_projects.sql") || migration_applied(conn, "041_fig_projects.sql") || migration_applied(conn, "040_fig_projects.sql")
+	}
 	if version == "044_fig_projects.sql" {
 		return migration_applied(conn, "043_fig_projects.sql") || migration_applied(conn, "041_fig_projects.sql") || migration_applied(conn, "040_fig_projects.sql")
 	}
