@@ -64,9 +64,15 @@ Lsp_Session_Entry :: struct {
 	wire_key:      string,
 	socket:        net.TCP_Socket,
 	started:       bool,
-	// closing is set by the bridge-disconnect teardown so the relay thread can
-	// tell "the bridge went away" from an ordinary client disconnect.
+	// closing marks the session dead: the relay must unwind and release it. It is
+	// set by the bridge-disconnect teardown AND by a failed write (REQ-LSP-RLY-2).
 	closing:       bool,
+	// bridge_gone narrows that to "the BRIDGE is what went away", which is the
+	// only case where the language server process died on its own. It must stay
+	// distinct from closing: the relay's teardown skips send_lsp_stop on it, so
+	// setting it for a merely-dead session would strand a live language server on
+	// the bridge host. See lsp_should_stop_on_bridge.
+	bridge_gone:   bool,
 }
 
 // Lsp_Session_Registry holds the live relays. Two indexes over the same entries:
@@ -76,6 +82,13 @@ Lsp_Session_Registry :: struct {
 	mu:       sync.Mutex,
 	by_wire:  map[string]^Lsp_Session_Entry,
 	by_owner: map[string]^Lsp_Session_Entry,
+	// send_timeout overrides LSP_SEND_TIMEOUT for sockets claimed on this
+	// registry; zero (the production value — nothing ever sets it) means use the
+	// constant. It lives HERE rather than in a package-level variable on purpose:
+	// `odin test` runs tests in parallel, so a mutable global would let one test's
+	// override leak into another's socket and make both flaky. A per-registry
+	// field is private to whoever owns the registry, which in tests is one test.
+	send_timeout: time.Duration,
 }
 
 // lsp_owner_key namespaces a client session id by its owner. The NUL separator
@@ -110,6 +123,29 @@ lsp_registry_claim :: proc(reg: ^Lsp_Session_Registry, owner_user_id, session_id
 	entry.socket        = socket
 	entry.started       = false
 	entry.closing       = false
+	entry.bridge_gone   = false
+
+	// Bound writes on this socket against a NON-PROGRESSING peer (REQ-LSP-RLY-2).
+	// Claim is the one choke point: every frame the Hub ever writes to this browser
+	// goes to entry.socket, and claim happens before the upgrade response, so
+	// nothing is written before the bound is in place. SO_SNDTIMEO touches ONLY the
+	// send side, so the relay thread's parked recv and its own .Receive_Timeout are
+	// unaffected — the reader remains the socket's sole closer.
+	//
+	// KNOW WHAT THIS DOES AND DOES NOT GUARANTEE. SO_SNDTIMEO bounds each send()
+	// SYSCALL, not the frame. Linux socket(7): a blocked send returns a partial
+	// count, or EWOULDBLOCK if nothing was sent. core/net _send_tcp only exits its
+	// loop on an errno, so a partial count with NO error loops into a FRESH timeout
+	// window. Therefore:
+	//   - a peer making NO progress (the wedged tab this ticket is about) is bounded
+	//     at one timeout, which is the defect being fixed;
+	//   - a peer that TRICKLES is bounded by its own throughput, not by this value.
+	//     A browser absorbing 500KB at 10KB/s holds the lock ~50s without the
+	//     timeout ever firing.
+	// The trickling case is NOT addressed here and is not this ticket's subject.
+	send_timeout := reg.send_timeout
+	if send_timeout <= 0 do send_timeout = LSP_SEND_TIMEOUT
+	_ = net.set_option(socket, .Send_Timeout, send_timeout)
 
 	if reg.by_wire == nil do reg.by_wire = make(map[string]^Lsp_Session_Entry)
 	if reg.by_owner == nil do reg.by_owner = make(map[string]^Lsp_Session_Entry)
@@ -169,8 +205,29 @@ lsp_registry_mark_stopped :: proc(reg: ^Lsp_Session_Registry, wire_id: string) {
 	entry.started = false
 }
 
-// lsp_session_closing reports whether the bridge-disconnect teardown has claimed
-// this session. Read under the lock: the flag is set from the bridge WS thread.
+// lsp_should_stop_on_bridge reports whether the relay's teardown must still tell
+// the bridge to stop the language server.
+//
+// This is the predicate the teardown defer consumes, named and separated so it can
+// be tested directly. It keys on bridge_gone, NOT on closing: a session killed for
+// a failed write (REQ-LSP-RLY-2) is dead, but its bridge is alive and its language
+// server is still running, so the stop MUST go out or the process outlives the
+// socket that owned it — one orphaned server per wedged tab.
+//
+// An unknown wire_id answers true, preserving the pre-existing behaviour that a
+// released entry still gets its stop sent.
+lsp_should_stop_on_bridge :: proc(reg: ^Lsp_Session_Registry, wire_id: string) -> bool {
+	if reg == nil do return true
+	sync.mutex_lock(&reg.mu)
+	defer sync.mutex_unlock(&reg.mu)
+	entry, found := reg.by_wire[wire_id]
+	if !found || entry == nil do return true
+	return !entry.bridge_gone
+}
+
+// lsp_session_closing reports whether this session has been marked dead, by either
+// the bridge-disconnect teardown or a failed write. Read under the lock: the flag
+// is set from the bridge WS thread.
 lsp_session_closing :: proc(reg: ^Lsp_Session_Registry, wire_id: string) -> bool {
 	if reg == nil do return false
 	sync.mutex_lock(&reg.mu)
@@ -205,8 +262,25 @@ lsp_registry_wake_bridge_sessions :: proc(reg: ^Lsp_Session_Registry, bridge_id:
 		if entry == nil || !entry.started do continue
 		if entry.bridge_id != bridge_id do continue
 		entry.closing = true
+		// The bridge is what went away, so the server process died with it. This
+		// is the ONLY place this may be set — see lsp_should_stop_on_bridge.
+		entry.bridge_gone = true
 		// Last word to the browser while the socket is still writable: the send
 		// side is untouched by shutdown(.Receive), so this frame goes out.
+		//
+		// This loop holds reg.mu across EVERY matching session, so with WEDGED tabs
+		// the ordinary LSP_SEND_TIMEOUT would cost N x 5s of lock hold on the one
+		// path whose whole purpose is recovering from a wedged peer — bounded, but a
+		// weaker version of the bug this ticket is about. So the teardown write gets
+		// its own much shorter bound (REQ-LSP-RLY-2 item A). N x 100ms is the bound
+		// for NON-PROGRESSING peers; a trickling peer is still bounded only by its
+		// own throughput (see lsp_registry_claim).
+		// That is sound precisely here and nowhere else: this frame is a COURTESY,
+		// the actual recovery is the shutdown below, and a browser that cannot take
+		// ~60 bytes in 100ms has a full send buffer, i.e. is exactly the wedged peer
+		// we are recovering from. It still learns the session ended — by the socket
+		// closing when the relay unwinds.
+		_ = net.set_option(entry.socket, .Send_Timeout, LSP_TEARDOWN_SEND_TIMEOUT)
 		frame := lsp_error_frame(entry.session_id, "bridge disconnected")
 		_ = lsp_write_ws_text_frame(entry.socket, frame)
 		delete(frame)
@@ -227,7 +301,22 @@ lsp_registry_deliver :: proc(reg: ^Lsp_Session_Registry, wire_id, text: string) 
 	defer sync.mutex_unlock(&reg.mu)
 	entry, found := reg.by_wire[wire_id]
 	if !found || entry == nil do return false
-	return lsp_write_ws_text_frame(entry.socket, text)
+	sent, ok := lsp_write_ws_text_frame_counted(entry.socket, text)
+	if ok do return true
+
+	// The write did not complete: either the peer is wedged (sent == 0, the send
+	// timeout expired having moved nothing) or, worse, half a frame is already on
+	// the wire (sent > 0) and this browser's stream can never resynchronise. Both
+	// end the session. A dead session is visible to the user and to the relay; a
+	// desynchronised one looks alive and serves corruption.
+	//
+	// We do NOT close the socket here. Per AGENTS.md "Socket lifetime across
+	// threads", the thread parked in recv is the sole closer on every exit path;
+	// this thread may only mark the session and wake that reader, exactly as
+	// lsp_registry_wake_bridge_sessions does.
+	entry.closing = true
+	_ = net.shutdown(entry.socket, .Receive)
+	return false
 }
 
 // --- WebSocket framing for the browser socket --------------------------------
@@ -274,15 +363,56 @@ lsp_ws_header_len :: proc(n: int) -> int {
 	}
 }
 
-lsp_write_ws_text_frame :: proc(client: net.TCP_Socket, text: string) -> bool {
+// LSP_SEND_TIMEOUT bounds how long one send() syscall to a browser socket may
+// block on a peer that is not draining, and therefore how long the registry lock
+// can be held against a wedged peer (REQ-LSP-RLY-2). It is NOT a bound on total
+// frame time for a peer that trickles — see lsp_registry_claim. Five seconds:
+// a browser that has not accepted a single byte for five seconds is wedged, not
+// merely slow — loopback and LAN writes complete in microseconds, and the only
+// thing that stalls them this long is a tab that has stopped draining its socket
+// entirely. Tuning this DOWN starts killing healthy clients on a slow link;
+// tuning it UP weakens the bound on the teardown path, which is the recovery
+// mechanism this defect was about. It is not an arbitrary constant.
+LSP_SEND_TIMEOUT :: 5 * time.Second
+
+// LSP_TEARDOWN_SEND_TIMEOUT bounds the courtesy frame on the bridge-disconnect
+// path, which writes to every affected session under one lock hold. See
+// lsp_registry_wake_bridge_sessions for why this path may be far stricter than
+// LSP_SEND_TIMEOUT.
+LSP_TEARDOWN_SEND_TIMEOUT :: 100 * time.Millisecond
+
+// lsp_write_ws_text_frame_counted writes one frame and reports HOW MUCH of it went
+// out, which the plain bool cannot express and the kill decision requires.
+//
+// net.send_tcp does NOT retry: core/net/socket_linux.odin _send_tcp returns on the
+// first errno with a possibly NON-ZERO total_written. So when SO_SNDTIMEO expires
+// mid-frame the result is a PARTIAL WebSocket frame on the wire, and a browser
+// that has read half a frame misparses that frame and every byte after it — the
+// stream is desynchronised permanently. A caller that only sees `err != nil`
+// cannot tell that apart from "nothing was sent" and would leave the session up in
+// a silently corrupt state, which is worse than ending it.
+//
+// ok is true only when the WHOLE frame went out. sent > 0 with ok=false is the
+// desynchronised case specifically.
+lsp_write_ws_text_frame_counted :: proc(client: net.TCP_Socket, text: string) -> (sent: int, ok: bool) {
 	n := len(text)
 	header_len := lsp_ws_header_len(n)
 	frame := make([]byte, header_len + n)
 	defer delete(frame)
 	lsp_ws_frame_header(frame[:header_len], n)
 	copy(frame[header_len:], transmute([]byte)text)
-	_, err := net.send_tcp(client, frame)
-	return err == nil
+	written, err := net.send_tcp(client, frame)
+	// NOTE: a send timeout arrives as .Would_Block (EAGAIN), NOT as .Timeout —
+	// core/net/errors_linux.odin _tcp_send_error never produces .Timeout on Linux.
+	// Do NOT "tidy" this into a check for .Timeout: it would compile, read as
+	// correct, and silently never fire. The test for both conditions at once —
+	// no error AND the full length — is deliberately error-kind-agnostic.
+	return written, err == nil && written == len(frame)
+}
+
+lsp_write_ws_text_frame :: proc(client: net.TCP_Socket, text: string) -> bool {
+	_, ok := lsp_write_ws_text_frame_counted(client, text)
+	return ok
 }
 
 // Lsp_WS_Reader mirrors Bridge_WS_Reader but accepts the 64-bit length the shared
@@ -530,9 +660,16 @@ lsp_server_config_clone :: proc(c: domain.Lsp_Server_Config) -> domain.Lsp_Serve
 // the operator set one (that is exactly "this server serves this tree"), otherwise
 // the directory holding the file.
 //
-// NOTE: root_markers is stored and surfaced by REQ-LSP-CFG-1 but nothing in the
-// tree walks it yet, so it is deliberately not consulted here rather than
-// half-implemented. Flagged to the coordinator for a follow-up.
+// root_markers is deliberately NOT consulted here, and it cannot be: this proc runs in
+// the Hub and resolves the cwd by pure string manipulation, but the files live on the
+// BRIDGE host. Walking upward for a marker from here would search the Hub's own
+// filesystem — the wrong machine — and could pick a stray .git as a nonsense root.
+// Root detection therefore belongs in src/bridge/lsp_session.odin, where the process is
+// spawned and the filesystem is the right one, which also means root_markers must first
+// be added to the lsp_start wire payload (it is not on the wire today).
+// Resolved by REQ-LSP-CFG-4: the column and its round-trip stay, the Settings > LSP field
+// is hidden until something reads it, and the bridge-side implementation is deferred
+// until the relay has run end to end (REQ-LSP-E2E-1). No open question here.
 lsp_working_dir :: proc(cfg: domain.Lsp_Server_Config, file_path: string) -> string {
 	if strings.trim_space(cfg.dir_prefix) != "" do return strings.clone(cfg.dir_prefix)
 	slash := strings.last_index_byte(file_path, '/')
@@ -641,11 +778,11 @@ lsp_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_So
 	started_bridge_id := ""
 	defer {
 		if started_bridge_id != "" {
-			// Skip the stop when the bridge itself is what went away: the server
-			// process died with it, and send_lsp_stop would only fail an offline
-			// bridge lookup. lsp_session_closing reads the flag the disconnect
-			// teardown set.
-			if !lsp_session_closing(h.sessions, wire_id) {
+			// Skip the stop ONLY when the bridge itself is what went away: the
+			// server process died with it, and send_lsp_stop would only fail an
+			// offline bridge lookup. Any other death — including a session killed
+			// for a failed write — leaves a live server that must be stopped.
+			if lsp_should_stop_on_bridge(h.sessions, wire_id) {
 				bridge_service.send_lsp_stop(h.bridges, auth_ctx, started_bridge_id, wire_id, h.bridge_command_sink)
 			}
 			delete(started_bridge_id)

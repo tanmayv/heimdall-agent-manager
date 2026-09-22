@@ -43,7 +43,7 @@ vcs_test_git :: proc(args: ..string) -> bool {
 // not_supported, same-ref) that return before any subprocess runs. Returns the dir
 // (temp-allocated); the caller must vcs_test_rm it.
 vcs_test_make_marker_repo :: proc(name, marker: string) -> string {
-	dir := fmt.tprintf("/tmp/ham-vcs-marker-%s", name)
+	dir := fmt.tprintf("/tmp/ham-vcs-marker-%s-%d", name, os.get_pid())
 	vcs_test_rm(dir)
 	_ = os.make_directory_all(fmt.tprintf("%s/%s", dir, marker))
 	return dir
@@ -53,7 +53,7 @@ vcs_test_make_marker_repo :: proc(name, marker: string) -> string {
 // unique temp dir and returns (dir, ok). No commits are made. The dir is returned even
 // on failure so the caller can still defer vcs_test_rm on it.
 vcs_test_git_repo :: proc(name: string) -> (string, bool) {
-	dir := fmt.tprintf("/tmp/ham-vcs-git-%s", name)
+	dir := fmt.tprintf("/tmp/ham-vcs-git-%s-%d", name, os.get_pid())
 	vcs_test_rm(dir)
 	if os.make_directory_all(dir) != nil do return dir, false
 	if !vcs_test_git("git", "init", "-b", "main", dir) do return dir, false
@@ -289,7 +289,7 @@ vcs_git_worktrees_list :: proc(t: ^testing.T) {
 	if !vcs_test_git("git", "-C", dir, "add", "README.md") do return
 	if !vcs_test_git("git", "-C", dir, "commit", "-m", "init") do return
 
-	wt := "/tmp/ham-vcs-wt-worktrees"
+	wt := fmt.tprintf("/tmp/ham-vcs-wt-%d-worktrees", os.get_pid())
 	vcs_test_rm(wt)
 	defer vcs_test_rm(wt)
 	if !vcs_test_git("git", "-C", dir, "worktree", "add", wt, "-b", "feat") do return
@@ -323,4 +323,13 @@ vcs_git_worktrees_list :: proc(t: ^testing.T) {
 		}
 		testing.expect(t, wt_current, "added worktree is_current when queried from itself")
 	}
+}
+
+// vcs_test_pid_paths prints the run-scoped /tmp paths this invocation will use,
+// proving two concurrent runs get different paths. Pure diagnostic — no assertions.
+@(test)
+vcs_test_pid_paths :: proc(t: ^testing.T) {
+	pid := os.get_pid()
+	fmt.printf("VCS-TEST-PID-PATHS pid=%d marker-example=/tmp/ham-vcs-marker-test-%d git-example=/tmp/ham-vcs-git-test-%d wt=/tmp/ham-vcs-wt-%d-worktrees\n",
+		pid, pid, pid, pid)
 }

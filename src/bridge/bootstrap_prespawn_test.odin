@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -11,7 +12,7 @@ import "core:testing"
 
 // bridge_prespawn_test_tmp returns a unique tmp run_dir path for a test.
 bridge_prespawn_test_tmp :: proc(name: string) -> string {
-	return strings.concatenate({"/tmp/ham-br1-", name})
+	return fmt.aprintf("/tmp/ham-br1-%s-%d", name, os.get_pid())
 }
 
 // bridge_prespawn_test_write seeds a file (creating parents), freeing the joined

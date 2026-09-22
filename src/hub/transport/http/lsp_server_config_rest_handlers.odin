@@ -85,8 +85,17 @@ lsp_server_config_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	}
 
 	now := platform.clock_now(h.clock)
+	// platform.generate_id returns fmt.tprintf memory — a TEMP-ALLOCATOR string — so it
+	// is cloned onto the heap before being stored or freed. DO NOT "simplify" this clone
+	// away: ID_Generator is a pluggable interface (ctx + proc pointer), so a caller can
+	// never assume ownership of what it returns. Without the clone the delete below is a
+	// bad free against context.allocator, and any read after the per-thread temp ring
+	// wraps would see bytes that had been reused in place. Same reasoning as the wire_id
+	// clone in lsp_session_handlers.odin.
+	config_id := strings.clone(platform.generate_id(h.ids, "lspcfg_"))
+	defer delete(config_id)
 	cfg := domain.Lsp_Server_Config{
-		config_id       = platform.generate_id(h.ids, "lspcfg_"),
+		config_id       = config_id,
 		owner_user_id   = auth_ctx.user_id,
 		bridge_id       = bridge_id,
 		language        = language,
@@ -98,7 +107,6 @@ lsp_server_config_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		created_at      = now,
 		updated_at      = now,
 	}
-	defer delete(cfg.config_id)
 
 	_, err := iface.lsp_server_config_upsert(h.repo, cfg)
 	if err.code != .None do return respond_error(err, req.request_id)

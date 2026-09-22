@@ -22,6 +22,10 @@ type FormState = {
   cmd: string;
   args: string;
   fileExtensions: string;
+  // Hidden pass-through (REQ-LSP-CFG-4). root_markers is stored but nothing reads it
+  // yet, so the field is not shown. It stays in form state because upsert replaces the
+  // row wholesale, so dropping it here would wipe a stored value on any unrelated edit.
+  // Surface it again when bridge-side root detection lands (after REQ-LSP-E2E-1).
   rootMarkers: string;
   dirPrefix: string;
 };
@@ -203,15 +207,6 @@ export default function LspPanel() {
             width="full"
           />
         </FormField>
-        <FormField label="Root markers">
-          <Input
-            data-debug-id="settings-lsp-form-root-markers"
-            value={form.rootMarkers}
-            onChange={(v) => setField('rootMarkers', v)}
-            placeholder="go.mod"
-            width="full"
-          />
-        </FormField>
         <FormField
           label="Directory override (optional)"
           hint={
@@ -381,7 +376,6 @@ export default function LspPanel() {
                                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-caption text-muted">
                                     {cfg.args ? <span>args: <span className="font-mono text-primary">{cfg.args}</span></span> : null}
                                     {cfg.file_extensions ? <span>extensions: <span className="font-mono text-primary">{cfg.file_extensions}</span></span> : null}
-                                    {cfg.root_markers ? <span>root markers: <span className="font-mono text-primary">{cfg.root_markers}</span></span> : null}
                                     {isOverride ? (
                                       <span>
                                         this directory, instead of the language default:{' '}

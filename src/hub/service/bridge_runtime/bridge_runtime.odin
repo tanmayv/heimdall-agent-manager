@@ -38,10 +38,28 @@ send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_
 	project_service.bridge_runtime_registry_command_unlock(registry)
 	if !wrote do return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command send failed")
 	deadline := time.to_unix_nanoseconds(time.now()) + i64(time.Duration(timeout_ms) * time.Millisecond)
+	// wait_id is a HEAP COPY of command.command_id, and it is load-bearing. Do not
+	// "simplify" it back to comparing command.command_id directly.
+	//
+	// command.command_id is almost always platform.generate_id output, which is
+	// fmt.tprintf memory: the PER-THREAD TEMP ALLOCATOR. The loop below re-reads that
+	// string on every iteration for up to timeout_ms (10s at most call sites). The temp
+	// allocator is a ring — once it wraps it hands back the same bytes and reuses them
+	// IN PLACE — so any allocation occurring inside this loop could rewrite the id while
+	// we were still comparing against it. The failure would not be a crash or a failing
+	// test: the compare would silently stop matching, the command's reply would never be
+	// recognised, and the call would time out after 10s, intermittently and only under
+	// enough load to wrap the ring.
+	//
+	// Comparing a heap copy makes that impossible rather than merely prevented, which is
+	// why this is a clone and not a comment telling you to avoid allocating in the loop.
+	// The loop is now free to allocate; no future edit here can reintroduce the defect.
+	wait_id := strings.clone(command.command_id)
+	defer delete(wait_id)
 	for time.to_unix_nanoseconds(time.now()) < deadline {
 		// runtime_command_cached takes the command lock internally (brief), then we
 		// sleep OUTSIDE the lock.
-		if cached, ok := runtime_command_cached(registry, command.command_id); ok do return cached, true, domain.Domain_Error{}
+		if cached, ok := runtime_command_cached(registry, wait_id); ok do return cached, true, domain.Domain_Error{}
 		time.sleep(25 * time.Millisecond)
 	}
 	return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command timed out")

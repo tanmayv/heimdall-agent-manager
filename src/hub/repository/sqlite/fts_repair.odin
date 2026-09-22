@@ -2,6 +2,7 @@ package sqlite
 
 import "core:c"
 import "core:fmt"
+import "core:strings"
 import domain "odin_test:hub/domain"
 
 // FTS index recovery for the search feature (SEARCH BUG: task/agent-instance UPDATE
@@ -91,7 +92,7 @@ fts_index_has_drift :: proc(conn: ^Conn, idx: Fts_Index) -> (drift: bool, ok: bo
 fts_rebuild_one :: proc(conn: ^Conn, fts: string) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := fmt.tprintf("INSERT INTO %s(%s) VALUES('rebuild');", fts, fts)
-	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
+	if sqlite3_prepare_v2(conn.db, strings.clone_to_cstring(query, context.temp_allocator), c.int(-1), &stmt, nil) != SQLITE_OK do return false
 	defer sqlite3_finalize(stmt)
 	return sqlite3_step(stmt) == SQLITE_DONE
 }
@@ -99,7 +100,7 @@ fts_rebuild_one :: proc(conn: ^Conn, fts: string) -> bool {
 // scalar_count runs a `SELECT count(*) ...` query and returns (n, ok).
 scalar_count :: proc(conn: ^Conn, query: string) -> (int, bool) {
 	stmt: sqlite3_stmt = nil
-	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return 0, false
+	if sqlite3_prepare_v2(conn.db, strings.clone_to_cstring(query, context.temp_allocator), c.int(-1), &stmt, nil) != SQLITE_OK do return 0, false
 	defer sqlite3_finalize(stmt)
 	if sqlite3_step(stmt) != SQLITE_ROW do return 0, false
 	return int_v(column_text(stmt, 0)), true

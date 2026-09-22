@@ -6,22 +6,31 @@ package main
 // enough — no real git/jj needed. Shares vcs_test_make_marker_repo / vcs_test_rm
 // from vcs_integration_test.odin.
 //
-// The success paths go through bridge_fs_write_file, which resolves the target
-// within the GLOBAL bridge_fs_root; the marker repos live under /tmp, so each such
-// test points the global root at /tmp (restored via defer) so the repo root is
-// accepted and the within-repo containment is what's actually exercised.
+// The success paths go through bridge_fs_write_file. The per-write containment root
+// is already a PARAMETER (vcs_provider.odin:190 passes the repo root); the global
+// bridge_fs_root acts one level up as the outer sandbox CEILING that any such root
+// must sit within (bridge_fs_effective_root, fs_management.odin:503-507). The marker
+// repos live under /tmp, so each success-path test pins that ceiling at /tmp — see
+// vcs_save_test_pin_tmp_root for why it pins and never restores.
 
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
 
-// vcs_save_test_use_tmp_root sets the global fs sandbox root to a canonical /tmp for
-// the duration of a test and returns the previous value so the caller can restore it.
-vcs_save_test_use_tmp_root :: proc() -> string {
-	old := bridge_fs_root
+// vcs_save_test_pin_tmp_root pins the global fs sandbox ceiling at a canonical /tmp,
+// IDEMPOTENTLY: every caller writes the same value, so concurrent writes are benign.
+//
+// It deliberately does NOT save-and-restore the previous value. A restore is what
+// makes this global race: `defer bridge_fs_root = old` puts back whatever the global
+// held at entry — in a test binary bridge_fs_init never runs, so that is typically ""
+// — and bridge_fs_effective_root (fs_management.odin:503-507) refuses every write when
+// the ceiling is "". A concurrent save then fails with path_outside_root, no file lands,
+// and the content assertion fails on the read. Restoring is therefore FORBIDDEN here.
+// This mirrors the idiom fs_management_test.odin:7-12 already documents for this same
+// global: set once, idempotently, never restore; isolate per test via `sandbox_root`.
+vcs_save_test_pin_tmp_root :: proc() {
 	bridge_fs_root = bridge_fs_canonicalize_existing("/tmp")
-	return old
 }
 
 @(test)
@@ -45,8 +54,7 @@ vcs_api_save_missing_file :: proc(t: ^testing.T) {
 
 @(test)
 vcs_api_save_writes_file :: proc(t: ^testing.T) {
-	old := vcs_save_test_use_tmp_root()
-	defer bridge_fs_root = old
+	vcs_save_test_pin_tmp_root()
 	repo := vcs_test_make_marker_repo("save-write", ".git")
 	defer vcs_test_rm(repo)
 	out := bridge_vcs_save_json("s", fmt.tprintf(`{"command_id":"s","root":"%s","path":"hello.txt","content":"hello world"}`, repo))
@@ -62,8 +70,7 @@ vcs_api_save_writes_file :: proc(t: ^testing.T) {
 vcs_api_save_unescapes_content :: proc(t: ^testing.T) {
 	// The JSON content carries an escaped newline; extract_json_string must decode it
 	// so the file lands with a real two-line body.
-	old := vcs_save_test_use_tmp_root()
-	defer bridge_fs_root = old
+	vcs_save_test_pin_tmp_root()
 	repo := vcs_test_make_marker_repo("save-nl", ".git")
 	defer vcs_test_rm(repo)
 	out := bridge_vcs_save_json("s", fmt.tprintf("{\"command_id\":\"s\",\"root\":\"%s\",\"path\":\"nl.txt\",\"content\":\"a\\nb\"}", repo))
@@ -78,8 +85,7 @@ vcs_api_save_unescapes_content :: proc(t: ^testing.T) {
 vcs_api_save_rejects_path_traversal :: proc(t: ^testing.T) {
 	// SECURITY: a "../escape.txt" path must be refused (containment via
 	// bridge_fs_write_file / bridge_fs_resolve_within) and must NOT touch disk.
-	old := vcs_save_test_use_tmp_root()
-	defer bridge_fs_root = old
+	vcs_save_test_pin_tmp_root()
 	repo := vcs_test_make_marker_repo("save-escape", ".git")
 	defer vcs_test_rm(repo)
 	// "../ham-vcs-save-escape-PWNED.txt" from the repo resolves to a sibling under

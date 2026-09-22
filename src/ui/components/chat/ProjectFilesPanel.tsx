@@ -25,6 +25,7 @@ import { initVimMode, VimMode } from 'monaco-vim';
 import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
 import { useTheme } from '../../store/themeSlice';
+import { useMonacoLsp } from '../../lsp/useMonacoLsp';
 import { Icon, IconButton } from '@ui';
 import { useDialogA11y } from '../ui/composites/useDialogA11y';
 import {
@@ -802,6 +803,25 @@ export default function ProjectFilesPanel({
     () => openTabs.find((t) => t.path === activeTabPath),
     [openTabs, activeTabPath]
   );
+
+  // REQ-LSP-UI-1: language-server features for the active tab.
+  //
+  // Gated on the "lsp" experiment flag INSIDE the hook: with the flag off it
+  // returns before minting a ticket, opening a socket or registering a single
+  // provider, so the editor behaves exactly as it did before this feature. The
+  // hook is called unconditionally because hooks must be — the gate is in its
+  // body, not at this call site.
+  //
+  // Disabled for image and unviewable tabs: there is no text document to sync.
+  useMonacoLsp({
+    monaco,
+    bridgeId,
+    rootAbs,
+    activePath: activeEditorTab?.isImage || activeEditorTab?.isUnviewable ? '' : activeTabPath,
+    monacoLanguageId: activeEditorTab ? getLanguageForMonaco(activeEditorTab.path) : '',
+    content: activeEditorTab?.content ?? '',
+    active: Boolean(activeEditorTab) && !activeEditorTab?.isImage && !activeEditorTab?.isUnviewable,
+  });
 
   // Fetch full file content across all byte pages before editing
   const fetchAllFileContent = useCallback(
