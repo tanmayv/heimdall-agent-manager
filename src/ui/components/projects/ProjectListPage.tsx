@@ -582,11 +582,11 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
   );
 
   const listSection = (
-    <div className="flex w-full min-w-0 flex-col gap-4">
+    <div className={`flex w-full min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
       {/* REQ-UI-20: nothing re-sorts under the user. Changes from elsewhere wait
           behind this pill and are applied only on tap. */}
       {!searching && list.pendingCount > 0 ? (
-        <div>
+        <div className="shrink-0">
           <Button size="sm" variant="secondary" data-debug-id="project-pending-pill" onClick={() => list.applyPending()}>
             {list.pendingCount} new or updated — refresh
           </Button>
@@ -594,29 +594,35 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
       ) : null}
 
       {list.restoreNotice ? (
-        <Text role="body-sm" tone="muted" data-debug-id="project-restore-notice">
-          Couldn&apos;t find where you were — showing the top of the list.
-        </Text>
+        <div className="shrink-0">
+          <Text role="body-sm" tone="muted" data-debug-id="project-restore-notice">
+            Couldn&apos;t find where you were — showing the top of the list.
+          </Text>
+        </div>
       ) : null}
 
-      {listBody}
+      <div className={twoPane ? 'flex-1 min-h-0 overflow-y-auto' : undefined}>
+        {listBody}
+      </div>
 
       {selectable ? (
-        <BulkActionBar
-          selectedCount={selectedIds.length}
-          loadedCount={visibleRows.length}
-          onCancel={() => setSelectedIds([])}
-        >
-          <ActionButton
-            icon="folder"
-            label="Archive"
-            variant="danger"
-            loading={bulkBusy}
-            disabled={selectedIds.length === 0}
-            data-debug-id="project-bulk-archive"
-            onClick={() => selectedIds.length && setConfirm({ ids: selectedIds })}
-          />
-        </BulkActionBar>
+        <div className="shrink-0">
+          <BulkActionBar
+            selectedCount={selectedIds.length}
+            loadedCount={visibleRows.length}
+            onCancel={() => setSelectedIds([])}
+          >
+            <ActionButton
+              icon="folder"
+              label="Archive"
+              variant="danger"
+              loading={bulkBusy}
+              disabled={selectedIds.length === 0}
+              data-debug-id="project-bulk-archive"
+              onClick={() => selectedIds.length && setConfirm({ ids: selectedIds })}
+            />
+          </BulkActionBar>
+        </div>
       ) : null}
     </div>
   );
@@ -699,27 +705,32 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
     <Tabs
       value={searching ? '' : tab}
       onChange={(next) => applyUrlState({ ...urlState, tab: next as ProjectTab })}
+      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
     >
       {/* No count badges: the list API returns no totals, and a loaded-row count on
           a keyset-paged list is a number that looks like a total and is not — which
           would be doubly wrong here, where the tab is applied client-side over
           however much of the stream happens to be loaded. */}
-      <TabsList label="Project state">
+      <TabsList label="Project state" className="shrink-0">
         {PROJECT_TABS.map((entry) => (
           <Tab key={entry.value} value={entry.value} disabled={searching} data-debug-id={`project-tab-${entry.value}`}>
             {entry.label}
           </Tab>
         ))}
       </TabsList>
-      {searching ? null : <TabsPanel value={tab}>{listSection}</TabsPanel>}
+      {searching ? null : (
+        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
+          {listSection}
+        </TabsPanel>
+      )}
     </Tabs>
   );
 
   const listColumn = (
-    <div data-debug-id="project-list-page" className="flex w-full min-w-0 flex-col gap-3">
-      {toolbar}
-      {filterChipRow}
-      <div className="flex min-w-0 flex-col gap-4">
+    <div data-debug-id="project-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
+      <div className="shrink-0">{toolbar}</div>
+      {filterChipRow ? <div className="shrink-0">{filterChipRow}</div> : null}
+      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
         {tabsBlock}
         {searching ? listSection : null}
       </div>
@@ -802,6 +813,7 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
         title="Projects"
         breadcrumbs={listCrumbs()}
         description={headerDescription}
+        className="h-full min-h-0 overflow-hidden"
         actions={
           <Button
             variant="primary"
@@ -813,9 +825,9 @@ export default function ProjectListPage({ selectedId = '' }: { selectedId?: stri
           </Button>
         }
       >
-        <div className="flex min-w-0 items-start gap-4">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4" data-debug-id="project-detail-pane">
+        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
+          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
+          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="project-detail-pane">
             {selectedId ? (
               <ProjectDetailPane projectId={selectedId} onAfterArchive={() => undefined} />
             ) : (
@@ -880,8 +892,8 @@ function ProjectDetailPane({ projectId, onAfterArchive }: { projectId: string; o
   const title = projectTitle(record);
 
   return (
-    <div ref={paneRef} className="min-w-0">
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden">
+      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <a
             href={projectViewHref(record.projectId)}
@@ -896,7 +908,9 @@ function ProjectDetailPane({ projectId, onAfterArchive }: { projectId: string; o
           <ProjectDetailActions record={record} busy={busy} onVerb={(verb) => void runVerb(verb)} />
         </div>
       </div>
-      <ProjectDetailBody record={record} actionError={actionError} wide={wide} />
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <ProjectDetailBody record={record} actionError={actionError} wide={wide} />
+      </div>
     </div>
   );
 }

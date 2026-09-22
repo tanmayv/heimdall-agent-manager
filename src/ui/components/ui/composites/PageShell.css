@@ -73,6 +73,7 @@
 .ui-pageshell-header {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   padding: var(--ps-pad-y) var(--ps-pad-x) var(--space-4);
 }
 
@@ -87,6 +88,24 @@
      own container. `min-width: 0` lets a flex child (the table's scroll region)
      actually shrink below its content width instead of forcing the page wider. */
   min-width: 0;
+}
+
+/* Full-height bounded PageShell for desktop two-pane views */
+.ui-pageshell.h-full {
+  height: 100%;
+  min-height: 0;
+}
+
+.ui-pageshell.h-full .ui-pageshell-container {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ui-pageshell.h-full .ui-pageshell-body {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* The banded rhythm is opt-in per page (`rhythm="banded"`) while the rest of the app

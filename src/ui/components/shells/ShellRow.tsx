@@ -173,14 +173,14 @@ export function ShellRow({
             style={{ minHeight: BODY_LINE }}
             title={body.cmd || undefined}
           >
-            {body.cmd}
+            {body.cmd && body.cmd.trim() ? body.cmd : <span className="italic text-faint select-none">&lt;empty&gt;</span>}
           </p>
           <p
             className="truncate text-body-sm text-faint"
             style={{ minHeight: BODY_LINE }}
             title={body.cwd || undefined}
           >
-            {body.cwd}
+            {body.cwd && body.cwd.trim() ? body.cwd : <span className="italic text-faint select-none">&lt;empty&gt;</span>}
           </p>
         </div>
 

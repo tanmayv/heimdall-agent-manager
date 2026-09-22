@@ -421,6 +421,10 @@ export default function ProjectFormPage({ projectId }: { projectId?: string }) {
           onClose={() => setPickerOpen(false)}
           onPick={(path) => {
             update('defaultPath', path);
+            if (!editing && !form.name.trim()) {
+              const base = path.split('/').filter(Boolean).pop();
+              if (base) update('name', base);
+            }
             setPickerOpen(false);
           }}
         />
@@ -630,9 +634,10 @@ function BridgePathsSection({
           onOpenChange={(next) => { if (!next) setPicking(null); }}
           title="Choose a folder on this machine"
           size="lg"
+          className="min-h-[440px] flex flex-col"
           data-debug-id="project-form-path-picker"
         >
-          <ModalBody>
+          <ModalBody className="min-h-[440px] flex-1">
             <BridgeDirectoryPicker
               bridgeId={picking.bridgeId}
               initialPath={picking.current}
@@ -680,8 +685,15 @@ function BridgePickerModal({
   }, [bridgeId, bridges]);
 
   return (
-    <Modal open onOpenChange={(next) => { if (!next) onClose(); }} title="Choose the project folder" size="lg" data-debug-id="project-form-browse-modal">
-      <ModalBody>
+    <Modal
+      open
+      onOpenChange={(next) => { if (!next) onClose(); }}
+      title="Choose the project folder"
+      size="lg"
+      className="min-h-[440px] flex flex-col"
+      data-debug-id="project-form-browse-modal"
+    >
+      <ModalBody className="min-h-[440px] flex-1">
         {bridgesQuery.isLoading ? (
           <div className="flex items-center gap-2">
             <Spinner size="sm" />
