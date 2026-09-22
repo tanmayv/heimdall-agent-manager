@@ -3,7 +3,7 @@
  * ------------------------------------------------------------------
  * Purpose: the small pill for a count, tag, or metadata label (EL-047/049/054).
  * It is the canonical home for the neutral count/tag pill that was duplicated
- * across MemoryPage/MemoryDetailPage, now with a semantic `tone` + `emphasis` so
+ * across the Memory pages, now with a semantic `tone` + `emphasis` so
  * the ~10 ad-hoc dot colors and the `/10`,`/15`,`/20` opacity forks collapse into
  * one token-driven control.
  *

@@ -1,3 +1,4 @@
+import { apiAbsoluteUrl } from './apiBase';
 import { useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { handleUserWsEvent, resyncAfterReconnect } from './wsInvalidation';
@@ -69,8 +70,12 @@ async function electronUserWsUrl(): Promise<string> {
 async function userWsUrl(): Promise<string> {
   if (typeof window === 'undefined') return '';
   if (hasElectronDeviceAuth()) return electronUserWsUrl();
-  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${scheme}//${window.location.host}/api/v1/user-ws`;
+  // Built from the API base so a preview build's socket follows the same path
+  // prefix as its fetches, rather than silently attaching to whatever hub happens
+  // to own the origin the preview is framed in.
+  const url = new URL(apiAbsoluteUrl('/api/v1/user-ws'));
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
 }
 
 // Focus context read at WS-event time. Only focusedChainId is consumed (targets

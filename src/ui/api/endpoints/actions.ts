@@ -20,6 +20,8 @@ export type Action = {
   target_tier?: string;
   target_project_id?: string;
   instance_strategy?: ActionInstanceStrategy;
+  /** Set by a `fresh_per_run` action: the instance the previous fire minted. */
+  last_spawned_instance_id?: string;
   prompt_text: string;
   cron_expr?: string;
   timezone?: string;
@@ -53,13 +55,14 @@ export type CreateActionInput = {
   interval?: string;
 };
 
+/**
+ * What PATCH actually accepts. `patch_action_handler`
+ * (`src/hub/transport/http/action_handlers.odin:388-470`) reads no `target_*` key at
+ * all, so an action's target is immutable once created — the fields were listed here
+ * before, and sending them looked like it worked while the server silently dropped
+ * them. `instance_strategy` IS patchable and stays.
+ */
 export type PatchActionInput = {
-  target_instance_id?: string;
-  target_agent_id?: string;
-  target_bridge_id?: string;
-  target_provider?: string;
-  target_tier?: string;
-  target_project_id?: string;
   instance_strategy?: ActionInstanceStrategy;
   prompt_text?: string;
   cron_expr?: string;

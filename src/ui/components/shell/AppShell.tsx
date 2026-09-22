@@ -6,10 +6,11 @@ import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import Icon, { type IconName } from '../Icon';
-import { Badge, CommandPalette, PageShell, StatusDot } from '@ui';
+import { Badge, Breadcrumbs as UiBreadcrumbs, CommandPalette, PageShell, StatusDot } from '@ui';
 import { useViewport, MobileTabBar } from './responsive';
 import { isAgentWorking } from './agentWorking';
 import { heimdallApi } from '../../api/heimdallApi';
+import { withApiBase } from '../../api/apiBase';
 import { useUserWebSocket } from '../../api/useUserWebSocket';
 import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
@@ -24,20 +25,26 @@ import ProjectsPanel from '../settings/ProjectsPanel';
 import TemplatesPanel from '../settings/TemplatesPanel';
 import AppearanceSettings from '../settings/AppearanceSettings';
 import { setTheme } from '../../store/themeSlice';
-import ProjectsSurface from '../projects/ProjectsSurface';
+import ProjectListPage from '../projects/ProjectListPage';
+import ProjectViewPage from '../projects/ProjectViewPage';
+import ProjectFormPage from '../projects/ProjectFormPage';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
-import ActionsPanel from '../actions/ActionsPanel';
 import PreviewSidebar from '../shells/PreviewSidebar';
 import CardsPanel from '../cards/CardsPanel';
 import ErrorBoundary from './ErrorBoundary';
-import ActionEditorPage from '../actions/ActionEditorPage';
-import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
-import { AgentDetailPanel } from '../agents/AgentDetailPanel';
+import ActionListPage from '../actions/ActionListPage';
+import ActionViewPage from '../actions/ActionViewPage';
+import ActionFormPage from '../actions/ActionFormPage';
+import ShellListPage from '../shells/ShellListPage';
+import ShellViewPage from '../shells/ShellViewPage';
+import AgentListPage from '../agents/AgentListPage';
+import AgentViewPage from '../agents/AgentViewPage';
+import AgentFormPage from '../agents/AgentFormPage';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
 import UserTokensPanel from '../settings/UserTokensPanel';
-import MemoryPanel from '../settings/MemoryPanel';
-import MemoryPage from '../memory/MemoryPage';
-import MemoryDetailPage from '../memory/MemoryDetailPage';
+import MemoryListPage from '../memory/MemoryListPage';
+import MemoryViewPage from '../memory/MemoryViewPage';
+import MemoryFormPage from '../memory/MemoryFormPage';
 import SkillViewerPage from '../skills/SkillViewerPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
 import LibraryPage from '../LibraryPage';
@@ -123,10 +130,11 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
 const NAV_ROUTES: ShellRoute[] = [
   { path: '/cards', label: 'Cards', icon: 'spark', description: 'Activity-driven Action Cards feed', group: 'primary' },
   { path: '/conversations', label: 'Conversations', icon: 'chat', description: 'Chat sessions grouped by project and agent', group: 'primary' },
-  { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts grouped by project', group: 'primary' },
+  { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts sent to your agents', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
   { path: '/agents', label: 'Agents', icon: 'bot', description: 'Agent identities and sessions', group: 'primary' },
   { path: '/memory', label: 'Memory', icon: 'spark', description: 'Durable facts, habits & skills for your agents', group: 'primary' },
+  { path: '/shells', label: 'Shells', icon: 'terminal', description: 'Every shell session your bridges are running', group: 'primary' },
   { path: '/chains', label: 'Task Chains', icon: 'tasks', description: 'Multi-agent task chains grouped by project', group: 'primary' },
   { path: '/library', label: 'Library', icon: 'device', description: 'Artifacts and files', group: 'primary' },
   { path: '/settings/bridges', label: 'Settings', icon: 'gear', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
@@ -158,6 +166,7 @@ function isRouteActive(currentPath: string, itemPath: string): boolean {
   if (itemPath === '/actions') return currentPath === '/actions' || currentPath.startsWith('/actions/');
   if (itemPath === '/settings/bridges') return currentPath.startsWith('/settings');
   if (itemPath === '/memory') return currentPath === '/memory' || currentPath.startsWith('/memory/');
+  if (itemPath === '/shells') return currentPath === '/shells' || currentPath.startsWith('/shells/');
   return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
 }
 
@@ -183,6 +192,7 @@ function routeTitle(path: string): string {
   if (path.startsWith('/conversations/')) return 'Conversation';
   if (path === '/actions/new') return 'New action';
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return 'Edit action';
+  if (path.startsWith('/actions/')) return 'Action detail';
   if (path.startsWith('/actions')) return 'Actions';
   if (path === '/chains/new') return 'New task chain';
   if (path.startsWith('/chains/') && path.includes('/tasks/')) return 'Task detail';
@@ -191,8 +201,16 @@ function routeTitle(path: string): string {
   if (path.startsWith('/agents/')) return 'Agent detail';
   if (path.startsWith('/library/artifacts/')) return 'Artifact viewer';
   if (path.startsWith('/library')) return 'Library';
+  if (path === '/projects/new') return 'New project';
+  if (path.startsWith('/projects/') && path.endsWith('/edit')) return 'Edit project';
+  if (path.startsWith('/projects/')) return 'Project detail';
+  if (path === '/memory/new') return 'New memory';
+  if (path.startsWith('/memory/') && path.endsWith('/edit')) return 'Edit memory';
   if (path.startsWith('/memory/')) return 'Memory detail';
   if (path.startsWith('/memory')) return 'Memory';
+  // Shells are runtime: there is no new/edit route to title (REQ-UI-15).
+  if (path.startsWith('/shells/')) return 'Shell session';
+  if (path.startsWith('/shells')) return 'Shells';
   if (path.startsWith('/skills/')) return 'Skill';
   if (path.startsWith('/settings/bridges')) return 'Bridge settings';
   if (path.startsWith('/settings/appearance')) return 'Appearance settings';
@@ -200,7 +218,6 @@ function routeTitle(path: string): string {
   if (path.startsWith('/settings/projects')) return 'Project settings';
   if (path.startsWith('/settings/providers')) return 'Provider settings';
   if (path.startsWith('/settings/templates')) return 'Templates';
-  if (path.startsWith('/settings/memory')) return 'Memory settings';
   if (path.startsWith('/settings/notifications')) return 'Notification settings';
   if (path.startsWith('/settings')) return 'Settings';
   if (path.startsWith('/agents')) return 'Agents';
@@ -214,14 +231,18 @@ function routeDescription(path: string): string {
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
   if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return 'Update the prompt or schedule for this action.';
-  if (path.startsWith('/actions')) return 'Scheduled and on-demand prompts grouped by project.';
+  if (path.startsWith('/actions/')) return 'One action: its prompt, its schedule and the agent it targets.';
+  if (path.startsWith('/actions')) return 'Scheduled and on-demand prompts sent to your agents.';
   if (path.startsWith('/chains/')) return 'Creation-ordered task list and task-detail route outlet. No graph editor or global inspector is present.';
   if (path.startsWith('/agents/')) return 'Agent overview, sessions, Bridges, and memory tabs will attach to this route.';
   if (path.startsWith('/library/artifacts/')) return 'Fullscreen artifact viewer route owned by the Library surface.';
   if (path.startsWith('/library')) return 'Filterable artifact list/grid route.';
-  if (path.startsWith('/memory/')) return 'Full memory record with body, scope, and edit/delete actions.';
+  if (path.startsWith('/projects/')) return 'One project: its description, per-bridge paths, and the chains, agents and memory attached to it.';
+  if (path.startsWith('/memory/')) return 'Full memory record with body, scope, and its status actions.';
   if (path.startsWith('/memory')) return 'Durable facts, habits and skills targeted to agents, projects, bridges, and templates. Empty scope applies to all.';
-  if (path.startsWith('/settings')) return 'Settings surface for Bridges, Providers, Appearance, User tokens, Projects, Memory, and Defaults.';
+  if (path.startsWith('/shells/')) return "One shell session: its live output, its details, and the preview when it declares a port.";
+  if (path.startsWith('/shells')) return 'Every shell session your bridges are running.';
+  if (path.startsWith('/settings')) return 'Settings surface for Bridges, Providers, Appearance, User tokens, Projects, and Defaults.';
   return 'Chat-first home with the routed main region ready for conversation surfaces.';
 }
 
@@ -232,7 +253,6 @@ const SETTINGS_NAV = [
   { path: '/settings/user-tokens', label: 'User tokens' },
   { path: '/settings/projects', label: 'Projects' },
   { path: '/settings/templates', label: 'Templates' },
-  { path: '/settings/memory', label: 'Memory' },
   { path: '/settings/notifications', label: 'Notifications' },
   { path: '/settings/defaults', label: 'Defaults' },
 ];
@@ -267,14 +287,17 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return [{ label: 'Actions', href: '/actions' }, { label: 'Edit Action' }];
   if (path.startsWith('/actions')) return [{ label: 'Actions' }];
   if (path.startsWith('/library')) return [{ label: 'Library' }];
-  if (path.startsWith('/memory/')) return [{ label: 'Memory', href: '/memory' }, { label: 'Detail' }];
-  if (path.startsWith('/memory')) return [{ label: 'Memory' }];
   if (path.startsWith('/agents')) return [{ label: 'Agents' }];
   return [{ label: 'Conversations' }];
 }
 
+// The trail itself is now `@ui`'s `Breadcrumbs` composite (REQ-UI-14 makes it every
+// resource page's contract, so it belongs in the library rather than private to the
+// shell). This wrapper keeps the shell's two local concerns: the `shell-breadcrumbs`
+// debug id, and turning an app path into the hash route the shell navigates by.
 function Breadcrumbs({ crumbs }: { crumbs: BreadcrumbCrumb[] }) {
-  return <nav data-debug-id="shell-breadcrumbs" aria-label="Breadcrumb" className="flex flex-wrap items-center gap-2 text-sm text-muted">{crumbs.map((crumb, index) => <span key={`${crumb.label}-${index}`} data-debug-id={`shell-breadcrumb-crumb-${index}`} className="inline-flex items-center gap-2">{index > 0 ? <span className="text-faint">/</span> : null}{crumb.href && index < crumbs.length - 1 ? <a data-debug-id={`shell-breadcrumb-link-${index}`} href={shellHash(crumb.href)} className="font-semibold text-muted hover:text-primary">{crumb.label}</a> : <span className="font-semibold text-primary">{crumb.label}</span>}</span>)}</nav>;
+  const linked = crumbs.map((crumb) => ({ ...crumb, href: crumb.href ? shellHash(crumb.href) : undefined }));
+  return <UiBreadcrumbs data-debug-id="shell-breadcrumbs" crumbs={linked} />;
 }
 
 function SettingsSubNav({ path }: { path: string }) {
@@ -289,8 +312,10 @@ function shellHash(path: string): string {
   return buildRouteHash(path, '');
 }
 
+// Same rule as `api/cookieFetch.ts`: absolute in every normal build, rooted at the
+// document when a preview build serves the app under a path prefix.
 function apiUrl(path: string): string {
-  return path.startsWith('/api/v1') ? path : `/api/v1${path.startsWith('/') ? path : `/${path}`}`;
+  return withApiBase(path.startsWith('/api/v1') ? path : `/api/v1${path.startsWith('/') ? path : `/${path}`}`);
 }
 
 function authRuntimeConfig(): Record<string, any> {
@@ -925,10 +950,6 @@ function AccessDenied() {
 
 
 
-function MemorySettingsPanel() {
-  return <MemoryPanel />;
-}
-
 function DefaultsSettingsPanel() {
   const agentsQuery = useListAgentIdentitiesQuery();
   // TODO(FIX): Replace any with strict TypeScript interface matching Odin backend schema
@@ -973,16 +994,16 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
     path.startsWith('/c/');
   const isKnownRoute = useMemo(() => {
     return [
-      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/settings', '/agent-monitor',
+      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/agent-monitor',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/c/') ||
       path.startsWith('/settings/bridges') ||
       path.startsWith('/settings/appearance') ||
       path.startsWith('/settings/user-tokens') ||
+      path.startsWith('/projects/') ||
       path.startsWith('/settings/projects') ||
       path.startsWith('/settings/providers') ||
       path.startsWith('/settings/templates') ||
-      path.startsWith('/settings/memory') ||
       path.startsWith('/settings/notifications') ||
       path.startsWith('/settings/defaults') ||
       path === '/agents/new';
@@ -1007,7 +1028,18 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   }
 
   return (
-    <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto overflow-x-hidden bg-canvas ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
+    <main
+      data-debug-id="shell-main-route-outlet"
+      className="min-w-0 flex-1 overflow-auto overflow-x-hidden bg-canvas"
+      // The scroll container clears the bottom chrome by MEASUREMENT rather than by a
+      // guessed `pb-20` (spec › GLOBAL FIXES): `--ui-bottom-chrome` is the tab bar's
+      // real height, published by the bar itself, and the safe-area inset is added on
+      // top so nothing is clipped on a device with a home indicator. A page that docks
+      // its own action bar adds its height in its own spacer.
+      style={mobileBottomPadded
+        ? { paddingBottom: 'calc(max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)) + var(--space-2))' }
+        : undefined}
+    >
       <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         <ErrorBoundary resetKey={path} label={routeTitle(path)}>
@@ -1015,14 +1047,26 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
           <CardsPanel />
         ) : path === '/conversations' ? (
           <ConversationsHomePage />
+        ) : path === '/actions' ? (
+          <ActionListPage />
         ) : path === '/actions/new' ? (
-          <ActionEditorPage />
+          <ActionFormPage />
         ) : path.startsWith('/actions/') && path.endsWith('/edit') ? (
-          <ActionEditorPage actionId={decodeURIComponent(path.slice('/actions/'.length, -'/edit'.length))} />
-        ) : path === '/actions' || path.startsWith('/actions/') ? (
-          <ActionsPanel />
+          <ActionFormPage actionId={decodeURIComponent(path.slice('/actions/'.length, -'/edit'.length))} />
+        ) : path.startsWith('/actions/') ? (
+          <ActionViewPage actionId={decodeURIComponent(path.slice('/actions/'.length))} />
+        ) : path === '/shells' ? (
+          <ShellListPage />
+        ) : path.startsWith('/shells/') ? (
+          <ShellViewPage sessionId={decodeURIComponent(path.slice('/shells/'.length))} />
         ) : path === '/projects' ? (
-          <ProjectsSurface />
+          <ProjectListPage />
+        ) : path === '/projects/new' ? (
+          <ProjectFormPage />
+        ) : path.startsWith('/projects/') && path.endsWith('/edit') ? (
+          <ProjectFormPage projectId={decodeURIComponent(path.slice('/projects/'.length, -'/edit'.length))} />
+        ) : path.startsWith('/projects/') ? (
+          <ProjectViewPage projectId={decodeURIComponent(path.slice('/projects/'.length))} />
         ) : path === '/conversations/new' ? (
           <ConversationLaunchComposer />
         ) : path === '/settings' || path === '/settings/bridges' ? (
@@ -1041,8 +1085,6 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
           <ProjectsPanel />
         ) : path === '/settings/templates' ? (
           <TemplatesPanel />
-        ) : path === '/settings/memory' ? (
-          <MemorySettingsPanel />
         ) : path === '/settings/notifications' ? (
           <NotificationsPanel />
         ) : path === '/settings/defaults' ? (
@@ -1052,15 +1094,21 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
         ) : path.startsWith('/chains/') ? (
           <TaskChainsPage {...parseChainRoute(path)} isMobile={isMobile} />
         ) : path === '/agents' ? (
-          <AgentsPanel />
+          <AgentListPage />
         ) : path === '/agents/new' ? (
-          <NewAgentPage />
+          <AgentFormPage />
+        ) : path.startsWith('/agents/') && path.endsWith('/edit') ? (
+          <AgentFormPage agentId={decodeURIComponent(path.slice('/agents/'.length, -'/edit'.length))} />
         ) : path.startsWith('/agents/') ? (
-          <AgentDetailPanel agentId={decodeURIComponent(path.slice('/agents/'.length))} />
+          <AgentViewPage agentId={decodeURIComponent(path.slice('/agents/'.length))} />
         ) : path === '/memory' ? (
-          <MemoryPage />
+          <MemoryListPage />
+        ) : path === '/memory/new' ? (
+          <MemoryFormPage />
+        ) : path.startsWith('/memory/') && path.endsWith('/edit') ? (
+          <MemoryFormPage memoryId={decodeURIComponent(path.slice('/memory/'.length, -'/edit'.length))} />
         ) : path.startsWith('/memory/') ? (
-          <MemoryDetailPage memoryId={decodeURIComponent(path.slice('/memory/'.length))} />
+          <MemoryViewPage memoryId={decodeURIComponent(path.slice('/memory/'.length))} />
         ) : path.startsWith('/skills/') ? (
           <SkillViewerPage slug={decodeURIComponent(path.slice('/skills/'.length))} />
         ) : path === '/library' ? (

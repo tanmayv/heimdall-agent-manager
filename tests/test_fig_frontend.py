@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Regression tests for Fig (CitC) Frontend RTK Query endpoints, FigDirectoryPicker UI,
-ProjectsPanel & ProjectsSurface toggle, workspace creation modal, and sidebar accordion folder icons.
+ProjectsPanel, ProjectRow & ProjectDetail Fig badges, workspace creation modal, and sidebar accordion folder icons.
 (REQ-FIG-6, REQ-FIG-7, REQ-FIG-7B)."""
 
 from pathlib import Path
@@ -15,7 +15,8 @@ ICON_TSX = ROOT / "src" / "ui" / "components" / "Icon.tsx"
 APP_SHELL_TSX = ROOT / "src" / "ui" / "components" / "shell" / "AppShell.tsx"
 FIG_PICKER_TSX = ROOT / "src" / "ui" / "components" / "FigDirectoryPicker.tsx"
 PROJECTS_PANEL_TSX = ROOT / "src" / "ui" / "components" / "settings" / "ProjectsPanel.tsx"
-PROJECTS_SURFACE_TSX = ROOT / "src" / "ui" / "components" / "projects" / "ProjectsSurface.tsx"
+PROJECT_ROW_TSX = ROOT / "src" / "ui" / "components" / "projects" / "ProjectRow.tsx"
+PROJECT_DETAIL_TSX = ROOT / "src" / "ui" / "components" / "projects" / "ProjectDetail.tsx"
 
 
 def require(condition: bool, message: str) -> None:
@@ -33,7 +34,8 @@ def main() -> None:
     app_shell_tsx = APP_SHELL_TSX.read_text(encoding="utf-8")
     fig_picker_tsx = FIG_PICKER_TSX.read_text(encoding="utf-8")
     projects_panel_tsx = PROJECTS_PANEL_TSX.read_text(encoding="utf-8")
-    projects_surface_tsx = PROJECTS_SURFACE_TSX.read_text(encoding="utf-8")
+    project_row_tsx = PROJECT_ROW_TSX.read_text(encoding="utf-8")
+    project_detail_tsx = PROJECT_DETAIL_TSX.read_text(encoding="utf-8")
 
     # 1. REQ-FIG-6: RTK Query endpoints & types (bridgeFig.ts, heimdallApi.ts)
     require("listBridgeFigWorkspaces" in bridge_fig, "bridgeFig.ts must define listBridgeFigWorkspaces")
@@ -81,29 +83,17 @@ def main() -> None:
     require("settings-project-fig-retry-btn" in projects_panel_tsx, "ProjectsPanel.tsx must have offline retry button")
     require("settings-project-fig-bridge-select" in projects_panel_tsx, "ProjectsPanel.tsx must have bridge select")
 
-    # 6. REQ-FIG-7: Desktop UI ProjectsSurface (ProjectsSurface.tsx)
-    require("projects-create-type-toggle" in projects_surface_tsx, "ProjectsSurface.tsx must have project type toggle")
-    require("projects-create-type-local-btn" in projects_surface_tsx, "ProjectsSurface.tsx must have Local Directory toggle button")
-    require("projects-create-type-fig-btn" in projects_surface_tsx, "ProjectsSurface.tsx must have Fig (CitC) toggle button")
-    require("projects-create-fig-workspace-select" in projects_surface_tsx, "ProjectsSurface.tsx must have CitC workspace select dropdown")
-    require("projects-create-fig-new-workspace-btn" in projects_surface_tsx, "ProjectsSurface.tsx must have New CitC workspace button")
-    require("projects-create-fig-modal" in projects_surface_tsx, "ProjectsSurface.tsx must have CitC workspace creation modal")
-    require("projects-create-fig-relative-path-input" in projects_surface_tsx, "ProjectsSurface.tsx must have relative google3 path input")
-    require("projects-create-fig-browse-btn" in projects_surface_tsx, "ProjectsSurface.tsx must have Browse google3 button")
-    require("projects-create-fig-picker" in projects_surface_tsx, "ProjectsSurface.tsx must embed FigDirectoryPicker")
-    require("projects-create-fig-offline-warning" in projects_surface_tsx, "ProjectsSurface.tsx must have offline warning banner")
-    require("projects-create-fig-retry-btn" in projects_surface_tsx, "ProjectsSurface.tsx must have offline retry button")
-    require("projects-create-fig-bridge-select" in projects_surface_tsx, "ProjectsSurface.tsx must have bridge select")
+    # 6. REQ-FIG-7: ProjectRow & ProjectDetail Fig (CitC) badges and workspace name
+    require("project.project_type === 'fig'" in project_row_tsx or "row.project_type === 'fig'" in project_row_tsx, "ProjectRow.tsx must check project.project_type === 'fig'")
+    require("Fig (CitC)" in project_row_tsx, "ProjectRow.tsx must render Fig (CitC) badge")
+    require("workspace_name" in project_row_tsx, "ProjectRow.tsx must render workspace name")
+    require("project.project_type === 'fig'" in project_detail_tsx or "record.project_type === 'fig'" in project_detail_tsx, "ProjectDetail.tsx must check project.project_type === 'fig'")
+    require("Fig (CitC)" in project_detail_tsx, "ProjectDetail.tsx must render Fig (CitC) badge")
+    require("workspace_name" in project_detail_tsx, "ProjectDetail.tsx must render workspace name")
 
-    # 7. REQ-EDIT-PICKER-1, REQ-EDIT-PICKER-2, REQ-EDIT-PICKER-4: Edit Mode Directory Pickers
-    require("project-detail-edit-fig-browse-btn" in projects_surface_tsx, "ProjectsSurface.tsx AboutPanel must have project-detail-edit-fig-browse-btn")
-    require("project-detail-edit-fig-picker" in projects_surface_tsx, "ProjectsSurface.tsx AboutPanel must embed FigDirectoryPicker in edit mode")
-    require("project-detail-default-path-browse-btn" in projects_surface_tsx, "ProjectsSurface.tsx BridgePathsPanel must have project-detail-default-path-browse-btn")
-    require("project-detail-default-path-fig-picker" in projects_surface_tsx, "ProjectsSurface.tsx BridgePathsPanel must embed FigDirectoryPicker for Fig projects")
-    require("project-detail-default-path-bridge-picker" in projects_surface_tsx, "ProjectsSurface.tsx BridgePathsPanel must embed BridgeDirectoryPicker for local projects")
+    # 7. REQ-EDIT-PICKER-1, REQ-EDIT-PICKER-2, REQ-EDIT-PICKER-4: Edit Mode Directory Pickers (ProjectsPanel)
     require("settings-project-edit-fig-browse-btn" in projects_panel_tsx, "ProjectsPanel.tsx edit form must have settings-project-edit-fig-browse-btn")
     require("settings-project-edit-fig-picker" in projects_panel_tsx, "ProjectsPanel.tsx edit form must embed FigDirectoryPicker in edit mode")
-    require("/google/src/cloud/${user || '$(whoami)'}/" in projects_surface_tsx, "ProjectsSurface.tsx must format CitC default path correctly")
     require("/google/src/cloud/${user || \"$(whoami)\"}/" in projects_panel_tsx, "ProjectsPanel.tsx must format CitC default path correctly")
 
     print("[+] FIG CITC FRONTEND & PICKER REGRESSION TESTS PASSED")

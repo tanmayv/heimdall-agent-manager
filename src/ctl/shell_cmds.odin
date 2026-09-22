@@ -152,35 +152,29 @@ ctl_shell_set_port :: proc(endpoint, token: string, tokens, args: []string) {
 		json_object(json_kv_raw("server_port", port)))
 }
 
-// list — GET /api/v1/bridges/{bridge_id}/shells or /api/v1/shells with filters
-// Flags: --bridge, --project, --chain, --status
-// Prints table: session_id, kind, label, status, pid, server_port, uptime
+// list — GET /api/v1/shells with optional filters
+// Flags: --bridge, --project, --chain, --status, --limit, --cursor
+// With no flags: every shell the caller owns, across every bridge.
+//
+// All flags go to the one owner-wide route. Previously --bridge switched to
+// /api/v1/bridges/{id}/shells, which reads only `status` — so
+// `shell list --bridge X --project Y` silently ignored --project and listed the
+// whole bridge. /api/v1/shells ANDs every filter, so each flag now narrows.
+// The bridge-scoped route is untouched and keeps its other callers.
 ctl_shell_list :: proc(endpoint, token: string, tokens, args: []string) {
 	bridge_id := option_value(args, "--bridge", "")
 	project_id := option_value(args, "--project", "")
 	chain_id := option_value(args, "--chain", "")
 	status := option_value(args, "--status", "")
 
-	if bridge_id != "" {
-		// Bridge-scoped listing via /api/v1/bridges/{id}/shells
-		qparts := make([dynamic]string)
-		defer delete(qparts)
-		if project_id != "" do append(&qparts, strings.concatenate({"project_id=", project_id}))
-		if chain_id != ""   do append(&qparts, strings.concatenate({"chain_id=", chain_id}))
-		if status != ""     do append(&qparts, strings.concatenate({"status=", status}))
-		qs := ""
-		if len(qparts) > 0 do qs = strings.concatenate({"?", strings.join(qparts[:], "&")})
-		ctl_shell_rest(endpoint, token, "GET",
-			strings.concatenate({fmt.tprintf("/api/v1/bridges/%s/shells", safe_path_part(bridge_id)), qs}), "")
-		return
-	}
-
-	// Global listing via /api/v1/shells
 	qparts := make([dynamic]string)
 	defer delete(qparts)
+	if bridge_id != ""  do append(&qparts, strings.concatenate({"bridge_id=", bridge_id}))
 	if project_id != "" do append(&qparts, strings.concatenate({"project_id=", project_id}))
 	if chain_id != ""   do append(&qparts, strings.concatenate({"chain_id=", chain_id}))
 	if status != ""     do append(&qparts, strings.concatenate({"status=", status}))
+	if v := ctl_shell_uint_flag(args, "--limit", ""); v != "" do append(&qparts, strings.concatenate({"limit=", v}))
+	if v := option_value(args, "--cursor", ""); v != "" do append(&qparts, strings.concatenate({"cursor=", v}))
 	qs := ""
 	if len(qparts) > 0 do qs = strings.concatenate({"?", strings.join(qparts[:], "&")})
 	ctl_shell_rest(endpoint, token, "GET", strings.concatenate({"/api/v1/shells", qs}), "")
@@ -240,9 +234,10 @@ print_help_shell :: proc() {
 	fmt.println("        --port 0 and --clear are the same request. Refused on a session")
 	fmt.println("        that has exited, and on a session you do not own.")
 	fmt.println("        Prints the updated session.")
-	fmt.println("  list  --bridge <id> | --chain <id>   One of these two is REQUIRED.")
-	fmt.println("        [--project <id>] [--status <s>]  Narrow further; --project alone is")
-	fmt.println("        NOT sufficient and fails with 'chain_id query parameter is required'.")
+	fmt.println("  list  [--bridge <id>] [--project <id>] [--chain <id>] [--status <s>]")
+	fmt.println("        [--limit N] [--cursor <c>]")
+	fmt.println("        With NO flags: every shell you own, across every bridge, paginated.")
+	fmt.println("        Filters are AND-ed, so --bridge X --status running means both.")
 	fmt.println("        Prints table: session_id, kind, label, status, pid, server_port, uptime")
 	fmt.println("  log     <session_id> [--offset N] [--limit N] [--grep <pattern>]")
 	fmt.println("        Stream log lines; response: {lines, truncated, total_lines}")
@@ -294,6 +289,7 @@ print_help_shell :: proc() {
 	fmt.println("")
 	fmt.println("EXAMPLES")
 	fmt.println("  ham-ctl shell start --bridge brg_abc --kind interactive --cmd bash --label 'my shell'")
+	fmt.println("  ham-ctl shell list")
 	fmt.println("  ham-ctl shell list --bridge brg_abc --status running")
 	fmt.println("  ham-ctl shell log  sess_123 --limit 50 --grep error")
 	fmt.println("  ham-ctl shell capture sess_123")

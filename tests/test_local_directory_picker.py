@@ -2,12 +2,11 @@
 """Regression tests for CT-13: Local Path Directory Picker with Root Browsing & Hidden Toggle.
 
 Verifies:
-1. ProjectsSurface.tsx:
-   - Browse button (`projects-create-local-browse-btn`) in create form for local project type
-   - Embedded BridgeDirectoryPicker (`projects-create-local-picker`)
-   - Bridge host select (`projects-create-local-bridge-select`)
-   - Edit form browse button (`project-detail-edit-local-browse-btn`)
-   - Embedded BridgeDirectoryPicker in edit form (`project-detail-edit-local-picker`)
+1. ProjectFormPage.tsx:
+   - Browse button (`project-form-browse`) in create/edit form for default project path
+   - Embedded BridgeDirectoryPicker (`project-form-browse-picker`)
+   - Bridge host select (`project-form-browse-bridge`)
+   - Per-bridge path picker (`project-form-path-picker`)
    - Auto-population of project Name from selected path basename
 2. ProjectsPanel.tsx:
    - Browse button (`settings-project-local-browse-btn`) in create form
@@ -30,7 +29,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-PROJECTS_SURFACE_TSX = ROOT / "src" / "ui" / "components" / "projects" / "ProjectsSurface.tsx"
+PROJECT_FORM_PAGE_TSX = ROOT / "src" / "ui" / "components" / "projects" / "ProjectFormPage.tsx"
 PROJECTS_PANEL_TSX = ROOT / "src" / "ui" / "components" / "settings" / "ProjectsPanel.tsx"
 BRIDGE_PICKER_TSX = ROOT / "src" / "ui" / "components" / "BridgeDirectoryPicker.tsx"
 BRIDGE_MAIN_ODIN = ROOT / "src" / "bridge" / "main.odin"
@@ -43,18 +42,17 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
-    surface_content = PROJECTS_SURFACE_TSX.read_text(encoding="utf-8")
+    form_page_content = PROJECT_FORM_PAGE_TSX.read_text(encoding="utf-8")
     panel_content = PROJECTS_PANEL_TSX.read_text(encoding="utf-8")
     picker_content = BRIDGE_PICKER_TSX.read_text(encoding="utf-8")
     bridge_main = BRIDGE_MAIN_ODIN.read_text(encoding="utf-8")
 
-    # 1. ProjectsSurface.tsx Create & Edit Form
-    require("projects-create-local-browse-btn" in surface_content, "ProjectsSurface.tsx must have projects-create-local-browse-btn")
-    require("projects-create-local-picker" in surface_content, "ProjectsSurface.tsx must embed BridgeDirectoryPicker with projects-create-local-picker")
-    require("projects-create-local-bridge-select" in surface_content, "ProjectsSurface.tsx must allow selecting bridge host for local directory browsing")
-    require("project-detail-edit-local-browse-btn" in surface_content, "ProjectsSurface.tsx AboutPanel must have project-detail-edit-local-browse-btn")
-    require("project-detail-edit-local-picker" in surface_content, "ProjectsSurface.tsx AboutPanel must embed BridgeDirectoryPicker with project-detail-edit-local-picker")
-    require("base = p.split('/').filter(Boolean).pop()" in surface_content, "ProjectsSurface.tsx must auto-populate name from path basename")
+    # 1. ProjectFormPage.tsx Create & Edit Form
+    require("project-form-browse" in form_page_content, "ProjectFormPage.tsx must have project-form-browse")
+    require("project-form-browse-picker" in form_page_content, "ProjectFormPage.tsx must embed BridgeDirectoryPicker with project-form-browse-picker")
+    require("project-form-browse-bridge" in form_page_content, "ProjectFormPage.tsx must allow selecting bridge host for local directory browsing")
+    require("project-form-path-picker" in form_page_content, "ProjectFormPage.tsx must embed BridgeDirectoryPicker for per-bridge paths")
+    require("base = path.split('/').filter(Boolean).pop()" in form_page_content, "ProjectFormPage.tsx must auto-populate name from path basename")
 
     # 2. ProjectsPanel.tsx Create & Edit Form
     require("settings-project-local-browse-btn" in panel_content, "ProjectsPanel.tsx must have settings-project-local-browse-btn")

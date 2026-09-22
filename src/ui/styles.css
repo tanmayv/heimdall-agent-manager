@@ -62,6 +62,13 @@ body {
   }
 }
 
+/*
+ * Prose measure. Body copy — a page description, empty-state text, an explanatory
+ * note — stops at a readable line length instead of running the full width of a
+ * 1440px window. Headings and data are deliberately NOT capped.
+ */
+.ui-measure { max-width: 68ch; }
+
 .ui-safe-bottom { padding-bottom: var(--ui-safe-bottom, 0px); }
 .ui-safe-top { padding-top: var(--ui-safe-top, 0px); }
 

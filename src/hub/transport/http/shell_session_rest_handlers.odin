@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+import iface "odin_test:hub/repository/iface"
 import auth_service "odin_test:hub/service/auth"
 import shell_session_svc "odin_test:hub/service/shell_session"
 
@@ -153,22 +154,33 @@ shell_session_list_by_project_handler :: proc(ctx: rawptr, req: Request) -> Resp
 	return respond_success(body, req.request_id, auth_ctx_server_time(req))
 }
 
-// GET /api/v1/shells?chain_id=<id>
-shell_session_list_by_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
+// GET /api/v1/shells[?bridge_id=&project_id=&chain_id=&status=&limit=&cursor=]
+//
+// The owner-wide shell list. With NO query parameters it returns every shell the
+// caller owns, across every bridge — the product had no such view before, and it
+// is the default this route now serves. Each parameter that is present adds one
+// AND-ed narrowing clause, so `?bridge_id=X&status=running` means both, not
+// either.
+//
+// chain_id used to be REQUIRED here and 400'd when absent, which is why
+// `ham-ctl shell list` could not list shells. It is now just one more optional
+// filter; a request that does pass it gets exactly what it got before, since a
+// lone chain_id filter is the same query the chain-scoped list ran.
+shell_session_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Shell_Session_Rest_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 
-	chain_id      := query_value(req.query, "chain_id")
-	status_filter := query_value(req.query, "status")
-	cursor        := query_value(req.query, "cursor")
-	limit         := query_int(req.query, "limit", 25)
-
-	if chain_id == "" {
-		return respond_error(domain.domain_error(.Validation_Failed, "chain_id query parameter is required"), req.request_id)
+	filter := iface.Shell_Session_List_Filter{
+		bridge_id  = query_value(req.query, "bridge_id"),
+		project_id = query_value(req.query, "project_id"),
+		chain_id   = query_value(req.query, "chain_id"),
+		status     = query_value(req.query, "status"),
 	}
+	cursor := query_value(req.query, "cursor")
+	limit  := query_int(req.query, "limit", 25)
 
-	sessions, next_cursor, err := shell_session_svc.shell_session_list_by_chain(h.shell_sessions, auth_ctx, chain_id, status_filter, cursor, limit)
+	sessions, next_cursor, err := shell_session_svc.shell_session_list(h.shell_sessions, auth_ctx, filter, cursor, limit)
 	if err.code != .None do return respond_error(err, req.request_id)
 	defer domain.shell_sessions_destroy(sessions)
 	defer delete(next_cursor)
@@ -391,6 +403,16 @@ _shell_session_list_json :: proc(sessions: []domain.Shell_Session, next_cursor: 
 	}
 	strings.write_string(&b, "],\"next_cursor\":\"")
 	write_handler_json_string(&b, next_cursor)
-	strings.write_string(&b, "\"}")
+	// has_more is exactly `next_cursor != ""`: the repo sets next_cursor ONLY
+	// when a full page came back, so a short page (empty cursor) is precisely
+	// "no more rows". Emitted rather than left to the client because every other
+	// list envelope here carries it, and both UI consumers already read
+	// `data?.has_more ?? <same derivation>` — the new key feeds the branch they
+	// already prefer with the value they already computed.
+	if next_cursor != "" {
+		strings.write_string(&b, "\",\"has_more\":true}")
+	} else {
+		strings.write_string(&b, "\",\"has_more\":false}")
+	}
 	return strings.to_string(b)
 }

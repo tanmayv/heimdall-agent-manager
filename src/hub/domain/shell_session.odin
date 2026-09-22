@@ -25,6 +25,25 @@ Shell_Session_Status_Exited   :: "exited"
 Shell_Session_Status_Killed   :: "killed"
 Shell_Session_Status_Failed   :: "failed"
 
+// The two STATUS GROUP names a list filter accepts in place of a concrete status.
+// They are not statuses and are never stored on a record — no row's status column
+// ever holds "live" or "finished". They exist so a query can express the
+// terminal/non-terminal split the domain has always owned (see
+// SHELL_SESSION_TERMINAL_STATUSES and shell_session_is_terminal below), which
+// before this had no spelling at the query layer at all.
+Shell_Session_Status_Group_Live     :: "live"
+Shell_Session_Status_Group_Finished :: "finished"
+
+// SHELL_SESSION_TERMINAL_STATUSES is the single definition of "this session is
+// over". shell_session_is_terminal reads it, and the repository's `finished` /
+// `live` filters build their SQL from it, so a sixth status can never be terminal
+// in one place and live in the other. Add a status here and both follow.
+SHELL_SESSION_TERMINAL_STATUSES :: [3]string{
+	Shell_Session_Status_Exited,
+	Shell_Session_Status_Killed,
+	Shell_Session_Status_Failed,
+}
+
 Shell_Session :: struct {
 	session_id:          string,
 	owner_user_id:       string,
@@ -49,9 +68,16 @@ Shell_Session :: struct {
 }
 
 shell_session_is_terminal :: proc(s: Shell_Session) -> bool {
-	return s.status == Shell_Session_Status_Exited ||
-	       s.status == Shell_Session_Status_Killed ||
-	       s.status == Shell_Session_Status_Failed
+	return shell_session_status_is_terminal(s.status)
+}
+
+// shell_session_status_is_terminal is the same question asked of a bare status
+// string, for callers that have a status but no record (a filter value, say).
+shell_session_status_is_terminal :: proc(status: string) -> bool {
+	for terminal in SHELL_SESSION_TERMINAL_STATUSES {
+		if status == terminal do return true
+	}
+	return false
 }
 
 shell_session_destroy :: proc(s: Shell_Session) {

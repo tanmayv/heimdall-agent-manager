@@ -133,6 +133,23 @@ export function validateCronExpression(cron: string): { valid: boolean; error?: 
 
 const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+/**
+ * `min`, `hour` -> `HH:MM`, but ONLY when both are plain integers.
+ *
+ * Returns '' otherwise, and every caller below treats that as "this schedule has no
+ * single clock time". Without the guard a stepped or listed field is padded like a
+ * number and prints nonsense: a cron whose hour field is a step (minute 30, hour
+ * "every 2nd") rendered as "Daily at (step):30", which is not a time and not what
+ * the expression means.
+ */
+function clockTime(min: string, hour: string): string {
+  const m = /^\d{1,2}$/.test(min.trim()) ? parseInt(min, 10) : NaN;
+  const h = /^\d{1,2}$/.test(hour.trim()) ? parseInt(hour, 10) : NaN;
+  if (!Number.isFinite(m) || !Number.isFinite(h)) return '';
+  if (m < 0 || m > 59 || h < 0 || h > 23) return '';
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 export function describeCron(cron: string): string {
   const check = validateCronExpression(cron);
   if (!check.valid) return check.error || 'Invalid cron expression';
@@ -151,31 +168,72 @@ export function describeCron(cron: string): string {
     return `Every ${hour.slice(2)} hours, on the hour`;
   }
   if (dom === '*' && month === '*' && dow === '*') {
-    const padHour = hour.padStart(2, '0');
-    const padMin = min.padStart(2, '0');
-    return `Daily at ${padHour}:${padMin}`;
+    const at = clockTime(min, hour);
+    if (at) return `Daily at ${at}`;
   }
   if (dom === '*' && month === '*' && (dow === '1-5' || dow === '1,2,3,4,5')) {
-    const padHour = hour.padStart(2, '0');
-    const padMin = min.padStart(2, '0');
-    return `Weekdays (Mon-Fri) at ${padHour}:${padMin}`;
+    const at = clockTime(min, hour);
+    if (at) return `Weekdays (Mon-Fri) at ${at}`;
   }
   if (dom === '*' && month === '*' && (dow === '0,6' || dow === '6,0' || dow === '7,6' || dow === '6,7')) {
-    const padHour = hour.padStart(2, '0');
-    const padMin = min.padStart(2, '0');
-    return `Weekends at ${padHour}:${padMin}`;
+    const at = clockTime(min, hour);
+    if (at) return `Weekends at ${at}`;
   }
   if (dom === '*' && month === '*' && dow !== '*') {
-    const padHour = hour.padStart(2, '0');
-    const padMin = min.padStart(2, '0');
-    const days = dow.split(',').map((d) => {
-      const num = parseInt(d, 10);
-      return !isNaN(num) && num >= 0 && num <= 7 ? DOW_NAMES[num] : d;
-    }).join(', ');
-    return `Every ${days} at ${padHour}:${padMin}`;
+    const at = clockTime(min, hour);
+    if (at) {
+      const days = dow.split(',').map((d) => {
+        const num = parseInt(d, 10);
+        return !isNaN(num) && num >= 0 && num <= 7 ? DOW_NAMES[num] : d;
+      }).join(', ');
+      return `Every ${days} at ${at}`;
+    }
   }
 
-  return `At minute ${min}, hour ${hour}, day-of-month ${dom}, month ${month}, day-of-week ${dow}`;
+  // Day-of-month schedules. These used to fall through to a field-by-field dump
+  // that read as noise in a list row ("At minute 0, hour 3, day-of-month 1, month *,
+  // day-of-week *") and was wide enough to wrap the row's pill line onto a second.
+  if (dow === '*' && dom !== '*') {
+    const at = clockTime(min, hour);
+    const day = ordinal(dom);
+    if (!at) return `Custom: ${cron}`;
+    // A day-of-month that is not a single day (a step, a list, a range) is not
+    // "monthly on the Nth" — saying so would be a confident wrong reading, so it
+    // falls through to the expression itself.
+    if (!day) return `Custom: ${cron}`;
+    if (month === '*') return `Monthly on the ${day} at ${at}`;
+    const monthName = MONTH_NAMES[parseInt(month, 10)];
+    if (monthName) return `Yearly on ${monthName} ${day} at ${at}`;
+  }
+  if (dom === '*' && dow === '*' && month !== '*') {
+    const at = clockTime(min, hour);
+    const monthName = MONTH_NAMES[parseInt(month, 10)];
+    if (at && monthName) return `Daily in ${monthName} at ${at}`;
+  }
+
+  // Anything genuinely irregular (a list of months, a step on day-of-month). Naming
+  // it as custom and showing the expression is shorter and more honest than reading
+  // five fields aloud.
+  return `Custom: ${cron}`;
+}
+
+const MONTH_NAMES: Record<number, string> = {
+  1: 'January', 2: 'February', 3: 'March', 4: 'April', 5: 'May', 6: 'June',
+  7: 'July', 8: 'August', 9: 'September', 10: 'October', 11: 'November', 12: 'December',
+};
+
+/** `1` -> `1st`. Returns '' for anything that is not a plain day number. */
+function ordinal(value: string): string {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || String(n) !== value.trim() || n < 1 || n > 31) return '';
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
 }
 
 export function buildEveryNHours(hours: number): string {

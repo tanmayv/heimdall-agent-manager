@@ -1,5 +1,5 @@
 import { heimdallApi } from '../heimdallApi';
-import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+import { apiErrorText, cookieJsonFetch, cookieJsonFetchEnvelope, cookieMutation } from '../cookieFetch';
 
 export type ProjectBridgePath = {
   bridge_id: string;
@@ -109,10 +109,15 @@ export const projectsApi = heimdallApi.injectEndpoints({
         { type: 'SidebarProjects' as const, id: 'ALL' },
       ],
     }),
-    deleteProject: build.mutation<any, { projectId: string }>({
+    // The project destructive verb. There is NO delete route for projects
+    // (`wiring.odin:316-323`): archive is the soft-delete, it does not cascade to
+    // chains/tasks/instances (`project_service.odin:242-244`), and the hub exposes
+    // no way back — `Update_Project_Input` carries no `state` field, so nothing in
+    // this API can un-archive.
+    archiveProject: build.mutation<any, { projectId: string }>({
       queryFn: async ({ projectId }) => {
         try {
-          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}`, 'DELETE');
+          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}/archive`, 'POST');
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -172,9 +177,179 @@ export const {
   useListProjectsQuery,
   useFetchProjectQuery,
   useCreateProjectMutation,
+  useArchiveProjectMutation,
   useUpdateProjectMutation,
-  useDeleteProjectMutation,
   useSetProjectBridgePathMutation,
   useDeleteProjectBridgePathMutation,
   useValidateProjectBridgePathMutation,
 } = projectsApi;
+
+/* ------------------------------------------------------------------ *
+ * The rebuilt Projects pages' data layer
+ * ------------------------------------------------------------------ *
+ * `useListProjectsQuery` above loads EVERY project in one unpaginated request and
+ * is still what the sidebar and the launch modal want. The list page needs the
+ * opposite: keyset pages it can scroll (REQ-UI-6), an abortable fetch, and the
+ * `page` envelope, so it uses the two imperative helpers below instead.
+ */
+
+/** A project as the pages use it: camelCase, every field present, never undefined. */
+export type ProjectRecord = {
+  projectId: string;
+  name: string;
+  slug: string;
+  description: string;
+  repoUrl: string;
+  vcsKind: string;
+  defaultPath: string;
+  /** `active` | `archived` (`domain.project_state_string`). */
+  state: string;
+  project_type?: 'local' | 'fig' | string;
+  workspace_name?: string;
+  relative_path?: string;
+  projectType?: string;
+  workspaceName?: string;
+  relativePath?: string;
+  updatedAt: string;
+  /** Detail-only: the list endpoint never sends these. */
+  bridgePaths: ProjectBridgePath[];
+};
+
+/**
+ * Normalises a wire project.
+ *
+ * Note what is NOT here: `created_at` and `owner_user_id`. `write_project_json`
+ * (`project_handlers.odin:77-79`) serialises neither — even though the list's
+ * cursor IS `created_at` — so the pages have exactly one timestamp to show, and
+ * per Amendment 6 they render no Created field rather than a permanent blank.
+ */
+export function normalizeProject(raw: any): ProjectRecord {
+  const src = raw?.project || raw || {};
+  const paths = Array.isArray(src.bridge_paths) ? src.bridge_paths : Array.isArray(raw?.bridge_paths) ? raw.bridge_paths : [];
+  const projectType = String(src.project_type || src.projectType || 'local');
+  const workspaceName = String(src.workspace_name || src.workspaceName || '');
+  const relativePath = String(src.relative_path || src.relativePath || '');
+  return {
+    projectId: String(src.project_id || src.projectId || ''),
+    name: String(src.name || ''),
+    slug: String(src.slug || ''),
+    description: String(src.description || ''),
+    repoUrl: String(src.repo_url || src.repoUrl || ''),
+    vcsKind: String(src.vcs_kind || src.vcsKind || ''),
+    defaultPath: String(src.default_path || src.defaultPath || ''),
+    state: String(src.state || 'active'),
+    project_type: projectType,
+    workspace_name: workspaceName,
+    relative_path: relativePath,
+    projectType,
+    workspaceName,
+    relativePath,
+    updatedAt: String(src.updated_at || src.updatedAt || ''),
+    bridgePaths: paths.map((entry: any) => ({
+      bridge_id: String(entry?.bridge_id || entry?.bridgeId || ''),
+      path: String(entry?.path || ''),
+      is_validated: Boolean(entry?.is_validated ?? entry?.isValidated),
+      last_validated_at: String(entry?.last_validated_at || entry?.lastValidatedAt || ''),
+      validation_error: String(entry?.validation_error || entry?.validationError || ''),
+    })),
+  };
+}
+
+export type ProjectPage = {
+  items: ProjectRecord[];
+  next_cursor: string;
+  has_more: boolean;
+};
+
+/**
+ * One keyset page of projects.
+ *
+ * Reads the FULL envelope because `has_more` / `next_cursor` live in the `page`
+ * sibling of `data`, which the data-unwrapping fetch strips; honours the abort
+ * signal `useInfiniteList` hands it.
+ *
+ * The endpoint takes `limit` and `cursor` and NOTHING else
+ * (`project_handlers.odin:15-25`) — no `state`, no `vcs_kind`, no facet of any
+ * kind. That is why the list page's tab and filter are applied in the browser.
+ */
+export async function fetchProjectPage(
+  args: { limit?: number; cursor?: string; signal?: AbortSignal } = {},
+): Promise<ProjectPage> {
+  const params = new URLSearchParams({ limit: String(args.limit || 50) });
+  if (args.cursor) params.set('cursor', args.cursor);
+  const body = await cookieJsonFetchEnvelope(`/projects?${params.toString()}`, { signal: args.signal });
+  const data = body?.data ?? body;
+  const rawItems = Array.isArray(data) ? data : data?.items || data?.projects || [];
+  const page = body?.page ?? {};
+  return {
+    items: rawItems.map(normalizeProject),
+    next_cursor: String(page?.next_cursor || ''),
+    has_more: Boolean(page?.has_more),
+  };
+}
+
+/**
+ * A project search hit. The search API returns no structured record, so a hit is a
+ * label plus a sublabel: `name` and `"<slug> · <vcs_kind>"`
+ * (`search_repo_sqlite.odin:708-711`). There is **no state on a hit**, so — exactly
+ * as on Memory — a search result is a navigation target and nothing else: no
+ * checkbox, no verbs. `route` is ignored; it points at `/settings/projects/<id>`.
+ */
+export type ProjectHit = {
+  id: string;
+  label: string;
+  slug: string;
+  vcsKind: string;
+  preview: string;
+};
+
+export type ProjectHitPage = {
+  items: ProjectHit[];
+  next_cursor: string;
+  has_more: boolean;
+};
+
+function projectHitFrom(raw: any): ProjectHit {
+  const sublabel = String(raw?.sublabel || '');
+  const [slugPart, vcsPart] = sublabel.split('·').map((part) => part.trim());
+  return {
+    id: String(raw?.id || ''),
+    label: String(raw?.label || ''),
+    slug: slugPart || '',
+    vcsKind: vcsPart || '',
+    preview: String(raw?.preview || raw?.snippet || ''),
+  };
+}
+
+/**
+ * The server-scoped project search (`types=project`, G-2).
+ *
+ * It matches name, project_id, slug, repo_url and vcs_kind — **not description**
+ * (`search_repo_sqlite.odin:708-722`), which is why the search placeholder names
+ * what is searchable instead of letting a miss read as a broken search.
+ */
+export async function searchProjectPage(
+  args: { q: string; limit?: number; cursor?: string; signal?: AbortSignal },
+): Promise<ProjectHitPage> {
+  const query = String(args.q || '').trim();
+  if (!query) return { items: [], next_cursor: '', has_more: false };
+  const params = new URLSearchParams({ q: query, types: 'project', limit: String(args.limit || 50) });
+  if (args.cursor) params.set('cursor', args.cursor);
+  const body = await cookieJsonFetchEnvelope(`/search?${params.toString()}`, { signal: args.signal });
+  const data = body?.data ?? body;
+  const page = body?.page ?? {};
+  const groups = Array.isArray(data?.groups) ? data.groups : [];
+  const hits = groups
+    .filter((group: any) => String(group?.type || '') === 'project')
+    .flatMap((group: any) => (Array.isArray(group?.hits) ? group.hits : []));
+  return {
+    items: hits.map(projectHitFrom).filter((hit: ProjectHit) => Boolean(hit.id)),
+    next_cursor: String(page?.next_cursor || ''),
+    has_more: Boolean(page?.has_more),
+  };
+}
+
+/** Human-readable text for anything a project mutation rejects with. */
+export function projectErrorText(err: unknown, fallback = 'Something went wrong'): string {
+  return apiErrorText(err, fallback);
+}

@@ -20,6 +20,15 @@
  * `aria-sort` on the active sort column; an optional `<caption>`; sortable headers
  * are real buttons with a focus ring.
  *
+ * Horizontal overflow (ground-truth Amendment 4): the table — never the page —
+ * is what scrolls sideways when the columns do not fit. The root wrapper is the
+ * `overflow-x: auto` container, and `scrollRegionLabel` turns it into a real
+ * `role="region"` with `tabindex="0"`, which is what gives a keyboard user a way to
+ * reach the columns past the fold. A column may pin itself with `sticky: 'start' |
+ * 'end'`; a pinned cell paints an OPAQUE background (`--ui-table-sticky-bg`,
+ * defaulting to the canvas token) because a transparent one smears the rows
+ * travelling underneath it.
+ *
  * Tokens only: border/type/spacing/color via tokens. No raw values.
  *
  * Escape hatch: `className` merges onto the root `<table>` wrapper.
@@ -39,6 +48,16 @@ export interface TableColumn<T> {
   align?: Align;
   /** Whether this column can be sorted. */
   sortable?: boolean;
+  /**
+   * Pin the column against an edge while the table scrolls horizontally. Use it for
+   * the controls a user reaches for at any scroll offset — the select box and the
+   * row actions. A pinned column paints an opaque background.
+   */
+  sticky?: 'start' | 'end';
+  /** Extra classes for this column's `<td>`s (width caps, wrapping, nowrap…). */
+  cellClassName?: string;
+  /** Extra classes for this column's `<th>`. Defaults to `cellClassName`. */
+  headerClassName?: string;
 }
 
 export interface TableSort {
@@ -57,6 +76,18 @@ export interface TableProps<T> extends RootClassNameProps {
   onSortChange?: (sort: TableSort) => void;
   /** Accessible table name (rendered as a visually-hidden `<caption>`). */
   caption?: string;
+  /**
+   * Turns the scroll wrapper into a keyboard-reachable `role="region"` with this
+   * accessible name. Set it whenever the table can overflow — without it the
+   * columns past the fold are pointer-only.
+   */
+  scrollRegionLabel?: string;
+  /**
+   * Minimum table width (any CSS length). Below it the wrapper scrolls instead of
+   * squeezing the columns into unreadable slivers — a table that can shrink forever
+   * never overflows, and never being able to overflow is not the same as fitting.
+   */
+  minWidth?: string;
 }
 
 const ALIGN_CLASS: Record<Align, string> = {
@@ -72,6 +103,8 @@ export function Table<T>({
   sort,
   onSortChange,
   caption,
+  scrollRegionLabel,
+  minWidth,
   className,
 }: TableProps<T>) {
   function toggleSort(key: string) {
@@ -79,9 +112,30 @@ export function Table<T>({
     onSortChange?.({ key, direction: nextDir });
   }
 
+  // Sticky cells need an opaque paint of their own — the rows scroll under them.
+  const stickyClass = (sticky: TableColumn<T>['sticky']) =>
+    sticky === 'start'
+      ? 'sticky left-0 z-[1] bg-[var(--ui-table-sticky-bg,var(--color-canvas))]'
+      : sticky === 'end'
+        ? 'sticky right-0 z-[1] bg-[var(--ui-table-sticky-bg,var(--color-canvas))]'
+        : '';
+
   return (
-    <div className={['w-full overflow-x-auto', className].filter(Boolean).join(' ')}>
-      <table className="w-full border-collapse text-[length:var(--text-body-sm-size)]">
+    <div
+      role={scrollRegionLabel ? 'region' : undefined}
+      aria-label={scrollRegionLabel}
+      tabIndex={scrollRegionLabel ? 0 : undefined}
+      className={[
+        'w-full max-w-full overflow-x-auto rounded-[var(--radius-sm)] focus-visible:shadow-focus focus-visible:outline-none',
+        className,
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      <table
+        style={minWidth ? { minWidth } : undefined}
+        className="w-full border-collapse text-[length:var(--text-body-sm-size)]"
+      >
         {caption ? <caption className="sr-only">{caption}</caption> : null}
         <thead>
           <tr className="border-b border-subtle">
@@ -95,9 +149,13 @@ export function Table<T>({
                   scope="col"
                   aria-sort={ariaSort}
                   className={[
-                    'px-3 py-2 font-semibold text-muted',
+                    'whitespace-nowrap px-3 py-2 text-label font-semibold uppercase tracking-wide text-faint',
                     ALIGN_CLASS[align],
-                  ].join(' ')}
+                    stickyClass(col.sticky),
+                    col.headerClassName ?? col.cellClassName ?? '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
                 >
                   {col.sortable ? (
                     <button
@@ -133,7 +191,17 @@ export function Table<T>({
                   ? col.render(row)
                   : String((row as Record<string, unknown>)[col.key] ?? '');
                 return (
-                  <td key={col.key} className={['px-3 py-2 text-primary', ALIGN_CLASS[align]].join(' ')}>
+                  <td
+                    key={col.key}
+                    className={[
+                      'px-3 py-2 align-middle text-primary',
+                      ALIGN_CLASS[align],
+                      stickyClass(col.sticky),
+                      col.cellClassName ?? '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
                     {content}
                   </td>
                 );

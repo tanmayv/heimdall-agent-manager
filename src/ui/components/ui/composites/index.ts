@@ -50,3 +50,17 @@ export type { PaginationProps } from './Pagination';
 
 export { ProgressBar } from './ProgressBar';
 export type { ProgressBarProps, ProgressTone } from './ProgressBar';
+
+export { DataList } from './DataList';
+export type { DataListProps, DataListColumn, DataListMobileRole } from './DataList';
+
+export { ActionButton } from './ActionButton';
+export type { ActionButtonProps } from './ActionButton';
+export { BulkActionBar } from './BulkActionBar';
+export type { BulkActionBarProps, BulkSelectToggleProps } from './BulkActionBar';
+
+export { FilterBar } from './FilterBar';
+export type { FilterBarProps } from './FilterBar';
+
+export { Breadcrumbs } from './Breadcrumbs';
+export type { BreadcrumbsProps, Crumb } from './Breadcrumbs';

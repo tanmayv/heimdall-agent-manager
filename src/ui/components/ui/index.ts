@@ -9,12 +9,12 @@
  *   - primitives/  no product knowledge, highly reused (Button, Input, Text, ...)
  *   - composites/  assembled from primitives, still product-agnostic (Modal, Table, ...)
  *   - patterns/    product-specific compositions worth naming (UserPickerField, ...)
+ *   - hooks/       behaviour with no markup of its own (useInfiniteList, useViewport)
  *
  * The shared prop vocabulary lives in `./types`.
  *
- * NOTE: This is the empty scaffold. Components are migrated in later per-component
- * tasks; add their re-exports below as each one lands. Keeping the exports here
- * (rather than deep-importing files) is what lets call sites use `@ui` stably.
+ * Add each component's re-export below as it lands. Keeping the exports here (rather
+ * than deep-importing files) is what lets call sites use `@ui` stably.
  */
 
 export * from './types';
@@ -22,3 +22,4 @@ export * from './types';
 export * from './primitives';
 export * from './composites';
 export * from './patterns';
+export * from './hooks';

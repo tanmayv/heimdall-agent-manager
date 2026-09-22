@@ -110,12 +110,18 @@ function convoDot(convo: PaletteConversation): { tone: Parameters<typeof StatusD
   return { tone, pulse: tone === 'success' && busy };
 }
 
+// Mirrors the sidebar's primary NAV_ROUTES (AppShell.tsx:130-140) — label, icon and
+// route all match, so a destination is found by the same name in both places. A route
+// the sidebar offers and the palette does not is unreachable by keyboard, which is how
+// Shells was missed: the page shipped, the sidebar entry shipped, this list did not.
 const DEFAULT_NAV: { label: string; icon: IconName; route: string }[] = [
+  { label: 'Cards', icon: 'spark', route: '/cards' },
   { label: 'Conversations', icon: 'chat', route: '/conversations' },
   { label: 'Actions', icon: 'clock', route: '/actions' },
   { label: 'Projects', icon: 'grid', route: '/projects' },
   { label: 'Agents', icon: 'bot', route: '/agents' },
   { label: 'Memory', icon: 'spark', route: '/memory' },
+  { label: 'Shells', icon: 'terminal', route: '/shells' },
   { label: 'Task Chains', icon: 'tasks', route: '/chains' },
   { label: 'Library', icon: 'device', route: '/library' },
   { label: 'Settings', icon: 'gear', route: '/settings/bridges' },

@@ -37,6 +37,7 @@ Put a component in the folder that matches its layer. When in doubt, keep it low
 | `primitives/` | Primitive | No product knowledge, highly reused. | `Button`, `Input`, `Text`, `Box`/`Stack`, `Icon`, `Badge`, `Checkbox`, `Radio`, `Select`, `Link` |
 | `composites/` | Composite | Assembled from primitives, still product-agnostic. | `Modal`, `Table`, `Tabs`, `Card`, `FormField`, `Menu`, `Toast`, `Pagination` |
 | `patterns/` | Pattern | Product-specific compositions worth naming. | `UserPickerField`, `BillingSummaryCard` |
+| `hooks/` | Hook | Behaviour with no markup of its own. | `useInfiniteList`, `useViewport` |
 
 Genuine one-offs stay local to their feature directory — do not force them in here.
 
@@ -55,6 +56,8 @@ Genuine one-offs stay local to their feature directory — do not force them in 
 
 ## Status
 
-Empty scaffold. The structure, the `@ui` alias, the shared-vocabulary `types.ts`, and the
-token layer exist. Components are migrated in later per-component tasks; existing components
-under `src/ui/components/` are untouched until then.
+Populated and in use. The structure, the `@ui` alias, the shared-vocabulary `types.ts`, and
+the token layer exist, and so do the components: primitives, composites, patterns and hooks
+are all listed in the barrel (`index.ts`) — read that for the current set. Feature code under
+`src/ui/components/` is migrated onto them per-resource, so both old and new call sites exist
+during a migration.

@@ -66,7 +66,7 @@ function normalizeMarkdownSource(source: string): string {
 function createArtifactButtonHtml(artifactId: string, initialLabelHtml = ''): string {
   const safeArtifactId = escapeHtml(artifactId);
   const initialText = initialLabelHtml || safeArtifactId;
-  return `<button type="button" data-artifact-id="${safeArtifactId}" data-artifact-link="true" data-debug-id="artifact-link-chip-${safeArtifactId}" title="Open artifact" class="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-info-soft px-2.5 py-0.5 text-xs font-medium text-accent hover:bg-neutral-soft"><span aria-hidden="true">\u{1F4CE}</span><span data-artifact-label="true">${initialText}</span></button>`;
+  return `<button type="button" data-artifact-id="${safeArtifactId}" data-artifact-link="true" data-debug-id="artifact-link-chip-${safeArtifactId}" title="Open artifact" class="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-info-soft px-2.5 py-0.5 text-xs font-medium text-accent hover:bg-neutral-soft"><span aria-hidden="true" class="inline-flex"><svg viewBox=\"0 0 24 24\" width=\"12\" height=\"12\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\"></path><path d=\"M14 3v5h5\"></path></svg></span><span data-artifact-label="true">${initialText}</span></button>`;
 }
 
 function renderInline(text: string): string {
@@ -242,7 +242,7 @@ export function renderMarkdown(source: string, copyAll = true): string {
   if (!raw.trim()) return '';
   if (!copyAll) return renderBlocks(source);
   const escapedSource = escapeHtml(raw);
-  const copyBtn = `<div class="mb-1 flex items-center justify-end"><button type="button" data-markdown-copy-all="true" data-debug-id="markdown-copy-all-btn" data-markdown-source="${escapedSource}" title="Copy entire markdown" class="inline-flex h-6 w-6 items-center justify-center rounded-md border border-subtle bg-surface text-muted opacity-60 transition hover:bg-surface-raised hover:text-primary hover:opacity-100"><span aria-hidden="true" class="text-xs">\u{1F4CB}</span></button></div>`;
+  const copyBtn = `<div class="mb-1 flex items-center justify-end"><button type="button" data-markdown-copy-all="true" data-debug-id="markdown-copy-all-btn" data-markdown-source="${escapedSource}" title="Copy entire markdown" class="inline-flex h-6 w-6 items-center justify-center rounded-md border border-subtle bg-surface text-muted opacity-60 transition hover:bg-surface-raised hover:text-primary hover:opacity-100"><span aria-hidden="true" class="inline-flex"><svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"9\" y=\"9\" width=\"11\" height=\"11\" rx=\"2\"></rect><path d=\"M5 15V6a2 2 0 0 1 2-2h8\"></path></svg></span></button></div>`;
   return copyBtn + renderBlocks(source);
 }
 
@@ -387,13 +387,15 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
       if (!text) return;
       await navigator.clipboard?.writeText(text).catch(() => undefined);
       if (button.matches('[data-markdown-copy-all="true"]')) {
-        const iconSpan = button.querySelector('span') || button;
-        const prevText = iconSpan.textContent || '\u{1F4CB}';
+        // The glyph is an inline SVG from the icon set, so the "copied" feedback
+        // swaps MARKUP, not text — assigning textContent here would wipe the icon.
+        const iconSpan = (button.querySelector('span') || button) as HTMLElement;
+        const prevMarkup = iconSpan.innerHTML;
         const prevTitle = button.getAttribute('title') || 'Copy entire markdown';
-        iconSpan.textContent = '\u{2713}';
+        iconSpan.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"></path></svg>`;
         button.setAttribute('title', 'Copied!');
         window.setTimeout(() => {
-          iconSpan.textContent = prevText;
+          iconSpan.innerHTML = prevMarkup;
           button.setAttribute('title', prevTitle);
         }, 1200);
         return;

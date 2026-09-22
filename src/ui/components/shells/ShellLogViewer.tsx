@@ -5,10 +5,24 @@ import {
   useRestartShellMutation,
 } from '../../api/endpoints/shells';
 import type { ShellLogResponse, ShellSession } from '../../api/endpoints/shells';
+import { IconButton } from '@ui';
 
 interface ShellLogViewerProps {
   session: ShellSession;
   onClose?: () => void;
+  /**
+   * Whether the viewer renders its own Restart / Kill pair.
+   *
+   * The Shells detail page passes `false`: Amendment 6 puts a resource's verbs in the
+   * row menu, the bulk bar and the DETAIL HEADER and nowhere else, and that page
+   * already owns both — with the proportional confirm policy (REQ-UI-18) these inline
+   * buttons do not have. Leaving them on would put Kill twice on one screen, once
+   * behind a confirm and once not.
+   *
+   * Defaults to `true` so the chain and conversation panels, which have no header of
+   * their own to carry the verbs, keep the affordances they shipped with.
+   */
+  showSessionVerbs?: boolean;
 }
 
 const PAGE_SIZE = 100;
@@ -50,7 +64,7 @@ const FOLLOW_RESYNC_AT = PAGE_SIZE / 2;
 const GREP_FOLLOW_LIMIT = PAGE_SIZE * 10;
 const PROBE_LIMIT = 1;
 
-export function ShellLogViewer({ session, onClose }: ShellLogViewerProps) {
+export function ShellLogViewer({ session, onClose, showSessionVerbs = true }: ShellLogViewerProps) {
   const [follow, setFollow] = useState(true);
   // Request offset while following. Settled only after `total` is known.
   const [tailOffset, setTailOffset] = useState(0);
@@ -217,7 +231,7 @@ export function ShellLogViewer({ session, onClose }: ShellLogViewerProps) {
         </div>
 
         <div className="flex items-center gap-1">
-          {isRunning && (
+          {isRunning && showSessionVerbs && (
             <>
               <button
                 type="button"
@@ -239,25 +253,26 @@ export function ShellLogViewer({ session, onClose }: ShellLogViewerProps) {
               </button>
             </>
           )}
-          <button
-            type="button"
-            title="Refresh log"
-            onClick={() => refetch()}
+          {/* Boy-scout: these two were bare '↻' and '×' glyphs, which are neither the
+              one line-icon set nor a real accessible name. IconButton carries both. */}
+          <IconButton
+            icon="refresh"
+            size="sm"
+            variant="ghost"
+            label="Refresh log"
             disabled={isFetching}
-            className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary disabled:opacity-40"
-            aria-label="Refresh log"
-          >
-            {isFetching ? '…' : '↻'}
-          </button>
+            onClick={() => refetch()}
+            data-debug-id={`shell-log-refresh-${session.session_id}`}
+          />
           {onClose && (
-            <button
-              type="button"
-              title="Close log viewer"
+            <IconButton
+              icon="close"
+              size="sm"
+              variant="ghost"
+              label="Close log viewer"
               onClick={onClose}
-              className="grid h-6 w-6 place-items-center rounded text-muted hover:bg-neutral-soft hover:text-primary"
-            >
-              ×
-            </button>
+              data-debug-id={`shell-log-close-${session.session_id}`}
+            />
           )}
         </div>
       </div>

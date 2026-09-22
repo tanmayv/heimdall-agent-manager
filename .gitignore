@@ -36,3 +36,7 @@ __pycache__/
 
 # Local-only VPS deployment runbook (not for the repo)
 /deployment.md
+
+# UI preview build + session marker (scripts/ui-preview.sh)
+dist-preview/
+.ui-preview-session

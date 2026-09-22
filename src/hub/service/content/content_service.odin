@@ -328,12 +328,12 @@ update_template :: proc(s:^Content_Service, auth:contracts.Auth_Context,id:strin
 	// clearing: it is required, so an explicit empty name is rejected rather than
 	// stored (same shape as has_body in update_memory).
 	if input.has_name {
-		if strings.trim_space(input.name)=="" do return {},false,domain.domain_error(.Validation_Failed,"template name is required")
-		t.name=input.name
+		if strings.trim_space(input.name)=="" do return {},false,domain.domain_error(.Validation_Failed,"template name is required");
+		t.name=input.name;
 	}
-	if input.has_description do t.description=input.description
-	if input.has_persona do t.persona=input.persona
-	if input.has_instructions do t.instructions=input.instructions
+	if input.has_description do t.description=input.description;
+	if input.has_persona do t.persona=input.persona;
+	if input.has_instructions do t.instructions=input.instructions;
 	t.updated_at=platform.clock_now(s.clock);
 	return iface.content_save_template(s.content,t)
 }

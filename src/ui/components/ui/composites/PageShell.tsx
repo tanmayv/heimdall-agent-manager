@@ -7,6 +7,15 @@
  * of one-per-author. Replaces the 6 hand-built header dialects and the 10+ page
  * max-width variants catalogued in `docs/ui-audit/` (finding #7).
  *
+ * THE TITLE IS THE TERMINAL CRUMB (convention, all five resources). A list page's
+ * trail is a single crumb reading exactly what the `<h1>` reads, so rendering both
+ * printed the page's name twice. PageShell therefore renders only the trail's
+ * ANCESTORS and lets the `<h1>` be the current level: `/memory` shows one "Memory"
+ * heading and no trail; `/memory/:id` shows "Memory /" above the record's title.
+ * Pages keep passing their FULL trail — the deduplication is the shell's job, not
+ * something five pages have to remember — and `aria-current="page"` is not lost,
+ * because the current page is now announced as the region's `<h1>` instead.
+ *
  * NOT for: section-level headers inside a page (use `SectionHeader`) or content
  * containers (use `Panel`).
  *
@@ -33,6 +42,8 @@
  */
 import React from 'react';
 import './PageShell.css';
+import { Breadcrumbs } from './Breadcrumbs';
+import type { Crumb } from './Breadcrumbs';
 import type { RootClassNameProps } from '../types';
 
 /** PageShell's content-width ramp. Superset of the shared `Width` (adds `wide`). */
@@ -41,14 +52,32 @@ export type PageShellWidth = 'content' | 'wide' | 'full';
 export interface PageShellProps extends RootClassNameProps {
   /** The page's single `<h1>`. Required — every page has exactly one. */
   title: React.ReactNode;
+  /**
+   * The breadcrumb trail, rendered above the eyebrow/title (REQ-UI-14). The page
+   * states its own trail rather than the shell inferring one from the path, which is
+   * the only way a trail can name the record it is on ("Memory / Prefer nix …").
+   */
+  breadcrumbs?: Crumb[];
   /** Uppercase overline above the title (e.g. the section the page belongs to). */
   eyebrow?: string;
-  /** Subtitle rendered under the title. */
+  /**
+   * Subtitle rendered under the title. Capped to a readable measure — prose running
+   * the full width of a 1440px window is a large part of what reads as unpolished.
+   */
   description?: React.ReactNode;
   /** Toolbar slot, rendered right-aligned next to the title (e.g. a primary action). */
   actions?: React.ReactNode;
   /** Content-width ramp. `content` (default) · `wide` · `full` (full-bleed). */
   width?: PageShellWidth;
+  /**
+   * Vertical rhythm for the body. `banded` — the rebuild's convention — gives the
+   * body the page's own inline padding and ONE gap between bands, so a page never
+   * tunes spacing element by element and the body lines up with the header instead
+   * of running flush to the window edge. `legacy` (the default) leaves the body
+   * unstyled, which is what the not-yet-migrated pages still expect; migrate a page
+   * and its hand-rolled gaps come out at the same time.
+   */
+  rhythm?: 'banded' | 'legacy';
   /** When true, renders a standard loading state in the body instead of children. */
   loading?: boolean;
   /**
@@ -63,10 +92,12 @@ export interface PageShellProps extends RootClassNameProps {
 
 export const PageShell: React.FC<PageShellProps> = ({
   title,
+  breadcrumbs,
   eyebrow,
   description,
   actions,
   width = 'content',
+  rhythm = 'legacy',
   loading = false,
   error,
   className,
@@ -74,6 +105,11 @@ export const PageShell: React.FC<PageShellProps> = ({
 }) => {
   const rootClassName = ['ui-pageshell', className].filter(Boolean).join(' ');
   const titleId = React.useId();
+
+  // The terminal crumb IS the title, so only the ancestors are a trail. A page that
+  // passes a single crumb (every list page) gets no trail at all, which is the
+  // point: one element, one job, no page printed twice.
+  const ancestorCrumbs = breadcrumbs ? breadcrumbs.slice(0, -1) : [];
 
   let body: React.ReactNode;
   if (loading) {
@@ -98,20 +134,30 @@ export const PageShell: React.FC<PageShellProps> = ({
       tabIndex={-1}
       aria-labelledby={titleId}
       data-width={width}
+      data-rhythm={rhythm}
       className={rootClassName}
     >
       <a className="ui-pageshell-skip" href="#main-content">
         Skip to content
       </a>
       <div className="ui-pageshell-container">
-        <header className="px-4 py-4 sm:px-6 sm:py-6">
+        <header className="ui-pageshell-header">
+          {ancestorCrumbs.length > 0 ? (
+            <Breadcrumbs crumbs={ancestorCrumbs} className="mb-1" />
+          ) : null}
           {eyebrow ? (
             <p className="mb-1 text-overline uppercase text-muted">{eyebrow}</p>
           ) : null}
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
+          {/* Wraps rather than squeezing: at ≤767px a page with two or three header
+              actions would otherwise crush the title and description into a
+              one-word-per-line column (REQ-UI-13). `basis` keeps them side by side
+              wherever there is room, which is every desktop width. */}
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1 basis-64">
               <h1 id={titleId} className="text-display text-primary">{title}</h1>
-              {description ? <p className="mt-1 text-body text-muted">{description}</p> : null}
+              {description ? (
+                <p className="ui-measure mt-1 text-body-sm text-muted">{description}</p>
+              ) : null}
             </div>
             {actions ? (
               <div className="flex shrink-0 items-center gap-2">{actions}</div>

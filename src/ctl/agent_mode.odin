@@ -642,7 +642,11 @@ ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string) {
 	content_response, content_ok := ctl_agent_local_call(endpoint, token, "agent.artifact.content", json_object(json_kv("artifact_id", artifact_id)))
 	if !content_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
 	if !strings.contains(content_response, `"ok":true`) { fmt.println(content_response); return }
-	if os.make_directory_all(dir) != nil { fmt.println(`{"ok":false,"message":"download directory could not be created"}`); os.exit(1) }
+	// make_directory_all reports an error when the directory ALREADY exists, so the
+	// result cannot be the failure test — treating it as one rejected every
+	// pre-created --dir. What matters is the postcondition: a usable directory.
+	os.make_directory_all(dir)
+	if !os.is_dir(dir) { fmt.println(`{"ok":false,"message":"download directory could not be created"}`); os.exit(1) }
 	ext := artifact_download_extension(meta_response, content_response)
 	filename := artifact_download_random_filename(ext)
 	path := path_join_agent(dir, filename)
