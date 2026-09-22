@@ -198,8 +198,9 @@ async function ensureLang(hl: HighlighterCore, lang: string): Promise<boolean> {
 // Returns null on any failure or when the language is unsupported, so the caller
 // can fall back to a plain, un-highlighted <pre>.
 export async function highlightCode(code: string, lang: string, themeId?: string): Promise<string | null> {
-  const language = String(lang || '').trim();
-  if (!language) return null;
+  const rawLang = String(lang || '').trim().toLowerCase();
+  if (!rawLang) return null;
+  const language = languageForFile(`file.${rawLang}`) || rawLang;
   try {
     const hl = await getHighlighter();
     const shikiTheme = getActiveShikiTheme(themeId);
@@ -223,8 +224,9 @@ export type CodeToken = { content: string; color?: string };
 // Returns null when the language is unknown or highlighting fails, so the caller
 // renders plain, un-highlighted lines with the same row structure.
 export async function highlightToLines(code: string, lang: string, themeId?: string): Promise<CodeToken[][] | null> {
-  const language = String(lang || '').trim();
-  if (!language) return null;
+  const rawLang = String(lang || '').trim().toLowerCase();
+  if (!rawLang) return null;
+  const language = languageForFile(`file.${rawLang}`) || rawLang;
   try {
     const hl = await getHighlighter();
     const shikiTheme = getActiveShikiTheme(themeId);
