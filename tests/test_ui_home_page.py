@@ -22,14 +22,14 @@ Requirements verified:
   - Sorted by updatedAt descending
   - Renders status badge, project name badge, task count badge, relative time, coordinator link
   - Clean EmptyState when no chains match
-- REQ-HOME-ISSUES-4: Recent Issues Tab (RecentIssuesTab.tsx)
-  - Fetches issues via useListIssuesQuery()
-  - Sub-view toggle: Recent Issues (created_at desc) vs Top 10 Issues (vote_count desc, slice 10)
-  - Status filters: All, New, Fixed, Obsolete
-  - Search input
-  - Desktop two-pane view (list on left, IssueDetail on right)
-  - Mobile single-pane drill-down with back button
-  - Upvote toggle support
+- REQ-HOME-ISSUES-4: Recent Issues Tab (RecentIssuesTab.tsx) & Tab Height Fix (Tabs.tsx)
+  - TabsPanel in Tabs.tsx returns null when inactive to prevent flex squishing
+  - Fetches issues via useListIssuesQuery({ limit: 100 })
+  - Single-pane direct navigation: clicking issue row navigates to /issues/:id via navigateTo(issueViewHref(id))
+  - Absence of two-pane split (no IssueDetail, no detail pane, no back button)
+  - Absence of search input, status filters, and view mode toggles
+  - Upvote toggle support via useVoteIssueMutation / useUnvoteIssueMutation
+  - Clean EmptyState when no issues reported
 - REQ-HOME-ACTIONS-5: Action Items Tab (ActionItemsTab.tsx)
   - Two-pane layout modeled after Issues & art_18d7db557b34a8e1
   - Left pane: search bar, status tabs, project selector (@ui Select), selectable card rows
@@ -48,6 +48,7 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+TABS_COMPOSITE = ROOT / 'src/ui/components/ui/composites/Tabs.tsx'
 APP_SHELL = ROOT / 'src/ui/components/shell/AppShell.tsx'
 RESPONSIVE = ROOT / 'src/ui/components/shell/responsive.tsx'
 HOME_PAGE = ROOT / 'src/ui/components/home/HomePage.tsx'
@@ -177,37 +178,43 @@ def test_req_home_chains_3():
 
 
 def test_req_home_issues_4():
-    """Verify Recent Issues Tab (REQ-HOME-ISSUES-4)."""
+    """Verify Recent Issues Tab and Tab Panel Height Fix (REQ-HOME-ISSUES-4, REQ-HOME-HEIGHT-1)."""
+    # 1. Verify TabsPanel returns null when inactive so inactive panels do not participate in layout
+    assert TABS_COMPOSITE.exists(), f"Tabs.tsx not found at {TABS_COMPOSITE}"
+    tabs_src = TABS_COMPOSITE.read_text(encoding='utf-8')
+    assert 'if (!isActive) return null;' in tabs_src, \
+        "TabsPanel should return null when !isActive so inactive panels do not participate in flex layout"
+
     assert ISSUES_TAB.exists(), f"RecentIssuesTab.tsx not found at {ISSUES_TAB}"
     src = ISSUES_TAB.read_text(encoding='utf-8')
 
-    # 1. useListIssuesQuery hook usage
+    # 2. useListIssuesQuery hook usage
     assert 'useListIssuesQuery' in src, "Should query issues with useListIssuesQuery"
+    assert 'limit: 100' in src, "Should query issues with limit: 100"
 
-    # 2. Sub-view toggle: Recent vs Top 10
-    assert 'data-debug-id="home-issues-view-mode-recent"' in src, "Missing Recent Issues view toggle button"
-    assert 'data-debug-id="home-issues-view-mode-top10"' in src, "Missing Top 10 Issues view toggle button"
-    assert 'slice(0, 10)' in src, "Top 10 mode should slice to top 10 issues"
-    assert 'vote_count' in src or 'voteCount' in src, "Top 10 mode should sort by vote_count"
-
-    # 3. Status filter chips
-    assert 'home-issues-filter-${f.value || \'all\'}' in src or 'home-issues-filter-' in src, "Missing status filter chip debug id"
-    assert 'STATUS_FILTERS' in src, "Missing STATUS_FILTERS list"
-
-    # 4. Search input
-    assert 'data-debug-id="home-issues-search-input"' in src, "Missing issues search input"
-
-    # 5. Desktop two-pane and mobile drill-down layouts
-    assert 'home-issues-list-pane' in src, "Missing issues list pane debug id"
-    assert 'home-issues-detail-pane' in src, "Missing issues detail pane debug id"
-    assert 'home-issues-back-btn' in src, "Missing mobile back button debug id"
-    assert 'IssueDetail' in src, "Should render IssueDetail component"
+    # 3. Direct navigation using navigateTo and issueViewHref
+    assert 'navigateTo' in src, "Should import and use navigateTo for direct issue navigation"
+    assert 'issueViewHref' in src, "Should use issueViewHref to generate issue detail URL"
+    assert 'navigateTo(href)' in src or 'navigateTo(issueViewHref' in src, \
+        "Clicking an issue row should trigger navigateTo(issueViewHref(id))"
     assert 'IssueRow' in src, "Should render IssueRow component"
 
-    # 6. Upvote support
+    # 4. Absence of two-pane detail pane, mobile drill-down, search input, status filters, and sub-view toggle
+    assert 'home-issues-detail-pane' not in src, "Recent issues should not have two-pane detail pane"
+    assert 'IssueDetail' not in src, "Recent issues should not render IssueDetail component"
+    assert 'home-issues-back-btn' not in src, "Recent issues should not have mobile drilldown back button"
+    assert 'home-issues-search-input' not in src, "Recent issues should not have search input"
+    assert 'home-issues-status-chips' not in src, "Recent issues should not have status filter chips"
+    assert 'STATUS_FILTERS' not in src, "Recent issues should not have STATUS_FILTERS"
+    assert 'home-issues-view-mode-' not in src, "Recent issues should not have sub-view mode toggle"
+
+    # 5. Upvote support
     assert 'useVoteIssueMutation' in src, "Should support issue voting"
     assert 'useUnvoteIssueMutation' in src, "Should support issue unvoting"
-    print("PASS: REQ-HOME-ISSUES-4 (Recent Issues Tab)")
+
+    # 6. EmptyState
+    assert 'home-issues-empty-state' in src, "Should render EmptyState with home-issues-empty-state debug ID"
+    print("PASS: REQ-HOME-ISSUES-4 (Recent Issues Tab & Tab Height Fix)")
 
 
 def test_req_home_actions_5():
