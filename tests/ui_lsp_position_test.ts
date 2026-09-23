@@ -35,16 +35,21 @@ import {
   lspHoverToMarkdownStrings,
   lspLanguageIdForPath,
   lspToMonacoCompletionKind,
+  lspToMonacoLocation,
   lspToMonacoPosition,
   lspToMonacoRange,
   lspToMonacoSeverity,
+  lspToMonacoSymbolKind,
   monacoToLspPosition,
   monacoToLspRange,
   normaliseDefinitionResult,
+  normaliseDocumentSymbols,
+  normaliseLocationResult,
   pathToFileUri,
   isJsonRpcNotification,
   isJsonRpcResponse,
   isJsonRpcServerRequest,
+  MONACO_SYMBOL_KIND,
 } from '../src/ui/lsp/lspProtocol.ts';
 
 // --- positions: each direction anchored on its own ---------------------------
@@ -354,4 +359,207 @@ test('round trip composes to identity — NOTE: insufficient on its own', () => 
   ]) {
     assert.deepEqual(monacoToLspPosition(lspToMonacoPosition(p)), p);
   }
+});
+
+// --- symbol kinds: LSP 1..26 -> Monaco 0..25 --------------------------------
+
+test('lspToMonacoSymbolKind maps every LSP kind 1..26 to Monaco 0..25', () => {
+  const expected: Array<[number, number, string]> = [
+    [1, 0, 'File'],
+    [2, 1, 'Module'],
+    [3, 2, 'Namespace'],
+    [4, 3, 'Package'],
+    [5, 4, 'Class'],
+    [6, 5, 'Method'],
+    [7, 6, 'Property'],
+    [8, 7, 'Field'],
+    [9, 8, 'Constructor'],
+    [10, 9, 'Enum'],
+    [11, 10, 'Interface'],
+    [12, 11, 'Function'],
+    [13, 12, 'Variable'],
+    [14, 13, 'Constant'],
+    [15, 14, 'String'],
+    [16, 15, 'Number'],
+    [17, 16, 'Boolean'],
+    [18, 17, 'Array'],
+    [19, 18, 'Object'],
+    [20, 19, 'Key'],
+    [21, 20, 'Null'],
+    [22, 21, 'EnumMember'],
+    [23, 22, 'Struct'],
+    [24, 23, 'Event'],
+    [25, 24, 'Operator'],
+    [26, 25, 'TypeParameter'],
+  ];
+  for (const [lsp, monaco, name] of expected) {
+    assert.equal(lspToMonacoSymbolKind(lsp), monaco, `LSP ${name}(${lsp}) -> Monaco ${monaco}`);
+  }
+});
+
+test('lspToMonacoSymbolKind falls back to Variable for undefined, null, or out-of-range kinds', () => {
+  assert.equal(lspToMonacoSymbolKind(undefined), MONACO_SYMBOL_KIND.Variable);
+  assert.equal(lspToMonacoSymbolKind(null as any), MONACO_SYMBOL_KIND.Variable);
+  assert.equal(lspToMonacoSymbolKind(0), MONACO_SYMBOL_KIND.Variable);
+  assert.equal(lspToMonacoSymbolKind(27), MONACO_SYMBOL_KIND.Variable);
+  assert.equal(lspToMonacoSymbolKind(999), MONACO_SYMBOL_KIND.Variable);
+});
+
+// --- location mapping: range shift and URI resolution -----------------------
+
+test('lspToMonacoLocation converts 0-based range to 1-based Monaco range and preserves URI', () => {
+  const loc = {
+    uri: 'file:///workspace/src/app.ts',
+    range: { start: { line: 9, character: 4 }, end: { line: 9, character: 12 } },
+  };
+  const monacoLoc = lspToMonacoLocation(loc);
+  assert.equal(monacoLoc.uri, 'file:///workspace/src/app.ts');
+  assert.deepEqual(monacoLoc.range, {
+    startLineNumber: 10,
+    startColumn: 5,
+    endLineNumber: 10,
+    endColumn: 13,
+  });
+});
+
+test('lspToMonacoLocation resolves URI against open Monaco models when monaco is provided', () => {
+  const modelUri = { path: '/workspace/src/app.ts', toString: () => 'model://app.ts' };
+  const mockMonaco = {
+    editor: {
+      getModels: () => [
+        {
+          uri: { path: '/src/app.ts' },
+        },
+      ],
+    },
+    Uri: {
+      file: (p: string) => ({ path: p, isFile: true }),
+    },
+  };
+  const locMatching = {
+    uri: 'file:///workspace/src/app.ts',
+    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+  };
+  const resMatching = lspToMonacoLocation(locMatching, '/workspace', mockMonaco);
+  assert.deepEqual(resMatching.uri, { path: '/src/app.ts' });
+
+  const locNonMatching = {
+    uri: 'file:///workspace/src/other.ts',
+    range: { start: { line: 1, character: 0 }, end: { line: 1, character: 5 } },
+  };
+  const resNonMatching = lspToMonacoLocation(locNonMatching, '/workspace', mockMonaco);
+  assert.deepEqual(resNonMatching.uri, { path: '/workspace/src/other.ts', isFile: true });
+});
+
+// --- document symbols normalisation -----------------------------------------
+
+test('normaliseDocumentSymbols handles hierarchical DocumentSymbol[]', () => {
+  const raw = [
+    {
+      name: 'UserService',
+      detail: 'class',
+      kind: 5, // Class -> Monaco 4
+      range: { start: { line: 0, character: 0 }, end: { line: 20, character: 0 } },
+      selectionRange: { start: { line: 0, character: 6 }, end: { line: 0, character: 17 } },
+      children: [
+        {
+          name: 'getUser',
+          detail: '(id: string) => User',
+          kind: 6, // Method -> Monaco 5
+          range: { start: { line: 5, character: 2 }, end: { line: 10, character: 2 } },
+          selectionRange: { start: { line: 5, character: 2 }, end: { line: 5, character: 9 } },
+          children: [],
+        },
+      ],
+    },
+  ];
+
+  const res = normaliseDocumentSymbols(raw);
+  assert.equal(res.length, 1);
+  const parent = res[0];
+  assert.equal(parent.name, 'UserService');
+  assert.equal(parent.kind, MONACO_SYMBOL_KIND.Class);
+  assert.deepEqual(parent.range, {
+    startLineNumber: 1,
+    startColumn: 1,
+    endLineNumber: 21,
+    endColumn: 1,
+  });
+  assert.deepEqual(parent.selectionRange, {
+    startLineNumber: 1,
+    startColumn: 7,
+    endLineNumber: 1,
+    endColumn: 18,
+  });
+  assert.equal(parent.children?.length, 1);
+  const child = parent.children![0];
+  assert.equal(child.name, 'getUser');
+  assert.equal(child.kind, MONACO_SYMBOL_KIND.Method);
+  assert.deepEqual(child.range, {
+    startLineNumber: 6,
+    startColumn: 3,
+    endLineNumber: 11,
+    endColumn: 3,
+  });
+});
+
+test('normaliseDocumentSymbols normalises flat SymbolInformation[] into symbol tree using containerName', () => {
+  const raw = [
+    {
+      name: 'Config',
+      kind: 11, // Interface -> Monaco 10
+      location: {
+        uri: 'file:///workspace/config.ts',
+        range: { start: { line: 0, character: 0 }, end: { line: 10, character: 0 } },
+      },
+    },
+    {
+      name: 'port',
+      kind: 7, // Property -> Monaco 6
+      containerName: 'Config',
+      location: {
+        uri: 'file:///workspace/config.ts',
+        range: { start: { line: 1, character: 2 }, end: { line: 1, character: 14 } },
+      },
+    },
+    {
+      name: 'host',
+      kind: 7, // Property -> Monaco 6
+      containerName: 'Config',
+      location: {
+        uri: 'file:///workspace/config.ts',
+        range: { start: { line: 2, character: 2 }, end: { line: 2, character: 14 } },
+      },
+    },
+    {
+      name: 'standaloneFn',
+      kind: 12, // Function -> Monaco 11
+      location: {
+        uri: 'file:///workspace/config.ts',
+        range: { start: { line: 12, character: 0 }, end: { line: 15, character: 0 } },
+      },
+    },
+  ];
+
+  const res = normaliseDocumentSymbols(raw as any);
+  assert.equal(res.length, 2, 'Top level should have Config and standaloneFn');
+  const configSym = res.find((s) => s.name === 'Config');
+  assert.ok(configSym);
+  assert.equal(configSym.kind, MONACO_SYMBOL_KIND.Interface);
+  assert.equal(configSym.children?.length, 2);
+  assert.equal(configSym.children![0].name, 'port');
+  assert.equal(configSym.children![0].kind, MONACO_SYMBOL_KIND.Property);
+  assert.equal(configSym.children![1].name, 'host');
+  assert.equal(configSym.children![1].kind, MONACO_SYMBOL_KIND.Property);
+
+  const fnSym = res.find((s) => s.name === 'standaloneFn');
+  assert.ok(fnSym);
+  assert.equal(fnSym.kind, MONACO_SYMBOL_KIND.Function);
+  assert.equal(fnSym.children?.length, 0);
+});
+
+test('normaliseDocumentSymbols returns empty array on null, undefined, or empty list', () => {
+  assert.deepEqual(normaliseDocumentSymbols(null), []);
+  assert.deepEqual(normaliseDocumentSymbols(undefined), []);
+  assert.deepEqual(normaliseDocumentSymbols([]), []);
 });

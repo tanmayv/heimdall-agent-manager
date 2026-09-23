@@ -2919,7 +2919,9 @@ bridge_tunnel_tcp_to_ws_worker :: proc(data: rawptr) {
 	local_tcp_conn  := stream.tcp_conn
 	local_stream_id := strings.clone(stream.stream_id, heap)
 
-	buf: [4096]byte
+	// 32 KB chunk size: 8x reduction in WS frames compared to 4 KB, comfortably
+	// under the 65,535-byte WebSocket frame ceiling after base64 expansion (~43.7 KB).
+	buf: [32768]byte
 	for {
 		n, recv_err := net.recv_tcp(local_tcp_conn, buf[:])
 		// A receive timeout is a periodic wake, NOT end-of-stream.  core:net reports a

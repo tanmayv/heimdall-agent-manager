@@ -528,3 +528,150 @@ fs_run_dir_prevalidated_read_and_blocks_escape :: proc(t: ^testing.T) {
 	testing.expect(t, !escape.ok, "read escape above run dir rejected")
 	testing.expect_value(t, escape.error_code, "path_outside_root")
 }
+
+// --- grep / ripgrep search engine tests ------------------------------------
+
+@(test)
+fs_grep_ripgrep_matches_and_offsets :: proc(t: ^testing.T) {
+	root := fs_test_make_root(t, "rg_matches")
+	defer fs_test_cleanup(root)
+	fs_test_seed_file(t, root, "file1.txt", "hello world\nsecond line with hello again\n")
+	fs_test_seed_file(t, root, "subdir/file2.txt", "no match here\nhello in subdir\n")
+
+	res := bridge_fs_grep("hello", true, 100, root, false, "rg")
+	defer bridge_fs_grep_result_delete(&res)
+
+	testing.expect(t, res.ok, "ripgrep search succeeded")
+	testing.expect_value(t, len(res.matches), 3)
+
+	found_file1_line1 := false
+	found_file1_line2 := false
+	found_file2_line2 := false
+
+	for m in res.matches {
+		if m.path == "file1.txt" && m.line_number == 1 {
+			found_file1_line1 = true
+			testing.expect_value(t, m.column, 1)
+			testing.expect_value(t, m.match_start, 0)
+			testing.expect_value(t, m.match_end, 5)
+			testing.expect(t, strings.contains(m.line, "hello world"), "line content matches")
+		} else if m.path == "file1.txt" && m.line_number == 2 {
+			found_file1_line2 = true
+			testing.expect_value(t, m.column, 18)
+			testing.expect_value(t, m.match_start, 17)
+			testing.expect_value(t, m.match_end, 22)
+		} else if m.path == "subdir/file2.txt" && m.line_number == 2 {
+			found_file2_line2 = true
+			testing.expect_value(t, m.column, 1)
+			testing.expect_value(t, m.match_start, 0)
+			testing.expect_value(t, m.match_end, 5)
+		}
+	}
+
+	testing.expect(t, found_file1_line1, "found file1 line 1 match")
+	testing.expect(t, found_file1_line2, "found file1 line 2 match")
+	testing.expect(t, found_file2_line2, "found file2 line 2 match")
+}
+
+@(test)
+fs_grep_ripgrep_exit_code_1_handled_as_zero_matches :: proc(t: ^testing.T) {
+	root := fs_test_make_root(t, "rg_exit_1")
+	defer fs_test_cleanup(root)
+	fs_test_seed_file(t, root, "test.txt", "some contents that do not match\n")
+
+	res := bridge_fs_grep("nonexistent_query_xyz_12345", true, 100, root, false, "rg")
+	defer bridge_fs_grep_result_delete(&res)
+
+	testing.expect(t, res.ok, "ripgrep exit code 1 handled gracefully as ok=true")
+	testing.expect_value(t, len(res.matches), 0)
+	testing.expect(t, !res.truncated, "not truncated")
+}
+
+@(test)
+fs_grep_grep_fallback_engine :: proc(t: ^testing.T) {
+	root := fs_test_make_root(t, "grep_engine")
+	defer fs_test_cleanup(root)
+	fs_test_seed_file(t, root, "notes.txt", "first line\nneedle in middle of line\nthird line\nneedle at start\n")
+
+	res := bridge_fs_grep("needle", true, 100, root, false, "grep")
+	defer bridge_fs_grep_result_delete(&res)
+
+	testing.expect(t, res.ok, "grep search succeeded")
+	testing.expect_value(t, len(res.matches), 2)
+	testing.expect_value(t, res.matches[0].path, "notes.txt")
+	testing.expect_value(t, res.matches[0].line_number, 2)
+	testing.expect_value(t, res.matches[0].column, 1)
+	testing.expect_value(t, res.matches[0].match_start, 0)
+	testing.expect_value(t, res.matches[0].match_end, 6)
+
+	testing.expect_value(t, res.matches[1].path, "notes.txt")
+	testing.expect_value(t, res.matches[1].line_number, 4)
+	testing.expect_value(t, res.matches[1].column, 1)
+
+	// Zero matches with grep fallback
+	no_match := bridge_fs_grep("nonexistent_pattern", true, 100, root, false, "grep")
+	defer bridge_fs_grep_result_delete(&no_match)
+	testing.expect(t, no_match.ok, "grep 0 matches handled as ok=true")
+	testing.expect_value(t, len(no_match.matches), 0)
+}
+
+@(test)
+fs_grep_bfs_fallback_engine :: proc(t: ^testing.T) {
+	root := fs_test_make_root(t, "bfs_engine")
+	defer fs_test_cleanup(root)
+	fs_test_seed_file(t, root, "sample.txt", "first line\nsecond item target here\n")
+
+	res := bridge_fs_grep("target", true, 100, root, false, "bfs")
+	defer bridge_fs_grep_result_delete(&res)
+
+	testing.expect(t, res.ok, "bfs search succeeded")
+	testing.expect_value(t, len(res.matches), 1)
+	testing.expect_value(t, res.matches[0].path, "sample.txt")
+	testing.expect_value(t, res.matches[0].line_number, 2)
+	testing.expect_value(t, res.matches[0].column, 13)
+	testing.expect_value(t, res.matches[0].match_start, 12)
+	testing.expect_value(t, res.matches[0].match_end, 18)
+}
+
+@(test)
+fs_grep_result_json_serializes_column_and_bounds :: proc(t: ^testing.T) {
+	matches := make([]Bridge_Fs_Grep_Match, 1)
+	matches[0] = Bridge_Fs_Grep_Match{
+		path = "src/main.odin",
+		line_number = 42,
+		column = 15,
+		match_start = 14,
+		match_end = 24,
+		line = "fmt.println(\"hello world\")",
+	}
+	res := Bridge_Fs_Grep_Result{
+		ok = true,
+		root = "/tmp/proj",
+		matches = matches,
+		truncated = false,
+	}
+	defer delete(matches)
+
+	json_str := bridge_fs_grep_result_json("cmd_grep_test", res)
+	defer delete(json_str)
+
+	testing.expect(t, strings.contains(json_str, "\"column\":15"), "column serialized in JSON")
+	testing.expect(t, strings.contains(json_str, "\"match_start\":14"), "match_start serialized in JSON")
+	testing.expect(t, strings.contains(json_str, "\"match_end\":24"), "match_end serialized in JSON")
+	testing.expect(t, strings.contains(json_str, "\"line_number\":42"), "line_number serialized in JSON")
+	testing.expect(t, strings.contains(json_str, "\"path\":\"src/main.odin\""), "path serialized in JSON")
+}
+
+@(test)
+fs_grep_prevalidated_run_dir :: proc(t: ^testing.T) {
+	run_dir := fs_test_make_root(t, "rundir_grep")
+	defer fs_test_cleanup(run_dir)
+	fs_test_seed_file(t, run_dir, "context.txt", "agent task run dir search test\n")
+
+	res := bridge_fs_grep("run dir", true, 100, run_dir, true)
+	defer bridge_fs_grep_result_delete(&res)
+
+	testing.expect(t, res.ok, "prevalidated run dir grep ok")
+	testing.expect_value(t, len(res.matches), 1)
+	testing.expect_value(t, res.matches[0].path, "context.txt")
+}

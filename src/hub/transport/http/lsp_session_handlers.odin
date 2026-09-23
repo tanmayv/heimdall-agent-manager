@@ -782,8 +782,9 @@ lsp_server_config_clone :: proc(c: domain.Lsp_Server_Config) -> domain.Lsp_Serve
 // Resolved by REQ-LSP-CFG-4: the column and its round-trip stay, the Settings > LSP field
 // is hidden until something reads it, and the bridge-side implementation is deferred
 // until the relay has run end to end (REQ-LSP-E2E-1). No open question here.
-lsp_working_dir :: proc(cfg: domain.Lsp_Server_Config, file_path: string) -> string {
+lsp_working_dir :: proc(cfg: domain.Lsp_Server_Config, file_path: string, root_path: string = "") -> string {
 	if strings.trim_space(cfg.dir_prefix) != "" do return strings.clone(cfg.dir_prefix)
+	if strings.trim_space(root_path) != "" do return strings.clone(root_path)
 	slash := strings.last_index_byte(file_path, '/')
 	if slash <= 0 do return strings.clone("")
 	return strings.clone(file_path[:slash])
@@ -920,10 +921,12 @@ lsp_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_So
 			bridge_id := json_string(text, "bridge_id")
 			language  := json_string(text, "language")
 			file_path := json_string(text, "file_path")
+			root_path := json_string(text, "root_path")
 			defer {
 				delete(bridge_id)
 				delete(language)
 				delete(file_path)
+				delete(root_path)
 			}
 			if strings.trim_space(bridge_id) == "" || strings.trim_space(language) == "" {
 				frame := lsp_error_frame(session_id, "start requires bridge_id and language")
@@ -941,7 +944,7 @@ lsp_session_stream_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_So
 			}
 			defer domain.lsp_server_config_destroy(cfg)
 
-			cwd := lsp_working_dir(cfg, file_path)
+			cwd := lsp_working_dir(cfg, file_path, root_path)
 			defer delete(cwd)
 
 			sent, send_err := bridge_service.send_lsp_start(

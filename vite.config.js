@@ -37,7 +37,19 @@ export default defineConfig({
       '/_dev/login': { target: DEV_PROXY_URL, changeOrigin: true },
       '/_dev/logout': { target: DEV_PROXY_URL, changeOrigin: true },
       // Rewrite Hub API: cookie-auth, identity injected by the proxy.
-      '/api/v1': { target: DEV_PROXY_URL, changeOrigin: true, cookieDomainRewrite: '', ws: true, timeout: LONG_PROXY_TIMEOUT_MS, proxyTimeout: LONG_PROXY_TIMEOUT_MS },
+      '/api/v1': {
+        target: DEV_PROXY_URL,
+        changeOrigin: true,
+        cookieDomainRewrite: '',
+        ws: true,
+        timeout: LONG_PROXY_TIMEOUT_MS,
+        proxyTimeout: LONG_PROXY_TIMEOUT_MS,
+        bypass: (req) => {
+          if (req.url && req.url.startsWith('/api/v1/preview')) {
+            return req.url;
+          }
+        },
+      },
     },
   },
 });

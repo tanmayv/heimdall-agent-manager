@@ -46,10 +46,15 @@ import {
   type FsReadFileResult,
   type FsQuickOpenResult,
   type FsScopeArgs,
+  type FsSearchScope,
+  type ScopedSearchMatch,
 } from '../../api/endpoints/projectFs';
 import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { useFetchTaskChainDetailQuery, useAddChainDirectoryMutation, type TaskChainDirectory } from '../../api/endpoints/tasks';
 import BridgeDirectoryPicker from '../BridgeDirectoryPicker';
+import SearchInFilesDrawer from './SearchInFilesDrawer';
+import { ProjectCommandPaletteModal } from './ProjectCommandPaletteModal';
+import { type EditorCommandContext } from '../../commands/editorCommands';
 
 export type DirectoryItem = {
   id: string; // 'primary' | dir.directoryId | `agent-rundir:${agentInstanceId}`
@@ -283,6 +288,26 @@ function getLanguageForMonaco(filePath: string): string {
   return map[lang] || lang || 'plaintext';
 }
 
+/**
+ * Configures Monaco's built-in TypeScript and JavaScript compiler defaults (REQ-PREVIEW-LSP-1).
+ * Sets ReactJSX and NodeJs module resolution so .tsx and .ts files do not trigger false-positive
+ * TS17004 ("Cannot use JSX unless the '--jsx' flag is provided") or TS2792 module resolution errors.
+ */
+export function configureMonacoTypeScriptDefaults(monacoInstance: any) {
+  if (!monacoInstance?.languages?.typescript) return;
+  const ts = monacoInstance.languages.typescript;
+  const compilerOptions = {
+    jsx: ts.JsxEmit.ReactJSX,
+    moduleResolution: ts.ModuleResolutionKind.NodeJs,
+    allowNonTsExtensions: true,
+    target: ts.ScriptTarget.Latest,
+    allowJs: true,
+    esModuleInterop: true,
+  };
+  ts.typescriptDefaults.setCompilerOptions(compilerOptions);
+  ts.javascriptDefaults.setCompilerOptions(compilerOptions);
+}
+
 function str(v: any): string {
   return String(v ?? '').trim();
 }
@@ -429,6 +454,12 @@ export type ProjectFilesPanelProps = {
   openFilePath?: string | null;
   onFileOpened?: () => void;
   onOpenQuickOpen?: () => void;
+  onOpenSearchInFiles?: () => void;
+  initialOpenSearchInFiles?: boolean;
+  onSearchDrawerConsumed?: () => void;
+  onOpenCommandPalette?: () => void;
+  initialOpenCommandPalette?: boolean;
+  onCommandPaletteConsumed?: () => void;
 };
 
 export default function ProjectFilesPanel({
@@ -447,10 +478,20 @@ export default function ProjectFilesPanel({
   openFilePath,
   onFileOpened,
   onOpenQuickOpen,
+  onOpenSearchInFiles,
+  initialOpenSearchInFiles = false,
+  onSearchDrawerConsumed,
+  onOpenCommandPalette,
+  initialOpenCommandPalette = false,
+  onCommandPaletteConsumed,
 }: ProjectFilesPanelProps) {
   const [listDir] = useLazyListProjectDirQuery();
   const [readFile, readState] = useLazyReadProjectFileQuery();
   const monaco = useMonaco();
+
+  useEffect(() => {
+    configureMonacoTypeScriptDefaults(monaco);
+  }, [monaco]);
 
   const [createFile, createFileState] = useCreateProjectFileMutation();
   const [createDir, createDirState] = useCreateProjectDirMutation();
@@ -481,6 +522,16 @@ export default function ProjectFilesPanel({
 
   // Add Directory Modal state (REQ-UI-ADD-DIRECTORY-MODAL)
   const [isAddDirectoryOpen, setIsAddDirectoryOpen] = useState(false);
+
+  // Scoped Search in Files Drawer state (Cmd+Shift+F / Ctrl+Shift+F) (REQ-SEARCH-UI-PANEL-1, REQ-SEARCH-SHORTCUTS-1)
+  const [isSearchDrawerOpen, setIsSearchDrawerOpen] = useState(Boolean(initialOpenSearchInFiles));
+
+  // Editor Command Palette state (Cmd+Shift+P / Ctrl+Shift+P / F1 / >) (REQ-EDITOR-COMMAND-PALETTE-1)
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(Boolean(initialOpenCommandPalette));
+  const [commandPaletteInitialQuery, setCommandPaletteInitialQuery] = useState('');
+
+  const monacoEditorRef = useRef<any>(null);
+  const pendingNavigationRef = useRef<{ path: string; line: number; column: number; length: number } | null>(null);
 
   type DirectorySessionState = {
     openTabs: EditorTab[];
@@ -634,6 +685,21 @@ export default function ProjectFilesPanel({
       return next;
     });
   }, [agentInstanceId]);
+
+  useEffect(() => {
+    if (initialOpenSearchInFiles) {
+      setIsSearchDrawerOpen(true);
+      updateExplorerCollapsed(false);
+      onSearchDrawerConsumed?.();
+    }
+  }, [initialOpenSearchInFiles, updateExplorerCollapsed, onSearchDrawerConsumed]);
+
+  useEffect(() => {
+    if (initialOpenCommandPalette) {
+      setIsCommandPaletteOpen(true);
+      onCommandPaletteConsumed?.();
+    }
+  }, [initialOpenCommandPalette, onCommandPaletteConsumed]);
   const [explorerWidth, setExplorerWidth] = useState<number>(280);
   const [isDiffMode, setIsDiffMode] = useState<boolean>(false);
   const [isResizing, setIsResizing] = useState<boolean>(false);
@@ -732,6 +798,25 @@ export default function ProjectFilesPanel({
       const next = !prev;
       try {
         localStorage.setItem('heimdall:editor:word_wrap', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  // Minimap in Monaco editor ('heimdall:editor:minimap'), defaults to true
+  const [isMinimapEnabled, setIsMinimapEnabled] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('heimdall:editor:minimap');
+      if (stored !== null) return stored === 'true';
+    } catch {}
+    return true;
+  });
+
+  const toggleMinimap = useCallback(() => {
+    setIsMinimapEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('heimdall:editor:minimap', String(next));
       } catch {}
       return next;
     });
@@ -887,6 +972,29 @@ export default function ProjectFilesPanel({
       bridgeId: activeDirectory.bridgeId || bridgeId || '',
     };
   }, [activeDirectory, projectId, chainId, bridgeId]);
+
+  const searchScopes = useMemo<FsSearchScope[]>(() => {
+    return availableDirectories.map((dir) => {
+      const scopeArgs: FsScopeArgs = dir.agentInstanceId
+        ? { agentInstanceId: dir.agentInstanceId, bridgeId: dir.bridgeId || bridgeId || '' }
+        : dir.id === 'primary'
+        ? { projectId, bridgeId: dir.bridgeId || bridgeId || '' }
+        : { chainId, directoryId: dir.id, bridgeId: dir.bridgeId || bridgeId || '' };
+
+      let kind: 'primary' | 'chain_directory' | 'agent_run_dir' = 'chain_directory';
+      if (dir.isPrimary || dir.id === 'primary') kind = 'primary';
+      else if (dir.kind === 'agent_run_dir' || dir.agentInstanceId) kind = 'agent_run_dir';
+
+      return {
+        id: dir.id,
+        label: dir.label,
+        kind,
+        path: dirRoots[dir.id] || dir.path || '',
+        bridgeId: dir.bridgeId || bridgeId || '',
+        scopeArgs,
+      };
+    });
+  }, [availableDirectories, projectId, chainId, bridgeId, dirRoots]);
 
   const isReadOnlyDirectory = Boolean(activeDirectory?.isReadOnly || activeDirectory?.kind === 'agent_run_dir');
 
@@ -1263,6 +1371,64 @@ export default function ProjectFilesPanel({
     return () => window.removeEventListener('keydown', handleQuickOpenKeyDown, true);
   }, [projectId, onOpenQuickOpen]);
 
+  // Global keydown listener for Search in Files (Cmd+Shift+F / Ctrl+Shift+F) (REQ-SEARCH-SHORTCUTS-1)
+  useEffect(() => {
+    if (!projectId) return;
+    const handleSearchInFilesKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F') && e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onOpenSearchInFiles) {
+          onOpenSearchInFiles();
+        } else {
+          setIsSearchDrawerOpen((prev) => {
+            const next = !prev;
+            if (next) {
+              if (isExplorerCollapsed) updateExplorerCollapsed(false);
+              if (isSinglePane) setActivePane('files');
+            }
+            return next;
+          });
+        }
+      }
+    };
+    window.addEventListener('keydown', handleSearchInFilesKeyDown, true);
+    return () => window.removeEventListener('keydown', handleSearchInFilesKeyDown, true);
+  }, [projectId, onOpenSearchInFiles, isExplorerCollapsed, updateExplorerCollapsed, isSinglePane]);
+
+  // Global keydown listener for Command Palette (Cmd+Shift+P / Ctrl+Shift+P and F1) (REQ-EDITOR-COMMAND-PALETTE-1)
+  useEffect(() => {
+    if (!projectId) return;
+    const handleCommandPaletteKeyDown = (e: KeyboardEvent) => {
+      const isCmdShiftP = (e.metaKey || e.ctrlKey) && (e.key === 'p' || e.key === 'P') && e.shiftKey;
+      const isF1 = e.key === 'F1';
+      if (isCmdShiftP || isF1) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onOpenCommandPalette) {
+          onOpenCommandPalette();
+        } else {
+          setCommandPaletteInitialQuery('');
+          setIsCommandPaletteOpen((prev) => !prev);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleCommandPaletteKeyDown, true);
+    return () => window.removeEventListener('keydown', handleCommandPaletteKeyDown, true);
+  }, [projectId, onOpenCommandPalette]);
+
+  // Global keydown listener for Toggle Word Wrap (Alt+Z)
+  useEffect(() => {
+    const handleWordWrapKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === 'z' || e.key === 'Z') && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        toggleWordWrap();
+      }
+    };
+    window.addEventListener('keydown', handleWordWrapKeyDown, true);
+    return () => window.removeEventListener('keydown', handleWordWrapKeyDown, true);
+  }, [toggleWordWrap]);
+
   // Show/hide-hidden refetches the CURRENT directory in place (Spec 4.2/4.3) —
   // it must not jump back to root. Skip the initial mount so this doesn't
   // double-fire alongside the project/bridge effect on first render.
@@ -1375,7 +1541,8 @@ export default function ProjectFilesPanel({
   // Fetch full file content across all byte pages before editing
   const fetchAllFileContent = useCallback(
     async (
-      filePath: string
+      filePath: string,
+      scopeOverride?: FsScopeArgs
     ): Promise<{
       content: string;
       isImage?: boolean;
@@ -1390,10 +1557,12 @@ export default function ProjectFilesPanel({
       let isImage = false;
       let mime = '';
 
+      const target = scopeOverride || activeFsTarget;
+
       while (!eof && iterations < 100) {
         iterations++;
         const res: FsReadFileResult = await readFile({
-          ...activeFsTarget,
+          ...target,
           path: filePath,
           offset,
         }).unwrap();
@@ -1452,7 +1621,7 @@ export default function ProjectFilesPanel({
   );
 
   const openFileInEditor = useCallback(
-    async (inputPath: string) => {
+    async (inputPath: string, scopeOverride?: FsScopeArgs) => {
       setError('');
       const filePath = inputPath;
 
@@ -1467,7 +1636,7 @@ export default function ProjectFilesPanel({
       }
       setOpeningInEditor(filePath);
       try {
-        const fileRes = await fetchAllFileContent(filePath);
+        const fileRes = await fetchAllFileContent(filePath, scopeOverride);
         const newTab: EditorTab = {
           path: filePath,
           content: fileRes.content,
@@ -1501,6 +1670,86 @@ export default function ProjectFilesPanel({
       onFileOpened?.();
     }
   }, [openFilePath, openFileInEditor, revealInExplorer, onFileOpened]);
+
+  // Navigate to match position from Search In Files
+  const handleSelectSearchMatch = useCallback(
+    async (match: ScopedSearchMatch) => {
+      // 1. Switch directory if match comes from another scope
+      const targetDirId = match.scopeId || (
+        match.scopeArgs.directoryId
+          ? match.scopeArgs.directoryId
+          : match.scopeArgs.agentInstanceId
+          ? `agent-rundir:${match.scopeArgs.agentInstanceId}`
+          : 'primary'
+      );
+      if (targetDirId !== activeDirectoryId) {
+        switchDirectory(targetDirId);
+      }
+
+      // 2. Open file in editor passing scopeArgs override so read target doesn't depend on stale closure
+      await openFileInEditor(match.path, match.scopeArgs);
+
+      // 3. Reveal and select position in Monaco
+      const matchLength =
+        match.match_end > match.match_start ? match.match_end - match.match_start : 0;
+
+      pendingNavigationRef.current = {
+        path: match.path,
+        line: match.line_number,
+        column: match.column,
+        length: matchLength,
+      };
+
+      const editor = monacoEditorRef.current;
+      if (editor && activeTabPath === match.path) {
+        try {
+          editor.revealPositionInCenter({ lineNumber: match.line_number, column: match.column }, 0);
+          editor.setSelection({
+            startLineNumber: match.line_number,
+            startColumn: match.column,
+            endLineNumber: match.line_number,
+            endColumn: match.column + Math.max(1, matchLength),
+          });
+          editor.focus();
+          pendingNavigationRef.current = null;
+        } catch {}
+      }
+
+      // 4. In mobile or single-pane mode, navigate to editor view
+      if (isSinglePane) {
+        setActivePane('editor');
+      }
+    },
+    [activeDirectoryId, switchDirectory, openFileInEditor, activeTabPath, isSinglePane]
+  );
+
+  // Apply pending jump to line/column when Monaco editor mounts or active tab changes
+  useEffect(() => {
+    if (
+      pendingNavigationRef.current &&
+      pendingNavigationRef.current.path === activeTabPath &&
+      monacoEditorRef.current
+    ) {
+      const { line, column, length } = pendingNavigationRef.current;
+      const timer = setTimeout(() => {
+        try {
+          const ed = monacoEditorRef.current;
+          if (ed) {
+            ed.revealPositionInCenter({ lineNumber: line, column }, 0);
+            ed.setSelection({
+              startLineNumber: line,
+              startColumn: column,
+              endLineNumber: line,
+              endColumn: column + Math.max(1, length),
+            });
+            ed.focus();
+          }
+        } catch {}
+        pendingNavigationRef.current = null;
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [activeTabPath]);
 
   const handleEditorNewFile = useCallback(
     async (inputPath: string) => {
@@ -1811,6 +2060,61 @@ export default function ProjectFilesPanel({
     setNameDraft(action?.kind === 'rename' ? action.entry.name : '');
   }
 
+  const commandPaletteContext = useMemo<EditorCommandContext>(() => {
+    return {
+      editor: monacoEditorRef.current,
+      monaco,
+      activeTab: activeEditorTab,
+      openSearchInFiles: () => {
+        setIsSearchDrawerOpen(true);
+        if (isExplorerCollapsed) updateExplorerCollapsed(false);
+        if (isSinglePane) setActivePane('files');
+      },
+      openQuickOpen: () => {
+        setIsQuickOpenOpen(true);
+      },
+      saveActiveFile: () => {
+        void saveActiveFile();
+      },
+      saveAllFiles: () => {
+        void saveAllFiles();
+      },
+      toggleWordWrap,
+      toggleMinimap,
+      isWordWrap,
+      isMinimapEnabled,
+      restartLsp: () => {
+        lsp.restart?.();
+      },
+      switchDirectoryScope: () => {
+        if (availableDirectories.length > 1) {
+          const currIdx = availableDirectories.findIndex((d) => d.id === activeDirectoryId);
+          const nextIdx = (currIdx + 1) % availableDirectories.length;
+          switchDirectory(availableDirectories[nextIdx].id);
+        }
+      },
+      switchDirectory,
+      availableDirectories,
+      activeDirectoryId,
+    };
+  }, [
+    monaco,
+    activeEditorTab,
+    isExplorerCollapsed,
+    updateExplorerCollapsed,
+    isSinglePane,
+    saveActiveFile,
+    saveAllFiles,
+    toggleWordWrap,
+    toggleMinimap,
+    isWordWrap,
+    isMinimapEnabled,
+    lsp,
+    availableDirectories,
+    activeDirectoryId,
+    switchDirectory,
+  ]);
+
   // ---- Render ---------------------------------------------------------------
 
   const wrapperCls = 'relative flex h-full min-h-0 w-full flex-col bg-surface';
@@ -1907,6 +2211,36 @@ export default function ProjectFilesPanel({
                 title="Quick open file (Cmd+P / Ctrl+P)"
                 aria-label="Quick open file"
                 className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-neutral-soft text-muted hover:text-primary transition-colors"
+              >
+                <Icon name="search" size={14} />
+              </button>
+
+              {/* 2b) Search in Files (Cmd+Shift+F / Ctrl+Shift+F) */}
+              <button
+                data-debug-id={`${debugPrefix}-search-in-files-btn`}
+                type="button"
+                onClick={() => {
+                  if (onOpenSearchInFiles) {
+                    onOpenSearchInFiles();
+                  } else {
+                    setIsSearchDrawerOpen((prev) => {
+                      const next = !prev;
+                      if (next) {
+                        if (isExplorerCollapsed) updateExplorerCollapsed(false);
+                        if (isSinglePane) setActivePane('files');
+                      }
+                      return next;
+                    });
+                  }
+                }}
+                title="Search in files (Cmd+Shift+F / Ctrl+Shift+F)"
+                aria-label="Search in files"
+                aria-pressed={isSearchDrawerOpen ? 'true' : 'false'}
+                className={`grid h-6 w-6 shrink-0 place-items-center rounded transition-colors ${
+                  isSearchDrawerOpen
+                    ? 'bg-accent/20 text-accent font-semibold shadow-xs'
+                    : 'hover:bg-neutral-soft text-muted hover:text-primary'
+                }`}
               >
                 <Icon name="search" size={14} />
               </button>
@@ -2278,7 +2612,50 @@ export default function ProjectFilesPanel({
                   : 'flex'
               } min-h-0 flex-col border-r border-subtle bg-surface shrink-0`}
             >
-              {/* Inline create/rename input */}
+              {/* Explorer / Search Mode Tabs */}
+              <div className="flex items-center border-b border-subtle px-2 py-1 gap-1 shrink-0 bg-surface-raised/40">
+                <button
+                  type="button"
+                  data-debug-id={`${debugPrefix}-tab-files`}
+                  onClick={() => setIsSearchDrawerOpen(false)}
+                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                    !isSearchDrawerOpen
+                      ? 'bg-neutral-soft text-primary font-semibold shadow-xs'
+                      : 'text-muted hover:bg-neutral-soft hover:text-primary'
+                  }`}
+                >
+                  <Icon name="folder" size={12} className={!isSearchDrawerOpen ? 'text-accent' : 'text-muted'} />
+                  <span>Files</span>
+                </button>
+                <button
+                  type="button"
+                  data-debug-id={`${debugPrefix}-tab-search`}
+                  onClick={() => setIsSearchDrawerOpen(true)}
+                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium transition-colors ${
+                    isSearchDrawerOpen
+                      ? 'bg-neutral-soft text-primary font-semibold shadow-xs'
+                      : 'text-muted hover:bg-neutral-soft hover:text-primary'
+                  }`}
+                >
+                  <Icon name="search" size={12} className={isSearchDrawerOpen ? 'text-accent' : 'text-muted'} />
+                  <span>Search</span>
+                </button>
+              </div>
+
+              {isSearchDrawerOpen ? (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <SearchInFilesDrawer
+                    isOpen={isSearchDrawerOpen}
+                    onClose={() => setIsSearchDrawerOpen(false)}
+                    scopes={searchScopes}
+                    activeDirectoryId={activeDirectoryId}
+                    onSelectMatch={handleSelectSearchMatch}
+                    debugPrefix="search-in-files"
+                  />
+                </div>
+              ) : (
+                <>
+                  {/* Inline create/rename input */}
               {pending ? (
                 <div data-debug-id={`${debugPrefix}-name-editor`} className="flex items-center gap-1.5 border-b border-subtle bg-surface-raised px-3 py-2">
                   <Icon name={pending.kind === 'new-dir' ? 'folder' : 'file'} size={13} className="text-muted" />
@@ -2426,7 +2803,9 @@ export default function ProjectFilesPanel({
                   </div>
                 ) : null}
               </div>
-            </div>
+            </>
+          )}
+        </div>
 
             {/* Resizer Divider */}
             {!isExplorerCollapsed && !isSinglePane ? (
@@ -2517,6 +2896,7 @@ export default function ProjectFilesPanel({
                         themeAppearance={theme?.appearance}
                         isVimMode={isVimMode}
                         isWordWrap={isWordWrap}
+                        isMinimapEnabled={isMinimapEnabled}
                         isReadOnly={isReadOnlyDirectory}
                         comments={commentsForPath(dirActiveTab.path)}
                         onAddComment={(line, lineText, body) => addComment(dirActiveTab.path, line, lineText, body)}
@@ -2531,6 +2911,9 @@ export default function ProjectFilesPanel({
                         }}
                         isDiffMode={dirDiffMode}
                         onToggleDiff={() => setIsDiffMode((prev) => !prev)}
+                        onEditorMount={(ed) => {
+                          monacoEditorRef.current = ed;
+                        }}
                       />
                     ) : (
                       <div
@@ -2670,6 +3053,18 @@ export default function ProjectFilesPanel({
         isOpen={isQuickOpenOpen}
         onClose={() => setIsQuickOpenOpen(false)}
         onSelectFile={(file) => void openFileInEditor(file)}
+        onSwitchToCommandPalette={(initialQuery) => {
+          setCommandPaletteInitialQuery(initialQuery ? `>${initialQuery}` : '>');
+          setIsCommandPaletteOpen(true);
+        }}
+      />
+
+      {/* Command Palette Modal (Cmd+Shift+P / Ctrl+Shift+P / F1 / >) (REQ-EDITOR-COMMAND-PALETTE-1) */}
+      <ProjectCommandPaletteModal
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        context={commandPaletteContext}
+        initialQuery={commandPaletteInitialQuery}
       />
 
       {/* Add Directory Modal (REQ-UI-ADD-DIRECTORY-MODAL) */}
@@ -2697,6 +3092,7 @@ export function ProjectQuickOpenModal({
   isOpen,
   onClose,
   onSelectFile,
+  onSwitchToCommandPalette,
 }: {
   projectId?: string;
   chainId?: string;
@@ -2707,6 +3103,7 @@ export function ProjectQuickOpenModal({
   isOpen: boolean;
   onClose: () => void;
   onSelectFile: (filePath: string) => void;
+  onSwitchToCommandPalette?: (initialQuery?: string) => void;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -2825,7 +3222,13 @@ export function ProjectQuickOpenModal({
             type="text"
             value={quickOpenQuery}
             onChange={(e) => {
-              setQuickOpenQuery(e.target.value);
+              const val = e.target.value;
+              if (val.startsWith('>')) {
+                onClose();
+                onSwitchToCommandPalette?.(val.slice(1).trimStart());
+                return;
+              }
+              setQuickOpenQuery(val);
               setQuickOpenSelectedIndex(0);
             }}
             onKeyDown={(e) => {
@@ -3186,7 +3589,9 @@ function MonacoMultiFileEditor({
   onToggleDiff: _onToggleDiff,
   isVimMode = false,
   isWordWrap = true,
+  isMinimapEnabled = true,
   isReadOnly = false,
+  onEditorMount,
 }: {
   tabs: EditorTab[];
   activeTab: EditorTab;
@@ -3214,9 +3619,14 @@ function MonacoMultiFileEditor({
   onToggleDiff?: () => void;
   isVimMode?: boolean;
   isWordWrap?: boolean;
+  isMinimapEnabled?: boolean;
   isReadOnly?: boolean;
+  onEditorMount?: (editor: any) => void;
 }) {
   const monaco = useMonaco();
+  useEffect(() => {
+    configureMonacoTypeScriptDefaults(monaco);
+  }, [monaco]);
   const monacoTheme = themeAppearance === 'light' ? 'light' : 'vs-dark';
   const language = useMemo(() => getLanguageForMonaco(activeTab.path), [activeTab.path]);
 
@@ -3339,6 +3749,7 @@ function MonacoMultiFileEditor({
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     setEditorInstance(editor);
+    onEditorMount?.(editor);
     try {
       editor.focus();
     } catch {}
@@ -3369,7 +3780,7 @@ function MonacoMultiFileEditor({
   };
 
   const options: EditorProps['options'] = {
-    minimap: { enabled: true },
+    minimap: { enabled: isMinimapEnabled },
     wordWrap: isWordWrap ? 'on' : 'off',
     lineNumbers: 'on',
     scrollBeyondLastLine: false,
@@ -3558,12 +3969,13 @@ function MonacoMultiFileEditor({
           </div>
         ) : isDiffMode ? (
           <DiffEditor
+            beforeMount={configureMonacoTypeScriptDefaults}
             original={activeTab.initialContent}
             modified={activeTab.content}
             language={language}
             theme={monacoTheme}
             options={{
-              minimap: { enabled: true },
+              minimap: { enabled: isMinimapEnabled },
               wordWrap: isWordWrap ? 'on' : 'off',
               lineNumbers: 'on',
               scrollBeyondLastLine: false,
@@ -3585,6 +3997,7 @@ function MonacoMultiFileEditor({
           />
         ) : (
           <Editor
+            beforeMount={configureMonacoTypeScriptDefaults}
             path={activeTab.path}
             value={activeTab.content}
             language={language}

@@ -1144,6 +1144,11 @@ Instance_Fs_Command :: struct {
 	send_offset:         bool,
 	read_limit:          int,
 	send_read_limit:     bool,
+	// search options
+	query:               string,
+	send_query:          bool,
+	case_sensitive:      bool,
+	send_case_sensitive: bool,
 }
 
 instance_fs_relay :: proc(h: ^Bridge_Handlers, req: Request, cmd: Instance_Fs_Command) -> (string, bool, domain.Domain_Error) {
@@ -1184,6 +1189,12 @@ instance_fs_command_json :: proc(cmd: Instance_Fs_Command, command_id, instance_
 	if cmd.send_read_limit {
 		strings.write_string(&b, ",\"limit\":"); strings.write_int(&b, cmd.read_limit)
 	}
+	if cmd.send_query {
+		strings.write_string(&b, ",\"query\":\""); write_handler_json_string(&b, cmd.query); strings.write_string(&b, "\"")
+	}
+	if cmd.send_case_sensitive {
+		strings.write_string(&b, ",\"case_sensitive\":"); strings.write_string(&b, "true" if cmd.case_sensitive else "false")
+	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
@@ -1212,6 +1223,25 @@ read_instance_file_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		path = query_value(req.query, "path"),
 		offset = offset, send_offset = offset > 0,
 		read_limit = rlimit, send_read_limit = rlimit > 0,
+	})
+	if !ok do return respond_error(err, req.request_id)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+search_instance_fs_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	query := query_value(req.query, "query")
+	case_sensitive := query_bool(req.query, "case_sensitive", false)
+	limit := query_int(req.query, "limit", 100)
+	result, ok, err := instance_fs_relay(h, req, Instance_Fs_Command{
+		command_type = "fs_grep",
+		path = query_value(req.query, "path"),
+		query = query,
+		send_query = true,
+		case_sensitive = case_sensitive,
+		send_case_sensitive = true,
+		limit = limit,
+		send_limit = limit > 0,
 	})
 	if !ok do return respond_error(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))

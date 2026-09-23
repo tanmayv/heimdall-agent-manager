@@ -59,3 +59,23 @@ instance_fs_list_command_json_omits_unset_optionals :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(out, "\"cursor\""), "omit cursor when empty")
 	testing.expect(t, !strings.contains(out, "\"limit\""), "omit limit when unset")
 }
+
+@(test)
+instance_fs_search_command_json_contract :: proc(t: ^testing.T) {
+	cmd := Instance_Fs_Command{
+		command_type = "fs_grep",
+		path = "",
+		query = "test_query",
+		send_query = true,
+		case_sensitive = true,
+		send_case_sensitive = true,
+		limit = 50,
+		send_limit = true,
+	}
+	out := instance_fs_command_json(cmd, "cmd_ifs_search_1", "inst_search_123")
+	testing.expect(t, strings.contains(out, "\"type\":\"fs_grep\""), "type present")
+	testing.expect(t, strings.contains(out, "\"instance_id\":\"inst_search_123\""), "instance_id present")
+	testing.expect(t, strings.contains(out, "\"query\":\"test_query\""), "query present")
+	testing.expect(t, strings.contains(out, "\"case_sensitive\":true"), "case_sensitive present")
+	testing.expect(t, strings.contains(out, "\"limit\":50"), "limit present")
+}

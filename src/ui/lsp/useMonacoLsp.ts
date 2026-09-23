@@ -36,9 +36,12 @@ import {
   lspHoverToMarkdownStrings,
   lspLanguageIdForPath,
   lspToMonacoCompletionKind,
+  lspToMonacoLocation,
   lspToMonacoRange,
   monacoToLspPosition,
   normaliseDefinitionResult,
+  normaliseDocumentSymbols,
+  normaliseLocationResult,
   pathToFileUri,
   MONACO_MARKER_SEVERITY,
   type LspCompletionItem,
@@ -60,7 +63,7 @@ const LSP_EXPERIMENT_KEY = 'lsp';
 
 // Markers owner string. Scoped so setModelMarkers only ever clears OUR markers
 // and never a future contributor's.
-const MARKER_OWNER = 'heimdall-lsp';
+const MARKER_OWNER = 'lsp';
 
 // How many outstanding server complaints to keep. gopls' toolchain-less failure
 // produces two (cause + symptom) and both must survive together, so anything
@@ -104,6 +107,8 @@ export type UseMonacoLspResult = {
   notices: LspServerNotice[];
   /** Dismisses one notice by its lspServerNoticeKey and suppresses repeats of it. */
   dismissNotice: (key: string) => void;
+  /** Restarts the language server session. */
+  restart?: () => void;
 };
 
 function joinAbs(rootAbs: string, relPath: string): string {
@@ -162,6 +167,11 @@ export function useMonacoLsp({
   // restarts — goes through exactly that teardown. A complaint therefore cannot
   // stay suppressed across the event that would have fixed it.
   const dismissedNoticeKeysRef = useRef<Set<string>>(new Set());
+
+  const [restartEpoch, setRestartEpoch] = useState(0);
+  const restart = useCallback(() => {
+    setRestartEpoch((prev) => prev + 1);
+  }, []);
 
   const clientRef = useRef<LspClient | null>(null);
   // Document version per URI, as textDocument/didChange requires: it must
@@ -268,6 +278,22 @@ export function useMonacoLsp({
   // is never described to a server that does not own it.
   const fileServed = lspFileServedBySession(lspConfigId, session.configId);
 
+  // Ensure Monaco TypeScript and JavaScript compiler defaults are initialized (REQ-PREVIEW-LSP-1)
+  useEffect(() => {
+    if (!monaco?.languages?.typescript) return;
+    const ts = monaco.languages.typescript;
+    const compilerOptions = {
+      jsx: ts.JsxEmit.ReactJSX,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      allowNonTsExtensions: true,
+      target: ts.ScriptTarget.Latest,
+      allowJs: true,
+      esModuleInterop: true,
+    };
+    ts.typescriptDefaults.setCompilerOptions(compilerOptions);
+    ts.javascriptDefaults.setCompilerOptions(compilerOptions);
+  }, [monaco]);
+
   useEffect(() => {
     // THE GATE. Nothing below this line runs with the flag off — an empty
     // sessionKey is exactly that gate, plus every other reason not to connect.
@@ -307,11 +333,35 @@ export function useMonacoLsp({
         if (!model) return;
         const markers = (p.diagnostics ?? []).map(lspDiagnosticToMarker);
         monaco.editor.setModelMarkers(model, MARKER_OWNER, markers);
+        // Clear any stale built-in worker markers on this model
+        monaco.editor.setModelMarkers(model, 'typescript', []);
+        monaco.editor.setModelMarkers(model, 'javascript', []);
       },
     });
     clientRef.current = client;
     versionsRef.current = new Map();
     openUriRef.current = '';
+
+    // When external LSP is active or handling TypeScript/JavaScript, disable
+    // Monaco built-in semantic diagnostics so the internal worker does not emit
+    // false-positive module resolution errors (TS2792) while the bridge language server
+    // handles workspace diagnostics (REQ-PREVIEW-LSP-1).
+    if (monaco?.languages?.typescript) {
+      const ts = monaco.languages.typescript;
+      ts.typescriptDefaults.setDiagnosticsOptions({
+        noSemanticValidation: true,
+        noSyntaxValidation: false,
+      });
+      ts.javascriptDefaults.setDiagnosticsOptions({
+        noSemanticValidation: true,
+        noSyntaxValidation: false,
+      });
+      for (const model of monaco.editor.getModels()) {
+        monaco.editor.setModelMarkers(model, 'typescript', []);
+        monaco.editor.setModelMarkers(model, 'javascript', []);
+      }
+    }
+
     void client.connect();
 
     return () => {
@@ -332,6 +382,7 @@ export function useMonacoLsp({
       if (monaco) {
         for (const model of monaco.editor.getModels()) {
           monaco.editor.setModelMarkers(model, MARKER_OWNER, []);
+          monaco.editor.setModelMarkers(model, 'heimdall-lsp', []);
         }
       }
     };
@@ -340,7 +391,7 @@ export function useMonacoLsp({
     // absPath is NOT here and must not be: see lspSessionKey.ts.
     // monaco is intentionally a dependency: providers and markers need the
     // namespace, and it arrives asynchronously.
-  }, [sessionKey, monaco]);
+  }, [sessionKey, monaco, restartEpoch]);
 
   // --- MarkerSeverity sanity check -----------------------------------------
   // lspProtocol.ts hardcodes monaco's MarkerSeverity values to stay
@@ -584,22 +635,60 @@ export function useMonacoLsp({
             textDocument: { uri: openUriRef.current },
             position: monacoToLspPosition({ lineNumber: position.lineNumber, column: position.column }),
           });
-          const locations = normaliseDefinitionResult(raw as any);
-          return locations.map((loc) => {
-            const targetPath = fileUriToPath(loc.uri);
-            const existing = findModelForPath(monaco, targetPath, rootAbs);
-            // A target in a file with no open model gets a monaco.Uri.file(...)
-            // — Monaco opens a peek view with no contents rather than
-            // navigating. Opening arbitrary files into tabs from a definition
-            // jump is a panel concern, not an adapter one, and is out of scope
-            // for this task.
-            return {
-              uri: existing ? existing.uri : monaco.Uri.file(targetPath),
-              range: lspToMonacoRange(loc.range),
-            };
-          });
+          const locations = normaliseLocationResult(raw as any);
+          return locations.map((loc) => lspToMonacoLocation(loc, rootAbs, monaco));
         } catch {
           return null;
+        }
+      },
+    });
+
+    const references = monaco.languages.registerReferenceProvider(monacoLanguageId, {
+      provideReferences: async (model: any, position: any) => {
+        if (!client.isReady() || !isSessionModel(model)) return [];
+        syncModelNow(model);
+        try {
+          const raw = await client.request('textDocument/references', {
+            textDocument: { uri: openUriRef.current },
+            position: monacoToLspPosition({ lineNumber: position.lineNumber, column: position.column }),
+            context: { includeDeclaration: true },
+          });
+          const locations = normaliseLocationResult(raw as any);
+          return locations.map((loc) => lspToMonacoLocation(loc, rootAbs, monaco));
+        } catch {
+          return [];
+        }
+      },
+    });
+
+    const implementation = monaco.languages.registerImplementationProvider(monacoLanguageId, {
+      provideImplementation: async (model: any, position: any) => {
+        if (!client.isReady() || !isSessionModel(model)) return null;
+        syncModelNow(model);
+        try {
+          const raw = await client.request('textDocument/implementation', {
+            textDocument: { uri: openUriRef.current },
+            position: monacoToLspPosition({ lineNumber: position.lineNumber, column: position.column }),
+          });
+          const locations = normaliseLocationResult(raw as any);
+          return locations.map((loc) => lspToMonacoLocation(loc, rootAbs, monaco));
+        } catch {
+          return null;
+        }
+      },
+    });
+
+    const documentSymbols = monaco.languages.registerDocumentSymbolProvider(monacoLanguageId, {
+      provideDocumentSymbols: async (model: any) => {
+        if (!client.isReady() || !isSessionModel(model)) return [];
+        syncModelNow(model);
+        try {
+          const raw = await client.request('textDocument/documentSymbol', {
+            textDocument: { uri: openUriRef.current },
+          });
+          return normaliseDocumentSymbols(raw as any);
+        } catch {
+          return [];
         }
       },
     });
@@ -608,6 +697,9 @@ export function useMonacoLsp({
       completion.dispose();
       hover.dispose();
       definition.dispose();
+      references.dispose();
+      implementation.dispose();
+      documentSymbols.dispose();
     };
   }, [enabled, active, monaco, monacoLanguageId, rootAbs, status]);
 
@@ -623,7 +715,7 @@ export function useMonacoLsp({
   // a bare statement for its whole life, so `status` and `detail` were computed
   // and dropped on the floor — which is why routing the server's complaint into
   // `detail` would have reproduced this task's own defect instead of fixing it.
-  return { enabled, status, detail, notices, dismissNotice };
+  return { enabled, status, detail, notices, dismissNotice, restart };
 }
 
 // Monaco models here are created by <Editor path={activeTab.path} />, so the

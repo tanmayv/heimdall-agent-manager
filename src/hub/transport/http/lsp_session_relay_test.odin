@@ -676,6 +676,16 @@ lsp_working_dir_prefers_config_prefix_then_file_dir :: proc(t: ^testing.T) {
 	defer delete(d2)
 	testing.expect_value(t, d2, "/work/other/pkg")
 
+	// Root path provided when dir_prefix is empty: uses root_path (e.g. project workspace root).
+	d_root := lsp_working_dir(plain, "/work/other/pkg/main.go", "/work/other")
+	defer delete(d_root)
+	testing.expect_value(t, d_root, "/work/other")
+
+	// Explicit dir_prefix still overrides root_path when configured.
+	d_scoped_root := lsp_working_dir(scoped, "/work/exp/pkg/main.go", "/workspace")
+	defer delete(d_scoped_root)
+	testing.expect_value(t, d_scoped_root, "/work/exp")
+
 	// A bare filename has no directory; must not slice out of bounds.
 	d3 := lsp_working_dir(plain, "main.go")
 	defer delete(d3)

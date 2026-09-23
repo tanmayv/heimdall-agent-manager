@@ -630,6 +630,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
   const [isDragging, setIsDragging] = useState(false);
   const [isRightPanelMaximized, setIsRightPanelMaximized] = useState(false);
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
+  const [openSearchInFilesOnMount, setOpenSearchInFilesOnMount] = useState(false);
+  const [openCommandPaletteOnMount, setOpenCommandPaletteOnMount] = useState(false);
   const [editorFileToOpen, setEditorFileToOpen] = useState<string | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -688,6 +690,42 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [projectId]);
+
+  // Global Cmd+Shift+F / Ctrl+Shift+F shortcut to open files drawer (REQ-SEARCH-SHORTCUTS-1)
+  useEffect(() => {
+    if (!projectId) return;
+    const handleGlobalSearchKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F') && e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (rightPanel !== 'files') {
+          setOpenSearchInFilesOnMount(true);
+          selectRightPanelTab('files');
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalSearchKeyDown, true);
+    return () => window.removeEventListener('keydown', handleGlobalSearchKeyDown, true);
+  }, [projectId, rightPanel]);
+
+  // Global Cmd+Shift+P / Ctrl+Shift+P and F1 shortcut to open Command Palette (REQ-EDITOR-COMMAND-PALETTE-1)
+  useEffect(() => {
+    if (!projectId) return;
+    const handleGlobalCommandPaletteKeyDown = (e: KeyboardEvent) => {
+      const isCmdShiftP = (e.metaKey || e.ctrlKey) && (e.key === 'p' || e.key === 'P') && e.shiftKey;
+      const isF1 = e.key === 'F1';
+      if (isCmdShiftP || isF1) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (rightPanel !== 'files') {
+          setOpenCommandPaletteOnMount(true);
+          selectRightPanelTab('files');
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalCommandPaletteKeyDown, true);
+    return () => window.removeEventListener('keydown', handleGlobalCommandPaletteKeyDown, true);
+  }, [projectId, rightPanel]);
 
   const handleQuickOpenSelectFile = (filePath: string) => {
     setIsQuickOpenOpen(false);
@@ -1532,6 +1570,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
               openFilePath={editorFileToOpen}
               onFileOpened={() => setEditorFileToOpen(null)}
               onOpenQuickOpen={() => setIsQuickOpenOpen(true)}
+              initialOpenSearchInFiles={openSearchInFilesOnMount}
+              onSearchDrawerConsumed={() => setOpenSearchInFilesOnMount(false)}
+              initialOpenCommandPalette={openCommandPaletteOnMount}
+              onCommandPaletteConsumed={() => setOpenCommandPaletteOnMount(false)}
             />
           ) : active === 'vcs' && hasVcs ? (
             <ProjectVcsPanel
@@ -2172,6 +2214,10 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
           isOpen={isQuickOpenOpen}
           onClose={() => setIsQuickOpenOpen(false)}
           onSelectFile={handleQuickOpenSelectFile}
+          onSwitchToCommandPalette={() => {
+            setOpenCommandPaletteOnMount(true);
+            selectRightPanelTab('files');
+          }}
         />
       ) : null}
     </section>

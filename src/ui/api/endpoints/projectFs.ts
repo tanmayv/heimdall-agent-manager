@@ -106,6 +106,24 @@ export type FsQuickOpenResult = {
   error?: { code: string; message: string };
 };
 
+import type {
+  FsSearchMatch,
+  FsSearchResult,
+  FsSearchScope,
+  ScopedSearchMatch,
+  MultiScopeSearchOptions,
+  MultiScopeSearchResult,
+} from '../../search/scopedSearchLogic';
+
+export type {
+  FsSearchMatch,
+  FsSearchResult,
+  FsSearchScope,
+  ScopedSearchMatch,
+  MultiScopeSearchOptions,
+  MultiScopeSearchResult,
+};
+
 // The shared error vocabulary from the contract, exported for callers that want
 // to branch on specific failures (e.g. friendly "already exists" messaging).
 export const FS_ERROR_CODES = [
@@ -171,6 +189,19 @@ type BatchWriteFilesArgs = FsScopeArgs & { files: Array<{ path: string; content:
 type MoveArgs = FsScopeArgs & { from: string; to: string };
 type DeleteArgs = FsScopeArgs & { path: string; recursive?: boolean };
 type QuickOpenArgs = FsScopeArgs & { query?: string; limit?: number };
+export type SearchFilesArgs = FsScopeArgs & {
+  query: string;
+  path?: string;
+  caseSensitive?: boolean;
+  limit?: number;
+};
+export type SearchInstanceFilesArgs = {
+  agentInstanceId: string;
+  query: string;
+  path?: string;
+  caseSensitive?: boolean;
+  limit?: number;
+};
 
 function base(target: { projectId?: string; chainId?: string; directoryId?: string; agentInstanceId?: string } | string): string {
   if (typeof target === 'string') {
@@ -384,6 +415,45 @@ export const projectFsApi = heimdallApi.injectEndpoints({
         }
       },
     }),
+
+    // Text search (fs_grep / ripgrep) across a project, chain directory, or agent run-dir.
+    searchProjectFiles: build.query<FsSearchResult, SearchFilesArgs>({
+      queryFn: async ({ projectId, chainId, directoryId, agentInstanceId, bridgeId = '', query, path = '', caseSensitive = false, limit = 100 }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (bridgeId && !agentInstanceId) qs.set('bridge_id', bridgeId);
+          if (query) qs.set('query', query);
+          if (path) qs.set('path', path);
+          if (caseSensitive) qs.set('case_sensitive', 'true');
+          if (limit != null) qs.set('limit', String(limit));
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = (await cookieJsonFetch(`${base({ projectId, chainId, directoryId, agentInstanceId })}/search${suffix}`)) as any;
+          const matches = Array.isArray(data?.matches) ? data.matches : [];
+          return { data: { ...data, matches } as FsSearchResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+    }),
+
+    // Search agent instance run directory files (GET /api/v1/agent-instances/{instanceId}/fs/search).
+    searchInstanceFiles: build.query<FsSearchResult, SearchInstanceFilesArgs>({
+      queryFn: async ({ agentInstanceId, query, path = '', caseSensitive = false, limit = 100 }) => {
+        try {
+          const qs = new URLSearchParams();
+          if (query) qs.set('query', query);
+          if (path) qs.set('path', path);
+          if (caseSensitive) qs.set('case_sensitive', 'true');
+          if (limit != null) qs.set('limit', String(limit));
+          const suffix = qs.toString() ? `?${qs.toString()}` : '';
+          const data = (await cookieJsonFetch(`/agent-instances/${encodeURIComponent(agentInstanceId)}/fs/search${suffix}`)) as any;
+          const matches = Array.isArray(data?.matches) ? data.matches : [];
+          return { data: { ...data, matches } as FsSearchResult };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+    }),
   }),
 });
 
@@ -408,4 +478,159 @@ export const {
   useBatchWriteProjectFilesMutation,
   useQuickOpenProjectFilesQuery,
   useLazyQuickOpenProjectFilesQuery,
+  useSearchProjectFilesQuery,
+  useLazySearchProjectFilesQuery,
+  useSearchInstanceFilesQuery,
+  useLazySearchInstanceFilesQuery,
 } = projectFsApi;
+
+// ---- Multi-scope search orchestration & deduplication helpers ----------------
+
+export {
+  normalizeFsPath,
+  deduplicateSearchScopes,
+  deduplicateScopeResultsByRoot,
+  globToRegExp,
+  matchesFilePattern,
+  transformSearchQuery,
+} from '../../search/scopedSearchLogic';
+
+import {
+  deduplicateSearchScopes,
+  deduplicateScopeResultsByRoot,
+  transformSearchQuery,
+  matchesFilePattern,
+  normalizeFsPath,
+} from '../../search/scopedSearchLogic';
+
+/**
+ * Orchestrates multi-scope concurrent searches across deduplicated project,
+ * task chain, and agent run directories.
+ */
+export async function orchestrateMultiScopeSearch(
+  options: MultiScopeSearchOptions
+): Promise<MultiScopeSearchResult> {
+  const {
+    query,
+    scopes,
+    caseSensitive = false,
+    wholeWord = false,
+    regex = false,
+    includePattern = '',
+    limitPerScope = 100,
+  } = options;
+
+  if (!query.trim() || scopes.length === 0) {
+    return {
+      scopesSearched: [],
+      scopesDeduplicatedOut: [],
+      matches: [],
+      totalMatches: 0,
+      totalFiles: 0,
+      isTruncated: false,
+      errors: [],
+    };
+  }
+
+  const { activeScopes, deduplicatedOut } = deduplicateSearchScopes(scopes);
+  const backendQuery = transformSearchQuery(query, { regex, wholeWord });
+
+  const errors: Array<{ scopeId: string; scopeLabel: string; error: string }> = [];
+  const allMatches: ScopedSearchMatch[] = [];
+  let isTruncated = false;
+
+  type ScopeExecutionResult = {
+    scope: FsSearchScope;
+    root: string;
+    matches: FsSearchMatch[];
+  };
+  const executionResults: ScopeExecutionResult[] = [];
+
+  const searchPromises = activeScopes.map(async (scope) => {
+    try {
+      const qs = new URLSearchParams();
+      if (scope.scopeArgs.bridgeId && !scope.scopeArgs.agentInstanceId) {
+        qs.set('bridge_id', scope.scopeArgs.bridgeId);
+      }
+      qs.set('query', backendQuery);
+      if (caseSensitive) qs.set('case_sensitive', 'true');
+      qs.set('limit', String(limitPerScope));
+
+      const endpoint = `${base(scope.scopeArgs)}/search?${qs.toString()}`;
+      const data = (await cookieJsonFetch(endpoint)) as FsSearchResult;
+
+      if (!data || !data.ok) {
+        if (data?.error?.message) {
+          errors.push({ scopeId: scope.id, scopeLabel: scope.label, error: data.error.message });
+        }
+        return;
+      }
+
+      if (data.truncated) {
+        isTruncated = true;
+      }
+
+      const canonicalRoot = normalizeFsPath(data.root || scope.path || '');
+      executionResults.push({
+        scope: { ...scope, path: canonicalRoot || scope.path },
+        root: canonicalRoot,
+        matches: data.matches || [],
+      });
+    } catch (err: any) {
+      errors.push({
+        scopeId: scope.id,
+        scopeLabel: scope.label,
+        error: String(err?.message || err),
+      });
+    }
+  });
+
+  await Promise.all(searchPromises);
+
+  // Post-response deduplication using canonical data.root returned by backend
+  const { activeResults, subsumedScopes } = deduplicateScopeResultsByRoot(executionResults);
+
+  const finalSearchedScopes: FsSearchScope[] = [];
+  const finalDeduplicatedOut: FsSearchScope[] = [...deduplicatedOut, ...subsumedScopes];
+  const seenMatchKeys = new Set<string>();
+
+  for (const r of activeResults) {
+    finalSearchedScopes.push(r.scope);
+    const bridge = (r.scope.bridgeId || 'local').trim();
+
+    for (const m of r.matches) {
+      if (!matchesFilePattern(m.path, includePattern)) {
+        continue;
+      }
+      const normRel = normalizeFsPath(m.path);
+      const matchKey = r.root
+        ? `${bridge}::${r.root}/${normRel}:${m.line_number}:${m.column}`
+        : `${bridge}::${r.scope.id}::${normRel}:${m.line_number}:${m.column}`;
+
+      if (seenMatchKeys.has(matchKey)) {
+        continue;
+      }
+      seenMatchKeys.add(matchKey);
+
+      allMatches.push({
+        ...m,
+        scopeId: r.scope.id,
+        scopeLabel: r.scope.label,
+        scopeKind: r.scope.kind,
+        scopeArgs: r.scope.scopeArgs,
+      });
+    }
+  }
+
+  const matchedFiles = new Set(allMatches.map((m) => `${m.scopeId}::${m.path}`));
+
+  return {
+    scopesSearched: finalSearchedScopes,
+    scopesDeduplicatedOut: finalDeduplicatedOut,
+    matches: allMatches,
+    totalMatches: allMatches.length,
+    totalFiles: matchedFiles.size,
+    isTruncated,
+    errors,
+  };
+}
