@@ -69,7 +69,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         store, so a toast can still surface on the pre-auth screen. It portals to
         document.body, so its position in this tree does not affect layout.
         Note this is NOT the app's only toast mechanism — five list pages render
-        their own local ones (see REQ-UI-TOAST-1). They never dispatch to this
+        their own local ones (see REQ-UI-TOAST-2). They never dispatch to this
         queue, so nothing here double-renders.
       */}
       <ToastViewport />
