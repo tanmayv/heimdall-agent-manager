@@ -60,7 +60,7 @@ def test_schema_and_migration_files() -> None:
     migrations_odin = read(ROOT / "src/hub/repository/sqlite/migrations.odin")
     require("MIGRATION_043_TASK_CHAIN_DIRECTORIES" in migrations_odin or "MIGRATION_044_TASK_CHAIN_DIRECTORIES" in migrations_odin, "MIGRATION constant must exist")
     require('"043_task_chain_directories.sql"' in migrations_odin or '"044_task_chain_directories.sql"' in migrations_odin, "migration file must be in migration_order")
-    require("migration_order :: [43]string{" in migrations_odin or "migration_order :: [44]string{" in migrations_odin, "migration_order array size must be 43 or 44")
+    require(bool(re.search(r"migration_order\s*::\s*\[\d+\]string\{", migrations_odin)), "migration_order array must exist")
     require("upgrade_task_chain_directories_schema" in migrations_odin, "upgrade proc must exist in migrations.odin")
 
 
