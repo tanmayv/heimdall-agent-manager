@@ -20,7 +20,7 @@ new_lsp_server_config_repository :: proc(impl: ^Lsp_Server_Config_Repo_SQLite, c
 
 // Column order for SELECT queries (used by lsp_server_config_from_stmt):
 // 0:config_id 1:owner_user_id 2:bridge_id 3:language 4:cmd 5:args
-// 6:file_extensions 7:root_markers 8:dir_prefix 9:created_at 10:updated_at
+// 6:file_extensions 7:root_markers 8:dir_prefix 9:dir_pattern 10:created_at 11:updated_at
 lsp_server_config_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Lsp_Server_Config {
 	c: domain.Lsp_Server_Config
 	c.config_id       = column_text(stmt, 0)
@@ -32,8 +32,9 @@ lsp_server_config_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.Lsp_Server_Con
 	c.file_extensions = column_text(stmt, 6)
 	c.root_markers    = column_text(stmt, 7)
 	c.dir_prefix      = column_text(stmt, 8)
-	c.created_at      = column_text(stmt, 9)
-	c.updated_at      = column_text(stmt, 10)
+	c.dir_pattern     = column_text(stmt, 9)
+	c.created_at      = column_text(stmt, 10)
+	c.updated_at      = column_text(stmt, 11)
 	return c
 }
 
@@ -45,14 +46,15 @@ lsp_server_config_upsert_sqlite :: proc(ctx: rawptr, cfg: domain.Lsp_Server_Conf
 	stmt: sqlite3_stmt = nil
 	query := `INSERT INTO lsp_server_configs (
 		config_id, owner_user_id, bridge_id, language, cmd, args,
-		file_extensions, root_markers, dir_prefix, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		file_extensions, root_markers, dir_prefix, dir_pattern, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(owner_user_id, bridge_id, language, dir_prefix) DO UPDATE SET
 		config_id       = excluded.config_id,
 		cmd             = excluded.cmd,
 		args            = excluded.args,
 		file_extensions = excluded.file_extensions,
 		root_markers    = excluded.root_markers,
+		dir_pattern     = excluded.dir_pattern,
 		updated_at      = excluded.updated_at;`
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
 		return false, domain.domain_error(.Internal_Error, "failed to prepare lsp server config upsert")
@@ -67,8 +69,9 @@ lsp_server_config_upsert_sqlite :: proc(ctx: rawptr, cfg: domain.Lsp_Server_Conf
 	bind_text(stmt, 7,  cfg.file_extensions)
 	bind_text(stmt, 8,  cfg.root_markers)
 	bind_text(stmt, 9,  cfg.dir_prefix)
-	bind_text(stmt, 10, cfg.created_at)
-	bind_text(stmt, 11, cfg.updated_at)
+	bind_text(stmt, 10, cfg.dir_pattern)
+	bind_text(stmt, 11, cfg.created_at)
+	bind_text(stmt, 12, cfg.updated_at)
 	if sqlite3_step(stmt) != SQLITE_DONE {
 		return false, domain.domain_error(.Internal_Error, "failed to upsert lsp server config")
 	}
@@ -81,7 +84,7 @@ lsp_server_config_get_sqlite :: proc(ctx: rawptr, owner_user_id, config_id: stri
 		return domain.Lsp_Server_Config{}, false, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := "SELECT config_id, owner_user_id, bridge_id, language, cmd, args, file_extensions, root_markers, dir_prefix, created_at, updated_at FROM lsp_server_configs WHERE owner_user_id = ? AND config_id = ? LIMIT 1;"
+	query := "SELECT config_id, owner_user_id, bridge_id, language, cmd, args, file_extensions, root_markers, dir_prefix, dir_pattern, created_at, updated_at FROM lsp_server_configs WHERE owner_user_id = ? AND config_id = ? LIMIT 1;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
 		return domain.Lsp_Server_Config{}, false, domain.domain_error(.Internal_Error, "failed to prepare lsp server config get")
 	}
@@ -98,7 +101,7 @@ lsp_server_config_list_by_bridge_sqlite :: proc(ctx: rawptr, owner_user_id, brid
 		return nil, domain.domain_error(.Internal_Error, "sqlite repository is not open")
 	}
 	stmt: sqlite3_stmt = nil
-	query := "SELECT config_id, owner_user_id, bridge_id, language, cmd, args, file_extensions, root_markers, dir_prefix, created_at, updated_at FROM lsp_server_configs WHERE owner_user_id = ? AND bridge_id = ? ORDER BY language ASC, dir_prefix ASC;"
+	query := "SELECT config_id, owner_user_id, bridge_id, language, cmd, args, file_extensions, root_markers, dir_prefix, dir_pattern, created_at, updated_at FROM lsp_server_configs WHERE owner_user_id = ? AND bridge_id = ? ORDER BY language ASC, dir_prefix ASC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK {
 		return nil, domain.domain_error(.Internal_Error, "failed to prepare lsp server config list")
 	}

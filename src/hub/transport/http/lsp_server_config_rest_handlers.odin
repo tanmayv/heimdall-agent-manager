@@ -30,6 +30,8 @@ write_lsp_server_config_json :: proc(b: ^strings.Builder, c: domain.Lsp_Server_C
 	write_handler_json_string(b, c.root_markers)
 	strings.write_string(b, "\",\"dir_prefix\":\"")
 	write_handler_json_string(b, c.dir_prefix)
+	strings.write_string(b, "\",\"dir_pattern\":\"")
+	write_handler_json_string(b, c.dir_pattern)
 	strings.write_string(b, "\",\"created_at\":\"")
 	write_handler_json_string(b, c.created_at)
 	strings.write_string(b, "\",\"updated_at\":\"")
@@ -67,12 +69,19 @@ lsp_server_config_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	file_extensions  := json_string(req.body, "file_extensions")
 	root_markers     := json_string(req.body, "root_markers")
 	dir_prefix_raw   := json_string(req.body, "dir_prefix")
+	dir_pattern_raw  := json_string(req.body, "dir_pattern")
+	if dir_pattern_raw == "" {
+		delete(dir_pattern_raw)
+		dir_pattern_raw = json_string(req.body, "dirPattern")
+	}
 	defer {
 		delete(args)
 		delete(file_extensions)
 		delete(root_markers)
 		delete(dir_prefix_raw)
+		delete(dir_pattern_raw)
 	}
+	dir_pattern := strings.trim_space(dir_pattern_raw)
 	// Normalize: strip ALL trailing slashes so "/work/project/" or "/work/project//"
 	// is stored as "/work/project". The resolver requires no trailing slash
 	// (domain/lsp_server_config.odin:12-14).
@@ -104,6 +113,7 @@ lsp_server_config_create_handler :: proc(ctx: rawptr, req: Request) -> Response 
 		file_extensions = file_extensions,
 		root_markers    = root_markers,
 		dir_prefix      = dir_prefix,
+		dir_pattern     = dir_pattern,
 		created_at      = now,
 		updated_at      = now,
 	}
@@ -172,10 +182,12 @@ lsp_server_config_resolve_handler :: proc(ctx: rawptr, req: Request) -> Response
 	if err.code != .None do return respond_error(err, req.request_id)
 	defer domain.lsp_server_configs_destroy(all_configs)
 
-	// Filter to the requested language before resolving.
+	// Filter configs matching requested language or file extension.
 	lang_configs := make([dynamic]domain.Lsp_Server_Config, context.temp_allocator)
 	for c in all_configs {
-		if c.language == language do append(&lang_configs, c)
+		if domain.lsp_server_config_matches_language_or_ext(c, language, file_path) {
+			append(&lang_configs, c)
+		}
 	}
 
 	cfg, found := domain.lsp_server_config_resolve(lang_configs[:], file_path)
