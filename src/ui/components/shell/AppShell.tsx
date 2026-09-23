@@ -31,6 +31,7 @@ import ProjectFormPage from '../projects/ProjectFormPage';
 import ProjectLaunchModal from '../projects/ProjectLaunchModal';
 import PreviewSidebar from '../shells/PreviewSidebar';
 import CardsPanel from '../cards/CardsPanel';
+import HomePage from '../home/HomePage';
 import ErrorBoundary from './ErrorBoundary';
 import ActionListPage from '../actions/ActionListPage';
 import ActionViewPage from '../actions/ActionViewPage';
@@ -133,7 +134,7 @@ const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
   isDefaultConversations: true,
 };
 const NAV_ROUTES: ShellRoute[] = [
-  { path: '/cards', label: 'Cards', icon: 'spark', description: 'Activity-driven Action Cards feed', group: 'primary' },
+  { path: '/home', label: 'Home', icon: 'home', description: 'Recent task chains, issues, and action items', group: 'primary' },
   { path: '/conversations', label: 'Conversations', icon: 'chat', description: 'Chat sessions grouped by project and agent', group: 'primary' },
   { path: '/actions', label: 'Actions', icon: 'clock', description: 'Scheduled and on-demand prompts sent to your agents', group: 'primary' },
   { path: '/projects', label: 'Projects', icon: 'grid', description: 'Projects, their agents, memory and bridge paths', group: 'primary' },
@@ -148,7 +149,7 @@ const NAV_ROUTES: ShellRoute[] = [
 
 function routeFromLocation(): string {
   const path = getRoutePathname();
-  if (!path || path === '/' || path === '/index.html') return '/cards';
+  if (!path || path === '/' || path === '/index.html' || path === '/cards') return '/home';
   return path;
 }
 
@@ -167,7 +168,8 @@ function focusMessageFromLocation(): string {
 }
 
 function isRouteActive(currentPath: string, itemPath: string): boolean {
-  if (itemPath === '/cards') return currentPath === '/cards' || currentPath.startsWith('/cards/');
+  if (itemPath === '/home') return currentPath === '/home' || currentPath.startsWith('/home/') || currentPath === '/cards' || currentPath.startsWith('/cards/');
+  if (itemPath === '/cards') return currentPath === '/cards' || currentPath.startsWith('/cards/') || currentPath === '/home' || currentPath.startsWith('/home/');
   if (itemPath === '/conversations') return currentPath === '/conversations' || currentPath.startsWith('/conversations/');
   if (itemPath === '/actions') return currentPath === '/actions' || currentPath.startsWith('/actions/');
   if (itemPath === '/settings/bridges') return currentPath.startsWith('/settings');
@@ -193,7 +195,7 @@ function parseChainRoute(path: string): { chainId: string; taskId?: string } {
 }
 
 function routeTitle(path: string): string {
-  if (path === '/cards' || path.startsWith('/cards')) return 'Action Cards';
+  if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return 'Home';
   if (path === '/conversations/new') return 'New conversation';
   if (path.startsWith('/conversations/')) return 'Conversation';
   if (path === '/actions/new') return 'New action';
@@ -236,7 +238,7 @@ function routeTitle(path: string): string {
 }
 
 function routeDescription(path: string): string {
-  if (path === '/cards' || path.startsWith('/cards')) return 'Activity-driven recommendations from Heimdall Curator. Review, accept, or reject maintenance proposals.';
+  if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return 'Recent task chains, issues, and action items.';
   if (path === '/conversations/new') return 'Composer-first launch surface. Agent, project, Bridge, provider, and tier controls belong here in later UI tasks.';
   if (path.startsWith('/conversations/')) return 'Page-owned conversation area. The conversation inspector will be owned by this route, not by global shell chrome.';
   if (path === '/actions/new') return 'Create a scheduled or on-demand prompt targeted to an agent instance.';
@@ -274,7 +276,7 @@ function decodeSegment(value: string): string {
 }
 
 function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = []): BreadcrumbCrumb[] {
-  if (path === '/cards' || path.startsWith('/cards')) return [{ label: 'Cards' }];
+  if (path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards')) return [{ label: 'Home' }];
   if (path === '/conversations/new') return [{ label: 'Conversations', href: '/conversations' }, { label: 'New Conversation' }];
   if (path.startsWith('/conversations/')) {
     const agentInstanceId = decodeSegment(path.slice('/conversations/'.length));
@@ -960,7 +962,7 @@ function AccessDenied() {
         <p className="text-xs font-semibold uppercase tracking-[0.22em] text-danger">403 forbidden</p>
         <h1 className="mt-3 text-3xl font-semibold tracking-tight">Access denied</h1>
         <p className="mt-3 text-sm leading-6 text-muted">You are authenticated, but this resource is not available to your account. Heimdall will not redirect to login for 403 responses.</p>
-        <a data-debug-id="access-denied-home-link" href={shellHash('/cards')} className="mt-6 inline-flex rounded-2xl border border-subtle bg-surface px-5 py-3 text-sm font-bold text-primary hover:bg-surface-raised">Back to home</a>
+        <a data-debug-id="access-denied-home-link" href={shellHash('/home')} className="mt-6 inline-flex rounded-2xl border border-subtle bg-surface px-5 py-3 text-sm font-bold text-primary hover:bg-surface-raised">Back to home</a>
       </section>
     </main>
   );
@@ -1022,7 +1024,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const lspFlagPending = isLspRoute && experimentsQuery.data === undefined && !experimentsQuery.isError;
   const isMappedRoute = useMemo(() => {
     return [
-      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/agent-monitor', '/issues',
+      '/home', '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/agent-monitor', '/issues',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/c/') ||
       path.startsWith('/settings/bridges') ||
@@ -1063,7 +1065,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
 
   const isDesktopTwoPaneRoute =
     viewport === 'desktop' &&
-    ['/projects', '/actions', '/agents', '/shells', '/memory'].some(
+    ['/home', '/cards', '/projects', '/actions', '/agents', '/shells', '/memory'].some(
       (prefix) => path === prefix || path.startsWith(`${prefix}/`)
     ) &&
     !path.endsWith('/new') &&
@@ -1099,8 +1101,8 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
         <ErrorBoundary resetKey={path} label={routeTitle(path)}>
         {lspFlagPending ? (
           <p data-debug-id="settings-lsp-gate-pending" className="text-sm text-muted">Loading…</p>
-        ) : path === '/cards' || path.startsWith('/cards') ? (
-          <CardsPanel />
+        ) : path === '/home' || path.startsWith('/home') || path === '/cards' || path.startsWith('/cards') ? (
+          <HomePage />
         ) : path === '/conversations' ? (
           <ConversationsHomePage />
         ) : path === '/actions' ? (
@@ -1436,7 +1438,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
       >
         <div className={`flex items-center gap-3 p-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
           {!collapsed && (
-            <a href={shellHash('/cards')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-neutral-soft">
+            <a href={shellHash('/home')} data-debug-id="shell-brand" className="min-w-0 rounded-xl px-2 py-1 hover:bg-neutral-soft">
               <span className="block truncate text-sm font-black tracking-tight text-primary">Heimdall</span>
             </a>
           )}
