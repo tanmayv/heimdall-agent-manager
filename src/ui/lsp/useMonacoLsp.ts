@@ -47,6 +47,7 @@ import {
   type LspHover,
 } from './lspProtocol';
 import {
+  lspNextNotices,
   lspServerNotice,
   lspServerNoticeKey,
   type LspServerNotice,
@@ -60,6 +61,12 @@ const LSP_EXPERIMENT_KEY = 'lsp';
 // Markers owner string. Scoped so setModelMarkers only ever clears OUR markers
 // and never a future contributor's.
 const MARKER_OWNER = 'heimdall-lsp';
+
+// How many outstanding server complaints to keep. gopls' toolchain-less failure
+// produces two (cause + symptom) and both must survive together, so anything
+// below 2 reintroduces the defect this cap sits next to. 3 leaves headroom
+// without letting a broken server paper over the editor.
+const MAX_NOTICES = 3;
 
 // One textDocument/didChange per keystroke would swamp the tunnel — every
 // character becomes a WS frame, a bridge write and a server reparse. 250ms is
@@ -87,14 +94,16 @@ export type UseMonacoLspResult = {
   status: LspClientStatus;
   detail: string;
   /**
-   * REQ-LSP-ENV-1: the server's own last complaint, or null when it has none.
-   * Null is the normal state of a healthy session. A CALLER THAT IGNORES THIS
+   * REQ-LSP-ENV-1: the server's own outstanding complaints, oldest first. Empty
+   * is the normal state of a healthy session. A CALLER THAT IGNORES THIS
    * REINTRODUCES THE DEFECT — a toolchain-less server explains itself here and
-   * nowhere else the user can see.
+   * nowhere else the user can see. RENDER ALL OF THEM: gopls reports the cause
+   * and the symptom as two separate messages, and showing only one of them is
+   * how this defect survived review once already.
    */
-  notice: LspServerNotice | null;
-  /** Clears the current notice and suppresses that exact complaint if repeated. */
-  dismissNotice: () => void;
+  notices: LspServerNotice[];
+  /** Dismisses one notice by its lspServerNoticeKey and suppresses repeats of it. */
+  dismissNotice: (key: string) => void;
 };
 
 function joinAbs(rootAbs: string, relPath: string): string {
@@ -125,16 +134,34 @@ export function useMonacoLsp({
   const [status, setStatus] = useState<LspClientStatus>('idle');
   const [detail, setDetail] = useState('');
 
-  // REQ-LSP-ENV-1: the language server's own last complaint, or null.
+  // REQ-LSP-ENV-1: the language server's own outstanding complaints.
   // A toolchain-less server explains itself over window/showMessage and then
   // answers every request with an error. Before this, that explanation reached
   // the browser and was dropped by the method check in onNotification below, so
   // the session looked healthy while returning nothing. See lspServerNotice.ts.
-  const [notice, setNotice] = useState<LspServerNotice | null>(null);
-  // Last notice shown, so a server that repeats itself does not re-alarm a user
-  // who has already dismissed it. gopls re-reports the same load failure on
-  // every request that touches the broken view.
-  const dismissedNoticeKeyRef = useRef<string>('');
+  //
+  // THIS IS A LIST, NOT A SINGLE SLOT, AND THAT IS LOAD-BEARING. It was a single
+  // `useState<LspServerNotice | null>` with an unconditional setter, and that
+  // quietly undid the whole point of the filter: gopls emits TWO frames — the
+  // CAUSE ("go command required, not found", type=3) and then the SYMPTOM
+  // ("Error loading workspace folders", type=1). Last writer wins in a single
+  // slot, so the symptom overwrote the cause and the user was left with the one
+  // message they cannot act on — precisely the outcome the channel-not-severity
+  // gate in lspServerNotice.ts exists to prevent. The gate admits the cause and
+  // single-slot storage threw it away again milliseconds later.
+  const [notices, setNotices] = useState<LspServerNotice[]>([]);
+  // Keys the user has explicitly dismissed, so a server that repeats itself does
+  // not re-alarm them. gopls re-reports the same load failure on every request
+  // that touches the broken view.
+  //
+  // KNOWN LIMIT, AND WHY IT IS ACCEPTABLE: this cannot distinguish "the server
+  // repeated itself" from "the condition went away and came back", because both
+  // produce identical text and so both stay dismissed. That is safe here because
+  // this ref is CLEARED ON SESSION TEARDOWN (see the cleanup below), and the
+  // realistic recovery — the user installs the toolchain and the server
+  // restarts — goes through exactly that teardown. A complaint therefore cannot
+  // stay suppressed across the event that would have fixed it.
+  const dismissedNoticeKeysRef = useRef<Set<string>>(new Set());
 
   const clientRef = useRef<LspClient | null>(null);
   // Document version per URI, as textDocument/didChange requires: it must
@@ -266,10 +293,12 @@ export function useMonacoLsp({
         if (method !== 'textDocument/publishDiagnostics') {
           const next = lspServerNotice(method, params);
           if (!next) return;
-          // Dedupe against what the user already dismissed, not against the
-          // previous notice: a repeat they have NOT dismissed should still show.
-          if (lspServerNoticeKey(next) === dismissedNoticeKeyRef.current) return;
-          setNotice(next);
+          // The accumulation RULE lives in lspNextNotices, not here: held as a
+          // setState callback it was untestable, and the single-slot version of
+          // it shipped a defect that a green suite could not see.
+          setNotices((prev) =>
+            lspNextNotices(prev, next, dismissedNoticeKeysRef.current, MAX_NOTICES)
+          );
           return;
         }
         const p = params as { uri?: string; diagnostics?: LspDiagnostic[] } | null;
@@ -296,8 +325,8 @@ export function useMonacoLsp({
       // a restart would pin a stale "go not found" banner over a server that has
       // since been fixed and restarted — the mirror of the stale-markers bug the
       // block below already guards against.
-      setNotice(null);
-      dismissedNoticeKeyRef.current = '';
+      setNotices([]);
+      dismissedNoticeKeysRef.current = new Set();
       // Our markers outlive the session that produced them otherwise — stale
       // squiggles on a file nothing is analysing any more.
       if (monaco) {
@@ -585,18 +614,16 @@ export function useMonacoLsp({
   // REQ-LSP-ENV-1: dismissing records the notice's identity, so the same text
   // repeated by a server that keeps failing stays dismissed, while a DIFFERENT
   // complaint still gets through.
-  const dismissNotice = useCallback(() => {
-    setNotice((current) => {
-      if (current) dismissedNoticeKeyRef.current = lspServerNoticeKey(current);
-      return null;
-    });
+  const dismissNotice = useCallback((key: string) => {
+    dismissedNoticeKeysRef.current.add(key);
+    setNotices((prev) => prev.filter((n) => lspServerNoticeKey(n) !== key));
   }, []);
 
   // CALLERS MUST USE THIS RETURN VALUE. ProjectFilesPanel.tsx called this hook as
   // a bare statement for its whole life, so `status` and `detail` were computed
   // and dropped on the floor — which is why routing the server's complaint into
   // `detail` would have reproduced this task's own defect instead of fixing it.
-  return { enabled, status, detail, notice, dismissNotice };
+  return { enabled, status, detail, notices, dismissNotice };
 }
 
 // Monaco models here are created by <Editor path={activeTab.path} />, so the

@@ -31,6 +31,7 @@ import assert from 'node:assert/strict';
 
 import {
   LSP_MESSAGE_TYPE,
+  lspNextNotices,
   lspServerNotice,
   lspServerNoticeKey,
 } from '../src/ui/lsp/lspServerNotice.ts';
@@ -174,7 +175,13 @@ test('a missing type on the LOG channel is dropped', () => {
   assert.equal(lspServerNotice('window/logMessage', { message: 'trace' }), null);
 });
 
-test('showMessageRequest is treated like showMessage', () => {
+// NOT RUNTIME COVERAGE — READ THE COMMENT BEFORE TRUSTING THIS TEST.
+// window/showMessageRequest is a server-initiated REQUEST, and lspClient.ts:273-284
+// replies -32601 and returns BEFORE onNotification runs, so this classification is
+// never exercised in production. This test pins the pure function's behaviour only.
+// It passes today and would keep passing if the feature were entirely absent from
+// the app, which is exactly the kind of false confidence this task exists to remove.
+test('showMessageRequest is classified like showMessage (pure function only)', () => {
   const notice = lspServerNotice('window/showMessageRequest', {
     type: LSP_MESSAGE_TYPE.Error,
     message: GOPLS_SYMPTOM,
@@ -220,6 +227,95 @@ test('the dedupe key is stable for a repeat and distinct for a different complai
 
   assert.equal(lspServerNoticeKey(first), lspServerNoticeKey(repeat), 'a repeat must dedupe');
   assert.notEqual(lspServerNoticeKey(first), lspServerNoticeKey(other), 'a new complaint must not');
+});
+
+test('gopls CAUSE and SYMPTOM have distinct keys, so both can be held at once', () => {
+  // The regression behind reviewer BLOCKING 1: the hook held ONE notice and the
+  // symptom overwrote the cause, leaving the user the unactionable half. The hook
+  // now keeps a list deduped on this key, so these two MUST NOT collide.
+  const cause = lspServerNotice('window/showMessage', { type: LSP_MESSAGE_TYPE.Info, message: GOPLS_CAUSE });
+  const symptom = lspServerNotice('window/showMessage', { type: LSP_MESSAGE_TYPE.Error, message: GOPLS_SYMPTOM });
+  assert.notEqual(lspServerNoticeKey(cause), lspServerNoticeKey(symptom));
+});
+
+test('the key separator is NUL, so level and text cannot be confused for one another', () => {
+  // NUL is used because it cannot occur in a server message, making the boundary
+  // unambiguous. It must be written as the ESCAPE '\u0000' in source, never as a
+  // literal byte: a raw NUL makes the file binary, which silently removes it from
+  // `grep -rn` (no output, exit 1) and turns `git diff` into "Bin 0 -> N bytes".
+  // That shipped once in this very file and made the change unreviewable.
+  const notice = lspServerNotice('window/showMessage', { type: LSP_MESSAGE_TYPE.Error, message: 'x' });
+  assert.ok(lspServerNoticeKey(notice).includes('\u0000'), 'separator must be NUL');
+  assert.equal(lspServerNoticeKey(notice), 'error\u0000x');
+});
+
+// --- accumulation: REVIEWER BLOCKING 1 ---------------------------------------
+// The defect these exist for shipped and passed a green 77-test suite. The hook
+// held ONE notice in a `useState<LspServerNotice | null>` with an unconditional
+// setter, so gopls' SYMPTOM overwrote its own CAUSE and the user was left with
+// "Error loading workspace folders (expected 1, got 0)" — the one sentence they
+// can do nothing with. The channel gate correctly ADMITTED the cause and React
+// state threw it away milliseconds later. It was invisible to tests because it
+// lived in a hook; the rule now lives in lspNextNotices so these can see it.
+
+const cause = () => lspServerNotice('window/showMessage', { type: LSP_MESSAGE_TYPE.Info, message: GOPLS_CAUSE });
+const symptom = () => lspServerNotice('window/showMessage', { type: LSP_MESSAGE_TYPE.Error, message: GOPLS_SYMPTOM });
+const NONE: ReadonlySet<string> = new Set();
+
+test('BOTH gopls frames are held at once — the single-slot regression', () => {
+  // THE REGRESSION TEST FOR BLOCKING 1. Arrival order is cause-then-symptom, as
+  // observed. If accumulation ever reverts to last-writer-wins, this fails.
+  let list = lspNextNotices([], cause(), NONE, 3);
+  list = lspNextNotices(list, symptom(), NONE, 3);
+  assert.equal(list.length, 2, 'the symptom must not evict the cause');
+  const texts = list.map((n) => n.text);
+  assert.ok(texts.includes(GOPLS_CAUSE), 'the ACTIONABLE sentence must survive');
+  assert.ok(texts.includes(GOPLS_SYMPTOM));
+});
+
+test('the reverse arrival order is equally safe', () => {
+  // Nothing guarantees gopls' ordering, so neither message may depend on it.
+  let list = lspNextNotices([], symptom(), NONE, 3);
+  list = lspNextNotices(list, cause(), NONE, 3);
+  assert.equal(list.length, 2);
+  assert.ok(list.map((n) => n.text).includes(GOPLS_CAUSE));
+});
+
+test('a repeated complaint does not stack up duplicates', () => {
+  // gopls re-reports the same load failure on every request touching the broken
+  // view, so without this the editor fills with copies of one message.
+  let list = lspNextNotices([], cause(), NONE, 3);
+  for (let i = 0; i < 20; i++) list = lspNextNotices(list, cause(), NONE, 3);
+  assert.equal(list.length, 1);
+});
+
+test('a dismissed complaint stays dismissed', () => {
+  const dismissed = new Set([lspServerNoticeKey(cause())]);
+  const list = lspNextNotices([], cause(), dismissed, 3);
+  assert.equal(list.length, 0, 'the user said they were done with this one');
+  // But a DIFFERENT complaint still gets through.
+  assert.equal(lspNextNotices([], symptom(), dismissed, 3).length, 1);
+});
+
+test('the cap bounds the list and evicts oldest-first', () => {
+  let list: ReturnType<typeof lspNextNotices> = [];
+  for (const msg of ['one', 'two', 'three', 'four']) {
+    list = lspNextNotices(
+      list,
+      lspServerNotice('window/showMessage', { type: LSP_MESSAGE_TYPE.Error, message: msg }),
+      NONE,
+      3
+    );
+  }
+  assert.equal(list.length, 3, 'a pathological server must not bury the editor');
+  assert.deepEqual(list.map((n) => n.text), ['two', 'three', 'four']);
+});
+
+test('the cap never evicts the two-frame gopls case', () => {
+  // The case this whole task exists for must never be lossy at the default cap.
+  let list = lspNextNotices([], cause(), NONE, 3);
+  list = lspNextNotices(list, symptom(), NONE, 3);
+  assert.equal(list.length, 2);
 });
 
 // --- VERIFICATION BOUNDARY --------------------------------------------------

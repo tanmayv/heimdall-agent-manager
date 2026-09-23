@@ -27,6 +27,7 @@ import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
 import { useTheme } from '../../store/themeSlice';
 import { LspNoticeBanner } from '../../lsp/LspNoticeBanner';
+import { lspServerNoticeKey } from '../../lsp/lspServerNotice';
 import { useMonacoLsp } from '../../lsp/useMonacoLsp';
 import { Icon, IconButton } from '@ui';
 import { useDialogA11y } from '../ui/composites/useDialogA11y';
@@ -2447,13 +2448,23 @@ export default function ProjectFilesPanel({
                       banner buried in this 4000-line component could not be
                       proven to display without standing up the whole panel.
                     */}
-                    {isCurrent ? (
-                      <LspNoticeBanner
-                        notice={lsp.notice}
-                        onDismiss={lsp.dismissNotice}
-                        debugPrefix={debugPrefix}
-                      />
-                    ) : null}
+                    {/*
+                      ONE BANNER PER OUTSTANDING NOTICE, NOT JUST THE LATEST.
+                      gopls reports the CAUSE and the SYMPTOM as two separate
+                      messages; rendering only one of them leaves the user with
+                      "Error loading workspace folders", which names nothing they
+                      can act on. See the list in useMonacoLsp.
+                    */}
+                    {isCurrent
+                      ? lsp.notices.map((n) => (
+                          <LspNoticeBanner
+                            key={lspServerNoticeKey(n)}
+                            notice={n}
+                            onDismiss={() => lsp.dismissNotice(lspServerNoticeKey(n))}
+                            debugPrefix={debugPrefix}
+                          />
+                        ))
+                      : null}
                     {dirTabs.length > 0 && dirActiveTab ? (
                       <MonacoMultiFileEditor
                         tabs={dirTabs}
