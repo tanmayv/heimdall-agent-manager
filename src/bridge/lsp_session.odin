@@ -164,6 +164,39 @@ bridge_lsp_session_status :: proc(session_id: string) -> (Bridge_Lsp_Status, boo
 // bridge_lsp_session_write_stdin writes to the server's stdin while HOLDING the
 // map lock, so a concurrent lsp_stop cannot close the fd between the liveness
 // check and the write (N1). Returns false if the session is gone or not running.
+// ---- opt-in JSON-RPC tracing ------------------------------------------------
+//
+// Set HAM_LSP_TRACE_DIR to capture, per session, EVERY frame in both directions:
+//   <dir>/<session_id>.jsonl   {"t":<unix_ms>,"dir":"tx"|"rx","body":<raw frame>}
+// "tx" is bridge -> language server (what the editor asked); "rx" is the answer.
+// Unset (the default) this is a single getenv and a branch, so production pays
+// nothing. It exists because "no completions" is indistinguishable, from the
+// outside, between a request never sent, a request sent against a stale
+// document, and a server answering nothing -- and those have different fixes.
+lsp_trace_dir :: proc() -> string {
+	dir, found := os.lookup_env_alloc("HAM_LSP_TRACE_DIR", context.temp_allocator)
+	if !found do return ""
+	return dir
+}
+
+lsp_trace :: proc(session_id: string, direction: string, body: string) {
+	dir := lsp_trace_dir()
+	if dir == "" do return
+	path := fmt.tprintf("%s/%s.jsonl", dir, session_id)
+	f, err := os.open(path, os.O_WRONLY | os.O_CREATE | os.O_APPEND, os.Permissions{.Read_User, .Write_User})
+	if err != nil do return
+	defer os.close(f)
+	// body is raw JSON already; embed it as a string so one bad frame cannot
+	// corrupt the whole trace file for a reader.
+	// NOTE: Odin's fmt treats a literal '{' as the start of a brace directive, so
+	// the JSON braces are passed as ARGUMENTS rather than written into the format
+	// string. Writing them inline yields "%!(MISSING CLOSE BRACE)" and a corrupt
+	// trace -- found the first time this ran.
+	line := fmt.tprintf("%s\"t\":%d,\"dir\":\"%s\",\"len\":%d,\"body\":%q%s\n",
+		"{", bridge_now_unix_ms(), direction, len(body), body, "}")
+	os.write(f, transmute([]byte)line)
+}
+
 bridge_lsp_session_write_stdin :: proc(session_id: string, chunks: ..[]byte) -> bool {
 	sync.mutex_lock(&bridge_lsp_session_map.mu)
 	defer sync.mutex_unlock(&bridge_lsp_session_map.mu)
@@ -171,6 +204,7 @@ bridge_lsp_session_write_stdin :: proc(session_id: string, chunks: ..[]byte) -> 
 	if !ok || s.status != .Running || s.stdin_w == nil do return false
 	for c in chunks {
 		if _, err := os.write(s.stdin_w, c); err != nil do return false
+		lsp_trace(session_id, "tx", string(c))
 	}
 	return true
 }
@@ -451,6 +485,7 @@ bridge_lsp_read_worker :: proc(data: rawptr) {
 				msg, remaining, parsed := lsp_try_parse_one(accum[:])
 				if !parsed do break msg_loop
 
+				lsp_trace(ctx.session_id, "rx", string(msg))
 				frame := bridge_lsp_data_frame_json(ctx.session_id, string(msg))
 				bridge_lsp_enqueue(frame)
 				delete(frame, lsp_heap())
