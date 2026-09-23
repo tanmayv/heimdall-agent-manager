@@ -72,7 +72,7 @@ function createArtifactButtonHtml(artifactId: string, initialLabelHtml = ''): st
 
 function renderInline(text: string): string {
   let escaped = escapeHtml(text);
-  escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code class="rounded bg-accent/10 border border-accent/25 px-1.5 py-0.5 font-mono text-[0.85em] font-medium text-accent">${code}</code>`);
+  escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code class="font-mono text-[0.85em] font-medium text-accent">${code}</code>`);
   escaped = escaped.replace(/(?:‘|’)([^‘’\n]+?)(?:’|‘)/g, '‘<span class="text-accent font-medium">$1</span>’');
   escaped = escaped.replace(/(^|[\s(\[{<])(?:&#39;|')(?![\s])([^'‘’\n]+?)(?<![\s])(?:&#39;|')(?=[\]}>)\s.,;:!?]|$)/g, '$1‘<span class="text-accent font-medium">$2</span>’');
   escaped = escaped.replace(/\*\*\*([^*\n]+)\*\*\*/g, '<strong><em>$1</em></strong>');
