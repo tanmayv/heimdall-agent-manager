@@ -19,6 +19,7 @@ import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
 import card_service "odin_test:hub/service/card"
+import issue_service "odin_test:hub/service/issue"
 import http "odin_test:hub/transport/http"
 import platform "odin_test:hub/platform"
 
@@ -41,6 +42,7 @@ App_Graph :: struct {
 	sqlite_scheduled_prompts: sqlite.Scheduled_Prompt_Repo_SQLite,
 	sqlite_push: sqlite.Push_Repo_SQLite,
 	sqlite_cards: sqlite.Card_Repo_SQLite,
+	sqlite_issues: sqlite.Issue_Repo_SQLite,
 	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
 	sqlite_experiments: sqlite.Experiment_Repo_SQLite,
 	sqlite_lsp_server_configs: sqlite.Lsp_Server_Config_Repo_SQLite,
@@ -83,6 +85,8 @@ App_Graph :: struct {
 	experiment_handlers: http.Experiment_Rest_Handlers,
 	lsp_server_config_handlers: http.Lsp_Server_Config_Rest_Handlers,
 	card_handlers: http.Card_Handlers,
+	issues: issue_service.Issue_Service,
+	issue_handlers: http.Issue_Handlers,
 	action_mutex: sync.Mutex,
 	action_bridge_versions: map[string]int,
 	router: http.Router,
@@ -130,6 +134,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.scheduled_prompts = graph.repos.actions
 	graph.repos.push_subscriptions = sqlite.new_push_repository(&graph.sqlite_push, &graph.db)
 	graph.repos.cards = sqlite.new_card_repository(&graph.sqlite_cards, &graph.db)
+	graph.repos.issues = sqlite.new_issue_repository(&graph.sqlite_issues, &graph.db)
 	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
 	graph.experiment_repo = sqlite.new_experiment_repository(&graph.sqlite_experiments, &graph.db)
 	graph.lsp_server_config_repo = sqlite.new_lsp_server_config_repository(&graph.sqlite_lsp_server_configs, &graph.db)
@@ -243,7 +248,9 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	)
 	graph.experiment_handlers = http.Experiment_Rest_Handlers{auth = &graph.auth, repo = &graph.experiment_repo, clock = &graph.clock}
 	graph.lsp_server_config_handlers = http.Lsp_Server_Config_Rest_Handlers{auth = &graph.auth, repo = &graph.lsp_server_config_repo, clock = &graph.clock, ids = &graph.ids}
+	graph.issues = issue_service.new_issue_service(&graph.repos.issues, &graph.clock, &graph.ids)
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
+	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
 	graph.agent_action_handlers.cards = &graph.cards
 	graph.router = http.new_router()
 	register_routes(graph)
@@ -396,6 +403,22 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/members", rawptr(&graph.taskchain_handlers), http.list_chain_members_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/members", rawptr(&graph.taskchain_handlers), http.add_chain_member_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/members/*", rawptr(&graph.taskchain_handlers), http.remove_chain_member_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories", rawptr(&graph.taskchain_handlers), http.list_chain_directories_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/directories", rawptr(&graph.taskchain_handlers), http.add_chain_directory_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.get_chain_directory_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.patch_chain_directory_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/directories/*", rawptr(&graph.taskchain_handlers), http.remove_chain_directory_handler)
+	// Task chain directory filesystem browser (resolves chain+directory -> bridge+path, relays fs_* WS commands).
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs", rawptr(&graph.bridge_handlers), http.list_chain_directory_fs_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs/quick-open", rawptr(&graph.bridge_handlers), http.quick_open_chain_directory_fs_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs/search", rawptr(&graph.bridge_handlers), http.search_chain_directory_fs_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/directories/*/fs/file", rawptr(&graph.bridge_handlers), http.read_chain_directory_file_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/directories/*/fs/file", rawptr(&graph.bridge_handlers), http.create_chain_directory_file_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/directories/*/fs/file", rawptr(&graph.bridge_handlers), http.write_chain_directory_file_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/task-chains/*/directories/*/fs/files", rawptr(&graph.bridge_handlers), http.batch_write_chain_directory_files_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/directories/*/fs/dir", rawptr(&graph.bridge_handlers), http.create_chain_directory_dir_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/directories/*/fs/move", rawptr(&graph.bridge_handlers), http.move_chain_directory_path_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/task-chains/*/directories/*/fs", rawptr(&graph.bridge_handlers), http.delete_chain_directory_path_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/task-chains/*/tasks/*", rawptr(&graph.taskchain_handlers), http.get_task_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/task-chains/*/tasks/*", rawptr(&graph.taskchain_handlers), http.patch_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/cancel", rawptr(&graph.taskchain_handlers), http.cancel_task_handler)
@@ -494,6 +517,20 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "PATCH", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.patch_card_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/cards/*", rawptr(&graph.card_handlers), http.delete_card_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/cards/*/*", rawptr(&graph.card_handlers), http.card_action_handler)
+
+	// Issues API
+	http.router_add(&graph.router, "GET", "/api/v1/issues", rawptr(&graph.issue_handlers), http.list_issues_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/issues", rawptr(&graph.issue_handlers), http.create_issue_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/issues/*", rawptr(&graph.issue_handlers), http.get_issue_handler)
+	http.router_add(&graph.router, "PATCH", "/api/v1/issues/*", rawptr(&graph.issue_handlers), http.patch_issue_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/issues/*", rawptr(&graph.issue_handlers), http.delete_issue_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/issues/*/comments", rawptr(&graph.issue_handlers), http.list_issue_comments_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/issues/*/comments", rawptr(&graph.issue_handlers), http.create_issue_comment_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/issues/*/comments/*", rawptr(&graph.issue_handlers), http.delete_issue_comment_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/issues/*/votes", rawptr(&graph.issue_handlers), http.list_issue_votes_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/issues/*/vote", rawptr(&graph.issue_handlers), http.vote_issue_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/issues/*/vote", rawptr(&graph.issue_handlers), http.unvote_issue_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/issues/*/unvote", rawptr(&graph.issue_handlers), http.unvote_issue_handler)
 
 	// Shell session WS stream + HTTP input/resize fallback (T7).
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/shells/*/stream", rawptr(&graph.shell_session_stream_handlers), http.shell_session_stream_handler)

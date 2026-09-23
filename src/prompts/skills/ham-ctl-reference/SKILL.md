@@ -1,6 +1,6 @@
 ---
 name: ham-ctl-reference
-description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, chat, memory, artifact, shell, shell-cmd, context, start-success) with exact verbs, flags, and valid values. Also covers shell sessions as a way to put a running process in front of the user — they can watch its stdout live and, if it serves HTTP on a declared port, open its UI as a preview in Heimdall — no inbound port on either machine, and it works when the Hub is on a different host. Includes how two services in separate sessions call each other through the Hub. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
+description: Authoritative command reference for the ham-ctl agent CLI — every group (bridge, agents, task-chain, task, issue, chat, memory, artifact, shell, shell-cmd, context, start-success) with exact verbs, flags, and valid values. Also covers shell sessions as a way to put a running process in front of the user — they can watch its stdout live and, if it serves HTTP on a declared port, open its UI as a preview in Heimdall — no inbound port on either machine, and it works when the Hub is on a different host. Includes how two services in separate sessions call each other through the Hub. Load whenever you need the precise ham-ctl syntax for a Heimdall action and want to get flags, positional ids, task/chain statuses, vote results, or memory scopes right the first time.
 ---
 
 # ham-ctl command reference
@@ -19,7 +19,7 @@ Conventions used below:
 - Run `./.heimdall/bin/ham-ctl <group> --help` for the built-in reference of any group;
   `./.heimdall/bin/ham-ctl --help` lists all groups.
 
-Groups: `bridge`, `agents`, `task-chain`, `task`, `chat`, `memory`, `artifact`,
+Groups: `bridge`, `agents`, `task-chain`, `task`, `issue`, `chat`, `memory`, `artifact`,
 `shell`, `shell-cmd`, `context`, `start-success`.
 
 ---
@@ -42,7 +42,7 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `chat`, `memory`, `artifact`,
 
 ## task-chain — your task chains
 - `task-chain list [--mine] [--project <id>]` — chains (`--mine` = ones you coordinate).
-- `task-chain show [<chain-id>]` — show a chain (defaults to your current chain).
+- `task-chain show [<chain-id>]` — show a chain (defaults to your current chain), including embedded `tasks` and `directories`.
 - `task-chain set-title <title> [--chain <id>]` — rename a chain (coordinator only).
 - `task-chain set-description <text> [--chain <id>]` (or `--stdin`) — set the chain
   description (coordinator only; pass `""` to clear; `--chain` defaults to your chain).
@@ -53,6 +53,58 @@ Groups: `bridge`, `agents`, `task-chain`, `task`, `chat`, `memory`, `artifact`,
   tasks, set each agent's current task, and nudge idle agents. **The chain id is REQUIRED**
   (positional, or `--chain <id>`; with neither it just prints help). Coordinator/owner only,
   idempotent. See the `coordinator-task-management` skill for when to run it.
+
+### Relevant directories (`task-chain directory`)
+Associate one or more working directories (local checkouts, CitC workspaces, repos) with a task chain so participating agents and the UI know which workspaces/directories are in scope. Directories are also embedded directly in `task-chain show [<chain-id>]` and `GET /api/v1/task-chains/:id` output under the `"directories"` array.
+
+- `task-chain directory list [--chain <id>]` — list relevant directories for a task chain (`--chain` defaults to your current chain).
+- `task-chain directory add --path <path> [--bridge <bridge_id>] [--vcs-kind <kind>] [--chain <id>]` — associate a directory with the chain.
+- `task-chain directory update <directory-id> [--path <path>] [--bridge <bridge_id>] [--vcs-kind <kind>] [--chain <id>]` — update an existing directory entry.
+- `task-chain directory remove <directory-id> [--chain <id>]` — disassociate a directory from the chain.
+
+#### Directory JSON shape (lean payload)
+Directory objects use a lean payload shape containing only operational fields. To keep coordination lightweight, metadata like timestamps (`created_at`, `updated_at`) and authorship/owner fields are intentionally omitted:
+
+```json
+{
+  "directory_id": "dir_18d7a123bc45de67",
+  "path": "/usr/local/google/home/tanmayvijay/heimdall-cloudtop",
+  "bridge_id": "brg_18d03379a7d6d47b",
+  "vcs_kind": "git",
+  "vcs": {}
+}
+```
+
+Fields:
+- `directory_id`: Unique identifier for the directory record (`dir_...`).
+- `path`: Target directory path on the bridge host.
+- `bridge_id`: Identifier of the bridge where the directory resides.
+- `vcs_kind`: Version control system kind (`git`, `citc`, `jj`, or empty).
+- `vcs`: Object containing VCS-specific details (branch, commit, status, etc.).
+
+#### Command examples
+```bash
+# List directories for the current chain
+ham-ctl task-chain directory list
+
+# List directories for a specific chain
+ham-ctl task-chain directory list --chain chain_18d711c5384a0119
+
+# Add a directory to the chain
+ham-ctl task-chain directory add --path /usr/local/google/home/tanmayvijay/heimdall-cloudtop --bridge brg_18d03379a7d6d47b --vcs-kind git
+
+# Add a directory to a specific chain
+ham-ctl task-chain directory add --chain chain_18d711c5384a0119 --path /google/src/cloud/tanmayvijay/heimdall --vcs-kind citc
+
+# Update an existing directory's path or bridge
+ham-ctl task-chain directory update dir_18d7a123bc45de67 --path /usr/local/google/home/tanmayvijay/heimdall-cloudtop-v2
+
+# Remove a directory from the chain
+ham-ctl task-chain directory remove dir_18d7a123bc45de67
+
+# View chain details with embedded directories
+ham-ctl task-chain show chain_18d711c5384a0119
+```
 
 ## task — tasks within a chain
 A positional `<task-id>` identifies the task and is enough on its own (task ids are
@@ -88,6 +140,113 @@ with no `ngtm`, the Hub auto-finalizes the task straight to `completed` (that is
 only outcome that unblocks dependents — `validated_good` does not). A single `ngtm` moves
 it to `validated_not_good` for rework. So the assignee's job is `--status in_validation`;
 the reviewer's job is `--result lgtm|ngtm`; completion happens on its own.
+
+## issue — track, discuss, and vote on issues and blockers
+Manage defects, toolchain quirks, environment problems, and out-of-scope bugs across
+the system. Supports lean list views, detail inspect with threaded comments, voting
+with single-vote enforcement per instance/user, and unvoting.
+
+A positional `<issue-id>` identifies the issue right after the verb.
+
+- `issue list [--status <new|fixed|obsolete>] [--scope <global|project|agent_id|bridge_id>] [--target-id <id>] [--chain <id>] [--query <text>] [--voter-id <id>] [--limit <limit>] [--offset <offset>]` — list issues. Returns a **lean payload** containing `description_preview`, `comment_count`, `vote_count`, and `has_voted` (when voter ID is supplied), omitting the full description and comments array.
+- `issue show <issue-id> [--voter-id <id>]` — show full issue details, including the full `description`, metadata, `closed_at`, `vote_count`, `comment_count`, `has_voted` (for the specified or caller identity), and embedded `comments` array.
+- `issue create --title <title> [--description <desc>] [--scope <global|project|agent_id|bridge_id>] [--target-id <id>] [--chain <id>] [--created-by <id>]` — create a new issue with status `new`.
+- `issue update <issue-id> [--title <title>] [--description <desc>] [--status <new|fixed|obsolete>] [--scope <scope>] [--target-id <id>] [--chain <id>]` — update an issue. Setting status to `fixed` or `obsolete` automatically populates the `closed_at` timestamp; setting back to `new` clears `closed_at`.
+- `issue comment <issue-id> --body <body> [--stdin] [--author-id <id>] [--author-name <name>]` — add a comment to an issue.
+- `issue comment <issue-id> list` (or `issue comments <issue-id>`) — list comments for an issue.
+- `issue vote <issue-id> [--voter-id <id>] [--voter-name <name>]` — cast an upvote on an issue. Each user or agent instance can vote only once; duplicate votes are rejected with HTTP 409 Conflict. Increments `vote_count` and sets `has_voted: true`.
+- `issue unvote <issue-id> [--voter-id <id>]` — retract a previously cast vote. Decrements `vote_count` and sets `has_voted: false`. Returns 404 if no vote exists for the voter.
+- `issue delete <issue-id>` (or `issue remove <issue-id>`) — permanently delete an issue, including its comments and votes.
+
+### Issue statuses and scopes
+- **Statuses**:
+  - `new` — open issue (default upon creation).
+  - `fixed` — resolved issue (sets `closed_at`).
+  - `obsolete` — discarded / no longer relevant (sets `closed_at`).
+- **Scopes** (`--scope` / `--scope-type`):
+  - `global` — system-wide or cross-project defects (default).
+  - `project` — project-specific defects (`--target-id` specifies project ID).
+  - `agent_id` (alias `agent`) — agent template or runtime instance issues (`--target-id` specifies agent ID).
+  - `bridge_id` (alias `bridge`) — host/bridge-specific issues (`--target-id` specifies bridge ID).
+
+### Issue JSON shapes
+
+#### Lean list shape (`issue list`)
+```json
+{
+  "issue_id": "iss_18d7a123bc45de67",
+  "title": "Compiler segfault on empty generic struct",
+  "description_preview": "Reproduces when compiling with -vet-unused...",
+  "status": "new",
+  "scope_type": "project",
+  "target_id": "proj_18c6879e443756f1",
+  "chain_id": "chain_18d711c5384a0119",
+  "created_by": "inst_18d78eed201a0bcf",
+  "created_at": "2026-09-22T14:00:00Z",
+  "updated_at": "2026-09-22T14:05:00Z",
+  "closed_at": "",
+  "vote_count": 3,
+  "comment_count": 2,
+  "has_voted": false
+}
+```
+
+#### Detail shape (`issue show`, `issue create`, `issue update`)
+```json
+{
+  "issue_id": "iss_18d7a123bc45de67",
+  "title": "Compiler segfault on empty generic struct",
+  "description": "Full reproduction logs and stack trace...",
+  "status": "new",
+  "scope_type": "project",
+  "target_id": "proj_18c6879e443756f1",
+  "chain_id": "chain_18d711c5384a0119",
+  "created_by": "inst_18d78eed201a0bcf",
+  "created_at": "2026-09-22T14:00:00Z",
+  "updated_at": "2026-09-22T14:05:00Z",
+  "closed_at": "",
+  "vote_count": 3,
+  "comment_count": 2,
+  "has_voted": true,
+  "comments": [
+    {
+      "comment_id": "icmt_18d7a9876543210f",
+      "issue_id": "iss_18d7a123bc45de67",
+      "author_id": "inst_18d78eed201a0bcf",
+      "author_name": "worker #42",
+      "body": "Confirmed also on NixOS 24.05 with odin-nightly.",
+      "created_at": "2026-09-22T14:02:00Z",
+      "updated_at": "2026-09-22T14:02:00Z"
+    }
+  ]
+}
+```
+
+### Command examples
+```bash
+# Search for existing issues to avoid filing duplicates
+ham-ctl issue list --query "compiler segfault"
+
+# Vote on an existing issue
+ham-ctl issue vote iss_18d7a123bc45de67
+
+# Retract a vote
+ham-ctl issue unvote iss_18d7a123bc45de67
+
+# Create a new issue scoped to a project
+ham-ctl issue create --title "Broken libsqlite3 dependency" \
+  --description "Fails to link on Ubuntu 22.04 with missing symbol sqlite3_column_table_name" \
+  --scope project --target-id proj_18c6879e443756f1
+
+# View issue details including threaded comments
+ham-ctl issue show iss_18d7a123bc45de67
+
+# Add a diagnostic comment to an issue
+ham-ctl issue comment iss_18d7a123bc45de67 --body "Workaround: export CGO_CFLAGS=-DSQLITE_ENABLE_COLUMN_METADATA"
+
+# Resolve an issue
+ham-ctl issue update iss_18d7a123bc45de67 --status fixed
+```
 
 ## chat — inbox, sending, and this conversation's title
 - `chat read [--limit N] [--since T] [--include-read] [--transcript]` — read messages.

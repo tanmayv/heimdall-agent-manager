@@ -37,6 +37,9 @@ import {
   writeChainOverviewCollapsedState,
   writeRightSidebarOpen,
   writeRightSidebarTab,
+  readPinnedMonitorAgents,
+  addPinnedMonitorAgent,
+  removePinnedMonitorAgent,
 } from '../../utils/clientPersistence';
 
 function canUseAmbientApiAuth(): boolean {
@@ -351,10 +354,42 @@ export default function ChainOverviewPanel({
   const [activeArtifactId, setActiveArtifactId] = useState<string>('');
   const [expandedAttentionTaskId, setExpandedAttentionTaskId] = useState<string | null>(null);
   const [openTerminalIds, setOpenTerminalIds] = useState<Record<string, boolean>>({});
+  const [capturedTerminalIds, setCapturedTerminalIds] = useState<Record<string, boolean>>({});
   const [maximizedTerminalInstanceId, setMaximizedTerminalInstanceId] = useState<string | null>(null);
+  const [pinnedAgentIds, setPinnedAgentIds] = useState<string[]>(() => readPinnedMonitorAgents());
+
+  React.useEffect(() => {
+    setPinnedAgentIds(readPinnedMonitorAgents());
+  }, []);
+
+  const handleTogglePinAgent = useCallback(
+    (instId: string, e?: React.MouseEvent) => {
+      e?.stopPropagation();
+      if (!instId) return;
+      const isPinned = pinnedAgentIds.includes(instId);
+      if (isPinned) {
+        removePinnedMonitorAgent(instId);
+        setPinnedAgentIds((prev) => prev.filter((id) => id !== instId));
+      } else {
+        addPinnedMonitorAgent(instId);
+        setPinnedAgentIds((prev) => (prev.includes(instId) ? prev : [...prev, instId]));
+        // On first pin, surface the monitor grid so the user sees where it went.
+        if (typeof window !== 'undefined') {
+          window.open(window.location.origin + '/#/agent-monitor', 'agent-monitor');
+        }
+      }
+    },
+    [pinnedAgentIds]
+  );
 
   const chain = chainData?.chain;
   const members: any[] = useMemo(() => chain?.members || [], [chain?.members]);
+  const capturedMembers = useMemo(() => {
+    return members.filter((member) => {
+      const instId = member.agentInstanceId || member.agent_instance_id;
+      return Boolean(capturedTerminalIds[instId]);
+    });
+  }, [members, capturedTerminalIds]);
   const tasks: any[] = useMemo(() => chain?.tasks || [], [chain?.tasks]);
   const artifacts: any[] = useMemo(() => artifactsData?.artifacts || [], [artifactsData?.artifacts]);
   const vcsFiles: VcsChangedFile[] = useMemo(() => vcsFilesQuery.data?.files || [], [vcsFilesQuery.data?.files]);
@@ -431,6 +466,24 @@ export default function ChainOverviewPanel({
       ...prev,
       [instId]: !prev[instId],
     }));
+  }, []);
+
+  // Toggle terminal capture
+  const toggleCaptureTerminal = useCallback((instId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setCapturedTerminalIds((prev) => {
+      const willCapture = !prev[instId];
+      if (willCapture) {
+        setOpenTerminalIds((openPrev) => ({
+          ...openPrev,
+          [instId]: true,
+        }));
+      }
+      return {
+        ...prev,
+        [instId]: willCapture,
+      };
+    });
   }, []);
 
   // Handle start agent instance
@@ -557,6 +610,7 @@ export default function ChainOverviewPanel({
                 const coordinatorClasses = isCoordinator
                   ? 'border-accent/50 bg-gradient-to-br from-accent/10 to-accent/5 ring-1 ring-accent/20'
                   : 'border-subtle bg-surface-secondary/30';
+                const isCapturing = Boolean(capturedTerminalIds[instId]);
 
                 return (
                   <div
@@ -598,6 +652,21 @@ export default function ChainOverviewPanel({
                     </div>
 
                     <div className="shrink-0 flex items-center gap-1 justify-end" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        data-debug-id={`chain-overview-toggle-capture-${instId}`}
+                        onClick={(e) => toggleCaptureTerminal(instId, e)}
+                        title={isCapturing ? 'Stop capturing terminal' : 'Capture terminal output'}
+                        aria-label={isCapturing ? 'Stop capturing terminal' : 'Capture terminal output'}
+                        aria-pressed={isCapturing}
+                        className={`grid h-7 w-7 place-items-center rounded-md border border-subtle transition-colors ${
+                          isCapturing
+                            ? 'bg-accent/20 text-accent font-semibold hover:bg-accent/30'
+                            : 'text-muted hover:bg-neutral-soft hover:text-primary'
+                        }`}
+                      >
+                        <Icon name="terminal" size={13} />
+                      </button>
                       {isStopped ? (
                         <button
                           type="button"
@@ -1050,23 +1119,26 @@ export default function ChainOverviewPanel({
             />
             <Icon name="terminal" size={14} className="text-muted" />
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted group-hover:text-primary transition-colors">
-              Fleet Terminals ({members.length})
+              Fleet Terminals ({capturedMembers.length})
             </h3>
           </div>
         </button>
 
         {!isCollapsed('terminals') && (
-          members.length === 0 ? (
-            <p className="text-xs text-muted py-1">No member agents available.</p>
+          capturedMembers.length === 0 ? (
+            <p className="text-xs text-muted py-1">
+              No active terminal captures. Click the terminal icon on an agent card in Chain Agents to capture and monitor its output.
+            </p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
-              {members.map((member) => {
+              {capturedMembers.map((member) => {
                 const instId = member.agentInstanceId || member.agent_instance_id;
                 const name = member.displayName || member.display_name || instId;
                 const role = member.role || 'worker';
                 const rawStatus = String(member.runtimeStatus || member.runtime_status || 'stopped').toLowerCase();
                 const isStopped = rawStatus === 'stopped' || rawStatus === 'failed';
                 const isOpen = Boolean(openTerminalIds[instId]);
+                const isPinned = pinnedAgentIds.includes(instId);
 
                 return (
                   <div
@@ -1094,6 +1166,20 @@ export default function ChainOverviewPanel({
                         <span className="text-[11px] text-muted">
                           {rawStatus}
                         </span>
+                        {/* Pin to Agent Monitor */}
+                        <button
+                          type="button"
+                          title={isPinned ? 'Unpin from monitor' : 'Pin to Agent Monitor'}
+                          aria-label={isPinned ? 'Unpin from monitor' : 'Pin to Agent Monitor'}
+                          aria-pressed={isPinned}
+                          data-debug-id={`chain-overview-terminal-pin-${instId}`}
+                          onClick={(e) => handleTogglePinAgent(instId, e)}
+                          className={`grid h-6 w-6 place-items-center rounded hover:bg-neutral-soft ${
+                            isPinned ? 'text-accent' : 'text-muted hover:text-primary'
+                          }`}
+                        >
+                          <Icon name="grid" size={12} />
+                        </button>
                         {/* Maximize / Pop out button */}
                         <button
                           type="button"
@@ -1184,15 +1270,40 @@ export default function ChainOverviewPanel({
                   maximizedTerminalInstanceId}
               </span>
             </div>
-            <button
-              type="button"
-              data-debug-id="chain-overview-maximized-terminal-close"
-              aria-label="Restore terminal"
-              onClick={() => setMaximizedTerminalInstanceId(null)}
-              className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
-            >
-              <Icon name="minimize" size={16} />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-debug-id={`chain-overview-maximized-terminal-pin-${maximizedTerminalInstanceId}`}
+                title={
+                  maximizedTerminalInstanceId && pinnedAgentIds.includes(maximizedTerminalInstanceId)
+                    ? 'Unpin from monitor'
+                    : 'Pin to Agent Monitor'
+                }
+                aria-label={
+                  maximizedTerminalInstanceId && pinnedAgentIds.includes(maximizedTerminalInstanceId)
+                    ? 'Unpin from monitor'
+                    : 'Pin to Agent Monitor'
+                }
+                aria-pressed={Boolean(maximizedTerminalInstanceId && pinnedAgentIds.includes(maximizedTerminalInstanceId))}
+                onClick={(e) => handleTogglePinAgent(maximizedTerminalInstanceId, e)}
+                className={`grid h-8 w-8 place-items-center rounded-lg hover:bg-neutral-soft ${
+                  maximizedTerminalInstanceId && pinnedAgentIds.includes(maximizedTerminalInstanceId)
+                    ? 'text-accent'
+                    : 'text-muted hover:text-primary'
+                }`}
+              >
+                <Icon name="grid" size={14} />
+              </button>
+              <button
+                type="button"
+                data-debug-id="chain-overview-maximized-terminal-close"
+                aria-label="Restore terminal"
+                onClick={() => setMaximizedTerminalInstanceId(null)}
+                className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-neutral-soft hover:text-primary"
+              >
+                <Icon name="minimize" size={16} />
+              </button>
+            </div>
           </div>
           <div className="flex-1 min-h-0 pt-3">
             <AgentPaneComposerPanel

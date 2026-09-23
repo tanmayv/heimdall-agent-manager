@@ -1,6 +1,6 @@
 ---
 name: coordinator-task-management
-description: How a task-chain COORDINATOR uses ham-ctl to plan, delegate to worker agents, enforce review gates, run reconcile, and complete the chain — including the full task lifecycle, status vocabulary, the fill-in task-creation template, the two review tiers, and the reconcile self-heal deep-dive. Load whenever you are the coordinator of a chain.
+description: How a task-chain COORDINATOR uses ham-ctl to plan, delegate to worker agents, enforce review gates, run reconcile, handle out-of-scope defects with issues reporting and voting, and complete the chain — including the full task lifecycle, status vocabulary, the fill-in task-creation template, the two review tiers, and the reconcile self-heal deep-dive. Load whenever you are the coordinator of a chain.
 ---
 
 # Coordinator task management (delegate — do not do the work yourself)
@@ -120,5 +120,19 @@ Rule of thumb: if you changed the PLAN (deps, priority, assignments, new tasks),
 ## 9. Communication
 - You are the primary point of contact for the user. See the `heimdall-ctl-communication` skill for messaging syntax, chat conventions, and separating technical logs (task comments) from user communication (`chat send --to user`).
 - Send user updates: `./.heimdall/bin/ham-ctl chat send --to user --body "<concise status/blocker>"`.
+
+## 10. Out-of-scope defects & issues (report, search, and vote)
+When coordinators or agents encounter bugs, host toolchain defects, environment problems, or external project blockers that are **not directly related to the current task chain**:
+- **Do not inflate chain scope**: Do not create chain tasks for unrelated bugs or derail ongoing work. Track them through Heimdall's issues system instead.
+- **Search before filing**: Before creating a new issue, search existing issues to check if the defect has already been reported:
+  `./.heimdall/bin/ham-ctl issue list [--query "<text>"] [--scope <global|project|agent_id|bridge_id>]`
+- **Vote on existing issues**: If the issue is already tracked, do NOT file a duplicate. Instead, cast a vote to signal impact and priority:
+  `./.heimdall/bin/ham-ctl issue vote <issue-id>`
+  Each agent instance or user may vote only once (duplicate votes return 409 Conflict). If a vote was cast in error, retract it with:
+  `./.heimdall/bin/ham-ctl issue unvote <issue-id>`
+  Add any reproduction logs, platform differences, or extra diagnostic details as a comment:
+  `./.heimdall/bin/ham-ctl issue comment <issue-id> --body "<diagnostic notes>"`
+- **File new issues**: If no matching issue exists, file a new issue with a clear description, reproduction steps, and appropriate scope:
+  `./.heimdall/bin/ham-ctl issue create --title "<concise summary>" --description "<details, logs, reproduction>" [--scope <global|project|agent_id|bridge_id>] [--target-id <id>]`
 
 Golden rule: if a worker agent could do it, delegate it. Reserve your own hands-on effort for planning, coordination, synthesis, reconcile, and completion.

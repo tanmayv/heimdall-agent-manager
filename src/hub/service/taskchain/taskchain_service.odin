@@ -2310,3 +2310,110 @@ chain_status_from_string :: proc(status: string) -> domain.Task_Chain_Status {
 	if status == "cancelled" do return .Cancelled
 	return .Active
 }
+
+// --- Directory Management (REQ-BE-TASK-CHAIN-RELEVANT-DIRECTORIES) ---
+
+Add_Directory_Input :: struct {
+	chain_id:      domain.Task_Chain_ID,
+	path:          string,
+	bridge_id:     string,
+	vcs_kind:      string,
+	vcs_info_json: string,
+}
+
+Update_Directory_Input :: struct {
+	directory_id:  string,
+	chain_id:      domain.Task_Chain_ID,
+	path:          string,
+	bridge_id:     string,
+	vcs_kind:      string,
+	vcs_info_json: string,
+	has_path:      bool,
+	has_bridge_id: bool,
+	has_vcs_kind:  bool,
+	has_vcs_info:  bool,
+}
+
+list_chain_directories :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Directory, domain.Domain_Error) {
+	chain, ok, err := get_chain_for_read(service, auth, chain_id)
+	if !ok do return nil, err
+	return iface.taskchain_list_directories_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+}
+
+get_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, directory_id: string) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
+	if directory_id == "" do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Validation_Failed, "directory_id is required")
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return domain.Task_Chain_Directory{}, false, err
+	return iface.taskchain_get_directory(service.repo, directory_id, chain.chain_id, chain.owner_user_id)
+}
+
+add_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Add_Directory_Input) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
+	trimmed_path := strings.trim_space(input.path)
+	if trimmed_path == "" do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Validation_Failed, "directory path is required")
+	chain, ok, err := get_chain(service, auth, input.chain_id)
+	if !ok do return domain.Task_Chain_Directory{}, false, err
+
+	now := platform.clock_now(service.clock)
+	dir_id := platform.generate_id(service.ids, "dir_")
+	vcs_json := input.vcs_info_json
+	if vcs_json == "" || !strings.starts_with(vcs_json, "{") {
+		vcs_json = "{}"
+	}
+
+	dir := domain.Task_Chain_Directory{
+		directory_id  = dir_id,
+		chain_id      = chain.chain_id,
+		owner_user_id = chain.owner_user_id,
+		path          = trimmed_path,
+		bridge_id     = strings.trim_space(input.bridge_id),
+		vcs_kind      = strings.trim_space(input.vcs_kind),
+		vcs_info_json = vcs_json,
+		created_at    = now,
+		updated_at    = now,
+	}
+
+	saved, save_ok, save_err := iface.taskchain_save_directory(service.repo, dir)
+	if !save_ok do return domain.Task_Chain_Directory{}, false, save_err
+	return saved, true, domain.Domain_Error{}
+}
+
+update_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Update_Directory_Input) -> (domain.Task_Chain_Directory, bool, domain.Domain_Error) {
+	if input.directory_id == "" do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Validation_Failed, "directory_id is required")
+	chain, ok, err := get_chain(service, auth, input.chain_id)
+	if !ok do return domain.Task_Chain_Directory{}, false, err
+
+	existing, get_ok, get_err := iface.taskchain_get_directory(service.repo, input.directory_id, chain.chain_id, chain.owner_user_id)
+	if !get_ok do return domain.Task_Chain_Directory{}, false, get_err
+
+	if input.has_path {
+		trimmed_path := strings.trim_space(input.path)
+		if trimmed_path == "" do return domain.Task_Chain_Directory{}, false, domain.domain_error(.Validation_Failed, "directory path cannot be empty")
+		existing.path = trimmed_path
+	}
+	if input.has_bridge_id do existing.bridge_id = strings.trim_space(input.bridge_id)
+	if input.has_vcs_kind do existing.vcs_kind = strings.trim_space(input.vcs_kind)
+	if input.has_vcs_info {
+		vcs_json := input.vcs_info_json
+		if vcs_json == "" || !strings.starts_with(vcs_json, "{") {
+			vcs_json = "{}"
+		}
+		existing.vcs_info_json = vcs_json
+	}
+	existing.updated_at = platform.clock_now(service.clock)
+
+	saved, save_ok, save_err := iface.taskchain_save_directory(service.repo, existing)
+	if !save_ok do return domain.Task_Chain_Directory{}, false, save_err
+	return saved, true, domain.Domain_Error{}
+}
+
+remove_chain_directory :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, directory_id: string) -> (bool, domain.Domain_Error) {
+	if directory_id == "" do return false, domain.domain_error(.Validation_Failed, "directory_id is required")
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return false, err
+
+	removed, rem_err := iface.taskchain_remove_directory(service.repo, directory_id, chain.chain_id, chain.owner_user_id)
+	if rem_err.code != .None do return false, rem_err
+	if !removed do return false, domain.domain_error(.Not_Found, "directory not found")
+	return true, domain.Domain_Error{}
+}
+

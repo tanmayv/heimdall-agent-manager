@@ -1,5 +1,5 @@
 import TaskChainsPage from '../taskchain/TaskChainsPage';
-import ProjectChainTree from '../chains/ProjectChainTree';
+import ProjectChainTree, { CollapsedPinnedChains } from '../chains/ProjectChainTree';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
@@ -45,6 +45,8 @@ import UserTokensPanel from '../settings/UserTokensPanel';
 import MemoryListPage from '../memory/MemoryListPage';
 import MemoryViewPage from '../memory/MemoryViewPage';
 import MemoryFormPage from '../memory/MemoryFormPage';
+import IssueListPage from '../issues/IssueListPage';
+import IssueFormPage from '../issues/IssueFormPage';
 import SkillViewerPage from '../skills/SkillViewerPage';
 import NotificationsPanel from '../settings/NotificationsPanel';
 import ExperimentalPanel from '../settings/ExperimentalPanel';
@@ -140,6 +142,7 @@ const NAV_ROUTES: ShellRoute[] = [
   { path: '/shells', label: 'Shells', icon: 'terminal', description: 'Every shell session your bridges are running', group: 'primary' },
   { path: '/chains', label: 'Task Chains', icon: 'tasks', description: 'Multi-agent task chains grouped by project', group: 'primary' },
   { path: '/library', label: 'Library', icon: 'device', description: 'Artifacts and files', group: 'primary' },
+  { path: '/issues', label: 'Issues', icon: 'alert', description: 'Reported issues across projects, agents, and bridges', group: 'primary' },
   { path: '/settings/bridges', label: 'Settings', icon: 'gear', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
 ];
 
@@ -204,6 +207,10 @@ function routeTitle(path: string): string {
   if (path.startsWith('/agents/')) return 'Agent detail';
   if (path.startsWith('/library/artifacts/')) return 'Artifact viewer';
   if (path.startsWith('/library')) return 'Library';
+  if (path === '/issues/new') return 'New issue';
+  if (path.startsWith('/issues/') && path.endsWith('/edit')) return 'Edit issue';
+  if (path.startsWith('/issues/')) return 'Issue detail';
+  if (path.startsWith('/issues')) return 'Issues';
   if (path === '/projects/new') return 'New project';
   if (path.startsWith('/projects/') && path.endsWith('/edit')) return 'Edit project';
   if (path.startsWith('/projects/')) return 'Project detail';
@@ -240,6 +247,7 @@ function routeDescription(path: string): string {
   if (path.startsWith('/agents/')) return 'Agent overview, sessions, Bridges, and memory tabs will attach to this route.';
   if (path.startsWith('/library/artifacts/')) return 'Fullscreen artifact viewer route owned by the Library surface.';
   if (path.startsWith('/library')) return 'Filterable artifact list/grid route.';
+  if (path.startsWith('/issues')) return 'Reported issues across projects, agents, and bridges.';
   if (path.startsWith('/projects/')) return 'One project: its description, per-bridge paths, and the chains, agents and memory attached to it.';
   if (path.startsWith('/memory/')) return 'Full memory record with body, scope, and its status actions.';
   if (path.startsWith('/memory')) return 'Durable facts, habits and skills targeted to agents, projects, bridges, and templates. Empty scope applies to all.';
@@ -291,6 +299,7 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
   if (path.startsWith('/actions/') && path.endsWith('/edit')) return [{ label: 'Actions', href: '/actions' }, { label: 'Edit Action' }];
   if (path.startsWith('/actions')) return [{ label: 'Actions' }];
   if (path.startsWith('/library')) return [{ label: 'Library' }];
+  if (path.startsWith('/issues')) return [{ label: 'Issues' }];
   if (path.startsWith('/agents')) return [{ label: 'Agents' }];
   return [{ label: 'Conversations' }];
 }
@@ -1013,7 +1022,7 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
   const lspFlagPending = isLspRoute && experimentsQuery.data === undefined && !experimentsQuery.isError;
   const isMappedRoute = useMemo(() => {
     return [
-      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/agent-monitor',
+      '/cards', '/conversations', '/conversations/new', '/actions', '/projects', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/memory', '/shells', '/settings', '/agent-monitor', '/issues',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/c/') ||
       path.startsWith('/settings/bridges') ||
@@ -1052,20 +1061,40 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
     );
   }
 
+  const isDesktopTwoPaneRoute =
+    viewport === 'desktop' &&
+    ['/projects', '/actions', '/agents', '/shells', '/memory'].some(
+      (prefix) => path === prefix || path.startsWith(`${prefix}/`)
+    ) &&
+    !path.endsWith('/new') &&
+    !path.endsWith('/edit');
+
   return (
     <main
       data-debug-id="shell-main-route-outlet"
-      className="min-w-0 flex-1 overflow-auto overflow-x-hidden bg-canvas"
+      className={
+        isDesktopTwoPaneRoute
+          ? 'h-full min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden bg-canvas'
+          : 'min-w-0 flex-1 overflow-auto overflow-x-hidden bg-canvas'
+      }
       // The scroll container clears the bottom chrome by MEASUREMENT rather than by a
       // guessed `pb-20` (spec › GLOBAL FIXES): `--ui-bottom-chrome` is the tab bar's
       // real height, published by the bar itself, and the safe-area inset is added on
       // top so nothing is clipped on a device with a home indicator. A page that docks
       // its own action bar adds its height in its own spacer.
-      style={mobileBottomPadded
-        ? { paddingBottom: 'calc(max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)) + var(--space-2))' }
-        : undefined}
+      style={
+        !isDesktopTwoPaneRoute && mobileBottomPadded
+          ? { paddingBottom: 'calc(max(var(--ui-bottom-chrome, 0px), env(safe-area-inset-bottom, 0px)) + var(--space-2))' }
+          : undefined
+      }
     >
-      <section className="mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full">
+      <section
+        className={
+          isDesktopTwoPaneRoute
+            ? 'mx-auto flex h-full min-h-0 w-full max-w-6xl min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full [&>*]:h-full [&>*]:min-h-0 [&>*]:flex-1'
+            : 'mx-auto flex min-h-full w-full max-w-6xl min-w-0 flex-col items-start overflow-x-hidden px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5 [&>*]:max-w-full'
+        }
+      >
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         <ErrorBoundary resetKey={path} label={routeTitle(path)}>
         {lspFlagPending ? (
@@ -1146,6 +1175,14 @@ function RouteOutlet({ path, focusMessageId, mobileBottomPadded = false, convers
           <LibraryPage session={{ clientToken: 'v1', daemonUrl: '' }} />
         ) : path.startsWith('/library/artifacts/') ? (
           <ArtifactViewer artifactId={decodeURIComponent(path.slice('/library/artifacts/'.length))} daemonUrl="" clientToken="v1" onClose={() => window.history.back()} />
+        ) : path === '/issues' ? (
+          <IssueListPage />
+        ) : path === '/issues/new' ? (
+          <IssueFormPage />
+        ) : path.startsWith('/issues/') && path.endsWith('/edit') ? (
+          <IssueFormPage issueId={decodeURIComponent(path.slice('/issues/'.length, -'/edit'.length))} />
+        ) : path.startsWith('/issues/') ? (
+          <IssueListPage selectedIssueId={decodeURIComponent(path.slice('/issues/'.length))} />
         ) : (
           <div className="w-full max-w-2xl rounded-2xl border border-subtle bg-surface p-5 text-left">
             <div data-debug-id="shell-page-placeholder-icon" className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-neutral-soft text-muted"><Icon name="search" size={22} /></div>
@@ -1439,6 +1476,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <nav data-debug-id="shell-primary-nav" className="mt-2 space-y-0.5" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
+          {collapsed && <CollapsedPinnedChains currentPath={path} onNavigate={handlePaletteNavigate} />}
           {!collapsed && <ProjectChainTree projects={liveProjects.map((p) => ({ projectId: p.projectId, projectName: p.name }))} currentPath={path} onNavigate={handlePaletteNavigate} />}
         </div>
 

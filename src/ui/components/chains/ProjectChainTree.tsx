@@ -275,3 +275,115 @@ export default function ProjectChainTree({ projects, currentPath, onNavigate }: 
     </section>
   );
 }
+
+/**
+ * Extracts first letter of first two words, uppercase.
+ * If 1 word, first 2 letters uppercase. If single char, 1 letter. If empty/whitespace, "TC".
+ */
+export function chainAvatarInitials(title: string): string {
+  const trimmed = (title || '').trim();
+  if (!trimmed) return 'TC';
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
+  return trimmed.slice(0, 2).toUpperCase();
+}
+
+/**
+ * Returns true if currentPath matches chain coordinator conversation
+ * (/conversations/<id>, /c/<id>) or chain overview (/chains/<chainId>).
+ */
+export function isChainActive(chain: ChainListItem, currentPath: string): boolean {
+  const coordId = chain.coordinatorAgentInstanceId;
+  if (coordId) {
+    const encCoord = encodeURIComponent(coordId);
+    if (
+      currentPath === `/conversations/${coordId}` ||
+      currentPath === `/conversations/${encCoord}` ||
+      currentPath === `/c/${coordId}` ||
+      currentPath === `/c/${encCoord}` ||
+      currentPath.startsWith(`/conversations/${coordId}/`) ||
+      currentPath.startsWith(`/conversations/${encCoord}/`) ||
+      currentPath.startsWith(`/c/${coordId}/`) ||
+      currentPath.startsWith(`/c/${encCoord}/`)
+    ) {
+      return true;
+    }
+  }
+  if (chain.chainId) {
+    const encChain = encodeURIComponent(chain.chainId);
+    if (
+      currentPath === `/chains/${chain.chainId}` ||
+      currentPath === `/chains/${encChain}` ||
+      currentPath.startsWith(`/chains/${chain.chainId}/`) ||
+      currentPath.startsWith(`/chains/${encChain}/`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function CollapsedPinnedChains({
+  currentPath,
+  onNavigate,
+}: {
+  currentPath: string;
+  onNavigate: (path: string) => void;
+}) {
+  const { data: pinnedData } = useListPinnedTaskChainsQuery();
+  const pinnedChains = pinnedData?.chains ?? [];
+
+  if (pinnedChains.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      data-debug-id="collapsed-pinned-chains"
+      className="flex flex-col items-center gap-2 pt-3 mt-3 border-t border-subtle"
+    >
+      {pinnedChains.map((chain) => {
+        const path = chain.coordinatorAgentInstanceId
+          ? `/conversations/${encodeURIComponent(chain.coordinatorAgentInstanceId)}`
+          : `/chains/${encodeURIComponent(chain.chainId)}`;
+        const active = isChainActive(chain, currentPath);
+        const title = chain.title || 'Untitled chain';
+        const tone = chainStatusTone(chain.status);
+        const initials = chainAvatarInitials(chain.title);
+
+        return (
+          <a
+            key={`collapsed-pinned-${chain.chainId}`}
+            href={`#${path}`}
+            data-debug-id={`collapsed-chain-avatar-${chain.chainId}`}
+            data-active={active ? 'true' : 'false'}
+            title={title}
+            aria-label={title}
+            onClick={(e) => {
+              e.preventDefault();
+              onNavigate(path);
+            }}
+            className={`relative flex h-9 w-9 items-center justify-center rounded-xl text-xs font-bold transition select-none ${
+              active
+                ? 'border-2 border-accent text-accent bg-neutral-soft ring-1 ring-accent/30 font-bold'
+                : 'border border-subtle text-muted hover:text-primary hover:bg-neutral-soft hover:border-default'
+            }`}
+          >
+            <span>{initials}</span>
+            <span className="absolute -bottom-0.5 -right-0.5 pointer-events-none">
+              <StatusDot
+                tone={tone}
+                pulse={chain.status === 'active'}
+                label={chain.status}
+                size="sm"
+              />
+            </span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+

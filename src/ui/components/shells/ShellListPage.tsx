@@ -578,11 +578,11 @@ export default function ShellListPage({ selectedId = '' }: { selectedId?: string
   );
 
   const listSection = (
-    <div className="flex w-full min-w-0 flex-col gap-4">
+    <div className={`flex w-full min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
       {/* "N new" rather than a silent re-sort: nothing moves under the reader until
           they ask for it (REQ-UI-20). */}
       {list.pendingCount > 0 && !searching ? (
-        <div className="flex justify-center">
+        <div className="flex justify-center shrink-0">
           <Button
             size="sm"
             variant="secondary"
@@ -594,37 +594,43 @@ export default function ShellListPage({ selectedId = '' }: { selectedId?: string
         </div>
       ) : null}
       {list.restoreNotice ? (
-        <Alert tone="info" title="Couldn't find where you were">
-          <div className="flex flex-col items-start gap-2">
-            <span>That session is no longer near the top of this list. You are back at the start.</span>
-            <Button size="sm" variant="ghost" onClick={() => list.dismissRestoreNotice()}>Dismiss</Button>
-          </div>
-        </Alert>
+        <div className="shrink-0">
+          <Alert tone="info" title="Couldn't find where you were">
+            <div className="flex flex-col items-start gap-2">
+              <span>That session is no longer near the top of this list. You are back at the start.</span>
+              <Button size="sm" variant="ghost" onClick={() => list.dismissRestoreNotice()}>Dismiss</Button>
+            </div>
+          </Alert>
+        </div>
       ) : null}
 
-      {listBody}
+      <div className={twoPane ? 'flex-1 min-h-0 overflow-y-auto' : undefined}>
+        {listBody}
+      </div>
 
       {selectable ? (
-        <BulkActionBar
-          selectedCount={selectedIds.length}
-          loadedCount={visibleRows.length}
-          onCancel={() => setSelectedIds([])}
-        >
-          <ActionButton
-            icon="stop"
-            label="Kill"
-            variant="danger"
-            loading={bulkBusy}
-            disabled={killable.length === 0}
-            title={
-              killable.length === 0 && selectedIds.length > 0
-                ? 'Every selected session has already finished — there is nothing to kill.'
-                : undefined
-            }
-            data-debug-id="shell-bulk-kill"
-            onClick={() => killable.length && setBulkConfirm(killable.map((row) => row.session_id))}
-          />
-        </BulkActionBar>
+        <div className="shrink-0">
+          <BulkActionBar
+            selectedCount={selectedIds.length}
+            loadedCount={visibleRows.length}
+            onCancel={() => setSelectedIds([])}
+          >
+            <ActionButton
+              icon="stop"
+              label="Kill"
+              variant="danger"
+              loading={bulkBusy}
+              disabled={killable.length === 0}
+              title={
+                killable.length === 0 && selectedIds.length > 0
+                  ? 'Every selected session has already finished — there is nothing to kill.'
+                  : undefined
+              }
+              data-debug-id="shell-bulk-kill"
+              onClick={() => killable.length && setBulkConfirm(killable.map((row) => row.session_id))}
+            />
+          </BulkActionBar>
+        </div>
       ) : null}
     </div>
   );
@@ -793,23 +799,28 @@ export default function ShellListPage({ selectedId = '' }: { selectedId?: string
         // exist under the new tab rather than leaving a filter that matches nothing.
         applyUrlState({ ...urlState, tab: next as ShellTab, status: '' })
       }
+      className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
     >
-      <TabsList label="Shell session state">
+      <TabsList label="Shell session state" className="shrink-0">
         {SHELL_TABS.map((entry) => (
           <Tab key={entry.value} value={entry.value} disabled={searching} data-debug-id={`shell-tab-${entry.value}`}>
             {entry.label}
           </Tab>
         ))}
       </TabsList>
-      {searching ? null : <TabsPanel value={tab}>{listSection}</TabsPanel>}
+      {searching ? null : (
+        <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
+          {listSection}
+        </TabsPanel>
+      )}
     </Tabs>
   );
 
   const listColumn = (
-    <div data-debug-id="shell-list-page" className="flex w-full min-w-0 flex-col gap-3">
-      {toolbar}
-      {filterChipRow}
-      <div className="flex min-w-0 flex-col gap-4">
+    <div data-debug-id="shell-list-page" className={`flex w-full min-w-0 flex-col gap-3 ${twoPane ? 'flex-1 min-h-0 h-full overflow-hidden' : ''}`}>
+      <div className="shrink-0">{toolbar}</div>
+      {filterChipRow ? <div className="shrink-0">{filterChipRow}</div> : null}
+      <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
         {tabsBlock}
         {searching ? listSection : null}
       </div>
@@ -919,10 +930,11 @@ export default function ShellListPage({ selectedId = '' }: { selectedId?: string
         title="Shells"
         breadcrumbs={listCrumbs()}
         description={headerDescription}
+        className="h-full min-h-0 overflow-hidden"
       >
-        <div className="flex min-w-0 items-start gap-4">
-          <div className="w-full min-w-0 max-w-[420px] shrink-0">{listColumn}</div>
-          <div className="min-w-0 flex-1 border-l border-subtle pl-4" data-debug-id="shell-detail-pane">
+        <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
+          <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
+          <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="shell-detail-pane">
             {selectedId ? (
               <ShellDetailPane sessionId={selectedId} />
             ) : (
@@ -974,8 +986,8 @@ function ShellDetailPane({ sessionId }: { sessionId: string }) {
   const title = shellTitle(record);
 
   return (
-    <div ref={paneRef} className="min-w-0">
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden">
+      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <a
             href={shellViewHref(record.session_id)}
@@ -990,13 +1002,15 @@ function ShellDetailPane({ sessionId }: { sessionId: string }) {
           <ShellDetailActions record={record} busy={busy} onVerb={runVerb} />
         </div>
       </div>
-      <ShellDetailBody
-        record={record}
-        actionError={actionError}
-        notice={notice}
-        wide={wide}
-        onVerb={runVerb}
-      />
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <ShellDetailBody
+          record={record}
+          actionError={actionError}
+          notice={notice}
+          wide={wide}
+          onVerb={runVerb}
+        />
+      </div>
       <ShellDetailOverlays
         confirm={detail.confirm}
         onResolve={detail.resolveConfirm}

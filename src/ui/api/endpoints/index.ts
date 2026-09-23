@@ -13,3 +13,4 @@ export * from './actions';
 export * from './cards';
 export * from './shellJobs';
 export * from './shells';
+export * from './issues';

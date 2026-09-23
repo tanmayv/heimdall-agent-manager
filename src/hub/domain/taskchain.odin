@@ -148,6 +148,18 @@ Task_Vote :: struct {
 	updated_at:                 string,
 }
 
+Task_Chain_Directory :: struct {
+	directory_id:  string,
+	chain_id:      Task_Chain_ID,
+	owner_user_id: User_ID,
+	path:          string,
+	bridge_id:     string,
+	vcs_kind:      string,
+	vcs_info_json: string,
+	created_at:    string,
+	updated_at:    string,
+}
+
 task_status_unblocks_dependents :: proc(status: Task_Status) -> bool {
 	return status == .Completed || status == .Cancelled
 }
