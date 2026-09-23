@@ -7,8 +7,11 @@
  * by the close button). Keeping the Redux queue (rather than a new Provider)
  * avoids duplicating the working showToast/dismiss infra.
  *
- * Mount ONCE near the app root (e.g. in AppShell) so toasts appear app-wide:
- *   <ToastViewport />
+ * ALREADY MOUNTED, ONCE, in src/ui/main.tsx inside <Provider> and outside
+ * ElectronDeviceAuthGate. Do NOT add a second mount (AppShell or elsewhere):
+ * every mount renders the same queue, so a second one double-renders every
+ * toast. This docstring previously said "mount near the app root" and nothing
+ * ever did — see REQ-UI-TOAST-1.
  *
  * Accessibility: each `@ui` Toast is its own live region (role=status / alert),
  * so the container is a plain positioning wrapper (no nested live region). The

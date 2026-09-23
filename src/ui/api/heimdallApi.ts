@@ -49,6 +49,8 @@ export const HEIMDALL_TAG_TYPES = [
   'BridgeFigWorkspaces',
   'ShellSessions',
   'ShellSession',
+  'Experiments',
+  'LspServerConfigs',
   'Issue',
   'IssueComments',
 ] as const;

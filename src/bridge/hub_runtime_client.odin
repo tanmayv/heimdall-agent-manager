@@ -144,6 +144,7 @@ bridge_hub_runtime_init :: proc() {
 	bridge_tunnel_streams = make(map[string]^Bridge_Tunnel_Stream, runtime.heap_allocator())
 	bridge_tunnel_data_outgoing = make([dynamic]Bridge_Tunnel_Data_Outgoing)
 	bridge_proxy_init()
+	bridge_lsp_init()
 }
 
 // Reset / clear runtime instance and launch registries under lock (for tests).
@@ -216,6 +217,7 @@ bridge_hub_runtime_worker :: proc() {
 			// events it enqueues are drained by the loop started just below.
 			thread.run(bridge_shell_session_reconcile_now)
 			bridge_hub_runtime_loop(&conn)
+			bridge_lsp_stop_all()
 			fmt.println("bridge hub runtime: connection closed, reconnecting…")
 		} else if got_error {
 			log_failure(&last_failure, &attempts, "hub sent bridge_error after hello — token rejected or bridge not recognized (re-enroll?)")
@@ -250,6 +252,7 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 		bridge_shell_output_drain_outgoing(conn)
 		bridge_shell_exited_drain_outgoing(conn)
 		bridge_tunnel_data_drain_outgoing(conn)
+		bridge_lsp_drain_outgoing(conn)
 		// Flush any status transitions applied on background threads (e.g. a
 		// pty-host ChildExited) so "stopped"/"unreachable" reaches the hub now,
 		// not on the next heartbeat.
@@ -583,6 +586,7 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 	if bridge_fs_handle_command(conn, type, text) do return
 	if bridge_fig_handle_command(conn, type, text) do return
 	if bridge_vcs_handle_command(conn, type, text) do return
+	if bridge_lsp_handle_command(conn, type, text) do return
 	if bridge_hub_handle_provider_command(conn, type, text) do return
 }
 

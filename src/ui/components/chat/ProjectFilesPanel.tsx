@@ -26,6 +26,9 @@ import { initVimMode, VimMode } from 'monaco-vim';
 import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
 import { useTheme } from '../../store/themeSlice';
+import { LspNoticeBanner } from '../../lsp/LspNoticeBanner';
+import { lspServerNoticeKey } from '../../lsp/lspServerNotice';
+import { useMonacoLsp } from '../../lsp/useMonacoLsp';
 import { Icon, IconButton } from '@ui';
 import { useDialogA11y } from '../ui/composites/useDialogA11y';
 import {
@@ -781,14 +784,30 @@ export default function ProjectFilesPanel({
     return '';
   }); // project-root-relative path ('' = root)
 
-  const [rootAbs, setRootAbs] = useState('');
+  // REQ-LSP-MERGE-1 / REQ-LSP-XBRIDGE-1: roots are PER DIRECTORY, not panel-wide.
+  // This used to be a single `rootAbs` that load() overwrote for whichever
+  // directory was listed last, while the `primary` entry read it as "the project
+  // root". Listing a chain directory therefore rewrote the PROJECT's root, so
+  // switching chain -> primary resolved the project's files against the chain
+  // directory's root: wrong root, plausible config, confident wrong completions.
+  // The outbound switch looked correct, which is what made it survive review.
+  // Keyed by directory id ('primary' | <directoryId> | agent-rundir:<instanceId>).
+  const [dirRoots, setDirRoots] = useState<Record<string, string>>({});
+
+  // The PROJECT's own root. Stable no matter which directory is on screen.
+  const primaryRoot = dirRoots['primary'] || '';
+  // The root of the directory CURRENTLY displayed -- the other meaning that used
+  // to share one variable with the line above. Empty until that directory has
+  // been listed once, which is honest: we do not know its root yet, and the LSP
+  // `active` gate below already declines to start a server without one.
+  const rootAbs = dirRoots[activeDirectoryId] || '';
 
   // Available directories (primary project root + extra task chain directories + member agent run dirs)
   const availableDirectories = useMemo<DirectoryItem[]>(() => {
     const primary: DirectoryItem = {
       id: 'primary',
-      label: projectName || (rootAbs ? baseName(rootAbs) : 'Primary Project'),
-      path: rootAbs || '',
+      label: projectName || (primaryRoot ? baseName(primaryRoot) : 'Primary Project'),
+      path: primaryRoot,
       bridgeId: bridgeId || '',
       isPrimary: true,
       kind: 'primary',
@@ -840,7 +859,7 @@ export default function ProjectFilesPanel({
     }
 
     return [primary, ...extras, ...agentRunDirs];
-  }, [projectName, rootAbs, bridgeId, taskChainDirectories, propMembers, chainDetailQuery.data?.chain?.members, agentInstanceId]);
+  }, [projectName, primaryRoot, bridgeId, taskChainDirectories, propMembers, chainDetailQuery.data?.chain?.members, agentInstanceId]);
 
   const activeDirectory = useMemo(() => {
     return availableDirectories.find((d) => d.id === activeDirectoryId) || availableDirectories[0];
@@ -977,9 +996,13 @@ export default function ProjectFilesPanel({
     async (
       path: string,
       opts?: { cursor?: string | null; append?: boolean; includeHidden?: boolean },
-      scopeOverride?: FsScopeArgs
+      scopeOverride?: FsScopeArgs,
+      dirIdOverride?: string
     ) => {
       const scope = scopeOverride || activeFsTarget;
+      // switchDirectory calls load() for the directory it is moving TO, which is
+      // not necessarily activeDirectoryId yet, so it passes the id explicitly.
+      const loadedDirId = dirIdOverride || activeDirectoryId;
       if (!scope.projectId && (!scope.chainId || !scope.directoryId) && !scope.agentInstanceId) return;
       const append = Boolean(opts?.append);
       setError('');
@@ -1002,7 +1025,12 @@ export default function ProjectFilesPanel({
           if (!append) setEntries([]);
           return;
         }
-        setRootAbs(res.root || '');
+        // Record under the directory that was LISTED, not the one that happens to
+        // be active when the response lands -- a switch can change that mid-flight.
+        setDirRoots((prev) => {
+          const next = res.root || '';
+          return prev[loadedDirId] === next ? prev : { ...prev, [loadedDirId]: next };
+        });
         setTruncated(Boolean(res.truncated));
         setHasMore(Boolean(res.has_more));
         setNextCursor(res.next_cursor ?? null);
@@ -1107,7 +1135,7 @@ export default function ProjectFilesPanel({
         ? { projectId, bridgeId: bridgeId || '' }
         : { chainId, directoryId: nextTargetDir.id, bridgeId: nextTargetDir.bridgeId || bridgeId || '' };
 
-      void load(nextCwd, isAgentRunDir ? { includeHidden: true } : undefined, nextScope);
+      void load(nextCwd, isAgentRunDir ? { includeHidden: true } : undefined, nextScope, newDirId);
     },
     [
       activeDirectoryId,
@@ -1299,6 +1327,50 @@ export default function ProjectFilesPanel({
     () => openTabs.find((t) => t.path === activeTabPath),
     [openTabs, activeTabPath]
   );
+
+  // REQ-LSP-UI-1: language-server features for the active tab.
+  //
+  // Gated on the "lsp" experiment flag INSIDE the hook: with the flag off it
+  // returns before minting a ticket, opening a socket or registering a single
+  // provider, so the editor behaves exactly as it did before this feature. The
+  // hook is called unconditionally because hooks must be — the gate is in its
+  // body, not at this call site.
+  //
+  // Disabled for image and unviewable tabs: there is no text document to sync.
+  // REQ-LSP-MERGE-1: EVERY directory carries its OWN bridge and its OWN root --
+  // a chain directory can live on a different bridge from the project and its path
+  // is not under rootAbs. The panel-level `bridgeId`/`rootAbs` describe the PRIMARY
+  // project only, so feeding them to the hook while the user edits a file in a chain
+  // directory resolves the server config against the wrong bridge, rooted in the wrong
+  // place. That does not error -- it starts a plausible language server and returns
+  // confident WRONG completions, which is the exact failure this chain exists to remove.
+  // Resolve both from activeDirectory, matching how upstream resolves every other
+  // directory-scoped value (see activeFsTarget and bridgeDisplay above).
+  const lspBridgeId = activeDirectory?.bridgeId || bridgeId || '';
+  // activeDirectory.path is rootAbs for 'primary' and the directory's own path for a
+  // chain directory. It is deliberately '' for an agent_run_dir, which has no editable
+  // root; `active` below gates on it so those mount an editor but never start a server
+  // (an empty root would otherwise make joinAbs emit a RELATIVE path to the resolver).
+  const lspRootAbs = activeDirectory?.path || '';
+  // REQ-LSP-ENV-1: THE RETURN VALUE IS LOAD-BEARING AND USED TO BE DISCARDED.
+  // This was a bare `useMonacoLsp({...})` call statement, so the hook's `status`
+  // and `detail` were computed every render and thrown away — nothing in the app
+  // rendered either one. Capturing it here and rendering `notice` below is ONE
+  // fix, not two edits: the language server's own explanation of why it is dead
+  // had nowhere to surface precisely because this call ignored its result.
+  const lsp = useMonacoLsp({
+    monaco,
+    bridgeId: lspBridgeId,
+    rootAbs: lspRootAbs,
+    activePath: activeEditorTab?.isImage || activeEditorTab?.isUnviewable ? '' : activeTabPath,
+    monacoLanguageId: activeEditorTab ? getLanguageForMonaco(activeEditorTab.path) : '',
+    content: activeEditorTab?.content ?? '',
+    active:
+      Boolean(activeEditorTab) &&
+      !activeEditorTab?.isImage &&
+      !activeEditorTab?.isUnviewable &&
+      Boolean(lspRootAbs),
+  });
 
   // Fetch full file content across all byte pages before editing
   const fetchAllFileContent = useCallback(
@@ -2392,6 +2464,32 @@ export default function ProjectFilesPanel({
                     style={{ display: isCurrent ? 'flex' : 'none' }}
                     className="min-h-0 flex-1 flex-col w-full h-full"
                   >
+                    {/*
+                      REQ-LSP-ENV-1: the language server's own complaint, where a
+                      user who has never opened a trace file will see it. The
+                      markup lives in LspNoticeBanner so it can be mounted and
+                      PHOTOGRAPHED on its own — this task exists because a
+                      message reached a render path that no user ever saw, and a
+                      banner buried in this 4000-line component could not be
+                      proven to display without standing up the whole panel.
+                    */}
+                    {/*
+                      ONE BANNER PER OUTSTANDING NOTICE, NOT JUST THE LATEST.
+                      gopls reports the CAUSE and the SYMPTOM as two separate
+                      messages; rendering only one of them leaves the user with
+                      "Error loading workspace folders", which names nothing they
+                      can act on. See the list in useMonacoLsp.
+                    */}
+                    {isCurrent
+                      ? lsp.notices.map((n) => (
+                          <LspNoticeBanner
+                            key={lspServerNoticeKey(n)}
+                            notice={n}
+                            onDismiss={() => lsp.dismissNotice(lspServerNoticeKey(n))}
+                            debugPrefix={debugPrefix}
+                          />
+                        ))
+                      : null}
                     {dirTabs.length > 0 && dirActiveTab ? (
                       <MonacoMultiFileEditor
                         tabs={dirTabs}

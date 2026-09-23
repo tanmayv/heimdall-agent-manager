@@ -8,7 +8,7 @@ Verifies:
 2. Shiki syntax highlighting integration in MarkdownBody (useEffect calling highlightCode
    and getActiveShikiTheme, setting data-shiki-rendered="true" on success, "fallback" on failure).
 3. Copy button reads from data-code-raw, pre code, or pre, while preserving Mermaid copy.
-4. Inline code is styled with rounded bg-accent/10 border border-accent/25 px-1.5 py-0.5 font-mono text-[0.85em] font-medium text-accent.
+4. Inline code is styled with font-mono text-[0.85em] font-medium text-accent (without border or border-accent/25).
 5. Quoted text (‘...’ / ’...’ / '...') is styled with ‘<span class="text-accent font-medium">$1</span>’.
 6. Bold and italics preserve standard text-primary without text-accent.
 7. Paragraphs use <p class="my-3 leading-relaxed"> and MarkdownBody uses space-y-3 when compact is false.
@@ -47,9 +47,19 @@ def test_markdown_body_source():
     assert 'data-code-raw' in src, "Copy button logic should check data-code-raw"
     assert 'querySelector' in src and ('pre code' in src or 'pre' in src), "Copy button logic should query pre / pre code fallback"
 
-    # 4. Inline code accent styling
-    inline_code_classes = "rounded bg-accent/10 border border-accent/25 px-1.5 py-0.5 font-mono text-[0.85em] font-medium text-accent"
+    # 4. Inline code accent styling (clean inline code without border)
+    inline_code_classes = "font-mono text-[0.85em] font-medium text-accent"
     assert inline_code_classes in src, f"Missing inline code classes: {inline_code_classes}"
+    render_inline_match = re.search(r'function renderInline\s*\([^)]*\)\s*:\s*string\s*\{(.*?)\n\}', src, re.DOTALL)
+    assert render_inline_match, "Could not find renderInline function in MarkdownBody.tsx"
+    inline_body = render_inline_match.group(1)
+    code_match = re.search(r'`\(\[\^`\\n\]\+\)`.*?<code([^>]*)>', inline_body)
+    assert code_match, "Could not find inline code replacement in renderInline"
+    code_attrs = code_match.group(1)
+    assert 'border' not in code_attrs, f"Inline code should not have border: {code_attrs}"
+    assert 'border-accent/25' not in code_attrs, f"Inline code should not have border-accent/25: {code_attrs}"
+    assert 'text-accent' in code_attrs, f"Inline code must retain text-accent: {code_attrs}"
+    assert 'font-mono' in code_attrs, f"Inline code must retain font-mono: {code_attrs}"
 
     # 5. Quoted text styling with accent
     quote_span = '<span class="text-accent font-medium">'
@@ -100,7 +110,7 @@ def test_functional_html_rendering():
 
     function renderInline(text) {
       let escaped = escapeHtml(text);
-      escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code class="rounded bg-accent/10 border border-accent/25 px-1.5 py-0.5 font-mono text-[0.85em] font-medium text-accent">${code}</code>`);
+      escaped = escaped.replace(/`([^`\n]+)`/g, (_m, code) => `<code class="font-mono text-[0.85em] font-medium text-accent">${code}</code>`);
       escaped = escaped.replace(/(?:‘|’)([^‘’\n]+?)(?:’|‘)/g, '‘<span class="text-accent font-medium">$1</span>’');
       escaped = escaped.replace(/(^|[\s(\[{<])(?:&#39;|')(?![\s])([^'‘’\n]+?)(?<![\s])(?:&#39;|')(?=[\]}>)\s.,;:!?]|$)/g, '$1‘<span class="text-accent font-medium">$2</span>’');
       escaped = escaped.replace(/\*\*\*([^*\n]+)\*\*\*/g, '<strong><em>$1</em></strong>');
@@ -114,8 +124,11 @@ def test_functional_html_rendering():
 
     // 1. Inline code test
     const codeHtml = renderInline('Use `npm run test` here');
-    if (!codeHtml.includes('class="rounded bg-accent/10 border border-accent/25 px-1.5 py-0.5 font-mono text-[0.85em] font-medium text-accent">npm run test</code>')) {
+    if (!codeHtml.includes('class="font-mono text-[0.85em] font-medium text-accent">npm run test</code>')) {
       throw new Error('Inline code formatting failed: ' + codeHtml);
+    }
+    if (codeHtml.includes('border') || codeHtml.includes('border-accent/25')) {
+      throw new Error('Inline code has unexpected border: ' + codeHtml);
     }
 
     // 2. Curly single quotes test

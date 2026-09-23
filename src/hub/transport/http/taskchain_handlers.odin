@@ -781,7 +781,11 @@ change_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !changed do return respond_error(err, req.request_id)
 	publish_task_changed(h, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "status_changed")
 	publish_chain_changed(h, string(task.owner_user_id), string(task.chain_id), "updated")
-	b := strings.builder_make(); write_task_json(&b, task)
+	// `task` is the RE-READ row (see change_task_status), so its status is what the
+	// database holds — which is not always what was asked for: the promotion engine may
+	// demote it again in the same request. Pass the requested value so a caller can see
+	// both rather than being told its request took effect when it did not.
+	b := strings.builder_make(); write_task_json(&b, task, task_status_http(status))
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -1109,8 +1113,17 @@ write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {
 	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, c.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(c.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, chain_status_http(c.status)); strings.write_string(b, "\",\"kind\":\""); write_handler_json_string(b, c.kind); strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id); strings.write_string(b, "\",\"default_reviewer_refs\":"); strings.write_string(b, json_or_empty_array(c.default_reviewer_refs_json)); strings.write_string(b, ",\"created_at\":\""); write_handler_json_string(b, c.created_at); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, c.updated_at); strings.write_string(b, "\",\"is_pinned\":"); strings.write_string(b, "true" if c.is_pinned else "false"); strings.write_string(b, ",\"pinned_at\":\""); write_handler_json_string(b, c.pinned_at); strings.write_string(b, "\"}")
 }
 
-write_task_json :: proc(b: ^strings.Builder, t: domain.Task) {
-	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(t.priority)); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
+// requested_status is OBSERVATIONAL and optional: pass it only when the caller asked
+// for a status the row did not end up holding, and it is emitted alongside the actual
+// one so the response cannot imply a change that did not stick. It is a defaulted
+// parameter so no existing call site changes, and an additive JSON field so no existing
+// consumer breaks. It reports what happened; it never predicts what will happen.
+write_task_json :: proc(b: ^strings.Builder, t: domain.Task, requested_status := "") {
+	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"priority\":\""); write_handler_json_string(b, domain.task_priority_string(t.priority)); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"")
+	if requested_status != "" && requested_status != task_status_http(t.status) {
+		strings.write_string(b, ",\"requested_status\":\""); write_handler_json_string(b, requested_status); strings.write_string(b, "\"")
+	}
+	strings.write_string(b, "}")
 }
 
 write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, t: domain.Task, deps: []domain.Task_Dependency, include_description := true) {

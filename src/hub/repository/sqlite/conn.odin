@@ -50,8 +50,12 @@ open :: proc(path: string) -> (Conn, bool, domain.Domain_Error) {
 	parent := path_dir(path)
 	if parent != "" do os.make_directory(parent)
 	conn := Conn{path = strings.clone(path)}
-	rc := sqlite3_open(cstring(raw_data(path)), &conn.db)
+	// Odin strings are not NUL-terminated, so raw_data(path) cannot be cast straight to
+	// cstring — SQLite would read past the end of the allocation. Same idiom as exec().
+	c_path := strings.clone_to_cstring(path, context.temp_allocator)
+	rc := sqlite3_open(c_path, &conn.db)
 	if rc != SQLITE_OK {
+		close(&conn)
 		return Conn{}, false, domain.domain_error(.Internal_Error, fmt.tprintf("sqlite open failed: %d", rc))
 	}
 	if !exec(&conn, "PRAGMA foreign_keys = ON;") {
@@ -65,7 +69,7 @@ close :: proc(conn: ^Conn) {
 	if conn == nil do return
 	if conn.db != nil do sqlite3_close(conn.db)
 	conn.db = nil
-	delete(conn.path)
+	if conn.path != "" { delete(conn.path); conn.path = "" }
 }
 
 exec :: proc(conn: ^Conn, query: string) -> bool {

@@ -10,7 +10,7 @@ import iface "odin_test:hub/repository/iface"
 
 @(test)
 test_artifact_repo_sqlite_lifecycle_and_pagination :: proc(t: ^testing.T) {
-	db_path := "/tmp/test_artifact_repo.db"
+	db_path := fmt.tprintf("/tmp/test_artifact_repo_%d.db", os.get_pid())
 	os.remove(db_path)
 	defer os.remove(db_path)
 
@@ -167,7 +167,7 @@ test_artifact_repo_sqlite_lifecycle_and_pagination :: proc(t: ^testing.T) {
 
 @(test)
 test_artifact_repo_sqlite_tracking_allocator :: proc(t: ^testing.T) {
-	db_path := "/tmp/test_artifact_repo_tracking.db"
+	db_path := fmt.tprintf("/tmp/test_artifact_repo_tracking_%d.db", os.get_pid())
 	os.remove(db_path)
 	defer os.remove(db_path)
 

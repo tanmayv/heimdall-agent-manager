@@ -48,6 +48,34 @@ export function useIsMobile(): boolean {
 }
 
 /**
+ * `TAILWIND_SM_MIN` / `useIsBelowTailwindSm` — the JS mirror of Tailwind's DEFAULT
+ * `sm:` breakpoint, which is 640px. `tailwind.config.js` deliberately does not
+ * override `theme.screens` (see the note in its header), so every `sm:` utility in
+ * the app switches at 640 — not at 768.
+ *
+ * THIS IS DELIBERATELY NOT `MOBILE_MAX` (767). The two numbers genuinely disagree,
+ * and that disagreement is a known pre-existing defect tracked as artifact art_18d7b91b4ac8743e item 9; it is
+ * not settled here and must not be "corrected" to 767 in passing. Use this hook ONLY
+ * where JS has to agree with a `sm:` class on the very same element — mounting a
+ * subtree that a sibling `sm:hidden` / `hidden sm:flex` wrapper would otherwise hide.
+ * For the app's mobile/tablet/desktop product breakpoints, use `useIsMobile`.
+ */
+export const TAILWIND_SM_MIN = 640;
+
+export function useIsBelowTailwindSm(): boolean {
+  const [below, setBelow] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth < TAILWIND_SM_MIN,
+  );
+  useEffect(() => {
+    const update = () => setBelow(window.innerWidth < TAILWIND_SM_MIN);
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+  return below;
+}
+
+/**
  * Keyboard-aware layout. Mobile soft keyboards shrink `window.visualViewport` without
  * resizing the layout viewport. We expose the gap as an inset so a bottom-pinned bar
  * can lift above the keyboard. Returns 0 on desktop or when no keyboard is visible.

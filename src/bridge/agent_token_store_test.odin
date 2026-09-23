@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -16,6 +17,20 @@ import "core:testing"
 // must not run interleaved or one test's config change makes another resolve the
 // wrong store path. In a real deployment each bridge is its own process, so this
 // only matters for the test harness; serialize them with a shared mutex.
+//
+// THE MUTEX IS NOT ENOUGH, AND THE REASON IS THE POINT: bridge_test_config_mutex is
+// a process-local sync.Mutex. It serialises THREADS INSIDE ONE BINARY and does
+// nothing whatsoever between two concurrent `odin test` invocations. Any test here
+// that also writes a SHARED FILESYSTEM PATH is still unsafe across processes, so
+// every data_dir below is run-scoped with os.get_pid(). The question to ask of any
+// lock before calling a test isolated: what is this lock actually serialising?
+//
+// Note which paths are NOT scoped, deliberately: the local_endpoint_run_dir values
+// ("/tmp/bridgeA", "/tmp/bridgeRT", ...) are never used as directories. They are
+// NAMESPACE INPUTS, slugified into a single path segment by
+// bridge_agent_token_store_namespace (agent_token_store.odin:132-148), so sharing
+// them between processes is harmless — and scoping them would silently weaken the
+// per-bridge-namespace assertions that are the whole point of these tests.
 bridge_test_config_mutex: sync.Mutex
 
 @(test)
@@ -43,14 +58,16 @@ bridge_token_store_namespace_is_per_bridge :: proc(t: ^testing.T) {
 bridge_token_store_two_bridges_do_not_clobber :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	// Isolate to a scratch data dir so we never touch a real store. Run-scoped by pid
+	// so two CONCURRENT `odin test` processes cannot share it (see the note above).
+	scratch := fmt.aprintf("/tmp/ham-token-store-test-%d", os.get_pid())
 	saved_dir := bridge_config.local_endpoint_run_dir
 	saved_data := bridge_config.data_dir
 	defer {
 		bridge_config.local_endpoint_run_dir = saved_dir
 		bridge_config.data_dir = saved_data
+		delete(scratch)
 	}
-	// Isolate to a scratch data dir so we never touch a real store.
-	scratch := "/tmp/ham-token-store-test"
 	bridge_config.data_dir = scratch
 
 	// Bridge A issues a token.
@@ -77,13 +94,16 @@ bridge_token_store_two_bridges_do_not_clobber :: proc(t: ^testing.T) {
 bridge_token_store_save_load_roundtrip :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	// Run-scoped by pid: shared across concurrent processes otherwise (see note above).
+	data_dir := fmt.aprintf("/tmp/ham-token-store-rt-%d", os.get_pid())
 	saved_dir := bridge_config.local_endpoint_run_dir
 	saved_data := bridge_config.data_dir
 	defer {
 		bridge_config.local_endpoint_run_dir = saved_dir
 		bridge_config.data_dir = saved_data
+		delete(data_dir)
 	}
-	bridge_config.data_dir = "/tmp/ham-token-store-rt"
+	bridge_config.data_dir = data_dir
 	bridge_config.local_endpoint_run_dir = "/tmp/bridgeRT"
 
 	bridge_agent_token_store_init()
@@ -103,13 +123,16 @@ bridge_token_store_save_load_roundtrip :: proc(t: ^testing.T) {
 bridge_token_invalidate_instance_reaps_all_roles :: proc(t: ^testing.T) {
 	sync.mutex_lock(&bridge_test_config_mutex)
 	defer sync.mutex_unlock(&bridge_test_config_mutex)
+	// Run-scoped by pid: shared across concurrent processes otherwise (see note above).
+	data_dir := fmt.aprintf("/tmp/ham-token-store-reap-%d", os.get_pid())
 	saved_dir := bridge_config.local_endpoint_run_dir
 	saved_data := bridge_config.data_dir
 	defer {
 		bridge_config.local_endpoint_run_dir = saved_dir
 		bridge_config.data_dir = saved_data
+		delete(data_dir)
 	}
-	bridge_config.data_dir = "/tmp/ham-token-store-reap"
+	bridge_config.data_dir = data_dir
 	bridge_config.local_endpoint_run_dir = "/tmp/bridgeREAP"
 	bridge_agent_token_store_init()
 	// Hermetic: drop any records persisted by a prior run so counts are exact.

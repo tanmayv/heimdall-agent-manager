@@ -47,6 +47,8 @@ App_Graph :: struct {
 	sqlite_cards: sqlite.Card_Repo_SQLite,
 	sqlite_issues: sqlite.Issue_Repo_SQLite,
 	sqlite_shell_sessions: sqlite.Shell_Session_Repo_SQLite,
+	sqlite_experiments: sqlite.Experiment_Repo_SQLite,
+	sqlite_lsp_server_configs: sqlite.Lsp_Server_Config_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
 	uow_factory: iface.Unit_Of_Work_Factory,
@@ -76,9 +78,15 @@ App_Graph :: struct {
 	scheduled_prompt_handlers: http.Scheduled_Prompt_Handlers,
 	cards: card_service.Card_Service,
 	shell_session_repo: iface.Shell_Session_Repository,
+	experiment_repo: iface.Experiment_Repository,
+	lsp_server_config_repo: iface.Lsp_Server_Config_Repository,
 	shell_session_service: shell_session_svc.Shell_Session_Service,
 	shell_session_stream_handlers: http.Shell_Session_Stream_Handlers,
+	lsp_session_registry:          http.Lsp_Session_Registry,
+	lsp_session_stream_handlers:   http.Lsp_Session_Stream_Handlers,
 	shell_session_rest_handlers: http.Shell_Session_Rest_Handlers,
+	experiment_handlers: http.Experiment_Rest_Handlers,
+	lsp_server_config_handlers: http.Lsp_Server_Config_Rest_Handlers,
 	card_handlers: http.Card_Handlers,
 	issues: issue_service.Issue_Service,
 	issue_handlers: http.Issue_Handlers,
@@ -186,6 +194,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.cards = sqlite.new_card_repository(&graph.sqlite_cards, &graph.db)
 	graph.repos.issues = sqlite.new_issue_repository(&graph.sqlite_issues, &graph.db)
 	graph.shell_session_repo = sqlite.new_shell_session_repository(&graph.sqlite_shell_sessions, &graph.db)
+	graph.experiment_repo = sqlite.new_experiment_repository(&graph.sqlite_experiments, &graph.db)
+	graph.lsp_server_config_repo = sqlite.new_lsp_server_config_repository(&graph.sqlite_lsp_server_configs, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.repos.agents, &graph.repos.projects, &graph.clock, &graph.ids)
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
@@ -253,11 +263,23 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		shell_repo          = &graph.shell_session_repo,
 		bridge_command_sink = bridge_command_sink,
 	}
+	// REQ-LSP-RLY-1. The registry is plain in-memory state: an LSP session lives
+	// exactly as long as its browser socket, so there is no table and nothing to
+	// reap on restart.
+	graph.lsp_session_stream_handlers = http.Lsp_Session_Stream_Handlers{
+		ws_tickets          = &graph.user_handlers.ws_tickets,
+		bridges             = &graph.bridges,
+		experiments         = &graph.experiment_repo,
+		lsp_configs         = &graph.lsp_server_config_repo,
+		sessions            = &graph.lsp_session_registry,
+		ids                 = &graph.ids,
+		bridge_command_sink = bridge_command_sink,
+	}
 	graph.shell_session_rest_handlers = http.Shell_Session_Rest_Handlers{
 		auth           = &graph.auth,
 		shell_sessions = &graph.shell_session_service,
 	}
-	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry, shell_sessions = &graph.shell_session_service}
+	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains, projects = &graph.projects, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry, shell_sessions = &graph.shell_session_service, lsp_sessions = &graph.lsp_session_registry}
 	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content, event_bus = &graph.event_bus}
@@ -293,6 +315,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		&graph.clock,
 		&graph.ids,
 	)
+	graph.experiment_handlers = http.Experiment_Rest_Handlers{auth = &graph.auth, repo = &graph.experiment_repo, clock = &graph.clock}
+	graph.lsp_server_config_handlers = http.Lsp_Server_Config_Rest_Handlers{auth = &graph.auth, repo = &graph.lsp_server_config_repo, clock = &graph.clock, ids = &graph.ids}
 	graph.issues = issue_service.new_issue_service(&graph.repos.issues, &graph.clock, &graph.ids)
 	graph.card_handlers = http.Card_Handlers{auth = &graph.auth, cards = &graph.cards, clock = &graph.clock}
 	graph.issue_handlers = http.Issue_Handlers{auth = &graph.auth, issues = &graph.issues, clock = &graph.clock}
@@ -331,6 +355,15 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/me/tokens", rawptr(&graph.user_handlers), http.list_my_tokens_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/me/tokens", rawptr(&graph.user_handlers), http.issue_my_token_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/me/tokens/*/revoke", rawptr(&graph.user_handlers), http.revoke_my_token_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/me/experiments", rawptr(&graph.experiment_handlers), http.experiment_list_handler)
+	http.router_add(&graph.router, "PUT", "/api/v1/me/experiments/*", rawptr(&graph.experiment_handlers), http.experiment_set_handler)
+	// LSP server config CRUD (REQ-LSP-CFG-1). The /resolve literal route must be
+	// registered before the /* wildcard so first-match-wins selects it correctly.
+	http.router_add(&graph.router, "POST", "/api/v1/bridges/*/lsp-servers", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_create_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/lsp-servers", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_list_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/lsp-servers/resolve", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_resolve_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/bridges/*/lsp-servers/*", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_get_handler)
+	http.router_add(&graph.router, "DELETE", "/api/v1/bridges/*/lsp-servers/*", rawptr(&graph.lsp_server_config_handlers), http.lsp_server_config_delete_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/me/ws-ticket", rawptr(&graph.user_handlers), http.issue_user_ws_ticket_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/push/vapid-public-key", rawptr(&graph.push_handlers), http.vapid_public_key_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/me/push-subscriptions", rawptr(&graph.push_handlers), http.create_push_subscription_handler)
@@ -575,6 +608,7 @@ register_routes :: proc(graph: ^App_Graph) {
 
 	// Shell session WS stream + HTTP input/resize fallback (T7).
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/shells/*/stream", rawptr(&graph.shell_session_stream_handlers), http.shell_session_stream_handler)
+	http.router_add_upgrade(&graph.router, "GET", "/api/v1/lsp/*/stream", rawptr(&graph.lsp_session_stream_handlers), http.lsp_session_stream_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/input", rawptr(&graph.shell_session_stream_handlers), http.shell_session_input_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/shells/*/resize", rawptr(&graph.shell_session_stream_handlers), http.shell_session_resize_handler)
 	// Preview tunnel proxy (T8) — raw-socket route: handler owns the socket for all

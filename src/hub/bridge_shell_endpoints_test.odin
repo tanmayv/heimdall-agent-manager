@@ -13,7 +13,7 @@ import api_http "odin_test:hub/transport/http"
 
 @(test)
 test_bridge_shell_input_and_resize_routes :: proc(t: ^testing.T) {
-	db_path := "/tmp/heimdall-hub-test-bridge-shell-unit.db"
+	db_path := fmt.tprintf("/tmp/heimdall-hub-test-bridge-shell-unit-%d.db", os.get_pid())
 	_ = os.remove(db_path)
 	defer _ = os.remove(db_path)
 

@@ -190,6 +190,16 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 	sync.mutex_unlock(&svc.mu)
 
 	// Send shell_start to bridge and wait for reply.
+	// cmd_id is NOT freed here, and must not be. platform.generate_id returns
+	// fmt.tprintf memory — the PER-THREAD TEMP ALLOCATOR — so delete()ing it is a bad
+	// free against context.allocator, not a reclaim. The same applies to the cmd_id in
+	// every other command helper in this file; none of them free it.
+	//
+	// Nothing needs freeing: the value is consumed within this request (the send path
+	// copies it) and the temp arena is reclaimed wholesale, so simply not deleting is
+	// the whole fix. A clone would also work but would be strictly more code for no
+	// gain — clone only when you intend to OWN the value, e.g. when it must outlive the
+	// request (see the wire_id clone in lsp_session_handlers.odin).
 	cmd_id := platform.generate_id(svc.ids, "cmd_sh_start_")
 	cmd_json := _shell_start_command_json(cmd_id, session_id, kind, input.cmd, input.cwd, input.label, input.project_id, input.chain_id, input.agent_instance_id, string(owner), input.server_port)
 	defer delete(cmd_json)
@@ -203,7 +213,6 @@ shell_session_create :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_C
 		},
 		30_000,
 	)
-	delete(cmd_id)
 
 	if !reply_ok {
 		session.status = domain.Shell_Session_Status_Failed
@@ -282,7 +291,6 @@ shell_session_restart :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 		project_service.Runtime_Command{bridge_id = session.bridge_id, command_id = cmd_id, body_json = cmd_json},
 		30_000,
 	)
-	delete(cmd_id)
 
 	if !reply_ok do return session, false, reply_err
 	defer delete(reply)
@@ -353,7 +361,6 @@ shell_session_set_port :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth
 		project_service.Runtime_Command{bridge_id = session.bridge_id, command_id = cmd_id, body_json = cmd_json},
 		Shell_Session_Set_Port_Timeout_Ms,
 	)
-	delete(cmd_id)
 
 	if !reply_ok {
 		// Offline and timed-out both arrive as Bridge_Offline; keep that code — it is
@@ -461,7 +468,6 @@ shell_session_get_log :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 		project_service.Runtime_Command{bridge_id = session.bridge_id, command_id = cmd_id, body_json = cmd_json},
 		30_000,
 	)
-	delete(cmd_id)
 
 	if !reply_ok do return {}, false, reply_err
 	defer delete(reply)
@@ -496,7 +502,6 @@ shell_session_capture :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth_
 		project_service.Runtime_Command{bridge_id = session.bridge_id, command_id = cmd_id, body_json = cmd_json},
 		30_000,
 	)
-	delete(cmd_id)
 
 	if !reply_ok do return {}, false, reply_err
 	defer delete(reply)
@@ -561,7 +566,6 @@ shell_session_get_pane :: proc(svc: ^Shell_Session_Service, auth: contracts.Auth
 		project_service.Runtime_Command{bridge_id = session.bridge_id, command_id = cmd_id, body_json = cmd_json},
 		5_000,
 	)
-	delete(cmd_id)
 
 	if !reply_ok do return "", false, reply_err
 	return reply, true, domain.Domain_Error{}

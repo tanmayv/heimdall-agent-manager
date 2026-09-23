@@ -554,8 +554,16 @@ agent_action_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response 
 	publish_agent_action(h, inst, "task_status", fmt.tprintf("set status \u2192 %s", task_status_http(task.status)))
 	publish_task_event(h.event_bus, string(task.owner_user_id), string(task.task_id), string(task.chain_id), "status_changed")
 	publish_chain_event(h.event_bus, string(task.owner_user_id), string(task.chain_id), "updated")
+	// `task` is the RE-READ row (see change_task_status), so its status is what the
+	// database holds — which is not always what was asked for: the promotion engine may
+	// demote it again in the same request. Pass the requested value so a caller can see
+	// both rather than being told its request took effect when it did not.
+	//
+	// This is the transport ham-ctl uses (ctl/agent_mode.odin -> bridge/agent_api.odin ->
+	// /api/v1/agent-actions/tasks/status), i.e. the path this defect was reported on, so it
+	// needs the same observational field as the user-mode route in taskchain_handlers.odin.
 	b := strings.builder_make()
-	write_task_json(&b, task)
+	write_task_json(&b, task, task_status_http(status))
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 

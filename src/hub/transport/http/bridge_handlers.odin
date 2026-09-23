@@ -33,6 +33,9 @@ Bridge_Handlers :: struct {
 	actions: rawptr,
 	scheduled_prompts: rawptr,
 	shell_sessions: ^shell_session_svc.Shell_Session_Service,
+	// REQ-LSP-RLY-1: live LSP relays, so lsp_* frames can be fanned out to the
+	// browser socket that owns each session.
+	lsp_sessions: ^Lsp_Session_Registry,
 }
 
 create_bridge_enrollment_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -1364,6 +1367,15 @@ bridge_ws_disconnect :: proc(h: ^Bridge_Handlers, bridge_id: string, connection_
 	// replaced us => it returns without removing the live entry), so gate the
 	// durable offline/cascade on the same generation to stay idempotent and avoid
 	// clobbering a fresh reconnect's instances.
+	// REQ-LSP-RLY-1: an LSP session's language server lives on this bridge, so a
+	// disconnect ends every session started on it. This wakes those relay threads
+	// (it never closes their sockets — see lsp_registry_wake_bridge_sessions) so
+	// each unwinds and releases its own entry; the browser gets an lsp_error first.
+	// Done before the generation gate: those sockets are dead either way, and a
+	// reconnect must not inherit sessions whose server process is gone.
+	if h.lsp_sessions != nil {
+		_ = lsp_registry_wake_bridge_sessions(h.lsp_sessions, bridge_id)
+	}
 	still_current := project_service.bridge_runtime_registry_generation(h.bridge_runtime_registry, bridge_id) == connection_generation
 	project_service.bridge_runtime_registry_mark_offline(h.bridge_runtime_registry, bridge_id, connection_generation)
 	if !still_current do return
@@ -1674,6 +1686,17 @@ bridge_ws_process_frame :: proc(h: ^Bridge_Handlers, bridge_id: string, connecti
 		}
 	case "capability_report":
 		_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
+	case "lsp_data", "lsp_error", "lsp_started", "lsp_stopped":
+		// REQ-LSP-RLY-1. Every lsp_* type the bridge can send MUST have an arm in
+		// this switch: a type with no arm falls through and is dropped silently,
+		// with no error anywhere, and the feature simply never works.
+		// lsp_forward_bridge_frame translates the Hub-internal wire session id
+		// back to the id the browser chose and writes the frame to that socket.
+		// It returns false for a frame whose session is already gone (the socket
+		// closed while the server was still talking), which is expected and dropped.
+		if h.lsp_sessions != nil {
+			_ = lsp_forward_bridge_frame(h.lsp_sessions, type, text)
+		}
 	case "shell_pty_output":
 		if h.shell_sessions != nil {
 			session_id := json_string(text, "session_id")

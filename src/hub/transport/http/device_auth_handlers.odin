@@ -166,3 +166,24 @@ json_bool :: proc(body, key: string) -> bool {
 	rest = strings.trim_space(rest)
 	return strings.has_prefix(rest, "true")
 }
+
+// json_bool_literal requires the field to be present AND be a JSON boolean literal
+// (exactly `true` or `false`). Returns (value, ok): ok=false if the field is absent
+// or its value is not a boolean literal (e.g. a quoted string "true", a number, or null).
+json_bool_literal :: proc(body, key: string) -> (value: bool, ok: bool) {
+	needle := strings.concatenate({"\"", key, "\":"})
+	defer delete(needle)
+	idx := strings.index(body, needle)
+	needle_len := len(needle)
+	if idx < 0 {
+		needle2 := strings.concatenate({"\"", key, "\": "})
+		defer delete(needle2)
+		idx = strings.index(body, needle2)
+		if idx < 0 do return false, false
+		needle_len = len(needle2)
+	}
+	rest := strings.trim_space(body[idx + needle_len:])
+	if strings.has_prefix(rest, "true")  do return true, true
+	if strings.has_prefix(rest, "false") do return false, true
+	return false, false
+}

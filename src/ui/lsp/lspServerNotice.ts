@@ -1,0 +1,198 @@
+// REQ-LSP-ENV-1: turns a language server's OWN complaint into something a user sees.
+//
+// THE DEFECT THIS EXISTS FOR. A language server with no toolchain on PATH starts
+// cleanly, completes the handshake, accepts every request and answers all of them
+// with an error — while the UI shows a healthy session. gopls without `go` says
+// exactly what is wrong, in band, over window/showMessage:
+//     type=3 "Error loading packages: go command required, not found:
+//             exec: \"go\": executable file not found in $PATH"
+//     type=1 "Error loading workspace folders (expected 1, got 0)"
+// Both arrived in the browser. Both hit the single method check in
+// useMonacoLsp.ts and were dropped. The user saw a green session that returned
+// nothing, twice, across two test rounds.
+//
+// WHY THIS IS A PURE FUNCTION AND NOT LOGIC INSIDE THE HOOK.
+// This repo has no React test renderer, no jsdom and no test runner, by
+// deliberate choice — tests/ui_lsp_session_key_test.ts documents the reasoning
+// at length. Anything living inside a hook is therefore structurally untestable
+// here, and a test written against the hook would pass just as happily with the
+// defect present. lspSessionKey.ts set the precedent of moving the RULE into a
+// pure function that the hook merely calls; this module follows it, so the
+// regression test in tests/ui_lsp_server_notice_test.ts actually executes and
+// actually fails if the filter regresses. This module imports NOTHING, which is
+// what lets node --test run it with native type stripping.
+
+// LSP MessageType (specification 3.17, §window/showMessage). Hardcoded rather
+// than imported because this module is deliberately dependency-free.
+export const LSP_MESSAGE_TYPE = {
+  Error: 1,
+  Warning: 2,
+  Info: 3,
+  Log: 4,
+  Debug: 5,
+} as const;
+
+export type LspNoticeLevel = 'error' | 'warning' | 'info';
+
+export type LspServerNotice = {
+  level: LspNoticeLevel;
+  /** The server's own words, trimmed and length-capped. Never rewritten. */
+  text: string;
+  /** The JSON-RPC method it arrived on, for the dedupe key and for debugging. */
+  method: string;
+  /** The raw LSP MessageType it carried. */
+  type: number;
+};
+
+// A pathological or broken server can emit a megabyte on one notification. The
+// banner wraps, so the cap is about not handing the renderer an unbounded
+// string, not about fitting a box.
+const MAX_TEXT = 600;
+
+// The two user-facing message channels. Both are meant to be SHOWN; the spec
+// describes showMessage as "ask the client to display a particular message in
+// the user interface".
+//
+// 'window/showMessageRequest' IS CURRENTLY UNREACHABLE IN PRODUCTION. It is a
+// server-initiated REQUEST (it always carries an id), and lspClient.ts:273-284
+// answers every such request with -32601 "client does not implement" and
+// RETURNS BEFORE onNotification runs — so this module never sees it. It is kept
+// here so the classification is correct if that branch ever learns to forward
+// requests, and because the cost of an unused Set entry is nothing.
+// DO NOT READ THE TEST AT tests/ui_lsp_server_notice_test.ts ("showMessageRequest
+// is treated like showMessage") AS RUNTIME COVERAGE. It passes over a path
+// production cannot reach. The user-visible consequence today: a rust-analyzer
+// "cargo not found — open settings?" prompt arrives on that channel and is still
+// invisible. That is a separate defect, not this one.
+const SHOW_METHODS = new Set(['window/showMessage', 'window/showMessageRequest']);
+
+// The verbose channel. This is where a healthy server is genuinely chatty —
+// gopls and rust-analyzer both log continuously at Info and below on a perfectly
+// working session — so it is admitted at Error only. See the gating note below.
+const LOG_METHOD = 'window/logMessage';
+
+/**
+ * Classifies one server-initiated notification into a user-visible notice, or
+ * null when it should be ignored.
+ *
+ * THE GATE, AND WHY IT IS NOT type<=2.
+ * The obvious gate is "Error and Warning only" (type<=2), and it is the one this
+ * task was scoped with. The observed payload above is why this function admits
+ * Info on the showMessage channel too: gopls reports the ACTUAL ROOT CAUSE —
+ * "go command required, not found ... in $PATH" — at type=3. A type<=2 gate
+ * surfaces only the downstream consequence ("expected 1, got 0"), which tells a
+ * user that something broke but not the one thing they need to know to fix it.
+ * Dropping the sentence that names the missing binary would leave this defect
+ * half-fixed in exactly the way that cost two test rounds.
+ *
+ * THE GATE SPLITS ON CHANNEL, NOT ON SEVERITY, AND THAT ASYMMETRY IS THE POINT.
+ * DO NOT "TIDY" IT INTO SYMMETRY — doing so re-breaks exactly this defect.
+ * Look at what gopls actually did:
+ *     type=3 (Info)  "go command required, not found"   <- the CAUSE. Actionable.
+ *     type=1 (Error) "Error loading workspace folders"  <- the SYMPTOM. Not actionable alone.
+ * THE SERVER PUT THE MORE IMPORTANT MESSAGE AT THE LOWER SEVERITY. That is not a
+ * gopls quirk to work around; it is the general case. Severity levels are
+ * assigned by each server's authors to their own taste and cannot be relied on
+ * to rank usefulness to a user. Filtering on severity therefore throws away the
+ * wrong things unpredictably.
+ *
+ * Channel is the reliable axis. window/showMessage is the sparse POPUP channel —
+ * the spec defines it as "ask the client to display a particular message in the
+ * user interface", so a server writing there has ALREADY DECIDED a human should
+ * read it, and we should not second-guess that with a severity filter.
+ * window/logMessage is the firehose, and Error-only is right there. So the
+ * healthy path is not flooded — a working server's routine chatter goes to
+ * logMessage at Info/Log/Debug and is dropped here, while the rare showMessage
+ * it does emit is something it wanted shown anyway.
+ *
+ * Info-level notices are returned at level 'info' so the caller can render them
+ * with less weight than a real error rather than alarming on them.
+ */
+export function lspServerNotice(method: string, params: unknown): LspServerNotice | null {
+  if (!method) return null;
+
+  const isShow = SHOW_METHODS.has(method);
+  const isLog = method === LOG_METHOD;
+  if (!isShow && !isLog) return null;
+
+  const p = params as { type?: unknown; message?: unknown } | null | undefined;
+  if (!p || typeof p !== 'object') return null;
+
+  const text = typeof p.message === 'string' ? p.message.trim() : '';
+  if (!text) return null;
+
+  const rawType = p.type;
+  const hasType = typeof rawType === 'number' && Number.isFinite(rawType);
+
+  // A missing or non-numeric `type` is malformed — the field is required. On the
+  // SHOW channel we surface it as an error rather than dropping it: this whole
+  // task exists because a server's explanation was silently discarded, so the
+  // safe failure direction here is "show it", not "swallow it". On the LOG
+  // channel an unknown severity is assumed to be ordinary log noise and dropped.
+  if (!hasType) {
+    if (!isShow) return null;
+    return { level: 'error', text: clamp(text), method, type: LSP_MESSAGE_TYPE.Error };
+  }
+
+  const type = rawType as number;
+
+  if (isLog) {
+    if (type !== LSP_MESSAGE_TYPE.Error) return null;
+    return { level: 'error', text: clamp(text), method, type };
+  }
+
+  // Show channel: Error, Warning and Info are surfaced; Log and Debug are not.
+  if (type === LSP_MESSAGE_TYPE.Error) return { level: 'error', text: clamp(text), method, type };
+  if (type === LSP_MESSAGE_TYPE.Warning) return { level: 'warning', text: clamp(text), method, type };
+  if (type === LSP_MESSAGE_TYPE.Info) return { level: 'info', text: clamp(text), method, type };
+  return null;
+}
+
+/**
+ * Identity of a notice for de-duplication. A server that repeats itself — gopls
+ * re-reports the same load failure on every request that touches the broken
+ * view — must not re-alarm the user each time.
+ */
+export function lspServerNoticeKey(notice: LspServerNotice): string {
+  return `${notice.level}\u0000${notice.text}`;
+}
+
+/**
+ * Folds one new notice into the set the user currently has outstanding.
+ *
+ * WHY THIS IS A PURE FUNCTION AND NOT A setState CALLBACK. It was a setState
+ * callback, and before that it was a single `useState<LspServerNotice | null>`
+ * with an unconditional setter — which meant gopls' SYMPTOM overwrote its own
+ * CAUSE and the user was left holding the half they cannot act on. That defect
+ * shipped, passed a green 77-test suite, passed typecheck, and was caught by a
+ * human reading the hook. It was invisible to the tests because it lived in
+ * React state, and this repo has no React test renderer by deliberate choice.
+ * So the RULE lives here, where tests/ui_lsp_server_notice_test.ts can drive it
+ * and fail when it regresses. Same reasoning as lspSessionKey.ts.
+ *
+ * Rules, in order:
+ *   - a notice the user has DISMISSED never comes back (see the hook for why
+ *     that is safe: the dismissed set is cleared on session teardown);
+ *   - a notice already outstanding is not stacked up a second time;
+ *   - otherwise it is appended, and the list is capped.
+ *
+ * EVICTION IS BY RECENCY, NOT SEVERITY, and that is deliberate: this module's
+ * whole thesis is that severity does not rank usefulness — gopls filed its only
+ * actionable sentence at Info — so evicting the lowest level would throw away
+ * exactly what the channel gate went to such trouble to admit.
+ */
+export function lspNextNotices(
+  prev: readonly LspServerNotice[],
+  next: LspServerNotice,
+  dismissedKeys: ReadonlySet<string>,
+  cap: number,
+): LspServerNotice[] {
+  const key = lspServerNoticeKey(next);
+  if (dismissedKeys.has(key)) return prev as LspServerNotice[];
+  if (prev.some((n) => lspServerNoticeKey(n) === key)) return prev as LspServerNotice[];
+  return [...prev, next].slice(-Math.max(1, cap));
+}
+
+function clamp(text: string): string {
+  return text.length <= MAX_TEXT ? text : `${text.slice(0, MAX_TEXT - 1)}…`;
+}

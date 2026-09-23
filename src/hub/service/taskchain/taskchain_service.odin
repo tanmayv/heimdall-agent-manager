@@ -797,6 +797,35 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 		// MEM-6 #6/#7: paused/cancelled/validated_good policy wakes (not covered by
 		// the CT-6 work/review gate above).
 		notify_status_policy(service, auth, task_ret, chain)
+		// REPORT THE ROW, NOT OUR INTENTION.
+		//
+		// recompute_chain_promotions above is allowed to change this task's status
+		// again, in this same request, and it regularly does: reconcile enforces
+		// "one In_Progress task per instance" and "zero while any task of yours is
+		// in_validation", and demotes back to Queued at promotion.odin:398-400.
+		// That is deliberate scheduling behaviour and is NOT a bug.
+		//
+		// The bug was that we returned task_ret — the in-memory struct we saved
+		// BEFORE recompute ran — so the API answered ok:true carrying a status the
+		// database no longer held. Callers recorded a state the Hub had already
+		// discarded, with nothing in the response to hint at it.
+		//
+		// Re-reading makes the response observational: it states what the row holds
+		// once everything that runs after the save has finished. It deliberately does
+		// NOT predict or re-implement the engine's rules — a second copy of those
+		// rules would drift from the engine and lie in a new way.
+		//
+		// ON THE FALLBACK: if the re-read fails we keep task_ret, which is the
+		// pre-recompute struct — i.e. exactly the value this fix exists to stop
+		// returning. That is a knowing trade, not an oversight: the status change
+		// itself has already succeeded and been persisted, so failing the whole call
+		// because a follow-up read failed would report a write that did happen as a
+		// failure — a worse lie than the one being fixed here, and in the opposite
+		// direction. If this path ever needs to be tightened, return the read error
+		// rather than silently substituting a stale struct.
+		if persisted, got, _ := iface.taskchain_get_task(service.repo, task.task_id); got {
+			task_ret = persisted
+		}
 	}
 	return task_ret, saved_ok, save_err
 }

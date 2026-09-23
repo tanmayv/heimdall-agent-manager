@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { Provider } from 'react-redux';
 import AppShell from './components/shell/AppShell';
 import ElectronDeviceAuthGate, { installElectronApiFetchBridge } from './components/ElectronDeviceAuthGate';
+import ToastViewport from './components/ToastViewport';
 import { store } from './store/store';
 import { buildRouteHash } from './utils/appLocation';
 import { registerNotificationServiceWorker } from './services/notificationService';
@@ -56,6 +57,22 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <ElectronDeviceAuthGate>
         <AppShell />
       </ElectronDeviceAuthGate>
+      {/*
+        REQ-UI-TOAST-1. THIS MOUNT IS LOAD-BEARING — DO NOT REMOVE IT AS "UNUSED".
+        ToastViewport is the ONLY component that selects the store/toastSlice
+        queue. Without it, `dispatch(showToast(...))` still runs, still mutates
+        state and still returns cleanly, while the user sees nothing at all. It
+        shipped unmounted, and four call sites dispatched into that void for its
+        whole life — including the Notifications "Test notification" button,
+        whose entire purpose is to prove notifications work.
+        It sits OUTSIDE ElectronDeviceAuthGate on purpose: it needs only the
+        store, so a toast can still surface on the pre-auth screen. It portals to
+        document.body, so its position in this tree does not affect layout.
+        Note this is NOT the app's only toast mechanism — five list pages render
+        their own local ones (see REQ-UI-TOAST-2). They never dispatch to this
+        queue, so nothing here double-renders.
+      */}
+      <ToastViewport />
     </Provider>
   </React.StrictMode>,
 );
