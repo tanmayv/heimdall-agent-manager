@@ -784,14 +784,30 @@ export default function ProjectFilesPanel({
     return '';
   }); // project-root-relative path ('' = root)
 
-  const [rootAbs, setRootAbs] = useState('');
+  // REQ-LSP-MERGE-1 / REQ-LSP-XBRIDGE-1: roots are PER DIRECTORY, not panel-wide.
+  // This used to be a single `rootAbs` that load() overwrote for whichever
+  // directory was listed last, while the `primary` entry read it as "the project
+  // root". Listing a chain directory therefore rewrote the PROJECT's root, so
+  // switching chain -> primary resolved the project's files against the chain
+  // directory's root: wrong root, plausible config, confident wrong completions.
+  // The outbound switch looked correct, which is what made it survive review.
+  // Keyed by directory id ('primary' | <directoryId> | agent-rundir:<instanceId>).
+  const [dirRoots, setDirRoots] = useState<Record<string, string>>({});
+
+  // The PROJECT's own root. Stable no matter which directory is on screen.
+  const primaryRoot = dirRoots['primary'] || '';
+  // The root of the directory CURRENTLY displayed -- the other meaning that used
+  // to share one variable with the line above. Empty until that directory has
+  // been listed once, which is honest: we do not know its root yet, and the LSP
+  // `active` gate below already declines to start a server without one.
+  const rootAbs = dirRoots[activeDirectoryId] || '';
 
   // Available directories (primary project root + extra task chain directories + member agent run dirs)
   const availableDirectories = useMemo<DirectoryItem[]>(() => {
     const primary: DirectoryItem = {
       id: 'primary',
-      label: projectName || (rootAbs ? baseName(rootAbs) : 'Primary Project'),
-      path: rootAbs || '',
+      label: projectName || (primaryRoot ? baseName(primaryRoot) : 'Primary Project'),
+      path: primaryRoot,
       bridgeId: bridgeId || '',
       isPrimary: true,
       kind: 'primary',
@@ -843,7 +859,7 @@ export default function ProjectFilesPanel({
     }
 
     return [primary, ...extras, ...agentRunDirs];
-  }, [projectName, rootAbs, bridgeId, taskChainDirectories, propMembers, chainDetailQuery.data?.chain?.members, agentInstanceId]);
+  }, [projectName, primaryRoot, bridgeId, taskChainDirectories, propMembers, chainDetailQuery.data?.chain?.members, agentInstanceId]);
 
   const activeDirectory = useMemo(() => {
     return availableDirectories.find((d) => d.id === activeDirectoryId) || availableDirectories[0];
@@ -980,9 +996,13 @@ export default function ProjectFilesPanel({
     async (
       path: string,
       opts?: { cursor?: string | null; append?: boolean; includeHidden?: boolean },
-      scopeOverride?: FsScopeArgs
+      scopeOverride?: FsScopeArgs,
+      dirIdOverride?: string
     ) => {
       const scope = scopeOverride || activeFsTarget;
+      // switchDirectory calls load() for the directory it is moving TO, which is
+      // not necessarily activeDirectoryId yet, so it passes the id explicitly.
+      const loadedDirId = dirIdOverride || activeDirectoryId;
       if (!scope.projectId && (!scope.chainId || !scope.directoryId) && !scope.agentInstanceId) return;
       const append = Boolean(opts?.append);
       setError('');
@@ -1005,7 +1025,12 @@ export default function ProjectFilesPanel({
           if (!append) setEntries([]);
           return;
         }
-        setRootAbs(res.root || '');
+        // Record under the directory that was LISTED, not the one that happens to
+        // be active when the response lands -- a switch can change that mid-flight.
+        setDirRoots((prev) => {
+          const next = res.root || '';
+          return prev[loadedDirId] === next ? prev : { ...prev, [loadedDirId]: next };
+        });
         setTruncated(Boolean(res.truncated));
         setHasMore(Boolean(res.has_more));
         setNextCursor(res.next_cursor ?? null);
@@ -1110,7 +1135,7 @@ export default function ProjectFilesPanel({
         ? { projectId, bridgeId: bridgeId || '' }
         : { chainId, directoryId: nextTargetDir.id, bridgeId: nextTargetDir.bridgeId || bridgeId || '' };
 
-      void load(nextCwd, isAgentRunDir ? { includeHidden: true } : undefined, nextScope);
+      void load(nextCwd, isAgentRunDir ? { includeHidden: true } : undefined, nextScope, newDirId);
     },
     [
       activeDirectoryId,
