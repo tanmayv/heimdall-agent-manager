@@ -52,8 +52,8 @@ export type MobileTabBarProps = {
 // Bottom tabs: Home (the Action Cards home page) and Chats replace the former
 // Chat/Agents entries; the command-palette stays the center button.
 const TABS: { id: string; label: string; icon: IconName; route: string }[] = [
-  // Home routes to the Action Cards feed (the app's home page).
-  { id: 'home', label: 'Home', icon: 'home', route: '/cards' },
+  // Home routes to the Home page (/home).
+  { id: 'home', label: 'Home', icon: 'home', route: '/home' },
   // Slot 2 sits immediately left of the palette button: Task Chains, not Projects.
   { id: 'chains', label: 'Chains', icon: 'tasks', route: '/chains' },
   // Conversations sit right of the palette button.
@@ -96,7 +96,12 @@ function useBottomChromeVar(ref: { current: HTMLElement | null }) {
 }
 
 export function MobileTabBar({ activePath, onNavigate, onOpenPalette, chatBadge = 0, chainsBadge = 0, paletteDebugId = 'shell-mobile-palette-button', className = '' }: MobileTabBarProps) {
-  const isActive = (route: string) => activePath === route || activePath.startsWith(`${route}/`);
+  const isActive = (route: string) => {
+    if (route === '/home') {
+      return activePath === '/home' || activePath.startsWith('/home/') || activePath === '/cards' || activePath.startsWith('/cards/');
+    }
+    return activePath === route || activePath.startsWith(`${route}/`);
+  };
   const navRef = useRef<HTMLElement | null>(null);
   useBottomChromeVar(navRef);
   return (
