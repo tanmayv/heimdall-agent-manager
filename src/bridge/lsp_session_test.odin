@@ -457,3 +457,112 @@ test_lsp_stop_all_terminates_and_frees :: proc(t: ^testing.T) {
 	// their frames and made their assertions fail intermittently.
 	drain_frames_for(session_id)
 }
+
+// --- root marker detection (REQ-LSP-ROOT-MARKERS-1) --------------------------
+
+@(test)
+test_lsp_find_root_dir_empty_and_invalid :: proc(t: ^testing.T) {
+	defer free_all(context.temp_allocator)
+
+	// Empty markers -> returns ""
+	{
+		res := bridge_lsp_find_root_dir("/some/file.ts", "/some", "")
+		defer delete(res)
+		testing.expect_value(t, res, "")
+	}
+
+	// Whitespace-only markers -> returns ""
+	{
+		res := bridge_lsp_find_root_dir("/some/file.ts", "/some", "   ,   ")
+		defer delete(res)
+		testing.expect_value(t, res, "")
+	}
+
+	// Empty path and cwd -> returns ""
+	{
+		res := bridge_lsp_find_root_dir("", "", "package.json")
+		defer delete(res)
+		testing.expect_value(t, res, "")
+	}
+}
+
+@(test)
+test_lsp_find_root_dir_upward_traversal :: proc(t: ^testing.T) {
+	defer free_all(context.temp_allocator)
+
+	// Create test tree:
+	// /tmp/ham-lsp-root-<pid>/
+	//   repo/
+	//     package.json
+	//     .git/
+	//     src/
+	//       tsconfig.json
+	//       ui/
+	//         components/
+	//           HomePage.tsx
+	base := fmt.aprintf("/tmp/ham-lsp-root-%d", os.get_pid())
+	defer {
+		_ = os.remove_all(base)
+		delete(base)
+	}
+
+	repo_dir       := fmt.tprintf("%s/repo", base)
+	src_dir        := fmt.tprintf("%s/src", repo_dir)
+	components_dir := fmt.tprintf("%s/ui/components", src_dir)
+
+	_ = os.make_directory_all(components_dir)
+	_ = os.make_directory_all(fmt.tprintf("%s/.git", repo_dir))
+	_ = os.write_entire_file(fmt.tprintf("%s/package.json", repo_dir), transmute([]byte)string("{}"))
+	_ = os.write_entire_file(fmt.tprintf("%s/tsconfig.json", src_dir), transmute([]byte)string("{}"))
+	file_path := fmt.tprintf("%s/HomePage.tsx", components_dir)
+	_ = os.write_entire_file(file_path, transmute([]byte)string("export const x = 1;"))
+
+	// 1. Walk up from nested file to tsconfig.json in src_dir (nearest marker)
+	{
+		res := bridge_lsp_find_root_dir(file_path, "", "tsconfig.json")
+		defer delete(res)
+		testing.expect_value(t, res, src_dir)
+	}
+
+	// 2. Walk up beyond src_dir to package.json in repo_dir
+	{
+		res := bridge_lsp_find_root_dir(file_path, "", "package.json")
+		defer delete(res)
+		testing.expect_value(t, res, repo_dir)
+	}
+
+	// 3. Comma-separated markers with whitespace: "go.mod, package.json"
+	{
+		res := bridge_lsp_find_root_dir(file_path, "", "go.mod, package.json")
+		defer delete(res)
+		testing.expect_value(t, res, repo_dir)
+	}
+
+	// 4. Directory marker (.git)
+	{
+		res := bridge_lsp_find_root_dir(file_path, "", ".git")
+		defer delete(res)
+		testing.expect_value(t, res, repo_dir)
+	}
+
+	// 5. Upward walk starting from cwd when file_path is empty
+	{
+		res := bridge_lsp_find_root_dir("", components_dir, "package.json")
+		defer delete(res)
+		testing.expect_value(t, res, repo_dir)
+	}
+
+	// 6. Relative file_path resolved against cwd
+	{
+		res := bridge_lsp_find_root_dir("ui/components/HomePage.tsx", src_dir, "package.json")
+		defer delete(res)
+		testing.expect_value(t, res, repo_dir)
+	}
+
+	// 7. Non-existent marker returns empty string
+	{
+		res := bridge_lsp_find_root_dir(file_path, "", "nonexistent.json, Cargo.toml")
+		defer delete(res)
+		testing.expect_value(t, res, "")
+	}
+}

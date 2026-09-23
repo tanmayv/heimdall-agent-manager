@@ -392,7 +392,7 @@ send_shell_resize :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context
 // same client session id must not collide on it; the relay allocates an opaque
 // wire id per session and that is what crosses this boundary.
 
-lsp_start_command_json :: proc(cmd_id, session_id, language, cmd, args, cwd, owner_user_id: string) -> string {
+lsp_start_command_json :: proc(cmd_id, session_id, language, cmd, args, cwd, owner_user_id: string, root_markers: string = "", file_path: string = "") -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"lsp_start\",\"command_id\":\"")
 	contracts.write_json_string(&b, cmd_id)
@@ -408,7 +408,18 @@ lsp_start_command_json :: proc(cmd_id, session_id, language, cmd, args, cwd, own
 	contracts.write_json_string(&b, cwd)
 	strings.write_string(&b, "\",\"owner_user_id\":\"")
 	contracts.write_json_string(&b, owner_user_id)
-	strings.write_string(&b, "\"}")
+	strings.write_string(&b, "\"")
+	if strings.trim_space(root_markers) != "" {
+		strings.write_string(&b, ",\"root_markers\":\"")
+		contracts.write_json_string(&b, root_markers)
+		strings.write_string(&b, "\"")
+	}
+	if strings.trim_space(file_path) != "" {
+		strings.write_string(&b, ",\"file_path\":\"")
+		contracts.write_json_string(&b, file_path)
+		strings.write_string(&b, "\"")
+	}
+	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
 
@@ -457,7 +468,14 @@ lsp_sink_for :: proc(service: ^Bridge_Service, sink_override: project_service.Br
 	return sink
 }
 
-send_lsp_start :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, session_id, language, cmd, args, cwd, owner_user_id: string, sink_override: project_service.Bridge_Command_Sink = {}) -> (bool, domain.Domain_Error) {
+send_lsp_start :: proc(
+	service: ^Bridge_Service,
+	auth: contracts.Auth_Context,
+	bridge_id, session_id, language, cmd, args, cwd, owner_user_id: string,
+	root_markers: string = "",
+	file_path: string = "",
+	sink_override: project_service.Bridge_Command_Sink = {},
+) -> (bool, domain.Domain_Error) {
 	if strings.trim_space(cmd) == "" {
 		return false, domain.domain_error(.Validation_Failed, "cmd is required")
 	}
@@ -467,7 +485,7 @@ send_lsp_start :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, b
 	cmd_id := ""
 	if service.ids != nil do cmd_id = platform.generate_id(service.ids, "cmd_lsp_start_")
 
-	cmd_json := lsp_start_command_json(cmd_id, session_id, language, cmd, args, cwd, owner_user_id)
+	cmd_json := lsp_start_command_json(cmd_id, session_id, language, cmd, args, cwd, owner_user_id, root_markers, file_path)
 	defer delete(cmd_json)
 
 	sent, send_err := project_service.bridge_command_send_runtime(

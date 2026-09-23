@@ -60,7 +60,7 @@ const LSP_EXPERIMENT_KEY = 'lsp';
 
 // Markers owner string. Scoped so setModelMarkers only ever clears OUR markers
 // and never a future contributor's.
-const MARKER_OWNER = 'heimdall-lsp';
+const MARKER_OWNER = 'lsp';
 
 // How many outstanding server complaints to keep. gopls' toolchain-less failure
 // produces two (cause + symptom) and both must survive together, so anything
@@ -268,6 +268,22 @@ export function useMonacoLsp({
   // is never described to a server that does not own it.
   const fileServed = lspFileServedBySession(lspConfigId, session.configId);
 
+  // Ensure Monaco TypeScript and JavaScript compiler defaults are initialized (REQ-PREVIEW-LSP-1)
+  useEffect(() => {
+    if (!monaco?.languages?.typescript) return;
+    const ts = monaco.languages.typescript;
+    const compilerOptions = {
+      jsx: ts.JsxEmit.ReactJSX,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      allowNonTsExtensions: true,
+      target: ts.ScriptTarget.Latest,
+      allowJs: true,
+      esModuleInterop: true,
+    };
+    ts.typescriptDefaults.setCompilerOptions(compilerOptions);
+    ts.javascriptDefaults.setCompilerOptions(compilerOptions);
+  }, [monaco]);
+
   useEffect(() => {
     // THE GATE. Nothing below this line runs with the flag off — an empty
     // sessionKey is exactly that gate, plus every other reason not to connect.
@@ -307,11 +323,35 @@ export function useMonacoLsp({
         if (!model) return;
         const markers = (p.diagnostics ?? []).map(lspDiagnosticToMarker);
         monaco.editor.setModelMarkers(model, MARKER_OWNER, markers);
+        // Clear any stale built-in worker markers on this model
+        monaco.editor.setModelMarkers(model, 'typescript', []);
+        monaco.editor.setModelMarkers(model, 'javascript', []);
       },
     });
     clientRef.current = client;
     versionsRef.current = new Map();
     openUriRef.current = '';
+
+    // When external LSP is active or handling TypeScript/JavaScript, disable
+    // Monaco built-in semantic diagnostics so the internal worker does not emit
+    // false-positive module resolution errors (TS2792) while the bridge language server
+    // handles workspace diagnostics (REQ-PREVIEW-LSP-1).
+    if (monaco?.languages?.typescript) {
+      const ts = monaco.languages.typescript;
+      ts.typescriptDefaults.setDiagnosticsOptions({
+        noSemanticValidation: true,
+        noSyntaxValidation: false,
+      });
+      ts.javascriptDefaults.setDiagnosticsOptions({
+        noSemanticValidation: true,
+        noSyntaxValidation: false,
+      });
+      for (const model of monaco.editor.getModels()) {
+        monaco.editor.setModelMarkers(model, 'typescript', []);
+        monaco.editor.setModelMarkers(model, 'javascript', []);
+      }
+    }
+
     void client.connect();
 
     return () => {
@@ -332,6 +372,7 @@ export function useMonacoLsp({
       if (monaco) {
         for (const model of monaco.editor.getModels()) {
           monaco.editor.setModelMarkers(model, MARKER_OWNER, []);
+          monaco.editor.setModelMarkers(model, 'heimdall-lsp', []);
         }
       }
     };

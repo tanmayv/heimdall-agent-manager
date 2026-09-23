@@ -224,12 +224,16 @@ export class LspClient {
           bridge_id: this.opts.bridgeId,
           language: this.opts.language,
           file_path: this.opts.filePath,
+          root_path: this.opts.rootPath,
         });
         this.setStatus('starting');
         this.startPing();
         break;
       case 'lsp_started':
         if (frame.ok) {
+          if (frame.root_path && typeof frame.root_path === 'string') {
+            this.opts.rootPath = frame.root_path;
+          }
           void this.initialize();
         } else {
           this.setStatus('error', String(frame.error || 'language server failed to start'));

@@ -513,6 +513,11 @@ lsp_bridge_frame_carries_each_type_payload :: proc(t: ^testing.T) {
 	defer delete(started_ok)
 	testing.expect(t, strings.contains(started_ok, "\"ok\":true"))
 
+	started_root := lsp_bridge_frame_for_client("lsp_started", "{\"type\":\"lsp_started\",\"session_id\":\"w1\",\"ok\":true,\"root_path\":\"/workspace/myproject\"}", "s1")
+	defer delete(started_root)
+	testing.expect(t, strings.contains(started_root, "\"ok\":true"))
+	testing.expect(t, strings.contains(started_root, "\"root_path\":\"/workspace/myproject\""))
+
 	started_bad := lsp_bridge_frame_for_client("lsp_started", "{\"type\":\"lsp_started\",\"session_id\":\"w1\",\"ok\":false,\"error\":\"process_start failed\"}", "s1")
 	defer delete(started_bad)
 	testing.expect(t, strings.contains(started_bad, "\"ok\":false"))
@@ -675,6 +680,16 @@ lsp_working_dir_prefers_config_prefix_then_file_dir :: proc(t: ^testing.T) {
 	d2 := lsp_working_dir(plain, "/work/other/pkg/main.go")
 	defer delete(d2)
 	testing.expect_value(t, d2, "/work/other/pkg")
+
+	// Root path provided when dir_prefix is empty: uses root_path (e.g. project workspace root).
+	d_root := lsp_working_dir(plain, "/work/other/pkg/main.go", "/work/other")
+	defer delete(d_root)
+	testing.expect_value(t, d_root, "/work/other")
+
+	// Explicit dir_prefix still overrides root_path when configured.
+	d_scoped_root := lsp_working_dir(scoped, "/work/exp/pkg/main.go", "/workspace")
+	defer delete(d_scoped_root)
+	testing.expect_value(t, d_scoped_root, "/work/exp")
 
 	// A bare filename has no directory; must not slice out of bounds.
 	d3 := lsp_working_dir(plain, "main.go")

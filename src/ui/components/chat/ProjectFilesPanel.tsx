@@ -283,6 +283,26 @@ function getLanguageForMonaco(filePath: string): string {
   return map[lang] || lang || 'plaintext';
 }
 
+/**
+ * Configures Monaco's built-in TypeScript and JavaScript compiler defaults (REQ-PREVIEW-LSP-1).
+ * Sets ReactJSX and NodeJs module resolution so .tsx and .ts files do not trigger false-positive
+ * TS17004 ("Cannot use JSX unless the '--jsx' flag is provided") or TS2792 module resolution errors.
+ */
+export function configureMonacoTypeScriptDefaults(monacoInstance: any) {
+  if (!monacoInstance?.languages?.typescript) return;
+  const ts = monacoInstance.languages.typescript;
+  const compilerOptions = {
+    jsx: ts.JsxEmit.ReactJSX,
+    moduleResolution: ts.ModuleResolutionKind.NodeJs,
+    allowNonTsExtensions: true,
+    target: ts.ScriptTarget.Latest,
+    allowJs: true,
+    esModuleInterop: true,
+  };
+  ts.typescriptDefaults.setCompilerOptions(compilerOptions);
+  ts.javascriptDefaults.setCompilerOptions(compilerOptions);
+}
+
 function str(v: any): string {
   return String(v ?? '').trim();
 }
@@ -451,6 +471,10 @@ export default function ProjectFilesPanel({
   const [listDir] = useLazyListProjectDirQuery();
   const [readFile, readState] = useLazyReadProjectFileQuery();
   const monaco = useMonaco();
+
+  useEffect(() => {
+    configureMonacoTypeScriptDefaults(monaco);
+  }, [monaco]);
 
   const [createFile, createFileState] = useCreateProjectFileMutation();
   const [createDir, createDirState] = useCreateProjectDirMutation();
@@ -3217,6 +3241,9 @@ function MonacoMultiFileEditor({
   isReadOnly?: boolean;
 }) {
   const monaco = useMonaco();
+  useEffect(() => {
+    configureMonacoTypeScriptDefaults(monaco);
+  }, [monaco]);
   const monacoTheme = themeAppearance === 'light' ? 'light' : 'vs-dark';
   const language = useMemo(() => getLanguageForMonaco(activeTab.path), [activeTab.path]);
 
@@ -3558,6 +3585,7 @@ function MonacoMultiFileEditor({
           </div>
         ) : isDiffMode ? (
           <DiffEditor
+            beforeMount={configureMonacoTypeScriptDefaults}
             original={activeTab.initialContent}
             modified={activeTab.content}
             language={language}
@@ -3585,6 +3613,7 @@ function MonacoMultiFileEditor({
           />
         ) : (
           <Editor
+            beforeMount={configureMonacoTypeScriptDefaults}
             path={activeTab.path}
             value={activeTab.content}
             language={language}
