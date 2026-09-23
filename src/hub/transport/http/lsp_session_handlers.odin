@@ -739,7 +739,9 @@ lsp_resolve_server :: proc(repo: ^iface.Lsp_Server_Config_Repository, owner_user
 	lang_configs := make([dynamic]domain.Lsp_Server_Config)
 	defer delete(lang_configs)
 	for c in all_configs {
-		if c.language == language do append(&lang_configs, c)
+		if domain.lsp_server_config_matches_language_or_ext(c, language, file_path) {
+			append(&lang_configs, c)
+		}
 	}
 
 	cfg, found := domain.lsp_server_config_resolve(lang_configs[:], file_path)
@@ -760,6 +762,7 @@ lsp_server_config_clone :: proc(c: domain.Lsp_Server_Config) -> domain.Lsp_Serve
 		file_extensions = strings.clone(c.file_extensions),
 		root_markers    = strings.clone(c.root_markers),
 		dir_prefix      = strings.clone(c.dir_prefix),
+		dir_pattern     = strings.clone(c.dir_pattern),
 		created_at      = strings.clone(c.created_at),
 		updated_at      = strings.clone(c.updated_at),
 	}

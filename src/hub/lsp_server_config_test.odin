@@ -8,12 +8,14 @@ import domain "odin_test:hub/domain"
 // read-only segment, so the tracking allocator never sees them.  Do not call
 // lsp_server_config_destroy on values produced here.
 @(private)
-make_cfg :: proc(language, dir_prefix: string) -> domain.Lsp_Server_Config {
+make_cfg :: proc(language, dir_prefix: string, dir_pattern: string = "", file_extensions: string = "") -> domain.Lsp_Server_Config {
 	return domain.Lsp_Server_Config{
-		config_id = "id",
-		language  = language,
-		dir_prefix = dir_prefix,
-		cmd       = "lsp",
+		config_id       = "id",
+		language        = language,
+		dir_prefix      = dir_prefix,
+		dir_pattern     = dir_pattern,
+		file_extensions = file_extensions,
+		cmd             = "lsp",
 	}
 }
 
@@ -145,4 +147,159 @@ test_lsp_resolve_double_trailing_slash_prefix_never_matches :: proc(t: ^testing.
 	got, found := domain.lsp_server_config_resolve(configs, "/work/project/main.go")
 	testing.expect(t, found, "default must still match when override has double trailing slash")
 	testing.expect(t, got.dir_prefix == "", "double-trailing-slash override must not win")
+}
+
+// --- glob pattern matching tests ---
+
+@(test)
+test_lsp_glob_match_single_and_recursive :: proc(t: ^testing.T) {
+	// Single '*' matches within path segment, does not cross '/'
+	testing.expect(t, domain.lsp_path_glob_match("/work/*/main.go", "/work/foo/main.go"), "* matches segment")
+	testing.expect(t, !domain.lsp_path_glob_match("/work/*/main.go", "/work/foo/bar/main.go"), "* must not cross slash")
+	testing.expect(t, !domain.lsp_path_glob_match("/work/*/main.go", "/work/main.go"), "* requires segment")
+
+	// '**' matches across slashes
+	testing.expect(t, domain.lsp_path_glob_match("/work/**", "/work/foo/bar/main.go"), "** matches deep path")
+	testing.expect(t, domain.lsp_path_glob_match("/work/**", "/work/main.go"), "** matches shallow path")
+	testing.expect(t, domain.lsp_path_glob_match("/work/**", "/work"), "** matches directory root")
+	testing.expect(t, domain.lsp_path_glob_match("**/main.go", "/work/foo/main.go"), "leading ** matches path")
+	testing.expect(t, domain.lsp_path_glob_match("**/main.go", "main.go"), "leading ** matches root file")
+
+	// Sample Fig pattern
+	fig_pat := "/google/src/cloud/*/*/google3/**"
+	testing.expect(t, domain.lsp_path_glob_match(fig_pat, "/google/src/cloud/tanmayvijay/heimdall/google3/experimental/main.go"), "fig pattern matches deep file")
+	testing.expect(t, domain.lsp_path_glob_match(fig_pat, "/google/src/cloud/user/ws/google3/BUILD"), "fig pattern matches BUILD in google3")
+	testing.expect(t, domain.lsp_path_glob_match(fig_pat, "/google/src/cloud/user/ws/google3"), "fig pattern matches google3 dir")
+	testing.expect(t, !domain.lsp_path_glob_match(fig_pat, "/google/src/cloud/user/google3/main.go"), "fig pattern requires 2 wildcard segments")
+	testing.expect(t, !domain.lsp_path_glob_match(fig_pat, "/google/src/head/tanmayvijay/heimdall/google3/main.go"), "fig pattern rejects non-cloud")
+}
+
+// --- multi-language and file extension matching tests ---
+
+@(test)
+test_lsp_matches_multi_language_and_wildcard :: proc(t: ^testing.T) {
+	// Wildcard "*" language
+	wild_cfg := make_cfg("*", "")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(wild_cfg, "go", "/work/main.go"), "* matches go")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(wild_cfg, "rust", "/work/lib.rs"), "* matches rust")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(wild_cfg, "", "/work/unknown"), "* matches empty language")
+
+	// Comma-separated list with whitespace
+	multi_cfg := make_cfg("go, cpp, java, python, proto, typescript", "")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(multi_cfg, "go", "/work/f"), "matches go")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(multi_cfg, "cpp", "/work/f"), "matches cpp")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(multi_cfg, "CPP", "/work/f"), "case insensitive matches CPP")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(multi_cfg, "Java", "/work/f"), "case insensitive matches Java")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(multi_cfg, "proto", "/work/f"), "matches proto")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(multi_cfg, "typescript", "/work/f"), "matches typescript")
+	testing.expect(t, !domain.lsp_server_config_matches_language_or_ext(multi_cfg, "rust", "/work/f"), "does not match rust")
+	testing.expect(t, !domain.lsp_server_config_matches_language_or_ext(multi_cfg, "py", "/work/f"), "does not partial-match py for python")
+}
+
+@(test)
+test_lsp_matches_file_extensions :: proc(t: ^testing.T) {
+	ext_cfg := make_cfg("ciderlsp", "", "", ".go, .cc, .cpp, .java, .py, .proto, .textpb")
+
+	// Language differs / unknown, but extension matches
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(ext_cfg, "unknown", "/work/service.proto"), "matches .proto extension")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(ext_cfg, "other", "/work/BUILD.textpb"), "matches .textpb extension")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(ext_cfg, "c++", "/work/main.cc"), "matches .cc extension")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(ext_cfg, "", "/work/main.CPP"), "case-insensitive extension match")
+	testing.expect(t, !domain.lsp_server_config_matches_language_or_ext(ext_cfg, "other", "/work/main.rs"), "rejects unmatched extension")
+	testing.expect(t, !domain.lsp_server_config_matches_language_or_ext(ext_cfg, "other", "/work/noext"), "rejects file without extension")
+
+	// Extension configured without leading dots
+	nodot_cfg := make_cfg("ciderlsp", "", "", "go, cc, cpp")
+	testing.expect(t, domain.lsp_server_config_matches_language_or_ext(nodot_cfg, "other", "/work/main.go"), "matches extension configured without leading dot")
+}
+
+// --- pattern resolution and precedence tests ---
+
+@(test)
+test_lsp_resolve_dir_pattern_matches :: proc(t: ^testing.T) {
+	configs := []domain.Lsp_Server_Config{
+		make_cfg("go", "", "/google/src/cloud/*/*/google3/**"),
+	}
+	got, found := domain.lsp_server_config_resolve(configs, "/google/src/cloud/tanmay/ws/google3/foo.go")
+	testing.expect(t, found, "dir_pattern should match")
+	testing.expect_value(t, got.dir_pattern, "/google/src/cloud/*/*/google3/**")
+
+	_, not_found := domain.lsp_server_config_resolve(configs, "/other/work/main.go")
+	testing.expect(t, !not_found, "dir_pattern should not match unrelated path")
+}
+
+@(test)
+test_lsp_resolve_dir_pattern_beats_default :: proc(t: ^testing.T) {
+	configs := []domain.Lsp_Server_Config{
+		make_cfg("go", "", "", ""),                                 // global default
+		make_cfg("go", "", "/google/src/cloud/*/*/google3/**", ""), // pattern match
+	}
+	// Matching pattern path
+	got1, found1 := domain.lsp_server_config_resolve(configs, "/google/src/cloud/tanmay/ws/google3/foo.go")
+	testing.expect(t, found1, "match found")
+	testing.expect_value(t, got1.dir_pattern, "/google/src/cloud/*/*/google3/**")
+
+	// Path outside pattern falls back to default
+	got2, found2 := domain.lsp_server_config_resolve(configs, "/home/user/code/main.go")
+	testing.expect(t, found2, "default match found")
+	testing.expect_value(t, got2.dir_pattern, "")
+	testing.expect_value(t, got2.dir_prefix, "")
+}
+
+@(test)
+test_lsp_resolve_literal_prefix_beats_dir_pattern :: proc(t: ^testing.T) {
+	configs := []domain.Lsp_Server_Config{
+		make_cfg("go", "", "", ""),                                            // default
+		make_cfg("go", "", "/google/src/cloud/*/*/google3/**", ""),            // pattern
+		make_cfg("go", "/google/src/cloud/tanmay/ws/google3/special", "", ""), // literal dir_prefix
+	}
+
+	// Inside literal dir_prefix: literal wins over pattern
+	got1, found1 := domain.lsp_server_config_resolve(configs, "/google/src/cloud/tanmay/ws/google3/special/main.go")
+	testing.expect(t, found1, "match found")
+	testing.expect_value(t, got1.dir_prefix, "/google/src/cloud/tanmay/ws/google3/special")
+
+	// Inside pattern but outside literal prefix: pattern wins over default
+	got2, found2 := domain.lsp_server_config_resolve(configs, "/google/src/cloud/tanmay/ws/google3/other/main.go")
+	testing.expect(t, found2, "match found")
+	testing.expect_value(t, got2.dir_pattern, "/google/src/cloud/*/*/google3/**")
+	testing.expect_value(t, got2.dir_prefix, "")
+
+	// Outside both: default wins
+	got3, found3 := domain.lsp_server_config_resolve(configs, "/home/tanmay/other.go")
+	testing.expect(t, found3, "default match found")
+	testing.expect_value(t, got3.dir_prefix, "")
+	testing.expect_value(t, got3.dir_pattern, "")
+}
+
+@(test)
+test_lsp_resolve_full_precedence_chain :: proc(t: ^testing.T) {
+	configs := []domain.Lsp_Server_Config{
+		make_cfg("go", "", "", ""),                // default (Tier 1)
+		make_cfg("go", "", "/work/**", ""),        // pattern (Tier 2)
+		make_cfg("go", "/work/proj", "", ""),      // shorter prefix (Tier 3)
+		make_cfg("go", "/work/proj/deep", "", ""), // longest prefix (Tier 3 winner)
+	}
+
+	// Longest prefix wins
+	got1, f1 := domain.lsp_server_config_resolve(configs, "/work/proj/deep/file.go")
+	testing.expect(t, f1, "found")
+	testing.expect_value(t, got1.dir_prefix, "/work/proj/deep")
+
+	// Shorter prefix wins when deep doesn't match
+	got2, f2 := domain.lsp_server_config_resolve(configs, "/work/proj/file.go")
+	testing.expect(t, f2, "found")
+	testing.expect_value(t, got2.dir_prefix, "/work/proj")
+
+	// Pattern wins when prefix doesn't match
+	got3, f3 := domain.lsp_server_config_resolve(configs, "/work/other/file.go")
+	testing.expect(t, f3, "found")
+	testing.expect_value(t, got3.dir_pattern, "/work/**")
+	testing.expect_value(t, got3.dir_prefix, "")
+
+	// Default wins when outside pattern
+	got4, f4 := domain.lsp_server_config_resolve(configs, "/opt/file.go")
+	testing.expect(t, f4, "found")
+	testing.expect_value(t, got4.dir_prefix, "")
+	testing.expect_value(t, got4.dir_pattern, "")
 }

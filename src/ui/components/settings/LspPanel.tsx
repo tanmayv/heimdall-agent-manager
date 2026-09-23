@@ -28,6 +28,7 @@ type FormState = {
   // Surface it again when bridge-side root detection lands (after REQ-LSP-E2E-1).
   rootMarkers: string;
   dirPrefix: string;
+  dirPattern: string;
 };
 
 const EMPTY_FORM: FormState = {
@@ -37,6 +38,7 @@ const EMPTY_FORM: FormState = {
   fileExtensions: '',
   rootMarkers: '',
   dirPrefix: '',
+  dirPattern: '',
 };
 
 // Strips trailing slashes and returns the normalized prefix (mirrors API normalization
@@ -89,6 +91,7 @@ export default function LspPanel() {
       fileExtensions: cfg.file_extensions,
       rootMarkers: cfg.root_markers,
       dirPrefix: cfg.dir_prefix,
+      dirPattern: cfg.dir_pattern || cfg.dirPattern || '',
     });
     setFormError('');
     setFormOpen(true);
@@ -122,6 +125,7 @@ export default function LspPanel() {
         fileExtensions: form.fileExtensions.trim(),
         rootMarkers: form.rootMarkers.trim(),
         dirPrefix: normalizedPrefix,
+        dirPattern: form.dirPattern.trim(),
       }).unwrap();
       closeForm();
     } catch (err: any) {
@@ -141,17 +145,28 @@ export default function LspPanel() {
     }
   }
 
-  // Group configs by language, then split into defaults (dir_prefix="") and overrides.
+  // Group configs by language, then split into defaults (dir_prefix="" && dir_pattern="") and overrides.
   const byLanguage = new Map<string, { defaults: LspServerConfig[]; overrides: LspServerConfig[] }>();
   for (const cfg of configs) {
     if (!byLanguage.has(cfg.language)) byLanguage.set(cfg.language, { defaults: [], overrides: [] });
     const group = byLanguage.get(cfg.language)!;
-    if (cfg.dir_prefix === '') group.defaults.push(cfg);
+    const hasPrefix = Boolean(cfg.dir_prefix && cfg.dir_prefix.trim());
+    const hasPattern = Boolean((cfg.dir_pattern || cfg.dirPattern) && (cfg.dir_pattern || cfg.dirPattern)!.trim());
+    if (!hasPrefix && !hasPattern) group.defaults.push(cfg);
     else group.overrides.push(cfg);
   }
-  // Sort overrides by prefix length descending so longer (more specific) paths appear first.
+  // Sort overrides by prefix length descending (longest first), then pattern overrides.
   for (const group of byLanguage.values()) {
-    group.overrides.sort((a, b) => b.dir_prefix.length - a.dir_prefix.length);
+    group.overrides.sort((a, b) => {
+      const aPrefix = (a.dir_prefix || '').trim().length;
+      const bPrefix = (b.dir_prefix || '').trim().length;
+      if (aPrefix > 0 && bPrefix > 0) return bPrefix - aPrefix;
+      if (aPrefix > 0 && bPrefix === 0) return -1;
+      if (aPrefix === 0 && bPrefix > 0) return 1;
+      const aPat = (a.dir_pattern || a.dirPattern || '').trim().length;
+      const bPat = (b.dir_pattern || b.dirPattern || '').trim().length;
+      return bPat - aPat;
+    });
   }
   const languages = Array.from(byLanguage.keys()).sort();
 
@@ -170,12 +185,16 @@ export default function LspPanel() {
         </p>
       )}
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <FormField label="Language *" className="sm:col-span-2">
+        <FormField
+          label="Language *"
+          hint="Comma-separated language IDs (e.g. go, cpp, java, python, proto, typescript) or * for all languages."
+          className="sm:col-span-2"
+        >
           <Input
             data-debug-id="settings-lsp-form-language"
             value={form.language}
             onChange={(v) => setField('language', v)}
-            placeholder="go"
+            placeholder="go, cpp, java"
             width="full"
             disabled={Boolean(editing)}
           />
@@ -198,12 +217,15 @@ export default function LspPanel() {
             width="full"
           />
         </FormField>
-        <FormField label="File extensions">
+        <FormField
+          label="File extensions"
+          hint="Comma-separated extensions (e.g. .go, .cc, .cpp, .java, .proto)"
+        >
           <Input
             data-debug-id="settings-lsp-form-extensions"
             value={form.fileExtensions}
             onChange={(v) => setField('fileExtensions', v)}
-            placeholder=".go"
+            placeholder=".go, .cc, .java, .proto"
             width="full"
           />
         </FormField>
@@ -224,6 +246,18 @@ export default function LspPanel() {
             placeholder="/home/user/project"
             width="full"
             disabled={Boolean(editing)}
+          />
+        </FormField>
+        <FormField
+          label="Directory Pattern (optional)"
+          hint="Glob pattern matching file path with * (non-slash) and ** (recursive), e.g. /google/src/cloud/*/*/google3/**"
+        >
+          <Input
+            data-debug-id="settings-lsp-form-dir-pattern"
+            value={form.dirPattern}
+            onChange={(v) => setField('dirPattern', v)}
+            placeholder="/google/src/cloud/*/*/google3/**"
+            width="full"
           />
         </FormField>
       </div>
@@ -309,7 +343,7 @@ export default function LspPanel() {
             {/* Resolution rule callout */}
             <div data-debug-id="settings-lsp-resolution-note" className="mt-4 rounded-xl border border-subtle bg-surface-raised/30 px-3 py-2 text-caption text-muted">
               <span className="font-medium text-primary">Resolution: </span>
-              longest-prefix-wins. When a file is opened, the override whose directory is the deepest match for that file's path is used. The language default catches any file with no matching override.
+              longest-prefix &gt; directory pattern &gt; default. When a file is opened, the longest matching directory prefix wins first, followed by matching directory glob patterns, falling back to the language default.
             </div>
 
             {/* Config list */}
@@ -327,15 +361,27 @@ export default function LspPanel() {
               <div className="mt-4 space-y-6">
                 {languages.map((lang) => {
                   const { defaults, overrides } = byLanguage.get(lang)!;
-                  // Resolution order: overrides are tried longest-prefix-first, and the
-                  // language default is the fallback, so it renders last. Do not re-sort
-                  // this list (alphabetically or otherwise) — the order IS the precedence
-                  // rule, and the label below tells the reader to read it that way.
+                  // Resolution order: overrides are tried longest-prefix-first, then pattern
+                  // overrides, and the language default is the fallback, so it renders last.
                   const all = [...overrides, ...defaults];
                   return (
                     <div key={lang} data-debug-id={`settings-lsp-lang-${lang}`}>
                       <div className="mb-2 flex flex-wrap items-baseline gap-x-2">
-                        <Text as="div" role="overline" tone="muted">{lang}</Text>
+                        {lang.includes(',') ? (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {lang.split(',').map((l) => l.trim()).filter(Boolean).map((l) => (
+                              <span
+                                key={l}
+                                data-debug-id={`settings-lsp-lang-tag-${l}`}
+                                className="rounded-md border border-subtle bg-surface-raised px-1.5 py-0.5 text-xs font-mono text-primary"
+                              >
+                                {l}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <Text as="div" role="overline" tone="muted">{lang}</Text>
+                        )}
                         <span
                           data-debug-id={`settings-lsp-lang-order-note-${lang}`}
                           className="text-caption text-muted"
@@ -346,6 +392,7 @@ export default function LspPanel() {
                       <div className="space-y-2">
                         {all.map((cfg) => {
                           const isOverride = cfg.dir_prefix !== '';
+                          const pattern = cfg.dir_pattern || cfg.dirPattern || '';
                           const isDeleting = deleteConfirmId === cfg.config_id;
                           return (
                             <div
@@ -364,6 +411,13 @@ export default function LspPanel() {
                                       >
                                         override
                                       </span>
+                                    ) : pattern ? (
+                                      <span
+                                        data-debug-id={`settings-lsp-config-pattern-badge-${cfg.config_id}`}
+                                        className="rounded-full border border-accent/30 bg-accent-soft px-2 py-0.5 text-[10px] text-accent"
+                                      >
+                                        pattern
+                                      </span>
                                     ) : (
                                       <span
                                         data-debug-id={`settings-lsp-config-default-badge-${cfg.config_id}`}
@@ -378,8 +432,14 @@ export default function LspPanel() {
                                     {cfg.file_extensions ? <span>extensions: <span className="font-mono text-primary">{cfg.file_extensions}</span></span> : null}
                                     {isOverride ? (
                                       <span>
-                                        this directory, instead of the language default:{' '}
+                                        prefix:{' '}
                                         <span className="font-mono text-primary">{cfg.dir_prefix}</span>
+                                      </span>
+                                    ) : null}
+                                    {pattern ? (
+                                      <span>
+                                        pattern:{' '}
+                                        <span className="font-mono text-primary">{pattern}</span>
                                       </span>
                                     ) : null}
                                   </div>

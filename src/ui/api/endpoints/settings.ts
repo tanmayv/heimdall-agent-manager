@@ -102,6 +102,8 @@ export type LspServerConfig = {
   file_extensions: string;
   root_markers: string;
   dir_prefix: string;
+  dir_pattern?: string;
+  dirPattern?: string;
   created_at: string;
   updated_at: string;
 };
@@ -127,10 +129,13 @@ export const lspApi = heimdallApi.injectEndpoints({
       fileExtensions?: string;
       rootMarkers?: string;
       dirPrefix?: string;
+      dirPattern?: string;
+      dir_pattern?: string;
     }>({
-      queryFn: async ({ bridgeId, language, cmd, args = '', fileExtensions = '', rootMarkers = '', dirPrefix = '' }) => {
+      queryFn: async ({ bridgeId, language, cmd, args = '', fileExtensions = '', rootMarkers = '', dirPrefix = '', dirPattern = '', dir_pattern = '' }) => {
         try {
           const normalizedPrefix = dirPrefix.replace(/\/+$/, '');
+          const pattern = (dirPattern || dir_pattern || '').trim();
           const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/lsp-servers`, 'POST', {
             language,
             cmd,
@@ -138,6 +143,7 @@ export const lspApi = heimdallApi.injectEndpoints({
             file_extensions: fileExtensions,
             root_markers: rootMarkers,
             dir_prefix: normalizedPrefix,
+            dir_pattern: pattern,
           });
           return { data: { config: data?.config } };
         } catch (error: any) {

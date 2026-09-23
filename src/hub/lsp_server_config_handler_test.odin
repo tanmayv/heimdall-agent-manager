@@ -131,3 +131,110 @@ test_lsp_server_config_slash_dir_prefix_rejected :: proc(t: ^testing.T) {
 	// Confirm only one config exists (rejections did not create extra rows).
 	testing.expect(t, strings.count(list_resp.body, "\"config_id\"") == 1, "exactly one config must exist after rejections")
 }
+
+@(test)
+test_lsp_server_config_dir_pattern_and_multilang_rest_roundtrip :: proc(t: ^testing.T) {
+	db_path := fmt.tprintf("/tmp/heimdall-hub-test-lsp-pattern-%d.db", os.get_pid())
+	_ = os.remove(db_path)
+	defer _ = os.remove(db_path)
+
+	cidrs := [?]string{"127.0.0.1/32"}
+	graph: app.App_Graph
+	ok, msg := app.build_graph(&graph, app.Hub_Config{
+		database_path        = db_path,
+		migrations_dir       = "src/hub/repository/sqlite/migrations",
+		username_header      = "X-authentik-username",
+		display_name_header  = "X-authentik-name",
+		email_header         = "X-authentik-email",
+		trusted_proxy_cidrs  = cidrs[:],
+		auto_provision_users = true,
+		logout_url           = "/_dev/logout",
+	})
+	testing.expect(t, ok, msg)
+	defer app.shutdown_graph(&graph)
+
+	alice := [?]contracts.HTTP_Header{{name = "X-authentik-username", value = "alice"}}
+
+	enroll_created := api_http.router_dispatch(&graph.router, api_http.Request{
+		method      = "POST",
+		path        = "/api/v1/bridge-enrollments",
+		body        = `{"label":"Alice Bridge Pattern"}`,
+		request_id  = "req_lspp_1",
+		remote_addr = "127.0.0.1",
+		headers     = alice[:],
+	})
+	testing.expect(t, enroll_created.status == 201, "bridge enrollment must succeed")
+
+	enrollment_token := ""
+	if idx := strings.index(enroll_created.body, "\"enrollment_token\":\""); idx >= 0 {
+		rest := enroll_created.body[idx + len("\"enrollment_token\":\""):]
+		if end := strings.index_byte(rest, '"'); end >= 0 do enrollment_token = rest[:end]
+	}
+
+	enroll_bearer := fmt.tprintf("Bearer %s", enrollment_token)
+	enroll_auth := [?]contracts.HTTP_Header{{name = "Authorization", value = enroll_bearer}}
+	enrolled := api_http.router_dispatch(&graph.router, api_http.Request{
+		method      = "POST",
+		path        = "/api/v1/bridges/enroll",
+		body        = `{"machine":{"hostname":"lsp-pattern-host"},"capabilities":[]}`,
+		request_id  = "req_lspp_2",
+		remote_addr = "127.0.0.1",
+		headers     = enroll_auth[:],
+	})
+	testing.expect(t, enrolled.status == 201, "bridge enroll must succeed")
+
+	bridge_id := ""
+	if idx := strings.index(enrolled.body, "\"bridge_id\":\""); idx >= 0 {
+		rest := enrolled.body[idx + len("\"bridge_id\":\""):]
+		if end := strings.index_byte(rest, '"'); end >= 0 do bridge_id = rest[:end]
+	}
+	testing.expect(t, bridge_id != "", "bridge_id must be non-empty")
+
+	lsp_path := fmt.tprintf("/api/v1/bridges/%s/lsp-servers", bridge_id)
+
+	// Create config with dir_pattern, multi-language, and file_extensions
+	create_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method      = "POST",
+		path        = lsp_path,
+		body        = `{"language":"go, cpp, proto","cmd":"ciderlsp","file_extensions":".go, .cc, .proto","dir_pattern":"/google/src/cloud/*/*/google3/**"}`,
+		request_id  = "req_lspp_3",
+		remote_addr = "127.0.0.1",
+		headers     = alice[:],
+	})
+	testing.expect(t, create_resp.status == 200, "create config with pattern must succeed")
+	testing.expect(t, strings.contains(create_resp.body, `"dir_pattern":"/google/src/cloud/*/*/google3/**"`), "response must contain dir_pattern")
+
+	// Resolve by matching language and pattern
+	resolve_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method      = "GET",
+		path        = fmt.tprintf("/api/v1/bridges/%s/lsp-servers/resolve", bridge_id),
+		query       = "language=proto&path=/google/src/cloud/tanmay/ws/google3/service.proto",
+		request_id  = "req_lspp_4",
+		remote_addr = "127.0.0.1",
+		headers     = alice[:],
+	})
+	testing.expect(t, resolve_resp.status == 200, "resolve must succeed for matching proto and pattern")
+	testing.expect(t, strings.contains(resolve_resp.body, `"cmd":"ciderlsp"`), "resolved server cmd matches")
+
+	// Resolve by matching file extension when language query parameter is different
+	resolve_ext_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method      = "GET",
+		path        = fmt.tprintf("/api/v1/bridges/%s/lsp-servers/resolve", bridge_id),
+		query       = "language=unknown&path=/google/src/cloud/tanmay/ws/google3/main.cc",
+		request_id  = "req_lspp_5",
+		remote_addr = "127.0.0.1",
+		headers     = alice[:],
+	})
+	testing.expect(t, resolve_ext_resp.status == 200, "resolve must succeed via file extension .cc")
+
+	// Resolve for path outside pattern should fail (404)
+	resolve_outside_resp := api_http.router_dispatch(&graph.router, api_http.Request{
+		method      = "GET",
+		path        = fmt.tprintf("/api/v1/bridges/%s/lsp-servers/resolve", bridge_id),
+		query       = "language=proto&path=/other/path/service.proto",
+		request_id  = "req_lspp_6",
+		remote_addr = "127.0.0.1",
+		headers     = alice[:],
+	})
+	testing.expect(t, resolve_outside_resp.status == 404, "resolve outside pattern without default must return 404")
+}

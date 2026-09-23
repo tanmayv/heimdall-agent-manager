@@ -497,14 +497,25 @@ bridge_fs_run_dir_root :: proc(instance_id: string) -> (root: string, ok: bool) 
 }
 
 // bridge_fs_effective_root resolves an optional project-root override to a canonical
-// absolute path, requiring it to be contained within the global bridge_fs_root
-// (defense-in-depth: a hostile hub request cannot escape the bridge sandbox). An
-// empty override yields the global root. ok=false means the override escaped.
+// absolute path. It accepts any valid existing directory on the host (e.g. task chain
+// directories or external project roots), or falls back to global bridge_fs_root if empty.
+// Subpath containment within the returned root is enforced by bridge_fs_resolve_within.
 bridge_fs_effective_root :: proc(root_override: string) -> (root: string, ok: bool) {
-	if strings.trim_space(root_override) == "" do return bridge_fs_root, bridge_fs_root != ""
-	canonical, within := bridge_fs_resolve_within(root_override) // checked against GLOBAL root
-	if !within do return "", false
-	return canonical, true
+	trimmed := strings.trim_space(root_override)
+	if trimmed == "" do return bridge_fs_root, bridge_fs_root != ""
+
+	// If within global bridge_fs_root, accept
+	canonical, within := bridge_fs_resolve_within(trimmed)
+	if within do return canonical, true
+
+	// Allow any existing directory on the host as a valid task chain / project root
+	can := bridge_fs_canonicalize_existing(trimmed)
+	if os.exists(can) && os.is_dir(can) {
+		return can, true
+	}
+	delete(can)
+
+	return "", false
 }
 
 // --- operations ----------------------------------------------------------

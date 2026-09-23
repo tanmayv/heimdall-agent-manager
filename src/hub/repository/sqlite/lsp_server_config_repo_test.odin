@@ -19,6 +19,7 @@ test_lsp_server_config_repo_sqlite_lifecycle :: proc(t: ^testing.T) {
 	mig_ok, _ := run_migrations(&conn)
 	testing.expect(t, mig_ok, "migrations ok")
 	testing.expect(t, table_column_exists(&conn, "lsp_server_configs", "dir_prefix"), "dir_prefix column exists")
+	testing.expect(t, table_column_exists(&conn, "lsp_server_configs", "dir_pattern"), "dir_pattern column exists")
 
 	impl := Lsp_Server_Config_Repo_SQLite{}
 	repo := new_lsp_server_config_repository(&impl, &conn)
@@ -61,6 +62,7 @@ test_lsp_server_config_repo_sqlite_lifecycle :: proc(t: ^testing.T) {
 		file_extensions = ".go",
 		root_markers    = "go.mod",
 		dir_prefix      = "/work/project",
+		dir_pattern     = "/work/project/**",
 		created_at      = "2026-09-22T10:00:00Z",
 		updated_at      = "2026-09-22T10:00:00Z",
 	}
@@ -74,8 +76,10 @@ test_lsp_server_config_repo_sqlite_lifecycle :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(list1), 2)
 	if len(list1) == 2 {
 		testing.expect_value(t, list1[0].dir_prefix, "")
+		testing.expect_value(t, list1[0].dir_pattern, "")
 		testing.expect_value(t, list1[0].cmd, "gopls")
 		testing.expect_value(t, list1[1].dir_prefix, "/work/project")
+		testing.expect_value(t, list1[1].dir_pattern, "/work/project/**")
 		testing.expect_value(t, list1[1].cmd, "gopls-special")
 	}
 	for c in list1 { domain.lsp_server_config_destroy(c) }
@@ -102,8 +106,10 @@ test_lsp_server_config_repo_sqlite_lifecycle :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(persisted), 2)
 	if len(persisted) == 2 {
 		testing.expect_value(t, persisted[0].dir_prefix, "")
+		testing.expect_value(t, persisted[0].dir_pattern, "")
 		testing.expect_value(t, persisted[0].cmd, "gopls")
 		testing.expect_value(t, persisted[1].dir_prefix, "/work/project")
+		testing.expect_value(t, persisted[1].dir_pattern, "/work/project/**")
 		testing.expect_value(t, persisted[1].cmd, "gopls-special")
 	}
 	for c in persisted { domain.lsp_server_config_destroy(c) }
