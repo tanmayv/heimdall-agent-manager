@@ -46,6 +46,64 @@ const ARTIFACT_TOKEN_RE = new RegExp(`(^|[^"'>])(${ARTIFACT_URI_PATTERN})`, 'g')
 const ARTIFACT_MARKDOWN_LINK_RE = new RegExp(`\\[([^\\]\\n]+)\\]\\((${ARTIFACT_URI_PATTERN})\\)`, 'g');
 const ARTIFACT_URI_ONLY_RE = new RegExp(`^artifact://(${ARTIFACT_ID_PATTERN})$`);
 
+export const RESOURCE_ID_PREFIXES = ['agt_', 'iss_', 'inst_', 'mem_', 'proj_', 'chain_', 'act_', 'sh_'] as const;
+export type ResourceIdPrefix = typeof RESOURCE_ID_PREFIXES[number];
+
+export const RESOURCE_TYPE_CONFIG: Record<ResourceIdPrefix, { route: string; type: string }> = {
+  agt_: { route: 'agents', type: 'agent' },
+  iss_: { route: 'issues', type: 'issue' },
+  inst_: { route: 'conversations', type: 'conversation' },
+  mem_: { route: 'memory', type: 'memory' },
+  proj_: { route: 'projects', type: 'project' },
+  chain_: { route: 'chains', type: 'chain' },
+  act_: { route: 'actions', type: 'action' },
+  sh_: { route: 'shells', type: 'shell' },
+};
+
+const RESOURCE_ID_RE = /(^|[^A-Za-z0-9_])((?:agt_|iss_|inst_|mem_|proj_|chain_|act_|sh_)[A-Za-z0-9_-]+)(?=[^A-Za-z0-9_-]|$)/g;
+
+export function autolinkResourceIds(html: string): string {
+  if (!html) return '';
+  const tokens = html.split(/(<[^>]+>)/g);
+  let inAnchor = 0;
+  let inButton = 0;
+  let inCode = 0;
+  let inPre = 0;
+
+  return tokens.map((token) => {
+    if (token.startsWith('<') && token.endsWith('>')) {
+      const isClosing = token.startsWith('</');
+      const isSelfClosing = token.endsWith('/>');
+      const tagMatch = token.match(/^<\/?\s*([a-zA-Z0-9]+)/);
+      const tag = tagMatch ? tagMatch[1].toLowerCase() : '';
+
+      if (isClosing) {
+        if (tag === 'a') inAnchor = Math.max(0, inAnchor - 1);
+        else if (tag === 'button') inButton = Math.max(0, inButton - 1);
+        else if (tag === 'code') inCode = Math.max(0, inCode - 1);
+        else if (tag === 'pre') inPre = Math.max(0, inPre - 1);
+      } else if (!isSelfClosing) {
+        if (tag === 'a') inAnchor++;
+        else if (tag === 'button') inButton++;
+        else if (tag === 'code') inCode++;
+        else if (tag === 'pre') inPre++;
+      }
+      return token;
+    }
+
+    if (inAnchor > 0 || inButton > 0 || inCode > 0 || inPre > 0) {
+      return token;
+    }
+
+    return token.replace(RESOURCE_ID_RE, (_full, prefixChar, id) => {
+      const prefix = (RESOURCE_ID_PREFIXES as readonly string[]).find((p) => id.startsWith(p)) as ResourceIdPrefix | undefined;
+      if (!prefix) return _full;
+      const { route, type } = RESOURCE_TYPE_CONFIG[prefix];
+      return `${prefixChar}<a href="#/${route}/${id}" data-resource-id="${id}" data-resource-type="${type}" class="font-mono text-accent underline decoration-accent/40 hover:decoration-accent">${id}</a>`;
+    });
+  }).join('');
+}
+
 export function artifactIdFromUri(value: string): string {
   const match = String(value || '').trim().match(ARTIFACT_URI_ONLY_RE);
   return match?.[1] || '';
@@ -82,19 +140,21 @@ function renderInline(text: string): string {
   escaped = escaped.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
   escaped = escaped.replace(/(^|[^A-Za-z0-9_])_([^_\s](?:[^_\n]*?[^_\s])?)_(?![A-Za-z0-9_])/g, '$1<em>$2</em>');
   escaped = escaped.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-  escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, url) => (
-    `<a href="${url}" target="_blank" rel="noreferrer" class="text-accent underline decoration-accent/40 hover:decoration-accent">${label}</a>`
-  ));
   escaped = escaped.replace(ARTIFACT_MARKDOWN_LINK_RE, (_m, label, _link, artifactId) => createArtifactButtonHtml(artifactId, label));
   escaped = escaped.replace(ARTIFACT_TOKEN_RE, (_m, prefix, _link, artifactId) => {
     // Initial visible text is the artifact ID (safe fallback). A React-side
     // effect asynchronously swaps in the resolved artifact name when available.
     return `${prefix}${createArtifactButtonHtml(artifactId)}`;
   });
+  escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|#[^\s)]+|\/[^\s)]+)\)/g, (_m, label, url) => {
+    const isExternal = /^https?:\/\//i.test(url);
+    const targetRel = isExternal ? ' target="_blank" rel="noreferrer"' : '';
+    return `<a href="${url}"${targetRel} class="text-accent underline decoration-accent/40 hover:decoration-accent">${label}</a>`;
+  });
   escaped = escaped.replace(/(^|[^"'>])((?:https?:\/\/)[\w\-._~:\/?#\[\]@!$&'()*+,;=%]+[\w\-_~:\/?#\[\]@!$&'()*+;=%])/g, (_m, prefix, url) => {
     return `${prefix}<a href="${url}" target="_blank" rel="noreferrer" class="text-accent underline decoration-accent/40 hover:decoration-accent">${url}</a>`;
   });
-  return escaped;
+  return autolinkResourceIds(escaped);
 }
 
 function splitTableRow(line: string): string[] {
@@ -156,6 +216,15 @@ function renderTable(lines: string[], start: number): { html: string; nextIndex:
   };
 }
 
+const HEADING_STYLES: Record<number, { tag: string; className: string }> = {
+  1: { tag: 'h1', className: 'mt-3 text-xl font-bold text-accent' },
+  2: { tag: 'h2', className: 'mt-2.5 text-lg font-semibold text-primary' },
+  3: { tag: 'h3', className: 'mt-2 text-base font-medium text-muted' },
+  4: { tag: 'h4', className: 'mt-1.5 text-sm font-medium text-muted' },
+  5: { tag: 'h5', className: 'mt-1 text-xs font-medium text-muted' },
+  6: { tag: 'h6', className: 'mt-1 text-xs font-medium text-muted' },
+};
+
 function renderBlocks(source: string): string {
   const lines = normalizeMarkdownSource(source).replace(/\r\n?/g, '\n').split('\n');
   const out: string[] = [];
@@ -185,8 +254,8 @@ function renderBlocks(source: string): string {
     const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*$/);
     if (heading) {
       const level = heading[1].length;
-      const tag = `h${Math.min(6, level + 2)}`;
-      out.push(`<${tag} class="mt-2 font-semibold text-primary">${renderInline(heading[2])}</${tag}>`);
+      const headingStyle = HEADING_STYLES[level] || HEADING_STYLES[6];
+      out.push(`<${headingStyle.tag} class="${headingStyle.className}">${renderInline(heading[2])}</${headingStyle.tag}>`);
       i += 1;
       continue;
     }
@@ -412,46 +481,66 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
         return;
       }
       const button = target?.closest?.('[data-markdown-copy-code="true"],[data-markdown-copy-table="true"],[data-markdown-copy-all="true"]') as HTMLButtonElement | null;
-      if (!button) return;
-      let text = '';
-      if (button.matches('[data-markdown-copy-all="true"]')) {
-        text = button.getAttribute('data-markdown-source') || normalizeMarkdownSource(source || '');
-      } else if (button.matches('[data-markdown-copy-code="true"]')) {
-        const wrapper = button.closest('.group');
-        text = wrapper?.getAttribute('data-mermaid-code')
-          || wrapper?.querySelector('[data-code-raw]')?.getAttribute('data-code-raw')
-          || wrapper?.getAttribute('data-code-raw')
-          || wrapper?.querySelector('pre code')?.textContent
-          || wrapper?.querySelector('pre')?.textContent
-          || '';
-      } else {
-        const wrapper = button.closest('.markdown-table');
-        const table = wrapper?.querySelector('table') as HTMLTableElement | null;
-        text = table ? tableToCsv(table) : '';
-      }
-      if (!text) return;
-      await navigator.clipboard?.writeText(text).catch(() => undefined);
-      if (button.matches('[data-markdown-copy-all="true"]')) {
-        // The glyph is an inline SVG from the icon set, so the "copied" feedback
-        // swaps MARKUP, not text — assigning textContent here would wipe the icon.
-        const iconSpan = (button.querySelector('span') || button) as HTMLElement;
-        const prevMarkup = iconSpan.innerHTML;
-        const prevTitle = button.getAttribute('title') || 'Copy entire markdown';
-        iconSpan.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"></path></svg>`;
-        button.setAttribute('title', 'Copied!');
-        window.setTimeout(() => {
-          iconSpan.innerHTML = prevMarkup;
-          button.setAttribute('title', prevTitle);
-        }, 1200);
+      if (button) {
+        let text = '';
+        if (button.matches('[data-markdown-copy-all="true"]')) {
+          text = button.getAttribute('data-markdown-source') || normalizeMarkdownSource(source || '');
+        } else if (button.matches('[data-markdown-copy-code="true"]')) {
+          const wrapper = button.closest('.group');
+          text = wrapper?.getAttribute('data-mermaid-code')
+            || wrapper?.querySelector('[data-code-raw]')?.getAttribute('data-code-raw')
+            || wrapper?.getAttribute('data-code-raw')
+            || wrapper?.querySelector('pre code')?.textContent
+            || wrapper?.querySelector('pre')?.textContent
+            || '';
+        } else {
+          const wrapper = button.closest('.markdown-table');
+          const table = wrapper?.querySelector('table') as HTMLTableElement | null;
+          text = table ? tableToCsv(table) : '';
+        }
+        if (!text) return;
+        await navigator.clipboard?.writeText(text).catch(() => undefined);
+        if (button.matches('[data-markdown-copy-all="true"]')) {
+          // The glyph is an inline SVG from the icon set, so the "copied" feedback
+          // swaps MARKUP, not text — assigning textContent here would wipe the icon.
+          const iconSpan = (button.querySelector('span') || button) as HTMLElement;
+          const prevMarkup = iconSpan.innerHTML;
+          const prevTitle = button.getAttribute('title') || 'Copy entire markdown';
+          iconSpan.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"></path></svg>`;
+          button.setAttribute('title', 'Copied!');
+          window.setTimeout(() => {
+            iconSpan.innerHTML = prevMarkup;
+            button.setAttribute('title', prevTitle);
+          }, 1200);
+          return;
+        }
+        const previous = button.getAttribute('data-original-text') || button.textContent || 'Copy';
+        if (!button.getAttribute('data-original-text')) {
+          button.setAttribute('data-original-text', previous);
+        }
+        button.textContent = 'Copied';
+        window.setTimeout(() => { button.textContent = previous; }, 1200);
         return;
       }
-      const previous = button.getAttribute('data-original-text') || button.textContent || 'Copy';
-      if (!button.getAttribute('data-original-text')) {
-        button.setAttribute('data-original-text', previous);
+
+    const resourceAnchor = target?.closest?.('a[data-resource-id],a[href^="#/"]') as HTMLAnchorElement | null;
+    if (resourceAnchor) {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
       }
-      button.textContent = 'Copied';
-      window.setTimeout(() => { button.textContent = previous; }, 1200);
-    };
+      const href = resourceAnchor.getAttribute('href') || '';
+      if (href.startsWith('#/')) {
+        event.preventDefault();
+        const targetHash = href.startsWith('#') ? href.slice(1) : href;
+        if (window.location.hash === targetHash || window.location.hash === `#${targetHash}`) {
+          window.dispatchEvent(new Event('hashchange'));
+        } else {
+          window.location.hash = targetHash;
+        }
+        return;
+      }
+    }
+  };
     root.addEventListener('click', onClick);
     return () => root.removeEventListener('click', onClick);
   }, [html, source, onArtifactClick]);

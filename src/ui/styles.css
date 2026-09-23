@@ -154,6 +154,38 @@ body {
   max-width: 100%;
 }
 
+/* REQ-MD-HEADINGS-1: Markdown heading styles mapped to theme tokens */
+.markdown h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+.markdown h2 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.markdown h3 {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.markdown h4 {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.markdown h5,
+.markdown h6 {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
 .markdown-message > * + * {
   margin-top: 0.65rem;
 }
@@ -171,14 +203,17 @@ body {
 
 .markdown-message h1 {
   font-size: 1.32rem;
+  color: var(--color-accent);
 }
 
 .markdown-message h2 {
   font-size: 1.18rem;
+  color: var(--color-text-primary);
 }
 
 .markdown-message h3 {
   font-size: 1.06rem;
+  color: var(--color-text-muted);
 }
 
 .markdown-message h4,

@@ -49,3 +49,7 @@ export function buildRouteHash(pathname: string, search: string): string {
   const normalizedPath = pathname && pathname.startsWith('/') ? pathname : `/${pathname || ''}`;
   return `#${normalizedPath}${normalizedSearch}`;
 }
+
+export function navigateTo(href: string): void {
+  window.location.hash = href.startsWith('#') ? href.slice(1) : href;
+}

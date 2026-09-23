@@ -187,16 +187,16 @@ export interface TabsPanelProps extends RootClassNameProps {
 export const TabsPanel: React.FC<TabsPanelProps> = ({ value, className, children }) => {
   const { value: active, baseId } = useTabs();
   const isActive = active === value;
+  if (!isActive) return null;
   return (
     <div
       role="tabpanel"
       id={panelId(baseId, value)}
       aria-labelledby={tabId(baseId, value)}
-      hidden={!isActive}
       tabIndex={0}
       className={className}
     >
-      {isActive ? children : null}
+      {children}
     </div>
   );
 };
