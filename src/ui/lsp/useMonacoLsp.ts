@@ -18,7 +18,7 @@
 // concurrent servers: a pool multiplies bridge processes per open tab, and the
 // relay gives one process per socket.
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useFetchExperimentsQuery, useResolveLspServerConfigQuery } from '../api/endpoints/settings';
 import { LspClient, type LspClientStatus } from './lspClient';
@@ -46,6 +46,11 @@ import {
   type LspDiagnostic,
   type LspHover,
 } from './lspProtocol';
+import {
+  lspServerNotice,
+  lspServerNoticeKey,
+  type LspServerNotice,
+} from './lspServerNotice';
 
 // The experiment key the Hub gates the relay on (LSP_EXPERIMENT_KEY in
 // lsp_session_handlers.odin:41). An absent key means disabled — the convention
@@ -81,6 +86,15 @@ export type UseMonacoLspResult = {
   enabled: boolean;
   status: LspClientStatus;
   detail: string;
+  /**
+   * REQ-LSP-ENV-1: the server's own last complaint, or null when it has none.
+   * Null is the normal state of a healthy session. A CALLER THAT IGNORES THIS
+   * REINTRODUCES THE DEFECT — a toolchain-less server explains itself here and
+   * nowhere else the user can see.
+   */
+  notice: LspServerNotice | null;
+  /** Clears the current notice and suppresses that exact complaint if repeated. */
+  dismissNotice: () => void;
 };
 
 function joinAbs(rootAbs: string, relPath: string): string {
@@ -110,6 +124,17 @@ export function useMonacoLsp({
   const enabled = useLspExperimentEnabled();
   const [status, setStatus] = useState<LspClientStatus>('idle');
   const [detail, setDetail] = useState('');
+
+  // REQ-LSP-ENV-1: the language server's own last complaint, or null.
+  // A toolchain-less server explains itself over window/showMessage and then
+  // answers every request with an error. Before this, that explanation reached
+  // the browser and was dropped by the method check in onNotification below, so
+  // the session looked healthy while returning nothing. See lspServerNotice.ts.
+  const [notice, setNotice] = useState<LspServerNotice | null>(null);
+  // Last notice shown, so a server that repeats itself does not re-alarm a user
+  // who has already dismissed it. gopls re-reports the same load failure on
+  // every request that touches the broken view.
+  const dismissedNoticeKeyRef = useRef<string>('');
 
   const clientRef = useRef<LspClient | null>(null);
   // Document version per URI, as textDocument/didChange requires: it must
@@ -231,7 +256,22 @@ export function useMonacoLsp({
         setDetail(d ?? '');
       },
       onNotification: (method, params) => {
-        if (method !== 'textDocument/publishDiagnostics') return;
+        // REQ-LSP-ENV-1. THIS WAS ONE LINE — `if (method !== 'textDocument/
+        // publishDiagnostics') return;` — and it was the entire discard. Every
+        // server-initiated notification that was not a diagnostic died here,
+        // including the one where a toolchain-less gopls says, in band, exactly
+        // what is wrong with it. The user saw a green session answering nothing.
+        // Diagnostics keep their original path unchanged; everything else now
+        // gets a look before it is dropped.
+        if (method !== 'textDocument/publishDiagnostics') {
+          const next = lspServerNotice(method, params);
+          if (!next) return;
+          // Dedupe against what the user already dismissed, not against the
+          // previous notice: a repeat they have NOT dismissed should still show.
+          if (lspServerNoticeKey(next) === dismissedNoticeKeyRef.current) return;
+          setNotice(next);
+          return;
+        }
         const p = params as { uri?: string; diagnostics?: LspDiagnostic[] } | null;
         if (!p?.uri || !monaco) return;
         const model = findModelForPath(monaco, fileUriToPath(p.uri), rootAbs);
@@ -252,6 +292,12 @@ export function useMonacoLsp({
       client.dispose();
       setStatus('idle');
       setDetail('');
+      // A complaint belongs to the session that produced it. Carrying it across
+      // a restart would pin a stale "go not found" banner over a server that has
+      // since been fixed and restarted — the mirror of the stale-markers bug the
+      // block below already guards against.
+      setNotice(null);
+      dismissedNoticeKeyRef.current = '';
       // Our markers outlive the session that produced them otherwise — stale
       // squiggles on a file nothing is analysing any more.
       if (monaco) {
@@ -536,7 +582,21 @@ export function useMonacoLsp({
     };
   }, [enabled, active, monaco, monacoLanguageId, rootAbs, status]);
 
-  return { enabled, status, detail };
+  // REQ-LSP-ENV-1: dismissing records the notice's identity, so the same text
+  // repeated by a server that keeps failing stays dismissed, while a DIFFERENT
+  // complaint still gets through.
+  const dismissNotice = useCallback(() => {
+    setNotice((current) => {
+      if (current) dismissedNoticeKeyRef.current = lspServerNoticeKey(current);
+      return null;
+    });
+  }, []);
+
+  // CALLERS MUST USE THIS RETURN VALUE. ProjectFilesPanel.tsx called this hook as
+  // a bare statement for its whole life, so `status` and `detail` were computed
+  // and dropped on the floor — which is why routing the server's complaint into
+  // `detail` would have reproduced this task's own defect instead of fixing it.
+  return { enabled, status, detail, notice, dismissNotice };
 }
 
 // Monaco models here are created by <Editor path={activeTab.path} />, so the

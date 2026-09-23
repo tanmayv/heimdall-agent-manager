@@ -1325,7 +1325,13 @@ export default function ProjectFilesPanel({
   // root; `active` below gates on it so those mount an editor but never start a server
   // (an empty root would otherwise make joinAbs emit a RELATIVE path to the resolver).
   const lspRootAbs = activeDirectory?.path || '';
-  useMonacoLsp({
+  // REQ-LSP-ENV-1: THE RETURN VALUE IS LOAD-BEARING AND USED TO BE DISCARDED.
+  // This was a bare `useMonacoLsp({...})` call statement, so the hook's `status`
+  // and `detail` were computed every render and thrown away — nothing in the app
+  // rendered either one. Capturing it here and rendering `notice` below is ONE
+  // fix, not two edits: the language server's own explanation of why it is dead
+  // had nowhere to surface precisely because this call ignored its result.
+  const lsp = useMonacoLsp({
     monaco,
     bridgeId: lspBridgeId,
     rootAbs: lspRootAbs,
@@ -2431,6 +2437,45 @@ export default function ProjectFilesPanel({
                     style={{ display: isCurrent ? 'flex' : 'none' }}
                     className="min-h-0 flex-1 flex-col w-full h-full"
                   >
+                    {/*
+                      REQ-LSP-ENV-1: the language server's own complaint, where a
+                      user who has never opened a trace file will see it.
+                      NOT the 120px save-feedback chip in the toolbar: gopls'
+                      actual text ("Error loading packages: go command required,
+                      not found: exec: \"go\": ... not found in $PATH") truncates
+                      there to "Error loading pac…", which names nothing the user
+                      can act on. This banner wraps and is full width for exactly
+                      that reason — the whole point is the sentence being legible.
+                    */}
+                    {isCurrent && lsp.notice ? (
+                      <div
+                        data-debug-id={`${debugPrefix}-lsp-notice`}
+                        role={lsp.notice.level === 'error' ? 'alert' : 'status'}
+                        className={`flex shrink-0 items-start gap-2 border-b px-3 py-2 text-[11px] ${
+                          lsp.notice.level === 'error'
+                            ? 'border-danger/30 bg-danger-soft text-danger'
+                            : lsp.notice.level === 'warning'
+                            ? 'border-warning/30 bg-warning-soft text-warning'
+                            : 'border-subtle bg-surface-raised text-muted'
+                        }`}
+                      >
+                        <Icon name="alert" size={12} className="mt-px shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <span className="font-medium">Language server: </span>
+                          {/* break-words, never truncate — see the note above. */}
+                          <span className="break-words">{lsp.notice.text}</span>
+                        </div>
+                        <button
+                          data-debug-id={`${debugPrefix}-lsp-notice-dismiss`}
+                          type="button"
+                          onClick={lsp.dismissNotice}
+                          title="Dismiss"
+                          className="shrink-0 rounded px-1 font-medium opacity-70 hover:opacity-100"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : null}
                     {dirTabs.length > 0 && dirActiveTab ? (
                       <MonacoMultiFileEditor
                         tabs={dirTabs}
