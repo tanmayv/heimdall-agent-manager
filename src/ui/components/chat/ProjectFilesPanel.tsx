@@ -26,6 +26,7 @@ import { initVimMode, VimMode } from 'monaco-vim';
 import MarkdownBody from '../MarkdownBody';
 import { highlightToLines, languageForFile, type CodeToken } from '../../utils/codeHighlight';
 import { useTheme } from '../../store/themeSlice';
+import { LspNoticeBanner } from '../../lsp/LspNoticeBanner';
 import { useMonacoLsp } from '../../lsp/useMonacoLsp';
 import { Icon, IconButton } from '@ui';
 import { useDialogA11y } from '../ui/composites/useDialogA11y';
@@ -2439,42 +2440,19 @@ export default function ProjectFilesPanel({
                   >
                     {/*
                       REQ-LSP-ENV-1: the language server's own complaint, where a
-                      user who has never opened a trace file will see it.
-                      NOT the 120px save-feedback chip in the toolbar: gopls'
-                      actual text ("Error loading packages: go command required,
-                      not found: exec: \"go\": ... not found in $PATH") truncates
-                      there to "Error loading pac…", which names nothing the user
-                      can act on. This banner wraps and is full width for exactly
-                      that reason — the whole point is the sentence being legible.
+                      user who has never opened a trace file will see it. The
+                      markup lives in LspNoticeBanner so it can be mounted and
+                      PHOTOGRAPHED on its own — this task exists because a
+                      message reached a render path that no user ever saw, and a
+                      banner buried in this 4000-line component could not be
+                      proven to display without standing up the whole panel.
                     */}
-                    {isCurrent && lsp.notice ? (
-                      <div
-                        data-debug-id={`${debugPrefix}-lsp-notice`}
-                        role={lsp.notice.level === 'error' ? 'alert' : 'status'}
-                        className={`flex shrink-0 items-start gap-2 border-b px-3 py-2 text-[11px] ${
-                          lsp.notice.level === 'error'
-                            ? 'border-danger/30 bg-danger-soft text-danger'
-                            : lsp.notice.level === 'warning'
-                            ? 'border-warning/30 bg-warning-soft text-warning'
-                            : 'border-subtle bg-surface-raised text-muted'
-                        }`}
-                      >
-                        <Icon name="alert" size={12} className="mt-px shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <span className="font-medium">Language server: </span>
-                          {/* break-words, never truncate — see the note above. */}
-                          <span className="break-words">{lsp.notice.text}</span>
-                        </div>
-                        <button
-                          data-debug-id={`${debugPrefix}-lsp-notice-dismiss`}
-                          type="button"
-                          onClick={lsp.dismissNotice}
-                          title="Dismiss"
-                          className="shrink-0 rounded px-1 font-medium opacity-70 hover:opacity-100"
-                        >
-                          ✕
-                        </button>
-                      </div>
+                    {isCurrent ? (
+                      <LspNoticeBanner
+                        notice={lsp.notice}
+                        onDismiss={lsp.dismissNotice}
+                        debugPrefix={debugPrefix}
+                      />
                     ) : null}
                     {dirTabs.length > 0 && dirActiveTab ? (
                       <MonacoMultiFileEditor
