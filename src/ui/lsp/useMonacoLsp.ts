@@ -20,8 +20,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { useFetchExperimentsQuery } from '../api/endpoints/settings';
+import { useFetchExperimentsQuery, useResolveLspServerConfigQuery } from '../api/endpoints/settings';
 import { LspClient, type LspClientStatus } from './lspClient';
+import {
+  LSP_NO_SESSION,
+  lspFileServedBySession,
+  lspNextSession,
+  lspResolvedConfigId,
+  lspSessionKey,
+  type LspResolvedSession,
+} from './lspSessionKey';
 import {
   fileUriToPath,
   lspDiagnosticToMarker,
@@ -108,6 +116,14 @@ export function useMonacoLsp({
   // increase on every change or a conforming server rejects the edit.
   const versionsRef = useRef<Map<string, number>>(new Map());
   const openUriRef = useRef<string>('');
+  // Flushes the pending debounced didChange immediately. Installed by the
+  // didChange effect; null when nothing is pending. Position-sensitive requests
+  // call it so the server never answers about a document it has not yet seen.
+  const flushDidChangeRef = useRef<(() => void) | null>(null);
+  // The exact text last sent in a didChange. Lets a pre-request sync skip when
+  // the server is already in step, and keeps the debounce and the sync from
+  // sending the same body twice.
+  const lastSentTextRef = useRef<string>('');
   // Latest text, read by the debounced didChange. Held in a ref so the debounce
   // timer does not capture a stale closure of `content`.
   const contentRef = useRef(content);
@@ -116,14 +132,94 @@ export function useMonacoLsp({
   const lspLanguage = activePath ? lspLanguageIdForPath(activePath) : '';
   const absPath = activePath ? joinAbs(rootAbs, activePath) : '';
 
+  // --- which server serves this file ----------------------------------------
+  // REQ-LSP-UI-2. Asks the Hub to run its own resolver over (bridge, language,
+  // absPath) and tell us the config_id it picked. We ask rather than compute
+  // because the Hub's rule has a path-boundary subtlety and two implementations
+  // of one rule drift; see the header of lspSessionKey.ts.
+  //
+  // This is cached per (bridgeId, language, path), so it is one request per
+  // DISTINCT FILE opened — not one per project, and not one per tab switch back
+  // to a file already visited, which is served from cache with no network.
+  // heimdallApi sets keepUnusedDataFor: 30 (heimdallApi.ts:101), so a file left
+  // unopened for more than 30s costs one more resolve when you return to it.
+  const resolveState = useResolveLspServerConfigQuery(
+    { bridgeId, language: lspLanguage, path: absPath },
+    { skip: !enabled || !active || !bridgeId || !lspLanguage || !absPath }
+  );
+  // MUST go through lspResolvedConfigId, which reads `currentData` and consults
+  // `isError`. Reading `resolveState.data` here would be this task's own defect:
+  // RTK Query's `data` is stale across an arg change, so a failed resolve for the
+  // NEW file would silently keep the PREVIOUS file's config and leave the wrong
+  // server serving it. That module owns the rule and the tests that pin it.
+  //
+  // '' covers: skipped, in flight, resolve FAILED, and the Hub answered 404
+  // because nothing is configured for this language and path. All of them mean
+  // "we do not know which server serves this file" — lspSessionKey folds them
+  // into one empty key, and an empty key means no session.
+  const lspConfigId = lspResolvedConfigId(resolveState);
+
   // --- session lifecycle ----------------------------------------------------
-  // Keyed on the things that define WHICH server: bridge, language, root. The
-  // file path is NOT a key — opening another file of the same language reuses
-  // the session and only re-syncs the document.
+  // KEYED ON WHICH SERVER, WHICH IS NOT THE SAME AS WHICH FILE.
+  //
+  // The key is bridge + language + root + the config_id the HUB RESOLVED for the
+  // active file. The file path is deliberately NOT part of it: opening another
+  // file of the same language inside one project resolves to the same config_id,
+  // produces a byte-identical key, and therefore reuses the running session
+  // instead of paying a cold start on every tab change.
+  //
+  // The config_id is what stops that reuse from being WRONG. Two same-language
+  // files under different dir_prefix overrides resolve to different configs and
+  // genuinely need different servers; keying on the resolved config restarts the
+  // session exactly when an override boundary is crossed, and never merely
+  // because the file changed. Empty key means no session at all — see
+  // lspSessionKey.ts, which owns this rule and is where its tests point.
+  //
+  // MEASURE AFTER TOUCHING THIS. DO NOT TRUST A GREEN SUITE ALONE.
+  // This effect has already shipped one defect that every test passed straight
+  // through, and the shape is worth knowing because it will recur here. Keying
+  // the session on the CURRENT file's resolution is a perfectly correct RULE —
+  // the discriminator test in ui_lsp_session_key_test.ts stayed green under it —
+  // and it still cost 5 language-server starts where 1 was right, because the
+  // key blanked for a single render while each new file resolved. The defect did
+  // not live in the rule. It lived in the SEQUENCE OF RENDERS, which a test of a
+  // pure function cannot see and a measurement finds immediately.
+  // The sequence test in that file is an attempt to pin the common cases as
+  // ordered data; it is not React, and it does not remove the need to count
+  // actual session starts when you change what this effect keys on.
+  // WHICH SERVER RUNS — the session is held across a file whose resolve has not
+  // landed yet, so opening a never-before-opened file does NOT tear the server
+  // down. lspNextSession owns that rule; it returns the previous object
+  // unchanged when nothing moved, which is what keeps this effect from looping.
+  const [session, setSession] = useState<LspResolvedSession>(LSP_NO_SESSION);
   useEffect(() => {
-    // THE GATE. Nothing below this line runs with the flag off.
-    if (!enabled || !active) return;
-    if (!bridgeId || !lspLanguage || !absPath) return;
+    setSession((prev) => lspNextSession(prev, {
+      bridgeId,
+      rootAbs,
+      language: lspLanguage,
+      configId: lspConfigId,
+    }));
+  }, [bridgeId, rootAbs, lspLanguage, lspConfigId]);
+
+  const sessionKey = lspSessionKey({
+    enabled,
+    active,
+    bridgeId: session.bridgeId,
+    language: session.language,
+    rootAbs: session.rootAbs,
+    configId: session.configId,
+  });
+
+  // WHICH FILE THE SERVER HAS BEEN TOLD ABOUT — the gate on didOpen/didChange.
+  // False while this file's own resolve is in flight, false if it FAILED, and
+  // false if it resolved to a different config than the one running. A document
+  // is never described to a server that does not own it.
+  const fileServed = lspFileServedBySession(lspConfigId, session.configId);
+
+  useEffect(() => {
+    // THE GATE. Nothing below this line runs with the flag off — an empty
+    // sessionKey is exactly that gate, plus every other reason not to connect.
+    if (!sessionKey) return;
 
     const client = new LspClient({
       bridgeId,
@@ -164,9 +260,12 @@ export function useMonacoLsp({
         }
       }
     };
+    // sessionKey carries enabled/active/bridgeId/lspLanguage/rootAbs and the
+    // resolved config_id, so it is the whole session identity in one value.
+    // absPath is NOT here and must not be: see lspSessionKey.ts.
     // monaco is intentionally a dependency: providers and markers need the
     // namespace, and it arrives asynchronously.
-  }, [enabled, active, bridgeId, lspLanguage, rootAbs, monaco]);
+  }, [sessionKey, monaco]);
 
   // --- MarkerSeverity sanity check -----------------------------------------
   // lspProtocol.ts hardcodes monaco's MarkerSeverity values to stay
@@ -197,6 +296,9 @@ export function useMonacoLsp({
     const client = clientRef.current;
     if (!client || !absPath || !lspLanguage) return;
     if (!client.isReady()) return;
+    // THE SYNC GATE. Until this file's own resolve says it belongs to the running
+    // server, it is not described to it — see lspFileServedBySession.
+    if (!fileServed) return;
 
     const uri = pathToFileUri(absPath);
     if (openUriRef.current === uri) return;
@@ -214,7 +316,7 @@ export function useMonacoLsp({
       // Only the unmount//file-switch path closes the document; the session
       // teardown above handles the socket itself.
     };
-  }, [enabled, active, absPath, lspLanguage, status]);
+  }, [enabled, active, absPath, lspLanguage, status, fileServed]);
 
   // didChange, debounced. Full-text sync (TextDocumentSyncKind.Full) is used
   // deliberately: incremental sync needs an exact mirror of the server's buffer
@@ -225,20 +327,53 @@ export function useMonacoLsp({
     if (!enabled || !active) return;
     const client = clientRef.current;
     if (!client || !client.isReady()) return;
+    // Gated for a reason that is NOT obvious: this effect takes its URI from
+    // openUriRef and its TEXT from contentRef. While a newly opened file is still
+    // resolving, openUriRef still names the PREVIOUS file but contentRef already
+    // holds the new one, so an ungated keystroke would send the new file's body
+    // under the old file's URI and corrupt that document on the server.
+    if (!fileServed) return;
     const uri = openUriRef.current;
     if (!uri) return;
 
-    const timer = setTimeout(() => {
+    const send = () => {
       const version = (versionsRef.current.get(uri) ?? 1) + 1;
       versionsRef.current.set(uri, version);
+      lastSentTextRef.current = contentRef.current;
       client.notify('textDocument/didChange', {
         textDocument: { uri, version },
         contentChanges: [{ text: contentRef.current }],
       });
+    };
+
+    const timer = setTimeout(() => {
+      if (flushDidChangeRef.current === flush) flushDidChangeRef.current = null;
+      send();
     }, DID_CHANGE_DEBOUNCE_MS);
 
-    return () => clearTimeout(timer);
-  }, [enabled, active, content, status]);
+    // THE DEBOUNCE MUST NOT OUTRANK A REQUEST THAT DEPENDS ON IT. Monaco fires
+    // completion/hover/definition the instant a trigger or word character is
+    // typed, which is always INSIDE this 250ms window — so without a flush the
+    // server is asked about a position in a document it has not been told about
+    // yet. It then answers for the stale buffer and Monaco falls back to its own
+    // word list, which looks exactly like "the language server is dead".
+    // Measured: completion went out 279ms AHEAD of the didChange describing the
+    // text it was asking about, and the suggest widget showed file word
+    // fragments; flushing first returns real gopls symbols for the same edit.
+    const flush = () => {
+      clearTimeout(timer);
+      if (flushDidChangeRef.current === flush) flushDidChangeRef.current = null;
+      send();
+    };
+    flushDidChangeRef.current = flush;
+
+    return () => {
+      clearTimeout(timer);
+      // Only disown the flush if it is still ours: a newer effect may already
+      // have installed its own.
+      if (flushDidChangeRef.current === flush) flushDidChangeRef.current = null;
+    };
+  }, [enabled, active, content, status, fileServed]);
 
   // --- provider registration -----------------------------------------------
   // Registered only once the session is READY, and disposed together. A
@@ -257,9 +392,56 @@ export function useMonacoLsp({
       return uri === openUriRef.current;
     };
 
+    // Pushes the model's CURRENT text to the server immediately, cancelling any
+    // pending debounced send so the two cannot fight. A no-op when the server is
+    // already in step, so ordinary typing still costs one debounced send.
+    const syncModelNow = (model: any) => {
+      const uri = openUriRef.current;
+      if (!uri || !client.isReady()) return;
+      let text: string;
+      try {
+        text = String(model.getValue());
+      } catch {
+        return;
+      }
+      if (text === lastSentTextRef.current) return;
+      flushDidChangeRef.current = null; // the debounce's body is now stale
+      const version = (versionsRef.current.get(uri) ?? 1) + 1;
+      versionsRef.current.set(uri, version);
+      lastSentTextRef.current = text;
+      client.notify('textDocument/didChange', {
+        textDocument: { uri, version },
+        contentChanges: [{ text }],
+      });
+    };
+
+    // TRIGGER CHARACTERS COME FROM THE SERVER, NOT FROM US. Without this Monaco
+    // only consults the provider on word characters, so completion after a DOT
+    // (`http.`, `strings.`) never reaches the language server at all and the user
+    // silently gets Monaco's built-in word list instead — indistinguishable from
+    // "LSP is dead", which is exactly how it was reported. gopls advertises what
+    // it wants in its initialize response; hardcoding "." would be a guess that
+    // is wrong for other languages.
+    const triggerCharacters: string[] = Array.isArray(
+      client.getCapabilities()?.completionProvider?.triggerCharacters,
+    )
+      ? client.getCapabilities().completionProvider.triggerCharacters
+      : [];
+
     const completion = monaco.languages.registerCompletionItemProvider(monacoLanguageId, {
+      triggerCharacters,
       provideCompletionItems: async (model: any, position: any) => {
         if (!client.isReady() || !isSessionModel(model)) return { suggestions: [] };
+        // Sync the buffer BEFORE asking about a position in it. Read the text
+        // from the MODEL, not from React state: Monaco fires this provider
+        // synchronously on the keystroke, before React has re-rendered with the
+        // new `content`, so a flush of the debounced effect would have nothing
+        // pending yet and would send the PREVIOUS text. The model is the only
+        // source that is already current at this instant. Measured before this
+        // fix: completion went out 278ms ahead of the didChange describing the
+        // text it asked about, and the suggest widget showed word fragments
+        // instead of gopls symbols.
+        syncModelNow(model);
         try {
           const raw = await client.request('textDocument/completion', {
             textDocument: { uri: openUriRef.current },

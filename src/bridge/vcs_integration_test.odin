@@ -42,6 +42,10 @@ vcs_test_git :: proc(args: ..string) -> bool {
 // real tool — enough for the detection-only handler paths (missing-file, jj
 // not_supported, same-ref) that return before any subprocess runs. Returns the dir
 // (temp-allocated); the caller must vcs_test_rm it.
+// NOTE: these dirs are removed on exit, but a run that CRASHES or is killed leaves
+// /tmp/ham-vcs-*-<pid> behind indefinitely, and pids recycle — so a stale dir can be
+// inherited by a later run with the same pid. Remove-on-entry (below) is what makes
+// that safe; keep it.
 vcs_test_make_marker_repo :: proc(name, marker: string) -> string {
 	dir := fmt.tprintf("/tmp/ham-vcs-marker-%s-%d", name, os.get_pid())
 	vcs_test_rm(dir)
@@ -325,11 +329,16 @@ vcs_git_worktrees_list :: proc(t: ^testing.T) {
 	}
 }
 
-// vcs_test_pid_paths prints the run-scoped /tmp paths this invocation will use,
-// proving two concurrent runs get different paths. Pure diagnostic — no assertions.
+// vcs_test_pid_paths proves the fixture paths are run-scoped by CALLING the real
+// helpers and printing what they RETURN, then removing them. It deliberately does not
+// hand-roll the path format: a diagnostic that builds its own copy of the string keeps
+// printing a reassuring pid-suffixed path even after a helper is reverted to a shared
+// one, i.e. it lies exactly when you need it. Pure diagnostic — no assertions.
 @(test)
 vcs_test_pid_paths :: proc(t: ^testing.T) {
-	pid := os.get_pid()
-	fmt.printf("VCS-TEST-PID-PATHS pid=%d marker-example=/tmp/ham-vcs-marker-test-%d git-example=/tmp/ham-vcs-git-test-%d wt=/tmp/ham-vcs-wt-%d-worktrees\n",
-		pid, pid, pid, pid)
+	marker := vcs_test_make_marker_repo("pidprobe", ".git")
+	defer vcs_test_rm(marker)
+	git_dir, _ := vcs_test_git_repo("pidprobe")
+	defer vcs_test_rm(git_dir)
+	fmt.printf("VCS-TEST-PID-PATHS pid=%d marker=%s git=%s\n", os.get_pid(), marker, git_dir)
 }

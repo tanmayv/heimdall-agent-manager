@@ -54,6 +54,24 @@ send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_
 	// Comparing a heap copy makes that impossible rather than merely prevented, which is
 	// why this is a clone and not a comment telling you to avoid allocating in the loop.
 	// The loop is now free to allocate; no future edit here can reintroduce the defect.
+	//
+	// WHY THE CLONE SITS HERE AND NOT AT PROCEDURE ENTRY: it is placed after the
+	// socket lookup, the locked frame write and the deadline computation so the
+	// bridge-offline and send-failure paths — which never reach the loop — neither
+	// allocate nor free. That placement is SAFE ONLY BECAUSE nothing between
+	// procedure entry and this line advances the per-thread temp ring: registry
+	// has_live/command_socket do string compares over a fixed array, the command
+	// lock/unlock are bare sync calls, time.now is arithmetic, and
+	// write_ws_text_frame (below in this file) allocates its frame with a bare
+	// make([]byte, ...) — i.e. on context.allocator (HEAP), not
+	// context.temp_allocator. (Trace established by reviewer #46 under REQ-ALLOC-2;
+	// deliberately cited by procedure name rather than line number, which rots.)
+	//
+	// That makes the argument CONDITIONAL, which is why it is written down: if
+	// write_ws_text_frame is ever switched to the temp allocator, a wrap could occur
+	// BEFORE this line and we would faithfully clone already-corrupted bytes. The
+	// clone would still be here, still read as correct, and protect nothing — and no
+	// test would fail, because nothing at this site would have changed.
 	wait_id := strings.clone(command.command_id)
 	defer delete(wait_id)
 	for time.to_unix_nanoseconds(time.now()) < deadline {

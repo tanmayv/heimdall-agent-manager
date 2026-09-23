@@ -152,6 +152,12 @@ test_change_task_status_reports_the_persisted_status :: proc(t: ^testing.T) {
 // This test pins that down so nobody later "fixes" the demotion believing it to be
 // REQ-HUB-STATUS-1. If this test starts failing, the scheduling rule changed - that
 // is a product decision, not a regression to be patched out.
+//
+// IT IS ALSO WHAT KEEPS TEST 1 HONEST, SO DO NOT DELETE IT AS REDUNDANT. Test 1
+// asserts REPORTED == PERSISTED; that holds TRIVIALLY if the fixture ever stops
+// producing a demotion, and it would then pass on the very code it exists to catch.
+// This test asserts, on the SAME fixture, that the demotion really happens - so the
+// pair is load-bearing together: test 2 is the proof that test 1 is not vacuous.
 @(test)
 test_reconcile_demotes_in_progress_while_instance_awaits_review_by_design :: proc(t: ^testing.T) {
 	graph: app.App_Graph

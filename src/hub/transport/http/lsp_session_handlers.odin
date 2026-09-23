@@ -420,58 +420,150 @@ lsp_write_ws_text_frame :: proc(client: net.TCP_Socket, text: string) -> bool {
 // this control channel"). A textDocument/didOpen carrying a large file is exactly
 // such a frame, so on this socket it must be read, not treated as a protocol error.
 Lsp_WS_Reader :: struct {
-	socket:  net.TCP_Socket,
-	pending: [dynamic]byte,
+	socket:     net.TCP_Socket,
+	pending:    [dynamic]byte,
+	// Partial message being reassembled across FRAGMENTED frames (REQ-LSP-RLY-3).
+	// Empty and `assembling = false` whenever no fragmented message is in flight.
+	// This lives on the reader, not on the stack of one take, because the frames
+	// of a fragmented message routinely arrive in different recv calls.
+	assembling: bool,
+	message:    [dynamic]byte,
 }
+
+// LSP_MAX_MESSAGE_BYTES caps ONE reassembled client message. Without a cap, a
+// client that sends continuation frames and never sets FIN grows `message`
+// forever: we would have traded a silent session death for memory exhaustion,
+// which is worse.
+//
+// WHY 32 MiB. The largest source file in this repository is ~142KB
+// (src/bridge/hub_runtime_client.odin); a didOpen carrying it is roughly twice
+// that on the wire, because the JSON-RPC is escaped and then wrapped again in the
+// Hub envelope. So real traffic sits three orders of magnitude below this. The
+// upper anchor is measurement: Electron 43.6.0 was observed delivering a single
+// 16,777,227-byte message as 132 frames, so the cap is set clearly ABOVE the
+// largest payload the real client was shown to produce. A legitimate message
+// cannot reach it; a malicious one is bounded at 32 MiB per session.
+LSP_MAX_MESSAGE_BYTES :: 32 * 1024 * 1024
 
 lsp_ws_reader_make :: proc(socket: net.TCP_Socket) -> Lsp_WS_Reader {
 	return Lsp_WS_Reader{socket = socket}
 }
 
 lsp_ws_reader_destroy :: proc(reader: ^Lsp_WS_Reader) {
-	if reader != nil do delete(reader.pending)
+	if reader == nil do return
+	delete(reader.pending)
+	delete(reader.message)
 }
 
-// lsp_ws_take_frame pulls ONE complete masked text frame off the front of
+// lsp_ws_take_frame pulls ONE complete client MESSAGE off the front of
 // reader.pending. ok=false with fatal=false means "need more bytes"; fatal=true
 // means the stream is unusable. Close (0x8) is reported as fatal so a browser
 // closing its socket ends the relay rather than looking like a short read.
+//
+// A MESSAGE IS NOT ALWAYS A FRAME (REQ-LSP-RLY-3). Chromium splits a large
+// outgoing send() into a first frame with opcode 0x1 and FIN CLEAR, followed by
+// 0x0 continuation frames until one carries FIN. This was measured, not assumed,
+// against the Electron we actually ship (flake.nix wraps pkgs.electron = 43.6.0;
+// the node_modules copy is a different version and is not what users run):
+//
+//     ~64KB  -> 1 frame,   FIN set
+//     ~128KB -> 3 frames:  0x1 FIN=0 | 0x0 FIN=0 | 0x0 FIN=1
+//     ~16MB  -> 132 frames
+//
+// THERE IS NO SIZE THRESHOLD TO SPECIAL-CASE. In the same measurements a ~70000
+// byte message fragmented while a LARGER ~80000 byte one did not, and the split
+// offsets differed on every run — fragmentation tracks socket state at send time,
+// not payload size. That is why the old "opcode != 0x1 is fatal" rule failed so
+// badly in the field: the same file would relay fine one minute and silently kill
+// the session the next.
+//
+// Reading the FIN bit is not optional here. Before this change the first fragment
+// PASSED the opcode check and was returned as though it were a whole message, so
+// truncated JSON reached the bridge and only THEN did the 0x0 frame end the
+// session. Corruption first, death second.
+//
+// PING (0x9) IS DELIBERATELY NOT HANDLED and stays fatal. Only the browser
+// connects to this endpoint (src/ui/lsp/lspClient.ts is the sole client) and the
+// JS WebSocket API cannot send a control ping, so the case is unreachable. Do not
+// "fix" it: an unreachable branch is code nobody can test and nobody maintains.
 lsp_ws_take_frame :: proc(reader: ^Lsp_WS_Reader) -> (text: string, ok: bool, fatal: bool) {
+	for {
+		frame_text, frame_ok, frame_fatal, consumed := lsp_ws_take_one_frame(reader)
+		if frame_fatal do return "", false, true
+		if !frame_ok do return "", false, false // need more bytes; keep what we have
+		if consumed do return frame_text, true, false
+		// A fragment was absorbed into reader.message; loop to see whether the
+		// next frame is already sitting in pending.
+	}
+}
+
+// lsp_ws_take_one_frame parses exactly one frame. `consumed` reports whether a
+// COMPLETE message is being returned in `text`; when it is false and ok is true,
+// the frame was a fragment that has been appended to reader.message instead.
+lsp_ws_take_one_frame :: proc(
+	reader: ^Lsp_WS_Reader,
+) -> (
+	text: string,
+	ok: bool,
+	fatal: bool,
+	consumed: bool,
+) {
 	b := reader.pending[:]
-	if len(b) < 2 do return "", false, false
+	if len(b) < 2 do return "", false, false, false
+	fin := (b[0] & 0x80) != 0
 	opcode := b[0] & 0x0f
-	if opcode != 0x1 do return "", false, true // text frames only; close/binary end it
+
+	switch opcode {
+	case 0x1: // text: either a whole message, or the head of a fragmented one
+		// A new text frame while a fragmented message is still open is a protocol
+		// violation, not something to paper over by discarding the partial.
+		if reader.assembling do return "", false, true, false
+	case 0x0: // continuation
+		// A continuation with nothing to continue is equally a violation.
+		if !reader.assembling do return "", false, true, false
+	case:
+		// Close (0x8) MUST stay fatal: a closed tab ends the session, and that is
+		// required behaviour with its own test. Binary (0x2) and the control
+		// opcodes are unreachable from our only client, so they end it too.
+		return "", false, true, false
+	}
 
 	masked := (b[1] & 0x80) != 0
 	payload_len := int(b[1] & 0x7f)
 	header_len := 2
 	switch payload_len {
 	case 126:
-		if len(b) < 4 do return "", false, false
+		if len(b) < 4 do return "", false, false, false
 		payload_len = int(b[2]) << 8 | int(b[3])
 		header_len = 4
 	case 127:
-		if len(b) < 10 do return "", false, false
+		if len(b) < 10 do return "", false, false, false
 		length: u64 = 0
 		for i in 0 ..< 8 {
 			length = length << 8 | u64(b[2 + i])
 		}
 		// Refuse a length this process could not hold anyway rather than
 		// truncating it into an int.
-		if length > u64(max(int) / 2) do return "", false, true
+		if length > u64(max(int) / 2) do return "", false, true, false
 		payload_len = int(length)
 		header_len = 10
+	}
+
+	// Bound the REASSEMBLED total, not just this frame. The check happens before
+	// any copying, so an oversized message costs nothing to reject.
+	if len(reader.message) + payload_len > LSP_MAX_MESSAGE_BYTES {
+		return "", false, true, false
 	}
 
 	data_off := header_len
 	mask_key: [4]byte
 	if masked {
-		if len(b) < header_len + 4 do return "", false, false
+		if len(b) < header_len + 4 do return "", false, false, false
 		mask_key = {b[header_len], b[header_len + 1], b[header_len + 2], b[header_len + 3]}
 		data_off = header_len + 4
 	}
 	frame_end := data_off + payload_len
-	if len(b) < frame_end do return "", false, false
+	if len(b) < frame_end do return "", false, false, false
 
 	payload := make([]byte, payload_len)
 	copy(payload, b[data_off:frame_end])
@@ -481,7 +573,24 @@ lsp_ws_take_frame :: proc(reader: ^Lsp_WS_Reader) -> (text: string, ok: bool, fa
 	remaining := len(reader.pending) - frame_end
 	if remaining > 0 do copy(reader.pending[:], reader.pending[frame_end:])
 	resize(&reader.pending, remaining)
-	return string(payload), true, false
+
+	// THE UNFRAGMENTED FAST PATH: a lone text frame with FIN set is the common
+	// case and still allocates exactly once, exactly as before this change.
+	if opcode == 0x1 && fin && !reader.assembling {
+		return string(payload), true, false, true
+	}
+
+	// Otherwise this frame is part of a fragmented message: accumulate it.
+	defer delete(payload)
+	append(&reader.message, ..payload[:])
+	reader.assembling = true
+	if !fin do return "", true, false, false // more fragments to come
+
+	// FIN seen: hand back the joined message and reset for the next one.
+	joined := strings.clone(string(reader.message[:]))
+	clear(&reader.message)
+	reader.assembling = false
+	return joined, true, false, true
 }
 
 lsp_read_ws_text_blocking :: proc(reader: ^Lsp_WS_Reader, timeout: time.Duration) -> (string, bool) {

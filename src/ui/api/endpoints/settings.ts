@@ -1,7 +1,7 @@
 import * as daemonApi from '../daemonApi';
 export type ExperimentFlag = { key: string; enabled: boolean };
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
-import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+import { apiUrl, cookieJsonFetch, cookieMutation } from '../cookieFetch';
 
 function auth(session: any) {
   return { daemonUrl: session.daemonUrl, clientToken: session.clientToken };
@@ -146,6 +146,68 @@ export const lspApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_r, _e, { bridgeId }) => [{ type: 'LspServerConfigs' as const, id: bridgeId }],
     }),
+    // REQ-LSP-UI-2: "which server config serves THIS file?"
+    //
+    // WHY THIS EXISTS. The Monaco LSP session is deliberately NOT keyed on the
+    // file path — switching between two files of one language must reuse the
+    // running server rather than restart it. But the Hub picks WHICH server to
+    // run by longest-matching dir_prefix of the file path
+    // (src/hub/domain/lsp_server_config.odin:31), so two same-language files
+    // under DIFFERENT dir_prefix overrides need DIFFERENT servers. Without this
+    // query the client cannot tell those two cases apart and silently serves the
+    // second file from the first file's server — wrong toolchain, wrong project
+    // root, plausible-looking but wrong answers. Observed, not theorised: see
+    // REQ-LSP-E2E-1.
+    //
+    // WHY WE ASK THE HUB INSTEAD OF COMPUTING IT HERE. The resolution rule has a
+    // path-boundary subtlety ("/work/exp" matches "/work/exp/main.go" but NOT
+    // "/work/experiment/main.go") and reimplementing it in TypeScript would mean
+    // two implementations of one rule, drifting. This endpoint runs the SAME
+    // domain.lsp_server_config_resolve the websocket path runs
+    // (lsp_server_config_rest_handlers.odin:152 and lsp_session_handlers.odin:734
+    // both list-by-bridge, filter by language, then call it), so there is one
+    // implementation exposed two ways.
+    //
+    // 404 IS A NORMAL ANSWER, NOT AN ERROR. "No server configured for this
+    // language and path" is the common case for most languages, so it maps to
+    // `{ config: null }` and the caller treats that as "no session". Any OTHER
+    // failure stays an error: a 500 or a dropped connection must not be
+    // indistinguishable from a deliberate absence of config.
+    resolveLspServerConfig: build.query<{ config: LspServerConfig | null }, {
+      bridgeId: string;
+      language: string;
+      path: string;
+    }>({
+      queryFn: async ({ bridgeId, language, path }) => {
+        try {
+          const url = apiUrl(
+            `/bridges/${encodeURIComponent(bridgeId)}/lsp-servers/resolve` +
+            `?language=${encodeURIComponent(language)}&path=${encodeURIComponent(path)}`
+          );
+          const res = await fetch(url, { credentials: 'include' });
+          if (res.status === 404) return { data: { config: null } };
+          if (!res.ok) {
+            let msg = `Request failed (${res.status})`;
+            try {
+              const errBody = JSON.parse(await res.text());
+              if (errBody?.error?.message) msg = errBody.error.message;
+              else if (errBody?.message) msg = errBody.message;
+            } catch {}
+            throw new Error(msg);
+          }
+          const body = JSON.parse(await res.text());
+          const envelope = body?.data !== undefined ? body.data : body;
+          return { data: { config: (envelope?.config as LspServerConfig | undefined) ?? null } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      // Same tag the upsert and delete mutations already invalidate, so an
+      // operator editing a server in Settings > LSP re-resolves every open file
+      // for free — and because an upsert issues a fresh config_id, editing the
+      // server for a directory correctly restarts the session serving it.
+      providesTags: (_result, _error, { bridgeId }) => [{ type: 'LspServerConfigs' as const, id: bridgeId }],
+    }),
     deleteLspServerConfig: build.mutation<void, { bridgeId: string; configId: string }>({
       queryFn: async ({ bridgeId, configId }) => {
         try {
@@ -162,6 +224,7 @@ export const lspApi = heimdallApi.injectEndpoints({
 
 export const {
   useListLspServerConfigsQuery,
+  useResolveLspServerConfigQuery,
   useUpsertLspServerConfigMutation,
   useDeleteLspServerConfigMutation,
 } = lspApi;

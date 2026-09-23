@@ -56,7 +56,7 @@ import Icon from '../Icon';
 import { useFetchChainTasksQuery, useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import AgentActivityBubbles from './AgentActivityBubbles';
 import { type TaskLike } from './chainTaskInference';
-import { useIsMobile } from '../shell/responsive';
+import { useIsBelowTailwindSm, useIsMobile } from '../shell/responsive';
 import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import { describeCron, formatInTimeZone, timeZoneLabel } from '../actions/scheduleUtils';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -595,6 +595,14 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
     setTimeout(() => { ta?.focus(); const np = newBefore.length; ta?.setSelectionRange(np, np); }, 0);
   }
   const isMobile = useIsMobile();
+  // REQ-UI-DUP-1: the two right-panel branches below are shown/hidden by `sm:` classes
+  // (`sm:hidden` / `hidden sm:flex`). Those are CSS visibility only — React mounts BOTH
+  // subtrees at every width, so one opened file produced two ProjectFilesPanel instances,
+  // two LSP sessions and two language-server processes on the bridge host. Gate each branch
+  // in JS on the SAME 640px boundary its own classes already use, so exactly one mounts and
+  // the rendered output is pixel-identical at every width. Deliberately 640 (Tailwind `sm:`)
+  // and not MOBILE_MAX=767 — see `useIsBelowTailwindSm` and artifact art_18d7b91b4ac8743e item 9.
+  const isBelowSm = useIsBelowTailwindSm();
   // Unified right-sidebar state. The top-right toggle opens/closes the panel; the
   // panel itself has Tasks / Files / RunDir tabs. 'closed' hides it entirely.
   // Initialized from ?panel= / ?sidebar= query param, falling back to UI storage.
@@ -1913,8 +1921,8 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
       ref={containerRef}
       className="relative flex flex-col sm:flex-row h-full min-h-0 w-full max-w-full overflow-hidden bg-canvas p-0 text-left"
     >
-      {/* Mobile (< 768px): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
-      {panelOpen ? (
+      {/* Mobile (< 640px, Tailwind `sm:`): the panel is a full-width overlay; the chat is hidden behind it when panel is open. */}
+      {panelOpen && isBelowSm ? (
         <div className="absolute inset-0 z-30 flex h-full w-full min-h-0 max-w-full flex-col overflow-hidden bg-surface pb-20 sm:hidden">
           {renderRightPanel(true)}
         </div>
@@ -2057,7 +2065,7 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         {renderComposer()}
       </div>
 
-      {/* Desktop (>= 768px) vertical resizer divider between chat view and right sidebar */}
+      {/* Desktop (>= 640px, Tailwind `sm:`) vertical resizer divider between chat view and right sidebar */}
       {panelOpen && !isRightPanelMaximized ? (
         <div
           role="separator"
@@ -2076,32 +2084,34 @@ export default function ConversationThreadPage({ agentInstanceId: routeInstanceI
         </div>
       ) : null}
 
-      {/* Col 2: Desktop (>= 768px) right sidebar with smooth 200ms open/close transition & overflow clipping */}
-      <div
-        data-debug-id="conversation-right-panel-resizable-container"
-        style={{
-          width:
-            !panelOpen
-              ? '0px'
-              : isRightPanelMaximized
-              ? '100%'
-              : `${sidebarWidth}px`,
-        }}
-        className={`hidden sm:flex h-full min-h-0 overflow-hidden shrink-0 flex-col ${
-          isRightPanelMaximized ? 'w-full flex-1 max-w-full min-w-0' : ''
-        } ${isDragging ? 'transition-none' : 'transition-[width] duration-200 ease-in-out'}`}
-      >
+      {/* Col 2: Desktop (>= 640px, Tailwind `sm:`) right sidebar with smooth 200ms open/close transition & overflow clipping */}
+      {!isBelowSm ? (
         <div
+          data-debug-id="conversation-right-panel-resizable-container"
           style={{
-            width: isRightPanelMaximized ? '100%' : `${sidebarWidth}px`,
+            width:
+              !panelOpen
+                ? '0px'
+                : isRightPanelMaximized
+                ? '100%'
+                : `${sidebarWidth}px`,
           }}
-          className={`h-full min-h-0 overflow-hidden flex flex-col ${
-            isRightPanelMaximized ? 'w-full flex-1 min-w-0' : 'min-w-[360px]'
-          }`}
+          className={`hidden sm:flex h-full min-h-0 overflow-hidden shrink-0 flex-col ${
+            isRightPanelMaximized ? 'w-full flex-1 max-w-full min-w-0' : ''
+          } ${isDragging ? 'transition-none' : 'transition-[width] duration-200 ease-in-out'}`}
         >
-          {renderRightPanel(false)}
+          <div
+            style={{
+              width: isRightPanelMaximized ? '100%' : `${sidebarWidth}px`,
+            }}
+            className={`h-full min-h-0 overflow-hidden flex flex-col ${
+              isRightPanelMaximized ? 'w-full flex-1 min-w-0' : 'min-w-[360px]'
+            }`}
+          >
+            {renderRightPanel(false)}
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {/* Subtle Top-Right Floating Toggle Button */}
       {isMobile && !chromeVisible && rightPanel === 'closed' && Boolean(chainId || projectId || agentInstanceId) ? (

@@ -186,6 +186,212 @@ lsp_make_masked_frame :: proc(text: string, mask: [4]byte) -> [dynamic]byte {
 	return out
 }
 
+// lsp_make_masked_fragment builds one frame of a FRAGMENTED message with the
+// opcode and FIN bit chosen explicitly, which lsp_make_masked_frame (always
+// 0x81 = FIN + text) cannot express. This is what Chromium actually puts on the
+// wire for a large send(): opcode 0x1 with FIN clear, then 0x0 continuations.
+@(private = "file")
+lsp_make_masked_fragment :: proc(text: string, mask: [4]byte, opcode: byte, fin: bool) -> [dynamic]byte {
+	n := len(text)
+	out := make([dynamic]byte)
+	append(&out, (0x80 if fin else 0x00) | opcode)
+	switch {
+	case n <= 125:
+		append(&out, byte(0x80 | n))
+	case n <= 65535:
+		append(&out, byte(0x80 | 126), byte((n >> 8) & 0xff), byte(n & 0xff))
+	case:
+		append(&out, byte(0x80 | 127))
+		for i in 0 ..< 8 do append(&out, byte((u64(n) >> uint(8 * (7 - i))) & 0xff))
+	}
+	append(&out, mask[0], mask[1], mask[2], mask[3])
+	for i in 0 ..< n do append(&out, text[i] ~ mask[i % 4])
+	return out
+}
+
+@(test)
+lsp_ws_take_frame_reassembles_a_fragmented_message :: proc(t: ^testing.T) {
+	// REQ-LSP-RLY-3. THE EXACT SHAPE MEASURED FROM ELECTRON 43.6.0: a first frame
+	// with opcode 0x1 and FIN CLEAR, then a 0x0 continuation carrying FIN.
+	//
+	// Before the fix this did not merely fail, it failed in two stages: frame 1
+	// passed the opcode check and was handed back as a COMPLETE message (so
+	// truncated JSON went to the bridge), and frame 2 then killed the session.
+	reader := Lsp_WS_Reader{}
+	defer lsp_ws_reader_destroy(&reader)
+
+	head := "{\"type\":\"send\",\"message\":\"first-half"
+	tail := "second-half\"}"
+	f1 := lsp_make_masked_fragment(head, {0x0a, 0x0b, 0x0c, 0x0d}, 0x1, false)
+	defer delete(f1)
+	f2 := lsp_make_masked_fragment(tail, {0x11, 0x22, 0x33, 0x44}, 0x0, true)
+	defer delete(f2)
+
+	// Frame 1 alone must yield NOTHING — not a truncated message, and not a fatal.
+	append(&reader.pending, ..f1[:])
+	_, ok1, fatal1 := lsp_ws_take_frame(&reader)
+	testing.expect(t, !ok1, "a FIN-clear first fragment must not be returned as a whole message")
+	testing.expect(t, !fatal1, "a fragmented message must not be fatal")
+
+	// The continuation completes it; the two halves must come back JOINED.
+	append(&reader.pending, ..f2[:])
+	text, ok2, fatal2 := lsp_ws_take_frame(&reader)
+	testing.expect(t, ok2, "the FIN continuation must complete the message")
+	testing.expect(t, !fatal2)
+	expected := strings.concatenate({head, tail})
+	defer delete(expected)
+	testing.expect_value(t, text, expected)
+	delete(text)
+	testing.expect_value(t, len(reader.pending), 0)
+	testing.expect(t, !reader.assembling, "the reader must be ready for the next message")
+}
+
+@(test)
+lsp_ws_take_frame_reassembles_many_fragments_across_recvs :: proc(t: ^testing.T) {
+	// Electron produced 132 frames for a 16MB message, and they do NOT arrive in
+	// one recv. Each fragment is appended separately here so the "need more bytes"
+	// path runs between every one — the partial must survive across calls.
+	reader := Lsp_WS_Reader{}
+	defer lsp_ws_reader_destroy(&reader)
+
+	parts := [?]string{"alpha-", "beta-", "gamma-", "delta"}
+	for part, i in parts {
+		is_last := i == len(parts) - 1
+		opcode: byte = 0x1 if i == 0 else 0x0
+		f := lsp_make_masked_fragment(part, {byte(i + 1), 2, 3, 4}, opcode, is_last)
+		defer delete(f)
+		append(&reader.pending, ..f[:])
+
+		text, ok, fatal := lsp_ws_take_frame(&reader)
+		testing.expect(t, !fatal, "no fragment may be fatal")
+		if is_last {
+			testing.expect(t, ok, "the final fragment must complete the message")
+			testing.expect_value(t, text, "alpha-beta-gamma-delta")
+			delete(text)
+		} else {
+			testing.expect(t, !ok, "a non-final fragment must yield no message")
+		}
+	}
+	testing.expect_value(t, len(reader.pending), 0)
+}
+
+@(test)
+lsp_ws_take_frame_reads_fragments_coalesced_in_one_recv :: proc(t: ^testing.T) {
+	// The opposite arrival pattern: every fragment already sitting in pending.
+	// One take must walk them all and return the single joined message.
+	reader := Lsp_WS_Reader{}
+	defer lsp_ws_reader_destroy(&reader)
+	f1 := lsp_make_masked_fragment("one-", {1, 2, 3, 4}, 0x1, false)
+	defer delete(f1)
+	f2 := lsp_make_masked_fragment("two-", {5, 6, 7, 8}, 0x0, false)
+	defer delete(f2)
+	f3 := lsp_make_masked_fragment("three", {9, 10, 11, 12}, 0x0, true)
+	defer delete(f3)
+	append(&reader.pending, ..f1[:])
+	append(&reader.pending, ..f2[:])
+	append(&reader.pending, ..f3[:])
+
+	text, ok, fatal := lsp_ws_take_frame(&reader)
+	testing.expect(t, ok)
+	testing.expect(t, !fatal)
+	testing.expect_value(t, text, "one-two-three")
+	delete(text)
+}
+
+@(test)
+lsp_ws_take_frame_still_reads_an_unfragmented_message :: proc(t: ^testing.T) {
+	// The fast path must be untouched: a lone FIN+text frame is still one message,
+	// and the reader must not think a fragmented message is open afterwards.
+	reader := Lsp_WS_Reader{}
+	defer lsp_ws_reader_destroy(&reader)
+	f := lsp_make_masked_frame("{\"n\":1}", {1, 2, 3, 4})
+	defer delete(f)
+	append(&reader.pending, ..f[:])
+
+	text, ok, fatal := lsp_ws_take_frame(&reader)
+	testing.expect(t, ok)
+	testing.expect(t, !fatal)
+	testing.expect_value(t, text, "{\"n\":1}")
+	delete(text)
+	testing.expect(t, !reader.assembling)
+	testing.expect_value(t, len(reader.message), 0)
+}
+
+@(test)
+lsp_ws_take_frame_rejects_a_continuation_with_nothing_to_continue :: proc(t: ^testing.T) {
+	// A 0x0 frame outside a fragmented message is a protocol violation. It must be
+	// fatal — NOT silently started as if it were a new message.
+	reader := Lsp_WS_Reader{}
+	defer lsp_ws_reader_destroy(&reader)
+	f := lsp_make_masked_fragment("orphan", {1, 2, 3, 4}, 0x0, true)
+	defer delete(f)
+	append(&reader.pending, ..f[:])
+
+	_, ok, fatal := lsp_ws_take_frame(&reader)
+	testing.expect(t, !ok)
+	testing.expect(t, fatal, "a continuation with no message open must end the session")
+}
+
+@(test)
+lsp_ws_take_frame_rejects_a_new_text_frame_mid_message :: proc(t: ^testing.T) {
+	// Interleaving a fresh text frame into an open fragmented message is illegal.
+	// Accepting it would silently discard the half-built message.
+	reader := Lsp_WS_Reader{}
+	defer lsp_ws_reader_destroy(&reader)
+	f1 := lsp_make_masked_fragment("head", {1, 2, 3, 4}, 0x1, false)
+	defer delete(f1)
+	f2 := lsp_make_masked_fragment("interloper", {5, 6, 7, 8}, 0x1, true)
+	defer delete(f2)
+	append(&reader.pending, ..f1[:])
+	_, ok1, fatal1 := lsp_ws_take_frame(&reader)
+	testing.expect(t, !ok1)
+	testing.expect(t, !fatal1)
+
+	append(&reader.pending, ..f2[:])
+	_, ok2, fatal2 := lsp_ws_take_frame(&reader)
+	testing.expect(t, !ok2)
+	testing.expect(t, fatal2, "a new text frame during reassembly must end the session")
+}
+
+@(test)
+lsp_ws_take_frame_caps_the_reassembled_size :: proc(t: ^testing.T) {
+	// The DoS bound. A client that sends continuations and never sets FIN must not
+	// be able to grow reader.message without limit: trading a silent session death
+	// for memory exhaustion would be a worse bug than the one being fixed.
+	//
+	// The cap is checked against the ACCUMULATED total, so this drives the reader
+	// with frames that are individually legal and collectively over the line.
+	reader := Lsp_WS_Reader{}
+	defer lsp_ws_reader_destroy(&reader)
+
+	chunk := strings.repeat("x", 1024 * 1024)
+	defer delete(chunk)
+
+	// First fragment opens the message.
+	f0 := lsp_make_masked_fragment(chunk, {1, 2, 3, 4}, 0x1, false)
+	defer delete(f0)
+	append(&reader.pending, ..f0[:])
+	_, ok0, fatal0 := lsp_ws_take_frame(&reader)
+	testing.expect(t, !ok0)
+	testing.expect(t, !fatal0)
+
+	// Feed continuations until the cap trips. It MUST trip, and before the loop
+	// runs away: LSP_MAX_MESSAGE_BYTES / 1MiB is 32, so ~32 iterations.
+	tripped := false
+	for _ in 0 ..< (LSP_MAX_MESSAGE_BYTES / len(chunk)) + 2 {
+		f := lsp_make_masked_fragment(chunk, {5, 6, 7, 8}, 0x0, false)
+		defer delete(f)
+		append(&reader.pending, ..f[:])
+		_, ok, fatal := lsp_ws_take_frame(&reader)
+		if fatal {
+			tripped = true
+			break
+		}
+		testing.expect(t, !ok, "an unterminated fragment must not yield a message")
+	}
+	testing.expect(t, tripped, "an unbounded fragmented message must be refused, not buffered forever")
+}
+
 @(test)
 lsp_ws_take_frame_reads_a_64bit_length_frame :: proc(t: ^testing.T) {
 	// A textDocument/didOpen carrying a large file is exactly this frame. The
