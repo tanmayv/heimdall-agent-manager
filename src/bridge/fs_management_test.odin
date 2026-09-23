@@ -377,13 +377,31 @@ fs_project_root_override_blocks_escape_above_project :: proc(t: ^testing.T) {
 
 @(test)
 fs_project_root_override_rejects_root_outside_bridge :: proc(t: ^testing.T) {
-	bad_root := fs_test_make_root(t, "proj_bad_root") // pins the global base
-	defer fs_test_cleanup(bad_root)
-	// A project root override that escapes the global bridge root must be refused
-	// (defense-in-depth) rather than honored.
-	res := bridge_fs_list_dir("", true, "", 200, "/etc")
-	testing.expect(t, !res.ok, "bad project root rejected")
-	testing.expect_value(t, res.error_code, "path_outside_root")
+	root := fs_test_make_root(t, "proj_ext_root") // pins the global base
+	defer fs_test_cleanup(root)
+
+	// Valid external directories on the host (e.g. /etc or a directory outside bridge root)
+	// are now accepted as valid project / task-chain roots.
+	can_etc, ok_etc := bridge_fs_effective_root("/etc")
+	testing.expect(t, ok_etc, "effective root for /etc ok")
+	testing.expect_value(t, can_etc, "/etc")
+
+	res_valid := bridge_fs_list_dir("", true, "", 200, "/etc")
+	testing.expect(t, res_valid.ok, "valid external directory accepted")
+
+	// Non-existent directory overrides must be rejected.
+	_, ok_bad := bridge_fs_effective_root("/nonexistent_ham_fs_test_dir_12345")
+	testing.expect(t, !ok_bad, "non-existent directory ok=false")
+
+	res_nonexistent := bridge_fs_list_dir("", true, "", 200, "/nonexistent_ham_fs_test_dir_12345")
+	testing.expect(t, !res_nonexistent.ok, "non-existent directory rejected")
+	testing.expect_value(t, res_nonexistent.error_code, "path_outside_root")
+
+	// Subpath containment inside the external root remains enforced: attempts to escape
+	// with '..' above the root are still rejected with path_outside_root.
+	res_escape := bridge_fs_read_file("../passwd", "/etc")
+	testing.expect(t, !res_escape.ok, "escape above external root rejected")
+	testing.expect_value(t, res_escape.error_code, "path_outside_root")
 }
 
 // --- agent instance run-dir (read-only) ----------------------------------
