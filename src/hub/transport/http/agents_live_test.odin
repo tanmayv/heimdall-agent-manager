@@ -293,3 +293,38 @@ agents_live_agents_within_group_oldest_first :: proc(t: ^testing.T) {
 	testing.expect_value(t, multi.members[0].agent_instance_id, "inst_m_old")
 	testing.expect_value(t, multi.members[1].agent_instance_id, "inst_m_new")
 }
+
+@(test)
+agents_live_archived_project_omitted_and_not_in_unassigned :: proc(t: ^testing.T) {
+	projects, chains, members_by_chain, instances_by_id := live_test_fixture()
+	defer live_test_fixture_free(projects, chains, members_by_chain, instances_by_id)
+
+	// Mark proj_b (Beta) as Archived.
+	projects[0].state = .Archived
+
+	tree := build_agents_live_tree(projects, chains, members_by_chain, instances_by_id)
+	defer free_agents_live_tree(tree)
+
+	// Archived project Beta must NOT be in tree.
+	_, beta_ok := find_project(tree, "proj_b")
+	testing.expect(t, !beta_ok, "archived project Beta must be omitted from tree")
+
+	// Active project Alpha must be in tree.
+	alpha, alpha_ok := find_project(tree, "proj_a")
+	testing.expect(t, alpha_ok, "active project Alpha must be present")
+
+	// chain_x still appears under proj_a (Coordinator is in proj_a and running)
+	_, ax_ok := find_chain(alpha, "chain_x")
+	testing.expect(t, ax_ok, "chain_x present under active Alpha")
+
+	// chain_p2dead appears under Alpha (P1 is in proj_a and running)
+	_, ap_ok := find_chain(alpha, "chain_p2dead")
+	testing.expect(t, ap_ok, "chain_p2dead present under active Alpha")
+
+	// Unassigned must ONLY contain chain_u, NOT any chain or member from Beta.
+	unassigned, u_ok := find_project(tree, "")
+	testing.expect(t, u_ok, "unassigned bucket present")
+	testing.expect_value(t, len(unassigned.chains), 1)
+	testing.expect_value(t, unassigned.chains[0].chain_id, "chain_u")
+}
+

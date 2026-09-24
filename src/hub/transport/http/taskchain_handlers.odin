@@ -118,11 +118,12 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 		strings.write_byte(&cb, ']')
 		return respond_list(strings.to_string(cb), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 	}
+	include_archived := query_bool(req.query, "include_archived", false) || (has_query_key(req.query, "project_id") && query_value(req.query, "project_id") != "")
 	if query_bool(req.query, "pinned", false) || query_value(req.query, "pinned") == "1" {
 		pinned_chains, pinned_err := taskchain_service.list_pinned_chains(h.taskchains, auth_ctx)
 		if pinned_err.code != .None do return respond_error(pinned_err, req.request_id)
 		defer delete(pinned_chains)
-		items := enrich_chain_list_items(h, auth_ctx, pinned_chains, false)
+		items := enrich_chain_list_items(h, auth_ctx, pinned_chains, false, include_archived)
 		defer delete(items)
 		b := strings.builder_make()
 		write_chain_list_items_json(&b, items[:])
@@ -135,7 +136,7 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if err.code != .None do return respond_error(err, req.request_id)
 	// ?has_tasks=1 (or true/yes) hides chains that carry no tasks yet — on real data
 	// that is roughly half of them, and an empty chain has nothing to show.
-	items := enrich_chain_list_items(h, auth_ctx, chains, query_bool(req.query, "has_tasks", false))
+	items := enrich_chain_list_items(h, auth_ctx, chains, query_bool(req.query, "has_tasks", false), include_archived)
 	defer delete(items)
 
 	// ?project_id=<id> (value may be empty for the Unassigned bucket) selects the
@@ -200,11 +201,11 @@ Chain_List_Item :: struct {
 // coordinator-instance -> project_id and project_id -> project_name lookups so a
 // project shared by many chains costs a single conversation/project fetch. The
 // returned dynamic array is caller-owned (delete it); its strings are not.
-enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, chains: []domain.Task_Chain, only_with_tasks: bool) -> [dynamic]Chain_List_Item {
+enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, chains: []domain.Task_Chain, only_with_tasks: bool, include_archived: bool) -> [dynamic]Chain_List_Item {
 	items := make([dynamic]Chain_List_Item)
 	proj_idx := conversation_project_index(h, auth)
 	defer destroy_conversation_project_index(&proj_idx)
-	name_by_project := make(map[string]string); defer delete(name_by_project)
+	meta_by_project := make(map[string]Resolved_Project_Meta); defer delete(meta_by_project)
 	// One grouped rollup for every chain, not one query per chain.
 	task_counts, counts_err := taskchain_service.task_counts_by_chain(h.taskchains, auth)
 	defer delete(task_counts)
@@ -220,6 +221,8 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 		if project_id == "" && string(c.chain_id) in proj_idx.by_chain {
 			project_id = proj_idx.by_chain[string(c.chain_id)]
 		}
+		meta := resolve_project_meta(h, auth, project_id, &meta_by_project)
+		if !include_archived && meta.is_archived do continue
 		append(&items, Chain_List_Item{
 			chain_id = string(c.chain_id),
 			title = c.title,
@@ -228,7 +231,7 @@ enrich_chain_list_items :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Con
 			updated_at = c.updated_at,
 			coordinator_agent_instance_id = coord_id,
 			project_id = project_id,
-			project_name = resolve_project_name(h, auth, project_id, &name_by_project),
+			project_name = meta.name,
 			task_count = count,
 			is_pinned = c.is_pinned,
 			pinned_at = c.pinned_at,
@@ -291,18 +294,27 @@ conversation_project_index :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_
 	return idx
 }
 
-// resolve_project_name looks up a project's display name, memoized by project id.
-// Empty project id (Unassigned) and unresolved/deleted projects return "".
-resolve_project_name :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, project_id: string, cache: ^map[string]string) -> string {
-	if project_id == "" do return ""
+Resolved_Project_Meta :: struct {
+	name:        string,
+	is_archived: bool,
+}
+
+// resolve_project_meta looks up a project's display name and archive status,
+// memoized by project id. Empty project id (Unassigned) and unresolved/deleted
+// projects return empty name and is_archived = false.
+resolve_project_meta :: proc(h: ^Taskchain_Handlers, auth: contracts.Auth_Context, project_id: string, cache: ^map[string]Resolved_Project_Meta) -> Resolved_Project_Meta {
+	if project_id == "" do return {}
 	if cached, ok := cache[project_id]; ok do return cached
-	if h.projects == nil do return ""
+	if h.projects == nil do return {}
 	p, ok, err := project_service.get(h.projects, auth, domain.Project_ID(project_id))
 	// As above: cache a real answer, but not a transient backend error.
-	if err.code != .None && err.code != .Not_Found do return ""
-	name := p.name if ok else ""
-	cache[project_id] = name
-	return name
+	if err.code != .None && err.code != .Not_Found do return {}
+	meta := Resolved_Project_Meta{
+		name = p.name if ok else "",
+		is_archived = ok && p.state == .Archived,
+	}
+	cache[project_id] = meta
+	return meta
 }
 
 // chain_list_item_less orders items newest-first by created_at, breaking ties on
@@ -1515,6 +1527,13 @@ build_agents_live_tree :: proc(projects: []domain.Project, chains: []domain.Task
 		pid := string(p.project_id)
 		matched[pid] = true
 		bucket := chains_by_project[pid] or_else nil
+		if p.state == .Archived {
+			for lc in bucket {
+				delete(lc.live_agents)
+				delete(lc.members)
+			}
+			continue
+		}
 		append(&out, Agents_Live_Project{
 			project_id = pid,
 			name = p.name,

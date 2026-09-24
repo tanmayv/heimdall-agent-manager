@@ -3,6 +3,7 @@ import { Badge, EmptyState, Icon, Input, Spinner, Text } from '@ui';
 import { useIsMobile } from '../shell/responsive';
 import { useFetchTaskChainGroupsQuery, type ChainListItem } from '../../api/endpoints/tasks';
 import { buildRouteHash } from '../../utils/appLocation';
+import { useArchivedProjectIds } from '../projects/projectModel';
 
 function shellHash(path: string): string {
   return buildRouteHash(path, '');
@@ -31,6 +32,7 @@ type StatusFilter = 'all' | 'active' | 'completed';
 export function RecentTaskChainsTab() {
   const isMobile = useIsMobile();
   const { data, isLoading, error, refetch } = useFetchTaskChainGroupsQuery();
+  const archivedProjectIds = useArchivedProjectIds();
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -40,16 +42,19 @@ export function RecentTaskChainsTab() {
     const groups = data?.groups || [];
     const list: ChainListItem[] = [];
     for (const g of groups) {
+      if (g.projectId && archivedProjectIds.has(g.projectId)) continue;
       for (const c of g.chains) {
+        const pid = c.projectId || g.projectId || '';
+        if (pid && archivedProjectIds.has(pid)) continue;
         list.push({
           ...c,
           projectName: c.projectName || g.projectName || 'Unassigned',
-          projectId: c.projectId || g.projectId || '',
+          projectId: pid,
         });
       }
     }
     return list;
-  }, [data]);
+  }, [data, archivedProjectIds]);
 
   // Filter for chains with status === 'active' or status === 'completed'
   const filteredChains = useMemo(() => {

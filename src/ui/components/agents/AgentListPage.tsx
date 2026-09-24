@@ -23,6 +23,7 @@ import React from 'react';
 import {
   ActionButton,
   Alert,
+  Badge,
   BulkActionBar,
   Button,
   EmptyState,
@@ -32,6 +33,7 @@ import {
   ModalBody,
   ModalFooter,
   PageShell,
+  StatusPill,
   Tab,
   Tabs,
   TabsList,
@@ -41,6 +43,7 @@ import {
   TOUCH_TARGET_CLASS,
   useInfiniteList,
   useViewport,
+  type Tone,
 } from '@ui';
 import AgentRow from './AgentRow';
 import {
@@ -48,6 +51,7 @@ import {
   AgentDetailBody,
   AgentDetailMeta,
   AgentDetailPaneSkeleton,
+  LiveInstanceDetailPane,
   useAgentDetail,
   usePaneIsWide,
 } from './AgentDetail';
@@ -57,17 +61,24 @@ import {
   searchAgentPage,
   agentErrorText,
   useArchiveAgentIdentityMutation,
+  useListAgentInstancesQuery,
+  useStopAgentInstanceMutation,
+  useRestartAgentInstanceMutation,
   type AgentHit,
   type AgentRecord,
 } from '../../api/endpoints/agents';
+import { useListProjectsQuery } from '../../api/endpoints/projects';
 import {
   AGENT_TABS,
   EMPTY_LIST_URL_STATE,
   FILTER_PAGE_CAP,
+  absoluteTime,
   archiveConfirmBody,
+  isLiveRuntimeStatus,
   listCrumbs,
   matchesTab,
   navigateTo,
+  relativeTime,
   agentEditHref,
   agentListHref,
   agentNewHref,
@@ -103,7 +114,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
   const [urlState, setUrlState] = React.useState<AgentListUrlState>(() =>
     parseAgentListUrl(getRouteSearch()),
   );
-  const tab: AgentTab = urlState.tab || 'active';
+  const tab: AgentTab = urlState.tab || 'live';
   const searching = Boolean(urlState.q);
 
   const applyUrlState = React.useCallback((next: AgentListUrlState) => {
@@ -149,7 +160,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
   /* ---------------- Client-side tab filter ----------------
    * No VCS filter — agents have no per-agent filter beyond state. */
   const visibleRows = React.useMemo(
-    () => list.items.filter((row) => matchesTab(row, tab)),
+    () => (tab === 'live' ? [] : list.items.filter((row) => matchesTab(row, tab))),
     [list.items, tab],
   );
 
@@ -158,13 +169,13 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     setAutoPages(0);
   }, [tab]);
   React.useEffect(() => {
-    if (searching) return;
+    if (searching || tab === 'live') return;
     if (visibleRows.length > 0) return;
     if (!list.hasMore || list.isPaging || list.isLoadingInitial || list.pagingError) return;
     if (autoPages >= FILTER_PAGE_CAP) return;
     setAutoPages((prev) => prev + 1);
     list.loadMore();
-  }, [autoPages, list, searching, visibleRows.length]);
+  }, [autoPages, list, searching, tab, visibleRows.length]);
 
   const moreToSearch = !searching && visibleRows.length === 0 && list.hasMore;
 
@@ -258,6 +269,95 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     [pushToast, runArchive],
   );
 
+  /* ---------------- Live Instances data ---------------- */
+  const liveInstancesQuery = useListAgentInstancesQuery({ limit: 200 });
+  const projectsQuery = useListProjectsQuery();
+  const projects = (projectsQuery.data?.projects || []) as any[];
+  const projectMap = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of projects) {
+      const id = String(p.project_id || p.projectId || p.id || '');
+      if (id) map.set(id, String(p.name || id));
+    }
+    return map;
+  }, [projects]);
+
+  const rawInstances = (liveInstancesQuery.data?.instances || []) as any[];
+  const liveInstances = React.useMemo(
+    () => rawInstances.filter((inst) => isLiveRuntimeStatus(inst.runtime_status || inst.runtimeStatus)),
+    [rawInstances],
+  );
+
+  const searchNormalized = (urlState.q || '').trim().toLowerCase();
+  const filteredLiveInstances = React.useMemo(() => {
+    if (!searchNormalized) return liveInstances;
+    return liveInstances.filter((inst) => {
+      const name = String(inst.display_name || inst.displayName || '').toLowerCase();
+      const instId = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '').toLowerCase();
+      const agtId = String(inst.agent_id || inst.agentId || '').toLowerCase();
+      const projId = String(inst.project_id || inst.projectId || '').toLowerCase();
+      const projName = String(projectMap.get(projId) || '').toLowerCase();
+      const chId = String(inst.chain_id || inst.chainId || '').toLowerCase();
+      const prov = String(inst.provider || '').toLowerCase();
+      return (
+        name.includes(searchNormalized) ||
+        instId.includes(searchNormalized) ||
+        agtId.includes(searchNormalized) ||
+        projId.includes(searchNormalized) ||
+        projName.includes(searchNormalized) ||
+        chId.includes(searchNormalized) ||
+        prov.includes(searchNormalized)
+      );
+    });
+  }, [liveInstances, searchNormalized, projectMap]);
+
+  const activeInstanceId = React.useMemo(() => {
+    if (urlState.instanceId) return urlState.instanceId;
+    if (twoPane && tab === 'live' && filteredLiveInstances.length > 0) {
+      const first = filteredLiveInstances[0];
+      return String(first.agent_instance_id || first.agentInstanceId || first.id || '');
+    }
+    return '';
+  }, [urlState.instanceId, twoPane, tab, filteredLiveInstances]);
+
+  const handleSelectInstance = React.useCallback(
+    (instanceId: string) => {
+      applyUrlState({ ...urlState, instanceId });
+    },
+    [applyUrlState, urlState],
+  );
+
+  const [restartAgentInstance] = useRestartAgentInstanceMutation();
+  const [stopAgentInstance] = useStopAgentInstanceMutation();
+  const [rowActionBusy, setRowActionBusy] = React.useState<Record<string, 'restart' | 'stop' | ''>>({});
+
+  const handleRowRestart = async (e: React.MouseEvent, agentId: string, instanceId: string) => {
+    e.stopPropagation();
+    setRowActionBusy((prev) => ({ ...prev, [instanceId]: 'restart' }));
+    try {
+      await restartAgentInstance({ agentId, instanceId }).unwrap();
+      pushToast({ tone: 'success', title: 'Restart initiated' });
+    } catch (err: any) {
+      pushToast({ tone: 'danger', title: "Couldn't restart instance", message: agentErrorText(err) });
+    } finally {
+      setRowActionBusy((prev) => ({ ...prev, [instanceId]: '' }));
+    }
+  };
+
+  const handleRowStop = async (e: React.MouseEvent, agentId: string, instanceId: string) => {
+    e.stopPropagation();
+    setRowActionBusy((prev) => ({ ...prev, [instanceId]: 'stop' }));
+    try {
+      await stopAgentInstance({ agentId, instanceId }).unwrap();
+      pushToast({ tone: 'success', title: 'Instance stopped' });
+      void liveInstancesQuery.refetch();
+    } catch (err: any) {
+      pushToast({ tone: 'danger', title: "Couldn't stop instance", message: agentErrorText(err) });
+    } finally {
+      setRowActionBusy((prev) => ({ ...prev, [instanceId]: '' }));
+    }
+  };
+
   /* ---------------- Keyboard ---------------- */
   const [cursorId, setCursorId] = React.useState('');
   const cursorRef = React.useRef('');
@@ -275,6 +375,28 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
         return;
       }
       if (typing || confirm) return;
+
+      if (tab === 'live') {
+        const items = filteredLiveInstances;
+        const index = items.findIndex(
+          (item) => String(item.agent_instance_id || item.agentInstanceId || item.id || '') === activeInstanceId,
+        );
+        if (event.key === 'j' || event.key === 'k') {
+          if (items.length === 0) return;
+          event.preventDefault();
+          const nextIndex = event.key === 'j'
+            ? Math.min(items.length - 1, index < 0 ? 0 : index + 1)
+            : Math.max(0, index < 0 ? 0 : index - 1);
+          const next = items[nextIndex];
+          const nextId = next ? String(next.agent_instance_id || next.agentInstanceId || next.id || '') : '';
+          if (nextId) {
+            handleSelectInstance(nextId);
+            const node = document.querySelector(`[data-agent-instance-row="${CSS.escape(nextId)}"]`);
+            node?.scrollIntoView({ block: 'nearest' });
+          }
+        }
+        return;
+      }
 
       const items = visibleRows;
       const index = items.findIndex((row) => row.agentId === cursorRef.current);
@@ -304,7 +426,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [confirm, twoPane, urlState, visibleRows]);
+  }, [confirm, twoPane, urlState, visibleRows, tab, filteredLiveInstances, activeInstanceId, handleSelectInstance]);
 
   /* ---------------- Empty states ---------------- */
   function emptyState(): React.ReactNode {
@@ -491,6 +613,165 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
     </>
   );
 
+  const liveSection = (
+    <div className={`flex w-full min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
+      <div className={twoPane ? 'flex-1 min-h-0 overflow-y-auto' : undefined}>
+        {liveInstancesQuery.isLoading ? (
+          <div role="status" aria-live="polite" aria-busy="true" data-debug-id="live-instances-skeleton">
+            <span className="sr-only">Loading live instances…</span>
+            <ul aria-hidden="true" className="flex flex-col">
+              {[0, 1, 2, 3].map((i) => (
+                <li key={i} className="flex min-h-[72px] flex-col justify-center gap-2 border-b border-subtle px-3 py-3">
+                  <div className="h-4 w-2/3 animate-pulse rounded-[var(--radius-sm)] bg-neutral-soft" />
+                  <div className="h-3 w-5/6 animate-pulse rounded-[var(--radius-sm)] bg-neutral-soft" />
+                  <div className="h-3 w-1/3 animate-pulse rounded-[var(--radius-sm)] bg-neutral-soft" />
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : liveInstancesQuery.error ? (
+          <Alert tone="danger" title="Couldn't load live instances">
+            <div className="flex flex-col items-start gap-3">
+              <span>{agentErrorText(liveInstancesQuery.error)}</span>
+              <Button size="sm" variant="secondary" onClick={() => liveInstancesQuery.refetch()}>Retry</Button>
+            </div>
+          </Alert>
+        ) : filteredLiveInstances.length === 0 ? (
+          urlState.q ? (
+            <EmptyState
+              data-debug-id="live-instances-empty-query"
+              icon="search"
+              title={`No live instances match "${urlState.q}"`}
+              description="Try a different search term or clear the filter."
+              action={<Button variant="secondary" onClick={() => { setQueryInput(''); applyUrlState({ ...urlState, q: '' }); }}>Clear search</Button>}
+            />
+          ) : (
+            <EmptyState
+              data-debug-id="live-instances-empty"
+              icon="bot"
+              title="No live instances running"
+              description="No agent instances are currently active. Launch a task chain or conversation to start an instance."
+            />
+          )
+        ) : (
+          <ul aria-label="Live Instances" data-debug-id="live-instances-table" className="flex flex-col">
+            {filteredLiveInstances.map((inst: any) => {
+              const instId = String(inst.agent_instance_id || inst.agentInstanceId || inst.id || '');
+              const agtId = String(inst.agent_id || inst.agentId || '');
+              const name = String(inst.display_name || inst.displayName || agtId || instId);
+              const status = String(inst.runtime_status || inst.runtimeStatus || 'running');
+              const actStatus = String(inst.activity_status || inst.activityStatus || '');
+              const prov = String(inst.provider || '');
+              const tr = String(inst.tier || '');
+              const projId = String(inst.project_id || inst.projectId || '');
+              const projName = projectMap.get(projId) || projId;
+              const chId = String(inst.chain_id || inst.chainId || '');
+              const timestamp = String(inst.started_at || inst.startedAt || inst.last_seen_at || inst.lastSeenAt || '');
+              const isSelected = instId === activeInstanceId;
+              const isRestartBusy = rowActionBusy[instId] === 'restart';
+              const isStopBusy = rowActionBusy[instId] === 'stop';
+
+              const rTone: Tone = (status.toLowerCase() === 'running' || status.toLowerCase() === 'ready')
+                ? 'success'
+                : (status.toLowerCase() === 'starting' || status.toLowerCase() === 'launching')
+                  ? 'warning'
+                  : (status.toLowerCase() === 'stopped' || status.toLowerCase() === 'failed')
+                    ? 'danger'
+                    : 'neutral';
+
+              return (
+                <li
+                  key={instId}
+                  data-agent-instance-row={instId}
+                  data-debug-id={`live-instance-row-${instId}`}
+                  data-active={isSelected || undefined}
+                  className={[
+                    'relative flex min-h-[72px] items-start gap-3 border-b border-subtle px-3 py-3 transition-colors duration-fast cursor-pointer',
+                    isSelected ? 'bg-surface-raised' : 'hover:bg-surface',
+                  ].join(' ')}
+                  onClick={() => handleSelectInstance(instId)}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <span className="min-w-0 truncate text-title text-primary font-medium">
+                          {name}
+                        </span>
+                        <StatusPill tone={rTone} data-debug-id={`live-instance-status-${instId}`}>
+                          {status}
+                        </StatusPill>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          loading={isRestartBusy}
+                          data-debug-id={`live-instance-row-restart-${instId}`}
+                          onClick={(e) => handleRowRestart(e, agtId, instId)}
+                        >
+                          Restart
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          loading={isStopBusy}
+                          data-debug-id={`live-instance-row-stop-${instId}`}
+                          onClick={(e) => handleRowStop(e, agtId, instId)}
+                        >
+                          Stop
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      {projId ? (
+                        <Badge data-debug-id={`live-instance-project-${instId}`}>
+                          {projName}
+                        </Badge>
+                      ) : null}
+                      {chId ? (
+                        <Badge data-debug-id={`live-instance-chain-${instId}`}>
+                          {chId}
+                        </Badge>
+                      ) : null}
+                      {agtId ? (
+                        <Text as="span" role="caption" tone="muted">
+                          agent: {agtId}
+                        </Text>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-1.5 flex items-end justify-between gap-3">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        {prov ? <Badge data-debug-id={`live-instance-provider-${instId}`}>{prov}</Badge> : null}
+                        {tr ? <Badge data-debug-id={`live-instance-tier-${instId}`}>{tr}</Badge> : null}
+                        {actStatus ? (
+                          <StatusPill tone={actStatus.toLowerCase() === 'busy' ? 'info' : 'neutral'}>
+                            {actStatus}
+                          </StatusPill>
+                        ) : null}
+                      </div>
+                      <Text
+                        as="span"
+                        role="caption"
+                        tone="muted"
+                        className="shrink-0 whitespace-nowrap"
+                        title={absoluteTime(timestamp)}
+                        data-debug-id={`live-instance-time-${instId}`}
+                      >
+                        {relativeTime(timestamp)}
+                      </Text>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+
   const listSection = (
     <div className={`flex w-full min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
       {!searching && list.pendingCount > 0 ? (
@@ -545,8 +826,8 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
         width="full"
         size={isMobile ? 'md' : 'sm'}
         leading={<Icon name="search" size="sm" />}
-        placeholder="Search names and slugs…"
-        aria-label="Search agent names and slugs"
+        placeholder={tab === 'live' ? 'Search live instances…' : 'Search names and slugs…'}
+        aria-label={tab === 'live' ? 'Search live instances' : 'Search agent names and slugs'}
         data-debug-id="agent-search-input"
         ref={searchRef}
         className={['min-w-0 flex-1', isMobile ? TOUCH_TARGET_CLASS : ''].filter(Boolean).join(' ')}
@@ -565,20 +846,25 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
 
   const tabsBlock = (
     <Tabs
-      value={searching ? '' : tab}
+      value={searching && tab !== 'live' ? '' : tab}
       onChange={(next) => applyUrlState({ ...urlState, tab: next as AgentTab })}
       className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}
     >
       <TabsList label="Agent state" className="shrink-0">
         {AGENT_TABS.map((entry) => (
-          <Tab key={entry.value} value={entry.value} disabled={searching} data-debug-id={`agent-tab-${entry.value}`}>
+          <Tab
+            key={entry.value}
+            value={entry.value}
+            disabled={searching && tab !== 'live'}
+            data-debug-id={`agent-tab-${entry.value}`}
+          >
             {entry.label}
           </Tab>
         ))}
       </TabsList>
-      {searching ? null : (
+      {searching && tab !== 'live' ? null : (
         <TabsPanel value={tab} className={twoPane ? 'flex flex-1 min-h-0 flex-col overflow-hidden' : undefined}>
-          {listSection}
+          {tab === 'live' ? liveSection : listSection}
         </TabsPanel>
       )}
     </Tabs>
@@ -589,7 +875,7 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
       <div className="shrink-0">{toolbar}</div>
       <div className={`flex min-w-0 flex-col gap-4 ${twoPane ? 'flex-1 min-h-0 overflow-hidden' : ''}`}>
         {tabsBlock}
-        {searching ? listSection : null}
+        {searching && tab !== 'live' ? listSection : null}
       </div>
     </div>
   );
@@ -684,7 +970,15 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
         <div className="flex min-w-0 items-stretch gap-4 flex-1 min-h-0 h-full overflow-hidden">
           <div className="w-full min-w-0 max-w-[420px] shrink-0 flex flex-col min-h-0 h-full overflow-hidden">{listColumn}</div>
           <div className="min-w-0 flex-1 border-l border-subtle pl-4 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="agent-detail-pane">
-            {selectedId ? (
+            {tab === 'live' ? (
+              activeInstanceId ? (
+                <LiveInstanceDetailPane instanceId={activeInstanceId} onStopped={() => void liveInstancesQuery.refetch()} />
+              ) : (
+                <div className="flex h-full items-center justify-center p-6">
+                  <Text role="body-sm" tone="muted">No live instances running.</Text>
+                </div>
+              )
+            ) : selectedId ? (
               <AgentDetailPane agentId={selectedId} onAfterArchive={() => undefined} />
             ) : (
               <div className="flex h-full items-center justify-center p-6">
@@ -692,6 +986,43 @@ export default function AgentListPage({ selectedId = '' }: { selectedId?: string
               </div>
             )}
           </div>
+        </div>
+        {overlays}
+      </PageShell>
+    );
+  }
+
+  if (!twoPane && tab === 'live' && urlState.instanceId) {
+    return (
+      <PageShell
+        width={viewport === 'tablet' ? 'content' : 'full'}
+        rhythm="banded"
+        title="Live Instance"
+        breadcrumbs={[{ label: 'Agents', href: agentListHref({ tab: 'live', q: '' }) }, { label: urlState.instanceId }]}
+        actions={
+          <Button
+            variant="secondary"
+            data-debug-id="live-instance-back-btn"
+            leading={<Icon name="arrow-left" size="sm" />}
+            onClick={() => applyUrlState({ ...urlState, instanceId: undefined })}
+          >
+            Back to Live Instances
+          </Button>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <div className="mb-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              data-debug-id="live-instance-back-btn"
+              leading={<Icon name="arrow-left" size="sm" />}
+              onClick={() => applyUrlState({ ...urlState, instanceId: undefined })}
+            >
+              Back to Live Instances
+            </Button>
+          </div>
+          <LiveInstanceDetailPane instanceId={urlState.instanceId} onStopped={() => void liveInstancesQuery.refetch()} />
         </div>
         {overlays}
       </PageShell>

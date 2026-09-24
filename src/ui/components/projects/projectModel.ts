@@ -10,7 +10,9 @@
  * Built on the Memory reference (`docs/ui-rebuild/memory.md`, Amendments 2-7). Only
  * what differs is commented; everything unremarked is the inherited convention.
  */
+import { useMemo } from 'react';
 import { buildRouteHash } from '../../utils/appLocation';
+import { useListProjectsQuery } from '../../api/endpoints/projects';
 import type { Tone } from '@ui';
 
 /* ------------------------------------------------------------------ *
@@ -27,6 +29,25 @@ export type ProjectState = 'active' | 'archived';
 
 export function projectState(record: { state?: string } | null | undefined): ProjectState {
   return String(record?.state || '').trim().toLowerCase() === 'archived' ? 'archived' : 'active';
+}
+
+export function isProjectArchived(record: { state?: string } | null | undefined): boolean {
+  return projectState(record) === 'archived';
+}
+
+export function useArchivedProjectIds(): Set<string> {
+  const { data } = useListProjectsQuery();
+  return useMemo(() => {
+    const set = new Set<string>();
+    const list = data?.projects || (Array.isArray(data) ? data : []);
+    for (const p of list) {
+      if (isProjectArchived(p)) {
+        const id = p.project_id || p.projectId;
+        if (id) set.add(id);
+      }
+    }
+    return set;
+  }, [data]);
 }
 
 export function stateLabel(state: ProjectState): string {

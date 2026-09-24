@@ -36,9 +36,10 @@ export function stateTone(state: AgentState): Tone {
  * Tabs (client-side — same note as Projects)
  * ------------------------------------------------------------------ */
 
-export type AgentTab = 'active' | 'archived';
+export type AgentTab = 'live' | 'active' | 'archived';
 
 export const AGENT_TABS: { value: AgentTab; label: string }[] = [
+  { value: 'live', label: 'Live Instances' },
   { value: 'active', label: 'Active' },
   { value: 'archived', label: 'Archived' },
 ];
@@ -132,6 +133,7 @@ export function relativeTime(updatedAt?: string): string {
 export interface AgentListUrlState {
   tab: AgentTab | '';
   q: string;
+  instanceId?: string;
 }
 
 export const EMPTY_LIST_URL_STATE: AgentListUrlState = { tab: '', q: '' };
@@ -139,9 +141,11 @@ export const EMPTY_LIST_URL_STATE: AgentListUrlState = { tab: '', q: '' };
 export function parseAgentListUrl(search: string): AgentListUrlState {
   const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
   const tab = String(params.get('tab') || '');
+  const instance = String(params.get('instance') || '');
   return {
     tab: (AGENT_TABS.some((entry) => entry.value === tab) ? tab : '') as AgentTab | '',
     q: String(params.get('q') || ''),
+    ...(instance ? { instanceId: instance } : {}),
   };
 }
 
@@ -149,8 +153,15 @@ export function agentListSearch(state: AgentListUrlState): string {
   const params = new URLSearchParams();
   if (state.tab) params.set('tab', state.tab);
   if (state.q) params.set('q', state.q);
+  if (state.instanceId) params.set('instance', state.instanceId);
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+export function isLiveRuntimeStatus(status?: string): boolean {
+  if (!status) return false;
+  const s = status.trim().toLowerCase();
+  return ['running', 'starting', 'launching', 'idle', 'busy', 'ready'].includes(s);
 }
 
 /** Agents have no extra filters beyond tabs, so this is always false. */

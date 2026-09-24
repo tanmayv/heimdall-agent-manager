@@ -23,6 +23,7 @@ import {
   Alert,
   Badge,
   Button,
+  EmptyState,
   Icon,
   IconButton,
   Menu,
@@ -32,6 +33,7 @@ import {
   StatusPill,
   Text,
   useViewport,
+  type Tone,
 } from '@ui';
 import MarkdownBody from '../MarkdownBody';
 import {
@@ -40,16 +42,23 @@ import {
   useArchiveAgentIdentityMutation,
   useFetchAgentIdentityQuery,
   useListAgentInstancesQuery,
+  useFetchAgentInstanceQuery,
+  useStopAgentInstanceMutation,
+  useRestartAgentInstanceMutation,
   type AgentRecord,
 } from '../../api/endpoints/agents';
+import { useListProjectsQuery } from '../../api/endpoints/projects';
+import { useFetchTaskChainDetailQuery } from '../../api/endpoints/tasks';
 import PaginatedMemoriesSection from '../shared/PaginatedMemoriesSection';
 import { buildRouteHash } from '../../utils/appLocation';
 import {
   VERB_LABEL,
   absoluteTime,
   agentEditHref,
+  agentListHref,
   agentState,
   agentTitle,
+  agentViewHref,
   navigateTo,
   relativeTime,
   stateLabel,
@@ -215,7 +224,7 @@ export function AgentDetailMeta({ record }: { record: AgentRecord }) {
  * Cards
  * ------------------------------------------------------------------ */
 
-function Card({
+export function Card({
   title,
   helper,
   action,
@@ -242,7 +251,7 @@ function Card({
   );
 }
 
-function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+export function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
       <Text as="div" role="label" tone="muted">{label}</Text>
@@ -469,6 +478,311 @@ export function AgentDetailPaneSkeleton() {
         {[0, 1, 2].map((i) => (
           <div key={i} className="h-4 w-full animate-pulse rounded-[var(--radius-sm)] bg-neutral-soft" />
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Live Instance Detail Pane
+ * ------------------------------------------------------------------ */
+
+export function LiveInstanceDetailPane({
+  instanceId,
+  onStopped,
+}: {
+  instanceId: string;
+  onStopped?: () => void;
+}) {
+  const paneRef = React.useRef<HTMLDivElement | null>(null);
+  const wide = usePaneIsWide(paneRef);
+
+  const instanceQuery = useFetchAgentInstanceQuery({ instanceId }, { skip: !instanceId });
+  const listQuery = useListAgentInstancesQuery({ limit: 200 }, { skip: Boolean(instanceQuery.data?.instance) });
+  const inst = instanceQuery.data?.instance || (listQuery.data?.instances || []).find(
+    (i: any) => (i.agent_instance_id || i.instanceId || i.id) === instanceId,
+  );
+
+  const agentId = String(inst?.agent_id || inst?.agentId || '');
+  const chainId = String(inst?.chain_id || inst?.chainId || '');
+  const projectId = String(inst?.project_id || inst?.projectId || '');
+  const projectPath = String(inst?.project_path || inst?.projectPath || '');
+  const displayName = String(inst?.display_name || inst?.displayName || agentId || instanceId);
+  const runtimeStatus = String(inst?.runtime_status || inst?.runtimeStatus || '');
+  const activityStatus = String(inst?.activity_status || inst?.activityStatus || '');
+  const provider = String(inst?.provider || '');
+  const tier = String(inst?.tier || '');
+  const currentTaskId = String(inst?.current_task_id || inst?.currentTaskId || '');
+  const currentTaskRole = String(inst?.current_task_role || inst?.currentTaskRole || '');
+  const bridgeId = String(inst?.bridge_id || inst?.bridgeId || '');
+  const startedAt = String(inst?.started_at || inst?.startedAt || '');
+  const lastSeenAt = String(inst?.last_seen_at || inst?.lastSeenAt || '');
+
+  const projectsQuery = useListProjectsQuery();
+  const project = (projectsQuery.data?.projects || []).find(
+    (p: any) => (p.project_id || p.projectId || p.id) === projectId,
+  );
+  const projectName = project?.name || projectId;
+  const displayProjectPath = projectPath || project?.default_path || project?.defaultPath || '';
+
+  const chainQuery = useFetchTaskChainDetailQuery({ chainId }, { skip: !chainId });
+  const chain = chainQuery.data?.chain;
+  const chainTitle = chain?.title || chain?.name || chainId;
+
+  const agentIdentityQuery = useFetchAgentIdentityQuery({ agentId }, { skip: !agentId });
+  const agentRecord = agentIdentityQuery.data?.agent ? normalizeAgent(agentIdentityQuery.data.agent) : null;
+  const agentDisplayName = agentRecord?.name || agentId;
+
+  const [restartInstance, { isLoading: isRestarting }] = useRestartAgentInstanceMutation();
+  const [stopInstance, { isLoading: isStopping }] = useStopAgentInstanceMutation();
+  const [actionError, setActionError] = React.useState('');
+  const [actionSuccess, setActionSuccess] = React.useState('');
+
+  const handleRestart = async () => {
+    setActionError('');
+    setActionSuccess('');
+    try {
+      await restartInstance({ agentId, instanceId }).unwrap();
+      setActionSuccess('Restart initiated successfully.');
+    } catch (err: any) {
+      setActionError(agentErrorText(err, "Couldn't restart this instance."));
+    }
+  };
+
+  const handleStop = async () => {
+    setActionError('');
+    setActionSuccess('');
+    try {
+      await stopInstance({ agentId, instanceId }).unwrap();
+      setActionSuccess('Instance stopped.');
+      onStopped?.();
+    } catch (err: any) {
+      setActionError(agentErrorText(err, "Couldn't stop this instance."));
+    }
+  };
+
+  if (instanceQuery.isLoading && !inst) {
+    return <AgentDetailPaneSkeleton />;
+  }
+
+  if (!instanceQuery.isLoading && !inst) {
+    return (
+      <EmptyState
+        data-debug-id="live-instance-missing"
+        icon="search"
+        title="Instance not found"
+        description={`Could not find live instance "${instanceId}".`}
+        action={<Button variant="secondary" onClick={() => navigateTo(agentListHref({ tab: 'live', q: '' }))}>Back to Live Instances</Button>}
+      />
+    );
+  }
+
+  const runtimeTone: Tone = (runtimeStatus.toLowerCase() === 'running' || runtimeStatus.toLowerCase() === 'ready')
+    ? 'success'
+    : (runtimeStatus.toLowerCase() === 'starting' || runtimeStatus.toLowerCase() === 'launching')
+      ? 'warning'
+      : (runtimeStatus.toLowerCase() === 'stopped' || runtimeStatus.toLowerCase() === 'failed' || runtimeStatus.toLowerCase() === 'terminated')
+        ? 'danger'
+        : 'neutral';
+
+  const activityTone: Tone = (activityStatus.toLowerCase() === 'busy' || activityStatus.toLowerCase() === 'working')
+    ? 'info'
+    : 'neutral';
+
+  const contextLinksCard = (
+    <Card title="Context Links" helper="Project, task chain, and identity running this instance." debugId="live-instance-links-card">
+      <div className="flex flex-col gap-3">
+        <DetailRow label="Project">
+          {projectId ? (
+            <a
+              href={buildRouteHash('/projects/' + encodeURIComponent(projectId), '')}
+              data-debug-id="live-instance-project-link"
+              className="group block min-w-0"
+            >
+              <Text as="div" role="body" className="font-medium text-primary hover:underline truncate">
+                {projectName}
+              </Text>
+              {displayProjectPath ? (
+                <Text as="div" role="caption" tone="muted" className="truncate" title={displayProjectPath}>
+                  {displayProjectPath}
+                </Text>
+              ) : null}
+            </a>
+          ) : (
+            <Text role="body" tone="muted">—</Text>
+          )}
+        </DetailRow>
+
+        <DetailRow label="Task Chain">
+          {chainId ? (
+            <a
+              href={buildRouteHash('/chains/' + encodeURIComponent(chainId), '')}
+              data-debug-id="live-instance-chain-link"
+              className="group block min-w-0"
+            >
+              <Text as="div" role="body" className="font-medium text-primary hover:underline truncate">
+                {chainTitle}
+              </Text>
+              <Text as="div" role="caption" tone="muted" className="truncate font-mono">
+                {chainId}
+              </Text>
+            </a>
+          ) : (
+            <Text role="body" tone="muted">—</Text>
+          )}
+        </DetailRow>
+
+        <DetailRow label="Agent Identity">
+          {agentId ? (
+            <a
+              href={agentViewHref(agentId)}
+              data-debug-id="live-instance-agent-link"
+              className="group block min-w-0"
+            >
+              <Text as="div" role="body" className="font-medium text-primary hover:underline truncate">
+                {agentDisplayName}
+              </Text>
+              <Text as="div" role="caption" tone="muted" className="truncate font-mono">
+                {agentId}
+              </Text>
+            </a>
+          ) : (
+            <Text role="body" tone="muted">—</Text>
+          )}
+        </DetailRow>
+      </div>
+    </Card>
+  );
+
+  const runtimeDetailsCard = (
+    <Card title="Runtime Details" helper="Live status, task assignment, and runtime metadata." debugId="live-instance-details-card">
+      <div className="flex flex-col gap-2.5">
+        <DetailRow label="Runtime Status">
+          <div className="flex items-center gap-2 mt-0.5">
+            <StatusPill tone={runtimeTone} data-debug-id="live-instance-runtime-status">
+              {runtimeStatus || 'unknown'}
+            </StatusPill>
+            {activityStatus ? (
+              <StatusPill tone={activityTone} data-debug-id="live-instance-activity-status">
+                {activityStatus}
+              </StatusPill>
+            ) : null}
+          </div>
+        </DetailRow>
+
+        <DetailRow label="Provider & Tier">
+          <div className="flex items-center gap-1.5 mt-0.5">
+            {provider ? <Badge data-debug-id="live-instance-provider">{provider}</Badge> : null}
+            {tier ? <Badge data-debug-id="live-instance-tier">{tier}</Badge> : null}
+            {!provider && !tier ? <Text role="body" tone="muted">—</Text> : null}
+          </div>
+        </DetailRow>
+
+        <DetailRow label="Current Task">
+          {currentTaskId ? (
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="font-mono text-body-sm" data-debug-id="live-instance-task-id">{currentTaskId}</span>
+              {currentTaskRole ? <Badge data-debug-id="live-instance-task-role">{currentTaskRole}</Badge> : null}
+            </div>
+          ) : (
+            <Text role="body" tone="muted">—</Text>
+          )}
+        </DetailRow>
+
+        <DetailRow label="Bridge">
+          {bridgeId ? (
+            <span className="font-mono text-body-sm" data-debug-id="live-instance-bridge-id">{bridgeId}</span>
+          ) : (
+            <Text role="body" tone="muted">—</Text>
+          )}
+        </DetailRow>
+
+        <DetailRow label="Started">
+          <Text role="body-sm" tone="muted" title={absoluteTime(startedAt)} data-debug-id="live-instance-started">
+            {startedAt ? `${relativeTime(startedAt)} (${absoluteTime(startedAt)})` : '—'}
+          </Text>
+        </DetailRow>
+
+        <DetailRow label="Last Seen">
+          <Text role="body-sm" tone="muted" title={absoluteTime(lastSeenAt)} data-debug-id="live-instance-last-seen">
+            {lastSeenAt ? `${relativeTime(lastSeenAt)} (${absoluteTime(lastSeenAt)})` : '—'}
+          </Text>
+        </DetailRow>
+
+        <DetailRow label="Instance ID">
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="font-mono text-body-sm truncate" data-debug-id="live-instance-id">{instanceId}</span>
+            <CopyButton value={instanceId} label="Copy instance ID" debugId="live-instance-copy-id" />
+          </div>
+        </DetailRow>
+      </div>
+    </Card>
+  );
+
+  return (
+    <div ref={paneRef} className="min-w-0 flex flex-col min-h-0 h-full overflow-hidden" data-debug-id="live-instance-detail-pane">
+      <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <Text as="div" role="title" className="text-page-title truncate" data-debug-id="live-instance-title">
+            {displayName}
+          </Text>
+          <div className="flex flex-wrap items-center gap-2 mt-1">
+            {provider ? <Badge data-debug-id="live-instance-header-provider">{provider}</Badge> : null}
+            {tier ? <Badge data-debug-id="live-instance-header-tier">{tier}</Badge> : null}
+            <StatusPill tone={runtimeTone} data-debug-id="live-instance-header-status">
+              {runtimeStatus || 'unknown'}
+            </StatusPill>
+            {startedAt ? (
+              <Text as="span" role="body-sm" tone="muted" title={absoluteTime(startedAt)}>
+                Started {relativeTime(startedAt)}
+              </Text>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            variant="secondary"
+            data-debug-id="live-instance-chat-link"
+            leading={<Icon name="chat" size="sm" />}
+            onClick={() => navigateTo(buildRouteHash('/conversations/' + encodeURIComponent(instanceId), ''))}
+          >
+            Open Chat
+          </Button>
+          <Button
+            variant="secondary"
+            data-debug-id="live-instance-restart-btn"
+            loading={isRestarting}
+            onClick={handleRestart}
+          >
+            Restart
+          </Button>
+          <Button
+            variant="danger"
+            data-debug-id="live-instance-stop-btn"
+            loading={isStopping}
+            onClick={handleStop}
+          >
+            Stop
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+        <div className="flex flex-col gap-3">
+          {actionError ? <Alert tone="danger" title="Operation failed">{actionError}</Alert> : null}
+          {actionSuccess ? <Alert tone="success" title={actionSuccess} /> : null}
+          {wide ? (
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="flex min-w-0 flex-1 flex-col gap-3">{contextLinksCard}</div>
+              <div className="flex min-w-0 flex-1 flex-col gap-3">{runtimeDetailsCard}</div>
+            </div>
+          ) : (
+            <>
+              {contextLinksCard}
+              {runtimeDetailsCard}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
